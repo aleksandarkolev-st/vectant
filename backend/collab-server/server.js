@@ -2400,10 +2400,24 @@ const server = http.createServer(async (req, res) => {
         }
         throw e;
       }
-      const status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
-        force,
-        trigger: 'workspace_prepare_api',
-      });
+      let status;
+      try {
+        status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
+          force,
+          trigger: 'workspace_prepare_api',
+          codesiteContext: prepCodeSiteContext,
+        });
+      } catch (e) {
+        if (e?.code === 'CODESITE_WORKSPACE_PREP_REQUIRES_ISOLATION') {
+          res.writeHead(e.status || 409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: e.code,
+            message: e.message,
+          }));
+          return;
+        }
+        throw e;
+      }
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
       return;
@@ -5941,9 +5955,10 @@ const server = http.createServer(async (req, res) => {
                   } catch (_) {}
                   try {
                     const canAutoPrepare = !sessionId || !userId || sessionManager.checkPermission(sessionId, userId, 'canFileOps');
-                    if (canAutoPrepare) {
+                    if (canAutoPrepare && !codeSiteContext.active) {
                       workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
                         trigger: 'workspace_files_meta',
+                        codesiteContext: codeSiteContext,
                       }).catch((error) => {
                         logger.warn('workspace_prep_background_trigger_failed', {
                           slug,

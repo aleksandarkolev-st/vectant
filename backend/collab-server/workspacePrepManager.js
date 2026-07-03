@@ -103,6 +103,20 @@ function publicStatus(state) {
   };
 }
 
+function codeSiteContextFromOptions(options = {}) {
+  const context = options.codesiteContext || options.codeSiteContext || options.codeSite || options.codesite || null;
+  return context && typeof context === 'object' ? context : null;
+}
+
+function assertWorkspacePrepAllowed(options = {}) {
+  const context = codeSiteContextFromOptions(options);
+  if (!context?.active) return;
+  const error = new Error('Workspace prep is blocked for active CodeSite transactions because package-manager prep mutates the real workspace. Run prep before opening the transaction or implement an overlay-backed prep executor.');
+  error.code = 'CODESITE_WORKSPACE_PREP_REQUIRES_ISOLATION';
+  error.status = 409;
+  throw error;
+}
+
 async function writeJsonAtomic(filePath, data) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp-${process.pid}`;
@@ -307,7 +321,9 @@ async function getWorkspacePrepStatus(slug, userId) {
   return publicStatus(state);
 }
 
-async function ensureWorkspacePrepared(slug, userId, { force = false, trigger = 'workspace_load' } = {}) {
+async function ensureWorkspacePrepared(slug, userId, options = {}) {
+  assertWorkspacePrepAllowed(options);
+  const { force = false, trigger = 'workspace_load' } = options;
   const state = getState(slug, userId);
   await loadState(state);
 
