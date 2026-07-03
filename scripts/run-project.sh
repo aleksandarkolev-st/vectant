@@ -14,6 +14,7 @@ arch="${SYNTHI_GPU_ARCH:-}"
 arch_source=""
 source_manifest="${SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH:-}}"
 source_root="${SYNTHI_GPU_AGENT_SOURCE_ROOT:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT:-}}"
+source_entry="${SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH:-}}"
 source_authority="${SYNTHI_GPU_AGENT_SOURCE_AUTHORITY:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY:-}}"
 
 usage() {
@@ -34,6 +35,7 @@ Options:
                            Default: none.
   --source-manifest PATH   Source-tree manifest for --validate source-first-visual.
   --source-root PATH       Source root for --validate source-first-visual.
+  --source-entry PATH      Entry path inside --source-root when it is not unambiguous.
   --source-authority NAME  Source authority for --validate source-first-visual, e.g.
                            direct_local_git_repo_path, user_source_files, workspace_source_files.
   --help, -h               Show this help.
@@ -118,6 +120,14 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       source_root="$1"
+      ;;
+    --source-entry)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--source-entry requires a value" >&2
+        exit 2
+      fi
+      source_entry="$1"
       ;;
     --source-authority)
       shift
@@ -318,6 +328,9 @@ if [ "$validation" = "source-first-visual" ]; then
   if [ -n "$source_root" ]; then
     echo "    source root: $source_root"
   fi
+  if [ -n "$source_entry" ]; then
+    echo "    source entry: $source_entry"
+  fi
   if [ -n "$source_authority" ]; then
     echo "    source authority: $source_authority"
   fi
@@ -350,6 +363,9 @@ case "$validation" in
     fi
     if [ -n "$source_root" ]; then
       source_first_args+=(--source-root "$source_root")
+    fi
+    if [ -n "$source_entry" ]; then
+      source_first_args+=(--source-entry "$source_entry")
     fi
     if [ -n "$source_authority" ]; then
       source_first_args+=(--source-authority "$source_authority")
