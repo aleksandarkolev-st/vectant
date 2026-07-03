@@ -118,6 +118,7 @@
     "proof:random-large-project:cold:self-check": "node scripts/gpu-hmr-random-large-project-cold-path.mjs --self-check",
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
+    "proof:runtime-boundary-adapter:self-check": "node scripts/tests/gpu-hmr-runtime-boundary-proof-adapter-smoke.mjs",
     "proof:adversarial-ledger:self-check": "node scripts/gpu-hmr-adversarial-proof-ledger-self-check.mjs",
     "proof:acceptance-contract:self-check": "node scripts/gpu-hmr-acceptance-contract-self-check.mjs",
     "proof:strict-gates:self-check": "node scripts/gpu-hmr-proof-strict-gates-self-check.mjs",
