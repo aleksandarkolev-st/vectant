@@ -29063,15 +29063,70 @@ function hiprtVisualProfileRows(rows) {
     const runtimeProbe = compactObject(row.runtimeProbeInstrumentation ?? row.runtime_probe_instrumentation);
     const disclosure = compactObject(runtimeProbe.disclosure);
     return row.backend === 'hiprt'
-      && rowHasAcceptedVisualEvidence(row)
-      && runtimeProbe.accepted === true
       && (
         row.acceptanceScope === 'hiprt_declared_visual_profile'
         || runtimeProbe.scope === 'hiprt_declared_visual_profile'
         || disclosure.acceptanceScope === 'hiprt_declared_visual_profile'
         || disclosure.acceptance_scope === 'hiprt_declared_visual_profile'
-      );
+      )
+      && hiprtVisualProfileCoverageGaps(row).length === 0;
   });
+}
+
+function hiprtVisualProfileCoverageGaps(row = {}) {
+  const runtimeProbe = compactObject(row.runtimeProbeInstrumentation ?? row.runtime_probe_instrumentation);
+  const hiprtContract = compactObject(row.hiprtContract ?? row.hiprt_contract);
+  const ledger = compactObject(row.ledger);
+  const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
+  const outputOracleFacet = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const runtimeVisualProofBindingAccepted = firstBool(
+    row.runtimeVisualProofBindingAccepted,
+    row.runtime_visual_proof_binding_accepted,
+  ) === true;
+  const sourceAdaptedProfile = firstBool(
+    row.sourceAdaptedProfile,
+    row.source_adapted_profile,
+  ) === true;
+  return compactStringList([
+    row.matrixOutcome === 'visual_profile_accepted'
+      ? null
+      : 'hiprt_visual_profile_matrix_outcome_required',
+    row.backend === 'hiprt' ? null : 'hiprt_visual_profile_backend_required',
+    rowHasAcceptedVisualEvidence(row) ? null : 'hiprt_visual_profile_recomputed_visual_required',
+    runtimeProbe.accepted === true
+      ? null
+      : 'hiprt_profile_instrumentation_disclosure_required',
+    hiprtContract.accepted === true ? null : 'hiprt_contract_required',
+    ledger.present === true ? null : 'hiprt_profile_recomputed_ledger_required',
+    ledger.source === 'recomputed_ledger' ? null : 'hiprt_profile_recomputed_ledger_query_required',
+    ledger.gpuHmrSuccess === true ? null : 'hiprt_profile_strict_ledger_success_required',
+    Array.isArray(ledger.failedInvariants) && ledger.failedInvariants.length === 0
+      ? null
+      : 'hiprt_profile_ledger_invariants_clean_required',
+    runtimeProofArtifact.present === true
+      ? null
+      : 'strict_runtime_proof_artifact_required',
+    runtimeVisualProofBindingAccepted
+      ? null
+      : 'visual_runtime_proof_binding_required',
+    sourceAdaptedProfile
+      ? null
+      : 'hiprt_visual_profile_source_adaptation_required',
+    row.cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
+    row.fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
+    row.processRestarted === false ? null : 'process_restart_firewall_field_not_false',
+    outputOracleFacet.accepted === true
+      ? null
+      : 'hiprt_visual_oracle_runtime_ledger_binding_required',
+  ]);
+}
+
+function hiprtVisualProfileRowsWithCoverageGaps(rows) {
+  return visualProfileRows(rows, (row) => row.backend === 'hiprt')
+    .map((row) => ({
+      row,
+      gaps: hiprtVisualProfileCoverageGaps(row),
+    }));
 }
 
 function hiprtVisualPathCoverage({ rows, fullRuntimeRows }) {
@@ -29092,7 +29147,30 @@ function hiprtVisualPathCoverage({ rows, fullRuntimeRows }) {
       rows: profileRows,
       openGaps: compactStringList([
         ...profileRows.flatMap((row) => row.openGaps),
+        ...hiprtVisualProfileRowsWithCoverageGaps(rows)
+          .filter((entry) => profileRows.includes(entry.row))
+          .flatMap((entry) => entry.gaps),
         'hiprt_no_shim_full_runtime_boundary_required',
+      ]),
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofAuthority: 'hiprt_visual_profile_diagnostic_only_not_gpu_hmr_acceptance',
+      proof_authority: 'hiprt_visual_profile_diagnostic_only_not_gpu_hmr_acceptance',
+    });
+  }
+  const rejectedProfileEntries = hiprtVisualProfileRowsWithCoverageGaps(rows)
+    .filter((entry) => entry.gaps.length > 0);
+  if (rejectedProfileEntries.length > 0) {
+    return coverageEntry({
+      id: 'hiprt_visual_path',
+      requirement: 'HIPRT same-process ray-traced visual path',
+      status: 'missing',
+      rows: rejectedProfileEntries.map((entry) => entry.row),
+      openGaps: compactStringList([
+        'hiprt_visual_runtime_proof_required',
+        ...rejectedProfileEntries.flatMap((entry) => entry.gaps),
       ]),
       acceptedForGpuHmr: false,
       accepted_for_gpu_hmr: false,
@@ -29188,7 +29266,27 @@ function hiprtRunModeCoverage({ rows, id, requirement, missingGap }) {
   if (fullRuntimeCoverage.status !== 'missing') return fullRuntimeCoverage;
 
   const profileRows = hiprtVisualProfileRows(rows);
-  if (profileRows.length === 0) return fullRuntimeCoverage;
+  if (profileRows.length === 0) {
+    const rejectedProfileEntries = hiprtVisualProfileRowsWithCoverageGaps(rows)
+      .filter((entry) => entry.gaps.length > 0);
+    if (rejectedProfileEntries.length === 0) return fullRuntimeCoverage;
+    return coverageEntry({
+      id,
+      requirement,
+      status: 'missing',
+      rows: rejectedProfileEntries.map((entry) => entry.row),
+      openGaps: compactStringList([
+        missingGap,
+        ...rejectedProfileEntries.flatMap((entry) => entry.gaps),
+      ]),
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofAuthority: 'hiprt_visual_profile_run_modes_diagnostic_only_not_gpu_hmr_acceptance',
+      proof_authority: 'hiprt_visual_profile_run_modes_diagnostic_only_not_gpu_hmr_acceptance',
+    });
+  }
 
   const profileTargetKeys = new Set(profileRows.map((row) => targetKeyForCoverageRow(row)));
   const rowsByTarget = new Map();

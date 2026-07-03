@@ -16951,6 +16951,116 @@ assert.equal(contractTargetHiprt.sourceAdaptedProfile, true);
 assert.equal(contractTargetHiprt.outputOracleFacet.accepted, true);
 assert.ok(contractTargetHiprt.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 
+const forgedSerializedHiprtProfileCoverageQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.hiprt.warm_visual_proof.v2',
+    artifactPath: 'synthetic/forged-serialized-hiprt-profile.json',
+    updatedAt: '2026-06-09T00:00:00.082Z',
+    backend: 'hiprt',
+    targetId: 'forged-serialized-hiprt-profile',
+    profileId: 'forged-serialized-hiprt-profile',
+    proofMode: 'same-process',
+    evidenceKind: 'raytraced_visual_oracle',
+    matrixOutcome: 'visual_profile_accepted',
+    acceptanceClass: 'source_adapted_visual_profile_not_no_shim_hmr',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    visualProfileAccepted: true,
+    visual_profile_accepted: true,
+    sourceAdaptedProfile: true,
+    source_adapted_profile: true,
+    proofChainAccepted: true,
+    proofChain: 'source_adapted_visual_profile_not_no_shim_hmr',
+    proofIds: ['hiprt-profile-proof:sha256:serialized-flags-only'],
+    ledger: {
+      present: false,
+      source: 'serialized_visual_profile_claim',
+      gpuHmrSuccess: false,
+      failedInvariants: [],
+    },
+    runtimeProofArtifact: {
+      present: false,
+      accepted: false,
+      failedGates: [],
+    },
+    runtime_probe_instrumentation: {
+      accepted: true,
+      scope: 'hiprt_declared_visual_profile',
+      disclosure: {
+        acceptanceScope: 'hiprt_declared_visual_profile',
+      },
+    },
+    runtimeProbeInstrumentation: {
+      accepted: true,
+      scope: 'hiprt_declared_visual_profile',
+      disclosure: {
+        acceptanceScope: 'hiprt_declared_visual_profile',
+      },
+    },
+    hiprtContract: {
+      present: true,
+      accepted: true,
+      acceptedForGpuHmr: false,
+      sourceAdaptedProfile: true,
+      missingFields: [],
+      missingEvidenceFields: [],
+    },
+    hiprt_contract: {
+      present: true,
+      accepted: true,
+      acceptedForGpuHmr: false,
+      sourceAdaptedProfile: true,
+      missingFields: [],
+      missingEvidenceFields: [],
+    },
+    outputOracleFacet: {
+      accepted: false,
+      kind: 'visual_oracle',
+      failedGates: [{ code: 'output_oracle_binding_missing' }],
+    },
+    output_oracle_facet: {
+      accepted: false,
+      kind: 'visual_oracle',
+      failedGates: [{ code: 'output_oracle_binding_missing' }],
+    },
+    visual: {
+      present: true,
+      accepted: true,
+      imageCount: 3,
+      existingImageCount: 0,
+      pngImageCount: 0,
+    },
+    runtimeVisualProofBindingAccepted: false,
+    runtime_visual_proof_binding_accepted: false,
+    runMode: {
+      accepted: true,
+      metricScope: 'hot_delta_1',
+      editHash: hashValue('forged-serialized-hiprt-profile-hot1'),
+    },
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+    reasons: ['source_adapted_profile_not_no_shim_gpu_hmr'],
+    openGaps: ['source_adapted_profile_not_no_shim_gpu_hmr'],
+  })],
+});
+const forgedSerializedHiprtCoverage = new Map(
+  forgedSerializedHiprtProfileCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(forgedSerializedHiprtCoverage.get('hiprt_visual_path')?.status, 'missing');
+assert.ok(forgedSerializedHiprtCoverage.get('hiprt_visual_path')?.openGaps.includes(
+  'strict_runtime_proof_artifact_required',
+));
+assert.ok(forgedSerializedHiprtCoverage.get('hiprt_visual_path')?.openGaps.includes(
+  'hiprt_visual_oracle_runtime_ledger_binding_required',
+));
+assert.equal(forgedSerializedHiprtCoverage.get('hiprt_run_modes')?.status, 'missing');
+assert.ok(forgedSerializedHiprtCoverage.get('hiprt_run_modes')?.openGaps.includes(
+  'visual_runtime_proof_binding_required',
+));
+
 const forgedHiprtVisualThreshold = ledger.rows.find(
   (row) => row.targetId === 'forged-hiprt-visual-threshold',
 );
@@ -17457,11 +17567,11 @@ assert.ok(coverageById.get('hiprt_visual_path')?.openGaps.includes(
 assert.equal(coverageById.get('hiprt_visual_path')?.acceptedForGpuHmr, false);
 assert.equal(coverageById.get('hiprt_run_modes')?.status, 'visual_profile_partial');
 const hiprtRunModeTarget = coverageById.get('hiprt_run_modes')?.targetCoverage?.find(
-  (entry) => entry.targetKey === 'hiprt:accepted-hiprt-recomputed-oracle',
+  (entry) => entry.targetKey === `hiprt:${contractTargetHiprt.targetId}`,
 );
 assert.equal(hiprtRunModeTarget?.status, 'visual_profile_partial');
 assert.ok(hiprtRunModeTarget.openGaps.includes(
-  'hiprt:accepted-hiprt-recomputed-oracle:negative_edit_refusal_evidence_missing',
+  `hiprt:${contractTargetHiprt.targetId}:negative_edit_refusal_evidence_missing`,
 ));
 assert.ok(coverageById.get('hiprt_run_modes')?.openGaps.includes(
   'hiprt_no_shim_full_runtime_run_modes_required',
