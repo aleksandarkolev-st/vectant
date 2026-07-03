@@ -7851,6 +7851,9 @@ function broadLibraryAgnosticScopeProven(row = {}, context = {}) {
 }
 
 function inferFullRuntimeAcceptanceScope(row, context = {}) {
+  if (row.matrixOutcome !== 'full_runtime_gpu_hmr' || row.acceptedForGpuHmr !== true) {
+    return 'not_full_runtime';
+  }
   const declaredScope = firstText(row.acceptanceScope, row.acceptance_scope);
   if (declaredScope === BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE) {
     return broadLibraryAgnosticScopeProven(row, context)
@@ -7858,7 +7861,6 @@ function inferFullRuntimeAcceptanceScope(row, context = {}) {
       : 'broad_library_agnostic_unproven';
   }
   if (declaredScope) return declaredScope;
-  if (row.matrixOutcome !== 'full_runtime_gpu_hmr') return 'not_full_runtime';
   if (
     row.acceptanceClass === 'scoped_hip_module_runtime_hmr'
     || row.proofMode === 'hip_module_runtime_readback'
@@ -8995,6 +8997,39 @@ function finalizeRow(seed) {
     row.openGaps = compactStringList([
       ...(Array.isArray(row.openGaps) ? row.openGaps : []),
       'gpu_hmr_success_requires_known_acceptance_scope',
+    ]);
+  }
+  const runtimeTargetIdentity = compactObject(
+    row.runtimeTargetIdentity ?? row.runtime_target_identity,
+  );
+  const runtimeTargetIdentityPresent = Object.keys(runtimeTargetIdentity).length > 0;
+  const runtimeTargetIdentityAccepted =
+    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity === true
+    || runtimeTargetIdentity.accepted_as_runtime_target_identity === true;
+  if (
+    row.matrixOutcome === 'full_runtime_gpu_hmr'
+    && row.acceptedForGpuHmr === true
+    && runtimeTargetIdentityPresent
+    && runtimeTargetIdentityAccepted !== true
+  ) {
+    row.matrixOutcome = 'unproven';
+    row.acceptedForGpuHmr = false;
+    row.gpuHmrSuccess = false;
+    row.proofChainAccepted = false;
+    row.acceptanceClass = firstText(row.acceptanceClass, row.acceptance_class)
+      ?? 'runtime_proof_rejected';
+    row.acceptance_class = row.acceptanceClass;
+    row.proofChain = 'runtime_target_identity_rejected';
+    row.proof_chain = row.proofChain;
+    row.reasons = compactStringList([
+      ...(Array.isArray(row.reasons) ? row.reasons : []),
+      'gpu_hmr_success_requires_runtime_target_identity_authority',
+      ...compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates),
+    ]);
+    row.openGaps = compactStringList([
+      ...(Array.isArray(row.openGaps) ? row.openGaps : []),
+      'gpu_hmr_success_requires_runtime_target_identity_authority',
+      ...compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates),
     ]);
   }
   const shouldCarryGeneralityClaim =
@@ -14618,6 +14653,21 @@ function rowSafetyFailures(row, context = {}) {
     if (row.runtimeProofArtifact?.accepted !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
     }
+    const runtimeTargetIdentity = compactObject(
+      row.runtimeTargetIdentity ?? row.runtime_target_identity,
+    );
+    const runtimeTargetIdentityPresent = Object.keys(runtimeTargetIdentity).length > 0;
+    const runtimeTargetIdentityAccepted =
+      runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity === true
+      || runtimeTargetIdentity.accepted_as_runtime_target_identity === true;
+    if (runtimeTargetIdentityPresent && runtimeTargetIdentityAccepted !== true) {
+      failures.push({ code: 'gpu_hmr_success_requires_runtime_target_identity_authority' });
+      for (const code of compactStringList(
+        runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates,
+      )) {
+        failures.push({ code });
+      }
+    }
     if (!rowHasAcceptedOutputOracleClosure(row)) {
       failures.push({ code: 'gpu_hmr_success_requires_accepted_output_oracle_facet' });
     }
@@ -15689,6 +15739,9 @@ async function runtimeProofRow(json, filePath, context) {
       json.workspace_slug,
     ],
   });
+  const runtimeTargetIdentityAccepted =
+    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity === true
+    || runtimeTargetIdentity.accepted_as_runtime_target_identity === true;
   const targetId = runtimeTargetIdentity.targetId;
   const oracleArtifacts = compactObject(ledgerRecord.oracle_artifacts ?? ledgerRecord.oracleArtifacts);
   const hasVisualOracle = isObject(oracleArtifacts.visual_oracle_artifacts ?? oracleArtifacts.visualOracleArtifacts);
@@ -15753,7 +15806,10 @@ async function runtimeProofRow(json, filePath, context) {
     context.repoRoot,
     path.dirname(filePath),
   );
-  const accepted = baseAccepted && outputOracleFacet.accepted === true;
+  const accepted =
+    baseAccepted
+    && outputOracleFacet.accepted === true
+    && runtimeTargetIdentityAccepted;
   const outputOracleFailureCodes = (outputOracleFacet.failedGates ?? [])
     .map((failure) => compactObject(failure).code);
   return finalizeRow({
@@ -15799,6 +15855,10 @@ async function runtimeProofRow(json, filePath, context) {
       json.degradedReason,
       ...(Array.isArray(json.limitations) ? json.limitations.map((item) => item?.degradedReason ?? item?.degraded_reason ?? item) : []),
       runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      runtimeTargetIdentityAccepted
+        ? null
+        : 'gpu_hmr_success_requires_runtime_target_identity_authority',
+      ...compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       outputOracleFacet.accepted === true ? null : 'output_oracle_artifacts_not_accepted',
       outputOracleFacet.kind === 'compute_oracle' && outputOracleFacet.accepted !== true
@@ -15814,6 +15874,10 @@ async function runtimeProofRow(json, filePath, context) {
     openGaps: accepted ? [] : compactStringList([
       'runtime_proof_not_accepted',
       runtimeProofArtifactGate.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      runtimeTargetIdentityAccepted
+        ? null
+        : 'runtime_target_identity_authority_required',
+      ...compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates),
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       outputOracleFacet.accepted === true ? null : 'output_oracle_artifacts_not_accepted',
       outputOracleFacet.kind === 'compute_oracle' && outputOracleFacet.accepted !== true
@@ -15916,6 +15980,11 @@ function runtimeTargetIdentityFacet({
       : diagnosticTargetLabel
         ? 'diagnostic_label_fallback'
         : 'unknown';
+  const acceptedAsRuntimeTargetIdentity = [
+    'project_identity_alias',
+    'ledger_project_id',
+    'contract_project_id',
+  ].includes(identitySource);
   const targetId = firstText(
     projectIdentityAlias,
     ledgerProjectId,
@@ -15923,6 +15992,14 @@ function runtimeTargetIdentityFacet({
     diagnosticTargetLabel,
     'unknown',
   );
+  const failedGates = compactStringList([
+    acceptedAsRuntimeTargetIdentity
+      ? null
+      : 'runtime_target_identity_missing_runtime_project_identity',
+    identitySource === 'diagnostic_label_fallback'
+      ? 'runtime_target_identity_diagnostic_label_not_acceptance_authority'
+      : null,
+  ]);
   return {
     schemaVersion: 'synthi.gpu_hmr.runtime_target_identity.v1',
     schema_version: 'synthi.gpu_hmr.runtime_target_identity.v1',
@@ -15946,6 +16023,11 @@ function runtimeTargetIdentityFacet({
     diagnostic_label_authority: diagnosticTargetLabel
       ? 'target_name_profile_slug_or_workspace_slug_for_debug_only'
       : null,
+    accepted: acceptedAsRuntimeTargetIdentity,
+    acceptedAsRuntimeTargetIdentity,
+    accepted_as_runtime_target_identity: acceptedAsRuntimeTargetIdentity,
+    failedGates,
+    failed_gates: failedGates,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -24700,6 +24782,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       validationProfileId,
     ],
   });
+  const runtimeTargetIdentityAccepted =
+    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity === true
+    || runtimeTargetIdentity.accepted_as_runtime_target_identity === true;
   const targetId = runtimeTargetIdentity.targetId;
   const hiprtContract = backend === 'hiprt'
     ? hiprtContractEvidenceFacet(
@@ -24725,6 +24810,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && runtimeVisualProofBindingAccepted
     && asyncVisualProofJobBindingAccepted
     && visualTransportLocatorsAccepted
+    && runtimeTargetIdentityAccepted
     && (backend !== 'hiprt' || (
       runtimeProbeInstrumentation.accepted === true
       && hiprtContract.accepted === true
@@ -24898,6 +24984,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         : 'source_first_ingestion_not_accepted',
       asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_not_accepted',
       visualTransportLocatorsAccepted ? null : 'visual_artifact_transport_non_visual_locator_rejected',
+      !isCold && !runtimeTargetIdentityAccepted
+        ? 'gpu_hmr_success_requires_runtime_target_identity_authority'
+        : null,
       backend === 'hiprt' && !isCold && runtimeProbeInstrumentation.accepted !== true
         ? 'hiprt_profile_instrumentation_disclosure_not_proven'
         : null,
@@ -24905,6 +24994,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
         ? 'hiprt_contract_not_proven'
         : null,
       targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
+      ...(!isCold
+        ? compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates)
+        : []),
       ...visual.failedGates,
       ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
       ...ledger.failedInvariants.map((failure) => failure.code),
@@ -24933,9 +25025,15 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
           asyncVisualProofJobBindingAccepted ? null : 'async_visual_proof_job_binding_required',
           visualTransportLocatorsAccepted ? null : 'visual_artifact_transport_visual_locator_required',
           runtimeVisualProofBindingAccepted ? null : 'visual_runtime_proof_binding_required',
+          !isCold && !runtimeTargetIdentityAccepted
+            ? 'runtime_target_identity_authority_required'
+            : null,
           !isCold && outputOracleFacet.accepted !== true
             ? 'visual_oracle_runtime_ledger_binding_required'
             : null,
+          ...(!isCold
+            ? compactStringList(runtimeTargetIdentity.failedGates ?? runtimeTargetIdentity.failed_gates)
+            : []),
           ...visual.failedGates,
           ...compactStringList((outputOracleFacet.failedGates ?? []).map((failure) => failure.code ?? failure)),
           ...(backend === 'hiprt' && !isCold ? hiprtContract.failedGates : []),

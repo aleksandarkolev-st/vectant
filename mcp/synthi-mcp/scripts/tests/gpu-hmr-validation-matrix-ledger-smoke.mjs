@@ -9502,6 +9502,19 @@ assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
 assert.ok(acceptedFlow.ledger.proofId.startsWith('gpu-ledger-proof:sha256:'));
 assert.equal(acceptedFlow.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedFlow.runtimeProofArtifact.accepted, true);
+assert.equal(
+  acceptedFlow.safety.accepted,
+  true,
+  JSON.stringify(acceptedFlow.safety.failedGates),
+);
+assert.deepEqual(
+  acceptedFlow.coverageObligations,
+  {
+    perTargetRunModes: true,
+    source: 'schema_inferred_run_mode_proof',
+  },
+  JSON.stringify(acceptedFlow.coverageObligations),
+);
 assert.equal(acceptedFlow.generalityClaim.schemaVersion, 'synthi.gpu_hmr.generality_claim.v1');
 assert.equal(acceptedFlow.generalityClaim.profileScopedOnly, true);
 assert.equal(acceptedFlow.generalityClaim.broadLibraryAgnosticAccepted, false);
@@ -10800,6 +10813,54 @@ assert.equal(missingStrictRuntimeArtifactQuery.accepted, false);
 assert.equal(missingStrictRuntimeArtifactQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
 assert.ok(missingStrictRuntimeArtifactQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_strict_runtime_proof_artifact'
+));
+
+const diagnosticRuntimeIdentityRow = acceptedAuthoritativeMatrixRow(
+  'accepted-diagnostic-label-runtime-identity',
+  {
+    runtimeTargetIdentity: {
+      schemaVersion: 'synthi.gpu_hmr.runtime_target_identity.v1',
+      schema_version: 'synthi.gpu_hmr.runtime_target_identity.v1',
+      proofAuthority: 'ledger_or_contract_project_identity_preferred_not_target_label',
+      proof_authority: 'ledger_or_contract_project_identity_preferred_not_target_label',
+      targetId: 'profile-label-only',
+      target_id: 'profile-label-only',
+      identitySource: 'diagnostic_label_fallback',
+      identity_source: 'diagnostic_label_fallback',
+      diagnosticTargetLabel: 'profile-label-only',
+      diagnostic_target_label: 'profile-label-only',
+      diagnosticLabelAuthority: 'target_name_profile_slug_or_workspace_slug_for_debug_only',
+      diagnostic_label_authority: 'target_name_profile_slug_or_workspace_slug_for_debug_only',
+      acceptedAsRuntimeTargetIdentity: false,
+      accepted_as_runtime_target_identity: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      failedGates: [
+        'runtime_target_identity_missing_runtime_project_identity',
+        'runtime_target_identity_diagnostic_label_not_acceptance_authority',
+      ],
+      failed_gates: [
+        'runtime_target_identity_missing_runtime_project_identity',
+        'runtime_target_identity_diagnostic_label_not_acceptance_authority',
+      ],
+    },
+  },
+);
+diagnosticRuntimeIdentityRow.runtime_target_identity =
+  diagnosticRuntimeIdentityRow.runtimeTargetIdentity;
+const diagnosticRuntimeIdentityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId(diagnosticRuntimeIdentityRow)],
+});
+assert.equal(diagnosticRuntimeIdentityQuery.accepted, false);
+assert.equal(diagnosticRuntimeIdentityQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(diagnosticRuntimeIdentityQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_runtime_target_identity_authority'
+));
+assert.ok(diagnosticRuntimeIdentityQuery.failedGates.some((gate) =>
+  gate.code === 'runtime_target_identity_diagnostic_label_not_acceptance_authority'
 ));
 
 const missingGeneralityClaimRow = acceptedAuthoritativeMatrixRow('accepted-missing-generality-claim');
@@ -17667,10 +17728,38 @@ assert.ok(!coverageById.get('external_engine_visual_profile')?.rows.some((row) =
   row.targetId === 'forged-external-engine-visual'
 ));
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
-assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
-assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);
-assert.equal(coverageById.get('per_target_run_modes')?.incompleteTargetCount, 0);
-const flowRunModeTarget = coverageById.get('per_target_run_modes')?.targetCoverage.find(
+const perTargetRunModesCoverage = coverageById.get('per_target_run_modes');
+assert.equal(
+  perTargetRunModesCoverage?.status,
+  'accepted',
+  JSON.stringify({
+    status: perTargetRunModesCoverage?.status,
+    rowCount: perTargetRunModesCoverage?.rowCount,
+    acceptedTargetCount: perTargetRunModesCoverage?.acceptedTargetCount,
+    incompleteTargetCount: perTargetRunModesCoverage?.incompleteTargetCount,
+    openGaps: perTargetRunModesCoverage?.openGaps,
+    targetCoverage: perTargetRunModesCoverage?.targetCoverage?.map((entry) => ({
+      targetKey: entry.targetKey,
+      status: entry.status,
+      rowCount: entry.rowCount,
+      openGaps: entry.openGaps,
+    })),
+    acceptedFlow: {
+      rowId: acceptedFlow.rowId,
+      targetId: acceptedFlow.targetId,
+      matrixOutcome: acceptedFlow.matrixOutcome,
+      acceptedForGpuHmr: acceptedFlow.acceptedForGpuHmr,
+      proofChainAccepted: acceptedFlow.proofChainAccepted,
+      safetyAccepted: acceptedFlow.safety?.accepted,
+      coverageObligations: acceptedFlow.coverageObligations,
+      runtimeTargetIdentityAccepted:
+        acceptedFlow.runtimeTargetIdentity?.acceptedAsRuntimeTargetIdentity,
+    },
+  }, null, 2),
+);
+assert.ok(perTargetRunModesCoverage?.acceptedTargetCount > 0);
+assert.equal(perTargetRunModesCoverage?.incompleteTargetCount, 0);
+const flowRunModeTarget = perTargetRunModesCoverage?.targetCoverage.find(
   (entry) => entry.targetKey === 'hip:flow',
 );
 assert.equal(flowRunModeTarget?.status, 'accepted');
