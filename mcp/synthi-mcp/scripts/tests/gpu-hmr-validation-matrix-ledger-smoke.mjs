@@ -17339,7 +17339,19 @@ assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
 const flowVisualCoverage = coverageById.get('flow_visual_gpu_path');
-assert.equal(flowVisualCoverage?.status, 'accepted');
+assert.equal(flowVisualCoverage?.status, 'diagnostic_only');
+assert.equal(flowVisualCoverage?.diagnosticOnly, true);
+assert.equal(flowVisualCoverage?.acceptedForGpuHmr, false);
+assert.equal(flowVisualCoverage?.gpuHmrSuccess, false);
+assert.equal(flowVisualCoverage?.canSatisfyRuntimeProof, false);
+assert.equal(flowVisualCoverage?.canSatisfyDispatchProof, false);
+assert.equal(
+  flowVisualCoverage?.proofAuthority,
+  'validation_profile_evidence_diagnostic_only_not_gpu_hmr_acceptance',
+);
+assert.ok(flowVisualCoverage?.openGaps.includes(
+  'validation_profile_evidence_diagnostic_only_not_gpu_hmr_authority',
+));
 assert.ok(flowVisualCoverage.rows.some((row) =>
   row.validationProfileEvidence?.accepted === true
   && row.validationProfileEvidence.profileId === 'flow'

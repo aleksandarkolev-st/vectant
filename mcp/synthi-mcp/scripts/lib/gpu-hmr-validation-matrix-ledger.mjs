@@ -7482,6 +7482,7 @@ function validationProfileCoverageEntries(rows) {
         ?? profileRows[0]?.validation_profile_evidence,
       );
       const profileId = firstText(firstEvidence.profileId, firstEvidence.profile_id);
+      const openGaps = ['validation_profile_evidence_diagnostic_only_not_gpu_hmr_authority'];
       return coverageEntry({
         id: profileClass,
         requirement: firstText(
@@ -7489,8 +7490,21 @@ function validationProfileCoverageEntries(rows) {
           firstEvidence.description,
           `Declared validation profile ${profileClass}`,
         ),
-        status: 'accepted',
+        status: 'diagnostic_only',
         rows: profileRows,
+        openGaps,
+        diagnosticOnly: true,
+        diagnostic_only: true,
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: false,
+        can_satisfy_runtime_proof: false,
+        canSatisfyDispatchProof: false,
+        can_satisfy_dispatch_proof: false,
+        proofAuthority: 'validation_profile_evidence_diagnostic_only_not_gpu_hmr_acceptance',
+        proof_authority: 'validation_profile_evidence_diagnostic_only_not_gpu_hmr_acceptance',
         profileId,
         profile_id: profileId,
       });
