@@ -2756,6 +2756,9 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
     present && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
       ? 'random_cold_direct_input_claimed_runtime_authority'
       : null,
+    present && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'random_cold_direct_input_claimed_dispatch_authority'
+      : null,
     ...suppliedBlockingGaps,
   ]);
   const accepted = present && failedGates.length === 0;
@@ -2774,6 +2777,8 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
     inputMode,
     input_mode: inputMode,
     inputChannels,
@@ -3181,6 +3186,10 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     json.canSatisfyRuntimeProof,
     json.can_satisfy_runtime_proof,
   );
+  const canSatisfyDispatchProof = firstBool(
+    json.canSatisfyDispatchProof,
+    json.can_satisfy_dispatch_proof,
+  );
   const resultAcceptedForGpuHmr = firstBool(
     result.acceptedForGpuHmr,
     result.accepted_for_gpu_hmr,
@@ -3189,6 +3198,10 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const resultCanSatisfyRuntimeProof = firstBool(
     result.canSatisfyRuntimeProof,
     result.can_satisfy_runtime_proof,
+  );
+  const resultCanSatisfyDispatchProof = firstBool(
+    result.canSatisfyDispatchProof,
+    result.can_satisfy_dispatch_proof,
   );
   const resultSourceIntake = firstCompactObject(
     result.sourceIntakeEvidence,
@@ -3253,6 +3266,9 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     canSatisfyRuntimeProof === true
       ? 'random_large_project_cold_path_claimed_runtime_authority'
       : null,
+    canSatisfyDispatchProof === true
+      ? 'random_large_project_cold_path_claimed_dispatch_authority'
+      : null,
     resultAcceptedForGpuHmr === true
       ? 'random_large_project_cold_path_result_claimed_gpu_hmr_acceptance'
       : null,
@@ -3261,6 +3277,9 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
       : null,
     resultCanSatisfyRuntimeProof === true
       ? 'random_large_project_cold_path_result_claimed_runtime_authority'
+      : null,
+    resultCanSatisfyDispatchProof === true
+      ? 'random_large_project_cold_path_result_claimed_dispatch_authority'
       : null,
     selectedIds.length > 0 || resultCandidateId
       ? null
@@ -3293,6 +3312,8 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
     runId: firstText(json.runId, json.run_id),
     run_id: firstText(json.runId, json.run_id),
     eventType,

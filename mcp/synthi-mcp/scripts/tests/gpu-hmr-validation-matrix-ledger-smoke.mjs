@@ -2841,6 +2841,15 @@ const forgedDirectInputCases = [
     },
     expectedGate: 'random_cold_direct_input_source_identity_hash_mismatch',
   },
+  {
+    fileName: 'random-cold-direct-input-dispatch-authority.json',
+    candidateId: 'direct-random-arbitrary-direct-input-dispatch-authority',
+    overrides: {
+      canSatisfyDispatchProof: true,
+      can_satisfy_dispatch_proof: true,
+    },
+    expectedGate: 'random_cold_direct_input_claimed_dispatch_authority',
+  },
 ];
 for (const testCase of forgedDirectInputCases) {
   await writeJson(
@@ -2884,6 +2893,67 @@ assert.equal(
     .find((entry) => entry.id === 'random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
   0,
 );
+
+const forgedColdPathDispatchAuthorityDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-dispatch-authority-forged',
+);
+const forgedColdPathDispatchAuthorityCases = [
+  {
+    fileName: 'random-cold-top-level-dispatch-authority.json',
+    candidateId: 'direct-random-arbitrary-top-level-dispatch-authority',
+    topLevelOverrides: {
+      canSatisfyDispatchProof: true,
+      can_satisfy_dispatch_proof: true,
+    },
+    expectedGate: 'random_large_project_cold_path_claimed_dispatch_authority',
+  },
+  {
+    fileName: 'random-cold-result-dispatch-authority.json',
+    candidateId: 'direct-random-arbitrary-result-dispatch-authority',
+    resultOverrides: {
+      canSatisfyDispatchProof: true,
+      can_satisfy_dispatch_proof: true,
+    },
+    expectedGate: 'random_large_project_cold_path_result_claimed_dispatch_authority',
+  },
+];
+for (const testCase of forgedColdPathDispatchAuthorityCases) {
+  await writeJson(
+    path.join(forgedColdPathDispatchAuthorityDir, testCase.fileName),
+    randomColdPathManifest({
+      candidateId: testCase.candidateId,
+      sourceUrl: `https://example.invalid/arbitrary/${testCase.candidateId}.git`,
+      immutableCommit: sha256Hex(`${testCase.candidateId}:commit`).slice(0, 40),
+      resultOverrides: testCase.resultOverrides,
+      topLevelOverrides: testCase.topLevelOverrides,
+    }),
+  );
+}
+const forgedColdPathDispatchAuthorityLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedColdPathDispatchAuthorityDir],
+  includeInvalidated: true,
+});
+const forgedColdPathDispatchAuthorityRows = forgedColdPathDispatchAuthorityLedger.rows.filter(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(
+  forgedColdPathDispatchAuthorityRows.length,
+  forgedColdPathDispatchAuthorityCases.length,
+);
+for (const testCase of forgedColdPathDispatchAuthorityCases) {
+  const row = forgedColdPathDispatchAuthorityRows
+    .find((candidateRow) => candidateRow.targetId === testCase.candidateId);
+  assert.equal(row?.safety.accepted, false);
+  assert.ok(row?.safety.failedGates.some((gate) =>
+    gate.code === 'random_large_project_cold_path_facet_invalid'
+  ));
+  assert.ok(row?.safety.failedGates.some((gate) => gate.code === testCase.expectedGate));
+  assert.equal(row?.acceptedForGpuHmr, false);
+  assert.equal(row?.gpuHmrSuccess, false);
+}
 
 const multiRandomColdPathDir = path.join(
   tmpRoot,
