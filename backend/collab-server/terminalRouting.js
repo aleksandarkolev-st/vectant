@@ -17,8 +17,9 @@ function codeSiteTerminalLaunchMode({
   workspaceSlug = '',
 } = {}) {
   if (!codeSiteContext?.active) return 'normal';
+  const hasQuarantineRuntime = shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug });
+  if (hasQuarantineRuntime) return 'overlay-runtime';
   if (usesRuntimePodTerminal) return 'block-runtime';
-  if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) return 'overlay-runtime';
   return 'block-host';
 }
 

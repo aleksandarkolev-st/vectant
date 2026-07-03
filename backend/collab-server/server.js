@@ -16,7 +16,7 @@ const { createRuntimeManager } = require('./workspaceRuntimeContainer');
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
-const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntimeTarget, codeSiteProgramRuntimeLaunchMode, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
+const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, codeSiteProgramRuntimeTarget, codeSiteProgramRuntimeLaunchMode, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -234,7 +234,8 @@ const managedProgramRuntime = createProgramRuntimeManager({
     const codeSiteHybridAvailable = Boolean(workspaceRuntime) && Boolean(ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME);
     const nonCodeSiteHybridAvailable = Boolean(workspaceRuntime) && ENABLE_CONTAINER_RUNTIME;
     const hasHybrid = codesiteContext?.active ? codeSiteHybridAvailable : nonCodeSiteHybridAvailable;
-    const { target } = programRuntimeTarget({
+    const { target } = codeSiteProgramRuntimeTarget({
+      codeSiteContext: codesiteContext,
       runtimeType,
       sysboxEnabled: isSysboxRuntimeEnabled(),
       hasHybrid,

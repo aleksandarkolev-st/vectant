@@ -40,6 +40,44 @@ const HOST_ENV_DENYLIST = new Set([
   'HOSTNAME', 'TMPDIR', 'TERM', 'NODE_ENV', '_',
 ]);
 
+function createDockerExecTextDecoder({ tty = true } = {}) {
+  let pending = Buffer.alloc(0);
+  const decode = (chunk, emit) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ''), 'utf8');
+    if (tty) {
+      emit(buffer.toString('utf8'));
+      return;
+    }
+    pending = pending.length ? Buffer.concat([pending, buffer]) : buffer;
+    while (pending.length >= 8) {
+      if (!isDockerMultiplexHeader(pending)) {
+        emit(pending.toString('utf8'));
+        pending = Buffer.alloc(0);
+        return;
+      }
+      const frameLength = pending.readUInt32BE(4);
+      if (pending.length < 8 + frameLength) return;
+      const payload = pending.subarray(8, 8 + frameLength);
+      if (payload.length) emit(payload.toString('utf8'));
+      pending = pending.subarray(8 + frameLength);
+    }
+  };
+  const flush = (emit) => {
+    if (pending.length) emit(pending.toString('utf8'));
+    pending = Buffer.alloc(0);
+  };
+  return { decode, flush };
+}
+
+function isDockerMultiplexHeader(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 8) return false;
+  const streamType = buffer[0];
+  return (streamType === 1 || streamType === 2)
+    && buffer[1] === 0
+    && buffer[2] === 0
+    && buffer[3] === 0;
+}
+
 function safeName(value, max = 40) {
   return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, max);
 }
@@ -445,8 +483,16 @@ function createRuntimeManager({
 
     const dataCbs = new Set();
     const exitCbs = new Set();
-    stream.on('data', (chunk) => { for (const cb of dataCbs) cb(chunk.toString('utf8')); });
+    const decoder = createDockerExecTextDecoder({ tty });
+    stream.on('data', (chunk) => {
+      decoder.decode(chunk, (text) => {
+        for (const cb of dataCbs) cb(text);
+      });
+    });
     stream.on('end', async () => {
+      decoder.flush((text) => {
+        for (const cb of dataCbs) cb(text);
+      });
       let exitCode = null;
       try { exitCode = (await exec.inspect()).ExitCode; } catch (_) {}
       for (const cb of exitCbs) cb({ exitCode });
@@ -619,7 +665,7 @@ async function setupCodeSiteOverlayMount(container) {
     '    su rootless -c \'touch /workspace/.codesite-overlay-rootless-probe && rm -f /workspace/.codesite-overlay-rootless-probe\'',
     '  fi',
     'fi',
-    '(findmnt -n -T /workspace 2>/dev/null | grep -E "overlay|fuse-overlayfs" >/dev/null) || (mount | grep " on /workspace " | grep -E "overlay|fuse-overlayfs" >/dev/null)',
+    '(grep -E " /workspace .* - (overlay|fuse-overlayfs|fuse\\.fuse-overlayfs) " /proc/self/mountinfo >/dev/null) || (findmnt -n -T /workspace 2>/dev/null | grep -E "overlay|fuse-overlayfs" >/dev/null) || (mount | grep " on /workspace " | grep -E "overlay|fuse-overlayfs" >/dev/null)',
   ].join('\n');
   const exec = await container.exec({
     Cmd: ['/bin/sh', '-lc', script],

@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-07-01T19:23:54.365Z",
-  "sourceRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
-  "runRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607",
+  "generatedAt": "2026-07-03T22:26:35.304Z",
+  "sourceRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+  "runRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d",
   "context": {
     "active": true,
     "workspaceSlug": "codesitefs-runtime-boundary",
-    "transactionId": "txn-1782933824566",
+    "transactionId": "txn-1783117570297",
     "mutationLeaseId": "lease-runtime-boundary",
     "displayCallsign": "RUNTIME-RAW-01",
     "actorUserId": "agent-user",
@@ -26,47 +26,56 @@
       "proof:codesitefs-runtime-boundary"
     ],
     "controlPlaneUrl": "http://app.test/api/workspace/codesitefs-runtime-boundary/codesite",
+    "controlPlaneTrusted": true,
     "fetch": "[proof-local-fetch]"
   },
   "runtime": {
     "image": "vectant-runtime:local",
     "network": "synthi-ide_default",
-    "dockerDriver": "docker-cli"
+    "dockerDriver": "dockerode"
   },
   "overlays": [
     {
       "label": "overlay-a",
       "quarantine": {
-        "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
-        "root": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe",
-        "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
-        "manifestPath": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/_records/qtn-txn-1782933824566-1782933824574-5b74bdfe.json",
-        "digest": "sha256:23a2970c2b3a8812f7ce10e0849a66ddab0c8924b56dc291c2653d6f1cc3bc99"
+        "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "overlayId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "root": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "baseRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "upperRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e/upper",
+        "workRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e/work",
+        "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "manifestPath": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/_records/ovl-txn-1783117570297-1783117586723-d1850a4e.json",
+        "digest": "sha256:cf0eb425062a63bbdfd9a329502c9681621cb9638ffc3c6853fab25e9556f776"
       },
       "runtime": {
-        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-23a2970c2b",
-        "host": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-23a2970c2b",
-        "containerId": "a147defb635b7500e77b09d07be06ce148520b2d6c25f35cf31e399d04b756b3",
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9",
+        "host": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9",
+        "containerId": "f781bb832f7bdf82f46708bf3deed7c1f12358714753cadbc9111c88eb248c92",
         "created": true
       },
       "inspect": {
-        "id": "a147defb635b7500e77b09d07be06ce148520b2d6c25f35cf31e399d04b756b3",
-        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-23a2970c2b",
+        "id": "f781bb832f7bdf82f46708bf3deed7c1f12358714753cadbc9111c88eb248c92",
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9",
         "image": "vectant-runtime:local",
         "labels": {
           "desktop.docker.io/wsl-distro": "Ubuntu",
-          "vectant/codesite-quarantine-id": "23a2970c2b",
-          "vectant/codesite-transaction-id": "txn-1782933824566",
-          "vectant/codesite-workspace-mode": "quarantine",
-          "vectant/lastActive": "1782933824596",
+          "vectant/codesite-base-readonly": "true",
+          "vectant/codesite-overlay-id": "40608c17b9",
+          "vectant/codesite-transaction-id": "txn-1783117570297",
+          "vectant/codesite-workspace-mode": "codesite-overlay",
+          "vectant/lastActive": "1783117586773",
           "vectant/runtime": "workspace-runtime-local",
           "vectant/slug": "codesitefs-runtime-boundary",
           "vectant/userId": "workspace-user"
         },
         "env": [
-          "CODESITE_QUARANTINE_ROOT=/workspace",
-          "CODESITE_WORKSPACE_QUARANTINED=1",
-          "SYNTHI_CODESITE_WORKSPACE_QUARANTINED=1",
+          "CODESITE_WORKSPACE_OVERLAY=1",
+          "SYNTHI_CODESITE_WORKSPACE_OVERLAY=1",
+          "CODESITE_BASE_ROOT=/codesite/base",
+          "CODESITE_OVERLAY_ROOT=/codesite/overlay",
+          "CODESITE_OVERLAY_UPPER=/codesite/overlay/upper",
+          "CODESITE_OVERLAY_WORK=/codesite/overlay/work",
           "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           "DOCKER_VERSION=29.5.3",
           "DOCKER_BUILDX_VERSION=0.34.1",
@@ -78,7 +87,8 @@
         ],
         "hostConfig": {
           "binds": [
-            "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe:/workspace"
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo:/codesite/base:ro",
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e:/codesite/overlay"
           ],
           "networkMode": "synthi-ide_default",
           "privileged": true
@@ -86,18 +96,8 @@
         "mounts": [
           {
             "Type": "volume",
-            "Name": "851dfd86660a8c989959e866b5b27702511243637b7bed19ea9e97806131dec2",
-            "Source": "/var/lib/docker/volumes/851dfd86660a8c989959e866b5b27702511243637b7bed19ea9e97806131dec2/_data",
-            "Destination": "/home/rootless/.local/share/docker",
-            "Driver": "local",
-            "Mode": "",
-            "RW": true,
-            "Propagation": ""
-          },
-          {
-            "Type": "volume",
-            "Name": "970c5a9c5f0fc3fe1a72028a49f74babf64c56b8322a10045fa5fb139d7a28ef",
-            "Source": "/var/lib/docker/volumes/970c5a9c5f0fc3fe1a72028a49f74babf64c56b8322a10045fa5fb139d7a28ef/_data",
+            "Name": "9004796ba0405850df56cb4eaa88771d932378c884e3752ae0adeb5da2d93fdb",
+            "Source": "/var/lib/docker/volumes/9004796ba0405850df56cb4eaa88771d932378c884e3752ae0adeb5da2d93fdb/_data",
             "Destination": "/var/lib/docker",
             "Driver": "local",
             "Mode": "",
@@ -106,24 +106,55 @@
           },
           {
             "Type": "bind",
-            "Source": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe",
-            "Destination": "/workspace",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+            "Destination": "/codesite/base",
+            "Mode": "ro",
+            "RW": false,
+            "Propagation": "rprivate"
+          },
+          {
+            "Type": "bind",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "Destination": "/codesite/overlay",
             "Mode": "",
             "RW": true,
             "Propagation": "rprivate"
+          },
+          {
+            "Type": "volume",
+            "Name": "85749afb2bae74bcb27a751222e4317cea3fdb41ea6dd4539bea346366cb749f",
+            "Source": "/var/lib/docker/volumes/85749afb2bae74bcb27a751222e4317cea3fdb41ea6dd4539bea346366cb749f/_data",
+            "Destination": "/home/rootless/.local/share/docker",
+            "Driver": "local",
+            "Mode": "",
+            "RW": true,
+            "Propagation": ""
           }
         ],
-        "workspaceMount": {
+        "workspaceMount": null,
+        "codeSiteBaseMount": {
           "Type": "bind",
-          "Source": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe",
-          "Destination": "/workspace",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+          "Destination": "/codesite/base",
+          "Mode": "ro",
+          "RW": false,
+          "Propagation": "rprivate"
+        },
+        "codeSiteOverlayMount": {
+          "Type": "bind",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+          "Destination": "/codesite/overlay",
           "Mode": "",
           "RW": true,
           "Propagation": "rprivate"
         }
       },
       "mount": {
-        "source": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe"
+        "workspaceSource": "",
+        "baseSource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "baseReadOnly": true,
+        "overlaySource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "overlayWritable": true
       },
       "command": {
         "output": "pwd=/workspace\nwhoami=rootless\nworkspaceWritable=yes\nreadbackApp=overlay app from manager overlay-a\nreadbackAuth=raw auth bypass attempt overlay-a\nreadbackRuntime=runtime wrote only to quarantine overlay-a\n",
@@ -135,15 +166,19 @@
           {
             "path": "api/auth/signup.ts",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
             "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
             "beforeSize": 22,
             "afterSize": 34,
-            "evidenceDigest": "sha256:4ed87de148b4554779c40ac62c050b27390d2433e192458700107d62e1c1c59a",
-            "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
+            "evidenceDigest": "sha256:4c14fd3835d09c7d0915c82534a61eb3544d4d95e3c136cd81a19f59375cfe26",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
             "quarantineEvidence": {
               "path": "api/auth/signup.ts",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
               "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
               "beforeSize": 22,
@@ -162,23 +197,27 @@
                   " "
                 ]
               },
-              "digest": "sha256:014833780d777525f438adc43eb81d70a35f2660c591ace9eef9786eddb532b5",
-              "evidenceRef": "codesitefs:quarantine:sha256:014833780d777525f438adc43eb81d70a35f2660c591ace9eef9786eddb532b5",
-              "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe"
+              "digest": "sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "evidenceRef": "codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
             }
           },
           {
             "path": "runtime.out",
             "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
             "beforeDigest": null,
             "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
             "beforeSize": null,
             "afterSize": 43,
-            "evidenceDigest": "sha256:58afb04432e45f67ea5a2d8cee573d127504ee88336ec12dc9555abfd0b60ef6",
-            "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
+            "evidenceDigest": "sha256:ca279462a70ecf2ad23951a538d229fe0cf0f8a18be07d0977e05cbbd3b957ee",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
             "quarantineEvidence": {
               "path": "runtime.out",
               "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
               "beforeDigest": null,
               "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
               "beforeSize": null,
@@ -195,23 +234,27 @@
                   " "
                 ]
               },
-              "digest": "sha256:fb361ce6585474510946435249390755a3ab1d9d5a775c801e81e77cf127ab4a",
-              "evidenceRef": "codesitefs:quarantine:sha256:fb361ce6585474510946435249390755a3ab1d9d5a775c801e81e77cf127ab4a",
-              "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe"
+              "digest": "sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "evidenceRef": "codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
             }
           },
           {
             "path": "src/app.js",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
             "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
             "beforeSize": 21,
             "afterSize": 35,
-            "evidenceDigest": "sha256:598af966a6374fce1df82ba2b47bf29bbcc57f8269dde968e3be548b0909d853",
-            "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
+            "evidenceDigest": "sha256:ce2cf4b68f6332f2601b0d37dcd2f70418c760ab083fbe026b48e4ad0179af94",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
             "quarantineEvidence": {
               "path": "src/app.js",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
               "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
               "beforeSize": 21,
@@ -230,9 +273,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:17b7107c1e1df08167c64512aa1998637b3e002dc87fe1cc81be604d3863a7b7",
-              "evidenceRef": "codesitefs:quarantine:sha256:17b7107c1e1df08167c64512aa1998637b3e002dc87fe1cc81be604d3863a7b7",
-              "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe"
+              "digest": "sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "evidenceRef": "codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
             }
           }
         ],
@@ -240,15 +283,19 @@
           {
             "path": "api/auth/signup.ts",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
             "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
             "beforeSize": 22,
             "afterSize": 34,
-            "evidenceDigest": "sha256:4ed87de148b4554779c40ac62c050b27390d2433e192458700107d62e1c1c59a",
-            "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
+            "evidenceDigest": "sha256:4c14fd3835d09c7d0915c82534a61eb3544d4d95e3c136cd81a19f59375cfe26",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
             "quarantineEvidence": {
               "path": "api/auth/signup.ts",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
               "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
               "beforeSize": 22,
@@ -267,9 +314,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:014833780d777525f438adc43eb81d70a35f2660c591ace9eef9786eddb532b5",
-              "evidenceRef": "codesitefs:quarantine:sha256:014833780d777525f438adc43eb81d70a35f2660c591ace9eef9786eddb532b5",
-              "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe"
+              "digest": "sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "evidenceRef": "codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
             },
             "ok": true,
             "response": {
@@ -285,15 +332,19 @@
           {
             "path": "runtime.out",
             "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
             "beforeDigest": null,
             "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
             "beforeSize": null,
             "afterSize": 43,
-            "evidenceDigest": "sha256:58afb04432e45f67ea5a2d8cee573d127504ee88336ec12dc9555abfd0b60ef6",
-            "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
+            "evidenceDigest": "sha256:ca279462a70ecf2ad23951a538d229fe0cf0f8a18be07d0977e05cbbd3b957ee",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
             "quarantineEvidence": {
               "path": "runtime.out",
               "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
               "beforeDigest": null,
               "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
               "beforeSize": null,
@@ -310,9 +361,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:fb361ce6585474510946435249390755a3ab1d9d5a775c801e81e77cf127ab4a",
-              "evidenceRef": "codesitefs:quarantine:sha256:fb361ce6585474510946435249390755a3ab1d9d5a775c801e81e77cf127ab4a",
-              "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe"
+              "digest": "sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "evidenceRef": "codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
             },
             "ok": true,
             "response": {
@@ -328,15 +379,19 @@
           {
             "path": "src/app.js",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
             "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
             "beforeSize": 21,
             "afterSize": 35,
-            "evidenceDigest": "sha256:598af966a6374fce1df82ba2b47bf29bbcc57f8269dde968e3be548b0909d853",
-            "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe",
+            "evidenceDigest": "sha256:ce2cf4b68f6332f2601b0d37dcd2f70418c760ab083fbe026b48e4ad0179af94",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
             "quarantineEvidence": {
               "path": "src/app.js",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
               "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
               "beforeSize": 21,
@@ -355,9 +410,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:17b7107c1e1df08167c64512aa1998637b3e002dc87fe1cc81be604d3863a7b7",
-              "evidenceRef": "codesitefs:quarantine:sha256:17b7107c1e1df08167c64512aa1998637b3e002dc87fe1cc81be604d3863a7b7",
-              "quarantineId": "qtn-txn-1782933824566-1782933824574-5b74bdfe"
+              "digest": "sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "evidenceRef": "codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
             },
             "ok": true,
             "response": {
@@ -376,36 +431,44 @@
     {
       "label": "overlay-b",
       "quarantine": {
-        "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
-        "root": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c",
-        "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
-        "manifestPath": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/_records/qtn-txn-1782933824566-1782933826051-eaecea1c.json",
-        "digest": "sha256:2539fb862a7d6ec01184537943fda1e04be39a496ec811b7feffb5e0c582919c"
+        "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+        "overlayId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+        "root": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+        "baseRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "upperRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b/upper",
+        "workRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b/work",
+        "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "manifestPath": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/_records/ovl-txn-1783117570297-1783117587466-ade3496b.json",
+        "digest": "sha256:e5c0e18d409d4be1c275e6e3ebd6ef849d0bf43938495900aa4cc14c49fa7b09"
       },
       "runtime": {
-        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-2539fb862a",
-        "host": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-2539fb862a",
-        "containerId": "e6472bbf8375c81e9edad4dd7f285a883b6b68923d133129ff7dcb7da500e780",
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece",
+        "host": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece",
+        "containerId": "b74a95f68eb0771d54a69d21698d0f18e2bec94e2dcca1711e73e65dde15312f",
         "created": true
       },
       "inspect": {
-        "id": "e6472bbf8375c81e9edad4dd7f285a883b6b68923d133129ff7dcb7da500e780",
-        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-2539fb862a",
+        "id": "b74a95f68eb0771d54a69d21698d0f18e2bec94e2dcca1711e73e65dde15312f",
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece",
         "image": "vectant-runtime:local",
         "labels": {
           "desktop.docker.io/wsl-distro": "Ubuntu",
-          "vectant/codesite-quarantine-id": "2539fb862a",
-          "vectant/codesite-transaction-id": "txn-1782933824566",
-          "vectant/codesite-workspace-mode": "quarantine",
-          "vectant/lastActive": "1782933826065",
+          "vectant/codesite-base-readonly": "true",
+          "vectant/codesite-overlay-id": "c826d72ece",
+          "vectant/codesite-transaction-id": "txn-1783117570297",
+          "vectant/codesite-workspace-mode": "codesite-overlay",
+          "vectant/lastActive": "1783117587470",
           "vectant/runtime": "workspace-runtime-local",
           "vectant/slug": "codesitefs-runtime-boundary",
           "vectant/userId": "workspace-user"
         },
         "env": [
-          "CODESITE_WORKSPACE_QUARANTINED=1",
-          "SYNTHI_CODESITE_WORKSPACE_QUARANTINED=1",
-          "CODESITE_QUARANTINE_ROOT=/workspace",
+          "CODESITE_WORKSPACE_OVERLAY=1",
+          "SYNTHI_CODESITE_WORKSPACE_OVERLAY=1",
+          "CODESITE_BASE_ROOT=/codesite/base",
+          "CODESITE_OVERLAY_ROOT=/codesite/overlay",
+          "CODESITE_OVERLAY_UPPER=/codesite/overlay/upper",
+          "CODESITE_OVERLAY_WORK=/codesite/overlay/work",
           "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           "DOCKER_VERSION=29.5.3",
           "DOCKER_BUILDX_VERSION=0.34.1",
@@ -417,7 +480,8 @@
         ],
         "hostConfig": {
           "binds": [
-            "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c:/workspace"
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo:/codesite/base:ro",
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b:/codesite/overlay"
           ],
           "networkMode": "synthi-ide_default",
           "privileged": true
@@ -425,16 +489,16 @@
         "mounts": [
           {
             "Type": "bind",
-            "Source": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c",
-            "Destination": "/workspace",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+            "Destination": "/codesite/overlay",
             "Mode": "",
             "RW": true,
             "Propagation": "rprivate"
           },
           {
             "Type": "volume",
-            "Name": "f28be178fe42ba3a00a17458a718451b73d05876ba2876c226ae67ec38ca5753",
-            "Source": "/var/lib/docker/volumes/f28be178fe42ba3a00a17458a718451b73d05876ba2876c226ae67ec38ca5753/_data",
+            "Name": "836e33c2288159b5f4e7caf85990202fe86a46cc33dd8a5a96c6ca91ccdfe2c3",
+            "Source": "/var/lib/docker/volumes/836e33c2288159b5f4e7caf85990202fe86a46cc33dd8a5a96c6ca91ccdfe2c3/_data",
             "Destination": "/home/rootless/.local/share/docker",
             "Driver": "local",
             "Mode": "",
@@ -443,26 +507,47 @@
           },
           {
             "Type": "volume",
-            "Name": "3c055aa7e02245a85713f262485b2549b6057a35dcbc257af657f36286de673a",
-            "Source": "/var/lib/docker/volumes/3c055aa7e02245a85713f262485b2549b6057a35dcbc257af657f36286de673a/_data",
+            "Name": "c884fbb9670de9cc2134ce716b9073c3b8b6a3f71d0e7538db075a583e0ee413",
+            "Source": "/var/lib/docker/volumes/c884fbb9670de9cc2134ce716b9073c3b8b6a3f71d0e7538db075a583e0ee413/_data",
             "Destination": "/var/lib/docker",
             "Driver": "local",
             "Mode": "",
             "RW": true,
             "Propagation": ""
+          },
+          {
+            "Type": "bind",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+            "Destination": "/codesite/base",
+            "Mode": "ro",
+            "RW": false,
+            "Propagation": "rprivate"
           }
         ],
-        "workspaceMount": {
+        "workspaceMount": null,
+        "codeSiteBaseMount": {
           "Type": "bind",
-          "Source": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c",
-          "Destination": "/workspace",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+          "Destination": "/codesite/base",
+          "Mode": "ro",
+          "RW": false,
+          "Propagation": "rprivate"
+        },
+        "codeSiteOverlayMount": {
+          "Type": "bind",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+          "Destination": "/codesite/overlay",
           "Mode": "",
           "RW": true,
           "Propagation": "rprivate"
         }
       },
       "mount": {
-        "source": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c"
+        "workspaceSource": "",
+        "baseSource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "baseReadOnly": true,
+        "overlaySource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+        "overlayWritable": true
       },
       "command": {
         "output": "pwd=/workspace\nwhoami=rootless\nworkspaceWritable=yes\nreadbackApp=overlay app from manager overlay-b\nreadbackAuth=raw auth bypass attempt overlay-b\nreadbackRuntime=runtime wrote only to quarantine overlay-b\n",
@@ -474,15 +559,19 @@
           {
             "path": "api/auth/signup.ts",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
             "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
             "beforeSize": 22,
             "afterSize": 34,
-            "evidenceDigest": "sha256:433eb26e3bebbcd66200f1a3c86cfad391ca394b661fa0edd84c9319d1c6a089",
-            "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
+            "evidenceDigest": "sha256:d9df2f43dd0baf622233265d4c12fea76a35b908d7503bc75b8b3dc0c12bd30a",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
             "quarantineEvidence": {
               "path": "api/auth/signup.ts",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
               "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
               "beforeSize": 22,
@@ -501,23 +590,27 @@
                   " "
                 ]
               },
-              "digest": "sha256:33685a296c799884e9af0cb608518a4f37a9ca556552a612412f141157f7e369",
-              "evidenceRef": "codesitefs:quarantine:sha256:33685a296c799884e9af0cb608518a4f37a9ca556552a612412f141157f7e369",
-              "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c"
+              "digest": "sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "evidenceRef": "codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
             }
           },
           {
             "path": "runtime.out",
             "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
             "beforeDigest": null,
             "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
             "beforeSize": null,
             "afterSize": 43,
-            "evidenceDigest": "sha256:70b4bd1823c60ce89706ec1da9391b1324d0d591aa41a2c85fd8ee1aedf7eb8b",
-            "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
+            "evidenceDigest": "sha256:ef40a4022251b9e9acc6ede4cd731e41f07d7c268fac7c90237a4b0e7067b28d",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
             "quarantineEvidence": {
               "path": "runtime.out",
               "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
               "beforeDigest": null,
               "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
               "beforeSize": null,
@@ -534,23 +627,27 @@
                   " "
                 ]
               },
-              "digest": "sha256:1419162b66d61bdc8a12da86ef23254b662292fe0a46970f3bfa92726a12dee0",
-              "evidenceRef": "codesitefs:quarantine:sha256:1419162b66d61bdc8a12da86ef23254b662292fe0a46970f3bfa92726a12dee0",
-              "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c"
+              "digest": "sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "evidenceRef": "codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
             }
           },
           {
             "path": "src/app.js",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
             "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
             "beforeSize": 21,
             "afterSize": 35,
-            "evidenceDigest": "sha256:1a99a209895420496627c7887489efa06803f973661731e8a7f5dab3e0829cd2",
-            "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
+            "evidenceDigest": "sha256:5cdaf09d82ab28106e24c59fb3a86b396c05746bea4f5ecb3ffffa5dc0601399",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
             "quarantineEvidence": {
               "path": "src/app.js",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
               "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
               "beforeSize": 21,
@@ -569,9 +666,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:b0e13ed64133f1bfd0fb775ebca9fa157c5dbdab5bf74f08a6ede2467db52f9c",
-              "evidenceRef": "codesitefs:quarantine:sha256:b0e13ed64133f1bfd0fb775ebca9fa157c5dbdab5bf74f08a6ede2467db52f9c",
-              "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c"
+              "digest": "sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "evidenceRef": "codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
             }
           }
         ],
@@ -579,15 +676,19 @@
           {
             "path": "api/auth/signup.ts",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
             "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
             "beforeSize": 22,
             "afterSize": 34,
-            "evidenceDigest": "sha256:433eb26e3bebbcd66200f1a3c86cfad391ca394b661fa0edd84c9319d1c6a089",
-            "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
+            "evidenceDigest": "sha256:d9df2f43dd0baf622233265d4c12fea76a35b908d7503bc75b8b3dc0c12bd30a",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
             "quarantineEvidence": {
               "path": "api/auth/signup.ts",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
               "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
               "beforeSize": 22,
@@ -606,9 +707,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:33685a296c799884e9af0cb608518a4f37a9ca556552a612412f141157f7e369",
-              "evidenceRef": "codesitefs:quarantine:sha256:33685a296c799884e9af0cb608518a4f37a9ca556552a612412f141157f7e369",
-              "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c"
+              "digest": "sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "evidenceRef": "codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
             },
             "ok": true,
             "response": {
@@ -624,15 +725,19 @@
           {
             "path": "runtime.out",
             "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
             "beforeDigest": null,
             "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
             "beforeSize": null,
             "afterSize": 43,
-            "evidenceDigest": "sha256:70b4bd1823c60ce89706ec1da9391b1324d0d591aa41a2c85fd8ee1aedf7eb8b",
-            "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
+            "evidenceDigest": "sha256:ef40a4022251b9e9acc6ede4cd731e41f07d7c268fac7c90237a4b0e7067b28d",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
             "quarantineEvidence": {
               "path": "runtime.out",
               "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
               "beforeDigest": null,
               "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
               "beforeSize": null,
@@ -649,9 +754,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:1419162b66d61bdc8a12da86ef23254b662292fe0a46970f3bfa92726a12dee0",
-              "evidenceRef": "codesitefs:quarantine:sha256:1419162b66d61bdc8a12da86ef23254b662292fe0a46970f3bfa92726a12dee0",
-              "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c"
+              "digest": "sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "evidenceRef": "codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
             },
             "ok": true,
             "response": {
@@ -667,15 +772,19 @@
           {
             "path": "src/app.js",
             "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
             "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
             "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
             "beforeSize": 21,
             "afterSize": 35,
-            "evidenceDigest": "sha256:1a99a209895420496627c7887489efa06803f973661731e8a7f5dab3e0829cd2",
-            "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c",
+            "evidenceDigest": "sha256:5cdaf09d82ab28106e24c59fb3a86b396c05746bea4f5ecb3ffffa5dc0601399",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
             "quarantineEvidence": {
               "path": "src/app.js",
               "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
               "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
               "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
               "beforeSize": 21,
@@ -694,9 +803,9 @@
                   " "
                 ]
               },
-              "digest": "sha256:b0e13ed64133f1bfd0fb775ebca9fa157c5dbdab5bf74f08a6ede2467db52f9c",
-              "evidenceRef": "codesitefs:quarantine:sha256:b0e13ed64133f1bfd0fb775ebca9fa157c5dbdab5bf74f08a6ede2467db52f9c",
-              "quarantineId": "qtn-txn-1782933824566-1782933826051-eaecea1c"
+              "digest": "sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "evidenceRef": "codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
             },
             "ok": true,
             "response": {
@@ -721,9 +830,9 @@
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:014833780d777525f438adc43eb81d70a35f2660c591ace9eef9786eddb532b5",
-      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe",
-      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
+      "evidenceRef": "codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
         "workspace-runtime-container",
         "execInRuntime",
@@ -737,9 +846,9 @@
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:fb361ce6585474510946435249390755a3ab1d9d5a775c801e81e77cf127ab4a",
-      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe",
-      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
+      "evidenceRef": "codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
         "workspace-runtime-container",
         "execInRuntime",
@@ -753,9 +862,9 @@
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:17b7107c1e1df08167c64512aa1998637b3e002dc87fe1cc81be604d3863a7b7",
-      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe",
-      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
+      "evidenceRef": "codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
         "workspace-runtime-container",
         "execInRuntime",
@@ -769,9 +878,9 @@
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:33685a296c799884e9af0cb608518a4f37a9ca556552a612412f141157f7e369",
-      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c",
-      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
+      "evidenceRef": "codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
         "workspace-runtime-container",
         "execInRuntime",
@@ -785,9 +894,9 @@
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:1419162b66d61bdc8a12da86ef23254b662292fe0a46970f3bfa92726a12dee0",
-      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c",
-      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
+      "evidenceRef": "codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
         "workspace-runtime-container",
         "execInRuntime",
@@ -801,9 +910,9 @@
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:b0e13ed64133f1bfd0fb775ebca9fa157c5dbdab5bf74f08a6ede2467db52f9c",
-      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c",
-      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo",
+      "evidenceRef": "codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
         "workspace-runtime-container",
         "execInRuntime",
@@ -812,9 +921,11 @@
     }
   ],
   "productPath": {
-    "hybridProgramLaunchMode": "quarantine-runtime",
-    "sysboxProgramLaunchMode": "block-runtime",
-    "sysboxTerminalLaunchMode": "block-runtime"
+    "hybridProgramLaunchMode": "overlay-runtime",
+    "sysboxProgramNoHybridLaunchMode": "block-runtime",
+    "sysboxProgramWithHybridLaunchMode": "overlay-runtime",
+    "sysboxTerminalNoHybridLaunchMode": "block-runtime",
+    "sysboxTerminalWithHybridLaunchMode": "overlay-runtime"
   },
   "repoChecks": [
     {
@@ -836,8 +947,8 @@
   "assertions": {
     "managerCreatedTwoRuntimeContainers": true,
     "sameTransactionOverlaysUseDistinctRuntimeContainers": true,
-    "workspaceMountsPointAtQuarantineRoots": true,
-    "runtimeContainersDeclareQuarantineMode": true,
+    "runtimeMountsReadOnlyBaseAndWritableOverlay": true,
+    "runtimeContainersDeclareOverlayMode": true,
     "runtimeWorkspaceWritable": true,
     "realRepoAllowedFileUnchanged": true,
     "realRepoBlockedFileUnchanged": true,
@@ -846,7 +957,8 @@
     "blockedPathRecordedAsQuarantined": true,
     "processTreeProvenanceRecorded": true,
     "durableEvidenceRefsCreated": true,
-    "sysboxRuntimePodStillBlocksWithoutMountStrategy": true,
+    "runtimePodWithoutManagedMountFailsClosed": true,
+    "runtimePodWithHybridFallsBackToQuarantineRuntime": true,
     "hybridContainerRuntimeRoutesToQuarantine": true
   }
 }

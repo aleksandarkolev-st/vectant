@@ -5,6 +5,7 @@ const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminal
 const {
   runtimeTerminalTarget,
   programRuntimeTarget,
+  codeSiteProgramRuntimeTarget,
   codeSiteProgramRuntimeLaunchMode,
   buildRuntimeShellScript,
   pickRuntimeScopeForSlug,
@@ -37,6 +38,14 @@ test('CodeSite terminal launch mode blocks host shells and permits container ove
     usesRuntimePodTerminal: true,
     workspaceSlug: 'repo',
   }), 'block-runtime');
+
+  assert.equal(codeSiteTerminalLaunchMode({
+    codeSiteContext: { active: true },
+    usesRuntimePodTerminal: true,
+    enableContainerRuntime: true,
+    workspaceRuntime: {},
+    workspaceSlug: 'repo',
+  }), 'overlay-runtime');
 
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: { active: true },
@@ -130,6 +139,20 @@ test('programRuntimeTarget: non-container is always headless', () => {
 test('programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: true, hasHybrid: true }).target, 'sysbox-pod');
 });
+test('codeSiteProgramRuntimeTarget: active container + hybrid → hybrid even when sysbox is enabled', () => {
+  assert.equal(codeSiteProgramRuntimeTarget({
+    codeSiteContext: { active: true },
+    runtimeType: 'container',
+    sysboxEnabled: true,
+    hasHybrid: true,
+  }).target, 'hybrid');
+  assert.equal(codeSiteProgramRuntimeTarget({
+    codeSiteContext: null,
+    runtimeType: 'container',
+    sysboxEnabled: true,
+    hasHybrid: true,
+  }).target, 'sysbox-pod');
+});
 test('programRuntimeTarget: container + hybrid only → hybrid', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: true }).target, 'hybrid');
 });
@@ -154,6 +177,12 @@ test('CodeSite program runtime mode blocks headless host launches and permits hy
     codeSiteContext: { active: true },
     runtimeType: 'container',
     sysboxEnabled: false,
+    hasHybrid: true,
+  }), 'overlay-runtime');
+  assert.equal(codeSiteProgramRuntimeLaunchMode({
+    codeSiteContext: { active: true },
+    runtimeType: 'container',
+    sysboxEnabled: true,
     hasHybrid: true,
   }), 'overlay-runtime');
   assert.equal(codeSiteProgramRuntimeLaunchMode({

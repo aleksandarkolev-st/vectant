@@ -1639,8 +1639,10 @@ async function writeRuntimeBoundaryAttestations(dir, { slug, project, transactio
       proofId: 'codesite.runtime.quarantine-overlay.current',
       title: 'Active CodeSite managed runtime surfaces require quarantine overlay',
       assertions: {
-        containerTerminalUsesQuarantineRuntime: runtimeBoundary.terminalContainerMode === 'quarantine-runtime',
-        hybridProgramUsesQuarantineRuntime: runtimeBoundary.programHybridMode === 'quarantine-runtime',
+        containerTerminalUsesQuarantineRuntime: runtimeBoundary.terminalContainerMode === 'overlay-runtime',
+        hybridProgramUsesQuarantineRuntime: runtimeBoundary.programHybridMode === 'overlay-runtime',
+        runtimePodWithManagedOverlayUsesQuarantineRuntime: runtimeBoundary.terminalRuntimePodWithOverlayMode === 'overlay-runtime'
+          && runtimeBoundary.programRuntimePodWithOverlayMode === 'overlay-runtime',
         overlayShellDidNotMutateRealRepo: runtimeBoundary.rawShellOverlay.realRepoUnchangedBeforeFinalize === true,
         unmanagedTerminalWriteQuarantined: runtimeBoundary.unmanagedTerminalWriteBoundary?.outcome === 'quarantined_before_real_repo_mutation'
           && runtimeBoundary.unmanagedTerminalWriteBoundary?.realRepoUnchangedBeforeFinalize === true
@@ -1649,6 +1651,8 @@ async function writeRuntimeBoundaryAttestations(dir, { slug, project, transactio
       evidence: {
         terminalContainerMode: runtimeBoundary.terminalContainerMode,
         programHybridMode: runtimeBoundary.programHybridMode,
+        terminalRuntimePodWithOverlayMode: runtimeBoundary.terminalRuntimePodWithOverlayMode,
+        programRuntimePodWithOverlayMode: runtimeBoundary.programRuntimePodWithOverlayMode,
         rawShellOverlay: runtimeBoundary.rawShellOverlay,
         unmanagedTerminalWriteBoundary: runtimeBoundary.unmanagedTerminalWriteBoundary,
       },
@@ -2709,6 +2713,13 @@ async function main() {
       usesRuntimePodTerminal: true,
       workspaceSlug: slug,
     }),
+    terminalRuntimePodWithOverlayMode: codeSiteTerminalLaunchMode({
+      codeSiteContext: codesiteContext,
+      usesRuntimePodTerminal: true,
+      enableContainerRuntime: true,
+      workspaceRuntime: { proof: true },
+      workspaceSlug: slug,
+    }),
     programHeadlessMode: codeSiteProgramRuntimeLaunchMode({
       codeSiteContext: codesiteContext,
       runtimeType: 'web',
@@ -2726,6 +2737,12 @@ async function main() {
       runtimeType: 'container',
       sysboxEnabled: true,
       hasHybrid: false,
+    }),
+    programRuntimePodWithOverlayMode: codeSiteProgramRuntimeLaunchMode({
+      codeSiteContext: codesiteContext,
+      runtimeType: 'container',
+      sysboxEnabled: true,
+      hasHybrid: true,
     }),
     rawShellOverlay: {
       scenario: 'unmanaged-terminal-write-through-quarantine-overlay',
@@ -2745,7 +2762,7 @@ async function main() {
       outcome: 'quarantined_before_real_repo_mutation',
       attemptedPath: changedPath,
       hostTerminalMode: 'block-host',
-      runtimeTerminalMode: 'quarantine-runtime',
+      runtimeTerminalMode: 'overlay-runtime',
       realRepoUnchangedBeforeFinalize: realContentAfterOverlayMutation === realContentBeforeQuarantine,
       overlayOnlyMutationObserved: overlayContentAfterMutation === quarantinedContent,
     },
@@ -3513,8 +3530,10 @@ async function main() {
         && blackBoxReplay?.replay?.causalEvents?.some((event) => event.type === 'read.observed'),
       runtimeBoundaryEnforced: runtimeBoundary.terminalHostMode === 'block-host'
         && runtimeBoundary.programHeadlessMode === 'block-host'
-        && runtimeBoundary.terminalContainerMode === 'quarantine-runtime'
-        && runtimeBoundary.programHybridMode === 'quarantine-runtime'
+        && runtimeBoundary.terminalContainerMode === 'overlay-runtime'
+        && runtimeBoundary.programHybridMode === 'overlay-runtime'
+        && runtimeBoundary.terminalRuntimePodWithOverlayMode === 'overlay-runtime'
+        && runtimeBoundary.programRuntimePodWithOverlayMode === 'overlay-runtime'
         && runtimeBoundary.terminalRuntimePodMode === 'block-runtime'
         && runtimeBoundary.programRuntimePodMode === 'block-runtime'
         && runtimeBoundary.rawShellOverlay.realRepoUnchangedBeforeFinalize === true,

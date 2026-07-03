@@ -5,11 +5,11 @@ import { createRequire } from 'node:module';
 import { spawn, execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { promisify } from 'node:util';
-import { chromium } from 'playwright';
 
 const require = createRequire(import.meta.url);
+const { chromium } = require('playwright');
 const {
-  createCodeSiteQuarantineWorkspace,
+  createCodeSiteOverlayWorkspace,
   finalizeCodeSiteQuarantineWorkspace,
   codeSiteRuntimeEnv,
 } = require('../backend/collab-server/codesiteFs');
@@ -221,8 +221,8 @@ pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#
 </section>
 <section class="card">
 <h2>Manager-created runtime containers</h2>
-<table><thead><tr><th>Overlay</th><th>Container</th><th>Mount source</th><th>Mode label</th><th>Writable</th></tr></thead><tbody>
-${proof.overlays.map((overlay) => `<tr><td>${escapeHtml(overlay.label)}</td><td>${escapeHtml(overlay.runtime.name)}</td><td>${escapeHtml(overlay.mount.source)}</td><td>${escapeHtml(overlay.inspect.labels['vectant/codesite-workspace-mode'])}</td><td>${escapeHtml(overlay.command.workspaceWritable)}</td></tr>`).join('')}
+<table><thead><tr><th>Overlay</th><th>Container</th><th>Read-only base</th><th>Writable overlay</th><th>Mode label</th><th>Writable</th></tr></thead><tbody>
+${proof.overlays.map((overlay) => `<tr><td>${escapeHtml(overlay.label)}</td><td>${escapeHtml(overlay.runtime.name)}</td><td>${escapeHtml(overlay.mount.baseSource)}</td><td>${escapeHtml(overlay.mount.overlaySource)}</td><td>${escapeHtml(overlay.inspect.labels['vectant/codesite-workspace-mode'])}</td><td>${escapeHtml(overlay.command.workspaceWritable)}</td></tr>`).join('')}
 </tbody></table>
 </section>
 <section class="card">
@@ -240,8 +240,10 @@ ${proof.recordedEvents.map((event) => `<tr><td>${escapeHtml(event.overlay)}</td>
 <section class="card">
 <h2>Runtime-pod gate</h2>
 <table><thead><tr><th>Surface</th><th>Launch mode</th></tr></thead><tbody>
-<tr><td>Terminal runtime pod</td><td>${escapeHtml(proof.productPath.sysboxTerminalLaunchMode)}</td></tr>
-<tr><td>Program runtime pod</td><td>${escapeHtml(proof.productPath.sysboxProgramLaunchMode)}</td></tr>
+<tr><td>Terminal runtime pod without overlay</td><td>${escapeHtml(proof.productPath.sysboxTerminalNoHybridLaunchMode)}</td></tr>
+<tr><td>Program runtime pod without overlay</td><td>${escapeHtml(proof.productPath.sysboxProgramNoHybridLaunchMode)}</td></tr>
+<tr><td>Terminal runtime pod with overlay</td><td>${escapeHtml(proof.productPath.sysboxTerminalWithHybridLaunchMode)}</td></tr>
+<tr><td>Program runtime pod with overlay</td><td>${escapeHtml(proof.productPath.sysboxProgramWithHybridLaunchMode)}</td></tr>
 <tr><td>Hybrid container runtime</td><td>${escapeHtml(proof.productPath.hybridProgramLaunchMode)}</td></tr>
 </tbody></table>
 </section>
@@ -308,6 +310,8 @@ async function runManagerCommand(manager, context, runtimeOptions, label) {
 async function inspectRuntimeContainer(docker, containerId) {
   const info = await docker.getContainer(containerId).inspect();
   const workspaceMount = (info.Mounts || []).find((mount) => mount.Destination === '/workspace' || mount.Target === '/workspace') || null;
+  const codeSiteBaseMount = (info.Mounts || []).find((mount) => mount.Destination === '/codesite/base' || mount.Target === '/codesite/base') || null;
+  const codeSiteOverlayMount = (info.Mounts || []).find((mount) => mount.Destination === '/codesite/overlay' || mount.Target === '/codesite/overlay') || null;
   return {
     id: info.Id,
     name: String(info.Name || '').replace(/^\//, ''),
@@ -321,6 +325,8 @@ async function inspectRuntimeContainer(docker, containerId) {
     },
     mounts: info.Mounts || [],
     workspaceMount,
+    codeSiteBaseMount,
+    codeSiteOverlayMount,
   };
 }
 
@@ -331,16 +337,23 @@ function mountSource(inspect) {
     || '';
 }
 
+function runtimeOptionsForOverlay(context, overlay) {
+  return {
+    codesiteContext: context,
+    codeSiteBaseRoot: overlay.baseRoot || overlay.originalCwd,
+    codeSiteOverlayRoot: overlay.root,
+    codeSiteOverlayUpperRoot: overlay.upperRoot,
+    codeSiteOverlayWorkRoot: overlay.workRoot,
+    codeSiteOverlayId: overlay.overlayId || overlay.quarantineId,
+  };
+}
+
 async function createProofOverlay({ manager, docker, context, sourceRoot, quarantineBase, label, writesSuffix }) {
-  const quarantine = await createCodeSiteQuarantineWorkspace(context, sourceRoot, {
+  const quarantine = await createCodeSiteOverlayWorkspace(context, sourceRoot, {
     baseDir: quarantineBase,
     operation: `runtime-container-${label}`,
   });
-  const runtimeOptions = {
-    codesiteContext: context,
-    codeSiteQuarantineRoot: quarantine.root,
-    codeSiteQuarantineId: quarantine.root,
-  };
+  const runtimeOptions = runtimeOptionsForOverlay(context, quarantine);
   const runtime = await manager.ensureRuntimeContainer(context.workspaceSlug, context.effectiveUserId, runtimeOptions);
   const inspect = await inspectRuntimeContainer(docker, runtime.containerId);
   const command = await runManagerCommand(manager, context, runtimeOptions, writesSuffix);
@@ -356,7 +369,13 @@ async function createProofOverlay({ manager, docker, context, sourceRoot, quaran
     quarantine,
     runtime,
     inspect,
-    mount: { source: mountSource(inspect) },
+    mount: {
+      workspaceSource: mountSource(inspect),
+      baseSource: inspect.codeSiteBaseMount?.Source || inspect.codeSiteBaseMount?.Name || '',
+      baseReadOnly: inspect.codeSiteBaseMount?.RW === false || inspect.codeSiteBaseMount?.ReadOnly === true,
+      overlaySource: inspect.codeSiteOverlayMount?.Source || inspect.codeSiteOverlayMount?.Name || '',
+      overlayWritable: inspect.codeSiteOverlayMount?.RW === true || inspect.codeSiteOverlayMount?.ReadOnly === false,
+    },
     command,
     finalized,
   };
@@ -394,6 +413,7 @@ async function main() {
     processAncestry: ['workspace-runtime-container', 'execInRuntime', 'raw-write'],
     evidenceRefs: ['proof:codesitefs-runtime-boundary'],
     controlPlaneUrl: 'http://app.test/api/workspace/codesitefs-runtime-boundary/codesite',
+    controlPlaneTrusted: true,
     fetch,
   };
   const dockerRuntime = createDockerClient();
@@ -427,11 +447,11 @@ async function main() {
     }));
   } finally {
     for (const overlay of overlays) {
-      await manager.teardown(context.workspaceSlug, context.effectiveUserId, {
-        codesiteContext: context,
-        codeSiteQuarantineRoot: overlay.quarantine.root,
-        codeSiteQuarantineId: overlay.quarantine.root,
-      }).catch(() => {});
+      await manager.teardown(
+        context.workspaceSlug,
+        context.effectiveUserId,
+        runtimeOptionsForOverlay(context, overlay.quarantine),
+      ).catch(() => {});
     }
   }
 
@@ -455,13 +475,26 @@ async function main() {
       sysboxEnabled: false,
       hasHybrid: true,
     }),
-    sysboxProgramLaunchMode: codeSiteProgramRuntimeLaunchMode({
+    sysboxProgramNoHybridLaunchMode: codeSiteProgramRuntimeLaunchMode({
       codeSiteContext: context,
       runtimeType: 'container',
       sysboxEnabled: true,
       hasHybrid: false,
     }),
-    sysboxTerminalLaunchMode: codeSiteTerminalLaunchMode({
+    sysboxProgramWithHybridLaunchMode: codeSiteProgramRuntimeLaunchMode({
+      codeSiteContext: context,
+      runtimeType: 'container',
+      sysboxEnabled: true,
+      hasHybrid: true,
+    }),
+    sysboxTerminalNoHybridLaunchMode: codeSiteTerminalLaunchMode({
+      codeSiteContext: context,
+      usesRuntimePodTerminal: true,
+      enableContainerRuntime: false,
+      workspaceRuntime: null,
+      workspaceSlug: context.workspaceSlug,
+    }),
+    sysboxTerminalWithHybridLaunchMode: codeSiteTerminalLaunchMode({
       codeSiteContext: context,
       usesRuntimePodTerminal: true,
       enableContainerRuntime: true,
@@ -491,11 +524,16 @@ async function main() {
   const assertions = {
     managerCreatedTwoRuntimeContainers: overlays.length === 2 && overlays.every((overlay) => overlay.runtime.containerId),
     sameTransactionOverlaysUseDistinctRuntimeContainers: overlayA.runtime.name !== overlayB.runtime.name && overlayA.runtime.containerId !== overlayB.runtime.containerId,
-    workspaceMountsPointAtQuarantineRoots: overlays.every((overlay) => overlay.mount.source === overlay.quarantine.root),
-    runtimeContainersDeclareQuarantineMode: overlays.every((overlay) =>
-      overlay.inspect.labels['vectant/codesite-workspace-mode'] === 'quarantine'
+    runtimeMountsReadOnlyBaseAndWritableOverlay: overlays.every((overlay) =>
+      overlay.mount.baseSource === overlay.quarantine.baseRoot
+      && overlay.mount.baseReadOnly === true
+      && overlay.mount.overlaySource === overlay.quarantine.root
+      && overlay.mount.overlayWritable === true),
+    runtimeContainersDeclareOverlayMode: overlays.every((overlay) =>
+      overlay.inspect.labels['vectant/codesite-workspace-mode'] === 'codesite-overlay'
       && overlay.inspect.labels['vectant/codesite-transaction-id'] === context.transactionId
-      && overlay.inspect.env.includes('CODESITE_WORKSPACE_QUARANTINED=1')),
+      && overlay.inspect.labels['vectant/codesite-base-readonly'] === 'true'
+      && overlay.inspect.env.includes('CODESITE_WORKSPACE_OVERLAY=1')),
     runtimeWorkspaceWritable: overlays.every((overlay) => overlay.command.workspaceWritable === 'yes'),
     realRepoAllowedFileUnchanged: realApp === 'real repo app before\n',
     realRepoBlockedFileUnchanged: realAuth === 'real repo auth before\n',
@@ -511,8 +549,11 @@ async function main() {
       event.processAncestry.includes('workspace-runtime-container')
       && event.processAncestry.includes('raw-write')),
     durableEvidenceRefsCreated: recordedEvents.every((event) => event.evidenceRef.startsWith('codesitefs:quarantine:sha256:')),
-    sysboxRuntimePodStillBlocksWithoutMountStrategy: productPath.sysboxTerminalLaunchMode === 'block-runtime' && productPath.sysboxProgramLaunchMode === 'block-runtime',
-    hybridContainerRuntimeRoutesToQuarantine: productPath.hybridProgramLaunchMode === 'quarantine-runtime',
+    runtimePodWithoutManagedMountFailsClosed: productPath.sysboxTerminalNoHybridLaunchMode === 'block-runtime'
+      && productPath.sysboxProgramNoHybridLaunchMode === 'block-runtime',
+    runtimePodWithHybridFallsBackToQuarantineRuntime: productPath.sysboxTerminalWithHybridLaunchMode === 'overlay-runtime'
+      && productPath.sysboxProgramWithHybridLaunchMode === 'overlay-runtime',
+    hybridContainerRuntimeRoutesToQuarantine: productPath.hybridProgramLaunchMode === 'overlay-runtime',
   };
   for (const [key, value] of Object.entries(assertions)) {
     assertProof(value === true, `assertion failed: ${key}`);
@@ -535,7 +576,11 @@ async function main() {
       label: overlay.label,
       quarantine: {
         quarantineId: overlay.quarantine.quarantineId,
+        overlayId: overlay.quarantine.overlayId,
         root: overlay.quarantine.root,
+        baseRoot: overlay.quarantine.baseRoot,
+        upperRoot: overlay.quarantine.upperRoot,
+        workRoot: overlay.quarantine.workRoot,
         originalCwd: overlay.quarantine.originalCwd,
         manifestPath: overlay.quarantine.manifestPath,
         digest: sha256(overlay.quarantine.root),

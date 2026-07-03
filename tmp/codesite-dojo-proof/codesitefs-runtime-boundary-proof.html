@@ -32,13 +32,13 @@ pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#
 <section class="grid">
 <div class="card"><div class="label">Runtime image</div><div class="value">vectant-runtime:local</div></div>
 <div class="card"><div class="label">Runtime network</div><div class="value">synthi-ide_default</div></div>
-<div class="card"><div class="label">Transaction</div><div class="value">txn-1782933824566</div></div>
-<div class="card"><div class="label">Source repo</div><div class="value">/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/repo</div></div>
+<div class="card"><div class="label">Transaction</div><div class="value">txn-1783117570297</div></div>
+<div class="card"><div class="label">Source repo</div><div class="value">/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo</div></div>
 </section>
 <section class="card">
 <h2>Manager-created runtime containers</h2>
-<table><thead><tr><th>Overlay</th><th>Container</th><th>Mount source</th><th>Mode label</th><th>Writable</th></tr></thead><tbody>
-<tr><td>overlay-a</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-23a2970c2b</td><td>/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933824574-5b74bdfe</td><td>quarantine</td><td>yes</td></tr><tr><td>overlay-b</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-2539fb862a</td><td>/tmp/codesitefs-runtime-boundary-proof/1782933824532-24cb5607/quarantine/codesitefs-runtime-boundary/txn-1782933824566/qtn-txn-1782933824566-1782933826051-eaecea1c</td><td>quarantine</td><td>yes</td></tr>
+<table><thead><tr><th>Overlay</th><th>Container</th><th>Read-only base</th><th>Writable overlay</th><th>Mode label</th><th>Writable</th></tr></thead><tbody>
+<tr><td>overlay-a</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e</td><td>codesite-overlay</td><td>yes</td></tr><tr><td>overlay-b</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b</td><td>codesite-overlay</td><td>yes</td></tr>
 </tbody></table>
 </section>
 <section class="card">
@@ -50,22 +50,24 @@ pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#
 <section class="card">
 <h2>Recorded boundary events</h2>
 <table><thead><tr><th>Overlay</th><th>Path</th><th>Event</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>overlay-a</td><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:014833780d777525f438adc43eb81d70a35f2660c591ace9eef9786eddb532b5</td></tr><tr><td>overlay-a</td><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:fb361ce6585474510946435249390755a3ab1d9d5a775c801e81e77cf127ab4a</td></tr><tr><td>overlay-a</td><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:17b7107c1e1df08167c64512aa1998637b3e002dc87fe1cc81be604d3863a7b7</td></tr><tr><td>overlay-b</td><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:33685a296c799884e9af0cb608518a4f37a9ca556552a612412f141157f7e369</td></tr><tr><td>overlay-b</td><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:1419162b66d61bdc8a12da86ef23254b662292fe0a46970f3bfa92726a12dee0</td></tr><tr><td>overlay-b</td><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:b0e13ed64133f1bfd0fb775ebca9fa157c5dbdab5bf74f08a6ede2467db52f9c</td></tr>
+<tr><td>overlay-a</td><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb</td></tr><tr><td>overlay-a</td><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225</td></tr><tr><td>overlay-a</td><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62</td></tr><tr><td>overlay-b</td><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a</td></tr><tr><td>overlay-b</td><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8</td></tr><tr><td>overlay-b</td><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4</td></tr>
 </tbody></table>
 </section>
 <section class="card">
 <h2>Runtime-pod gate</h2>
 <table><thead><tr><th>Surface</th><th>Launch mode</th></tr></thead><tbody>
-<tr><td>Terminal runtime pod</td><td>block-runtime</td></tr>
-<tr><td>Program runtime pod</td><td>block-runtime</td></tr>
-<tr><td>Hybrid container runtime</td><td>quarantine-runtime</td></tr>
+<tr><td>Terminal runtime pod without overlay</td><td>block-runtime</td></tr>
+<tr><td>Program runtime pod without overlay</td><td>block-runtime</td></tr>
+<tr><td>Terminal runtime pod with overlay</td><td>overlay-runtime</td></tr>
+<tr><td>Program runtime pod with overlay</td><td>overlay-runtime</td></tr>
+<tr><td>Hybrid container runtime</td><td>overlay-runtime</td></tr>
 </tbody></table>
 </section>
 <section class="card"><h2>Assertions</h2><pre>{
   &quot;managerCreatedTwoRuntimeContainers&quot;: true,
   &quot;sameTransactionOverlaysUseDistinctRuntimeContainers&quot;: true,
-  &quot;workspaceMountsPointAtQuarantineRoots&quot;: true,
-  &quot;runtimeContainersDeclareQuarantineMode&quot;: true,
+  &quot;runtimeMountsReadOnlyBaseAndWritableOverlay&quot;: true,
+  &quot;runtimeContainersDeclareOverlayMode&quot;: true,
   &quot;runtimeWorkspaceWritable&quot;: true,
   &quot;realRepoAllowedFileUnchanged&quot;: true,
   &quot;realRepoBlockedFileUnchanged&quot;: true,
@@ -74,7 +76,8 @@ pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#
   &quot;blockedPathRecordedAsQuarantined&quot;: true,
   &quot;processTreeProvenanceRecorded&quot;: true,
   &quot;durableEvidenceRefsCreated&quot;: true,
-  &quot;sysboxRuntimePodStillBlocksWithoutMountStrategy&quot;: true,
+  &quot;runtimePodWithoutManagedMountFailsClosed&quot;: true,
+  &quot;runtimePodWithHybridFallsBackToQuarantineRuntime&quot;: true,
   &quot;hybridContainerRuntimeRoutesToQuarantine&quot;: true
 }</pre></section>
 <section class="card"><h2>Runtime output</h2><pre>overlay-a
