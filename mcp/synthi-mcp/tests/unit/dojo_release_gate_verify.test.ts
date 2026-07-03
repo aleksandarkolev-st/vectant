@@ -220,6 +220,7 @@ import {
   verifyDojoReleaseGateManifestArtifacts,
   verifyDojoReleaseGateRunReportArtifact,
   verifyDojoReleaseGateVerifierSelfCheckArtifact,
+  verifyTherapeuticTomographyProductionEvidenceArtifact,
   verifyDojoPrivacyRedactionEvidenceArtifact,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
@@ -341,6 +342,77 @@ describe("Dojo release gate artifact verifier", () => {
       "verifier_self_check_missing_negative_controls",
     ]));
   }, 30000);
+
+  it("rejects stale therapeutic tomography v1 evidence in the release verifier", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-therapeutic-tomography-release-verify-"));
+    const evidencePath = path.join(dir, "THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json");
+    await writeFile(evidencePath, `${JSON.stringify({
+      schema_version: "synthi.dojo.therapeuticTomographyReleaseEvidence.v1",
+      generated_at: "2026-06-30T00:01:20.000Z",
+      scope: "repo-local release-gate evidence with non-loopback hosted/probe endpoints",
+      hosted_runtime: {
+        authorized: true,
+        session_id: "hosted-release-session",
+        url: "https://runtime.example.test/session/hosted-release-session",
+        loopback: false,
+      },
+      tenant_scope: {
+        tenant_id: "tenant-release",
+        workspace_id: "workspace-release",
+        actor_id: "agent-release",
+      },
+      task_id: "release_incident_response_non_demo_001",
+      non_demo_probe_adapter: {
+        kind: "https_probe_adapter",
+        endpoint_url: "https://probe.example.test/therapeutic/incident-response",
+        loopback: false,
+        probes_completed: ["service_health_rollup", "blast_radius_summary"],
+      },
+      durable_store: {
+        kind: "file",
+        path: "mcp/synthi-mcp/.tmp/therapeutic-release-evidence/runtime.json",
+        audit_reconstruction_verified: true,
+      },
+      proof_signing: {
+        signature_algorithm: "hmac-sha256",
+        signature_key_id: "release-therapeutic-proof-key",
+        signing_provider: "hmac-local",
+        signature_verified: true,
+      },
+      authorization_path: {
+        unauthorized_bypass_decision: "denied",
+        access_decision: "approved",
+        protected_dispatch_decision: "approved",
+        post_revocation_dispatch_decision: "denied",
+      },
+      safety_assertions: {
+        narrative_only_grants_broader_access: false,
+        diagnostic_proof_authorized_mutation: false,
+        broad_access_granted: false,
+        raw_logs_granted: false,
+        model_weights_granted: false,
+        admin_privileges_granted: false,
+        full_db_access_granted: false,
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const rejected = await verifyTherapeuticTomographyProductionEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "therapeutic_tomography_schema_mismatch:synthi.dojo.therapeuticTomographyReleaseEvidence.v1",
+      "therapeutic_tomography_production_invalid:schema_version_invalid",
+      "therapeutic_tomography_production_invalid:hosted_runtime_url_not_production_https",
+      "therapeutic_tomography_production_invalid:durable_store_not_external_control_plane",
+      "therapeutic_tomography_production_invalid:proof_signing_provider_not_external",
+      "therapeutic_tomography_production_invalid:proof_signature_algorithm_not_ed25519",
+      "therapeutic_tomography_probe_transport_not_fetch",
+      "therapeutic_tomography_store_not_external",
+      "therapeutic_tomography_signing_provider_not_external:hmac-local",
+    ]));
+  });
 
   it("verifies live chaos runner reports and rejects missing scenarios or tampered command evidence", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-chaos-verify-"));
@@ -3197,6 +3269,7 @@ describe("Dojo release gate artifact verifier", () => {
     const checkrideLicenseEvidencePath = await writeCheckrideLicenseEvidenceFixture({ dir });
     const caseLawRuntimeEvidencePath = await writeCaseLawRuntimeEvidenceFixture({ dir });
     const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
+    const therapeuticTomographyEvidencePath = await writeTherapeuticTomographyProductionEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
     const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
@@ -3278,6 +3351,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_checkride_license_self_check").default_evidence_path = checkrideLicenseEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check").default_evidence_path = caseLawRuntimeEvidencePath;
     setManifestGateDefaultEvidencePath(manifest, "dojo_hosted_runtime_gateway_self_check", hostedRuntimeGatewayEvidencePath);
+    setManifestGateDefaultEvidencePath(manifest, "dojo_therapeutic_tomography_production_release", therapeuticTomographyEvidencePath);
     setManifestGateDefaultEvidencePath(manifest, "privacy_redaction_suite", privacyEvidencePath);
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
@@ -3343,6 +3417,7 @@ describe("Dojo release gate artifact verifier", () => {
         "checkride-license-evidence": checkrideLicenseEvidencePath,
         "case-law-runtime-evidence": caseLawRuntimeEvidencePath,
         "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
+        "therapeutic-tomography-evidence": therapeuticTomographyEvidencePath,
         "source-drift-evidence": sourceDriftEvidencePath,
         "agent-ready-ui-contract-evidence": agentReadyUiContractEvidencePath,
         "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
@@ -8864,6 +8939,130 @@ async function writeHostedRuntimeGatewayEvidenceFixture({
     });
   }
   await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+async function writeTherapeuticTomographyProductionEvidenceFixture({
+  dir,
+  basename = "therapeutic-tomography-production",
+}) {
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify({
+    schema_version: "synthi.dojo.therapeuticTomographyReleaseEvidence.v2",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    scope: "production deployed therapeutic tomography release evidence",
+    hosted_runtime: {
+      authorized: true,
+      session_id: "session-prod-001",
+      url: "https://runtime.prod.synthi.ai/session/session-prod-001",
+      loopback: false,
+      authorization_observed_at: "2026-07-01T00:00:00.000Z",
+      status: 200,
+      response_headers_sha256: "a".repeat(64),
+      response_body_sha256: "b".repeat(64),
+      authorization_context: {
+        session_id: "session-prod-001",
+        tenant_id: "tenant-prod-001",
+        organization_id: "org-prod-001",
+        workspace_id: "workspace-prod-001",
+        actor_id: "agent-prod-001",
+        roles: ["incident_commander", "therapeutic_proof_broker"],
+        source: "hosted_runtime_authorization_response",
+      },
+    },
+    tenant_scope: {
+      tenant_id: "tenant-prod-001",
+      organization_id: "org-prod-001",
+      workspace_id: "workspace-prod-001",
+      actor_id: "agent-prod-001",
+      roles: ["incident_commander", "therapeutic_proof_broker"],
+      source: "production_runtime_authorization",
+    },
+    task_id: "production_incident_response_001",
+    deployed_probe_adapter: {
+      kind: "https_probe_adapter",
+      endpoint_url: "https://probe.prod.synthi.ai/therapeutic/incident-response",
+      loopback: false,
+      transport: "fetch",
+      probes_completed: ["service_health_rollup", "blast_radius_summary"],
+      evidence_refs: ["evidence:probe-1", "evidence:probe-2"],
+      http_observations: [
+        {
+          probe_name: "service_health_rollup",
+          url: "https://probe.prod.synthi.ai/therapeutic/incident-response",
+          status: 200,
+          request_body_sha256: "1".repeat(64),
+          response_body_sha256: "2".repeat(64),
+          observed_at: "2026-07-01T00:00:00.000Z",
+        },
+        {
+          probe_name: "blast_radius_summary",
+          url: "https://probe.prod.synthi.ai/therapeutic/incident-response",
+          status: 200,
+          request_body_sha256: "3".repeat(64),
+          response_body_sha256: "4".repeat(64),
+          observed_at: "2026-07-01T00:00:00.000Z",
+        },
+      ],
+    },
+    production_durable_store: {
+      kind: "external_control_plane",
+      endpoint_url: "https://control.prod.synthi.ai/therapeutic/runtime-state",
+      readback_url: "https://control.prod.synthi.ai/therapeutic/runtime-state/record-prod-001",
+      record_id: "record-prod-001",
+      state_sha256: "5".repeat(64),
+      persisted_at: "2026-07-01T00:00:00.000Z",
+      append_status: 201,
+      append_response_body_sha256: "6".repeat(64),
+      read_status: 200,
+      read_response_body_sha256: "7".repeat(64),
+      evidence_records: 8,
+      audit_records: 7,
+      grant_records: 1,
+      proof_decision_records: 2,
+      checkride_reports: 0,
+      policy_learning_records: 0,
+      reconstructed_evidence_records: 8,
+      reconstructed_audit_records: 7,
+      reconstruction_verified: true,
+    },
+    proof_signing: {
+      signature_algorithm: "ed25519",
+      signature_key_id: "therapeutic-prod-key",
+      signing_provider: "managed-key-service",
+      key_custody: "managed",
+      signature_verified: true,
+      verification_blocked_by: [],
+      external_signing_path: {
+        provider: "managed-key-service",
+        key_uri: "gcp-kms://projects/prod/locations/global/keyRings/dojo/cryptoKeys/therapeutic",
+        command_redacted: true,
+        args_redacted: true,
+      },
+    },
+    authorization_path: {
+      unauthorized_bypass_decision: "denied",
+      unauthorized_bypass_blocked_by: ["broker_required", "active_scoped_grant_missing"],
+      access_decision: "approved",
+      grant_id: "grant-prod-001",
+      protected_dispatch_decision: "approved",
+      post_revocation_dispatch_decision: "denied",
+      post_revocation_dispatch_blocked_by: ["broker_required", "active_scoped_grant_missing"],
+      revoked_grants: [{ grant_id: "grant-prod-001", status: "revoked", revocation_status: "success" }],
+    },
+    safety_assertions: {
+      narrative_only_access_decision: "denied",
+      narrative_only_blocked_by: ["narrative_only_proof"],
+      narrative_only_grants_broader_access: false,
+      diagnostic_proof_authorized_mutation: false,
+      unauthorized_protected_tool_bypass: "blocked",
+      broad_access_granted: false,
+      raw_logs_granted: false,
+      model_weights_granted: false,
+      admin_privileges_granted: false,
+      full_db_access_granted: false,
+    },
+  }, null, 2)}\n`, "utf8");
   return evidencePath;
 }
 

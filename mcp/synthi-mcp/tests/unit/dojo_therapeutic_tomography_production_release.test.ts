@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 
@@ -223,6 +223,25 @@ describe("therapeutic tomography production release evidence gate", () => {
     ]));
 
     expect(validateProductionTherapeuticTomographyEvidence(productionArtifact()).ok).toBe(true);
+  });
+
+  it("treats the checked-in release evidence as production only when it is valid v2", async () => {
+    const { validateProductionTherapeuticTomographyEvidence } = await releaseModulePromise;
+    const evidencePath = resolve(process.cwd(), "..", "..", "docs", "THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json");
+    const artifact = JSON.parse(await readFile(evidencePath, "utf8"));
+    const validation = validateProductionTherapeuticTomographyEvidence(artifact);
+
+    if (artifact.schema_version === "synthi.dojo.therapeuticTomographyReleaseEvidence.v2") {
+      expect(validation.ok).toBe(true);
+      expect(validation.errors).toEqual([]);
+    } else {
+      expect(validation.ok).toBe(false);
+      expect(validation.errors).toEqual(expect.arrayContaining([
+        "schema_version_invalid",
+        "durable_store_not_external_control_plane",
+        "proof_signing_provider_not_external",
+      ]));
+    }
   });
 
   it("requires response fingerprints for runtime, probe, and durable store observations", async () => {

@@ -1,0 +1,1455 @@
+{
+  "schema_version": "synthi.dojo.therapeuticRuntimeState.v1",
+  "tenant_scope": {
+    "tenant_id": "tenant-release",
+    "workspace_id": "workspace-release",
+    "actor_id": "agent-release"
+  },
+  "trace": {
+    "schema_version": "synthi.dojo.therapeuticTrace.v1",
+    "task_id": "release_incident_response_non_demo_001",
+    "task_class": "incident_response",
+    "user_goal": "Diagnose checkout incident using non-demo aggregate probe service.",
+    "current_authority_dose": 4,
+    "uncertainties": [
+      {
+        "id": "incident_scope",
+        "description": "Identify the affected service and smallest read-only rollback metadata access.",
+        "current_confidence": 0.792,
+        "possible_causes": [
+          "service_deploy",
+          "dependency_failure",
+          "regional_impact"
+        ],
+        "useful_probes": [
+          "service_health_rollup",
+          "blast_radius_summary"
+        ],
+        "blocking_status": "open",
+        "severity": "high"
+      }
+    ],
+    "authority_doses": [
+      {
+        "id": "dose_aa525",
+        "task_id": "release_incident_response_non_demo_001",
+        "level": 4,
+        "scope": "service:checkout-api",
+        "permitted_tools": [
+          "rollback_candidate_readiness"
+        ],
+        "permitted_data_classes": [
+          "rollback_metadata"
+        ],
+        "forbidden_data_classes": [
+          "raw_prod_logs",
+          "full_database",
+          "model_weights",
+          "admin_privileges"
+        ],
+        "mutation_allowed": false,
+        "max_blast_radius": "service:checkout-api",
+        "expiration_condition": "end_of_task",
+        "revoke_plan": "temporary grant is revoked on task end or explicit revoke",
+        "expected_effect": "Read scoped rollback metadata after aggregate incident probes identify checkout-api.",
+        "side_effects": [],
+        "decision": "approved"
+      }
+    ],
+    "projection_probes": [
+      {
+        "id": "probe_396e6983",
+        "task_id": "release_incident_response_non_demo_001",
+        "name": "service_health_rollup",
+        "task_class": "incident_response",
+        "target_uncertainty": "incident_scope",
+        "required_authority_dose": 1,
+        "required_data_classes": [
+          "aggregate_service_health"
+        ],
+        "forbidden_data_classes": [
+          "raw_prod_logs",
+          "request_bodies",
+          "customer_identifiers"
+        ],
+        "input_schema": {
+          "service_name": "string",
+          "time_window": "string"
+        },
+        "allowed_output_shape": [
+          "service_name",
+          "health_delta",
+          "primary_symptom",
+          "confidence",
+          "time_window"
+        ],
+        "allowed_output_schema": {
+          "service_name": "string",
+          "health_delta": "number",
+          "primary_symptom": "string",
+          "confidence": "number",
+          "time_window": "string"
+        },
+        "privacy_cost": 1,
+        "expected_information_gain": 8,
+        "actual_information_gain": 8,
+        "confidence": 0.88,
+        "status": "completed",
+        "result_summary": {
+          "service_name": "checkout-api",
+          "health_delta": -0.22,
+          "primary_symptom": "elevated_error_rate",
+          "confidence": 0.88,
+          "time_window": "last_30m"
+        },
+        "failure_modes": [
+          "service_metrics_missing",
+          "window_not_indexed"
+        ],
+        "verifier": "schema_and_shape",
+        "allowed_output_shape_valid": true
+      },
+      {
+        "id": "probe_38b2b4d1",
+        "task_id": "release_incident_response_non_demo_001",
+        "name": "blast_radius_summary",
+        "task_class": "incident_response",
+        "target_uncertainty": "incident_scope",
+        "required_authority_dose": 2,
+        "required_data_classes": [
+          "aggregate_impact_slices"
+        ],
+        "forbidden_data_classes": [
+          "customer_identifiers",
+          "full_database",
+          "raw_prod_logs"
+        ],
+        "input_schema": {
+          "service_name": "string",
+          "time_window": "string"
+        },
+        "allowed_output_shape": [
+          "affected_slice",
+          "estimated_impact_pct",
+          "severity",
+          "confidence",
+          "time_window"
+        ],
+        "allowed_output_schema": {
+          "affected_slice": "string",
+          "estimated_impact_pct": "number",
+          "severity": "string",
+          "confidence": "number",
+          "time_window": "string"
+        },
+        "privacy_cost": 2,
+        "expected_information_gain": 8,
+        "actual_information_gain": 8,
+        "confidence": 0.84,
+        "status": "completed",
+        "result_summary": {
+          "affected_slice": "us-east checkout traffic",
+          "estimated_impact_pct": 12,
+          "severity": "high",
+          "confidence": 0.84,
+          "time_window": "last_30m"
+        },
+        "failure_modes": [
+          "impact_slices_missing",
+          "slice_too_small"
+        ],
+        "verifier": "schema_and_shape",
+        "allowed_output_shape_valid": true
+      }
+    ],
+    "escalation_justifications": [],
+    "proof_capsules": [
+      {
+        "id": "proof_release_rollback_readiness",
+        "task_id": "release_incident_response_non_demo_001",
+        "requested_access": {
+          "id": "release-rollback-readiness",
+          "task_id": "release_incident_response_non_demo_001",
+          "authority_dose": 4,
+          "scope": "service:checkout-api",
+          "mode": "read_only",
+          "data_classes": [
+            "rollback_metadata"
+          ],
+          "tools": [
+            "rollback_candidate_readiness"
+          ],
+          "expiration": "end_of_task",
+          "revocable": true,
+          "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+        },
+        "current_authority_dose": 2,
+        "requested_authority_dose": 4,
+        "machine_verifiable_claims": [
+          {
+            "claim": "lower_risk_probe_attempted",
+            "expected": "at_least_one_completed_lower_risk_probe",
+            "evidence": "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+            "verifier": "trace_lookup",
+            "result": "pass",
+            "actual": [
+              "service_health_rollup",
+              "blast_radius_summary"
+            ],
+            "critical": true
+          },
+          {
+            "claim": "completed_probe_outputs_shape_valid",
+            "expected": true,
+            "evidence": "trace.projection_probes.completed.allowed_output_shape_valid",
+            "verifier": "probe_output_shape_check",
+            "result": "pass",
+            "actual": [
+              {
+                "name": "service_health_rollup",
+                "allowed_output_shape_valid": true
+              },
+              {
+                "name": "blast_radius_summary",
+                "allowed_output_shape_valid": true
+              }
+            ],
+            "critical": true
+          },
+          {
+            "claim": "service_health_rollup_service_name_identified",
+            "expected": "checkout-api",
+            "evidence": "trace.projection_probes.service_health_rollup.output.service_name",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": "checkout-api",
+            "critical": false
+          },
+          {
+            "claim": "service_health_rollup_health_delta_identified",
+            "expected": -0.22,
+            "evidence": "trace.projection_probes.service_health_rollup.output.health_delta",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": -0.22,
+            "critical": false
+          },
+          {
+            "claim": "service_health_rollup_primary_symptom_identified",
+            "expected": "elevated_error_rate",
+            "evidence": "trace.projection_probes.service_health_rollup.output.primary_symptom",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": "elevated_error_rate",
+            "critical": false
+          },
+          {
+            "claim": "service_health_rollup_confidence_identified",
+            "expected": 0.88,
+            "evidence": "trace.projection_probes.service_health_rollup.output.confidence",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": 0.88,
+            "critical": false
+          },
+          {
+            "claim": "service_health_rollup_time_window_identified",
+            "expected": "last_30m",
+            "evidence": "trace.projection_probes.service_health_rollup.output.time_window",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": "last_30m",
+            "critical": false
+          },
+          {
+            "claim": "blast_radius_summary_affected_slice_identified",
+            "expected": "us-east checkout traffic",
+            "evidence": "trace.projection_probes.blast_radius_summary.output.affected_slice",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": "us-east checkout traffic",
+            "critical": false
+          },
+          {
+            "claim": "blast_radius_summary_estimated_impact_pct_identified",
+            "expected": 12,
+            "evidence": "trace.projection_probes.blast_radius_summary.output.estimated_impact_pct",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": 12,
+            "critical": false
+          },
+          {
+            "claim": "blast_radius_summary_severity_identified",
+            "expected": "high",
+            "evidence": "trace.projection_probes.blast_radius_summary.output.severity",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": "high",
+            "critical": false
+          },
+          {
+            "claim": "blast_radius_summary_confidence_identified",
+            "expected": 0.84,
+            "evidence": "trace.projection_probes.blast_radius_summary.output.confidence",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": 0.84,
+            "critical": false
+          },
+          {
+            "claim": "blast_radius_summary_time_window_identified",
+            "expected": "last_30m",
+            "evidence": "trace.projection_probes.blast_radius_summary.output.time_window",
+            "verifier": "equality_check",
+            "result": "pass",
+            "actual": "last_30m",
+            "critical": false
+          },
+          {
+            "claim": "requested_scope_is_supported_minimal_scope",
+            "expected": [
+              "service:checkout-api"
+            ],
+            "evidence": "access_request.scope",
+            "verifier": "scope_subset_check",
+            "result": "pass",
+            "actual": "service:checkout-api",
+            "critical": true
+          },
+          {
+            "claim": "request_is_read_only",
+            "expected": true,
+            "evidence": "access_request.mode",
+            "verifier": "permission_diff_check",
+            "result": "pass",
+            "actual": "read_only",
+            "critical": true
+          },
+          {
+            "claim": "forbidden_data_not_requested",
+            "expected": [
+              "raw_prod_logs",
+              "full_database",
+              "model_weights",
+              "admin_privileges"
+            ],
+            "evidence": "access_request.data_classes",
+            "verifier": "forbidden_class_check",
+            "result": "pass",
+            "actual": [
+              "rollback_metadata"
+            ],
+            "critical": true
+          },
+          {
+            "claim": "expiration_defined",
+            "expected": true,
+            "evidence": "access_request.expiration",
+            "verifier": "expiration_check",
+            "result": "pass",
+            "actual": "end_of_task",
+            "critical": true
+          },
+          {
+            "claim": "revocation_defined",
+            "expected": true,
+            "evidence": "access_request.revocable",
+            "verifier": "revocation_check",
+            "result": "pass",
+            "actual": true,
+            "critical": true
+          },
+          {
+            "claim": "diagnosis_request_has_no_write_access",
+            "expected": true,
+            "evidence": "access_request.mode",
+            "verifier": "mutation_separation_check",
+            "result": "pass",
+            "actual": "read_only",
+            "critical": true
+          }
+        ],
+        "human_reviewed_claims": [
+          {
+            "claim": "rollback_metadata_is_reasonable_next_step",
+            "reviewer_role": "incident_commander",
+            "status": "approved",
+            "rationale": "Aggregate probes isolate checkout-api and request is read-only rollback metadata."
+          }
+        ],
+        "unverifiable_narrative_claims": [],
+        "evidence_links": [
+          "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+          "trace.projection_probes.completed.allowed_output_shape_valid",
+          "trace.projection_probes.service_health_rollup.output.service_name",
+          "trace.projection_probes.service_health_rollup.output.health_delta",
+          "trace.projection_probes.service_health_rollup.output.primary_symptom",
+          "trace.projection_probes.service_health_rollup.output.confidence",
+          "trace.projection_probes.service_health_rollup.output.time_window",
+          "trace.projection_probes.blast_radius_summary.output.affected_slice",
+          "trace.projection_probes.blast_radius_summary.output.estimated_impact_pct",
+          "trace.projection_probes.blast_radius_summary.output.severity",
+          "trace.projection_probes.blast_radius_summary.output.confidence",
+          "trace.projection_probes.blast_radius_summary.output.time_window",
+          "access_request.scope",
+          "access_request.mode",
+          "access_request.data_classes",
+          "access_request.expiration",
+          "access_request.revocable",
+          "access_request.mode"
+        ],
+        "verifier_results": [
+          "lower_risk_probe_attempted:pass",
+          "completed_probe_outputs_shape_valid:pass",
+          "service_health_rollup_service_name_identified:pass",
+          "service_health_rollup_health_delta_identified:pass",
+          "service_health_rollup_primary_symptom_identified:pass",
+          "service_health_rollup_confidence_identified:pass",
+          "service_health_rollup_time_window_identified:pass",
+          "blast_radius_summary_affected_slice_identified:pass",
+          "blast_radius_summary_estimated_impact_pct_identified:pass",
+          "blast_radius_summary_severity_identified:pass",
+          "blast_radius_summary_confidence_identified:pass",
+          "blast_radius_summary_time_window_identified:pass",
+          "requested_scope_is_supported_minimal_scope:pass",
+          "request_is_read_only:pass",
+          "forbidden_data_not_requested:pass",
+          "expiration_defined:pass",
+          "revocation_defined:pass",
+          "diagnosis_request_has_no_write_access:pass"
+        ],
+        "failed_claims": [],
+        "risk_score": 4,
+        "minimality_score": 1,
+        "approved": true,
+        "reviewer": "deterministic-proof-router",
+        "timestamp": "2026-06-30T00:00:30.000Z",
+        "signature_algorithm": "hmac-sha256",
+        "signature_key_id": "release-therapeutic-proof-key",
+        "signature": "hmac-sha256:7fdbd572f2ce029b47e8ab5bf700840d0b8ff31112d37ee137c87e1be9fa2ec6",
+        "signing_provider": "hmac-local",
+        "key_custody": "local",
+        "signed_at": "2026-06-30T00:00:31.000Z"
+      }
+    ],
+    "blocked_overreach_attempts": [],
+    "suggested_lower_risk_alternatives": [],
+    "human_overrides": [],
+    "final_outcome": "in_progress",
+    "diagnosis": "",
+    "remediation_plan": "",
+    "avoided_access": [],
+    "over_escalation_flags": [],
+    "under_escalation_flags": [],
+    "learned_policy_delta": []
+  },
+  "store": {
+    "evidence_records": [
+      {
+        "evidence_id": "evidence_1ab4e03f",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "access_decision",
+        "created_at": "2026-06-30T00:00:05.000Z",
+        "payload": {
+          "tool": {
+            "tool_name": "rollback_candidate_readiness",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "mode": "read_only",
+            "scope": "service:checkout-api"
+          },
+          "decision": "denied",
+          "blocked_by": [
+            "broker_required",
+            "active_scoped_grant_missing"
+          ]
+        }
+      },
+      {
+        "evidence_id": "evidence_3b03284d",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "probe_result",
+        "created_at": "2026-06-30T00:00:10.000Z",
+        "payload": {
+          "probe": {
+            "id": "probe_396e6983",
+            "task_id": "release_incident_response_non_demo_001",
+            "name": "service_health_rollup",
+            "task_class": "incident_response",
+            "target_uncertainty": "incident_scope",
+            "required_authority_dose": 1,
+            "required_data_classes": [
+              "aggregate_service_health"
+            ],
+            "forbidden_data_classes": [
+              "raw_prod_logs",
+              "request_bodies",
+              "customer_identifiers"
+            ],
+            "input_schema": {
+              "service_name": "string",
+              "time_window": "string"
+            },
+            "allowed_output_shape": [
+              "service_name",
+              "health_delta",
+              "primary_symptom",
+              "confidence",
+              "time_window"
+            ],
+            "allowed_output_schema": {
+              "service_name": "string",
+              "health_delta": "number",
+              "primary_symptom": "string",
+              "confidence": "number",
+              "time_window": "string"
+            },
+            "privacy_cost": 1,
+            "expected_information_gain": 8,
+            "actual_information_gain": 8,
+            "confidence": 0.88,
+            "status": "completed",
+            "result_summary": {
+              "service_name": "checkout-api",
+              "health_delta": -0.22,
+              "primary_symptom": "elevated_error_rate",
+              "confidence": 0.88,
+              "time_window": "last_30m"
+            },
+            "failure_modes": [
+              "service_metrics_missing",
+              "window_not_indexed"
+            ],
+            "verifier": "schema_and_shape",
+            "allowed_output_shape_valid": true
+          }
+        }
+      },
+      {
+        "evidence_id": "evidence_594146b5",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "probe_result",
+        "created_at": "2026-06-30T00:00:20.000Z",
+        "payload": {
+          "probe": {
+            "id": "probe_38b2b4d1",
+            "task_id": "release_incident_response_non_demo_001",
+            "name": "blast_radius_summary",
+            "task_class": "incident_response",
+            "target_uncertainty": "incident_scope",
+            "required_authority_dose": 2,
+            "required_data_classes": [
+              "aggregate_impact_slices"
+            ],
+            "forbidden_data_classes": [
+              "customer_identifiers",
+              "full_database",
+              "raw_prod_logs"
+            ],
+            "input_schema": {
+              "service_name": "string",
+              "time_window": "string"
+            },
+            "allowed_output_shape": [
+              "affected_slice",
+              "estimated_impact_pct",
+              "severity",
+              "confidence",
+              "time_window"
+            ],
+            "allowed_output_schema": {
+              "affected_slice": "string",
+              "estimated_impact_pct": "number",
+              "severity": "string",
+              "confidence": "number",
+              "time_window": "string"
+            },
+            "privacy_cost": 2,
+            "expected_information_gain": 8,
+            "actual_information_gain": 8,
+            "confidence": 0.84,
+            "status": "completed",
+            "result_summary": {
+              "affected_slice": "us-east checkout traffic",
+              "estimated_impact_pct": 12,
+              "severity": "high",
+              "confidence": 0.84,
+              "time_window": "last_30m"
+            },
+            "failure_modes": [
+              "impact_slices_missing",
+              "slice_too_small"
+            ],
+            "verifier": "schema_and_shape",
+            "allowed_output_shape_valid": true
+          }
+        }
+      },
+      {
+        "evidence_id": "evidence_2ef6fb6d",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "access_decision",
+        "created_at": "2026-06-30T00:00:40.000Z",
+        "payload": {
+          "request": {
+            "id": "release-rollback-readiness",
+            "task_id": "release_incident_response_non_demo_001",
+            "authority_dose": 4,
+            "scope": "service:checkout-api",
+            "mode": "read_only",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "tools": [
+              "rollback_candidate_readiness"
+            ],
+            "expiration": "end_of_task",
+            "revocable": true,
+            "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+          },
+          "broker_decision": {
+            "decision": "approved",
+            "tier": 1,
+            "blocked_by": [],
+            "suggested_alternatives": [],
+            "proof_capsule": {
+              "id": "proof_release_rollback_readiness",
+              "task_id": "release_incident_response_non_demo_001",
+              "requested_access": {
+                "id": "release-rollback-readiness",
+                "task_id": "release_incident_response_non_demo_001",
+                "authority_dose": 4,
+                "scope": "service:checkout-api",
+                "mode": "read_only",
+                "data_classes": [
+                  "rollback_metadata"
+                ],
+                "tools": [
+                  "rollback_candidate_readiness"
+                ],
+                "expiration": "end_of_task",
+                "revocable": true,
+                "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+              },
+              "current_authority_dose": 2,
+              "requested_authority_dose": 4,
+              "machine_verifiable_claims": [
+                {
+                  "claim": "lower_risk_probe_attempted",
+                  "expected": "at_least_one_completed_lower_risk_probe",
+                  "evidence": "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+                  "verifier": "trace_lookup",
+                  "result": "pass",
+                  "actual": [
+                    "service_health_rollup",
+                    "blast_radius_summary"
+                  ],
+                  "critical": true
+                },
+                {
+                  "claim": "completed_probe_outputs_shape_valid",
+                  "expected": true,
+                  "evidence": "trace.projection_probes.completed.allowed_output_shape_valid",
+                  "verifier": "probe_output_shape_check",
+                  "result": "pass",
+                  "actual": [
+                    {
+                      "name": "service_health_rollup",
+                      "allowed_output_shape_valid": true
+                    },
+                    {
+                      "name": "blast_radius_summary",
+                      "allowed_output_shape_valid": true
+                    }
+                  ],
+                  "critical": true
+                },
+                {
+                  "claim": "service_health_rollup_service_name_identified",
+                  "expected": "checkout-api",
+                  "evidence": "trace.projection_probes.service_health_rollup.output.service_name",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "checkout-api",
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_health_delta_identified",
+                  "expected": -0.22,
+                  "evidence": "trace.projection_probes.service_health_rollup.output.health_delta",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": -0.22,
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_primary_symptom_identified",
+                  "expected": "elevated_error_rate",
+                  "evidence": "trace.projection_probes.service_health_rollup.output.primary_symptom",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "elevated_error_rate",
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_confidence_identified",
+                  "expected": 0.88,
+                  "evidence": "trace.projection_probes.service_health_rollup.output.confidence",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": 0.88,
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_time_window_identified",
+                  "expected": "last_30m",
+                  "evidence": "trace.projection_probes.service_health_rollup.output.time_window",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "last_30m",
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_affected_slice_identified",
+                  "expected": "us-east checkout traffic",
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.affected_slice",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "us-east checkout traffic",
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_estimated_impact_pct_identified",
+                  "expected": 12,
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.estimated_impact_pct",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": 12,
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_severity_identified",
+                  "expected": "high",
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.severity",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "high",
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_confidence_identified",
+                  "expected": 0.84,
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.confidence",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": 0.84,
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_time_window_identified",
+                  "expected": "last_30m",
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.time_window",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "last_30m",
+                  "critical": false
+                },
+                {
+                  "claim": "requested_scope_is_supported_minimal_scope",
+                  "expected": [
+                    "service:checkout-api"
+                  ],
+                  "evidence": "access_request.scope",
+                  "verifier": "scope_subset_check",
+                  "result": "pass",
+                  "actual": "service:checkout-api",
+                  "critical": true
+                },
+                {
+                  "claim": "request_is_read_only",
+                  "expected": true,
+                  "evidence": "access_request.mode",
+                  "verifier": "permission_diff_check",
+                  "result": "pass",
+                  "actual": "read_only",
+                  "critical": true
+                },
+                {
+                  "claim": "forbidden_data_not_requested",
+                  "expected": [
+                    "raw_prod_logs",
+                    "full_database",
+                    "model_weights",
+                    "admin_privileges"
+                  ],
+                  "evidence": "access_request.data_classes",
+                  "verifier": "forbidden_class_check",
+                  "result": "pass",
+                  "actual": [
+                    "rollback_metadata"
+                  ],
+                  "critical": true
+                },
+                {
+                  "claim": "expiration_defined",
+                  "expected": true,
+                  "evidence": "access_request.expiration",
+                  "verifier": "expiration_check",
+                  "result": "pass",
+                  "actual": "end_of_task",
+                  "critical": true
+                },
+                {
+                  "claim": "revocation_defined",
+                  "expected": true,
+                  "evidence": "access_request.revocable",
+                  "verifier": "revocation_check",
+                  "result": "pass",
+                  "actual": true,
+                  "critical": true
+                },
+                {
+                  "claim": "diagnosis_request_has_no_write_access",
+                  "expected": true,
+                  "evidence": "access_request.mode",
+                  "verifier": "mutation_separation_check",
+                  "result": "pass",
+                  "actual": "read_only",
+                  "critical": true
+                }
+              ],
+              "human_reviewed_claims": [
+                {
+                  "claim": "rollback_metadata_is_reasonable_next_step",
+                  "reviewer_role": "incident_commander",
+                  "status": "approved",
+                  "rationale": "Aggregate probes isolate checkout-api and request is read-only rollback metadata."
+                }
+              ],
+              "unverifiable_narrative_claims": [],
+              "evidence_links": [
+                "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+                "trace.projection_probes.completed.allowed_output_shape_valid",
+                "trace.projection_probes.service_health_rollup.output.service_name",
+                "trace.projection_probes.service_health_rollup.output.health_delta",
+                "trace.projection_probes.service_health_rollup.output.primary_symptom",
+                "trace.projection_probes.service_health_rollup.output.confidence",
+                "trace.projection_probes.service_health_rollup.output.time_window",
+                "trace.projection_probes.blast_radius_summary.output.affected_slice",
+                "trace.projection_probes.blast_radius_summary.output.estimated_impact_pct",
+                "trace.projection_probes.blast_radius_summary.output.severity",
+                "trace.projection_probes.blast_radius_summary.output.confidence",
+                "trace.projection_probes.blast_radius_summary.output.time_window",
+                "access_request.scope",
+                "access_request.mode",
+                "access_request.data_classes",
+                "access_request.expiration",
+                "access_request.revocable",
+                "access_request.mode"
+              ],
+              "verifier_results": [
+                "lower_risk_probe_attempted:pass",
+                "completed_probe_outputs_shape_valid:pass",
+                "service_health_rollup_service_name_identified:pass",
+                "service_health_rollup_health_delta_identified:pass",
+                "service_health_rollup_primary_symptom_identified:pass",
+                "service_health_rollup_confidence_identified:pass",
+                "service_health_rollup_time_window_identified:pass",
+                "blast_radius_summary_affected_slice_identified:pass",
+                "blast_radius_summary_estimated_impact_pct_identified:pass",
+                "blast_radius_summary_severity_identified:pass",
+                "blast_radius_summary_confidence_identified:pass",
+                "blast_radius_summary_time_window_identified:pass",
+                "requested_scope_is_supported_minimal_scope:pass",
+                "request_is_read_only:pass",
+                "forbidden_data_not_requested:pass",
+                "expiration_defined:pass",
+                "revocation_defined:pass",
+                "diagnosis_request_has_no_write_access:pass"
+              ],
+              "failed_claims": [],
+              "risk_score": 4,
+              "minimality_score": 1,
+              "approved": true,
+              "reviewer": "deterministic-proof-router",
+              "timestamp": "2026-06-30T00:00:30.000Z",
+              "signature_algorithm": "hmac-sha256",
+              "signature_key_id": "release-therapeutic-proof-key",
+              "signature": "hmac-sha256:7fdbd572f2ce029b47e8ab5bf700840d0b8ff31112d37ee137c87e1be9fa2ec6",
+              "signing_provider": "hmac-local",
+              "key_custody": "local",
+              "signed_at": "2026-06-30T00:00:31.000Z"
+            }
+          }
+        }
+      },
+      {
+        "evidence_id": "evidence_11a50849",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "temporary_grant",
+        "created_at": "2026-06-30T00:00:40.000Z",
+        "payload": {
+          "grant": {
+            "grant_id": "grant_1a72d496",
+            "task_id": "release_incident_response_non_demo_001",
+            "access_request": {
+              "id": "release-rollback-readiness",
+              "task_id": "release_incident_response_non_demo_001",
+              "authority_dose": 4,
+              "scope": "service:checkout-api",
+              "mode": "read_only",
+              "data_classes": [
+                "rollback_metadata"
+              ],
+              "tools": [
+                "rollback_candidate_readiness"
+              ],
+              "expiration": "end_of_task",
+              "revocable": true,
+              "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+            },
+            "proof_capsule_id": "proof_release_rollback_readiness",
+            "status": "active",
+            "approved_at": "2026-06-30T00:00:40.000Z",
+            "expires_at": "9999-12-31T23:59:59.999Z"
+          }
+        }
+      },
+      {
+        "evidence_id": "evidence_3cc49590",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "access_decision",
+        "created_at": "2026-06-30T00:00:50.000Z",
+        "payload": {
+          "tool": {
+            "tool_name": "rollback_candidate_readiness",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "mode": "read_only",
+            "scope": "service:checkout-api"
+          },
+          "decision": "approved",
+          "grant_id": "grant_1a72d496"
+        }
+      },
+      {
+        "evidence_id": "evidence_43c5c026",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "revocation",
+        "created_at": "2026-06-30T00:01:00.000Z",
+        "payload": {
+          "grant": {
+            "grant_id": "grant_1a72d496",
+            "task_id": "release_incident_response_non_demo_001",
+            "access_request": {
+              "id": "release-rollback-readiness",
+              "task_id": "release_incident_response_non_demo_001",
+              "authority_dose": 4,
+              "scope": "service:checkout-api",
+              "mode": "read_only",
+              "data_classes": [
+                "rollback_metadata"
+              ],
+              "tools": [
+                "rollback_candidate_readiness"
+              ],
+              "expiration": "end_of_task",
+              "revocable": true,
+              "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+            },
+            "proof_capsule_id": "proof_release_rollback_readiness",
+            "status": "revoked",
+            "approved_at": "2026-06-30T00:00:40.000Z",
+            "expires_at": "9999-12-31T23:59:59.999Z",
+            "revoked_at": "2026-06-30T00:01:00.000Z",
+            "revoked_by": "therapeutic-runtime",
+            "revocation_status": "success",
+            "revocation_reason": "release_evidence_complete"
+          }
+        }
+      },
+      {
+        "evidence_id": "evidence_7a2fd289",
+        "task_id": "release_incident_response_non_demo_001",
+        "kind": "access_decision",
+        "created_at": "2026-06-30T00:01:05.000Z",
+        "payload": {
+          "tool": {
+            "tool_name": "rollback_candidate_readiness",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "mode": "read_only",
+            "scope": "service:checkout-api"
+          },
+          "decision": "denied",
+          "blocked_by": [
+            "broker_required",
+            "active_scoped_grant_missing"
+          ]
+        }
+      }
+    ],
+    "audit_records": [
+      {
+        "audit_id": "audit_504441dc",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "tool_bypass_blocked",
+        "created_at": "2026-06-30T00:00:05.000Z",
+        "details": {
+          "tool": {
+            "tool_name": "rollback_candidate_readiness",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "mode": "read_only",
+            "scope": "service:checkout-api"
+          },
+          "evidence_id": "evidence_1ab4e03f",
+          "blocked_by": [
+            "broker_required",
+            "active_scoped_grant_missing"
+          ]
+        }
+      },
+      {
+        "audit_id": "audit_38aa0dd",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "probe_completed",
+        "created_at": "2026-06-30T00:00:10.000Z",
+        "details": {
+          "probe_name": "service_health_rollup",
+          "evidence_id": "evidence_3b03284d"
+        }
+      },
+      {
+        "audit_id": "audit_6f4631db",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "probe_completed",
+        "created_at": "2026-06-30T00:00:20.000Z",
+        "details": {
+          "probe_name": "blast_radius_summary",
+          "evidence_id": "evidence_594146b5"
+        }
+      },
+      {
+        "audit_id": "audit_784953b2",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "access_approved",
+        "created_at": "2026-06-30T00:00:40.000Z",
+        "details": {
+          "request": {
+            "id": "release-rollback-readiness",
+            "task_id": "release_incident_response_non_demo_001",
+            "authority_dose": 4,
+            "scope": "service:checkout-api",
+            "mode": "read_only",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "tools": [
+              "rollback_candidate_readiness"
+            ],
+            "expiration": "end_of_task",
+            "revocable": true,
+            "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+          },
+          "broker_decision": {
+            "decision": "approved",
+            "tier": 1,
+            "blocked_by": [],
+            "suggested_alternatives": [],
+            "proof_capsule": {
+              "id": "proof_release_rollback_readiness",
+              "task_id": "release_incident_response_non_demo_001",
+              "requested_access": {
+                "id": "release-rollback-readiness",
+                "task_id": "release_incident_response_non_demo_001",
+                "authority_dose": 4,
+                "scope": "service:checkout-api",
+                "mode": "read_only",
+                "data_classes": [
+                  "rollback_metadata"
+                ],
+                "tools": [
+                  "rollback_candidate_readiness"
+                ],
+                "expiration": "end_of_task",
+                "revocable": true,
+                "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+              },
+              "current_authority_dose": 2,
+              "requested_authority_dose": 4,
+              "machine_verifiable_claims": [
+                {
+                  "claim": "lower_risk_probe_attempted",
+                  "expected": "at_least_one_completed_lower_risk_probe",
+                  "evidence": "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+                  "verifier": "trace_lookup",
+                  "result": "pass",
+                  "actual": [
+                    "service_health_rollup",
+                    "blast_radius_summary"
+                  ],
+                  "critical": true
+                },
+                {
+                  "claim": "completed_probe_outputs_shape_valid",
+                  "expected": true,
+                  "evidence": "trace.projection_probes.completed.allowed_output_shape_valid",
+                  "verifier": "probe_output_shape_check",
+                  "result": "pass",
+                  "actual": [
+                    {
+                      "name": "service_health_rollup",
+                      "allowed_output_shape_valid": true
+                    },
+                    {
+                      "name": "blast_radius_summary",
+                      "allowed_output_shape_valid": true
+                    }
+                  ],
+                  "critical": true
+                },
+                {
+                  "claim": "service_health_rollup_service_name_identified",
+                  "expected": "checkout-api",
+                  "evidence": "trace.projection_probes.service_health_rollup.output.service_name",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "checkout-api",
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_health_delta_identified",
+                  "expected": -0.22,
+                  "evidence": "trace.projection_probes.service_health_rollup.output.health_delta",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": -0.22,
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_primary_symptom_identified",
+                  "expected": "elevated_error_rate",
+                  "evidence": "trace.projection_probes.service_health_rollup.output.primary_symptom",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "elevated_error_rate",
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_confidence_identified",
+                  "expected": 0.88,
+                  "evidence": "trace.projection_probes.service_health_rollup.output.confidence",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": 0.88,
+                  "critical": false
+                },
+                {
+                  "claim": "service_health_rollup_time_window_identified",
+                  "expected": "last_30m",
+                  "evidence": "trace.projection_probes.service_health_rollup.output.time_window",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "last_30m",
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_affected_slice_identified",
+                  "expected": "us-east checkout traffic",
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.affected_slice",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "us-east checkout traffic",
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_estimated_impact_pct_identified",
+                  "expected": 12,
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.estimated_impact_pct",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": 12,
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_severity_identified",
+                  "expected": "high",
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.severity",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "high",
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_confidence_identified",
+                  "expected": 0.84,
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.confidence",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": 0.84,
+                  "critical": false
+                },
+                {
+                  "claim": "blast_radius_summary_time_window_identified",
+                  "expected": "last_30m",
+                  "evidence": "trace.projection_probes.blast_radius_summary.output.time_window",
+                  "verifier": "equality_check",
+                  "result": "pass",
+                  "actual": "last_30m",
+                  "critical": false
+                },
+                {
+                  "claim": "requested_scope_is_supported_minimal_scope",
+                  "expected": [
+                    "service:checkout-api"
+                  ],
+                  "evidence": "access_request.scope",
+                  "verifier": "scope_subset_check",
+                  "result": "pass",
+                  "actual": "service:checkout-api",
+                  "critical": true
+                },
+                {
+                  "claim": "request_is_read_only",
+                  "expected": true,
+                  "evidence": "access_request.mode",
+                  "verifier": "permission_diff_check",
+                  "result": "pass",
+                  "actual": "read_only",
+                  "critical": true
+                },
+                {
+                  "claim": "forbidden_data_not_requested",
+                  "expected": [
+                    "raw_prod_logs",
+                    "full_database",
+                    "model_weights",
+                    "admin_privileges"
+                  ],
+                  "evidence": "access_request.data_classes",
+                  "verifier": "forbidden_class_check",
+                  "result": "pass",
+                  "actual": [
+                    "rollback_metadata"
+                  ],
+                  "critical": true
+                },
+                {
+                  "claim": "expiration_defined",
+                  "expected": true,
+                  "evidence": "access_request.expiration",
+                  "verifier": "expiration_check",
+                  "result": "pass",
+                  "actual": "end_of_task",
+                  "critical": true
+                },
+                {
+                  "claim": "revocation_defined",
+                  "expected": true,
+                  "evidence": "access_request.revocable",
+                  "verifier": "revocation_check",
+                  "result": "pass",
+                  "actual": true,
+                  "critical": true
+                },
+                {
+                  "claim": "diagnosis_request_has_no_write_access",
+                  "expected": true,
+                  "evidence": "access_request.mode",
+                  "verifier": "mutation_separation_check",
+                  "result": "pass",
+                  "actual": "read_only",
+                  "critical": true
+                }
+              ],
+              "human_reviewed_claims": [
+                {
+                  "claim": "rollback_metadata_is_reasonable_next_step",
+                  "reviewer_role": "incident_commander",
+                  "status": "approved",
+                  "rationale": "Aggregate probes isolate checkout-api and request is read-only rollback metadata."
+                }
+              ],
+              "unverifiable_narrative_claims": [],
+              "evidence_links": [
+                "trace.projection_probes[required_authority_dose < access_request.authority_dose].status",
+                "trace.projection_probes.completed.allowed_output_shape_valid",
+                "trace.projection_probes.service_health_rollup.output.service_name",
+                "trace.projection_probes.service_health_rollup.output.health_delta",
+                "trace.projection_probes.service_health_rollup.output.primary_symptom",
+                "trace.projection_probes.service_health_rollup.output.confidence",
+                "trace.projection_probes.service_health_rollup.output.time_window",
+                "trace.projection_probes.blast_radius_summary.output.affected_slice",
+                "trace.projection_probes.blast_radius_summary.output.estimated_impact_pct",
+                "trace.projection_probes.blast_radius_summary.output.severity",
+                "trace.projection_probes.blast_radius_summary.output.confidence",
+                "trace.projection_probes.blast_radius_summary.output.time_window",
+                "access_request.scope",
+                "access_request.mode",
+                "access_request.data_classes",
+                "access_request.expiration",
+                "access_request.revocable",
+                "access_request.mode"
+              ],
+              "verifier_results": [
+                "lower_risk_probe_attempted:pass",
+                "completed_probe_outputs_shape_valid:pass",
+                "service_health_rollup_service_name_identified:pass",
+                "service_health_rollup_health_delta_identified:pass",
+                "service_health_rollup_primary_symptom_identified:pass",
+                "service_health_rollup_confidence_identified:pass",
+                "service_health_rollup_time_window_identified:pass",
+                "blast_radius_summary_affected_slice_identified:pass",
+                "blast_radius_summary_estimated_impact_pct_identified:pass",
+                "blast_radius_summary_severity_identified:pass",
+                "blast_radius_summary_confidence_identified:pass",
+                "blast_radius_summary_time_window_identified:pass",
+                "requested_scope_is_supported_minimal_scope:pass",
+                "request_is_read_only:pass",
+                "forbidden_data_not_requested:pass",
+                "expiration_defined:pass",
+                "revocation_defined:pass",
+                "diagnosis_request_has_no_write_access:pass"
+              ],
+              "failed_claims": [],
+              "risk_score": 4,
+              "minimality_score": 1,
+              "approved": true,
+              "reviewer": "deterministic-proof-router",
+              "timestamp": "2026-06-30T00:00:30.000Z",
+              "signature_algorithm": "hmac-sha256",
+              "signature_key_id": "release-therapeutic-proof-key",
+              "signature": "hmac-sha256:7fdbd572f2ce029b47e8ab5bf700840d0b8ff31112d37ee137c87e1be9fa2ec6",
+              "signing_provider": "hmac-local",
+              "key_custody": "local",
+              "signed_at": "2026-06-30T00:00:31.000Z"
+            }
+          },
+          "evidence_id": "evidence_2ef6fb6d"
+        }
+      },
+      {
+        "audit_id": "audit_4c8d8549",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "protected_tool_dispatched",
+        "created_at": "2026-06-30T00:00:50.000Z",
+        "details": {
+          "tool": {
+            "tool_name": "rollback_candidate_readiness",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "mode": "read_only",
+            "scope": "service:checkout-api"
+          },
+          "grant_id": "grant_1a72d496",
+          "evidence_id": "evidence_3cc49590"
+        }
+      },
+      {
+        "audit_id": "audit_3600ca78",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "grant_revoked",
+        "created_at": "2026-06-30T00:01:00.000Z",
+        "details": {
+          "grant_id": "grant_1a72d496",
+          "reason": "release_evidence_complete"
+        }
+      },
+      {
+        "audit_id": "audit_1ad70b5d",
+        "task_id": "release_incident_response_non_demo_001",
+        "event_type": "tool_bypass_blocked",
+        "created_at": "2026-06-30T00:01:05.000Z",
+        "details": {
+          "tool": {
+            "tool_name": "rollback_candidate_readiness",
+            "data_classes": [
+              "rollback_metadata"
+            ],
+            "mode": "read_only",
+            "scope": "service:checkout-api"
+          },
+          "evidence_id": "evidence_7a2fd289",
+          "blocked_by": [
+            "broker_required",
+            "active_scoped_grant_missing"
+          ]
+        }
+      }
+    ],
+    "grants": [
+      {
+        "grant_id": "grant_1a72d496",
+        "task_id": "release_incident_response_non_demo_001",
+        "access_request": {
+          "id": "release-rollback-readiness",
+          "task_id": "release_incident_response_non_demo_001",
+          "authority_dose": 4,
+          "scope": "service:checkout-api",
+          "mode": "read_only",
+          "data_classes": [
+            "rollback_metadata"
+          ],
+          "tools": [
+            "rollback_candidate_readiness"
+          ],
+          "expiration": "end_of_task",
+          "revocable": true,
+          "purpose": "Read scoped rollback metadata after aggregate incident probes identify checkout-api."
+        },
+        "proof_capsule_id": "proof_release_rollback_readiness",
+        "status": "revoked",
+        "approved_at": "2026-06-30T00:00:40.000Z",
+        "expires_at": "9999-12-31T23:59:59.999Z",
+        "revoked_at": "2026-06-30T00:01:00.000Z",
+        "revoked_by": "therapeutic-runtime",
+        "revocation_status": "success",
+        "revocation_reason": "release_evidence_complete"
+      }
+    ],
+    "proof_statuses": {
+      "proof_release_rollback_readiness": "used"
+    },
+    "proof_decision_records": [
+      {
+        "decision_id": "proof_decision_491006e6",
+        "task_id": "release_incident_response_non_demo_001",
+        "request_id": "release-rollback-readiness",
+        "decision": "approved",
+        "tier": 1,
+        "decision_mechanism": "deterministic_verifier",
+        "verification_latency_ms": 1,
+        "llm_reviewed": false,
+        "human_reviewed": true,
+        "token_count": 0,
+        "cache_hit": false,
+        "probe_bundle_success": true,
+        "blocked_by": [],
+        "created_at": "2026-06-30T00:00:40.000Z"
+      }
+    ],
+    "checkride_reports": [],
+    "policy_learning_records": [],
+    "review_requests": [],
+    "remediation_verifications": [],
+    "tenant_scope": {
+      "tenant_id": "tenant-release",
+      "workspace_id": "workspace-release",
+      "actor_id": "agent-release"
+    },
+    "persistence": {
+      "kind": "file",
+      "path": "C:\\Users\\bombt\\Desktop\\work\\vectant-ade\\mcp\\synthi-mcp\\.tmp\\therapeutic-release-evidence\\tenant-release\\workspace-release\\release_incident_response_non_demo_001.therapeutic-runtime.json",
+      "durable": true,
+      "last_persisted_at": "2026-06-30T00:01:10.000Z"
+    }
+  },
+  "persisted_at": "2026-06-30T00:01:10.000Z"
+}
