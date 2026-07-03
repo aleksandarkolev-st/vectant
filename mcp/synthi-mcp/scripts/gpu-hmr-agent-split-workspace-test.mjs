@@ -6813,6 +6813,109 @@ function ledgerEvidenceRefs(records) {
     .slice(0, 32);
 }
 
+function traceEventEvidenceRefs(event, fallbackRefs = []) {
+  return [...new Set([
+    ...(Array.isArray(event?.evidence_refs) ? event.evidence_refs : []),
+    ...(Array.isArray(event?.evidenceRefs) ? event.evidenceRefs : []),
+    ...(Array.isArray(fallbackRefs) ? fallbackRefs : []),
+  ].map((value) => String(value ?? '').trim()).filter(Boolean))];
+}
+
+function runtimeTraceFromLedgerRecord(record) {
+  if (!isRecord(record)) return null;
+  const loaderEvent = isRecord(record.loader_event)
+    ? record.loader_event
+    : isRecord(record.loaderEvent)
+      ? record.loaderEvent
+      : {};
+  const dispatchEvent = isRecord(record.dispatch_event)
+    ? record.dispatch_event
+    : isRecord(record.dispatchEvent)
+      ? record.dispatchEvent
+      : {};
+  const outputEvent = isRecord(record.output_event)
+    ? record.output_event
+    : isRecord(record.outputEvent)
+      ? record.outputEvent
+      : {};
+  const baseEvidenceRefs = ledgerEvidenceRefs([record]);
+  const loaderEvidenceRefs = traceEventEvidenceRefs(loaderEvent, baseEvidenceRefs);
+  const dispatchEvidenceRefs = traceEventEvidenceRefs(dispatchEvent, baseEvidenceRefs);
+  const outputEvidenceRefs = traceEventEvidenceRefs(outputEvent, baseEvidenceRefs);
+  const loaderTraceEvent = {
+    source: loaderEvent.loader_api ?? loaderEvent.loaderApi ?? 'runtime_loader_event',
+    loaderApi: loaderEvent.loader_api ?? loaderEvent.loaderApi ?? null,
+    loader_api: loaderEvent.loader_api ?? loaderEvent.loaderApi ?? null,
+    artifactHash: loaderEvent.artifact_hash ?? loaderEvent.artifactHash ?? null,
+    artifact_hash: loaderEvent.artifact_hash ?? loaderEvent.artifactHash ?? null,
+    epoch: loaderEvent.epoch ?? record.epoch ?? null,
+    processId: loaderEvent.process_id ?? loaderEvent.processId ?? null,
+    process_id: loaderEvent.process_id ?? loaderEvent.processId ?? null,
+    evidenceRefs: loaderEvidenceRefs,
+    evidence_refs: loaderEvidenceRefs,
+  };
+  const dispatchTraceEvent = {
+    command: dispatchEvent.launch_api ?? dispatchEvent.launchApi ?? 'hipModuleLaunchKernel',
+    dispatchId: dispatchEvent.dispatch_id ?? dispatchEvent.dispatchId ?? dispatchEvent.id ?? null,
+    dispatch_id: dispatchEvent.dispatch_id ?? dispatchEvent.dispatchId ?? dispatchEvent.id ?? null,
+    epoch: dispatchEvent.epoch ?? null,
+    artifactHash: dispatchEvent.artifact_hash ?? dispatchEvent.artifactHash ?? null,
+    artifact_hash: dispatchEvent.artifact_hash ?? dispatchEvent.artifactHash ?? null,
+    outputTargetId: dispatchEvent.output_target_id ?? dispatchEvent.outputTargetId ?? null,
+    output_target_id: dispatchEvent.output_target_id ?? dispatchEvent.outputTargetId ?? null,
+    processId: dispatchEvent.process_id ?? dispatchEvent.processId ?? null,
+    process_id: dispatchEvent.process_id ?? dispatchEvent.processId ?? null,
+    evidenceRefs: dispatchEvidenceRefs,
+    evidence_refs: dispatchEvidenceRefs,
+  };
+  const outputTraceEvent = {
+    kind: outputEvent.kind ?? 'visual_frame',
+    afterDispatchId:
+      outputEvent.after_dispatch_id
+      ?? outputEvent.afterDispatchId
+      ?? dispatchTraceEvent.dispatchId,
+    after_dispatch_id:
+      outputEvent.after_dispatch_id
+      ?? outputEvent.afterDispatchId
+      ?? dispatchTraceEvent.dispatch_id,
+    epoch: outputEvent.epoch ?? null,
+    artifactHash: outputEvent.artifact_hash ?? outputEvent.artifactHash ?? null,
+    artifact_hash: outputEvent.artifact_hash ?? outputEvent.artifactHash ?? null,
+    outputTargetId: outputEvent.output_target_id ?? outputEvent.outputTargetId ?? null,
+    output_target_id: outputEvent.output_target_id ?? outputEvent.outputTargetId ?? null,
+    processId: outputEvent.process_id ?? outputEvent.processId ?? null,
+    process_id: outputEvent.process_id ?? outputEvent.processId ?? null,
+    evidenceRefs: outputEvidenceRefs,
+    evidence_refs: outputEvidenceRefs,
+  };
+  return {
+    schemaVersion: 'synthi.gpu_hmr.runtime_trace.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_trace.v1',
+    proofAuthority: 'runner_observed_wait_hmr_runtime_boundaries',
+    proof_authority: 'runner_observed_wait_hmr_runtime_boundaries',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    loaderEvents: [loaderTraceEvent],
+    loader_events: [loaderTraceEvent],
+    dispatchEvents: [dispatchTraceEvent],
+    dispatch_events: [dispatchTraceEvent],
+    outputEvents: [outputTraceEvent],
+    output_events: [outputTraceEvent],
+    evidenceRefs: [...new Set([
+      ...loaderEvidenceRefs,
+      ...dispatchEvidenceRefs,
+      ...outputEvidenceRefs,
+    ])],
+    evidence_refs: [...new Set([
+      ...loaderEvidenceRefs,
+      ...dispatchEvidenceRefs,
+      ...outputEvidenceRefs,
+    ])],
+  };
+}
+
 function withRunModeVisualLedgerProof({
   proof,
   visualDelta,
@@ -6967,6 +7070,7 @@ function withRunModeVisualLedgerProof({
   const deterministicVisualModeEvaluation = deterministicVisualMode
     ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
     : null;
+  const runtimeTrace = runtimeTraceFromLedgerRecord(finalLedgerRecord);
   const proofLedgerSourceConsistency = {
     accepted: true,
     mode: 'derived_only',
@@ -6991,6 +7095,8 @@ function withRunModeVisualLedgerProof({
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
     visualOracleArtifacts,
     visual_oracle_artifacts: visualOracleArtifacts,
     visualEvidenceArtifacts,
@@ -7018,6 +7124,8 @@ function withRunModeVisualLedgerProof({
     proof_ledger: finalLedger,
     runtimeProofArtifact: finalRuntimeProofArtifact,
     runtime_proof_artifact: finalRuntimeProofArtifact,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
     visualOracleArtifacts,
     visual_oracle_artifacts: visualOracleArtifacts,
     visualEvidenceArtifacts,
