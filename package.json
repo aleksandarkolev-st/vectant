@@ -1,6 +1,10 @@
 {
   "scripts": {
-    "start:collab": "node ./backend/collab-server/server.js"
+    "start:collab": "node ./backend/collab-server/server.js",
+    "proof:source-first:visual": "npm --prefix mcp/synthi-mcp run proof:source-first:visual",
+    "proof:source-first:visual:self-check": "npm --prefix mcp/synthi-mcp run proof:source-first:visual:self-check",
+    "proof:flow:source-first:visual": "npm --prefix mcp/synthi-mcp run proof:flow:source-first:visual",
+    "proof:rocm:source-first:realistic-visual": "npm --prefix mcp/synthi-mcp run proof:rocm:source-first:realistic-visual"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
