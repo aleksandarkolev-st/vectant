@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CodeSite Release Gate</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #07080d; color: #f5f7fb; }
+    body { margin: 0; padding: 28px; background: #07080d; }
+    main { max-width: 1180px; margin: 0 auto; }
+    .hero { border: 1px solid #2b3450; background: #111521; border-radius: 8px; padding: 24px; margin-bottom: 18px; }
+    .status { display: inline-flex; align-items: center; border-radius: 4px; padding: 5px 10px; font-size: 12px; font-weight: 800; letter-spacing: .04em; background: #0f6b3b; color: white; }
+    h1 { margin: 10px 0 8px; font-size: 28px; line-height: 1.15; letter-spacing: 0; }
+    p { margin: 0; color: #aeb8d4; line-height: 1.55; max-width: 900px; }
+    .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0 18px; }
+    .metric, .card { border: 1px solid #27304a; background: #111521; border-radius: 8px; padding: 16px; min-width: 0; }
+    .label { color: #8f9bb8; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+    .value { font-size: 22px; line-height: 1.2; overflow-wrap: anywhere; }
+    .good { color: #8dffb8; }
+    .bad { color: #ff9999; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; color: #d8def1; background: #070a12; border: 1px solid #202842; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.45; }
+    @media (max-width: 720px) { body { padding: 12px; } .meta, .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <span class="status">PASS</span>
+      <h1>CodeSite Release Gate</h1>
+      <p>Blocking release validation for committed CodeSite workflow proof, visual artifacts, runtime mount boundary evidence, trusted proof bundles, and real Codex agent transcripts.</p>
+    </section>
+    <section class="meta">
+      <div class="metric"><div class="label">Slug</div><div class="value">codesite-mature-full-proof-20260702bc</div></div>
+      <div class="metric"><div class="label">Proof root</div><div class="value">tmp/codesite-dojo-proof</div></div>
+      <div class="metric"><div class="label">Generated</div><div class="value">2026-07-03T14:20:41.684Z</div></div>
+    </section>
+    <section class="grid">
+    <section class="card">
+      <div class="label">workflowAssertions</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;workflowAssertions&quot;,
+  &quot;count&quot;: 43,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">visualArtifacts</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;visualArtifacts&quot;,
+  &quot;checked&quot;: 8,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">runtimeMountBoundary</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;runtimeMountBoundary&quot;,
+  &quot;assertions&quot;: 10,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">proofBundles</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;proofBundles&quot;,
+  &quot;found&quot;: 1,
+  &quot;verified&quot;: 1,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">codexAgentEvidence</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;codexAgentEvidence&quot;,
+  &quot;records&quot;: 3,
+  &quot;valid&quot;: 3,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+  </section>
+    <section class="card" style="margin-top:12px">
+      <div class="label">Failures</div>
+      <pre>[]</pre>
+    </section>
+  </main>
+</body>
+</html>

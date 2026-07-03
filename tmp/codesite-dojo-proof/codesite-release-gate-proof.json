@@ -1,0 +1,38 @@
+{
+  "ok": true,
+  "schemaVersion": "synthi.codesite.releaseGate.v1",
+  "generatedAt": "2026-07-03T14:20:41.684Z",
+  "proofRoot": "tmp/codesite-dojo-proof",
+  "slug": "codesite-mature-full-proof-20260702bc",
+  "checks": [
+    {
+      "name": "workflowAssertions",
+      "count": 43,
+      "ok": true
+    },
+    {
+      "name": "visualArtifacts",
+      "checked": 8,
+      "ok": true
+    },
+    {
+      "name": "runtimeMountBoundary",
+      "assertions": 10,
+      "ok": true
+    },
+    {
+      "name": "proofBundles",
+      "found": 1,
+      "verified": 1,
+      "ok": true
+    },
+    {
+      "name": "codexAgentEvidence",
+      "records": 3,
+      "valid": 3,
+      "ok": true
+    }
+  ],
+  "warnings": [],
+  "failures": []
+}
