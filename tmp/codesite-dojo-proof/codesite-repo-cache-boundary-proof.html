@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CodeSite Repo Cache Boundary Proof</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f8f5;color:#162019;color-scheme:light}
+body{margin:0;background:#f6f8f5;color:#162019}
+main{width:min(1180px,calc(100vw - 56px));margin:0 auto;padding:40px 0 50px}
+header{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;border-bottom:1px solid #cdd8ce;padding-bottom:24px}
+h1{margin:0;font-size:38px;line-height:1.04;font-weight:780;letter-spacing:0}
+.sub{margin:12px 0 0;color:#53635a;max-width:860px;line-height:1.55}
+.stamp{border:1px solid #22744a;background:#e7f6ec;color:#0b6034;padding:12px 34px;font-weight:780}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0}
+.card,section{background:#fbfcf8;border:1px solid #cdd8ce}
+.card{padding:16px;min-height:78px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#617068}
+.value{font-size:28px;font-weight:780;margin-top:10px}
+section{padding:20px;margin-top:18px}
+h2{font-size:19px;margin:0 0 14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-top:1px solid #e2e8e3;padding:10px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#59675f}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+pre{background:#101812;color:#e9f2ed;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
+.ok{color:#0d6b3e;font-weight:760}
+.fail{color:#aa2f20;font-weight:760}
+@media(max-width:860px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<h1>CodeSite Repo Cache Boundary Proof</h1>
+<p class="sub">Verified 2026-07-03T19:06:47.081Z. Active CodeSite repo-cache materialization is denied without explicit repo-wide git_provisioning clearance and allowed only with repo-wide clearance. Git provisioning routes thread the same context into service/cache primitives.</p>
+</div>
+<div class="stamp">PASS</div>
+</header>
+<div class="cards">
+<div class="card"><div class="label">Cache Boundary</div><div class="value">1/1</div></div>
+<div class="card"><div class="label">Runtime/Prep</div><div class="value">4/4</div></div>
+<div class="card"><div class="label">Docker Replay</div><div class="value">1/1</div></div>
+<div class="card"><div class="label">Assertions</div><div class="value">14/14</div></div>
+</div>
+<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>repo cache has active CodeSite materialization guard</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>repo cache materialization is classified as git_provisioning</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>GitService.withLock passes options into repoCache.acquire</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>initRepo accepts provisioning options without breaking token user id compatibility</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>cloneRepo accepts provisioning options without breaking token user id compatibility</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>ensureUserRepo accepts provisioning options</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>server threads CodeSite provisioning options into implicit and explicit provisioning</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>regression test proves denial before repo directory creation</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>syntaxRepoCache command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/repoCache.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxGitService command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/gitService.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxServer command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/server.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>repoCacheBoundary command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:1,&quot;suites&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>runtimePrep command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:4,&quot;suites&quot;:0,&quot;pass&quot;:4,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>dockerRepoCache command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/repoCache.js &amp;&amp; node --check backend/collab-server/gitService.js &amp;&amp; node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:1,&quot;suites&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
+<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/repoCache.js</code></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/gitService.js</code></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/server.js</code></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js</code></td><td>1/1</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js</code></td><td>4/4</td></tr><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/repoCache.js &amp;&amp; node --check backend/collab-server/gitService.js &amp;&amp; node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js</code></td><td>1/1</td></tr></tbody></table></section>
+<section><h2>Git Binding</h2><pre>{
+  &quot;head&quot;: &quot;70632b69b2ef6ef6d098cd94811163086a6449c8&quot;,
+  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
+  &quot;statusShort&quot;: &quot;M backend/collab-server/gitService.js\n M backend/collab-server/repoCache.js\n M backend/collab-server/server.js\n?? backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js&quot;
+}</pre></section>
+<section><h2>Boundary Snapshot</h2><pre>{
+  &quot;deniedWithoutRepoWideClearance&quot;: &quot;active CodeSite + git_provisioning + allowedPaths src/** =&gt; CODESITE_WRITE_DENIED before mkdir&quot;,
+  &quot;allowedWithRepoWideClearance&quot;: &quot;active CodeSite + git_provisioning + allowedPaths ** =&gt; repoCache.acquire may materialize&quot;,
+  &quot;threadedEntrypoints&quot;: [
+    &quot;workspace prepare auto-init&quot;,
+    &quot;file-content auto-init&quot;,
+    &quot;git auto-init&quot;,
+    &quot;git ensure-user-repo&quot;,
+    &quot;git init&quot;,
+    &quot;git clone&quot;
+  ],
+  &quot;dockerReplay&quot;: &quot;node:20-bookworm reruns syntax and repoCache boundary tests against mounted checkout&quot;
+}</pre></section>
+</main>
+</body>
+</html>

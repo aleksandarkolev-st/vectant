@@ -156,6 +156,19 @@ function codeSiteContextFromOptions(options = {}) {
     return options.codesiteContext || options.codeSiteContext || null;
 }
 
+function splitTokenUserIdAndOptions(tokenUserId = null, options = {}) {
+    if (
+        tokenUserId
+        && typeof tokenUserId === 'object'
+        && !Array.isArray(tokenUserId)
+        && options
+        && Object.keys(options).length === 0
+    ) {
+        return { tokenUserId: null, options: tokenUserId };
+    }
+    return { tokenUserId, options: options || {} };
+}
+
 function codeSiteEvidenceArrays(input = {}) {
     return {
         evidenceRefs: arrayValue(input.evidenceRefs ?? input.evidence_refs),
@@ -1203,12 +1216,12 @@ class GitService {
     }
 
     // Helper to run operations with lock + repo cache acquire/release
-    async withLock(slug, operation, userId) {
+    async withLock(slug, operation, userId, options = {}) {
         const lockKey = userId ? `${slug}:${userId}` : slug;
         const releaseLock = await repoLock.acquire(lockKey);
         try {
             // Ensure working tree is materialised before the operation
-            await repoCache.acquire(slug, userId);
+            await repoCache.acquire(slug, userId, options);
             try {
                 return await operation();
             } finally {
@@ -1630,7 +1643,10 @@ class GitService {
         return null;
     }
 
-    async initRepo(slug, remoteUrl, userId, tokenUserId = null) {
+    async initRepo(slug, remoteUrl, userId, tokenUserId = null, options = {}) {
+        const provisioningArgs = splitTokenUserIdAndOptions(tokenUserId, options);
+        tokenUserId = provisioningArgs.tokenUserId;
+        options = provisioningArgs.options;
         const initResult = await this.withLock(slug, async () => {
             // repoCache.acquire (inside withLock) already materialised files
             // from GCS if needed, so we only need to git-init if missing.
@@ -1726,18 +1742,21 @@ class GitService {
             // Defense-in-depth: hide internal artifacts from git status
             await this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
-        });
+        }, null, options);
 
         // ── Provision per-user working tree (outside slug-level lock) ────
         if (userId) {
-            const userResult = await this.ensureUserRepo(slug, userId);
+            const userResult = await this.ensureUserRepo(slug, userId, options);
             console.log(`[GitService] initRepo: per-user repo for ${slug}/${userId} (created=${userResult.created})`);
         }
 
         return initResult;
     }
 
-    async cloneRepo(slug, repoUrl, token, userId, tokenUserId = null) {
+    async cloneRepo(slug, repoUrl, token, userId, tokenUserId = null, options = {}) {
+        const provisioningArgs = splitTokenUserIdAndOptions(tokenUserId, options);
+        tokenUserId = provisioningArgs.tokenUserId;
+        options = provisioningArgs.options;
         const cloneResult = await this.withLock(slug, async () => {
             const repoPath = this.getRepoPath(slug);
             let cleanRepoUrl = repoUrl;
@@ -1953,11 +1972,11 @@ class GitService {
             this._archiveGitAsync(slug);
             
             return { success: true, path: repoPath };
-        });
+        }, null, options);
 
         // ── Provision per-user working tree (outside slug-level lock) ────
         if (userId) {
-            const userResult = await this.ensureUserRepo(slug, userId);
+            const userResult = await this.ensureUserRepo(slug, userId, options);
             console.log(`[GitService] cloneRepo: per-user repo for ${slug}/${userId} (created=${userResult.created})`);
         }
 
@@ -4946,7 +4965,7 @@ class GitService {
      * @param {string} userId — Authenticated user id
      * @returns {Promise<{ path: string, created: boolean }>}
      */
-    async ensureUserRepo(slug, userId) {
+    async ensureUserRepo(slug, userId, options = {}) {
         if (!userId) throw new GitError('userId is required', 'MISSING_USER_ID');
 
         const userRepoPath = this.getUserRepoPath(slug, userId);
@@ -5094,7 +5113,7 @@ class GitService {
                     'USER_REPO_ERROR'
                 );
             }
-        }, userId);
+        }, userId, options);
     }
 
     /**

@@ -1407,6 +1407,25 @@ async function enforceCodeSiteProvisioningAllowed(context, kind, options = {}) {
   );
 }
 
+function codeSiteArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function codeSiteProvisioningOptions(context, options = {}) {
+  return {
+    ...codeSiteEnforceOptions(context, options),
+    codesiteContext: context,
+    evidenceRefs: [
+      ...codeSiteArray(options.evidenceRefs),
+      'collab:git-provisioning',
+    ],
+    processAncestry: [
+      ...codeSiteArray(options.processAncestry),
+      'collab-server:git-provisioning',
+    ],
+  };
+}
+
 function needsCodeSiteUserRepoProvisioning(slug, userId) {
   if (!userId) return false;
   try {
@@ -2379,7 +2398,16 @@ const server = http.createServer(async (req, res) => {
           if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
             await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare:auto-init', prepCodeSiteEnforcement);
           }
-          await gitService.initRepo(slug, null, effectiveUserId);
+          await gitService.initRepo(
+            slug,
+            null,
+            effectiveUserId,
+            null,
+            codeSiteProvisioningOptions(prepCodeSiteContext, {
+              evidenceRefs: ['collab:workspace-prepare:auto-init'],
+              processAncestry: ['collab-server:workspace-prepare'],
+            }),
+          );
         } catch (e) {
           if (e?.code === 'CODESITE_WRITE_DENIED') {
             writeCodeSiteDenied(res, e);
@@ -2547,7 +2575,16 @@ const server = http.createServer(async (req, res) => {
           if (!userId || needsCodeSiteUserRepoProvisioning(slug, userId)) {
             await enforceCodeSiteProvisioningAllowed(fileContentCodeSiteContext, 'file-content:auto-init', fileContentCodeSiteEnforcement);
           }
-          await gitService.initRepo(slug, null, userId);
+          await gitService.initRepo(
+            slug,
+            null,
+            userId,
+            null,
+            codeSiteProvisioningOptions(fileContentCodeSiteContext, {
+              evidenceRefs: ['collab:file-content:auto-init'],
+              processAncestry: ['collab-server:file-content'],
+            }),
+          );
           hydratedSlugs.add(hKey);
         } catch (e) {
           if (e?.code === 'CODESITE_WRITE_DENIED') {
@@ -5242,7 +5279,16 @@ const server = http.createServer(async (req, res) => {
             if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
               await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:auto-init', codeSiteEnforcement);
             }
-            await gitService.initRepo(slug, null, effectiveUserId);
+            await gitService.initRepo(
+              slug,
+              null,
+              effectiveUserId,
+              null,
+              codeSiteProvisioningOptions(codeSiteContext, {
+                evidenceRefs: ['collab:git:auto-init'],
+                processAncestry: ['collab-server:git:auto-init'],
+              }),
+            );
             hydratedSlugs.add(hKey);
           } catch (e) {
             if (e?.code === 'CODESITE_WRITE_DENIED') {
@@ -5266,7 +5312,14 @@ const server = http.createServer(async (req, res) => {
                 if (needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
                   await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:ensure-user-repo', codeSiteEnforcement);
                 }
-                await gitService.ensureUserRepo(slug, effectiveUserId);
+                await gitService.ensureUserRepo(
+                  slug,
+                  effectiveUserId,
+                  codeSiteProvisioningOptions(codeSiteContext, {
+                    evidenceRefs: ['collab:git:ensure-user-repo'],
+                    processAncestry: ['collab-server:git:ensure-user-repo'],
+                  }),
+                );
                 // Pin the per-user repo in the cache so it won't be evicted
                 // while this user is actively interacting with the workspace.
                 // Unpinning happens when the notification WS disconnects.
@@ -5328,12 +5381,21 @@ const server = http.createServer(async (req, res) => {
 
             switch (action) {
                 case 'init':
-                {
-                  const boundary = await runGitBoundary(
-                    async () => gitService.initRepo(slug, data.remoteUrl, bootstrapUserId, tokenUserId),
-                  );
-                  result = boundary.applyResult;
-                }
+	                {
+	                  const boundary = await runGitBoundary(
+	                    async () => gitService.initRepo(
+	                      slug,
+	                      data.remoteUrl,
+	                      bootstrapUserId,
+	                      tokenUserId,
+	                      codeSiteProvisioningOptions(codeSiteContext, {
+	                        evidenceRefs: ['collab:git:init'],
+	                        processAncestry: ['collab-server:git:init'],
+	                      }),
+	                    ),
+	                  );
+	                  result = boundary.applyResult;
+	                }
                 hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                 if (data.owner || data.name || data.showInRecent === true || data.addToRecent === true) {
                   workspaceManager.addWorkspace(slug, data.remoteUrl, data.owner, data.name, {
@@ -5370,12 +5432,22 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
                 case 'clone':
-                  {
-                    const boundary = await runGitBoundary(
-                      async () => gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId),
-                    );
-                    result = boundary.applyResult;
-                  }
+	                  {
+	                    const boundary = await runGitBoundary(
+	                      async () => gitService.cloneRepo(
+	                        slug,
+	                        data.repoUrl,
+	                        data.token,
+	                        bootstrapUserId,
+	                        tokenUserId,
+	                        codeSiteProvisioningOptions(codeSiteContext, {
+	                          evidenceRefs: ['collab:git:clone'],
+	                          processAncestry: ['collab-server:git:clone'],
+	                        }),
+	                      ),
+	                    );
+	                    result = boundary.applyResult;
+	                  }
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                   // Save metadata locally for the dashboard recent list. Callers can
                   // still opt out explicitly for short-lived internal workspaces.
