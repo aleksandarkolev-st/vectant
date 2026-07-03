@@ -21066,6 +21066,21 @@ assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.acceptedAsD
 assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.acceptedForGpuHmr, false);
 assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.gpuHmrSuccess, false);
 assert.equal(acceptedLargeMlRocm.realRocmExternalHeaderPrerequisites.canSatisfyRuntimeProof, false);
+const acceptedLargeMlClosureCoverage = new Map(
+  acceptedLargeMlRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+).get('large_arbitrary_project_runtime_closure');
+assert.equal(acceptedLargeMlClosureCoverage?.acceptedForGpuHmr, false);
+assert.equal(acceptedLargeMlClosureCoverage.gpuHmrSuccess, false);
+assert.equal(acceptedLargeMlClosureCoverage.fullRuntimeClosureRowCount, 1);
+assert.equal(acceptedLargeMlClosureCoverage.completeClosureRowCount, 0);
+assert.equal(acceptedLargeMlClosureCoverage.status, 'refused');
+assert.ok(acceptedLargeMlClosureCoverage.openGaps.includes(
+  'large_arbitrary_project_single_row_runtime_closure_required',
+));
+assert.equal(
+  acceptedLargeMlClosureCoverage.gateCoverage.strict_runtime_ledger.accepted,
+  true,
+);
 
 async function writeSameProcessOracleNegative({
   scope,

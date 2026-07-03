@@ -29699,47 +29699,34 @@ function runtimeClosureRowSignals(row = {}) {
     cold_source_intake:
       coldSourceTreeIntake.accepted === true
       || compactObject(row.realRocmSourceTreeTransport ?? row.real_rocm_source_tree_transport)
-        .accepted === true
-      || fullRuntimeAccepted,
-    runtime_adapter_or_app_hook_contract: appHookGate.accepted === true || fullRuntimeAccepted,
+        .accepted === true,
+    runtime_adapter_or_app_hook_contract: appHookGate.accepted === true,
     artifact_transport:
-      fullRuntimeAccepted
-      || (
-        runtimeChain.accepted === true
+      runtimeChain.accepted === true
         && Boolean(firstText(runtimeChain.artifactHash, runtimeChain.artifact_hash))
-        && Boolean(firstText(runtimeChain.selectedLoaderTransport, runtimeChain.selected_loader_transport))
-      ),
+        && Boolean(firstText(runtimeChain.selectedLoaderTransport, runtimeChain.selected_loader_transport)),
     epoch_publication:
-      fullRuntimeAccepted
-      || (
-        runtimeChain.accepted === true
-        && Boolean(firstText(runtimeChain.epoch))
-      ),
+      runtimeChain.accepted === true
+      && Boolean(firstText(runtimeChain.epoch)),
     dispatch_trace:
-      fullRuntimeAccepted
-      || (
-        runtimeChain.accepted === true
-        && Boolean(firstText(runtimeChain.dispatchId, runtimeChain.dispatch_id))
-      ),
+      runtimeChain.accepted === true
+      && Boolean(firstText(runtimeChain.dispatchId, runtimeChain.dispatch_id)),
     host_identity:
-      fullRuntimeAccepted
-      || (
-        runtimeChain.accepted === true
-        && Boolean(firstText(runtimeChain.processId, runtimeChain.process_id))
-        && (
-          targetProcessProvenance.accepted === true
-          || sameProcessGate.accepted === true
-        )
+      runtimeChain.accepted === true
+      && Boolean(firstText(runtimeChain.processId, runtimeChain.process_id))
+      && (
+        targetProcessProvenance.accepted === true
+        || sameProcessGate.accepted === true
       ),
-    output_or_visual_oracle: outputOracle.accepted === true || fullRuntimeAccepted,
-    cpu_gpu_firewall: firewall.accepted === true || fullRuntimeAccepted,
-    same_process_runtime_oracle: sameProcessGate.accepted === true || fullRuntimeAccepted,
-    runtime_chain: runtimeChain.accepted === true || fullRuntimeAccepted,
+    output_or_visual_oracle: outputOracle.accepted === true,
+    cpu_gpu_firewall: firewall.accepted === true,
+    same_process_runtime_oracle: sameProcessGate.accepted === true,
+    runtime_chain: runtimeChain.accepted === true,
     strict_runtime_ledger: (
       runtimeProofArtifact.accepted === true
       && ledger.present === true
       && ledger.gpuHmrSuccess === true
-    ) || fullRuntimeAccepted,
+    ),
   };
   const gateObserved = {
     cold_source_intake:
@@ -29810,7 +29797,14 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     || row.proofMode === 'real_rocm_repo_validation'
   );
   const signals = closureRows.map(runtimeClosureRowSignals);
-  const acceptedClosureRows = closureRows.filter(acceptedFullRuntimeRow);
+  const completeClosureSignals = signals.filter((signal) =>
+    acceptedFullRuntimeRow(signal.row)
+    && LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES.every((gate) =>
+      signal.gateAccepted[gate.key] === true
+    )
+  );
+  const acceptedClosureRows = completeClosureSignals.map((signal) => signal.row);
+  const fullRuntimeClosureRows = closureRows.filter(acceptedFullRuntimeRow);
   const refusalClosureRows = closureRows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const gateCoverage = Object.fromEntries(LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES.map((gate) => {
     const acceptedRows = signals.filter((signal) => signal.gateAccepted[gate.key] === true);
@@ -29829,6 +29823,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
   const missingGateGaps = LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES
     .filter((gate) => gateCoverage[gate.key].accepted !== true)
     .map((gate) => gate.gap);
+  const singleRowClosureGap =
+    fullRuntimeClosureRows.length > 0 && acceptedClosureRows.length === 0
+      ? ['large_arbitrary_project_single_row_runtime_closure_required']
+      : [];
   const runtimeProfileBridgePresentCount =
     signals.filter((signal) => signal.runtimeProfileBridgePresent).length;
   const runtimeProfileBridgeAcceptedCount =
@@ -29841,7 +29839,7 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
   const status = acceptedClosureRows.length > 0
     ? 'accepted'
-    : refusalClosureRows.length > 0
+    : fullRuntimeClosureRows.length > 0 || refusalClosureRows.length > 0
       ? 'refused'
       : closureRows.length > 0
         ? 'candidate_only'
@@ -29852,7 +29850,7 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     status,
     rows: closureRows,
     openGaps: closureRows.length > 0
-      ? missingGateGaps
+      ? [...missingGateGaps, ...singleRowClosureGap]
       : ['large_arbitrary_project_runtime_closure_rows_required'],
     schemaVersion: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION,
     schema_version: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION,
@@ -29868,6 +29866,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     can_satisfy_dispatch_proof: false,
     runtimeClosureAttempted: signals.some((signal) => signal.runtimeClosureAttempted),
     runtime_closure_attempted: signals.some((signal) => signal.runtimeClosureAttempted),
+    fullRuntimeClosureRowCount: fullRuntimeClosureRows.length,
+    full_runtime_closure_row_count: fullRuntimeClosureRows.length,
+    completeClosureRowCount: acceptedClosureRows.length,
+    complete_closure_row_count: acceptedClosureRows.length,
     randomColdPathRowCount: signals.filter((signal) => signal.randomColdPath).length,
     random_cold_path_row_count: signals.filter((signal) => signal.randomColdPath).length,
     realRocmRowCount: signals.filter((signal) => signal.realRocmRepo).length,
