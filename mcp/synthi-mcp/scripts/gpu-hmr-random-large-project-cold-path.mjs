@@ -41,6 +41,14 @@ const RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
   'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success';
+const ADAPTER_CLOSURE_EXPECTATION_SCHEMA =
+  'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1';
+const ADAPTER_CLOSURE_EXPECTATION_AUTHORITY =
+  'adapter_closure_expectation_only_not_gpu_hmr_success';
+const RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE =
+  'runtime_adapter_or_app_hook_contract';
+const RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_GAP =
+  'runtime_adapter_or_app_hook_contract_missing';
 const REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS = Object.freeze([
   'artifact_transport',
   'epoch_publication',
@@ -292,6 +300,28 @@ function uniqueSortedStrings(values) {
   )].sort();
 }
 
+function firstString(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+function runtimeBoundaryHintsWithSupportClosure(raw = {}) {
+  const hints = raw && typeof raw === 'object' ? raw : {};
+  const required = uniqueSortedStrings([
+    ...(Array.isArray(hints.required) ? hints.required : []),
+    ...(Array.isArray(hints.required_stages) ? hints.required_stages : []),
+    RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE,
+  ]);
+  return {
+    ...hints,
+    required,
+    required_stages: required,
+  };
+}
+
 function bloblessGitTreeSizeListingEnabled(env = process.env) {
   return env.SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING === '1';
 }
@@ -390,8 +420,12 @@ function cleanCandidate(
     sizeSignals: candidate.sizeSignals ?? candidate.size_signals ?? {},
     buildSystemHints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
     build_system_hints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
-    runtimeBoundaryHints: candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {},
-    runtime_boundary_hints: candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {},
+    runtimeBoundaryHints: runtimeBoundaryHintsWithSupportClosure(
+      candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {},
+    ),
+    runtime_boundary_hints: runtimeBoundaryHintsWithSupportClosure(
+      candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {},
+    ),
     oracleHints: candidate.oracleHints ?? candidate.oracle_hints ?? {},
     oracle_hints: candidate.oracleHints ?? candidate.oracle_hints ?? {},
   };
@@ -1718,6 +1752,7 @@ function discoverBuildMetadata({ candidate, files, classification, contentEviden
 function runtimeRequirementsForBackend(backend) {
   const commonStages = [
     'runtime_profile_contract',
+    RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE,
     'artifact_transport',
     'same_process_loader',
     'epoch_publication',
@@ -1945,6 +1980,7 @@ function deriveRuntimeBoundaryExpectation({ candidate, classification, buildMeta
   const acceptableOracleKinds = sourceDerivedOracleKinds;
   const missingRuntimeEvidenceGaps = [
     'runtime_profile_contract_missing',
+    RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_GAP,
     'artifact_transport_unproven',
     'same_process_loader_unproven',
     'epoch_publication_unproven',
@@ -2018,6 +2054,92 @@ function deriveRuntimeBoundaryExpectation({ candidate, classification, buildMeta
     ...facet,
     expectationHash: contentHash(stableJson(facet)),
     expectation_hash: contentHash(stableJson(facet)),
+  };
+}
+
+function deriveRuntimeSupportClosureObligation({
+  candidate,
+  runtimeBoundaryExpectation,
+  runtimeProfileProofBridgeAccepted = false,
+  runtimeProfileStrictRuntimeProofAccepted = false,
+} = {}) {
+  const hints = candidate?.runtimeBoundaryHints ?? candidate?.runtime_boundary_hints ?? {};
+  const closureHint = hints.adapterClosure ?? hints.adapter_closure ?? {};
+  const possibleOutcomes = [
+    'built_in_reload',
+    'generated_adapter',
+    'api_interpose',
+    'engine_asset_reload',
+    'unsupported_requires_app_hook',
+  ];
+  const hintedOutcome = firstString(
+    closureHint.outcome,
+    closureHint.reloadMechanism,
+    closureHint.reload_mechanism,
+    closureHint.adapterOutcome,
+    closureHint.adapter_outcome,
+  );
+  const outcome = runtimeProfileProofBridgeAccepted
+    ? 'generated_adapter'
+    : possibleOutcomes.includes(hintedOutcome)
+      ? hintedOutcome
+      : 'unsupported_requires_app_hook';
+  const hintClaimsAuthority = claimsGpuHmrAuthority(closureHint);
+  const boundaryStages = uniqueSortedStrings([
+    ...(Array.isArray(runtimeBoundaryExpectation?.requiredBoundaryStages)
+      ? runtimeBoundaryExpectation.requiredBoundaryStages
+      : []),
+    ...(Array.isArray(runtimeBoundaryExpectation?.required_boundary_stages)
+      ? runtimeBoundaryExpectation.required_boundary_stages
+      : []),
+  ]);
+  const blockingGaps = runtimeProfileStrictRuntimeProofAccepted
+    ? ['runtime_support_closure_requires_matrix_runtime_chain_ingestion']
+    : runtimeProfileProofBridgeAccepted
+      ? ['runtime_support_closure_requires_strict_runtime_proof']
+      : outcome === 'unsupported_requires_app_hook'
+        ? ['runtime_support_closure_requires_app_hook']
+        : ['runtime_support_closure_requires_runtime_boundary_proof'];
+  const failedGates = uniqueSortedStrings([
+    hintClaimsAuthority ? 'runtime_support_closure_hint_claimed_gpu_hmr_authority' : null,
+  ]);
+  const facet = {
+    schemaVersion: ADAPTER_CLOSURE_EXPECTATION_SCHEMA,
+    schema_version: ADAPTER_CLOSURE_EXPECTATION_SCHEMA,
+    proofAuthority: ADAPTER_CLOSURE_EXPECTATION_AUTHORITY,
+    proof_authority: ADAPTER_CLOSURE_EXPECTATION_AUTHORITY,
+    accepted: false,
+    acceptedAsSupportEvidence: failedGates.length === 0,
+    accepted_as_support_evidence: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    required: true,
+    outcome,
+    possibleOutcomes,
+    possible_outcomes: possibleOutcomes,
+    runtimeProfileProofBridgeAccepted,
+    runtime_profile_proof_bridge_accepted: runtimeProfileProofBridgeAccepted,
+    runtimeProfileStrictRuntimeProofAccepted,
+    runtime_profile_strict_runtime_proof_accepted: runtimeProfileStrictRuntimeProofAccepted,
+    candidateHintsUsedForAcceptance: false,
+    candidate_hints_used_for_acceptance: false,
+    requiredBoundaryStages: boundaryStages,
+    required_boundary_stages: boundaryStages,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+  return {
+    ...facet,
+    obligationHash: contentHash(stableJson(facet)),
+    obligation_hash: contentHash(stableJson(facet)),
   };
 }
 
@@ -2845,6 +2967,10 @@ async function buildAcceptedSourceIntakeFacet({
     classification,
     buildMetadataDiscovery,
   });
+  const runtimeSupportClosureObligation = deriveRuntimeSupportClosureObligation({
+    candidate,
+    runtimeBoundaryExpectation,
+  });
   const runtimeBoundaryEventManifestTemplate = deriveRuntimeBoundaryEventManifestTemplate({
     candidate,
     runtimeBoundaryExpectation,
@@ -2890,6 +3016,10 @@ async function buildAcceptedSourceIntakeFacet({
       runtimeBoundaryExpectation.acceptedAsRuntimeBoundaryExpectation === true,
     runtime_boundary_expectation_accepted:
       runtimeBoundaryExpectation.acceptedAsRuntimeBoundaryExpectation === true,
+    runtimeSupportClosureObligation,
+    runtime_support_closure_obligation: runtimeSupportClosureObligation,
+    runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
+    runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
     runtimeBoundaryEventManifestTemplate,
     runtime_boundary_event_manifest_template: runtimeBoundaryEventManifestTemplate,
     runtimeBoundaryEventManifestTemplateAccepted:
@@ -3540,6 +3670,21 @@ async function runSelectedCandidate(
     const runtimeProfileStrictRuntimeProofAccepted =
       runtimeProfileProofBridge?.strictRuntimeProofAccepted === true
       || runtimeProfileProofBridge?.strict_runtime_proof_accepted === true;
+    const runtimeSupportClosureObligation = deriveRuntimeSupportClosureObligation({
+      candidate,
+      runtimeBoundaryExpectation: sourceIntakeEvidence?.runtimeBoundaryExpectation
+        ?? sourceIntakeEvidence?.runtime_boundary_expectation,
+      runtimeProfileProofBridgeAccepted,
+      runtimeProfileStrictRuntimeProofAccepted,
+    });
+    const runtimeSupportClosureGaps = uniqueSortedStrings([
+      ...(Array.isArray(runtimeSupportClosureObligation.blockingGaps)
+        ? runtimeSupportClosureObligation.blockingGaps
+        : []),
+      ...(Array.isArray(runtimeSupportClosureObligation.blocking_gaps)
+        ? runtimeSupportClosureObligation.blocking_gaps
+        : []),
+    ]);
     const buildMetadataGap = buildMetadataContentAccepted
       ? 'semantic_build_metadata_execution_missing'
       : (buildMetadataDiscoveryAccepted
@@ -3559,6 +3704,7 @@ async function runSelectedCandidate(
       ? ['cold_path_runtime_profile_proof_requires_matrix_ingestion']
       : [
         runtimeProfileProofBridgeAccepted ? null : 'runtime_profile_contract_missing',
+        ...runtimeSupportClosureGaps,
         'same_process_loader_unproven',
         'epoch_publication_unproven',
         'dispatch_trace_unproven',
@@ -3628,6 +3774,10 @@ async function runSelectedCandidate(
         sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate ?? null,
       runtime_boundary_event_manifest_template:
         sourceIntakeEvidence?.runtime_boundary_event_manifest_template ?? null,
+      runtimeSupportClosureObligation,
+      runtime_support_closure_obligation: runtimeSupportClosureObligation,
+      runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
+      runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
       runtimeProfileProofBridgeAccepted,
       runtime_profile_proof_bridge_accepted: runtimeProfileProofBridgeAccepted,
       runtimeProfileStrictRuntimeProofAccepted,
@@ -4345,6 +4495,10 @@ async function selfCheck() {
     classification: listingClassification,
     buildMetadataDiscovery: buildDiscovery,
   });
+  const runtimeSupportClosure = deriveRuntimeSupportClosureObligation({
+    candidate: candidates[0],
+    runtimeBoundaryExpectation: runtimeExpectation,
+  });
   const runtimeEventTemplate = deriveRuntimeBoundaryEventManifestTemplate({
     candidate: candidates[0],
     runtimeBoundaryExpectation: runtimeExpectation,
@@ -4413,9 +4567,17 @@ async function selfCheck() {
     || buildDiscovery.buildMetadataContentAccepted !== false
     || runtimeExpectation.acceptedAsRuntimeBoundaryExpectation !== true
     || runtimeExpectation.gpuHmrSuccess !== false
+    || !runtimeExpectation.requiredBoundaryStages.includes(RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE)
+    || !runtimeExpectation.missingRuntimeEvidenceGaps.includes(RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_GAP)
     || !runtimeExpectation.requiredBoundaryStages.includes('output_oracle')
     || !runtimeExpectation.expectedRuntimeEvents.includes('hip_kernel_dispatch')
     || !runtimeExpectation.expectedRuntimeEvents.includes('command_buffer_or_dispatch_bind')
+    || runtimeSupportClosure.proofAuthority !== ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
+    || runtimeSupportClosure.acceptedForGpuHmr !== false
+    || runtimeSupportClosure.gpuHmrSuccess !== false
+    || runtimeSupportClosure.canSatisfyRuntimeProof !== false
+    || !runtimeSupportClosure.possibleOutcomes.includes('unsupported_requires_app_hook')
+    || !runtimeSupportClosure.blockingGaps.includes('runtime_support_closure_requires_app_hook')
     || runtimeEventTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate !== true
     || runtimeEventTemplate.gpuHmrSuccess !== false
     || runtimeEventTemplate.canSatisfyRuntimeProof !== false
@@ -4584,7 +4746,13 @@ async function selfCheck() {
     unprofiledResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || unprofiledResult.runnerAttempted !== false
     || !unprofiledResult.blockingGaps?.includes('runtime_profile_contract_missing')
+    || !unprofiledResult.blockingGaps?.includes('runtime_support_closure_requires_app_hook')
     || !unprofiledResult.blockingGaps?.includes('strict_runtime_ledger_missing')
+    || unprofiledResult.runtimeSupportClosureObligation?.proofAuthority
+      !== ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
+    || unprofiledResult.runtimeSupportClosureObligation?.acceptedForGpuHmr !== false
+    || unprofiledResult.runtimeSupportClosureObligation?.gpuHmrSuccess !== false
+    || unprofiledResult.runtimeSupportClosureObligation?.canSatisfyRuntimeProof !== false
     || unprofiledResult.acceptedForGpuHmr !== false
     || unprofiledResult.gpuHmrSuccess !== false
   ) {
@@ -4617,6 +4785,8 @@ async function selfCheck() {
     || directResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || directResult.sourceTreeIntakeAccepted !== false
     || !directResult.blockingGaps?.includes('source_tree_intake_missing')
+    || !directResult.blockingGaps?.includes('runtime_support_closure_requires_app_hook')
+    || directResult.runtimeSupportClosureOutcome !== 'unsupported_requires_app_hook'
     || directResult.acceptedForGpuHmr !== false
     || directResult.gpuHmrSuccess !== false
   ) {
@@ -4701,6 +4871,7 @@ async function selfCheck() {
     || localResult.gpuSourceFileCount !== 1
     || localResult.runtimeBoundaryExpectationAccepted !== true
     || localResult.runtimeBoundaryEventManifestTemplateAccepted !== true
+    || localResult.runtimeSupportClosureOutcome !== 'unsupported_requires_app_hook'
     || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
     || localResult.sourceIntakeEvidence?.sourceRelevantFileCount !== 1
     || localResult.sourceIntakeEvidence?.sourceOrBuildRelevantFileCount !== 2
@@ -4719,7 +4890,13 @@ async function selfCheck() {
     || localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.gpuSourceSignalCount !== 1
     || !localResult.sourceIntakeEvidence?.buildMetadataDiscovery?.detectedBuildSystems?.includes('cmake')
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.requiredBoundaryStages?.includes('same_process_loader')
+    || !localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.requiredBoundaryStages
+      ?.includes(RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE)
     || localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.gpuHmrSuccess !== false
+    || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.proofAuthority
+      !== ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
+    || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.gpuHmrSuccess !== false
+    || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.canSatisfyRuntimeProof !== false
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.gpuHmrSuccess !== false
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.canSatisfyRuntimeProof !== false
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.requiredEventKinds?.includes('dispatch_trace')
