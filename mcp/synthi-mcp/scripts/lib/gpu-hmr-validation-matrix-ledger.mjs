@@ -7247,6 +7247,7 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const visualArtifactHashSet = new Set(visualArtifactHashesForRow(row));
   const ledgerRecord = ledgerRecordForRow(row);
   const profileId = firstText(supplied.profileId, supplied.profile_id, supplied.id);
+  const source = firstText(supplied.source, supplied.evidenceSource, supplied.evidence_source);
   const profileClass = firstText(
     supplied.profileClass,
     supplied.profile_class,
@@ -7276,9 +7277,25 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     ledgerRecord.projectId,
     ledgerRecord.project_id,
   ]);
+  const rowProfileId = firstText(
+    row.profileId,
+    row.profile_id,
+    row.validationProfileId,
+    row.validation_profile_id,
+  );
+  const sourceFirst = compactObject(row.sourceFirstIngestion ?? row.source_first_ingestion);
+  const directSourceProfileIdBoundToRow =
+    sourceFirst.accepted === true
+    && source === 'agent_split_direct_source_runtime_visual_proof'
+    && Boolean(profileId)
+    && Boolean(rowProfileId)
+    && profileId === rowProfileId;
   const profileIdBoundToRow =
     Boolean(profileId)
-    && rowRuntimeIdentities.some((identity) => identity === profileId);
+    && (
+      rowRuntimeIdentities.some((identity) => identity === profileId)
+      || directSourceProfileIdBoundToRow
+    );
   const evidenceRefsBound = evidenceRefs.filter((ref) =>
     evidenceRefSet.has(ref)
     || visualArtifactHashSet.has(ref)
@@ -7335,6 +7352,8 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     accepted: failedGates.length === 0,
     profileIdBoundToRow,
     profile_id_bound_to_row: profileIdBoundToRow,
+    directSourceProfileIdBoundToRow,
+    direct_source_profile_id_bound_to_row: directSourceProfileIdBoundToRow,
     proofIdsBoundToRow,
     proof_ids_bound_to_row: proofIdsBoundToRow,
     evidenceRefsBoundToRow,
