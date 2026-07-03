@@ -26272,19 +26272,9 @@ function fullRuntimeGeneralityBreakdown(rows, broadProof = {}) {
 
 function rowHasAcceptedComputeEvidence(row) {
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
-  const computeCardEvidence = compactObject(row.computeCardEvidence ?? row.compute_card_evidence);
-  const visual = compactObject(row.visual);
-  const computeCardOnlyProofAccepted =
-    firstBool(row.computeCardOnlyProofAccepted, row.compute_card_only_proof_accepted) === true
-    && firstBool(computeCardEvidence.accepted) === true
-    && firstText(visual.evidenceKind, visual.evidence_kind)
-      === 'compute_card_not_runtime_visual_oracle';
-  return (
-    firstBool(outputOracle.accepted) === true
+  return firstBool(outputOracle.accepted) === true
     && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
-      === 'compute_oracle'
-  )
-    || computeCardOnlyProofAccepted;
+      === 'compute_oracle';
 }
 
 function rowHasAcceptedVisualOutputOracle(row) {
