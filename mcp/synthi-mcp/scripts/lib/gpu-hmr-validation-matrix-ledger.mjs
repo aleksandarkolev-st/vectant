@@ -28718,6 +28718,83 @@ function rowHasAcceptedVisualEvidence(row) {
       === 'visual_oracle';
 }
 
+function webgpuRuntimeResourceCount(trace = {}, ...keys) {
+  const object = compactObject(trace);
+  for (const key of keys) {
+    const value = finiteNumber(object[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function rowHasAcceptedNativeWebGpuRuntimeEvidence(row = {}) {
+  const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
+  const nativeEvidenceObjects = nativeRuntimeApiEvidenceObjects(row, runtimeProofArtifact)
+    .filter((evidence) => {
+      const backend = firstText(evidence.backend, evidence.backendFamily, evidence.backend_family);
+      return !backend || String(backend).toLowerCase().includes('webgpu');
+    });
+  const nativeApiAccepted = nativeEvidenceObjects.some(nativeRuntimeApiEvidenceAccepted);
+  const nativeTrace = nativeRuntimeTraceEvidenceFacet(row);
+  return nativeApiAccepted
+    || (
+      nativeTrace.accepted === true
+      && nativeTrace.loader === true
+      && nativeTrace.dispatch === true
+      && nativeTrace.output === true
+    );
+}
+
+function webgpuRuntimeVisualCoverageAccepted(
+  row,
+  {
+    supportedPipelineScope = null,
+    requireEmptyResources = false,
+    requireProfiledResources = false,
+  } = {},
+) {
+  if (row.backend !== 'webgpu') return false;
+  if (row.proofMode === 'webgpu_wgsl_runtime_compute') return false;
+  if (!rowHasAcceptedVisualOutputOracle(row)) return false;
+  const declaredScopeEvidence = compactObject(row.declaredScopeEvidence ?? row.declared_scope_evidence);
+  if (declaredScopeEvidence.accepted !== true) return false;
+  if (supportedPipelineScope && row.supportedPipelineScope !== supportedPipelineScope) return false;
+  if (firstBool(
+    row.runtimeVisualLedgerBindingAccepted,
+    row.runtime_visual_ledger_binding_accepted,
+    row.ledgerVisualArtifactBindingAccepted,
+    row.ledger_visual_artifact_binding_accepted,
+  ) !== true) {
+    return false;
+  }
+  if (!rowHasAcceptedNativeWebGpuRuntimeEvidence(row)) return false;
+  const runtimeResourceTrace = compactObject(row.runtimeResourceTrace ?? row.runtime_resource_trace);
+  if (nativeRuntimeEvidenceClaimsAuthority(runtimeResourceTrace)) return false;
+  if (!requireEmptyResources && !requireProfiledResources) return true;
+  const resourceStateHash = normalizeSha256(firstText(
+    runtimeResourceTrace.resourceStateHash,
+    runtimeResourceTrace.resource_state_hash,
+  ));
+  if (!contentAddressedSha256(resourceStateHash)) return false;
+  const bindGroupCount = webgpuRuntimeResourceCount(
+    runtimeResourceTrace,
+    'bindGroupCount',
+    'bind_group_count',
+  );
+  const vertexBufferCount = webgpuRuntimeResourceCount(
+    runtimeResourceTrace,
+    'vertexBufferCount',
+    'vertex_buffer_count',
+  );
+  if (requireEmptyResources) {
+    return bindGroupCount === 0 && vertexBufferCount === 0;
+  }
+  return bindGroupCount !== null
+    && bindGroupCount > 0
+    && vertexBufferCount !== null
+    && vertexBufferCount > 0;
+}
+
 function rowHasAcceptedExternalProjectContract(row, options = {}) {
   const contract = compactObject(row.externalProjectContract ?? row.external_project_contract);
   if (contract.accepted !== true) return false;
@@ -29987,9 +30064,7 @@ function planCoverage(rows, context = {}) {
     && row.runtimeProbeInstrumentation?.accepted === true
   );
   const webgpuRuntimeRows = acceptedRows(rows, (row) =>
-    row.backend === 'webgpu'
-    && rowHasAcceptedVisualEvidence(row)
-    && row.proofMode !== 'webgpu_wgsl_runtime_compute'
+    webgpuRuntimeVisualCoverageAccepted(row)
   );
   const webgpuComputeRows = acceptedRows(rows, (row) =>
     row.backend === 'webgpu'
@@ -29998,17 +30073,16 @@ function planCoverage(rows, context = {}) {
     && row.outputOracleFacet?.accepted === true
   );
   const webgpuEmptyLayoutRows = acceptedRows(rows, (row) =>
-    row.backend === 'webgpu'
-    && row.supportedPipelineScope === 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list'
-    && row.declaredScopeEvidence?.accepted === true
+    webgpuRuntimeVisualCoverageAccepted(row, {
+      supportedPipelineScope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+      requireEmptyResources: true,
+    })
   );
   const webgpuProfiledLayoutRows = acceptedRows(rows, (row) =>
-    row.backend === 'webgpu'
-    && row.supportedPipelineScope === 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list'
-    && row.declaredScopeEvidence?.accepted === true
-    && row.runtimeResourceTrace?.resourceStateHash
-    && row.runtimeResourceTrace?.bindGroupCount > 0
-    && row.runtimeResourceTrace?.vertexBufferCount > 0
+    webgpuRuntimeVisualCoverageAccepted(row, {
+      supportedPipelineScope: 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list',
+      requireProfiledResources: true,
+    })
   );
   const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
   const externalVisualRows = visualProfileRows(rows, (row) =>

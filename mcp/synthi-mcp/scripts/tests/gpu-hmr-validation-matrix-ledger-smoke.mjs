@@ -17297,6 +17297,97 @@ assert.equal(coverageById.get('large_real_rocm_repo:real-rocm-second-lib')?.stat
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
+
+function webgpuProfiledLayoutCoverageRow({ targetId, oracle, proofMode }) {
+  const row = acceptedBroadReadinessCandidate({
+    targetId,
+    backend: 'webgpu',
+    acceptanceScope: 'webgpu_declared_pipeline_visual',
+    proofMode,
+    oracle,
+    updatedAt: '2026-06-30T21:10:00.000Z',
+  });
+  row.supportedPipelineScope =
+    'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list';
+  row.supported_pipeline_scope = row.supportedPipelineScope;
+  row.declaredScopeEvidence = {
+    accepted: true,
+    scope: row.supportedPipelineScope,
+    scopedClaimBoundaryAccepted: true,
+    scoped_claim_boundary_accepted: true,
+    failedGates: [],
+    failed_gates: [],
+  };
+  row.declared_scope_evidence = row.declaredScopeEvidence;
+  row.runtimeResourceTrace = {
+    backend: 'webgpu',
+    acceptedAsRuntimeEvidence: true,
+    accepted_as_runtime_evidence: true,
+    resourceStateHash: hashValue(`webgpu-resource-state:${targetId}`),
+    resource_state_hash: hashValue(`webgpu-resource-state:${targetId}`),
+    bindGroupCount: 2,
+    bind_group_count: 2,
+    vertexBufferCount: 1,
+    vertex_buffer_count: 1,
+  };
+  row.runtime_resource_trace = row.runtimeResourceTrace;
+  row.nativeWebGpuApiEvidence = {
+    backend: 'webgpu',
+    accepted: true,
+    acceptedAsRuntimeEvidence: true,
+    accepted_as_runtime_evidence: true,
+    counts: {
+      createShaderModule: 1,
+      createRenderPipeline: 1,
+      queueSubmit: 1,
+      captureFrame: 1,
+    },
+    required: ['createShaderModule', 'createRenderPipeline', 'queueSubmit', 'captureFrame'],
+  };
+  row.native_webgpu_api_evidence = row.nativeWebGpuApiEvidence;
+  row.runtimeVisualLedgerBindingAccepted = oracle === 'visual';
+  row.runtime_visual_ledger_binding_accepted = row.runtimeVisualLedgerBindingAccepted;
+  row.ledgerVisualArtifactBindingAccepted = oracle === 'visual';
+  row.ledger_visual_artifact_binding_accepted = row.ledgerVisualArtifactBindingAccepted;
+  return withQueryRecomputedRowId(row);
+}
+
+const webgpuProfiledVisualCoverageQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    webgpuProfiledLayoutCoverageRow({
+      targetId: 'webgpu-profiled-layout-visual-coverage',
+      oracle: 'visual',
+      proofMode: 'webgpu_wgsl_runtime_visual',
+    }),
+  ],
+});
+const webgpuProfiledVisualCoverage = new Map(
+  webgpuProfiledVisualCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(webgpuProfiledVisualCoverage.get('webgpu_scoped_runtime_visual')?.status, 'accepted');
+assert.equal(
+  webgpuProfiledVisualCoverage.get('webgpu_profiled_layout_runtime_visual')?.status,
+  'accepted',
+);
+
+const webgpuProfiledComputeOnlyCoverageQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    webgpuProfiledLayoutCoverageRow({
+      targetId: 'webgpu-profiled-layout-compute-only',
+      oracle: 'compute',
+      proofMode: 'webgpu_wgsl_runtime_compute',
+    }),
+  ],
+});
+const webgpuProfiledComputeOnlyCoverage = new Map(
+  webgpuProfiledComputeOnlyCoverageQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(
+  webgpuProfiledComputeOnlyCoverage.get('webgpu_profiled_layout_runtime_visual')?.status,
+  'missing',
+);
 assert.equal(coverageById.get('webgpu_compute_runtime_readback')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_runtime_preflight')?.status, 'preflight_only');
 assert.ok(coverageById.get('webgpu_runtime_preflight')?.openGaps.includes(
