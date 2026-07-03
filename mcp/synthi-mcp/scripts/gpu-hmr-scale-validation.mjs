@@ -1794,7 +1794,11 @@ constexpr int kValue = ${i};
   return {
     files,
     relevantFiles: files.filter((f) => f.relevant),
+    expectedExecutableTargetName: codemodelTargets[0]?.name ?? null,
+    expected_executable_target_name: codemodelTargets[0]?.name ?? null,
     primaryPath: 'src/app/main.cpp',
+    publicGpuApiHeaderPath: 'src/gpu/particle_api.hpp',
+    public_gpu_api_header_path: 'src/gpu/particle_api.hpp',
     devicePath: `src/gpu/particle_kernels.${deviceExt}`,
     templateHeaderPath: useTemplateFixture ? 'src/gpu/particle_template_math.hpp' : null,
   };
@@ -2342,6 +2346,13 @@ function cleanRel(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
 }
 
+function relListIncludes(values, expectedRelPath) {
+  const expected = cleanRel(expectedRelPath);
+  return Boolean(expected) && Array.isArray(values) && values.some((value) =>
+    cleanRel(value) === expected
+  );
+}
+
 function manifestRolePaths(manifest, vendor) {
   const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
     ? manifest.module_files
@@ -2521,15 +2532,30 @@ function validateProdRunReportContract(split, project, vendor, arch) {
       `targets=${cmakeFileApi.targetCount} method=${targetResolution.method}`,
     );
   }
-  if (targetResolution.selectedTarget?.name !== 'particle_field') {
-    throw new Error(`unexpected selected CMake target: ${targetResolution.selectedTarget?.name ?? 'missing'}`);
+  const expectedTargetName =
+    project.expectedExecutableTargetName
+    ?? project.expected_executable_target_name
+    ?? project.targetName
+    ?? project.target_name
+    ?? null;
+  if (!expectedTargetName) {
+    throw new Error('project descriptor missing expected executable target name');
   }
-  if (!targetResolution.selectedTarget?.sourceFiles?.includes(project.primaryPath)) {
+  if (targetResolution.selectedTarget?.name !== expectedTargetName) {
+    throw new Error(
+      `selected CMake target does not match project descriptor: `
+      + `${targetResolution.selectedTarget?.name ?? 'missing'} !== ${expectedTargetName}`,
+    );
+  }
+  if (!relListIncludes(targetResolution.selectedTarget?.sourceFiles, project.primaryPath)) {
     throw new Error(`selected CMake target does not include ${project.primaryPath}`);
   }
   const selectedTarget = reportDoc.selectedTarget || {};
-  if (selectedTarget.targetName !== 'particle_field') {
-    throw new Error(`run report selectedTarget not promoted from CMake File API: ${JSON.stringify(selectedTarget).slice(0, 300)}`);
+  if (selectedTarget.targetName !== expectedTargetName) {
+    throw new Error(
+      `run report selectedTarget does not match project descriptor target: `
+      + `${JSON.stringify(selectedTarget).slice(0, 300)}`,
+    );
   }
   const headerGraph = reportDoc.affectedHeaderGraph;
   if (!headerGraph || headerGraph.schemaVersion !== 'synthi.gpu.device_include_graph.v1') {
@@ -2538,12 +2564,22 @@ function validateProdRunReportContract(split, project, vendor, arch) {
   if (headerGraph.status !== 'bounded') {
     throw new Error(`device include graph is not bounded: ${JSON.stringify(headerGraph).slice(0, 500)}`);
   }
-  if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_api.hpp')) {
-    throw new Error(`device include graph missing reachable particle_api.hpp: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+  const publicGpuApiHeaderPath =
+    project.publicGpuApiHeaderPath
+    ?? project.public_gpu_api_header_path
+    ?? null;
+  if (!publicGpuApiHeaderPath) {
+    throw new Error('project descriptor missing public GPU API header path');
+  }
+  if (!relListIncludes(headerGraph.reachableHeaders, publicGpuApiHeaderPath)) {
+    throw new Error(
+      `device include graph missing reachable public GPU API header ${publicGpuApiHeaderPath}: `
+      + `${JSON.stringify(headerGraph).slice(0, 500)}`,
+    );
   }
   if (CFG.templateEvidenceMode === 'fresh') {
-    if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_template_math.hpp')) {
-      throw new Error(`device include graph missing reachable template header: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+    if (project.templateHeaderPath && !relListIncludes(headerGraph.reachableHeaders, project.templateHeaderPath)) {
+      throw new Error(`device include graph missing reachable template header ${project.templateHeaderPath}: ${JSON.stringify(headerGraph).slice(0, 500)}`);
     }
     if (reportDoc.templateEvidenceStatus !== 'fresh') {
       throw new Error(`fresh template evidence was not accepted: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
@@ -2572,8 +2608,8 @@ function validateProdRunReportContract(split, project, vendor, arch) {
     const expectedReason = CFG.templateEvidenceMode === 'stale'
       ? 'template_evidence_stale'
       : 'template_evidence_missing';
-    if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_template_math.hpp')) {
-      throw new Error(`device include graph missing reachable template header: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+    if (project.templateHeaderPath && !relListIncludes(headerGraph.reachableHeaders, project.templateHeaderPath)) {
+      throw new Error(`device include graph missing reachable template header ${project.templateHeaderPath}: ${JSON.stringify(headerGraph).slice(0, 500)}`);
     }
     if (reportDoc.templateEvidenceStatus !== expectedStatus) {
       throw new Error(`unexpected templateEvidenceStatus: ${reportDoc.templateEvidenceStatus ?? 'missing'} !== ${expectedStatus}`);
