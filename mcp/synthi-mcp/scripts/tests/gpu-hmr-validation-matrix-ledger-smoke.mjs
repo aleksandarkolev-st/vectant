@@ -13952,6 +13952,86 @@ assert.ok(
   broadReadinessWithNewerWeakAttemptLedger.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('latest_attempt_unselected_by_priority_selection'),
 );
+const relabeledSourceFirstSourceHash = hashValue('source-first-relabel-replay-source');
+const relabeledSourceFirstInitialFiles = [{
+  path: 'src/main.cpp',
+  contentHash: relabeledSourceFirstSourceHash,
+  content_hash: relabeledSourceFirstSourceHash,
+  byteLength: 8192,
+  byte_length: 8192,
+}];
+const relabeledSourceFirstAcceptedAttempt = withSourceFirstWorkspaceSourceProvenance(
+  acceptedBroadReadinessCandidate({
+    targetId: 'source-first-relabel-original-target',
+    backend: 'hip',
+    acceptanceScope: 'rocm_hip_declared_runtime_profile',
+    oracle: 'visual',
+    updatedAt: '2026-06-30T21:00:00.000Z',
+  }),
+  'user_source_files',
+  'C:/external-user-workspaces/source-first-relabel-original',
+  {
+    sourceHash: relabeledSourceFirstSourceHash,
+    initialFiles: relabeledSourceFirstInitialFiles,
+  },
+);
+const relabeledSourceFirstNewerWeakAttempt = withQueryRecomputedRowId((() => {
+  const row = withSourceFirstWorkspaceSourceProvenance(
+    acceptedBroadReadinessCandidate({
+      targetId: 'source-first-relabel-alias-target',
+      backend: 'hip',
+      acceptanceScope: 'rocm_hip_declared_runtime_profile',
+      oracle: 'visual',
+      updatedAt: '2999-01-03T00:00:00.000Z',
+    }),
+    'user_source_files',
+    'C:/external-user-workspaces/source-first-relabel-alias',
+    {
+      sourceHash: relabeledSourceFirstSourceHash,
+      initialFiles: relabeledSourceFirstInitialFiles,
+    },
+  );
+  row.matrixOutcome = 'unproven';
+  row.matrix_outcome = 'unproven';
+  row.acceptedForGpuHmr = false;
+  row.accepted_for_gpu_hmr = false;
+  row.gpuHmrSuccess = false;
+  row.gpu_hmr_success = false;
+  row.proofChainAccepted = false;
+  row.proof_chain_accepted = false;
+  row.reasons = ['source_first_relabel_newer_attempt_missing_runtime_proof'];
+  row.openGaps = ['source_first_relabel_newer_attempt_missing_runtime_proof'];
+  row.open_gaps = row.openGaps;
+  return row;
+})());
+const sourceFirstRelabelReplayLedger = buildGpuHmrValidationMatrixLedger([
+  relabeledSourceFirstAcceptedAttempt,
+  relabeledSourceFirstNewerWeakAttempt,
+  ...broadReadinessRows.slice(1),
+  ...broadReadinessRandomColdRows,
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(sourceFirstRelabelReplayLedger.query.accepted, true);
+assert.equal(
+  sourceFirstRelabelReplayLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  sourceFirstRelabelReplayLedger.summary.broadLibraryAgnosticReadiness
+    .latestAcceptedFullRuntimeUnselectedAttemptCount,
+  1,
+);
+assert.ok(
+  sourceFirstRelabelReplayLedger.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('latest_attempt_unselected_by_priority_selection'),
+);
+assert.ok(sourceFirstRelabelReplayLedger.attemptHistory.attempts.every((attempt) =>
+  !String(attempt.attemptKey ?? attempt.attempt_key).includes('source-first-relabel-original-target')
+));
+assert.ok(sourceFirstRelabelReplayLedger.attemptHistory.attempts.every((attempt) =>
+  !String(attempt.attemptKey ?? attempt.attempt_key).includes('source-first-relabel-alias-target')
+));
 const broadReadinessRowsWithNewerPendingColdAttempt =
   JSON.parse(JSON.stringify(broadReadinessRowsWithRandomCold));
 const pendingColdSelectedIndex = broadReadinessRows.length;

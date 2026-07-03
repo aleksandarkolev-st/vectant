@@ -5766,8 +5766,7 @@ function sourceFirstVisualCanonicalTargetKey(row = {}) {
   if (!SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES.includes(sourceAuthority)) return null;
   const sourceIdentityHash = sourceFirstVisualSourceIdentityHash(row);
   if (!contentAddressedSha256(sourceIdentityHash)) return null;
-  const targetId = firstText(row.targetId, row.profileId) ?? 'unknown';
-  return `source-first-visual:${sourceIdentityHash}:${targetId}`;
+  return `source-first-visual:${sourceIdentityHash}`;
 }
 
 function randomColdPathCanonicalTargetKey(row = {}) {
@@ -5790,10 +5789,17 @@ function rowAttemptKey(row) {
   const runModeKey = Object.keys(runMode).length > 0
     ? firstText(runMode.metricScope, runMode.metric_scope) ?? 'unknown'
     : null;
+  const canonicalTarget = canonicalTargetKey(row);
+  const canonicalProfile = (
+    randomColdPathCanonicalTargetKey(row)
+    || sourceFirstVisualCanonicalTargetKey(row)
+  )
+    ? 'evidence_identity_not_profile_label'
+    : row.profileId ?? 'unknown';
   return [
     row.backend ?? 'unknown',
-    canonicalTargetKey(row),
-    row.profileId ?? 'unknown',
+    canonicalTarget,
+    canonicalProfile,
     row.proofMode ?? 'unknown',
     runModeKey,
     row.evidenceKind ?? 'unknown',
