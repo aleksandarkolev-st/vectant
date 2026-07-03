@@ -1549,10 +1549,15 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_evidence_path: "docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json",
     artifact_requirements: {
       require_deployed_hosted_runtime_url: true,
+      require_runtime_issued_authorization_context: true,
+      require_runtime_response_fingerprints: true,
       require_deployed_probe_endpoint: true,
+      require_probe_http_response_fingerprints: true,
       require_production_tenant_rbac: true,
       require_external_control_plane_store: true,
       require_state_reconstruction: true,
+      require_store_append_and_readback_fingerprints: true,
+      require_store_readback_url: true,
       require_external_or_managed_signing: true,
       require_unauthorized_bypass_denied: true,
       require_scoped_broker_grant: true,
@@ -1560,6 +1565,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_revocation_denies_dispatch: true,
       require_narrative_only_broad_access_denied: true,
       require_no_loopback_or_demo_transport: true,
+      require_no_artifact_write_on_failed_production_dependency: true,
     },
     requires_env: [...THERAPEUTIC_TOMOGRAPHY_PRODUCTION_REQUIRED_ENV],
     env_value_requirements: [
@@ -4296,6 +4302,11 @@ export async function runSelfCheck({ outDir }) {
   assert.equal(tomographyGate?.package_script, "proof:dojo:therapeutic-tomography:release-evidence");
   assert.deepEqual(tomographyGate?.requires_env, THERAPEUTIC_TOMOGRAPHY_PRODUCTION_REQUIRED_ENV);
   assert.equal(tomographyGate?.artifact_requirements?.require_no_loopback_or_demo_transport, true);
+  assert.equal(tomographyGate?.artifact_requirements?.require_runtime_issued_authorization_context, true);
+  assert.equal(tomographyGate?.artifact_requirements?.require_runtime_response_fingerprints, true);
+  assert.equal(tomographyGate?.artifact_requirements?.require_probe_http_response_fingerprints, true);
+  assert.equal(tomographyGate?.artifact_requirements?.require_store_append_and_readback_fingerprints, true);
+  assert.equal(tomographyGate?.artifact_requirements?.require_no_artifact_write_on_failed_production_dependency, true);
   assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_live_chaos" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_soak_performance_self_check" && gate.tier === "T8"));
