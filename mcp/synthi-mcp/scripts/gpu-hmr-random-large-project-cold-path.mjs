@@ -21,6 +21,10 @@ const DIRECT_SOURCE_INPUT_IDENTITY_ROLE =
   'source_identity_hash_bound_to_direct_input_not_whitelist';
 const SOURCE_INTAKE_SCHEMA = 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const SOURCE_INTAKE_AUTHORITY = 'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
+const SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA =
+  'synthi.gpu_hmr.source_intake_transport_fallback.v1';
+const SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY =
+  'source_intake_transport_fallback_only_not_gpu_hmr_success';
 const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_discovery.v1';
 const BUILD_METADATA_DISCOVERY_AUTHORITY = 'build_metadata_discovery_only_not_gpu_hmr_success';
 const BUILD_METADATA_CONTENT_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_content.v1';
@@ -2473,6 +2477,123 @@ function githubTreeFailureCanUseAutomaticGitFallback(githubTree = {}) {
   return httpStatus === 429 || ((httpStatus === 403 || httpStatus === 429) && bodyTail.includes('rate limit'));
 }
 
+function directUserSourceCanUseAutomaticGitFallback(candidate = {}) {
+  const candidateSource = String(candidate.candidateSource ?? candidate.candidate_source ?? '');
+  const directInputEvidence = candidate.directInputEvidence ?? candidate.direct_input_evidence;
+  const directEvidence = directInputEvidence && typeof directInputEvidence === 'object'
+    ? directInputEvidence
+    : {};
+  return (candidateSource === 'direct_source_url_commit' || candidateSource === 'direct_local_git_repo_path')
+    && (directEvidence.acceptedAsDirectInputEvidence ?? directEvidence.accepted_as_direct_input_evidence) === true
+    && (directEvidence.proofAuthority ?? directEvidence.proof_authority) === DIRECT_SOURCE_INPUT_AUTHORITY
+    && (directEvidence.targetNameIndependent ?? directEvidence.target_name_independent) === true
+    && Array.isArray(directEvidence.projectNameWhitelist ?? directEvidence.project_name_whitelist)
+    && (directEvidence.projectNameWhitelist ?? directEvidence.project_name_whitelist).length === 0
+    && Array.isArray(directEvidence.specificTargetIdsAllowed ?? directEvidence.specific_target_ids_allowed)
+    && (directEvidence.specificTargetIdsAllowed ?? directEvidence.specific_target_ids_allowed).length === 0
+    && claimsGpuHmrAuthority(candidate) === false
+    && claimsGpuHmrAuthority(directEvidence) === false;
+}
+
+function githubTreeTruncationCanUseAutomaticGitFallback(githubTree = {}, candidate = {}) {
+  return String(githubTree?.status ?? '') === 'source_intake_github_tree_truncated'
+    && directUserSourceCanUseAutomaticGitFallback(candidate) === true;
+}
+
+function directSourceInputEvidenceHashForCandidate(candidate = {}) {
+  const directInputEvidence = candidate.directInputEvidence ?? candidate.direct_input_evidence;
+  const directEvidence = directInputEvidence && typeof directInputEvidence === 'object'
+    ? directInputEvidence
+    : {};
+  return directEvidence.evidenceHash ?? directEvidence.evidence_hash ?? null;
+}
+
+function sourceIntakeTransportFallbackEvidence({
+  candidate = {},
+  reason,
+  automatic = false,
+  automaticReason = null,
+  requiresExplicitOptIn = true,
+  recommendedTransport,
+  githubTree = null,
+  forcedByEnv = null,
+  fullTreeOptInEnv = null,
+} = {}) {
+  const candidateSource = String(candidate.candidateSource ?? candidate.candidate_source ?? '');
+  const immutableCommit = String(candidate.immutableCommit ?? candidate.immutable_commit ?? '').trim();
+  const trigger = githubTree && typeof githubTree === 'object'
+    ? {
+      status: githubTree.status ?? null,
+      reason: githubTree.reason ?? null,
+      httpStatus: githubTree.httpStatus ?? githubTree.http_status ?? null,
+      githubApiAuthentication: githubTree.githubApiAuthentication ?? githubTree.github_api_authentication ?? null,
+      bodyTail: githubTree.bodyTail ?? githubTree.body_tail ?? null,
+    }
+    : null;
+  const seed = {
+    schemaVersion: SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA,
+    reason,
+    automatic: automatic === true,
+    automaticReason,
+    requiresExplicitOptIn: requiresExplicitOptIn === true,
+    recommendedTransport,
+    candidateSource,
+    immutableCommit,
+    directSourceInputEvidenceHash: directSourceInputEvidenceHashForCandidate(candidate),
+    trigger,
+    forcedByEnv,
+    fullTreeOptInEnv,
+  };
+  const fallbackEvidenceHash = contentHash(stableJson(seed));
+  return {
+    schemaVersion: SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA,
+    schema_version: SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA,
+    proofAuthority: SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY,
+    proof_authority: SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY,
+    fallbackAuthority: SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY,
+    fallback_authority: SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsTransportFallbackEvidence: true,
+    accepted_as_transport_fallback_evidence: true,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    reason,
+    automatic: automatic === true,
+    automaticReason,
+    automatic_reason: automaticReason,
+    requiresExplicitOptIn: requiresExplicitOptIn === true,
+    requires_explicit_opt_in: requiresExplicitOptIn === true,
+    recommendedTransport,
+    recommended_transport: recommendedTransport,
+    candidateSource,
+    candidate_source: candidateSource,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    directSourceInputEvidenceHash: seed.directSourceInputEvidenceHash,
+    direct_source_input_evidence_hash: seed.directSourceInputEvidenceHash,
+    fullTreeOptInEnv,
+    full_tree_opt_in_env: fullTreeOptInEnv,
+    forcedByEnv,
+    forced_by_env: forcedByEnv,
+    trigger,
+    fallbackEvidenceHash,
+    fallback_evidence_hash: fallbackEvidenceHash,
+    githubTree,
+    github_tree: githubTree,
+  };
+}
+
 async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   if (!candidate.localRepoPath) return { attempted: false };
   const repoPath = path.resolve(candidate.localRepoPath);
@@ -2745,6 +2866,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   const liveGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK === '1';
   const forceGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK === '1';
   const fullGitFallbackEnabled = fullGitSourceTreeFallbackEnabled();
+  const directSourceAutomaticGitFallbackEnabled = directUserSourceCanUseAutomaticGitFallback(candidate);
   const base = {
     schemaVersion: SOURCE_INTAKE_SCHEMA,
     schema_version: SOURCE_INTAKE_SCHEMA,
@@ -2766,6 +2888,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     local_path: relativeLocalPath,
     gitFallbackForced: forceGitFallbackEnabled,
     git_fallback_forced: forceGitFallbackEnabled,
+    liveGitFallbackEnabled,
+    live_git_fallback_enabled: liveGitFallbackEnabled,
+    directSourceAutomaticGitFallbackEnabled,
+    direct_source_automatic_git_fallback_enabled: directSourceAutomaticGitFallbackEnabled,
     fullGitFallbackEnabled,
     full_git_fallback_enabled: fullGitFallbackEnabled,
     startedAt,
@@ -2838,16 +2964,27 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     ? { attempted: false, skipped: true, reason: 'forced_git_fallback_for_source_tree_intake' }
     : await fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs });
   let githubTreeFallback = forceGitFallbackEnabled
-    ? {
+    ? sourceIntakeTransportFallbackEvidence({
+      candidate,
       reason: 'forced_git_fallback_for_source_tree_intake',
+      automatic: false,
+      automaticReason: 'explicit_force_git_fallback_env',
+      requiresExplicitOptIn: false,
+      recommendedTransport: fullGitFallbackEnabled
+        ? 'git_fetch_depth_1_full_tree'
+        : 'git_fetch_depth_1_blobless',
       forcedByEnv: 'SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK=1',
-      forced_by_env: 'SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK=1',
-    }
+      fullTreeOptInEnv: fullGitFallbackEnabled
+        ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1'
+        : null,
+    })
     : null;
   if (githubTree.attempted === true) {
     if (githubTree.accepted !== true) {
       if (githubTree.status === 'source_intake_github_tree_truncated') {
-        if (!liveGitFallbackEnabled) {
+        const automaticTruncationFallback =
+          githubTreeTruncationCanUseAutomaticGitFallback(githubTree, candidate);
+        if (!liveGitFallbackEnabled && !automaticTruncationFallback) {
           const gitFallbackPlan = {
             available: true,
             available_authority: 'fallback_plan_only_not_source_intake_or_gpu_hmr_success',
@@ -2872,33 +3009,39 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
             git_fallback_plan: gitFallbackPlan,
           });
         }
-        githubTreeFallback = {
-          reason: 'github_recursive_tree_truncated_falling_back_to_blobless_git_tree',
-          githubTree,
-          github_tree: githubTree,
-        };
-      } else if (githubTreeFailureCanUseAutomaticGitFallback(githubTree)) {
-        githubTreeFallback = {
-          reason: 'github_tree_rate_limited_falling_back_to_blobless_git_tree',
-          fallbackAuthority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
-          fallback_authority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
-          automatic: true,
-          automatic_reason: 'github_api_rate_limited',
+        githubTreeFallback = sourceIntakeTransportFallbackEvidence({
+          candidate,
+          reason: automaticTruncationFallback
+            ? 'github_recursive_tree_truncated_direct_source_falling_back_to_blobless_git_tree'
+            : 'github_recursive_tree_truncated_falling_back_to_blobless_git_tree',
+          automatic: automaticTruncationFallback,
+          automaticReason: automaticTruncationFallback
+            ? 'direct_user_source_github_tree_truncated'
+            : 'explicit_git_fallback_opt_in',
+          requiresExplicitOptIn: automaticTruncationFallback !== true,
           recommendedTransport: fullGitFallbackEnabled
-            ? 'git_fetch_depth_1_full_tree'
-            : 'git_fetch_depth_1_blobless',
-          recommended_transport: fullGitFallbackEnabled
             ? 'git_fetch_depth_1_full_tree'
             : 'git_fetch_depth_1_blobless',
           fullTreeOptInEnv: fullGitFallbackEnabled
             ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1'
             : null,
-          full_tree_opt_in_env: fullGitFallbackEnabled
+          githubTree,
+        });
+      } else if (githubTreeFailureCanUseAutomaticGitFallback(githubTree)) {
+        githubTreeFallback = sourceIntakeTransportFallbackEvidence({
+          candidate,
+          reason: 'github_tree_rate_limited_falling_back_to_blobless_git_tree',
+          automatic: true,
+          automaticReason: 'github_api_rate_limited',
+          recommendedTransport: fullGitFallbackEnabled
+            ? 'git_fetch_depth_1_full_tree'
+            : 'git_fetch_depth_1_blobless',
+          requiresExplicitOptIn: false,
+          fullTreeOptInEnv: fullGitFallbackEnabled
             ? 'SYNTHI_GPU_HMR_UNPROFILED_FULL_GIT_FALLBACK=1'
             : null,
           githubTree,
-          github_tree: githubTree,
-        };
+        });
       } else {
         return fail(githubTree.status, githubTree.reason, {
           githubTree,
@@ -3986,8 +4129,57 @@ async function selfCheck() {
       status: 'source_intake_github_tree_truncated',
       httpStatus: 200,
     }) !== false
+    || githubTreeTruncationCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_truncated',
+      httpStatus: 200,
+    }, directCandidate) !== true
+    || githubTreeTruncationCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_truncated',
+      httpStatus: 200,
+    }, candidates[0]) !== false
+    || githubTreeTruncationCanUseAutomaticGitFallback({
+      status: 'source_intake_github_tree_truncated',
+      httpStatus: 200,
+    }, {
+      ...directCandidate,
+      acceptedForGpuHmr: true,
+    }) !== false
+    || directUserSourceCanUseAutomaticGitFallback(spoofedDirectPool[0]) !== false
   ) {
     throw new Error('random large-project cold-path GitHub rate-limit fallback self-check failed');
+  }
+  const fallbackEvidence = sourceIntakeTransportFallbackEvidence({
+    candidate: directCandidate,
+    reason: 'self_check_direct_source_truncation',
+    automatic: true,
+    automaticReason: 'direct_user_source_github_tree_truncated',
+    requiresExplicitOptIn: false,
+    recommendedTransport: 'git_fetch_depth_1_blobless',
+    githubTree: {
+      status: 'source_intake_github_tree_truncated',
+      reason: 'github_recursive_tree_truncated',
+      httpStatus: 200,
+    },
+  });
+  if (
+    fallbackEvidence.schemaVersion !== SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA
+    || fallbackEvidence.proofAuthority !== SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY
+    || fallbackEvidence.fallbackAuthority !== SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY
+    || fallbackEvidence.acceptedForGpuHmr !== false
+    || fallbackEvidence.gpuHmrSuccess !== false
+    || fallbackEvidence.canSatisfyRuntimeProof !== false
+    || fallbackEvidence.canSatisfyDispatchProof !== false
+    || fallbackEvidence.targetNameIndependent !== true
+    || fallbackEvidence.projectNameWhitelist.length !== 0
+    || fallbackEvidence.specificTargetIdsAllowed.length !== 0
+    || fallbackEvidence.directSourceInputEvidenceHash
+      !== directCandidate.directInputEvidence?.evidenceHash
+    || fallbackEvidence.requiresExplicitOptIn !== false
+    || fallbackEvidence.automatic !== true
+    || !/^sha256:[a-f0-9]{64}$/i.test(fallbackEvidence.fallbackEvidenceHash ?? '')
+    || claimsGpuHmrAuthority(fallbackEvidence) === true
+  ) {
+    throw new Error('random large-project cold-path transport fallback evidence self-check failed');
   }
   const { manifest } = await buildManifest({
     seed: 'self-check-seed',
