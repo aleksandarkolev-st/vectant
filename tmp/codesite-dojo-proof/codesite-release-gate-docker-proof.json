@@ -1,7 +1,7 @@
 {
   "ok": true,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-03T14:20:41.741Z",
+  "generatedAt": "2026-07-03T21:57:52.092Z",
   "proofRoot": "tmp/codesite-dojo-proof",
   "slug": "codesite-mature-full-proof-20260702bc",
   "checks": [
@@ -18,6 +18,14 @@
     {
       "name": "runtimeMountBoundary",
       "assertions": 10,
+      "ok": true
+    },
+    {
+      "name": "activeTransactionAuthority",
+      "assertions": 48,
+      "commands": 17,
+      "dockerTests": 119,
+      "visualBytes": 1012000,
       "ok": true
     },
     {

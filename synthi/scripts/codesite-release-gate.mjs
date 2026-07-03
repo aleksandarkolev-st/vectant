@@ -18,6 +18,8 @@ const REQUIRED_WORKFLOW_SHOTS = [
   'codesite-full-workflow-ui-causal-replay-handover.png',
   'codesite-full-workflow-ui-causal-replay-mobile.png',
 ];
+const ACTIVE_AUTHORITY_PROOF = 'codesite-active-transaction-registry-proof.json';
+const ACTIVE_AUTHORITY_PNG = 'codesite-active-transaction-registry-proof.png';
 
 async function main(argv) {
   const options = parseArgs(argv);
@@ -82,6 +84,13 @@ async function main(argv) {
   const runtimePngPath = path.join(proofRoot, 'codesite-runtime-mount-boundary-proof.png');
   validatePng(root, runtimePngPath, failures);
   checks.push({ name: 'runtimeMountBoundary', assertions: runtimeAssertions.length, ok: runtimeAssertions.every(([, value]) => value === true) });
+
+  const activeAuthoritySummary = validateActiveAuthorityProof({
+    root,
+    proofRoot,
+    failures,
+  });
+  checks.push({ name: 'activeTransactionAuthority', ...activeAuthoritySummary });
 
   const trustedKeysPath = path.join(proofRoot, `trusted-proof-authorities-${slug}.json`);
   if (!fs.existsSync(trustedKeysPath)) failures.push(`trusted proof authorities missing: ${relative(root, trustedKeysPath)}`);
@@ -311,6 +320,62 @@ function validatePng(root, filePath, failures) {
   const height = buffer.readUInt32BE(20);
   if (!width || !height) failures.push(`${relative(root, filePath)} has empty PNG dimensions`);
   return { width, height, bytes: buffer.length };
+}
+
+function validateActiveAuthorityProof({ root, proofRoot, failures }) {
+  const proofPath = path.join(proofRoot, ACTIVE_AUTHORITY_PROOF);
+  const proof = readJson(proofPath, failures);
+  if (proof?.ok !== true) failures.push(`${relative(root, proofPath)} ok must be true`);
+  const assertions = Array.isArray(proof?.assertions) ? proof.assertions : [];
+  if (!assertions.length) failures.push(`${relative(root, proofPath)} assertions must be a non-empty array`);
+  const failedAssertions = assertions.filter((assertion) => assertion?.ok !== true);
+  for (const assertion of failedAssertions) {
+    failures.push(`${relative(root, proofPath)} active authority assertion failed: ${assertion?.name || '<unnamed>'}`);
+  }
+  const commands = Array.isArray(proof?.commands) ? proof.commands : [];
+  if (!commands.length) failures.push(`${relative(root, proofPath)} commands must be a non-empty array`);
+  const failedCommands = commands.filter((command) => Number(command?.exitCode) !== 0);
+  for (const command of failedCommands) {
+    failures.push(`${relative(root, proofPath)} active authority command failed: ${command?.name || command?.command || '<unnamed>'}`);
+  }
+  const dockerReplay = commands.find((command) => command?.name === 'dockerReplay');
+  if (!dockerReplay) {
+    failures.push(`${relative(root, proofPath)} missing dockerReplay command`);
+  } else {
+    if (Number(dockerReplay.exitCode) !== 0) {
+      failures.push(`${relative(root, proofPath)} dockerReplay exitCode must be 0`);
+    }
+    if (Number(dockerReplay.summary?.tests || 0) <= 0 || Number(dockerReplay.summary?.fail || 0) !== 0) {
+      failures.push(`${relative(root, proofPath)} dockerReplay summary must contain passing tests and zero failures`);
+    }
+  }
+  const requiredCommandNames = [
+    'activityEndpointTests',
+    'activeBoundaryTests',
+    'runtimePrepTests',
+    'gitServiceBoundaryTests',
+    'dockerReplay',
+  ];
+  for (const name of requiredCommandNames) {
+    if (!commands.some((command) => command?.name === name && Number(command.exitCode) === 0)) {
+      failures.push(`${relative(root, proofPath)} missing passing ${name} command`);
+    }
+  }
+  const png = validatePng(root, path.join(proofRoot, ACTIVE_AUTHORITY_PNG), failures);
+  return {
+    assertions: assertions.length,
+    commands: commands.length,
+    dockerTests: Number(dockerReplay?.summary?.tests || 0),
+    visualBytes: png?.bytes || 0,
+    ok: proof?.ok === true
+      && assertions.length > 0
+      && failedAssertions.length === 0
+      && commands.length > 0
+      && failedCommands.length === 0
+      && Number(dockerReplay?.exitCode) === 0
+      && Number(dockerReplay?.summary?.fail || 0) === 0
+      && Boolean(png?.bytes),
+  };
 }
 
 function verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures }) {
