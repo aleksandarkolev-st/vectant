@@ -8,7 +8,7 @@
     body { margin: 0; padding: 28px; background: #07080d; }
     main { max-width: 1180px; margin: 0 auto; }
     .hero { border: 1px solid #2b3450; background: #111521; border-radius: 8px; padding: 24px; margin-bottom: 18px; }
-    .status { display: inline-flex; align-items: center; border-radius: 4px; padding: 5px 10px; font-size: 12px; font-weight: 800; letter-spacing: .04em; background: #0f6b3b; color: white; }
+    .status { display: inline-flex; align-items: center; border-radius: 4px; padding: 5px 10px; font-size: 12px; font-weight: 800; letter-spacing: .04em; background: #7f1d1d; color: white; }
     h1 { margin: 10px 0 8px; font-size: 28px; line-height: 1.15; letter-spacing: 0; }
     p { margin: 0; color: #aeb8d4; line-height: 1.55; max-width: 900px; }
     .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0 18px; }
@@ -25,14 +25,14 @@
 <body>
   <main>
     <section class="hero">
-      <span class="status">PASS</span>
+      <span class="status">FAIL</span>
       <h1>CodeSite Release Gate</h1>
       <p>Blocking release validation for committed CodeSite workflow proof, visual artifacts, runtime mount boundary evidence, trusted proof bundles, and real Codex agent transcripts.</p>
     </section>
     <section class="meta">
       <div class="metric"><div class="label">Slug</div><div class="value">codesite-mature-full-proof-20260702bc</div></div>
-      <div class="metric"><div class="label">Proof root</div><div class="value">tmp/codesite-dojo-proof</div></div>
-      <div class="metric"><div class="label">Generated</div><div class="value">2026-07-03T22:54:17.345Z</div></div>
+      <div class="metric"><div class="label">Proof root</div><div class="value">tmp/codesite-release-gate-negative-proofroot</div></div>
+      <div class="metric"><div class="label">Generated</div><div class="value">2026-07-03T22:53:24.981Z</div></div>
     </section>
     <section class="grid">
     <section class="card">
@@ -85,7 +85,7 @@
 
     <section class="card">
       <div class="label">maturePlanProofSuite</div>
-      <div class="value good">pass</div>
+      <div class="value bad">fail</div>
       <pre>{
   &quot;name&quot;: &quot;maturePlanProofSuite&quot;,
   &quot;required&quot;: 30,
@@ -418,7 +418,7 @@
       &quot;commands&quot;: 4,
       &quot;dockerCommands&quot;: 2,
       &quot;qualityCounters&quot;: 7,
-      &quot;ok&quot;: true
+      &quot;ok&quot;: false
     }
   ],
   &quot;assertions&quot;: 359,
@@ -426,7 +426,7 @@
   &quot;browserCaptures&quot;: 6,
   &quot;commands&quot;: 85,
   &quot;dockerCommands&quot;: 23,
-  &quot;ok&quot;: true
+  &quot;ok&quot;: false
 }</pre>
     </section>
 
@@ -456,7 +456,11 @@
   </section>
     <section class="card" style="margin-top:12px">
       <div class="label">Failures</div>
-      <pre>[]</pre>
+      <pre>[
+  &quot;tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.png appears blank&quot;,
+  &quot;tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json commands.0.summary.skipped must be 0, observed 1&quot;,
+  &quot;tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json testSummary.skipped must be 0, observed 1&quot;
+]</pre>
     </section>
   </main>
 </body>

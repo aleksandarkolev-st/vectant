@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { verifyProofBundleFile } from './codesite-proof-verify.mjs';
 
 const require = createRequire(import.meta.url);
@@ -20,10 +21,78 @@ const REQUIRED_WORKFLOW_SHOTS = [
 ];
 const ACTIVE_AUTHORITY_PROOF = 'codesite-active-transaction-registry-proof.json';
 const ACTIVE_AUTHORITY_PNG = 'codesite-active-transaction-registry-proof.png';
+const REQUIRED_MATURE_PROOFS = [
+  {
+    name: 'activeMutationBoundary',
+    plan: '2A.1, 2B, 25.2A',
+    file: 'codesite-active-mutation-boundary-proof.json',
+    png: 'codesite-active-mutation-boundary-proof.png',
+    requiredCommands: ['activeBoundaryTests', 'gitServiceBoundaryTests', 'dockerReplay'],
+    dockerCommand: 'dockerReplay',
+  },
+  { name: 'gitServiceBoundary', plan: '2A.3, 2B', file: 'codesite-gitservice-boundary-proof.json', png: 'codesite-gitservice-boundary-proof.png' },
+  { name: 'gitServiceIndexBoundary', plan: '2A.3, 2B', file: 'codesite-gitservice-index-proof.json', png: 'codesite-gitservice-index-proof.png' },
+  { name: 'gitServiceWorktreeBoundary', plan: '2A.3, 2B', file: 'codesite-gitservice-worktree-proof.json', png: 'codesite-gitservice-worktree-proof.png' },
+  { name: 'directGitServiceBoundary', plan: '2A.3, 2B', file: 'codesite-direct-gitservice-boundary-proof.json', png: 'codesite-direct-gitservice-boundary-proof.png' },
+  { name: 'gitProvisioningBoundary', plan: '2A.3, 2B', file: 'codesite-git-provisioning-boundary-proof.json', png: 'codesite-git-provisioning-boundary-proof.png' },
+  { name: 'repoCacheBoundary', plan: '2A.3, 2B', file: 'codesite-repo-cache-boundary-proof.json', png: 'codesite-repo-cache-boundary-proof.png' },
+  { name: 'workspacePrepGuard', plan: '2A.3, 25.2C', file: 'codesite-workspace-prep-guard-proof.json', png: 'codesite-workspace-prep-guard-proof.png' },
+  { name: 'runtimeFilesystemHydration', plan: '2A.3, 25.2C', file: 'codesite-runtime-filesystem-hydration-proof.json', png: 'codesite-runtime-filesystem-hydration-proof.png' },
+  { name: 'runtimeOverlay', plan: '2A.3, 25.2C', file: 'codesite-runtime-overlay-proof.json', png: 'codesite-runtime-overlay-proof.png' },
+  { name: 'runtimeQuarantine', plan: '2A.3, 26.9', file: 'codesite-runtime-quarantine-proof.json', png: 'codesite-runtime-quarantine-proof.png' },
+  { name: 'codesiteFsRuntimeBoundary', plan: '2A.3, 25.2C, 26.9', file: 'codesitefs-runtime-boundary-proof.json', png: 'codesitefs-runtime-boundary-proof.png' },
+  { name: 'quarantineReview', plan: '2A.3, 26.9', file: 'codesite-quarantine-review-proof.json', png: 'codesite-quarantine-review-proof.png' },
+  { name: 'proofCarryingCommit', plan: '2A.4, 25.7B, 26.4', file: 'codesite-proof-carrying-commit-proof.json', png: 'codesite-proof-carrying-commit-proof.png' },
+  {
+    name: 'lineInspector',
+    plan: '2A.6, 25.7B, 26.10',
+    file: 'codesite-line-inspector-proof.json',
+    png: 'codesite-line-inspector-proof.png',
+    browserProof: true,
+  },
+  {
+    name: 'shadowSimulator',
+    plan: '2A.5, 25.4, 26.6',
+    file: 'codesite-shadow-simulator-proof.json',
+    png: 'codesite-shadow-simulator-proof.png',
+    browserProof: true,
+  },
+  { name: 'runwayOccupancy', plan: '26.2', file: 'codesite-runway-occupancy-proof.json', png: 'codesite-runway-occupancy-proof.png' },
+  { name: 'counterfactualMemory', plan: '22, 25.9', file: 'codesite-counterfactual-memory-proof.json', png: 'codesite-counterfactual-memory-proof.png' },
+  { name: 'repoPolicyCompiler', plan: '2A.7, 25.0', file: 'codesite-repo-policy-compiler-proof.json', png: 'codesite-repo-policy-compiler-proof.png' },
+  { name: 'repoLocalAutosync', plan: '23', file: 'codesite-repo-local-autosync-proof.json', png: 'codesite-repo-local-autosync-proof.png' },
+  { name: 'radarAdapter', plan: '8, 15, 25.3', file: 'codesite-radar-adapter-proof.json', png: 'codesite-radar-adapter-proof.png' },
+  {
+    name: 'radarUi',
+    plan: '8, 25.3, 26.1',
+    file: 'codesite-radar-ui-proof.json',
+    allowNoAssertions: true,
+    browserProof: true,
+    requiredScreenshots: ['codesite-radar-ui-desktop.png', 'codesite-radar-ui-mobile.png'],
+    requiredCaptureTruthies: ['hasLandingQueue', 'hasRiskLabel'],
+    requiredCaptureCounts: ['flightBlips', 'riskCones', 'holdingPatterns'],
+  },
+  { name: 'schemaFirstClearance', plan: '9, 17, 25.4', file: 'codesite-schema-first-clearance-proof.json', png: 'codesite-schema-first-clearance-proof.png' },
+  { name: 'metrics', plan: '27', file: 'codesite-metrics-proof.json', png: 'codesite-metrics-proof.png' },
+  { name: 'isolationContract', plan: '2A.1, 26.7', file: 'codesite-isolation-contract-proof.json', png: 'codesite-isolation-contract-proof.png' },
+  { name: 'runtimeContext', plan: '20, 25.2C', file: 'codesite-runtime-context-proof.json', png: 'codesite-runtime-context-proof.png' },
+  { name: 'contextAlias', plan: '20, 25.2C', file: 'codesite-context-alias-proof.json', png: 'codesite-context-alias-proof.png' },
+  { name: 'monitorDowngrade', plan: '2A.3, 28', file: 'codesite-monitor-downgrade-proof.json', png: 'codesite-monitor-downgrade-proof.png' },
+  { name: 'pathlessRun', plan: '2A.3, 28', file: 'codesite-pathless-run-proof.json', png: 'codesite-pathless-run-proof.png' },
+  { name: 'terminalReattach', plan: '2A.3, 28', file: 'codesite-terminal-reattach-proof.json', png: 'codesite-terminal-reattach-proof.png' },
+];
 
 async function main(argv) {
   const options = parseArgs(argv);
   const root = repoRoot();
+  if (options.inputPath) {
+    const failures = [];
+    const result = readJson(path.resolve(root, options.inputPath), failures);
+    if (!result || failures.length) throw new Error(`Unable to read release gate input: ${failures.join('; ')}`);
+    await writeReleaseGateArtifacts({ root, options, result });
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
   const proofRoot = path.resolve(root, options.proofRoot);
   const failures = [];
   const warnings = [];
@@ -92,6 +161,9 @@ async function main(argv) {
   });
   checks.push({ name: 'activeTransactionAuthority', ...activeAuthoritySummary });
 
+  const matureProofSummary = validateMatureProofSuite({ root, proofRoot, failures });
+  checks.push({ name: 'maturePlanProofSuite', ...matureProofSummary });
+
   const trustedKeysPath = path.join(proofRoot, `trusted-proof-authorities-${slug}.json`);
   if (!fs.existsSync(trustedKeysPath)) failures.push(`trusted proof authorities missing: ${relative(root, trustedKeysPath)}`);
   const proofBundleSummary = verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures });
@@ -110,6 +182,11 @@ async function main(argv) {
     warnings,
     failures,
   };
+  await writeReleaseGateArtifacts({ root, options, result });
+  if (!result.ok) process.exitCode = 1;
+}
+
+async function writeReleaseGateArtifacts({ root, options, result }) {
   const output = `${JSON.stringify(result, null, 2)}\n`;
   if (options.outPath) {
     const outPath = path.resolve(root, options.outPath);
@@ -126,7 +203,6 @@ async function main(argv) {
     await screenshotHtml(path.resolve(root, options.htmlPath), path.resolve(root, options.pngPath));
   }
   process.stdout.write(output);
-  if (!result.ok) process.exitCode = 1;
 }
 
 function repoRoot() {
@@ -137,6 +213,7 @@ function parseArgs(argv) {
   const options = {
     proofRoot: process.env.CODESITE_PROOF_ROOT || DEFAULT_PROOF_ROOT,
     minimumAssertions: Number(process.env.CODESITE_RELEASE_GATE_MINIMUM_ASSERTIONS || DEFAULT_MINIMUM_ASSERTIONS),
+    inputPath: process.env.CODESITE_RELEASE_GATE_INPUT || null,
     outPath: process.env.CODESITE_RELEASE_GATE_OUT || null,
     htmlPath: process.env.CODESITE_RELEASE_GATE_HTML || null,
     pngPath: process.env.CODESITE_RELEASE_GATE_PNG || null,
@@ -145,11 +222,12 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === '--proof-root') options.proofRoot = argv[++index];
     else if (arg === '--minimum-assertions') options.minimumAssertions = Number(argv[++index]);
+    else if (arg === '--input') options.inputPath = argv[++index];
     else if (arg === '--out') options.outPath = argv[++index];
     else if (arg === '--html') options.htmlPath = argv[++index];
     else if (arg === '--png') options.pngPath = argv[++index];
     else if (arg === '--help' || arg === '-h') {
-      process.stdout.write('Usage: node scripts/codesite-release-gate.mjs [--proof-root tmp/codesite-dojo-proof] [--minimum-assertions 43] [--out path] [--html path --png path]\n');
+      process.stdout.write('Usage: node scripts/codesite-release-gate.mjs [--proof-root tmp/codesite-dojo-proof] [--minimum-assertions 43] [--out path] [--html path --png path] [--input result.json --html path --png path]\n');
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
@@ -319,7 +397,129 @@ function validatePng(root, filePath, failures) {
   const width = buffer.readUInt32BE(16);
   const height = buffer.readUInt32BE(20);
   if (!width || !height) failures.push(`${relative(root, filePath)} has empty PNG dimensions`);
-  return { width, height, bytes: buffer.length };
+  const pixelStats = inspectPngPixels(root, filePath, buffer, failures);
+  if (pixelStats && pixelStats.nonblank !== true) {
+    failures.push(`${relative(root, filePath)} appears blank`);
+  }
+  return { width, height, bytes: buffer.length, ...(pixelStats || {}) };
+}
+
+function inspectPngPixels(root, filePath, buffer, failures) {
+  const chunks = readPngChunks(buffer);
+  const ihdr = chunks.find((chunk) => chunk.type === 'IHDR')?.data;
+  if (!ihdr || ihdr.length < 13) {
+    failures.push(`${relative(root, filePath)} missing IHDR chunk`);
+    return null;
+  }
+  const width = ihdr.readUInt32BE(0);
+  const height = ihdr.readUInt32BE(4);
+  const bitDepth = ihdr.readUInt8(8);
+  const colorType = ihdr.readUInt8(9);
+  const interlace = ihdr.readUInt8(12);
+  if (bitDepth !== 8 || interlace !== 0) {
+    failures.push(`${relative(root, filePath)} uses unsupported PNG encoding for nonblank validation`);
+    return null;
+  }
+  const channels = pngChannelCount(colorType);
+  if (!channels) {
+    failures.push(`${relative(root, filePath)} uses unsupported PNG color type ${colorType}`);
+    return null;
+  }
+  const idat = Buffer.concat(chunks.filter((chunk) => chunk.type === 'IDAT').map((chunk) => chunk.data));
+  if (!idat.length) {
+    failures.push(`${relative(root, filePath)} missing IDAT data`);
+    return null;
+  }
+  let inflated;
+  try {
+    inflated = zlib.inflateSync(idat);
+  } catch (error) {
+    failures.push(`${relative(root, filePath)} IDAT inflate failed: ${error?.message || String(error)}`);
+    return null;
+  }
+  const rowBytes = width * channels;
+  const expectedBytes = (rowBytes + 1) * height;
+  if (inflated.length < expectedBytes) {
+    failures.push(`${relative(root, filePath)} inflated data shorter than expected`);
+    return null;
+  }
+  const previous = Buffer.alloc(rowBytes);
+  const current = Buffer.alloc(rowBytes);
+  let offset = 0;
+  const seen = new Set();
+  let transitions = 0;
+  let last = null;
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[offset];
+    offset += 1;
+    const raw = inflated.subarray(offset, offset + rowBytes);
+    offset += rowBytes;
+    try {
+      unfilterPngRow(filter, raw, current, previous, channels);
+    } catch (error) {
+      failures.push(`${relative(root, filePath)} PNG decode failed: ${error?.message || String(error)}`);
+      return null;
+    }
+    for (const byte of current) {
+      seen.add(byte);
+      if (last !== null && byte !== last) transitions += 1;
+      last = byte;
+      if (seen.size > 8 && transitions > 512) {
+        return { nonblank: true, colorType, bitDepth, channels, sampleValues: seen.size };
+      }
+    }
+    current.copy(previous);
+  }
+  return { nonblank: seen.size > 1 && transitions > 16, colorType, bitDepth, channels, sampleValues: seen.size };
+}
+
+function readPngChunks(buffer) {
+  const chunks = [];
+  let offset = 8;
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString('ascii');
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > buffer.length) break;
+    chunks.push({ type, data: buffer.subarray(dataStart, dataEnd) });
+    offset = dataEnd + 4;
+    if (type === 'IEND') break;
+  }
+  return chunks;
+}
+
+function pngChannelCount(colorType) {
+  if (colorType === 0 || colorType === 3) return 1;
+  if (colorType === 2) return 3;
+  if (colorType === 4) return 2;
+  if (colorType === 6) return 4;
+  return 0;
+}
+
+function unfilterPngRow(filter, raw, current, previous, bytesPerPixel) {
+  for (let index = 0; index < raw.length; index += 1) {
+    const left = index >= bytesPerPixel ? current[index - bytesPerPixel] : 0;
+    const up = previous[index] || 0;
+    const upLeft = index >= bytesPerPixel ? previous[index - bytesPerPixel] : 0;
+    let value = raw[index];
+    if (filter === 1) value += left;
+    else if (filter === 2) value += up;
+    else if (filter === 3) value += Math.floor((left + up) / 2);
+    else if (filter === 4) value += paeth(left, up, upLeft);
+    else if (filter !== 0) throw new Error(`unsupported PNG filter ${filter}`);
+    current[index] = value & 0xff;
+  }
+}
+
+function paeth(left, up, upLeft) {
+  const estimate = left + up - upLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const upDistance = Math.abs(estimate - up);
+  const upLeftDistance = Math.abs(estimate - upLeft);
+  if (leftDistance <= upDistance && leftDistance <= upLeftDistance) return left;
+  if (upDistance <= upLeftDistance) return up;
+  return upLeft;
 }
 
 function validateActiveAuthorityProof({ root, proofRoot, failures }) {
@@ -334,10 +534,11 @@ function validateActiveAuthorityProof({ root, proofRoot, failures }) {
   }
   const commands = Array.isArray(proof?.commands) ? proof.commands : [];
   if (!commands.length) failures.push(`${relative(root, proofPath)} commands must be a non-empty array`);
-  const failedCommands = commands.filter((command) => Number(command?.exitCode) !== 0);
+  const failedCommands = commands.filter((command) => !commandPassed(command));
   for (const command of failedCommands) {
     failures.push(`${relative(root, proofPath)} active authority command failed: ${command?.name || command?.command || '<unnamed>'}`);
   }
+  const qualityCounters = validateProofQualityCounters({ root, proofPath, proof, failures });
   const dockerReplay = commands.find((command) => command?.name === 'dockerReplay');
   if (!dockerReplay) {
     failures.push(`${relative(root, proofPath)} missing dockerReplay command`);
@@ -345,7 +546,7 @@ function validateActiveAuthorityProof({ root, proofRoot, failures }) {
     if (Number(dockerReplay.exitCode) !== 0) {
       failures.push(`${relative(root, proofPath)} dockerReplay exitCode must be 0`);
     }
-    if (Number(dockerReplay.summary?.tests || 0) <= 0 || Number(dockerReplay.summary?.fail || 0) !== 0) {
+    if (Number(dockerReplay.summary?.tests || 0) <= 0 || !commandPassed(dockerReplay)) {
       failures.push(`${relative(root, proofPath)} dockerReplay summary must contain passing tests and zero failures`);
     }
   }
@@ -357,7 +558,7 @@ function validateActiveAuthorityProof({ root, proofRoot, failures }) {
     'dockerReplay',
   ];
   for (const name of requiredCommandNames) {
-    if (!commands.some((command) => command?.name === name && Number(command.exitCode) === 0)) {
+    if (!commands.some((command) => command?.name === name && commandPassed(command))) {
       failures.push(`${relative(root, proofPath)} missing passing ${name} command`);
     }
   }
@@ -365,6 +566,7 @@ function validateActiveAuthorityProof({ root, proofRoot, failures }) {
   return {
     assertions: assertions.length,
     commands: commands.length,
+    qualityCounters,
     dockerTests: Number(dockerReplay?.summary?.tests || 0),
     visualBytes: png?.bytes || 0,
     ok: proof?.ok === true
@@ -372,10 +574,315 @@ function validateActiveAuthorityProof({ root, proofRoot, failures }) {
       && failedAssertions.length === 0
       && commands.length > 0
       && failedCommands.length === 0
-      && Number(dockerReplay?.exitCode) === 0
-      && Number(dockerReplay?.summary?.fail || 0) === 0
+      && commandPassed(dockerReplay)
       && Boolean(png?.bytes),
   };
+}
+
+function validateMatureProofSuite({ root, proofRoot, failures }) {
+  const artifacts = [];
+  let assertionCount = 0;
+  let commandCount = 0;
+  let dockerCommandCount = 0;
+  let visualCount = 0;
+  let browserCaptureCount = 0;
+
+  for (const spec of REQUIRED_MATURE_PROOFS) {
+    const summary = validateMatureProofArtifact({ root, proofRoot, spec, failures });
+    artifacts.push(summary);
+    assertionCount += summary.assertions;
+    commandCount += summary.commands;
+    dockerCommandCount += summary.dockerCommands;
+    visualCount += summary.visuals;
+    browserCaptureCount += summary.browserCaptures;
+  }
+
+  return {
+    required: REQUIRED_MATURE_PROOFS.length,
+    artifacts: artifacts.map((artifact) => ({
+      name: artifact.name,
+      plan: artifact.plan,
+      assertions: artifact.assertions,
+      visuals: artifact.visuals,
+      browserCaptures: artifact.browserCaptures,
+      commands: artifact.commands,
+      dockerCommands: artifact.dockerCommands,
+      qualityCounters: artifact.qualityCounters,
+      ok: artifact.ok,
+    })),
+    assertions: assertionCount,
+    visuals: visualCount,
+    browserCaptures: browserCaptureCount,
+    commands: commandCount,
+    dockerCommands: dockerCommandCount,
+    ok: artifacts.every((artifact) => artifact.ok),
+  };
+}
+
+function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
+  const beforeFailureCount = failures.length;
+  const proofPath = path.join(proofRoot, spec.file);
+  const proof = readJson(proofPath, failures);
+  const summary = {
+    name: spec.name,
+    plan: spec.plan,
+    file: relative(root, proofPath),
+    assertions: 0,
+    visuals: 0,
+    browserCaptures: 0,
+    commands: 0,
+    dockerCommands: 0,
+    ok: false,
+  };
+
+  if (!proof) {
+    summary.ok = false;
+    return summary;
+  }
+
+  if (proof.ok !== undefined && proof.ok !== true) {
+    failures.push(`${relative(root, proofPath)} ok must be true`);
+  }
+  if (proof.status !== undefined && proof.status !== 'validated') {
+    failures.push(`${relative(root, proofPath)} status expected validated, observed ${proof.status}`);
+  }
+  if (!proof.generatedAt) {
+    failures.push(`${relative(root, proofPath)} missing generatedAt`);
+  }
+
+  const assertionSummary = validateProofAssertions({
+    root,
+    proofPath,
+    assertions: proof.assertions,
+    allowNoAssertions: spec.allowNoAssertions,
+    failures,
+  });
+  summary.assertions = assertionSummary.total;
+
+  for (const fileName of [spec.png, ...(spec.requiredScreenshots || [])].filter(Boolean)) {
+    const png = validatePng(root, path.join(proofRoot, fileName), failures);
+    if (png?.bytes) summary.visuals += 1;
+  }
+
+  if (spec.browserProof) {
+    summary.browserCaptures = validateBrowserProof({
+      root,
+      proofRoot,
+      proofPath,
+      proof,
+      requiredTruthies: spec.requiredCaptureTruthies || [],
+      requiredCounts: spec.requiredCaptureCounts || [],
+      failures,
+    });
+  }
+
+  const commandSummary = validateProofCommands({
+    root,
+    proofPath,
+    proof,
+    requiredCommands: spec.requiredCommands || [],
+    dockerCommand: spec.dockerCommand,
+    failures,
+  });
+  summary.commands = commandSummary.commands;
+  summary.dockerCommands = commandSummary.dockerCommands;
+  summary.qualityCounters = commandSummary.qualityCounters;
+  summary.ok = failures.length === beforeFailureCount;
+  return summary;
+}
+
+function validateProofAssertions({ root, proofPath, assertions, allowNoAssertions, failures }) {
+  const entries = normalizeAssertions(assertions);
+  if (!entries.length) {
+    if (!allowNoAssertions) failures.push(`${relative(root, proofPath)} assertions must be non-empty`);
+    return { total: 0, failed: 0 };
+  }
+  const failed = entries.filter((entry) => entry.ok !== true);
+  for (const entry of failed) {
+    failures.push(`${relative(root, proofPath)} assertion failed: ${entry.name}`);
+  }
+  return { total: entries.length, failed: failed.length };
+}
+
+function normalizeAssertions(assertions) {
+  if (Array.isArray(assertions)) {
+    return assertions.map((assertion, index) => ({
+      name: assertionName(assertion, index),
+      ok: assertionOk(assertion),
+    }));
+  }
+  if (assertions && typeof assertions === 'object') {
+    return Object.entries(assertions).map(([name, value]) => ({
+      name,
+      ok: assertionOk(value),
+    }));
+  }
+  return [];
+}
+
+function assertionName(assertion, index) {
+  if (assertion && typeof assertion === 'object' && assertion.name) return assertion.name;
+  return `assertion[${index}]`;
+}
+
+function assertionOk(assertion) {
+  if (assertion === true) return true;
+  if (!assertion || typeof assertion !== 'object') return false;
+  if (assertion.ok !== undefined) return assertion.ok === true;
+  if (assertion.passed !== undefined) return assertion.passed === true;
+  if (assertion.value !== undefined) return assertion.value === true;
+  if (assertion.status !== undefined) return assertion.status === 'passed' || assertion.status === 'pass';
+  return false;
+}
+
+function validateProofCommands({ root, proofPath, proof, requiredCommands, dockerCommand, failures }) {
+  const commandList = collectProofCommands(proof);
+  const qualityCounters = validateProofQualityCounters({ root, proofPath, proof, failures });
+  let dockerCommands = 0;
+
+  for (const command of commandList) {
+    if (command?.ok === false || (command?.exitCode !== undefined && Number(command.exitCode) !== 0)) {
+      failures.push(`${relative(root, proofPath)} command failed: ${command?.name || command?.command || '<unnamed>'}`);
+    }
+    if (isDockerCommand(command)) dockerCommands += 1;
+  }
+
+  for (const name of requiredCommands) {
+    if (!commandList.some((command) => command?.name === name && commandPassed(command))) {
+      failures.push(`${relative(root, proofPath)} missing passing ${name} command`);
+    }
+  }
+
+  if (dockerCommand) {
+    const command = commandList.find((item) => item?.name === dockerCommand);
+    if (!command) {
+      failures.push(`${relative(root, proofPath)} missing ${dockerCommand} Docker command`);
+    } else if (Number(command?.summary?.tests || 0) <= 0 || Number(command?.summary?.fail || 0) !== 0 || !commandPassed(command)) {
+      failures.push(`${relative(root, proofPath)} ${dockerCommand} must report passing tests and zero failures`);
+    }
+  }
+
+  return { commands: commandList.length, dockerCommands, qualityCounters };
+}
+
+function collectProofCommands(proof) {
+  const commands = [];
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (typeof value.command === 'string' && !seen.has(value)) {
+      seen.add(value);
+      commands.push(value);
+    }
+    for (const child of Object.values(value)) {
+      if (child && typeof child === 'object') visit(child);
+    }
+  };
+  visit(proof);
+  return commands;
+}
+
+function commandPassed(command) {
+  if (!command || typeof command !== 'object') return false;
+  if (command.ok === false) return false;
+  if (command.exitCode !== undefined && Number(command.exitCode) !== 0) return false;
+  return !hasBadTestCounters(command.summary) && !hasBadTestCounters(command.tap) && !hasBadTestCounters(command.testSummary);
+}
+
+function validateProofQualityCounters({ root, proofPath, proof, failures }) {
+  const summaries = collectTestCounterObjects(proof);
+  for (const item of summaries) {
+    const badCounters = badTestCounters(item.value);
+    for (const [key, value] of badCounters) {
+      failures.push(`${relative(root, proofPath)} ${item.path}.${key} must be 0, observed ${value}`);
+    }
+  }
+  return summaries.length;
+}
+
+function collectTestCounterObjects(proof) {
+  const summaries = [];
+  const seen = new Set();
+  const visit = (value, keys = []) => {
+    if (!value || typeof value !== 'object') return;
+    const lastKey = keys.at(-1);
+    if (!seen.has(value) && looksLikeTestCounterObject(value, lastKey, keys)) {
+      seen.add(value);
+      summaries.push({ path: keys.join('.') || '<root>', value });
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (child && typeof child === 'object') visit(child, [...keys, key]);
+    }
+  };
+  visit(proof);
+  return summaries;
+}
+
+function looksLikeTestCounterObject(value, lastKey, keys) {
+  if (!value || typeof value !== 'object') return false;
+  const hasCounter = ['tests', 'pass', 'fail', 'failed', 'failures', 'cancelled', 'skipped', 'todo']
+    .some((key) => typeof value[key] === 'number');
+  if (!hasCounter) return false;
+  if (['summary', 'tap', 'testSummary'].includes(lastKey)) return true;
+  return keys.some((key) => ['commands', 'hostTests', 'dockerNodeTests', 'steps'].includes(key));
+}
+
+function hasBadTestCounters(value) {
+  return badTestCounters(value).length > 0;
+}
+
+function badTestCounters(value) {
+  if (!value || typeof value !== 'object') return [];
+  return ['fail', 'failed', 'failures', 'cancelled', 'skipped', 'todo']
+    .filter((key) => typeof value[key] === 'number' && Number(value[key]) > 0)
+    .map((key) => [key, Number(value[key])]);
+}
+
+function isDockerCommand(command) {
+  const text = `${command?.name || ''} ${command?.command || ''} ${command?.runner || ''}`.toLowerCase();
+  return text.includes('docker');
+}
+
+function validateBrowserProof({ root, proofRoot, proofPath, proof, requiredTruthies, requiredCounts, failures }) {
+  const captures = Array.isArray(proof?.browserProof?.captures) ? proof.browserProof.captures : [];
+  if (!captures.length) {
+    failures.push(`${relative(root, proofPath)} browserProof.captures must be non-empty`);
+    return 0;
+  }
+
+  for (const [index, capture] of captures.entries()) {
+    const label = capture?.viewport?.name || `capture[${index}]`;
+    const screenshotPath = resolveProofArtifactPath(root, proofRoot, capture?.screenshot);
+    if (!screenshotPath) {
+      failures.push(`${relative(root, proofPath)} ${label} missing screenshot path`);
+    } else {
+      validatePng(root, screenshotPath, failures);
+    }
+    if (Array.isArray(capture?.consoleErrors) && capture.consoleErrors.length > 0) {
+      failures.push(`${relative(root, proofPath)} ${label} has console errors`);
+    }
+    for (const key of requiredTruthies) {
+      if (capture?.checks?.[key] !== true) {
+        failures.push(`${relative(root, proofPath)} ${label} expected checks.${key} true`);
+      }
+    }
+    for (const key of requiredCounts) {
+      if (Number(capture?.checks?.[key] || 0) <= 0) {
+        failures.push(`${relative(root, proofPath)} ${label} expected checks.${key} to be positive`);
+      }
+    }
+  }
+
+  return captures.length;
+}
+
+function resolveProofArtifactPath(root, proofRoot, artifactPath) {
+  if (!artifactPath) return null;
+  const normalized = String(artifactPath);
+  if (path.isAbsolute(normalized)) return normalized;
+  const fromRoot = path.resolve(root, normalized);
+  if (fs.existsSync(fromRoot)) return fromRoot;
+  return path.resolve(proofRoot, normalized);
 }
 
 function verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures }) {

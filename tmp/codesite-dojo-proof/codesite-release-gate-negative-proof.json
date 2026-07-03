@@ -1,8 +1,8 @@
 {
-  "ok": true,
+  "ok": false,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-03T22:54:17.345Z",
-  "proofRoot": "tmp/codesite-dojo-proof",
+  "generatedAt": "2026-07-03T22:53:24.981Z",
+  "proofRoot": "tmp/codesite-release-gate-negative-proofroot",
   "slug": "codesite-mature-full-proof-20260702bc",
   "checks": [
     {
@@ -361,7 +361,7 @@
           "commands": 4,
           "dockerCommands": 2,
           "qualityCounters": 7,
-          "ok": true
+          "ok": false
         }
       ],
       "assertions": 359,
@@ -369,7 +369,7 @@
       "browserCaptures": 6,
       "commands": 85,
       "dockerCommands": 23,
-      "ok": true
+      "ok": false
     },
     {
       "name": "proofBundles",
@@ -385,5 +385,9 @@
     }
   ],
   "warnings": [],
-  "failures": []
+  "failures": [
+    "tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.png appears blank",
+    "tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json commands.0.summary.skipped must be 0, observed 1",
+    "tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json testSummary.skipped must be 0, observed 1"
+  ]
 }
