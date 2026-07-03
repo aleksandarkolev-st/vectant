@@ -309,11 +309,46 @@ function visualArtifactHash(artifact) {
   return normalizeSha256(firstText(
     artifact.contentHash,
     artifact.content_hash,
-    artifact.expectedHash,
-    artifact.expected_hash,
-    artifact.sha256,
-    artifact.hash,
   ));
+}
+
+function visualArtifactByteLength(artifact) {
+  const length = firstFiniteNumber(
+    artifact.byteLength,
+    artifact.byte_length,
+    artifact.bytes,
+    artifact.byteCount,
+    artifact.byte_count,
+  );
+  return Number.isFinite(length) && length > 0 ? length : null;
+}
+
+function visualArtifactContentHashVerified(artifact) {
+  return firstBool(
+    artifact.contentHashVerified,
+    artifact.content_hash_verified,
+    artifact.hashVerified,
+    artifact.hash_verified,
+    artifact.byteHashVerified,
+    artifact.byte_hash_verified,
+    artifact.readableByteHashVerified,
+    artifact.readable_byte_hash_verified,
+  ) === true;
+}
+
+function contentAddressedProofId(value) {
+  return /\bsha256:[0-9a-f]{64}\b/i.test(String(value ?? '').trim());
+}
+
+function visualArtifactProofId(artifact) {
+  return firstText(
+    artifact.proofId,
+    artifact.proof_id,
+    artifact.verificationProofId,
+    artifact.verification_proof_id,
+    artifact.evidenceId,
+    artifact.evidence_id,
+  );
 }
 
 function visualArtifactPath(artifact) {
@@ -345,17 +380,16 @@ function visualArtifactAuthority(artifact) {
 function visualArtifactAuthorityAccepted(artifact) {
   const authority = visualArtifactAuthority(artifact)?.toLowerCase();
   if (!authority) return false;
-  return [
+  return new Set([
+    'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
     'runtime_boundary_visual_artifact_verification',
-    'async_visual_metrics',
-    'async_visual_worker',
-    'matrix_async_visual_worker',
+    'async_visual_metrics_and_transport_only',
+    'matrix_async_visual_worker_rgba',
     'mcp.gpu_hmr_validation',
-    'visual_worker',
-    'visual_artifact_file_verification',
-    'image_byte_verification',
-    'byte_hash_verification',
-  ].some((token) => authority.includes(token));
+    'visual_artifact_file_verification_not_gpu_hmr_success',
+    'image_byte_verification_not_gpu_hmr_success',
+    'byte_hash_verification_not_gpu_hmr_success',
+  ]).has(authority);
 }
 
 function visualArtifactHasVerifiedBytes(artifact) {
@@ -367,6 +401,10 @@ function visualArtifactHasVerifiedBytes(artifact) {
       artifact.acceptedAsVisualEvidence,
       artifact.accepted_as_visual_evidence,
     ) === true
+    && visualArtifactHash(artifact)
+    && visualArtifactContentHashVerified(artifact)
+    && visualArtifactByteLength(artifact) !== null
+    && contentAddressedProofId(visualArtifactProofId(artifact))
     && !firstText(artifact.readError, artifact.read_error)
     && !firstText(artifact.visualAnalysisError, artifact.visual_analysis_error)
     && visualArtifactAuthorityAccepted(artifact)
@@ -394,7 +432,11 @@ function visualEvidenceArtifactsVerificationFailures(visualOracleArtifacts, arti
       && visualArtifactHash(artifact) === expectedHash
     );
     if (!matching) {
-      failures.push(`runtime_boundary_visual_evidence_${role}_hash_mismatch`);
+      failures.push(
+        candidates.some((artifact) => visualArtifactHash(artifact))
+          ? `runtime_boundary_visual_evidence_${role}_hash_mismatch`
+          : `runtime_boundary_visual_evidence_${role}_content_hash_missing`,
+      );
       continue;
     }
     if (!visualArtifactPath(matching) && !visualArtifactHash(matching)) {
@@ -405,10 +447,22 @@ function visualEvidenceArtifactsVerificationFailures(visualOracleArtifacts, arti
         failures.push(`runtime_boundary_visual_evidence_${role}_claims_success_authority`);
       }
       if (!visualArtifactAuthorityAccepted(matching)) {
-        failures.push(`runtime_boundary_visual_evidence_${role}_verification_authority_missing`);
+        failures.push(`runtime_boundary_visual_evidence_${role}_byte_verifier_authority_missing`);
       }
       if (visualArtifactEvidenceRefs(matching).length === 0) {
         failures.push(`runtime_boundary_visual_evidence_${role}_evidence_refs_missing`);
+      }
+      if (!visualArtifactHash(matching)) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_content_hash_missing`);
+      }
+      if (!visualArtifactContentHashVerified(matching)) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_content_hash_unverified`);
+      }
+      if (visualArtifactByteLength(matching) === null) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_byte_length_missing`);
+      }
+      if (!contentAddressedProofId(visualArtifactProofId(matching))) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_proof_id_missing`);
       }
       if (firstBool(matching.acceptedAsImageEvidence, matching.accepted_as_image_evidence) !== true) {
         failures.push(`runtime_boundary_visual_evidence_${role}_image_not_accepted`);
@@ -1548,32 +1602,6 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     epoch: epoch.epoch,
     timestampAfterDispatch: output.timestampMonotonicNs,
   });
-  const outputOracleKind = oracleMode === 'visual'
-    ? acceptedVisualOracleKind(output.oracleKind)
-    : (output?.oracleKind === 'output_oracle' ? 'buffer_checksum' : output?.oracleKind);
-  const outputOracleExpected = oracleMode === 'visual'
-    ? visualOracleArtifacts.after_image_hash
-    : computeOracleArtifacts.checksum_after;
-  const outputOracleActual = outputOracleExpected;
-  const outputOracleTarget = oracleMode === 'visual'
-    ? {
-        kind: 'visual',
-        target_id: outputTargetId,
-        framebuffer_identity: visualTargetIdentity,
-        swapchain_or_framebuffer_identity: visualTargetIdentity,
-        camera_state_hash: visualOracleArtifacts.camera_state_hash,
-        swapchain_size: visualOracleArtifacts.swapchain_size,
-        capture_backend: visualOracleArtifacts.capture_backend,
-        frame_number: visualOracleArtifacts.frame_number,
-        visual_target_verified: true,
-        evidence_refs: output.evidenceRefs,
-      }
-    : {
-        kind: 'compute',
-        target_id: outputTargetId,
-        compute_only_target_verified: true,
-        evidence_refs: output.evidenceRefs,
-      };
   const deterministicVisualMode = oracleMode === 'visual'
     ? (objectOrNull(input.deterministicVisualMode) ?? objectOrNull(input.deterministic_visual_mode) ?? null)
     : null;
@@ -1586,6 +1614,39 @@ function buildBoundaryProofComponents(input, stageEvidence) {
       visualEvidenceArtifacts,
     );
   }
+  const verifiedAfterVisualArtifact = oracleMode === 'visual'
+    ? verifiedVisualEvidenceArtifactForRole(visualOracleArtifacts, visualEvidenceArtifacts, 'after')
+    : null;
+  const outputOracleKind = oracleMode === 'visual'
+    ? acceptedVisualOracleKind(output.oracleKind)
+    : (output?.oracleKind === 'output_oracle' ? 'buffer_checksum' : output?.oracleKind);
+  const outputOracleExpected = oracleMode === 'visual'
+    ? visualOracleArtifacts.after_image_hash
+    : computeOracleArtifacts.checksum_after;
+  const outputOracleActual = oracleMode === 'visual'
+    ? visualArtifactHash(verifiedAfterVisualArtifact ?? {})
+    : outputOracleExpected;
+  const outputOraclePassed = Boolean(outputOracleExpected && outputOracleActual && outputOracleExpected === outputOracleActual);
+  const outputOracleTarget = oracleMode === 'visual'
+    ? {
+        kind: 'visual',
+        target_id: outputTargetId,
+        framebuffer_identity: visualTargetIdentity,
+        swapchain_or_framebuffer_identity: visualTargetIdentity,
+        camera_state_hash: visualOracleArtifacts.camera_state_hash,
+        swapchain_size: visualOracleArtifacts.swapchain_size,
+        capture_backend: visualOracleArtifacts.capture_backend,
+        frame_number: visualOracleArtifacts.frame_number,
+        visual_target_verified: outputOraclePassed,
+        visual_actual_hash_source: 'verified_visual_evidence_artifact_content_hash',
+        evidence_refs: output.evidenceRefs,
+      }
+    : {
+        kind: 'compute',
+        target_id: outputTargetId,
+        compute_only_target_verified: true,
+        evidence_refs: output.evidenceRefs,
+      };
   const visualEvidenceRefs = oracleMode === 'visual'
     ? compactStringList([
         ...output.evidenceRefs,
@@ -1615,9 +1676,11 @@ function buildBoundaryProofComponents(input, stageEvidence) {
       runtimeSessionId,
       outputTargetId,
       producer: 'runtime_boundary_proof_adapter',
-      passed: true,
+      passed: outputOraclePassed,
       expected: outputOracleExpected,
       actual: outputOracleActual,
+      actualSource: oracleMode === 'visual' ? 'verified_visual_evidence_artifact_content_hash' : 'compute_oracle_checksum_after',
+      actual_source: oracleMode === 'visual' ? 'verified_visual_evidence_artifact_content_hash' : 'compute_oracle_checksum_after',
       requiredOracleId: outputTargetId,
       oracleId: outputTargetId,
       outputOracleTarget,

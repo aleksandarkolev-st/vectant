@@ -76,6 +76,7 @@ function writeVisualFixturePngs() {
     return [
       [`${role}Image`, file],
       [`${role}ImageHash`, sha256Buffer(bytes)],
+      [`${role}ImageByteLength`, bytes.length],
     ];
   }));
 }
@@ -91,8 +92,15 @@ function visualEvidenceArtifactsFromFixture(fixture) {
     source_path: fixture[`${role}Image`],
     contentHash: fixture[`${role}ImageHash`],
     content_hash: fixture[`${role}ImageHash`],
-    expectedHash: fixture[`${role}ImageHash`],
-    expected_hash: fixture[`${role}ImageHash`],
+    contentHashVerified: true,
+    content_hash_verified: true,
+    byteLength: fixture[`${role}ImageByteLength`],
+    byte_length: fixture[`${role}ImageByteLength`],
+    bytes: fixture[`${role}ImageByteLength`],
+    proofId: `visual-artifact-verification:${fixture[`${role}ImageHash`]}`,
+    proof_id: `visual-artifact-verification:${fixture[`${role}ImageHash`]}`,
+    evidenceId: `visual-artifact-verification:${fixture[`${role}ImageHash`]}`,
+    evidence_id: `visual-artifact-verification:${fixture[`${role}ImageHash`]}`,
     proofAuthority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
     proof_authority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
     evidenceAuthority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
@@ -346,6 +354,46 @@ assert.equal(visualDeclaredOnlyOracle.runtimeProofArtifact, null);
 assert.ok(
   visualDeclaredOnlyOracle.failedGates.includes('runtime_boundary_visual_evidence_artifacts_missing'),
   visualDeclaredOnlyOracle.failedGates.join(','),
+);
+
+const visualExpectedHashOnly = buildRuntimeBoundaryProofAdapter({
+  ...visualInput,
+  visualEvidenceArtifacts: visualEvidenceArtifactsFromFixture(visualFixture).map((artifact) =>
+    artifact.role === 'before'
+      ? {
+          ...artifact,
+          contentHash: null,
+          content_hash: null,
+          expectedHash: visualFixture.beforeImageHash,
+          expected_hash: visualFixture.beforeImageHash,
+        }
+      : artifact
+  ),
+});
+assert.equal(visualExpectedHashOnly.accepted, false);
+assert.equal(visualExpectedHashOnly.runtimeProofArtifact, null);
+assert.ok(
+  visualExpectedHashOnly.failedGates.includes('runtime_boundary_visual_evidence_before_content_hash_missing'),
+  visualExpectedHashOnly.failedGates.join(','),
+);
+
+const visualUnverifiedContentHash = buildRuntimeBoundaryProofAdapter({
+  ...visualInput,
+  visualEvidenceArtifacts: visualEvidenceArtifactsFromFixture(visualFixture).map((artifact) =>
+    artifact.role === 'after'
+      ? {
+          ...artifact,
+          contentHashVerified: false,
+          content_hash_verified: false,
+        }
+      : artifact
+  ),
+});
+assert.equal(visualUnverifiedContentHash.accepted, false);
+assert.equal(visualUnverifiedContentHash.runtimeProofArtifact, null);
+assert.ok(
+  visualUnverifiedContentHash.failedGates.includes('runtime_boundary_visual_evidence_after_content_hash_unverified'),
+  visualUnverifiedContentHash.failedGates.join(','),
 );
 
 const visualMissingFramebuffer = buildRuntimeBoundaryProofAdapter({
