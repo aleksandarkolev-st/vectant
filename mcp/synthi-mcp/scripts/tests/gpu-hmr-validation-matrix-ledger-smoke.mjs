@@ -2046,6 +2046,64 @@ function randomColdBuildMetadataContentEvidenceFixture({
   };
 }
 
+function randomColdRuntimeSupportClosureFixture(overrides = {}) {
+  const possibleOutcomes = [
+    'api_interpose',
+    'built_in_reload',
+    'engine_asset_reload',
+    'generated_adapter',
+    'unsupported_requires_app_hook',
+  ];
+  const requiredBoundaryStages = [
+    'runtime_adapter_or_app_hook_contract',
+    'same_process_loader',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_oracle',
+  ];
+  const closure = {
+    schemaVersion: 'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1',
+    schema_version: 'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1',
+    proofAuthority: 'adapter_closure_expectation_only_not_gpu_hmr_success',
+    proof_authority: 'adapter_closure_expectation_only_not_gpu_hmr_success',
+    accepted: false,
+    acceptedAsSupportEvidence: true,
+    accepted_as_support_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    required: true,
+    outcome: 'unsupported_requires_app_hook',
+    possibleOutcomes,
+    possible_outcomes: possibleOutcomes,
+    runtimeProfileProofBridgeAccepted: false,
+    runtime_profile_proof_bridge_accepted: false,
+    runtimeProfileStrictRuntimeProofAccepted: false,
+    runtime_profile_strict_runtime_proof_accepted: false,
+    candidateHintsUsedForAcceptance: false,
+    candidate_hints_used_for_acceptance: false,
+    requiredBoundaryStages,
+    required_boundary_stages: requiredBoundaryStages,
+    blockingGaps: ['runtime_support_closure_requires_app_hook'],
+    blocking_gaps: ['runtime_support_closure_requires_app_hook'],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+  const obligationHash = contentHashFor(closure);
+  return {
+    ...closure,
+    obligationHash,
+    obligation_hash: obligationHash,
+  };
+}
+
 function randomColdSourceListingManifestFixture({
   targetId = 'random-cold-readiness-user-project',
   fileCount = 1500,
@@ -2164,6 +2222,7 @@ function randomColdPathManifest({
     sourceRelevantFileCount,
     gpuSourceSignalCount: gpuSourceFileCount,
   });
+  const runtimeSupportClosureObligation = randomColdRuntimeSupportClosureFixture();
   const sourceIntakeEvidence = {
     schemaVersion: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
     schema_version: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
@@ -2262,6 +2321,7 @@ function randomColdPathManifest({
       backendCandidates: ['vulkan', 'webgpu_wgsl'],
       backend_candidates: ['vulkan', 'webgpu_wgsl'],
       requiredBoundaryStages: [
+        'runtime_adapter_or_app_hook_contract',
         'same_process_loader',
         'epoch_publication',
         'dispatch_trace',
@@ -2269,6 +2329,7 @@ function randomColdPathManifest({
         'output_oracle',
       ],
       required_boundary_stages: [
+        'runtime_adapter_or_app_hook_contract',
         'same_process_loader',
         'epoch_publication',
         'dispatch_trace',
@@ -2276,6 +2337,10 @@ function randomColdPathManifest({
         'output_oracle',
       ],
     },
+    runtimeSupportClosureObligation,
+    runtime_support_closure_obligation: runtimeSupportClosureObligation,
+    runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
+    runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
     runtimeBoundaryEventManifestTemplateAccepted: true,
     runtime_boundary_event_manifest_template_accepted: true,
     runtimeBoundaryEventManifestTemplate: template,
@@ -2318,10 +2383,15 @@ function randomColdPathManifest({
     runtime_boundary_event_manifest_template_accepted: true,
     runtimeBoundaryEventManifestTemplate: template,
     runtime_boundary_event_manifest_template: template,
+    runtimeSupportClosureObligation,
+    runtime_support_closure_obligation: runtimeSupportClosureObligation,
+    runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
+    runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
     sourceIntakeEvidence,
     source_intake_evidence: sourceIntakeEvidence,
     blockingGaps: [
       'runtime_profile_contract_missing',
+      'runtime_support_closure_requires_app_hook',
       'semantic_build_metadata_execution_missing',
       'same_process_loader_unproven',
       'epoch_publication_unproven',
@@ -2332,6 +2402,7 @@ function randomColdPathManifest({
     ],
     blocking_gaps: [
       'runtime_profile_contract_missing',
+      'runtime_support_closure_requires_app_hook',
       'semantic_build_metadata_execution_missing',
       'same_process_loader_unproven',
       'epoch_publication_unproven',
@@ -2610,6 +2681,24 @@ assert.equal(
   randomColdRow.coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence,
   true,
 );
+assert.equal(randomColdRow.randomColdRuntimeSupportClosureObligation.present, true);
+assert.equal(
+  randomColdRow.randomColdRuntimeSupportClosureObligation.proofAuthority,
+  'adapter_closure_expectation_only_not_gpu_hmr_success',
+);
+assert.equal(
+  randomColdRow.randomColdRuntimeSupportClosureObligation.acceptedAsSupportEvidence,
+  true,
+);
+assert.equal(randomColdRow.randomColdRuntimeSupportClosureObligation.acceptedForGpuHmr, false);
+assert.equal(randomColdRow.randomColdRuntimeSupportClosureObligation.gpuHmrSuccess, false);
+assert.equal(randomColdRow.randomColdRuntimeSupportClosureObligation.canSatisfyRuntimeProof, false);
+assert.equal(randomColdRow.randomColdRuntimeSupportClosureObligation.canSatisfyDispatchProof, false);
+assert.equal(
+  randomColdRow.randomColdRuntimeSupportClosureObligation.outcome,
+  'unsupported_requires_app_hook',
+);
+assert.ok(randomColdRow.openGaps.includes('runtime_support_closure_requires_app_hook'));
 const forgedSelectionAuditDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-selection-audit-forged',
@@ -2835,7 +2924,13 @@ assert.equal(
 assert.equal(randomColdRuntimeClosure.runtimeClosureAttempted, true);
 assert.equal(randomColdRuntimeClosure.randomColdPathRowCount, 1);
 assert.equal(randomColdRuntimeClosure.realRocmRowCount, 0);
+assert.equal(randomColdRuntimeClosure.runtimeSupportClosurePresentCount, 1);
+assert.equal(randomColdRuntimeClosure.runtimeSupportClosureAcceptedCount, 1);
 assert.equal(randomColdRuntimeClosure.gateCoverage.cold_source_intake.accepted, true);
+assert.equal(
+  randomColdRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.observed,
+  true,
+);
 assert.equal(
   randomColdRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted,
   false,
@@ -3166,6 +3261,70 @@ for (const testCase of forgedColdPathDispatchAuthorityCases) {
   assert.equal(row?.acceptedForGpuHmr, false);
   assert.equal(row?.gpuHmrSuccess, false);
 }
+
+const forgedAdapterClosureAuthorityDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-adapter-closure-authority-forged',
+);
+const forgedAdapterClosureAuthority = randomColdRuntimeSupportClosureFixture({
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: true,
+  can_satisfy_dispatch_proof: true,
+});
+await writeJson(
+  path.join(forgedAdapterClosureAuthorityDir, 'random-cold-adapter-closure-authority.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-adapter-closure-authority',
+    sourceUrl: 'https://example.invalid/arbitrary/adapter-closure-authority.git',
+    immutableCommit: sha256Hex('adapter-closure-authority:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeSupportClosureObligation: forgedAdapterClosureAuthority,
+      runtime_support_closure_obligation: forgedAdapterClosureAuthority,
+      runtimeSupportClosureOutcome: forgedAdapterClosureAuthority.outcome,
+      runtime_support_closure_outcome: forgedAdapterClosureAuthority.outcome,
+    },
+  }),
+);
+const forgedAdapterClosureAuthorityLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAdapterClosureAuthorityDir],
+  includeInvalidated: true,
+});
+const forgedAdapterClosureAuthorityRow = forgedAdapterClosureAuthorityLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedAdapterClosureAuthorityRow?.safety.accepted, false);
+assert.equal(forgedAdapterClosureAuthorityRow.acceptedForGpuHmr, false);
+assert.equal(forgedAdapterClosureAuthorityRow.gpuHmrSuccess, false);
+assert.equal(
+  forgedAdapterClosureAuthorityRow.randomColdRuntimeSupportClosureObligation.present,
+  true,
+);
+assert.equal(
+  forgedAdapterClosureAuthorityRow.randomColdRuntimeSupportClosureObligation.accepted,
+  false,
+);
+assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_adapter_closure_expectation_invalid'
+));
+assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_closure_expectation_claimed_gpu_hmr_success'
+));
+assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_closure_expectation_claimed_runtime_authority'
+));
+assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_closure_expectation_claimed_dispatch_authority'
+));
+assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_adapter_closure_expectation_claimed_authority'
+));
 
 const multiRandomColdPathDir = path.join(
   tmpRoot,

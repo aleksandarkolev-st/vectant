@@ -214,6 +214,17 @@ const RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY =
   'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const RANDOM_COLD_ADAPTER_CLOSURE_EXPECTATION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1';
+const RANDOM_COLD_ADAPTER_CLOSURE_EXPECTATION_AUTHORITY =
+  'adapter_closure_expectation_only_not_gpu_hmr_success';
+const RANDOM_COLD_ADAPTER_CLOSURE_OUTCOMES = Object.freeze([
+  'built_in_reload',
+  'generated_adapter',
+  'api_interpose',
+  'engine_asset_reload',
+  'unsupported_requires_app_hook',
+]);
 const LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION =
   'synthi.gpu_hmr.large_arbitrary_project_runtime_closure_coverage.v1';
 const LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_AUTHORITY =
@@ -3384,6 +3395,205 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
   };
 }
 
+function randomColdAdapterClosureExpectationFacet(raw = {}) {
+  const facet = compactObject(raw);
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const acceptedAsSupportEvidence = firstBool(
+    facet.acceptedAsSupportEvidence,
+    facet.accepted_as_support_evidence,
+    facet.accepted,
+  ) === true;
+  const outcome = firstText(facet.outcome);
+  const possibleOutcomes = compactStringList([
+    ...(Array.isArray(facet.possibleOutcomes) ? facet.possibleOutcomes : []),
+    ...(Array.isArray(facet.possible_outcomes) ? facet.possible_outcomes : []),
+  ]);
+  const requiredBoundaryStages = compactStringList([
+    ...(Array.isArray(facet.requiredBoundaryStages) ? facet.requiredBoundaryStages : []),
+    ...(Array.isArray(facet.required_boundary_stages) ? facet.required_boundary_stages : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const suppliedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const authorityClaims = compactStringList(facet.authorityClaims ?? facet.authority_claims);
+  const obligationHash = normalizeSha256(firstText(facet.obligationHash, facet.obligation_hash));
+  const existingRecomputedObligationHash = normalizeSha256(firstText(
+    facet.recomputedObligationHash,
+    facet.recomputed_obligation_hash,
+  ));
+  const obligationHashSeed = { ...facet };
+  delete obligationHashSeed.obligationHash;
+  delete obligationHashSeed.obligation_hash;
+  delete obligationHashSeed.suppliedObligationHash;
+  delete obligationHashSeed.supplied_obligation_hash;
+  delete obligationHashSeed.recomputedObligationHash;
+  delete obligationHashSeed.recomputed_obligation_hash;
+  const recomputedObligationHash = existingRecomputedObligationHash
+    ?? normalizeSha256(`sha256:${sha256Hex(stableJson(obligationHashSeed))}`);
+  const authorityFlagClaimed = acceptedForGpuHmr === true
+    || gpuHmrSuccess === true
+    || canSatisfyRuntimeProof === true
+    || canSatisfyDispatchProof === true
+    || authorityClaims.length > 0;
+  const hasClosureMaterial = Boolean(
+    schemaVersion
+      || proofAuthority
+      || acceptedAsSupportEvidence
+      || outcome
+      || possibleOutcomes.length
+      || requiredBoundaryStages.length
+      || blockingGaps.length
+      || suppliedFailedGates.length
+      || obligationHash
+  );
+  const present = Object.keys(facet).length > 0
+    && (firstBool(facet.present) !== false || authorityFlagClaimed || hasClosureMaterial);
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      blockingGaps: [],
+      blocking_gaps: [],
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const allowedOutcomeSet = new Set(RANDOM_COLD_ADAPTER_CLOSURE_OUTCOMES);
+  const failedGates = compactStringList([
+    ...suppliedFailedGates,
+    schemaVersion === RANDOM_COLD_ADAPTER_CLOSURE_EXPECTATION_SCHEMA_VERSION
+      ? null
+      : 'random_cold_adapter_closure_expectation_schema_invalid',
+    proofAuthority === RANDOM_COLD_ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
+      ? null
+      : 'random_cold_adapter_closure_expectation_authority_invalid',
+    acceptedAsSupportEvidence === true
+      ? null
+      : 'random_cold_adapter_closure_expectation_not_accepted_as_support',
+    outcome && allowedOutcomeSet.has(outcome)
+      ? null
+      : 'random_cold_adapter_closure_expectation_outcome_invalid',
+    acceptedForGpuHmr === true
+      ? 'random_cold_adapter_closure_expectation_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'random_cold_adapter_closure_expectation_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'random_cold_adapter_closure_expectation_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'random_cold_adapter_closure_expectation_claimed_dispatch_authority'
+      : null,
+    authorityClaims.length === 0
+      ? null
+      : 'random_cold_adapter_closure_expectation_authority_claim_present',
+    obligationHash
+      ? null
+      : 'random_cold_adapter_closure_expectation_hash_missing',
+    obligationHash && recomputedObligationHash && obligationHash !== recomputedObligationHash
+      ? 'random_cold_adapter_closure_expectation_hash_mismatch'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    required: firstBool(facet.required) === true,
+    outcome,
+    possibleOutcomes: possibleOutcomes.length > 0
+      ? possibleOutcomes
+      : [...RANDOM_COLD_ADAPTER_CLOSURE_OUTCOMES],
+    possible_outcomes: possibleOutcomes.length > 0
+      ? possibleOutcomes
+      : [...RANDOM_COLD_ADAPTER_CLOSURE_OUTCOMES],
+    requiredBoundaryStages,
+    required_boundary_stages: requiredBoundaryStages,
+    runtimeProfileProofBridgeAccepted:
+      firstBool(
+        facet.runtimeProfileProofBridgeAccepted,
+        facet.runtime_profile_proof_bridge_accepted,
+      ) === true,
+    runtime_profile_proof_bridge_accepted:
+      firstBool(
+        facet.runtimeProfileProofBridgeAccepted,
+        facet.runtime_profile_proof_bridge_accepted,
+      ) === true,
+    runtimeProfileStrictRuntimeProofAccepted:
+      firstBool(
+        facet.runtimeProfileStrictRuntimeProofAccepted,
+        facet.runtime_profile_strict_runtime_proof_accepted,
+      ) === true,
+    runtime_profile_strict_runtime_proof_accepted:
+      firstBool(
+        facet.runtimeProfileStrictRuntimeProofAccepted,
+        facet.runtime_profile_strict_runtime_proof_accepted,
+      ) === true,
+    candidateHintsUsedForAcceptance:
+      firstBool(
+        facet.candidateHintsUsedForAcceptance,
+        facet.candidate_hints_used_for_acceptance,
+      ) === true,
+    candidate_hints_used_for_acceptance:
+      firstBool(
+        facet.candidateHintsUsedForAcceptance,
+        facet.candidate_hints_used_for_acceptance,
+      ) === true,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    authorityClaims,
+    authority_claims: authorityClaims,
+    suppliedObligationHash: obligationHash,
+    supplied_obligation_hash: obligationHash,
+    obligationHash: recomputedObligationHash,
+    obligation_hash: recomputedObligationHash,
+    recomputedObligationHash,
+    recomputed_obligation_hash: recomputedObligationHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const selection = compactObject(json.selection);
   const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
@@ -3586,6 +3796,30 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     runtime_profile_proof_bridge: firstCompactObject(
       result.runtimeProfileProofBridge,
       result.runtime_profile_proof_bridge,
+    ),
+    runtimeSupportClosureObligation: firstCompactObject(
+      result.runtimeSupportClosureObligation,
+      result.runtime_support_closure_obligation,
+      resultSourceIntake.runtimeSupportClosureObligation,
+      resultSourceIntake.runtime_support_closure_obligation,
+    ),
+    runtime_support_closure_obligation: firstCompactObject(
+      result.runtimeSupportClosureObligation,
+      result.runtime_support_closure_obligation,
+      resultSourceIntake.runtimeSupportClosureObligation,
+      resultSourceIntake.runtime_support_closure_obligation,
+    ),
+    runtimeSupportClosureOutcome: firstText(
+      result.runtimeSupportClosureOutcome,
+      result.runtime_support_closure_outcome,
+      resultSourceIntake.runtimeSupportClosureOutcome,
+      resultSourceIntake.runtime_support_closure_outcome,
+    ),
+    runtime_support_closure_outcome: firstText(
+      result.runtimeSupportClosureOutcome,
+      result.runtime_support_closure_outcome,
+      resultSourceIntake.runtimeSupportClosureOutcome,
+      resultSourceIntake.runtime_support_closure_outcome,
     ),
     sourceUrl,
     source_url: sourceUrl,
@@ -14804,6 +15038,14 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_path_cannot_claim_runtime_authority' });
     }
+    if (
+      firstBool(
+        coldPathFacet.canSatisfyDispatchProof,
+        coldPathFacet.can_satisfy_dispatch_proof,
+      ) === true
+    ) {
+      failures.push({ code: 'random_large_project_cold_path_cannot_claim_dispatch_authority' });
+    }
     const selectionAuditRaw = firstCompactObject(
       row.randomColdPathSelectionAudit,
       row.random_cold_path_selection_audit,
@@ -14853,6 +15095,10 @@ function rowSafetyFailures(row, context = {}) {
         coldTemplate.canSatisfyRuntimeProof,
         coldTemplate.can_satisfy_runtime_proof,
       ) === true
+      || firstBool(
+        coldTemplate.canSatisfyDispatchProof,
+        coldTemplate.can_satisfy_dispatch_proof,
+      ) === true
     ) {
       failures.push({ code: 'random_large_project_cold_template_claimed_runtime_authority' });
     }
@@ -14888,6 +15134,49 @@ function rowSafetyFailures(row, context = {}) {
       )
     ) {
       failures.push({ code: 'random_large_project_cold_runtime_profile_bridge_claimed_authority' });
+    }
+    const runtimeSupportClosureRaw = firstCompactObject(
+      row.randomColdRuntimeSupportClosureObligation,
+      row.random_cold_runtime_support_closure_obligation,
+      row.runtimeSupportClosureObligation,
+      row.runtime_support_closure_obligation,
+      coldPathFacet.runtimeSupportClosureObligation,
+      coldPathFacet.runtime_support_closure_obligation,
+    );
+    const runtimeSupportClosure =
+      randomColdAdapterClosureExpectationFacet(runtimeSupportClosureRaw);
+    const runtimeSupportClosureFailedGates = compactStringList([
+      ...(Array.isArray(runtimeSupportClosure.failedGates) ? runtimeSupportClosure.failedGates : []),
+      ...(Array.isArray(runtimeSupportClosure.failed_gates) ? runtimeSupportClosure.failed_gates : []),
+    ]);
+    if (runtimeSupportClosure.present === true && runtimeSupportClosure.accepted !== true) {
+      failures.push({ code: 'random_large_project_cold_adapter_closure_expectation_invalid' });
+      failures.push(...runtimeSupportClosureFailedGates.map((code) => ({ code })));
+    }
+    const runtimeSupportClosureAuthorityFailed = runtimeSupportClosureFailedGates.some((code) =>
+      code === 'random_cold_adapter_closure_expectation_claimed_gpu_hmr_acceptance'
+      || code === 'random_cold_adapter_closure_expectation_claimed_gpu_hmr_success'
+      || code === 'random_cold_adapter_closure_expectation_claimed_runtime_authority'
+      || code === 'random_cold_adapter_closure_expectation_claimed_dispatch_authority'
+      || code === 'random_cold_adapter_closure_expectation_authority_claim_present'
+    );
+    if (
+      runtimeSupportClosure.present === true
+      && (
+        runtimeSupportClosureAuthorityFailed
+        || firstBool(runtimeSupportClosureRaw.acceptedForGpuHmr, runtimeSupportClosureRaw.accepted_for_gpu_hmr) === true
+        || firstBool(runtimeSupportClosureRaw.gpuHmrSuccess, runtimeSupportClosureRaw.gpu_hmr_success) === true
+        || firstBool(
+          runtimeSupportClosureRaw.canSatisfyRuntimeProof,
+          runtimeSupportClosureRaw.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeSupportClosureRaw.canSatisfyDispatchProof,
+          runtimeSupportClosureRaw.can_satisfy_dispatch_proof,
+        ) === true
+      )
+    ) {
+      failures.push({ code: 'random_large_project_cold_adapter_closure_expectation_claimed_authority' });
     }
     const coldSourceIntakeRaw = compactObject(
       row.sourceIntakeEvidence
@@ -24803,6 +25092,14 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     randomLargeProjectColdPath.runtimeProfileProofBridge,
     randomLargeProjectColdPath.runtime_profile_proof_bridge,
   ));
+  const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
+    result.runtimeSupportClosureObligation,
+    result.runtime_support_closure_obligation,
+    sourceIntake.runtimeSupportClosureObligation,
+    sourceIntake.runtime_support_closure_obligation,
+    randomLargeProjectColdPath.runtimeSupportClosureObligation,
+    randomLargeProjectColdPath.runtime_support_closure_obligation,
+  ));
   const randomColdPathDirectInputEvidence =
     randomLargeProjectColdPath.directInputEvidence
     ?? randomLargeProjectColdPath.direct_input_evidence
@@ -24867,6 +25164,12 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     ...(randomColdRuntimeProfileProofBridge.present === true
       ? randomColdRuntimeProfileProofBridge.failedGates
       : []),
+    ...(randomColdRuntimeSupportClosureObligation.present === true
+      ? randomColdRuntimeSupportClosureObligation.blockingGaps
+      : []),
+    ...(randomColdRuntimeSupportClosureObligation.present === true
+      ? randomColdRuntimeSupportClosureObligation.failedGates
+      : []),
     'same_process_loader_unproven',
     'epoch_publication_unproven',
     'dispatch_trace_unproven',
@@ -24901,6 +25204,7 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     randomColdRuntimeProfileProofBridge.strictRuntimeProofId,
     randomColdRuntimeProfileProofBridge.proofLedgerId,
     randomColdRuntimeProfileProofBridge.facetHash,
+    randomColdRuntimeSupportClosureObligation.obligationHash,
   ]);
   return finalizeRow({
     artifactPath: relPath(filePath, context.repoRoot),
@@ -24954,6 +25258,30 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     runtime_profile_proof_bridge: randomColdRuntimeProfileProofBridge.present === true
       ? randomColdRuntimeProfileProofBridge
       : null,
+    randomColdRuntimeSupportClosureObligation:
+      randomColdRuntimeSupportClosureObligation.present === true
+        ? randomColdRuntimeSupportClosureObligation
+        : null,
+    random_cold_runtime_support_closure_obligation:
+      randomColdRuntimeSupportClosureObligation.present === true
+        ? randomColdRuntimeSupportClosureObligation
+        : null,
+    runtimeSupportClosureObligation:
+      randomColdRuntimeSupportClosureObligation.present === true
+        ? randomColdRuntimeSupportClosureObligation
+        : null,
+    runtime_support_closure_obligation:
+      randomColdRuntimeSupportClosureObligation.present === true
+        ? randomColdRuntimeSupportClosureObligation
+        : null,
+    runtimeSupportClosureOutcome:
+      randomColdRuntimeSupportClosureObligation.present === true
+        ? randomColdRuntimeSupportClosureObligation.outcome
+        : firstText(result.runtimeSupportClosureOutcome, result.runtime_support_closure_outcome),
+    runtime_support_closure_outcome:
+      randomColdRuntimeSupportClosureObligation.present === true
+        ? randomColdRuntimeSupportClosureObligation.outcome
+        : firstText(result.runtimeSupportClosureOutcome, result.runtime_support_closure_outcome),
     sourceUrl,
     source_url: sourceUrl,
     repoPath,
@@ -26593,6 +26921,14 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       row.cold_runtime_boundary_event_manifest_template,
     );
     const template = coldRuntimeBoundaryEventManifestTemplateFacet(templateRaw);
+    const runtimeSupportClosure = randomColdAdapterClosureExpectationFacet(firstCompactObject(
+      row.randomColdRuntimeSupportClosureObligation,
+      row.random_cold_runtime_support_closure_obligation,
+      row.runtimeSupportClosureObligation,
+      row.runtime_support_closure_obligation,
+      facet.runtimeSupportClosureObligation,
+      facet.runtime_support_closure_obligation,
+    ));
     const backendEvidence = compactObject(
       row.randomColdBackendEvidence
       ?? row.random_cold_backend_evidence,
@@ -26738,9 +27074,25 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     const forbiddenAuthority = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
       || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
       || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      || firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
       || firstBool(template.acceptedForGpuHmr, template.accepted_for_gpu_hmr) === true
       || firstBool(template.gpuHmrSuccess, template.gpu_hmr_success) === true
       || firstBool(template.canSatisfyRuntimeProof, template.can_satisfy_runtime_proof) === true
+      || firstBool(template.canSatisfyDispatchProof, template.can_satisfy_dispatch_proof) === true
+      || firstBool(
+        runtimeSupportClosure.acceptedForGpuHmr,
+        runtimeSupportClosure.accepted_for_gpu_hmr,
+      ) === true
+      || firstBool(runtimeSupportClosure.gpuHmrSuccess, runtimeSupportClosure.gpu_hmr_success) === true
+      || firstBool(
+        runtimeSupportClosure.canSatisfyRuntimeProof,
+        runtimeSupportClosure.can_satisfy_runtime_proof,
+      ) === true
+      || firstBool(
+        runtimeSupportClosure.canSatisfyDispatchProof,
+        runtimeSupportClosure.can_satisfy_dispatch_proof,
+      ) === true
+      || (runtimeSupportClosure.present === true && runtimeSupportClosure.accepted !== true)
       || firstBool(
         directInputEvidence.acceptedForGpuHmr,
         directInputEvidence.accepted_for_gpu_hmr,
@@ -26749,6 +27101,10 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       || firstBool(
         directInputEvidence.canSatisfyRuntimeProof,
         directInputEvidence.can_satisfy_runtime_proof,
+      ) === true
+      || firstBool(
+        directInputEvidence.canSatisfyDispatchProof,
+        directInputEvidence.can_satisfy_dispatch_proof,
       ) === true
       || firstBool(
         buildContentEvidence.acceptedForGpuHmr,
@@ -28208,6 +28564,14 @@ function rowRefs(rows) {
       row.coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template:
       row.coldRuntimeBoundaryEventManifestTemplate,
+    randomColdRuntimeSupportClosureObligation:
+      row.randomColdRuntimeSupportClosureObligation,
+    random_cold_runtime_support_closure_obligation:
+      row.randomColdRuntimeSupportClosureObligation,
+    runtimeSupportClosureObligation: row.runtimeSupportClosureObligation,
+    runtime_support_closure_obligation: row.runtimeSupportClosureObligation,
+    runtimeSupportClosureOutcome: row.runtimeSupportClosureOutcome,
+    runtime_support_closure_outcome: row.runtimeSupportClosureOutcome,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
@@ -29272,6 +29636,12 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.runtimeProfileProofBridge
     ?? row.runtime_profile_proof_bridge
   );
+  const runtimeSupportClosure = compactObject(
+    row.randomColdRuntimeSupportClosureObligation
+    ?? row.random_cold_runtime_support_closure_obligation
+    ?? row.runtimeSupportClosureObligation
+    ?? row.runtime_support_closure_obligation
+  );
   const runtimeChain = compactObject(
     row.realRocmRuntimeChain
     ?? row.real_rocm_runtime_chain
@@ -29375,6 +29745,9 @@ function runtimeClosureRowSignals(row = {}) {
     runtime_adapter_or_app_hook_contract:
       gateAccepted.runtime_adapter_or_app_hook_contract
       || appHookGate.required === true
+      || runtimeSupportClosure.acceptedAsSupportEvidence === true
+      || runtimeSupportClosure.accepted_as_support_evidence === true
+      || runtimeSupportClosure.present === true
       || coldTemplate.acceptedAsSupportEvidence === true
       || runtimeProfileBridgePresent,
     artifact_transport:
@@ -29415,6 +29788,10 @@ function runtimeClosureRowSignals(row = {}) {
     runtimeClosureAttempted,
     runtimeProfileBridgePresent,
     runtimeProfileBridgeAccepted,
+    runtimeSupportClosurePresent: runtimeSupportClosure.present === true,
+    runtimeSupportClosureAccepted:
+      runtimeSupportClosure.acceptedAsSupportEvidence === true
+      || runtimeSupportClosure.accepted_as_support_evidence === true,
     strictRuntimeProofAccepted,
     runtimeBoundaryTemplateAccepted:
       coldTemplate.acceptedAsSupportEvidence === true
@@ -29453,6 +29830,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     signals.filter((signal) => signal.runtimeProfileBridgePresent).length;
   const runtimeProfileBridgeAcceptedCount =
     signals.filter((signal) => signal.runtimeProfileBridgeAccepted).length;
+  const runtimeSupportClosurePresentCount =
+    signals.filter((signal) => signal.runtimeSupportClosurePresent).length;
+  const runtimeSupportClosureAcceptedCount =
+    signals.filter((signal) => signal.runtimeSupportClosureAccepted).length;
   const strictRuntimeProofAcceptedCount =
     signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
   const status = acceptedClosureRows.length > 0
@@ -29492,6 +29873,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     runtime_profile_bridge_present_count: runtimeProfileBridgePresentCount,
     runtimeProfileBridgeAcceptedCount,
     runtime_profile_bridge_accepted_count: runtimeProfileBridgeAcceptedCount,
+    runtimeSupportClosurePresentCount,
+    runtime_support_closure_present_count: runtimeSupportClosurePresentCount,
+    runtimeSupportClosureAcceptedCount,
+    runtime_support_closure_accepted_count: runtimeSupportClosureAcceptedCount,
     strictRuntimeProofAcceptedCount,
     strict_runtime_proof_accepted_count: strictRuntimeProofAcceptedCount,
     matrixRuntimeIngestionRequired:
