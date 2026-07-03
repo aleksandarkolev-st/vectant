@@ -4,7 +4,6 @@ import {
 } from './gpu-hmr-acceptance-contract.mjs';
 import {
   buildValidationRuntimeProofArtifact,
-  visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from './gpu-hmr-validation-proof-artifact.mjs';
 import {
   runtimeProofArtifactStrictGate,
@@ -130,6 +129,10 @@ function compactStringList(values) {
 
 function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function compactObjectList(value) {
+  return (Array.isArray(value) ? value : []).map(objectOrNull).filter(Boolean);
 }
 
 function firstText(...values) {
@@ -284,6 +287,179 @@ function visualRoleHasReference(source, role) {
     return firstText(item.role, item.artifactRole, item.artifact_role) === role
       && normalizeSha256(firstText(item.sha256, item.hash, item.contentHash, item.content_hash));
   });
+}
+
+function visualEvidenceArtifactsFromInput(input = {}) {
+  const inputArtifacts = objectOrNull(input.oracleArtifacts) ?? objectOrNull(input.oracle_artifacts) ?? {};
+  return [
+    ...compactObjectList(input.visualEvidenceArtifacts),
+    ...compactObjectList(input.visual_evidence_artifacts),
+    ...compactObjectList(inputArtifacts.visualEvidenceArtifacts),
+    ...compactObjectList(inputArtifacts.visual_evidence_artifacts),
+  ].map((artifact) => ({ ...artifact }));
+}
+
+function visualArtifactRole(artifact) {
+  const role = firstText(artifact.role, artifact.artifactRole, artifact.artifact_role);
+  if (!role) return null;
+  return role.trim().toLowerCase().replace(/-/g, '_');
+}
+
+function visualArtifactHash(artifact) {
+  return normalizeSha256(firstText(
+    artifact.contentHash,
+    artifact.content_hash,
+    artifact.expectedHash,
+    artifact.expected_hash,
+    artifact.sha256,
+    artifact.hash,
+  ));
+}
+
+function visualArtifactPath(artifact) {
+  return firstText(artifact.path, artifact.filePath, artifact.file_path, artifact.sourcePath, artifact.source_path);
+}
+
+function visualArtifactEvidenceRefs(artifact) {
+  return compactStringList([
+    ...(Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : []),
+    ...(Array.isArray(artifact.evidence_refs) ? artifact.evidence_refs : []),
+    artifact.evidenceId,
+    artifact.evidence_id,
+  ]);
+}
+
+function visualArtifactAuthority(artifact) {
+  return firstText(
+    artifact.proofAuthority,
+    artifact.proof_authority,
+    artifact.evidenceAuthority,
+    artifact.evidence_authority,
+    artifact.producerSubsystem,
+    artifact.producer_subsystem,
+    artifact.recomputeEngine,
+    artifact.recompute_engine,
+  );
+}
+
+function visualArtifactAuthorityAccepted(artifact) {
+  const authority = visualArtifactAuthority(artifact)?.toLowerCase();
+  if (!authority) return false;
+  return [
+    'runtime_boundary_visual_artifact_verification',
+    'async_visual_metrics',
+    'async_visual_worker',
+    'matrix_async_visual_worker',
+    'mcp.gpu_hmr_validation',
+    'visual_worker',
+    'visual_artifact_file_verification',
+    'image_byte_verification',
+    'byte_hash_verification',
+  ].some((token) => authority.includes(token));
+}
+
+function visualArtifactHasVerifiedBytes(artifact) {
+  return firstBool(
+    artifact.acceptedAsImageEvidence,
+    artifact.accepted_as_image_evidence,
+  ) === true
+    && firstBool(
+      artifact.acceptedAsVisualEvidence,
+      artifact.accepted_as_visual_evidence,
+    ) === true
+    && !firstText(artifact.readError, artifact.read_error)
+    && !firstText(artifact.visualAnalysisError, artifact.visual_analysis_error)
+    && visualArtifactAuthorityAccepted(artifact)
+    && visualArtifactEvidenceRefs(artifact).length > 0
+    && !authorityClaimsSuccess(artifact);
+}
+
+function visualEvidenceArtifactsVerificationFailures(visualOracleArtifacts, artifacts) {
+  const source = objectOrNull(visualOracleArtifacts);
+  if (!source) return ['runtime_boundary_visual_oracle_artifacts_missing'];
+  const artifactList = compactObjectList(artifacts);
+  if (artifactList.length === 0) return ['runtime_boundary_visual_evidence_artifacts_missing'];
+
+  const failures = [];
+  for (const role of ['before', 'after', 'diff']) {
+    const expectedHash = visualRoleHash(source, role);
+    const candidates = artifactList.filter((artifact) => visualArtifactRole(artifact) === role);
+    if (candidates.length === 0) {
+      failures.push(`runtime_boundary_visual_evidence_${role}_artifact_missing`);
+      continue;
+    }
+    const matching = candidates.find((artifact) =>
+      visualArtifactHash(artifact)
+      && expectedHash
+      && visualArtifactHash(artifact) === expectedHash
+    );
+    if (!matching) {
+      failures.push(`runtime_boundary_visual_evidence_${role}_hash_mismatch`);
+      continue;
+    }
+    if (!visualArtifactPath(matching) && !visualArtifactHash(matching)) {
+      failures.push(`runtime_boundary_visual_evidence_${role}_reference_missing`);
+    }
+    if (!visualArtifactHasVerifiedBytes(matching)) {
+      if (authorityClaimsSuccess(matching)) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_claims_success_authority`);
+      }
+      if (!visualArtifactAuthorityAccepted(matching)) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_verification_authority_missing`);
+      }
+      if (visualArtifactEvidenceRefs(matching).length === 0) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_evidence_refs_missing`);
+      }
+      if (firstBool(matching.acceptedAsImageEvidence, matching.accepted_as_image_evidence) !== true) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_image_not_accepted`);
+      }
+      if (firstBool(matching.acceptedAsVisualEvidence, matching.accepted_as_visual_evidence) !== true) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_visual_not_accepted`);
+      }
+      if (firstText(matching.readError, matching.read_error)) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_read_error`);
+      }
+      if (firstText(matching.visualAnalysisError, matching.visual_analysis_error)) {
+        failures.push(`runtime_boundary_visual_evidence_${role}_analysis_error`);
+      }
+    }
+  }
+  return [...new Set(failures)];
+}
+
+function verifiedVisualEvidenceArtifactForRole(visualOracleArtifacts, artifacts, role) {
+  const expectedHash = visualRoleHash(visualOracleArtifacts, role);
+  if (!expectedHash) return null;
+  return compactObjectList(artifacts).find((artifact) =>
+    visualArtifactRole(artifact) === role
+    && visualArtifactHash(artifact) === expectedHash
+    && visualArtifactHasVerifiedBytes(artifact)
+  ) ?? null;
+}
+
+function visualOracleArtifactsWithEvidenceVerification(visualOracleArtifacts, artifacts) {
+  const source = objectOrNull(visualOracleArtifacts);
+  if (!source) return null;
+  const verification = {
+    ...objectOrNull(source.visualPixelVerification),
+    ...objectOrNull(source.visual_pixel_verification),
+  };
+  const result = {
+    ...source,
+    visual_pixel_verification: verification,
+    visualPixelVerification: verification,
+  };
+  for (const role of ['before', 'after', 'diff']) {
+    const artifact = verifiedVisualEvidenceArtifactForRole(source, artifacts, role);
+    if (!artifact) continue;
+    const snakeKey = `${role}_image_hash_verified`;
+    const camelKey = `${role}ImageHashVerified`;
+    verification[snakeKey] = true;
+    verification[camelKey] = true;
+    result[snakeKey] = true;
+    result[camelKey] = true;
+  }
+  return result;
 }
 
 function eventKind(event) {
@@ -785,11 +961,26 @@ function visualOracleArtifactsFromInput(input = {}, outputEvent = null) {
     ...objectOrNull(source.visualPixelVerification),
     ...objectOrNull(source.visual_pixel_verification),
     before_image_hash: beforeImageHash,
-    before_image_hash_verified: beforeImageHash !== null,
+    before_image_hash_verified: firstBool(
+      source.beforeImageHashVerified,
+      source.before_image_hash_verified,
+      objectOrNull(source.visualPixelVerification)?.beforeImageHashVerified,
+      objectOrNull(source.visual_pixel_verification)?.before_image_hash_verified,
+    ) === true,
     after_image_hash: afterImageHash,
-    after_image_hash_verified: afterImageHash !== null,
+    after_image_hash_verified: firstBool(
+      source.afterImageHashVerified,
+      source.after_image_hash_verified,
+      objectOrNull(source.visualPixelVerification)?.afterImageHashVerified,
+      objectOrNull(source.visual_pixel_verification)?.after_image_hash_verified,
+    ) === true,
     diff_image_hash: diffImageHash,
-    diff_image_hash_verified: diffImageHash !== null,
+    diff_image_hash_verified: firstBool(
+      source.diffImageHashVerified,
+      source.diff_image_hash_verified,
+      objectOrNull(source.visualPixelVerification)?.diffImageHashVerified,
+      objectOrNull(source.visual_pixel_verification)?.diff_image_hash_verified,
+    ) === true,
     metrics_verified: firstBool(
       source.pixelMetricsVerified,
       source.pixel_metrics_verified,
@@ -931,11 +1122,15 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
   const outputEventForInput = stageEventsForInput.get('output_oracle') ?? null;
   const computeOracleArtifacts = computeOracleArtifactsFromInput(input);
   const visualOracleArtifacts = visualOracleArtifactsFromInput(input, outputEventForInput);
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromInput(input);
   const visualOracleRequested =
     Boolean(visualOracleArtifacts)
     || isVisualOracleKind(firstText(input.oracleKind, input.oracle_kind, outputEventForInput?.oracleKind));
   const oracleVerificationFailures = visualOracleRequested
-    ? visualOracleVerificationFailures(visualOracleArtifacts)
+    ? [
+        ...visualOracleVerificationFailures(visualOracleArtifacts),
+        ...visualEvidenceArtifactsVerificationFailures(visualOracleArtifacts, visualEvidenceArtifacts),
+      ]
     : computeOracleVerificationFailures(computeOracleArtifacts);
   const failedGates = [
     projectId ? null : 'runtime_boundary_project_id_missing',
@@ -1105,7 +1300,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
   const host = stages.host_identity;
   const output = stages.output_oracle;
   const backend = firstText(input.backend);
-  const visualOracleArtifacts = visualOracleArtifactsFromInput(input, output);
+  let visualOracleArtifacts = visualOracleArtifactsFromInput(input, output);
   const oracleMode = visualOracleArtifacts ? 'visual' : 'compute';
   const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const artifactBeforeHash = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
@@ -1383,19 +1578,19 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     ? (objectOrNull(input.deterministicVisualMode) ?? objectOrNull(input.deterministic_visual_mode) ?? null)
     : null;
   const visualEvidenceArtifacts = oracleMode === 'visual'
-    ? visualEvidenceArtifactsFromVisualOracleArtifacts(visualOracleArtifacts, {
-        producerSubsystem: 'runtime_boundary_proof_adapter',
-      }).map((artifact) => ({
-        ...artifact,
-        acceptedAsVisualEvidence: true,
-        accepted_as_visual_evidence: true,
-        acceptedAsImageEvidence: true,
-        accepted_as_image_evidence: true,
-        readError: null,
-        read_error: null,
-        visualAnalysisError: null,
-        visual_analysis_error: null,
-      }))
+    ? visualEvidenceArtifactsFromInput(input)
+    : [];
+  if (oracleMode === 'visual') {
+    visualOracleArtifacts = visualOracleArtifactsWithEvidenceVerification(
+      visualOracleArtifacts,
+      visualEvidenceArtifacts,
+    );
+  }
+  const visualEvidenceRefs = oracleMode === 'visual'
+    ? compactStringList([
+        ...output.evidenceRefs,
+        ...visualEvidenceArtifacts.flatMap(visualArtifactEvidenceRefs),
+      ])
     : [];
   const outputProof = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
@@ -1433,8 +1628,8 @@ function buildBoundaryProofComponents(input, stageEvidence) {
       deterministic_visual_mode: deterministicVisualMode,
       evidenceRefs: output.evidenceRefs,
       evidence_refs: output.evidenceRefs,
-      visualEvidenceRefs: oracleMode === 'visual' ? output.evidenceRefs : [],
-      visual_evidence_refs: oracleMode === 'visual' ? output.evidenceRefs : [],
+      visualEvidenceRefs,
+      visual_evidence_refs: visualEvidenceRefs,
     },
     oracleArtifacts: oracleMode === 'visual'
       ? { visual_oracle_artifacts: visualOracleArtifacts }
@@ -1446,8 +1641,8 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     visual_frame_observed: oracleMode === 'visual',
     visualEvidenceRequired: oracleMode === 'visual',
     visual_evidence_required: oracleMode === 'visual',
-    visualEvidenceRefs: oracleMode === 'visual' ? output.evidenceRefs : [],
-    visual_evidence_refs: oracleMode === 'visual' ? output.evidenceRefs : [],
+    visualEvidenceRefs,
+    visual_evidence_refs: visualEvidenceRefs,
     deterministicOutputObserved: true,
     deterministic_output_observed: true,
     deterministicOracleProvided: true,

@@ -80,6 +80,44 @@ function writeVisualFixturePngs() {
   }));
 }
 
+function visualEvidenceArtifactsFromFixture(fixture) {
+  return ['before', 'after', 'diff'].map((role) => ({
+    kind: 'visual-artifact',
+    role,
+    artifactRole: role,
+    artifact_role: role,
+    path: fixture[`${role}Image`],
+    sourcePath: fixture[`${role}Image`],
+    source_path: fixture[`${role}Image`],
+    contentHash: fixture[`${role}ImageHash`],
+    content_hash: fixture[`${role}ImageHash`],
+    expectedHash: fixture[`${role}ImageHash`],
+    expected_hash: fixture[`${role}ImageHash`],
+    proofAuthority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
+    proof_authority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
+    evidenceAuthority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
+    evidence_authority: 'runtime_boundary_visual_artifact_verification_not_gpu_hmr_success',
+    acceptedAsVisualEvidence: true,
+    accepted_as_visual_evidence: true,
+    acceptedAsImageEvidence: true,
+    accepted_as_image_evidence: true,
+    acceptedAsRuntimeVisualProof: false,
+    accepted_as_runtime_visual_proof: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    readError: null,
+    read_error: null,
+    visualAnalysisError: null,
+    visual_analysis_error: null,
+    evidenceRefs: [`visual-artifact-verification:${role}:${fixture[`${role}ImageHash`]}`],
+    evidence_refs: [`visual-artifact-verification:${role}:${fixture[`${role}ImageHash`]}`],
+  }));
+}
+
 function boundaryEvents(overrides = {}) {
   const session = overrides.session ?? 'runtime-session-1';
   const processId = overrides.processId ?? 'pid-1';
@@ -279,6 +317,7 @@ const visualInput = adapterInput({
     pixelMetricsVerified: true,
     evidenceRefs: ['validation:output-oracle:visual-pngs'],
   },
+  visualEvidenceArtifacts: visualEvidenceArtifactsFromFixture(visualFixture),
 });
 const visualStageEvidence = buildRuntimeBoundaryStageEvidence(visualInput.runtimeBoundaryEvents);
 assert.equal(visualStageEvidence.accepted, true, visualStageEvidence.failedGates.join(','));
@@ -297,6 +336,17 @@ const visualLedgerArtifacts = visualLedgerOracleArtifacts.visual_oracle_artifact
 assert.ok(visualLedgerArtifacts, Object.keys(visualLedgerRecord).join(','));
 assert.equal(visualLedgerArtifacts.after_image_hash, visualFixture.afterImageHash);
 assert.equal(visualAccepted.strictGate.status, 'pass', visualAccepted.strictGate.detail);
+
+const visualDeclaredOnlyOracle = buildRuntimeBoundaryProofAdapter({
+  ...visualInput,
+  visualEvidenceArtifacts: [],
+});
+assert.equal(visualDeclaredOnlyOracle.accepted, false);
+assert.equal(visualDeclaredOnlyOracle.runtimeProofArtifact, null);
+assert.ok(
+  visualDeclaredOnlyOracle.failedGates.includes('runtime_boundary_visual_evidence_artifacts_missing'),
+  visualDeclaredOnlyOracle.failedGates.join(','),
+);
 
 const visualMissingFramebuffer = buildRuntimeBoundaryProofAdapter({
   ...visualInput,
