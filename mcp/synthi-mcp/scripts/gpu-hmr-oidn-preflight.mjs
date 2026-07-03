@@ -73,6 +73,10 @@ function sha256Json(value) {
   return createHash('sha256').update(JSON.stringify(stableJson(value))).digest('hex');
 }
 
+function sha256Stable(value) {
+  return `sha256:${sha256Json(value)}`;
+}
+
 function sha256Buffer(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
@@ -650,6 +654,47 @@ function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd, pathInt
   };
 }
 
+function oidnPreflightTimingMetrics({ durationNs, classification }) {
+  const editHash = sha256Stable({
+    workerContainer: CFG.workerContainer,
+    repoPath: CFG.repoPath,
+    seed: CFG.seed,
+    outputOracleManifestPath: CFG.outputOracleManifestPath || null,
+  });
+  return {
+    schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+    schema_version: 'synthi.gpu.hmr.runner_timing_metrics.v1',
+    proofAuthority: 'oidn_preflight_timing_telemetry_only_not_gpu_hmr_success',
+    proof_authority: 'oidn_preflight_timing_telemetry_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    metricClock: 'monotonic_ns',
+    metric_clock: 'monotonic_ns',
+    metricScope: 'cold',
+    metric_scope: 'cold',
+    cacheState: 'clean',
+    cache_state: 'clean',
+    editId: `${cleanToken(CFG.slug)}:oidn-runtime-preflight`,
+    edit_id: `${cleanToken(CFG.slug)}:oidn-runtime-preflight`,
+    editHash,
+    edit_hash: editHash,
+    editKind: 'runtime_preflight',
+    edit_kind: 'runtime_preflight',
+    differentEdit: false,
+    different_edit: false,
+    resultState: classification?.resultState ?? null,
+    result_state: classification?.resultState ?? null,
+    timings: {
+      runtime_probe_time: durationNs,
+      total_validator_wall_time: durationNs,
+    },
+  };
+}
+
 async function buildProof() {
   if (!CFG.workerContainer) failConfig('OIDN preflight requires a worker container');
   if (!CFG.repoPath) failConfig('OIDN preflight requires the HIPRT/OIDN repo path inside the worker');
@@ -679,12 +724,16 @@ async function buildProof() {
     outputOracle,
   });
   const ended = process.hrtime.bigint();
+  const durationNs = Number(ended - started);
+  const timingMetrics = oidnPreflightTimingMetrics({ durationNs, classification });
   const proofBase = {
     schema: 'synthi.gpu_hmr.oidn_preflight.v1',
     slug: CFG.slug,
     startedAt,
     completedAt: new Date().toISOString(),
-    durationMs: Number((Number(ended - started) / 1_000_000).toFixed(3)),
+    durationMs: Number((durationNs / 1_000_000).toFixed(3)),
+    timingMetrics,
+    timing_metrics: timingMetrics,
     workerContainer: CFG.workerContainer,
     repoPath: CFG.repoPath,
     seed: CFG.seed,
@@ -819,6 +868,17 @@ function runSelfCheck() {
     outputAccepted.openGaps.includes('oidn_full_runtime_hmr_ledger_not_proven'),
     'accepted OIDN output proof must still require full runtime ledger',
   );
+  const timingMetrics = oidnPreflightTimingMetrics({
+    durationNs: 123456789,
+    classification: outputAccepted,
+  });
+  assert(timingMetrics.metricClock === 'monotonic_ns', 'OIDN timing metric clock must be monotonic_ns');
+  assert(timingMetrics.metricScope === 'cold', 'OIDN preflight timing must use the accepted cold scope');
+  assert(timingMetrics.editKind === 'runtime_preflight', 'OIDN timing edit kind must identify runtime preflight');
+  assert(timingMetrics.timings.runtime_probe_time === 123456789, 'OIDN runtime probe timing missing');
+  assert(timingMetrics.acceptedForGpuHmr === false, 'OIDN timing cannot claim GPU HMR acceptance');
+  assert(timingMetrics.gpuHmrSuccess === false, 'OIDN timing cannot claim GPU HMR success');
+  assert(timingMetrics.canSatisfyRuntimeProof === false, 'OIDN timing cannot satisfy runtime proof');
   const shimRejected = classifyPreflight({
     oidnTool: './bin/oidnTest',
     tests: [
