@@ -7257,19 +7257,23 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const proofIdsBoundToRow =
     proofIds.length > 0
     && proofIds.every((proofId) => rowProofIds.has(proofId));
+  const runtimeTargetIdentity = compactObject(
+    row.runtimeTargetIdentity ?? row.runtime_target_identity,
+  );
+  const runtimeTargetIdentityAccepted =
+    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity === true
+    || runtimeTargetIdentity.accepted_as_runtime_target_identity === true;
+  const acceptedRuntimeTargetId = runtimeTargetIdentityAccepted
+    ? firstText(runtimeTargetIdentity.targetId, runtimeTargetIdentity.target_id)
+    : null;
   const rowRuntimeIdentities = compactStringList([
+    acceptedRuntimeTargetId,
     row.targetId,
     row.target_id,
-    row.profileId,
-    row.profile_id,
-    row.validationProfileId,
-    row.validation_profile_id,
     row.projectId,
     row.project_id,
     ledgerRecord.projectId,
     ledgerRecord.project_id,
-    ledgerRecord.editId,
-    ledgerRecord.edit_id,
   ]);
   const profileIdBoundToRow =
     Boolean(profileId)
