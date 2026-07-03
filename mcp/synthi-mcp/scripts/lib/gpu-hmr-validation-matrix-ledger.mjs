@@ -16282,8 +16282,6 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   const visualEvidenceArtifacts = visualEvidenceInputsFromValue(
     explicitVisualEvidenceCarrier
       ? (json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts)
-      : explicitVisualArtifactCarrier
-        ? null
       : (
           runtimeProofArtifact.visualEvidenceArtifacts
           ?? runtimeProofArtifact.visual_evidence_artifacts
