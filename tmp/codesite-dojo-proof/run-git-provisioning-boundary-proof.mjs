@@ -126,7 +126,7 @@ pre{background:#101812;color:#e9f2ed;padding:14px;white-space:pre-wrap;overflow:
 <div class="card"><div class="label">Policy Tests</div><div class="value">${escapeHtml(testCountLabel(proof.commands.find((item) => item.name === 'policy')))}</div></div>
 <div class="card"><div class="label">Git Boundary</div><div class="value">${escapeHtml(testCountLabel(proof.commands.find((item) => item.name === 'gitService')))}</div></div>
 <div class="card"><div class="label">CodeSiteFS</div><div class="value">${escapeHtml(testCountLabel(proof.commands.find((item) => item.name === 'codesiteFs')))}</div></div>
-<div class="card"><div class="label">Docker Policy</div><div class="value">${escapeHtml(testCountLabel(proof.commands.find((item) => item.name === 'dockerPolicy')))}</div></div>
+<div class="card"><div class="label">Docker CodeSiteFS</div><div class="value">${escapeHtml(testCountLabel(proof.commands.find((item) => item.name === 'dockerCodeSiteFs')))}</div></div>
 </div>
 <section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody>${assertionRows}</tbody></table></section>
 <section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody>${commandRows}</tbody></table></section>
@@ -151,10 +151,25 @@ async function main() {
   fs.mkdirSync(proofRoot, { recursive: true });
 
   const { codeSiteGitActionAttempts, shouldRunCodeSiteGitBoundary } = require(path.join(repoRoot, 'backend', 'collab-server', 'codeSiteGitPolicy.js'));
+  const { evaluateCodeSiteWrite } = require(path.join(repoRoot, 'backend', 'collab-server', 'codesiteFs.js'));
   const serverSource = read('backend/collab-server/server.js');
   const policySource = read('backend/collab-server/codeSiteGitPolicy.js');
   const initAttempt = codeSiteGitActionAttempts('init')[0] || null;
   const cloneAttempt = codeSiteGitActionAttempts('clone')[0] || null;
+  const narrowProvisioning = evaluateCodeSiteWrite({
+    active: true,
+    mutationLeaseId: 'lease-proof',
+    transactionId: 'txn-proof',
+    allowedPaths: ['synthi/src/components/**'],
+    allowedTools: ['git_provisioning'],
+  }, { path: '**', kind: 'init', tool: 'git_provisioning' });
+  const repoWideProvisioning = evaluateCodeSiteWrite({
+    active: true,
+    mutationLeaseId: 'lease-proof',
+    transactionId: 'txn-proof',
+    allowedPaths: ['**'],
+    allowedTools: ['git_provisioning'],
+  }, { path: '**', kind: 'init', tool: 'git_provisioning' });
   const assertions = [];
 
   assert(initAttempt?.tool === 'git_provisioning' && initAttempt?.path === '**', 'init maps to git_provisioning repo-scoped attempt', assertions, initAttempt);
@@ -164,6 +179,10 @@ async function main() {
   assert(/case 'init':[\s\S]{0,360}runGitBoundary[\s\S]{0,220}gitService\.initRepo/.test(serverSource), 'server init branch wraps gitService.initRepo in runGitBoundary', assertions);
   assert(/case 'clone':[\s\S]{0,360}runGitBoundary[\s\S]{0,220}gitService\.cloneRepo/.test(serverSource), 'server clone branch wraps gitService.cloneRepo in runGitBoundary', assertions);
   assert(/'init'/.test(policySource) && /'clone'/.test(policySource), 'policy action set includes provisioning actions', assertions);
+  assert(narrowProvisioning.ok === false
+    && narrowProvisioning.event?.details?.reason_codes?.includes('repo_provisioning_clearance_required'),
+  'narrow write set cannot authorize repo provisioning', assertions, narrowProvisioning.event?.details);
+  assert(repoWideProvisioning.ok === true, 'repo-wide write set authorizes repo provisioning', assertions, repoWideProvisioning.event?.details);
 
   const commands = [
     { name: 'syntax', ...run('node', ['--check', 'backend/collab-server/server.js']) },
@@ -172,7 +191,7 @@ async function main() {
     { name: 'gitService', ...run('node', ['--test', 'backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js']) },
     { name: 'codesiteFs', ...run('node', ['--test', 'backend/collab-server/__tests__/codesiteFs.test.js']) },
     {
-      name: 'dockerPolicy',
+      name: 'dockerCodeSiteFs',
       ...run('docker', [
         'run',
         '--rm',
@@ -183,7 +202,7 @@ async function main() {
         'node:20-bookworm',
         'sh',
         '-lc',
-        'node --check backend/collab-server/codeSiteGitPolicy.js && node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js',
+        'node --check backend/collab-server/codeSiteGitPolicy.js && node --check backend/collab-server/codesiteFs.js && node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js backend/collab-server/__tests__/codesiteFs.test.js',
       ]),
     },
   ];
@@ -208,6 +227,16 @@ async function main() {
         init: shouldRunCodeSiteGitBoundary('init'),
         clone: shouldRunCodeSiteGitBoundary('clone'),
         status: shouldRunCodeSiteGitBoundary('status'),
+      },
+      provisioningClearance: {
+        narrow: {
+          ok: narrowProvisioning.ok,
+          reasonCodes: narrowProvisioning.event?.details?.reason_codes || [],
+        },
+        repoWide: {
+          ok: repoWideProvisioning.ok,
+          reasonCodes: repoWideProvisioning.event?.details?.reason_codes || [],
+        },
       },
     },
     commands,

@@ -2056,6 +2056,9 @@ function evaluateCodeSiteWrite(context, attempt = {}) {
   if (context.blockedPaths?.some((pattern) => matchPathPattern(relPath, pattern))) {
     return denied(context, attempt, relPath, ['entered_no_fly_zone']);
   }
+  if (isRepoProvisioningCodeSiteTool(tool) && !hasRepoWideCodeSiteClearance(context.allowedPaths)) {
+    return denied(context, attempt, relPath, ['repo_provisioning_clearance_required']);
+  }
   if (!repoScopedTool && context.allowedPaths?.length && !context.allowedPaths.some((pattern) => matchPathPattern(relPath, pattern))) {
     return denied(context, attempt, relPath, ['outside_clearance_route']);
   }
@@ -2064,6 +2067,14 @@ function evaluateCodeSiteWrite(context, attempt = {}) {
 
 function isRepoScopedCodeSiteTool(tool) {
   return ['git_refs', 'git_config', 'git_provisioning'].includes(String(tool || ''));
+}
+
+function isRepoProvisioningCodeSiteTool(tool) {
+  return String(tool || '') === 'git_provisioning';
+}
+
+function hasRepoWideCodeSiteClearance(allowedPaths = []) {
+  return parsePatternList(allowedPaths).some((pattern) => ['**', '*'].includes(cleanPattern(pattern)));
 }
 
 function evaluateCodeSiteRead(context, attempt = {}) {

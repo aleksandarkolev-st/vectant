@@ -341,6 +341,28 @@ test('repo-scoped Git ref writes honor tool clearance without requiring fake fil
   assert.deepStrictEqual(fileWrite.event.details.reason_codes, ['tool_not_in_clearance']);
 });
 
+test('git provisioning requires explicit repo-wide clearance', () => {
+  const narrowContext = {
+    active: true,
+    mutationLeaseId: 'lease-1',
+    transactionId: 'txn-1',
+    allowedPaths: ['synthi/src/components/**'],
+    allowedTools: ['git_provisioning'],
+  };
+  const repoWideContext = {
+    ...narrowContext,
+    allowedPaths: ['**'],
+  };
+
+  const narrow = evaluateCodeSiteWrite(narrowContext, { path: '**', kind: 'init', tool: 'git_provisioning' });
+  assert.strictEqual(narrow.ok, false);
+  assert.deepStrictEqual(narrow.event.details.reason_codes, ['repo_provisioning_clearance_required']);
+
+  const repoWide = evaluateCodeSiteWrite(repoWideContext, { path: '**', kind: 'init', tool: 'git_provisioning' });
+  assert.strictEqual(repoWide.ok, true);
+  assert.deepStrictEqual(repoWide.event.details.reason_codes, ['inside_clearance_route']);
+});
+
 test('CodeSiteFS lifecycle applies an allowed write through prepare, emit, apply, and verify', async () => {
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-boundary-'));
   await fs.mkdir(path.join(repo, 'src'), { recursive: true });
