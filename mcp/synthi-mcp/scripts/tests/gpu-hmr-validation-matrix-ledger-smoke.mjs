@@ -2495,6 +2495,59 @@ function randomColdPathManifest({
   };
 }
 
+function randomColdRuntimeProfileProofBridgeFixture(overrides = {}) {
+  const bridge = {
+    present: true,
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1',
+    proofAuthority: 'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsRuntimeProfileProofBridge: true,
+    accepted_as_runtime_profile_proof_bridge: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    runtimeProofProfilePath: 'profiles/arbitrary/runtime-profile.json',
+    runtime_proof_profile_path: 'profiles/arbitrary/runtime-profile.json',
+    runtimeProofProfileSha256: hashValue('random-cold-runtime-profile-proof-bridge:profile'),
+    runtime_proof_profile_sha256: hashValue('random-cold-runtime-profile-proof-bridge:profile'),
+    runtimeProfileAdapterResultPath: 'artifacts/arbitrary/runtime-adapter-result.json',
+    runtime_profile_adapter_result_path: 'artifacts/arbitrary/runtime-adapter-result.json',
+    runtimeProfileAdapterResultSha256: hashValue('random-cold-runtime-profile-proof-bridge:adapter-result'),
+    runtime_profile_adapter_result_sha256: hashValue('random-cold-runtime-profile-proof-bridge:adapter-result'),
+    strictRuntimeProofAccepted: false,
+    strict_runtime_proof_accepted: false,
+    runnerAttempted: true,
+    runner_attempted: true,
+    runnerExitCode: 0,
+    runner_exit_code: 0,
+    runnerTimedOut: false,
+    runner_timed_out: false,
+    runtimeProfileAdapterResultPresent: true,
+    runtime_profile_adapter_result_present: true,
+    authorityClaims: [],
+    authority_claims: [],
+    blockingGaps: ['strict_runtime_ledger_missing'],
+    blocking_gaps: ['strict_runtime_ledger_missing'],
+    adapterResultBlockingGaps: ['strict_runtime_proof_not_accepted'],
+    adapter_result_blocking_gaps: ['strict_runtime_proof_not_accepted'],
+    facetHash: hashValue('random-cold-runtime-profile-proof-bridge:facet'),
+    facet_hash: hashValue('random-cold-runtime-profile-proof-bridge:facet'),
+    failedGates: [],
+    failed_gates: [],
+  };
+  return {
+    ...bridge,
+    ...overrides,
+  };
+}
+
 const randomColdPathDir = path.join(tmpRoot, 'random-large-project-cold-path-smoke');
 await writeJson(
   path.join(randomColdPathDir, 'random-cold-valid.json'),
@@ -2610,6 +2663,96 @@ const forgedSelectionAuditDefaultLedger = await collectGpuHmrValidationMatrixLed
   roots: [forgedSelectionAuditDir],
 });
 assert.equal(forgedSelectionAuditDefaultLedger.summary.omittedInvalidatedRows, 1);
+const hiddenAuthorityBridgeDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-hidden-authority',
+);
+await writeJson(
+  path.join(hiddenAuthorityBridgeDir, 'random-cold-runtime-bridge-hidden-authority.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-hidden-authority',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-hidden-authority.git',
+    immutableCommit: sha256Hex('runtime-bridge-hidden-authority:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        present: false,
+        acceptedForGpuHmr: true,
+        accepted_for_gpu_hmr: true,
+        gpuHmrSuccess: true,
+        gpu_hmr_success: true,
+        canSatisfyRuntimeProof: true,
+        can_satisfy_runtime_proof: true,
+        canSatisfyDispatchProof: true,
+        can_satisfy_dispatch_proof: true,
+      }),
+    },
+  }),
+);
+const hiddenAuthorityBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [hiddenAuthorityBridgeDir],
+  includeInvalidated: true,
+});
+const hiddenAuthorityBridgeRow = hiddenAuthorityBridgeLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(hiddenAuthorityBridgeRow?.safety.accepted, false);
+assert.equal(hiddenAuthorityBridgeRow.acceptedForGpuHmr, false);
+assert.equal(hiddenAuthorityBridgeRow.gpuHmrSuccess, false);
+assert.equal(hiddenAuthorityBridgeRow.randomColdRuntimeProfileProofBridge.present, true);
+assert.ok(hiddenAuthorityBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_runtime_profile_bridge_invalid'
+));
+assert.ok(hiddenAuthorityBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_claimed_gpu_hmr_success'
+));
+assert.ok(hiddenAuthorityBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_claimed_runtime_authority'
+));
+const malformedHashBridgeDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-malformed-hashes',
+);
+await writeJson(
+  path.join(malformedHashBridgeDir, 'random-cold-runtime-bridge-malformed-hashes.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-malformed-hashes',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-malformed-hashes.git',
+    immutableCommit: sha256Hex('runtime-bridge-malformed-hashes:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        runtimeProofProfileSha256: 'not-a-sha256-profile',
+        runtime_proof_profile_sha256: 'not-a-sha256-profile',
+        runtimeProfileAdapterResultSha256: 'not-a-sha256-adapter-result',
+        runtime_profile_adapter_result_sha256: 'not-a-sha256-adapter-result',
+        facetHash: 'not-a-sha256-facet',
+        facet_hash: 'not-a-sha256-facet',
+      }),
+    },
+  }),
+);
+const malformedHashBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [malformedHashBridgeDir],
+  includeInvalidated: true,
+});
+const malformedHashBridgeRow = malformedHashBridgeLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(malformedHashBridgeRow?.safety.accepted, false);
+assert.equal(malformedHashBridgeRow.acceptedForGpuHmr, false);
+assert.equal(malformedHashBridgeRow.gpuHmrSuccess, false);
+assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_profile_hash_invalid'
+));
+assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_adapter_result_hash_invalid'
+));
+assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_facet_hash_invalid'
+));
 assert.ok(randomColdRow.openGaps.includes('strict_runtime_ledger_missing'));
 const randomColdCoverage = new Map(
   randomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry]),

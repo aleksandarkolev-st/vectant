@@ -240,6 +240,10 @@ const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
   'build_metadata_content_bytes_only_not_gpu_hmr_success';
+const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
+const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
+  'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_evidence_collection.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_AUTHORITY =
@@ -757,6 +761,11 @@ function normalizeSha256(value) {
   if (/^sha256:[a-f0-9]{64}$/i.test(raw)) return raw.toLowerCase();
   if (/^[a-f0-9]{64}$/i.test(raw)) return `sha256:${raw.toLowerCase()}`;
   return raw;
+}
+
+function isSha256(value) {
+  const normalized = normalizeSha256(value);
+  return typeof normalized === 'string' && /^sha256:[a-f0-9]{64}$/.test(normalized);
 }
 
 function runtimeBoundaryLineHashes(lines = []) {
@@ -3158,6 +3167,219 @@ function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
   };
 }
 
+function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
+  const facet = compactObject(raw);
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const acceptedAsBridge = firstBool(
+    facet.acceptedAsRuntimeProfileProofBridge,
+    facet.accepted_as_runtime_profile_proof_bridge,
+    facet.accepted,
+  ) === true;
+  const runtimeProofProfileSha256 = normalizeSha256(firstText(
+    facet.runtimeProofProfileSha256,
+    facet.runtime_proof_profile_sha256,
+  ));
+  const adapterResultSha256 = normalizeSha256(firstText(
+    facet.runtimeProfileAdapterResultSha256,
+    facet.runtime_profile_adapter_result_sha256,
+  ));
+  const adapterResultPath = firstText(
+    facet.runtimeProfileAdapterResultPath,
+    facet.runtime_profile_adapter_result_path,
+  );
+  const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
+  const strictRuntimeProofAccepted = firstBool(
+    facet.strictRuntimeProofAccepted,
+    facet.strict_runtime_proof_accepted,
+  ) === true;
+  const strictRuntimeProofId = firstText(
+    facet.strictRuntimeProofId,
+    facet.strict_runtime_proof_id,
+  );
+  const proofLedgerId = firstText(facet.proofLedgerId, facet.proof_ledger_id);
+  const runnerAttempted = firstBool(facet.runnerAttempted, facet.runner_attempted) === true;
+  const adapterResultPresent = firstBool(
+    facet.runtimeProfileAdapterResultPresent,
+    facet.runtime_profile_adapter_result_present,
+  ) === true;
+  const authorityClaims = compactStringList(facet.authorityClaims ?? facet.authority_claims);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const adapterResultBlockingGaps = compactStringList([
+    ...(Array.isArray(facet.adapterResultBlockingGaps) ? facet.adapterResultBlockingGaps : []),
+    ...(Array.isArray(facet.adapter_result_blocking_gaps) ? facet.adapter_result_blocking_gaps : []),
+  ]);
+  const suppliedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const authorityFlagClaimed = acceptedForGpuHmr === true
+    || gpuHmrSuccess === true
+    || canSatisfyRuntimeProof === true
+    || canSatisfyDispatchProof === true
+    || authorityClaims.length > 0;
+  const hasBridgeMaterial = Boolean(
+    schemaVersion
+      || proofAuthority
+      || acceptedAsBridge
+      || strictRuntimeProofAccepted
+      || strictRuntimeProofId
+      || proofLedgerId
+      || runnerAttempted
+      || adapterResultPresent
+      || runtimeProofProfileSha256
+      || adapterResultSha256
+      || adapterResultPath
+      || facetHash
+      || blockingGaps.length
+      || adapterResultBlockingGaps.length
+      || suppliedFailedGates.length
+  );
+  const present = Object.keys(facet).length > 0
+    && (firstBool(facet.present) !== false || authorityFlagClaimed || hasBridgeMaterial);
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      blockingGaps: [],
+      blocking_gaps: [],
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const failedGates = compactStringList([
+    ...suppliedFailedGates,
+    schemaVersion === RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION
+      ? null
+      : 'random_cold_runtime_profile_bridge_schema_invalid',
+    proofAuthority === RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY
+      ? null
+      : 'random_cold_runtime_profile_bridge_authority_invalid',
+    acceptedForGpuHmr === true
+      ? 'random_cold_runtime_profile_bridge_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'random_cold_runtime_profile_bridge_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'random_cold_runtime_profile_bridge_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'random_cold_runtime_profile_bridge_claimed_dispatch_authority'
+      : null,
+    authorityClaims.length === 0
+      ? null
+      : 'random_cold_runtime_profile_bridge_authority_claim_present',
+    acceptedAsBridge && runnerAttempted !== true
+      ? 'random_cold_runtime_profile_bridge_accepted_without_runner_attempt'
+      : null,
+    acceptedAsBridge && adapterResultPresent !== true
+      ? 'random_cold_runtime_profile_bridge_accepted_without_adapter_result'
+      : null,
+    acceptedAsBridge && !runtimeProofProfileSha256
+      ? 'random_cold_runtime_profile_bridge_profile_hash_missing'
+      : null,
+    acceptedAsBridge && runtimeProofProfileSha256 && !isSha256(runtimeProofProfileSha256)
+      ? 'random_cold_runtime_profile_bridge_profile_hash_invalid'
+      : null,
+    acceptedAsBridge && !adapterResultSha256
+      ? 'random_cold_runtime_profile_bridge_adapter_result_hash_missing'
+      : null,
+    acceptedAsBridge && adapterResultSha256 && !isSha256(adapterResultSha256)
+      ? 'random_cold_runtime_profile_bridge_adapter_result_hash_invalid'
+      : null,
+    acceptedAsBridge && !adapterResultPath
+      ? 'random_cold_runtime_profile_bridge_adapter_result_path_missing'
+      : null,
+    acceptedAsBridge && !facetHash
+      ? 'random_cold_runtime_profile_bridge_facet_hash_missing'
+      : null,
+    acceptedAsBridge && facetHash && !isSha256(facetHash)
+      ? 'random_cold_runtime_profile_bridge_facet_hash_invalid'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedAsRuntimeProfileProofBridge: acceptedAsBridge,
+    accepted_as_runtime_profile_proof_bridge: acceptedAsBridge,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    runtimeProofProfilePath: firstText(
+      facet.runtimeProofProfilePath,
+      facet.runtime_proof_profile_path,
+    ),
+    runtime_proof_profile_path: firstText(
+      facet.runtimeProofProfilePath,
+      facet.runtime_proof_profile_path,
+    ),
+    runtimeProofProfileSha256,
+    runtime_proof_profile_sha256: runtimeProofProfileSha256,
+    runtimeProfileAdapterResultPath: adapterResultPath,
+    runtime_profile_adapter_result_path: adapterResultPath,
+    runtimeProfileAdapterResultSha256: adapterResultSha256,
+    runtime_profile_adapter_result_sha256: adapterResultSha256,
+    strictRuntimeProofAccepted,
+    strict_runtime_proof_accepted: strictRuntimeProofAccepted,
+    strictRuntimeProofId,
+    strict_runtime_proof_id: strictRuntimeProofId,
+    proofLedgerId,
+    proof_ledger_id: proofLedgerId,
+    runnerAttempted,
+    runner_attempted: runnerAttempted,
+    runnerExitCode: finiteNumber(facet.runnerExitCode ?? facet.runner_exit_code),
+    runner_exit_code: finiteNumber(facet.runnerExitCode ?? facet.runner_exit_code),
+    runnerTimedOut: firstBool(facet.runnerTimedOut, facet.runner_timed_out) === true,
+    runner_timed_out: firstBool(facet.runnerTimedOut, facet.runner_timed_out) === true,
+    adapterResultBlockingGaps,
+    adapter_result_blocking_gaps: adapterResultBlockingGaps,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    authorityClaims,
+    authority_claims: authorityClaims,
+    facetHash,
+    facet_hash: facetHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const selection = compactObject(json.selection);
   const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
@@ -3353,6 +3575,14 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     ),
     profileMode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
     profile_mode: firstText(result.profileMode, result.profile_mode, candidate.profileMode, candidate.profile_mode),
+    runtimeProfileProofBridge: firstCompactObject(
+      result.runtimeProfileProofBridge,
+      result.runtime_profile_proof_bridge,
+    ),
+    runtime_profile_proof_bridge: firstCompactObject(
+      result.runtimeProfileProofBridge,
+      result.runtime_profile_proof_bridge,
+    ),
     sourceUrl,
     source_url: sourceUrl,
     repoPath,
@@ -14527,6 +14757,39 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_template_claimed_runtime_authority' });
     }
+    const runtimeProfileBridgeRaw = firstCompactObject(
+      row.randomColdRuntimeProfileProofBridge,
+      row.random_cold_runtime_profile_proof_bridge,
+      row.runtimeProfileProofBridge,
+      row.runtime_profile_proof_bridge,
+      coldPathFacet.runtimeProfileProofBridge,
+      coldPathFacet.runtime_profile_proof_bridge,
+    );
+    const runtimeProfileBridge = randomColdRuntimeProfileProofBridgeFacet(runtimeProfileBridgeRaw);
+    if (runtimeProfileBridge.present === true && runtimeProfileBridge.accepted !== true) {
+      failures.push({ code: 'random_large_project_cold_runtime_profile_bridge_invalid' });
+      failures.push(...compactStringList([
+        ...(Array.isArray(runtimeProfileBridge.failedGates) ? runtimeProfileBridge.failedGates : []),
+        ...(Array.isArray(runtimeProfileBridge.failed_gates) ? runtimeProfileBridge.failed_gates : []),
+      ]).map((code) => ({ code })));
+    }
+    if (
+      runtimeProfileBridge.present === true
+      && (
+        firstBool(runtimeProfileBridge.acceptedForGpuHmr, runtimeProfileBridge.accepted_for_gpu_hmr) === true
+        || firstBool(runtimeProfileBridge.gpuHmrSuccess, runtimeProfileBridge.gpu_hmr_success) === true
+        || firstBool(
+          runtimeProfileBridge.canSatisfyRuntimeProof,
+          runtimeProfileBridge.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeProfileBridge.canSatisfyDispatchProof,
+          runtimeProfileBridge.can_satisfy_dispatch_proof,
+        ) === true
+      )
+    ) {
+      failures.push({ code: 'random_large_project_cold_runtime_profile_bridge_claimed_authority' });
+    }
     const coldSourceIntakeRaw = compactObject(
       row.sourceIntakeEvidence
       ?? row.source_intake_evidence
@@ -24435,6 +24698,12 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
       };
   const randomLargeProjectColdPath =
     randomColdPathSupportFacet(json, result, candidate);
+  const randomColdRuntimeProfileProofBridge = randomColdRuntimeProfileProofBridgeFacet(firstCompactObject(
+    result.runtimeProfileProofBridge,
+    result.runtime_profile_proof_bridge,
+    randomLargeProjectColdPath.runtimeProfileProofBridge,
+    randomLargeProjectColdPath.runtime_profile_proof_bridge,
+  ));
   const randomColdPathDirectInputEvidence =
     randomLargeProjectColdPath.directInputEvidence
     ?? randomLargeProjectColdPath.direct_input_evidence
@@ -24493,6 +24762,12 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
   const proofGaps = compactStringList([
     ...resultBlockingGaps,
     ...failClosedStatusGaps,
+    ...(randomColdRuntimeProfileProofBridge.present === true
+      ? randomColdRuntimeProfileProofBridge.blockingGaps
+      : []),
+    ...(randomColdRuntimeProfileProofBridge.present === true
+      ? randomColdRuntimeProfileProofBridge.failedGates
+      : []),
     'same_process_loader_unproven',
     'epoch_publication_unproven',
     'dispatch_trace_unproven',
@@ -24522,6 +24797,11 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     coldSourceTreeIntake.sourceIntakeTransportFallback?.fallbackEvidenceHash,
     coldSourceTreeIntake.source_intake_transport_fallback?.fallback_evidence_hash,
     coldRuntimeBoundaryEventManifestTemplate.templateHash,
+    randomColdRuntimeProfileProofBridge.runtimeProofProfileSha256,
+    randomColdRuntimeProfileProofBridge.runtimeProfileAdapterResultSha256,
+    randomColdRuntimeProfileProofBridge.strictRuntimeProofId,
+    randomColdRuntimeProfileProofBridge.proofLedgerId,
+    randomColdRuntimeProfileProofBridge.facetHash,
   ]);
   return finalizeRow({
     artifactPath: relPath(filePath, context.repoRoot),
@@ -24563,6 +24843,18 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     source_intake_transport_fallback: coldSourceTreeIntake.source_intake_transport_fallback,
     coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
+    randomColdRuntimeProfileProofBridge: randomColdRuntimeProfileProofBridge.present === true
+      ? randomColdRuntimeProfileProofBridge
+      : null,
+    random_cold_runtime_profile_proof_bridge: randomColdRuntimeProfileProofBridge.present === true
+      ? randomColdRuntimeProfileProofBridge
+      : null,
+    runtimeProfileProofBridge: randomColdRuntimeProfileProofBridge.present === true
+      ? randomColdRuntimeProfileProofBridge
+      : null,
+    runtime_profile_proof_bridge: randomColdRuntimeProfileProofBridge.present === true
+      ? randomColdRuntimeProfileProofBridge
+      : null,
     sourceUrl,
     source_url: sourceUrl,
     repoPath,
