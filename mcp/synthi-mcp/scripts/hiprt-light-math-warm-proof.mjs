@@ -2914,6 +2914,65 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     model_provenance: modelProvenance(),
     evidence_refs: evidenceRefs,
   };
+  const runtimeTraceEvidenceRefs = [
+    `runtime:hiprt:loader-boundary:${artifactHashAfter ?? 'missing'}`,
+    `runtime:hiprt:dispatch-boundary:${dispatchId}`,
+    `runtime:hiprt:output-boundary:${proof.changed.contentHash}`,
+  ];
+  const runtimeTrace = {
+    schemaVersion: 'synthi.gpu_hmr.native_runtime_trace.v1',
+    schema_version: 'synthi.gpu_hmr.native_runtime_trace.v1',
+    proofAuthority: 'hiprt_same_process_runtime_trace_observation_not_gpu_hmr_success',
+    proof_authority: 'hiprt_same_process_runtime_trace_observation_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    loaderEvents: [{
+      ...ledgerRecord.loader_event,
+      source: 'hiprt_same_process_recompile_shader_cache',
+      command: 'hiprt_same_process_recompile_shader_cache',
+      evidenceRefs: [runtimeTraceEvidenceRefs[0]],
+      evidence_refs: [runtimeTraceEvidenceRefs[0]],
+    }],
+    loader_events: [{
+      ...ledgerRecord.loader_event,
+      source: 'hiprt_same_process_recompile_shader_cache',
+      command: 'hiprt_same_process_recompile_shader_cache',
+      evidenceRefs: [runtimeTraceEvidenceRefs[0]],
+      evidence_refs: [runtimeTraceEvidenceRefs[0]],
+    }],
+    dispatchEvents: [{
+      ...ledgerRecord.dispatch_event,
+      source: 'hiprt_native_launch_observer',
+      command: ledgerRecord.dispatch_event.launch_api,
+      evidenceRefs: [runtimeTraceEvidenceRefs[1]],
+      evidence_refs: [runtimeTraceEvidenceRefs[1]],
+    }],
+    dispatch_events: [{
+      ...ledgerRecord.dispatch_event,
+      source: 'hiprt_native_launch_observer',
+      command: ledgerRecord.dispatch_event.launch_api,
+      evidenceRefs: [runtimeTraceEvidenceRefs[1]],
+      evidence_refs: [runtimeTraceEvidenceRefs[1]],
+    }],
+    outputEvents: [{
+      ...ledgerRecord.output_event,
+      source: 'hiprt_same_process_framebuffer_readback',
+      command: 'framebuffer_readback_after_dispatch',
+      evidenceRefs: [runtimeTraceEvidenceRefs[2]],
+      evidence_refs: [runtimeTraceEvidenceRefs[2]],
+    }],
+    output_events: [{
+      ...ledgerRecord.output_event,
+      source: 'hiprt_same_process_framebuffer_readback',
+      command: 'framebuffer_readback_after_dispatch',
+      evidenceRefs: [runtimeTraceEvidenceRefs[2]],
+      evidence_refs: [runtimeTraceEvidenceRefs[2]],
+    }],
+    evidenceRefs: runtimeTraceEvidenceRefs,
+    evidence_refs: runtimeTraceEvidenceRefs,
+  };
   const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
   const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
   const proofLedgerRecord = proofLedger.records?.[0] ?? ledgerRecord;
@@ -3034,6 +3093,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     runtimeBoundaryAppHook,
     runtime_boundary_app_hook: runtimeBoundaryAppHook,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
     shaderCacheArtifact: shaderArtifact,
     shader_cache_artifact: shaderArtifact,
     postRecompileEvidence: post,
@@ -3822,7 +3883,10 @@ async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
   proof.runtime_boundary_events = proof.runtimeBoundaryEvents;
   proof.runtimeBoundaryEventSource = 'hiprt_runtime_boundary_app_hook_self_check';
   proof.runtime_boundary_event_source = proof.runtimeBoundaryEventSource;
-  proof.timingMetrics = hiprtWarmTimingMetrics(proof);
+  proof.timingMetrics = {
+    ...hiprtWarmTimingMetrics(proof),
+    ...hiprtHotRuntimeRunModeMetadata(proof),
+  };
   const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
   proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
   proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
@@ -3892,28 +3956,34 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
       includeUnproven: true,
       generatedAt: '2026-06-30T00:00:00.000Z',
     });
-    const acceptedRow = matrix.rows.find((row) =>
+    const acceptedCandidateRows = matrix.rows.filter((row) =>
       row.proofIds?.includes(acceptedProof.runtimeProofArtifact.proofId));
+    const acceptedRow = acceptedCandidateRows.find((row) =>
+      row.backend === 'hiprt'
+      && row.matrixOutcome === 'full_runtime_gpu_hmr'
+      && row.acceptedForGpuHmr === true
+      && row.gpuHmrSuccess === true);
     if (
       acceptedRow?.matrixOutcome !== 'full_runtime_gpu_hmr'
       || acceptedRow?.backend !== 'hiprt'
       || acceptedRow?.acceptedForGpuHmr !== true
     ) {
       throw new Error(`HIPRT runtime-boundary matrix self-check rejected accepted fixture ${stableJson({
-        matrixOutcome: acceptedRow?.matrixOutcome,
-        acceptanceClass: acceptedRow?.acceptanceClass,
-        acceptedForGpuHmr: acceptedRow?.acceptedForGpuHmr,
-        gpuHmrSuccess: acceptedRow?.gpuHmrSuccess,
-        reasons: acceptedRow?.reasons,
-        openGaps: acceptedRow?.openGaps,
-        ledger: acceptedRow?.ledger,
-        runtimeProofArtifact: acceptedRow?.runtimeProofArtifact,
-        runtimeProbeInstrumentation: acceptedRow?.runtimeProbeInstrumentation,
-        hiprtContract: acceptedRow?.hiprtContract,
-        sourceAdaptedProfile: acceptedRow?.sourceAdaptedProfile,
-        visualAccepted: acceptedRow?.visual?.accepted,
-        oracleRegionAccepted: acceptedRow?.oracleRegion?.accepted,
-        rowId: acceptedRow?.rowId,
+        candidateCount: acceptedCandidateRows.length,
+        candidates: acceptedCandidateRows.map((row) => ({
+          matrixOutcome: row?.matrixOutcome,
+          acceptanceClass: row?.acceptanceClass,
+          backend: row?.backend,
+          proofMode: row?.proofMode,
+          acceptedForGpuHmr: row?.acceptedForGpuHmr,
+          gpuHmrSuccess: row?.gpuHmrSuccess,
+          reasons: row?.reasons,
+          openGaps: row?.openGaps,
+          safety: row?.safety,
+          visualAccepted: row?.visual?.accepted,
+          oracleRegionAccepted: row?.oracleRegion?.accepted,
+          rowId: row?.rowId,
+        })),
       })}`);
     }
     const sourceAdaptedProof = await buildHiprtBoundarySelfCheckProof(tmpDir, {
@@ -4177,7 +4247,10 @@ async function main() {
     acceptance,
     accepted,
   };
-  proof.timingMetrics = hiprtWarmTimingMetrics(proof);
+  proof.timingMetrics = {
+    ...hiprtWarmTimingMetrics(proof),
+    ...hiprtHotRuntimeRunModeMetadata(proof),
+  };
   const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
   proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
   proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
