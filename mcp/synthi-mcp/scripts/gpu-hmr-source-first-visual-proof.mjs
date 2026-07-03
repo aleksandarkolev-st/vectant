@@ -420,6 +420,7 @@ if (sourceAuthority) {
 setDefaultEnv('SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS', '1');
 setDefaultEnv('SYNTHI_SYNC_TO_GCS', '0');
 setDefaultEnv('SYNTHI_VALIDATION_AUTHLESS_WORKSPACE', '1');
+setDefaultEnv('SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_TIMEOUT_MS', '240000');
 setDefaultEnv('SYNTHI_GPU_VENDOR', vendor);
 
 await import('./gpu-hmr-agent-split-workspace-test.mjs');
