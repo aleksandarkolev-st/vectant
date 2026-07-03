@@ -228,6 +228,10 @@ const RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION =
   'synthi.gpu_hmr.unprofiled_cold_source_intake.v1';
 const RANDOM_COLD_SOURCE_INTAKE_AUTHORITY =
   'unprofiled_source_tree_intake_only_not_gpu_hmr_success';
+const RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA_VERSION =
+  'synthi.gpu_hmr.source_intake_transport_fallback.v1';
+const RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY =
+  'source_intake_transport_fallback_only_not_gpu_hmr_success';
 const RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_source_listing_manifest.v1';
 const RANDOM_COLD_SOURCE_LISTING_MANIFEST_AUTHORITY =
@@ -2051,6 +2055,36 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ?? result.runtimeBoundaryExpectation
     ?? result.runtime_boundary_expectation,
   );
+  const transportEvidence = compactObject(
+    facet.transportEvidence
+    ?? facet.transport_evidence,
+  );
+  const directInputEvidence = compactObject(
+    result.directInputEvidence
+    ?? result.direct_input_evidence,
+  );
+  const transportFallbackEvidence = randomColdSourceIntakeTransportFallbackEvidenceFacet(
+    firstCompactObject(
+      facet.sourceIntakeTransportFallback,
+      facet.source_intake_transport_fallback,
+      result.sourceIntakeTransportFallback,
+      result.source_intake_transport_fallback,
+      transportEvidence.githubTreeFallback,
+      transportEvidence.github_tree_fallback,
+    ),
+    {
+      directSourceInputEvidenceHash: firstText(
+        directInputEvidence.evidenceHash,
+        directInputEvidence.evidence_hash,
+      ),
+      immutableCommit: firstText(
+        result.immutableCommit,
+        result.immutable_commit,
+        facet.immutableCommit,
+        facet.immutable_commit,
+      ),
+    },
+  );
   const present = Object.keys(facet).length > 0;
   const acceptedFlag = firstBool(
     facet.acceptedAsIntakeEvidence,
@@ -2154,6 +2188,14 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     present && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
       ? 'random_cold_source_intake_claimed_dispatch_authority'
       : null,
+    present
+      && transportFallbackEvidence.present === true
+      && transportFallbackEvidence.acceptedAsTransportFallbackEvidence !== true
+      ? 'random_cold_source_intake_transport_fallback_invalid'
+      : null,
+    ...(present && transportFallbackEvidence.present === true
+      ? transportFallbackEvidence.failedGates
+      : []),
     ...suppliedFailedGates,
   ]);
   const accepted = present && failedGates.length === 0;
@@ -2176,6 +2218,20 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     can_satisfy_runtime_proof: false,
     status: firstText(facet.status, result.status) ?? null,
     transport: firstText(facet.transport) ?? null,
+    transportEvidence: {
+      present: Object.keys(transportEvidence).length > 0,
+      githubTreeFallback: transportFallbackEvidence,
+      github_tree_fallback: transportFallbackEvidence,
+    },
+    transport_evidence: {
+      present: Object.keys(transportEvidence).length > 0,
+      githubTreeFallback: transportFallbackEvidence,
+      github_tree_fallback: transportFallbackEvidence,
+    },
+    transportFallbackEvidence,
+    transport_fallback_evidence: transportFallbackEvidence,
+    sourceIntakeTransportFallback: transportFallbackEvidence,
+    source_intake_transport_fallback: transportFallbackEvidence,
     sourceListingHash,
     source_listing_hash: sourceListingHash,
     sourceListingManifest,
@@ -2740,6 +2796,194 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
     expected_source_identity_hash: expectedSourceIdentityHash,
     sourceIdentityHashMatchesContext,
     source_identity_hash_matches_context: sourceIdentityHashMatchesContext,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdSourceIntakeTransportFallbackEvidenceFacet(input = {}, context = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const explicitlyAbsent =
+    firstBool(facet.present) === false
+    && !firstText(facet.schemaVersion, facet.schema_version, facet.schema)
+    && !firstText(facet.proofAuthority, facet.proof_authority)
+    && !firstText(facet.fallbackEvidenceHash, facet.fallback_evidence_hash);
+  if (!present || explicitlyAbsent) {
+    return {
+      present: false,
+      accepted: true,
+      acceptedAsTransportFallbackEvidence: false,
+      accepted_as_transport_fallback_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const fallbackAuthority = firstText(facet.fallbackAuthority, facet.fallback_authority);
+  const acceptedFlag = firstBool(
+    facet.acceptedAsTransportFallbackEvidence,
+    facet.accepted_as_transport_fallback_evidence,
+    facet.accepted,
+  );
+  const candidateSource = firstText(facet.candidateSource, facet.candidate_source);
+  const immutableCommit = firstText(facet.immutableCommit, facet.immutable_commit);
+  const automatic = firstBool(facet.automatic) === true;
+  const automaticReason = firstText(facet.automaticReason, facet.automatic_reason);
+  const requiresExplicitOptIn = firstBool(
+    facet.requiresExplicitOptIn,
+    facet.requires_explicit_opt_in,
+  ) === true;
+  const recommendedTransport = firstText(facet.recommendedTransport, facet.recommended_transport);
+  const forcedByEnv = firstText(facet.forcedByEnv, facet.forced_by_env);
+  const fullTreeOptInEnv = firstText(facet.fullTreeOptInEnv, facet.full_tree_opt_in_env);
+  const trigger = Object.keys(compactObject(facet.trigger)).length > 0
+    ? compactObject(facet.trigger)
+    : null;
+  const directSourceInputEvidenceHash = normalizeSha256(firstText(
+    facet.directSourceInputEvidenceHash,
+    facet.direct_source_input_evidence_hash,
+  ));
+  const expectedDirectSourceInputEvidenceHash = normalizeSha256(firstText(
+    context.directSourceInputEvidenceHash,
+    context.direct_source_input_evidence_hash,
+  ));
+  const expectedImmutableCommit = firstText(context.immutableCommit, context.immutable_commit);
+  const projectNameWhitelistPresent = Array.isArray(facet.projectNameWhitelist)
+    || Array.isArray(facet.project_name_whitelist);
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(facet.projectNameWhitelist) ? facet.projectNameWhitelist : []),
+    ...(Array.isArray(facet.project_name_whitelist) ? facet.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowedPresent = Array.isArray(facet.specificTargetIdsAllowed)
+    || Array.isArray(facet.specific_target_ids_allowed);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(facet.specificTargetIdsAllowed) ? facet.specificTargetIdsAllowed : []),
+    ...(Array.isArray(facet.specific_target_ids_allowed) ? facet.specific_target_ids_allowed : []),
+  ]);
+  const fallbackEvidenceHash = normalizeSha256(firstText(
+    facet.fallbackEvidenceHash,
+    facet.fallback_evidence_hash,
+  ));
+  const recomputedFallbackEvidenceHash = normalizeSha256(`sha256:${sha256Hex(stableJson({
+    schemaVersion: RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA_VERSION,
+    reason: firstText(facet.reason),
+    automatic,
+    automaticReason,
+    requiresExplicitOptIn,
+    recommendedTransport,
+    candidateSource,
+    immutableCommit: immutableCommit ? immutableCommit.toLowerCase() : immutableCommit,
+    directSourceInputEvidenceHash,
+    trigger,
+    forcedByEnv,
+    fullTreeOptInEnv,
+  }))}`);
+  const failedGates = compactStringList([
+    schemaVersion !== RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA_VERSION
+      ? 'random_cold_source_intake_transport_fallback_schema_invalid'
+      : null,
+    proofAuthority !== RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY
+      ? 'random_cold_source_intake_transport_fallback_authority_invalid'
+      : null,
+    fallbackAuthority !== RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_AUTHORITY
+      ? 'random_cold_source_intake_transport_fallback_authority_invalid'
+      : null,
+    acceptedFlag !== true
+      ? 'random_cold_source_intake_transport_fallback_not_accepted'
+      : null,
+    firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'random_cold_source_intake_transport_fallback_claimed_gpu_hmr_acceptance'
+      : null,
+    firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'random_cold_source_intake_transport_fallback_claimed_gpu_hmr_success'
+      : null,
+    firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'random_cold_source_intake_transport_fallback_claimed_runtime_authority'
+      : null,
+    firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'random_cold_source_intake_transport_fallback_claimed_dispatch_authority'
+      : null,
+    firstBool(facet.targetNameIndependent, facet.target_name_independent) !== true
+      ? 'random_cold_source_intake_transport_fallback_target_name_dependent'
+      : null,
+    projectNameWhitelistPresent !== true
+      ? 'random_cold_source_intake_transport_fallback_project_whitelist_missing'
+      : null,
+    projectNameWhitelist.length > 0
+      ? 'random_cold_source_intake_transport_fallback_project_whitelist_not_empty'
+      : null,
+    specificTargetIdsAllowedPresent !== true
+      ? 'random_cold_source_intake_transport_fallback_target_whitelist_missing'
+      : null,
+    specificTargetIdsAllowed.length > 0
+      ? 'random_cold_source_intake_transport_fallback_target_whitelist_not_empty'
+      : null,
+    fallbackEvidenceHash ? null : 'random_cold_source_intake_transport_fallback_hash_missing',
+    fallbackEvidenceHash && fallbackEvidenceHash !== recomputedFallbackEvidenceHash
+      ? 'random_cold_source_intake_transport_fallback_hash_mismatch'
+      : null,
+    expectedDirectSourceInputEvidenceHash
+      && directSourceInputEvidenceHash
+      && directSourceInputEvidenceHash !== expectedDirectSourceInputEvidenceHash
+      ? 'random_cold_source_intake_transport_fallback_direct_input_hash_mismatch'
+      : null,
+    expectedImmutableCommit
+      && immutableCommit
+      && immutableCommit.toLowerCase() !== expectedImmutableCommit.toLowerCase()
+      ? 'random_cold_source_intake_transport_fallback_commit_mismatch'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    accepted,
+    acceptedAsTransportFallbackEvidence: accepted,
+    accepted_as_transport_fallback_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    fallbackAuthority,
+    fallback_authority: fallbackAuthority,
+    candidateSource,
+    candidate_source: candidateSource,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    automatic,
+    requiresExplicitOptIn,
+    requires_explicit_opt_in: requiresExplicitOptIn,
+    recommendedTransport,
+    recommended_transport: recommendedTransport,
+    directSourceInputEvidenceHash,
+    direct_source_input_evidence_hash: directSourceInputEvidenceHash,
+    fallbackEvidenceHash,
+    fallback_evidence_hash: fallbackEvidenceHash,
+    recomputedFallbackEvidenceHash,
+    recomputed_fallback_evidence_hash: recomputedFallbackEvidenceHash,
+    targetNameIndependent: firstBool(facet.targetNameIndependent, facet.target_name_independent) === true,
+    target_name_independent: firstBool(facet.targetNameIndependent, facet.target_name_independent) === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
     failedGates,
     failed_gates: failedGates,
   };
@@ -24256,6 +24500,8 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     coldSourceTreeIntake.facetHash,
     coldSourceTreeIntake.buildMetadataContentHash,
     coldSourceTreeIntake.runtimeBoundaryExpectationHash,
+    coldSourceTreeIntake.sourceIntakeTransportFallback?.fallbackEvidenceHash,
+    coldSourceTreeIntake.source_intake_transport_fallback?.fallback_evidence_hash,
     coldRuntimeBoundaryEventManifestTemplate.templateHash,
   ]);
   return finalizeRow({
@@ -24294,6 +24540,8 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     cold_source_tree_intake: coldSourceTreeIntake,
     sourceIntakeEvidence: sourceIntake,
     source_intake_evidence: sourceIntake,
+    sourceIntakeTransportFallback: coldSourceTreeIntake.sourceIntakeTransportFallback,
+    source_intake_transport_fallback: coldSourceTreeIntake.source_intake_transport_fallback,
     coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
     sourceUrl,
@@ -25751,6 +25999,7 @@ function randomColdSourceIntakeFormConsistency(row = {}) {
     };
   }
   const rawSummary = randomColdSourceIntakeSummary(rawIntake, row);
+  const normalizedSummary = randomColdSourceIntakeSummary(normalizedIntake, row);
   const normalizedFailedGates = compactStringList([
     ...(Array.isArray(normalizedIntake.failedGates) ? normalizedIntake.failedGates : []),
     ...(Array.isArray(normalizedIntake.failed_gates) ? normalizedIntake.failed_gates : []),
@@ -25810,6 +26059,22 @@ function randomColdSourceIntakeFormConsistency(row = {}) {
     normalizedIntake.buildMetadataContentHash,
     normalizedIntake.build_metadata_content_hash,
   ));
+  const rawTransportFallbackHash = normalizeSha256(firstText(
+    rawSummary.sourceIntakeTransportFallback?.fallbackEvidenceHash,
+    rawSummary.source_intake_transport_fallback?.fallback_evidence_hash,
+    rawSummary.transportFallbackEvidence?.fallbackEvidenceHash,
+    rawSummary.transport_fallback_evidence?.fallback_evidence_hash,
+  ));
+  const normalizedTransportFallbackHash = normalizeSha256(firstText(
+    normalizedSummary.sourceIntakeTransportFallback?.fallbackEvidenceHash,
+    normalizedSummary.source_intake_transport_fallback?.fallback_evidence_hash,
+    normalizedSummary.transportFallbackEvidence?.fallbackEvidenceHash,
+    normalizedSummary.transport_fallback_evidence?.fallback_evidence_hash,
+    normalizedIntake.sourceIntakeTransportFallback?.fallbackEvidenceHash,
+    normalizedIntake.source_intake_transport_fallback?.fallback_evidence_hash,
+    normalizedIntake.transportFallbackEvidence?.fallbackEvidenceHash,
+    normalizedIntake.transport_fallback_evidence?.fallback_evidence_hash,
+  ));
   const failedGates = compactStringList([
     rawSummary.accepted !== true ? 'random_cold_source_intake_raw_invalid' : null,
     ...(rawSummary.accepted !== true
@@ -25843,6 +26108,19 @@ function randomColdSourceIntakeFormConsistency(row = {}) {
       && normalizedBuildMetadataContentHash
       && rawBuildMetadataContentHash !== normalizedBuildMetadataContentHash
       ? 'random_cold_source_intake_form_build_metadata_hash_mismatch'
+      : null,
+    (rawTransportFallbackHash || normalizedTransportFallbackHash)
+      && (!rawTransportFallbackHash || !normalizedTransportFallbackHash)
+      ? 'random_cold_source_intake_form_transport_fallback_hash_missing'
+      : null,
+    rawTransportFallbackHash
+      && normalizedTransportFallbackHash
+      && rawTransportFallbackHash !== normalizedTransportFallbackHash
+      ? 'random_cold_source_intake_form_transport_fallback_hash_mismatch'
+      : null,
+    normalizedSummary.sourceIntakeTransportFallback?.present === true
+      && normalizedSummary.sourceIntakeTransportFallback?.accepted !== true
+      ? 'random_cold_source_intake_form_transport_fallback_invalid'
       : null,
     firstBool(normalizedIntake.acceptedForGpuHmr, normalizedIntake.accepted_for_gpu_hmr) === true
       ? 'random_cold_source_intake_normalized_claimed_gpu_hmr_acceptance'
@@ -25879,6 +26157,10 @@ function randomColdSourceIntakeFormConsistency(row = {}) {
     raw_build_metadata_content_hash: rawBuildMetadataContentHash,
     normalizedBuildMetadataContentHash,
     normalized_build_metadata_content_hash: normalizedBuildMetadataContentHash,
+    rawTransportFallbackHash,
+    raw_transport_fallback_hash: rawTransportFallbackHash,
+    normalizedTransportFallbackHash,
+    normalized_transport_fallback_hash: normalizedTransportFallbackHash,
     failedGates,
     failed_gates: failedGates,
   };

@@ -1867,6 +1867,87 @@ function randomColdDirectInputEvidenceFixture({
   };
 }
 
+function randomColdTransportFallbackEvidenceFixture({
+  candidateSource = 'direct_source_url_commit',
+  immutableCommit = '1111111111111111111111111111111111111111',
+  directSourceInputEvidenceHash = hashValue('direct-source-input-evidence'),
+  reason = 'source_intake_github_tree_truncated',
+  automatic = true,
+  automaticReason = 'direct_user_source_github_tree_truncated',
+  requiresExplicitOptIn = false,
+  recommendedTransport = 'git_fetch_depth_1_blobless',
+  forcedByEnv = null,
+  fullTreeOptInEnv = null,
+  trigger = {
+    status: 'source_intake_github_tree_truncated',
+    reason: 'github_recursive_tree_truncated',
+    httpStatus: 200,
+    githubApiAuthentication: 'not_used',
+    bodyTail: null,
+  },
+} = {}) {
+  const seed = {
+    schemaVersion: 'synthi.gpu_hmr.source_intake_transport_fallback.v1',
+    reason,
+    automatic: automatic === true,
+    automaticReason,
+    requiresExplicitOptIn: requiresExplicitOptIn === true,
+    recommendedTransport,
+    candidateSource,
+    immutableCommit,
+    directSourceInputEvidenceHash,
+    trigger,
+    forcedByEnv,
+    fullTreeOptInEnv,
+  };
+  const fallbackEvidenceHash = contentHashFor(seed);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.source_intake_transport_fallback.v1',
+    schema_version: 'synthi.gpu_hmr.source_intake_transport_fallback.v1',
+    proofAuthority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
+    proof_authority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
+    fallbackAuthority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
+    fallback_authority: 'source_intake_transport_fallback_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsTransportFallbackEvidence: true,
+    accepted_as_transport_fallback_evidence: true,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    reason,
+    automatic: automatic === true,
+    automaticReason,
+    automatic_reason: automaticReason,
+    requiresExplicitOptIn: requiresExplicitOptIn === true,
+    requires_explicit_opt_in: requiresExplicitOptIn === true,
+    recommendedTransport,
+    recommended_transport: recommendedTransport,
+    candidateSource,
+    candidate_source: candidateSource,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    directSourceInputEvidenceHash,
+    direct_source_input_evidence_hash: directSourceInputEvidenceHash,
+    forcedByEnv,
+    forced_by_env: forcedByEnv,
+    fullTreeOptInEnv,
+    full_tree_opt_in_env: fullTreeOptInEnv,
+    trigger,
+    fallbackEvidenceHash,
+    fallback_evidence_hash: fallbackEvidenceHash,
+  };
+}
+
 function randomColdBuildMetadataContentEvidenceFixture({
   targetId = 'random-cold-readiness-user-project',
   accepted = true,
@@ -10153,6 +10234,27 @@ function randomColdReadinessMatrixRow({
   return withQueryRecomputedRowId(row);
 }
 
+function attachRandomColdTransportFallback(row, fallbackEvidence) {
+  row.coldSourceTreeIntake.transportEvidence = {
+    githubTreeFallback: fallbackEvidence,
+    github_tree_fallback: fallbackEvidence,
+  };
+  row.coldSourceTreeIntake.transport_evidence = {
+    githubTreeFallback: fallbackEvidence,
+    github_tree_fallback: fallbackEvidence,
+  };
+  row.cold_source_tree_intake.transportEvidence =
+    JSON.parse(JSON.stringify(row.coldSourceTreeIntake.transportEvidence));
+  row.cold_source_tree_intake.transport_evidence =
+    JSON.parse(JSON.stringify(row.coldSourceTreeIntake.transport_evidence));
+  const recomputedSourceIntakeFacetHash = sourceIntakeFacetHashFor(row.coldSourceTreeIntake);
+  row.coldSourceTreeIntake.facetHash = recomputedSourceIntakeFacetHash;
+  row.coldSourceTreeIntake.facet_hash = recomputedSourceIntakeFacetHash;
+  row.cold_source_tree_intake.facetHash = recomputedSourceIntakeFacetHash;
+  row.cold_source_tree_intake.facet_hash = recomputedSourceIntakeFacetHash;
+  return withQueryRecomputedRowId(row);
+}
+
 function withQueryRecomputedRowId(row) {
   const probe = {
     ...JSON.parse(JSON.stringify(row)),
@@ -12666,6 +12768,151 @@ assert.ok(forgedNormalizedSourceIntakeColdQuery.failedGates.some((gate) =>
 ));
 assert.equal(
   forgedNormalizedSourceIntakeColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+const validTransportFallbackColdRow = (() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'valid-transport-fallback-random-cold',
+    sourceUrl: 'https://example.invalid/direct/valid-transport-fallback.git',
+    immutableCommit: '3030303030303030303030303030303030303030',
+  });
+  const directInputHash = row.randomLargeProjectColdPath.directInputEvidence.evidenceHash;
+  const fallbackEvidence = randomColdTransportFallbackEvidenceFixture({
+    immutableCommit: row.immutableCommit,
+    directSourceInputEvidenceHash: directInputHash,
+  });
+  return attachRandomColdTransportFallback(row, fallbackEvidence);
+})();
+const validTransportFallbackQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    validTransportFallbackColdRow,
+  ],
+});
+assert.equal(validTransportFallbackQuery.accepted, true);
+assert.equal(
+  validTransportFallbackQuery.failedGates.some((gate) =>
+    String(gate.code ?? '').includes('source_intake_transport_fallback')
+  ),
+  false,
+);
+assert.equal(
+  validTransportFallbackColdRow.coldSourceTreeIntake.transportEvidence
+    .githubTreeFallback.proofAuthority,
+  'source_intake_transport_fallback_only_not_gpu_hmr_success',
+);
+assert.equal(
+  validTransportFallbackColdRow.coldSourceTreeIntake.transportEvidence
+    .githubTreeFallback.fallbackEvidenceHash,
+  validTransportFallbackColdRow.coldSourceTreeIntake.transportEvidence
+    .githubTreeFallback.recomputedFallbackEvidenceHash
+    ?? validTransportFallbackColdRow.coldSourceTreeIntake.transportEvidence
+      .githubTreeFallback.fallbackEvidenceHash,
+);
+const forgedTransportFallbackCases = [
+  {
+    targetId: 'forged-transport-fallback-gpu-hmr-acceptance-random-cold',
+    field: 'acceptedForGpuHmr',
+    snakeField: 'accepted_for_gpu_hmr',
+    gate: 'random_cold_source_intake_transport_fallback_claimed_gpu_hmr_acceptance',
+  },
+  {
+    targetId: 'forged-transport-fallback-gpu-hmr-success-random-cold',
+    field: 'gpuHmrSuccess',
+    snakeField: 'gpu_hmr_success',
+    gate: 'random_cold_source_intake_transport_fallback_claimed_gpu_hmr_success',
+  },
+  {
+    targetId: 'forged-transport-fallback-runtime-authority-random-cold',
+    field: 'canSatisfyRuntimeProof',
+    snakeField: 'can_satisfy_runtime_proof',
+    gate: 'random_cold_source_intake_transport_fallback_claimed_runtime_authority',
+  },
+  {
+    targetId: 'forged-transport-fallback-dispatch-authority-random-cold',
+    field: 'canSatisfyDispatchProof',
+    snakeField: 'can_satisfy_dispatch_proof',
+    gate: 'random_cold_source_intake_transport_fallback_claimed_dispatch_authority',
+  },
+];
+for (const testCase of forgedTransportFallbackCases) {
+  const row = randomColdReadinessMatrixRow({
+    targetId: testCase.targetId,
+    sourceUrl: `https://example.invalid/forged/${testCase.targetId}.git`,
+    immutableCommit: sha256Hex(`${testCase.targetId}:commit`).slice(0, 40),
+  });
+  const directInputHash = row.randomLargeProjectColdPath.directInputEvidence.evidenceHash;
+  const fallbackEvidence = randomColdTransportFallbackEvidenceFixture({
+    immutableCommit: row.immutableCommit,
+    directSourceInputEvidenceHash: directInputHash,
+  });
+  fallbackEvidence[testCase.field] = true;
+  fallbackEvidence[testCase.snakeField] = true;
+  const forgedTransportFallbackRow =
+    attachRandomColdTransportFallback(row, fallbackEvidence);
+  const forgedTransportFallbackQuery = queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows,
+      forgedTransportFallbackRow,
+    ],
+  });
+  assert.equal(forgedTransportFallbackQuery.accepted, false);
+  assert.ok(forgedTransportFallbackQuery.failedGates.some((gate) =>
+    gate.code === 'random_large_project_cold_source_intake_invalid'
+  ));
+  assert.ok(forgedTransportFallbackQuery.failedGates.some((gate) =>
+    gate.code === 'random_cold_source_intake_transport_fallback_invalid'
+  ));
+  assert.ok(forgedTransportFallbackQuery.failedGates.some((gate) =>
+    gate.code === testCase.gate
+  ));
+  assert.equal(
+    forgedTransportFallbackQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+    0,
+  );
+}
+const droppedNormalizedTransportFallbackColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'dropped-normalized-transport-fallback-random-cold',
+    sourceUrl: 'https://example.invalid/forged/dropped-normalized-transport-fallback.git',
+    immutableCommit: '3131313131313131313131313131313131313131',
+  });
+  const directInputHash = row.randomLargeProjectColdPath.directInputEvidence.evidenceHash;
+  const fallbackEvidence = randomColdTransportFallbackEvidenceFixture({
+    immutableCommit: row.immutableCommit,
+    directSourceInputEvidenceHash: directInputHash,
+  });
+  row.sourceIntakeEvidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+  row.sourceIntakeEvidence.transportEvidence = {
+    githubTreeFallback: fallbackEvidence,
+    github_tree_fallback: fallbackEvidence,
+  };
+  row.sourceIntakeEvidence.transport_evidence =
+    JSON.parse(JSON.stringify(row.sourceIntakeEvidence.transportEvidence));
+  row.sourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(row.sourceIntakeEvidence);
+  row.sourceIntakeEvidence.facet_hash = row.sourceIntakeEvidence.facetHash;
+  row.source_intake_evidence = JSON.parse(JSON.stringify(row.sourceIntakeEvidence));
+  return row;
+})());
+const droppedNormalizedTransportFallbackColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    droppedNormalizedTransportFallbackColdRow,
+  ],
+});
+assert.equal(droppedNormalizedTransportFallbackColdQuery.accepted, false);
+assert.ok(droppedNormalizedTransportFallbackColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_form_mismatch'
+));
+assert.ok(droppedNormalizedTransportFallbackColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_intake_form_transport_fallback_hash_missing'
+));
+assert.equal(
+  droppedNormalizedTransportFallbackColdQuery
+    .summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   0,
 );
 const profileIdOnlyRandomColdRow = withQueryRecomputedRowId((() => {
@@ -25452,3 +25699,4 @@ console.log(JSON.stringify({
   proofId: ledger.proofId,
   rows: ledger.rows.length,
 }, null, 2));
+process.exit(0);
