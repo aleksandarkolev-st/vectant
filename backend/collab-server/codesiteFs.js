@@ -246,11 +246,12 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     data,
     header,
   });
+  const requestedMode = explicitMode || 'enforce';
   const context = {
     active: false,
     required,
     managedAgent,
-    mode: explicitMode || 'enforce',
+    mode: managedAgent && requestedMode === 'monitor' ? 'enforce' : requestedMode,
     workspaceSlug: extra.workspaceSlug || data.workspaceSlug || data.slug || null,
     actorUserId: extra.actorUserId || data.userId || data.actorUserId || header('x-user-id') || null,
     effectiveUserId: extra.effectiveUserId || null,

@@ -202,6 +202,31 @@ test('generic process ancestry marks MCP and workflow writes as managed', () => 
   assert.deepStrictEqual(context.processAncestry, ['mcp:synthi_apply_patch']);
 });
 
+test('managed agent signals cannot downgrade CodeSite enforcement to monitor mode', () => {
+  const managed = codeSiteContextFromRequest({ headers: {} }, {
+    codesite: {
+      mode: 'monitor',
+      transactionId: 'txn-managed-monitor',
+      agentSessionId: 'agent-1',
+      agentProvider: 'codex',
+      agentRuntime: 'codex-cli',
+    },
+  }, { workspaceSlug: 'acme' });
+  const observer = codeSiteContextFromRequest({ headers: {} }, {
+    codesite: {
+      mode: 'monitor',
+      transactionId: 'txn-observer-monitor',
+    },
+  }, { workspaceSlug: 'acme' });
+
+  assert.strictEqual(managed.active, true);
+  assert.strictEqual(managed.managedAgent, true);
+  assert.strictEqual(managed.mode, 'enforce');
+  assert.strictEqual(observer.active, true);
+  assert.strictEqual(observer.managedAgent, false);
+  assert.strictEqual(observer.mode, 'monitor');
+});
+
 test('trusted managed write scopes fail closed when CodeSite context is missing', async () => {
   await assert.rejects(
     () => enforceCodeSiteWriteAllowed(null, {
