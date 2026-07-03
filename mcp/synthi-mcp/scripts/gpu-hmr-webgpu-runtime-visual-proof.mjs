@@ -1803,6 +1803,7 @@ function webgpuRuntimeProofArtifactId({
   acceptanceContract,
   artifacts,
   trace,
+  runtimeTrace,
 }) {
   return `gpu-runtime-proof:${sha256Text(stableJson({
     backend: 'webgpu',
@@ -1811,6 +1812,9 @@ function webgpuRuntimeProofArtifactId({
     artifactHashAfter: acceptanceContract.artifact_hash_after,
     dispatchId: trace.after.dispatchId,
     diffImageHash: artifacts.diffImageHash,
+    runtimeTraceHash: runtimeTrace
+      ? sha256Text(stableJson(runtimeTrace))
+      : null,
   }))}`;
 }
 
@@ -1821,6 +1825,7 @@ function buildRuntimeProofArtifact({
   visualThresholdValidation,
   nativeWebGpuEvidence,
   processContinuity,
+  runtimeTrace,
 }) {
   const acceptanceContract = proof.contract;
   const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(acceptanceContract);
@@ -1877,6 +1882,7 @@ function buildRuntimeProofArtifact({
       acceptanceContract,
       artifacts,
       trace,
+      runtimeTrace,
     }),
     resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : 'gpu-hmr-runtime-proof-rejected',
     fullRuntimeProven,
@@ -1940,6 +1946,8 @@ function buildRuntimeProofArtifact({
     visual_threshold_validation: visualThresholdValidation,
     nativeWebGpuApiEvidence: nativeWebGpuEvidence,
     native_webgpu_api_evidence: nativeWebGpuEvidence,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
     ...(artifacts.asyncVisualProof ? {
       asyncVisualProof: artifacts.asyncVisualProof,
       async_visual_proof: artifacts.asyncVisualProof,
@@ -1958,6 +1966,163 @@ function buildRuntimeProofArtifact({
     full_runtime_proven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
     gpuHmrSuccess: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
     gpu_hmr_success: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+  };
+}
+
+function runtimeTraceEvent(trace, type, label) {
+  const events = Array.isArray(trace?.events) ? trace.events : [];
+  const matches = events.filter((event) =>
+    event
+    && typeof event === 'object'
+    && event.type === type
+    && (!label || event.label === label)
+  );
+  return matches.at(-1) ?? null;
+}
+
+function webgpuRuntimeTraceEventRef(kind, event) {
+  return event ? `runtime:webgpu:${kind}:sha256:${sha256Text(stableJson(event)).slice('sha256:'.length)}` : null;
+}
+
+function buildNativeWebGpuRuntimeTrace({
+  trace,
+  processContinuity,
+  nativeWebGpuEvidence,
+}) {
+  const afterTrace = trace?.after ?? {};
+  const label = afterTrace.label ?? 'after';
+  const loaderObservation = runtimeTraceEvent(afterTrace, 'loader', label);
+  const publishObservation = runtimeTraceEvent(afterTrace, 'epoch_publish', label);
+  const dispatchObservation = runtimeTraceEvent(afterTrace, 'dispatch', label);
+  const outputObservation = runtimeTraceEvent(afterTrace, 'output', label);
+  const loaderRef = webgpuRuntimeTraceEventRef('loader-boundary', loaderObservation);
+  const publishRef = webgpuRuntimeTraceEventRef('epoch-boundary', publishObservation);
+  const dispatchRef = webgpuRuntimeTraceEventRef('dispatch-boundary', dispatchObservation);
+  const outputRef = webgpuRuntimeTraceEventRef('output-boundary', outputObservation);
+  const evidenceRefs = [
+    loaderRef,
+    publishRef,
+    dispatchRef,
+    outputRef,
+  ].filter(Boolean);
+  const loaderEvent = loaderObservation ? {
+    id: `webgpu-loader-${loaderObservation.epoch ?? afterTrace.epoch}`,
+    artifact_hash: loaderObservation.artifactHash ?? afterTrace.artifactHash,
+    epoch: loaderObservation.epoch ?? afterTrace.epoch,
+    process_id: processContinuity.processIdAfter,
+    source: 'webgpu_browser_runtime_trace',
+    command: 'GPUDevice.createShaderModule',
+    observedEventType: loaderObservation.type,
+    observed_event_type: loaderObservation.type,
+    observedTimestampMs: finiteNumber(loaderObservation.timestamp, null),
+    observed_timestamp_ms: finiteNumber(loaderObservation.timestamp, null),
+    evidenceRefs: [loaderRef].filter(Boolean),
+    evidence_refs: [loaderRef].filter(Boolean),
+  } : null;
+  const epochEvent = publishObservation ? {
+    id: `webgpu-publish-${publishObservation.epoch ?? afterTrace.epoch}`,
+    artifact_hash: publishObservation.artifactHash ?? afterTrace.artifactHash,
+    epoch: publishObservation.epoch ?? afterTrace.epoch,
+    process_id: processContinuity.processIdAfter,
+    pipeline_id: publishObservation.pipelineId ?? afterTrace.pipelineId,
+    pipeline_epoch: publishObservation.epoch ?? afterTrace.pipelineEpoch,
+    source: 'webgpu_browser_runtime_trace',
+    command: 'GPUDevice.createRenderPipeline',
+    observedEventType: publishObservation.type,
+    observed_event_type: publishObservation.type,
+    observedTimestampMs: finiteNumber(publishObservation.timestamp, null),
+    observed_timestamp_ms: finiteNumber(publishObservation.timestamp, null),
+    evidenceRefs: [publishRef].filter(Boolean),
+    evidence_refs: [publishRef].filter(Boolean),
+  } : null;
+  const dispatchEvent = dispatchObservation ? {
+    id: dispatchObservation.dispatchId ?? afterTrace.dispatchId,
+    dispatch_id: dispatchObservation.dispatchId ?? afterTrace.dispatchId,
+    artifact_hash: dispatchObservation.artifactHash ?? afterTrace.artifactHash,
+    epoch: dispatchObservation.epoch ?? afterTrace.epoch,
+    process_id: processContinuity.processIdAfter,
+    pipeline_id: dispatchObservation.pipelineId ?? afterTrace.pipelineId,
+    pipeline_epoch: dispatchObservation.pipelineEpoch ?? afterTrace.pipelineEpoch,
+    resource_state_hash: dispatchObservation.resourceStateHash
+      ?? afterTrace.resourceTrace?.resourceStateHash,
+    bind_group_bindings: dispatchObservation.bindGroupBindings
+      ?? afterTrace.resourceTrace?.bindGroupBindings
+      ?? [],
+    vertex_buffer_bindings: dispatchObservation.vertexBufferBindings
+      ?? afterTrace.resourceTrace?.vertexBuffers
+      ?? [],
+    source: 'webgpu_browser_runtime_trace',
+    command: 'GPURenderPassEncoder.draw',
+    observedEventType: dispatchObservation.type,
+    observed_event_type: dispatchObservation.type,
+    observedTimestampMs: finiteNumber(dispatchObservation.timestamp, null),
+    observed_timestamp_ms: finiteNumber(dispatchObservation.timestamp, null),
+    evidenceRefs: [dispatchRef].filter(Boolean),
+    evidence_refs: [dispatchRef].filter(Boolean),
+  } : null;
+  const outputEvent = outputObservation ? {
+    id: `webgpu-output-${outputObservation.epoch ?? afterTrace.epoch}`,
+    kind: 'visual_frame',
+    after_dispatch_id: outputObservation.dispatchId ?? afterTrace.dispatchId,
+    artifact_hash: outputObservation.artifactHash ?? afterTrace.artifactHash,
+    epoch: outputObservation.epoch ?? afterTrace.epoch,
+    process_id: processContinuity.processIdAfter,
+    pipeline_id: outputObservation.pipelineId ?? afterTrace.pipelineId,
+    pipeline_epoch: outputObservation.pipelineEpoch ?? afterTrace.pipelineEpoch,
+    frame_number: outputObservation.frameNumber ?? afterTrace.frameNumber,
+    source: 'webgpu_browser_runtime_trace',
+    command: 'GPUQueue.onSubmittedWorkDone+canvas_capture',
+    observedEventType: outputObservation.type,
+    observed_event_type: outputObservation.type,
+    observedTimestampMs: finiteNumber(outputObservation.timestamp, null),
+    observed_timestamp_ms: finiteNumber(outputObservation.timestamp, null),
+    evidenceRefs: [outputRef].filter(Boolean),
+    evidence_refs: [outputRef].filter(Boolean),
+  } : null;
+  const observedApiTrace = [
+    'requestAdapterNative',
+    'requestDeviceNative',
+    'createShaderModuleNative',
+    'createRenderPipelineNative',
+    'queue.submit',
+    'GPURenderPassEncoder.draw',
+    'GPUQueue.onSubmittedWorkDone',
+    'canvas_capture_after_dispatch',
+  ];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.native_runtime_trace.v1',
+    schema_version: 'synthi.gpu_hmr.native_runtime_trace.v1',
+    proofAuthority: 'webgpu_browser_runtime_trace_observation_not_gpu_hmr_success',
+    proof_authority: 'webgpu_browser_runtime_trace_observation_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    backend: 'webgpu',
+    processId: processContinuity.processIdAfter,
+    process_id: processContinuity.processIdAfter,
+    sameProcess: processContinuity.accepted === true,
+    same_process: processContinuity.accepted === true,
+    processRestarted: processContinuity.processRestarted === true,
+    process_restarted: processContinuity.processRestarted === true,
+    apiTrace: observedApiTrace,
+    api_trace: observedApiTrace,
+    nativeWebGpuApiEvidence: nativeWebGpuEvidence,
+    native_webgpu_api_evidence: nativeWebGpuEvidence,
+    loaderEvents: [loaderEvent].filter(Boolean),
+    loader_events: [loaderEvent].filter(Boolean),
+    epochEvents: [epochEvent].filter(Boolean),
+    epoch_events: [epochEvent].filter(Boolean),
+    dispatchEvents: [dispatchEvent].filter(Boolean),
+    dispatch_events: [dispatchEvent].filter(Boolean),
+    outputEvents: [outputEvent].filter(Boolean),
+    output_events: [outputEvent].filter(Boolean),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
   };
 }
 
@@ -2502,6 +2667,11 @@ async function runProof() {
       nativeWebGpuApiEvidence: nativeWebGpuEvidence,
       runMode,
     });
+    const runtimeTrace = buildNativeWebGpuRuntimeTrace({
+      trace,
+      processContinuity,
+      nativeWebGpuEvidence,
+    });
     const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
     const ledgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
     const baseRuntimeAccepted = proofLedger.gpuHmrSuccess === true
@@ -2539,6 +2709,8 @@ async function runProof() {
       metrics,
       visualThresholdValidation,
       nativeWebGpuApiEvidence: nativeWebGpuEvidence,
+      runtimeTrace,
+      runtime_trace: runtimeTrace,
       deterministicVisualMode: profile.deterministicVisualMode,
       proofLedger,
       proofLedgerQuery: ledgerQuery,
@@ -2567,6 +2739,7 @@ async function runProof() {
       visualThresholdValidation,
       nativeWebGpuEvidence,
       processContinuity,
+      runtimeTrace,
     });
     proof.runtime_proof_artifact = proof.runtimeProofArtifact;
     proof.gpuHmrSuccess = proof.runtimeProofArtifact.gpuHmrSuccess === true;
