@@ -1301,6 +1301,69 @@ async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
   return quarantine;
 }
 
+async function createCodeSiteOverlayWorkspace(context, cwd, options = {}) {
+  if (!context?.active || !context.transactionId || !cwd) return null;
+  const baseDir = options.baseDir || DEFAULT_QUARANTINE_BASE_DIR;
+  const overlayId = options.overlayId || `ovl-${safeSegment(context.transactionId)}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const root = path.join(
+    baseDir,
+    safeSegment(context.workspaceSlug || 'workspace'),
+    safeSegment(context.transactionId),
+    overlayId,
+  );
+  const upperRoot = path.join(root, 'upper');
+  const workRoot = path.join(root, 'work');
+  const mergedRoot = path.join(root, 'workspace');
+  await fsp.mkdir(upperRoot, { recursive: true });
+  await fsp.mkdir(workRoot, { recursive: true });
+  await fsp.mkdir(mergedRoot, { recursive: true });
+  const overlay = {
+    quarantineId: overlayId,
+    overlayId,
+    mountMode: 'docker-overlay',
+    cwd: mergedRoot,
+    originalCwd: cwd,
+    baseRoot: cwd,
+    upperRoot,
+    workRoot,
+    root,
+    baseDir,
+    manifestPath: codeSiteQuarantineManifestPath(baseDir, context.workspaceSlug, overlayId),
+    operation: options.operation || 'managed-runtime',
+    symlinkSanitization: { sanitized: [], preserved: [] },
+    before: await snapshotTree(cwd),
+  };
+  await writeCodeSiteQuarantineManifest(overlay, {
+    schemaVersion: QUARANTINE_MANIFEST_SCHEMA_VERSION,
+    quarantineId: overlayId,
+    overlayId,
+    mountMode: 'docker-overlay',
+    workspaceSlug: context.workspaceSlug || null,
+    transactionId: context.transactionId || null,
+    mutationLeaseId: context.mutationLeaseId || null,
+    displayCallsign: context.displayCallsign || null,
+    actorUserId: context.actorUserId || null,
+    effectiveUserId: context.effectiveUserId || null,
+    operation: overlay.operation,
+    status: 'open',
+    root,
+    originalCwd: cwd,
+    baseRoot: cwd,
+    upperRoot,
+    workRoot,
+    mergedRoot,
+    createdAt: new Date().toISOString(),
+    finalizedAt: null,
+    cleanup: null,
+    changes: [],
+    recorded: [],
+    symlinkSanitization: overlay.symlinkSanitization,
+    evidenceRefs: asArray(context.evidenceRefs),
+    processAncestry: asArray(context.processAncestry),
+  });
+  return overlay;
+}
+
 async function sanitizeCodeSiteQuarantineSymlinks(root) {
   const rootRealPath = await fsp.realpath(root).catch(() => path.resolve(root));
   const sanitized = [];
@@ -1367,7 +1430,9 @@ function isPathWithin(root, candidate) {
 
 async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options = {}) {
   if (!context?.active || !quarantine?.root) return { changes: [], recorded: [] };
-  const after = await snapshotTree(quarantine.root);
+  const after = quarantine.mountMode === 'docker-overlay'
+    ? await snapshotCodeSiteOverlayView(quarantine)
+    : await snapshotTree(quarantine.root);
   const changes = diffSnapshots(quarantine.before || new Map(), after);
   const recorded = [];
   const changesWithEvidence = [];
@@ -1436,6 +1501,10 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
       status: manifestChanges.length ? 'reviewable' : (previousManifest?.status || 'empty'),
       root: quarantine.root,
       originalCwd: quarantine.originalCwd,
+      mountMode: quarantine.mountMode || previousManifest?.mountMode || 'copy',
+      baseRoot: quarantine.baseRoot || previousManifest?.baseRoot || null,
+      upperRoot: quarantine.upperRoot || previousManifest?.upperRoot || null,
+      workRoot: quarantine.workRoot || previousManifest?.workRoot || null,
       finalizedAt: new Date().toISOString(),
       cleanup: {
         overlayRemoved: options.cleanup !== false,
@@ -1459,6 +1528,57 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
     });
   }
   return { changes: changesWithEvidence, recorded };
+}
+
+async function snapshotCodeSiteOverlayView(quarantine) {
+  const before = quarantine.before instanceof Map ? new Map(quarantine.before) : new Map();
+  if (!quarantine.upperRoot) return before;
+  await applyOverlayUpperSnapshot(quarantine.upperRoot, quarantine.upperRoot, before);
+  return before;
+}
+
+async function applyOverlayUpperSnapshot(root, current, snapshot) {
+  let entries = [];
+  try {
+    entries = await fsp.readdir(current, { withFileTypes: true });
+  } catch (_) {
+    return;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(current, entry.name);
+    const parentRel = path.relative(root, current).replace(/\\/g, '/');
+    if (entry.name === '.wh..wh..opq') continue;
+    if (entry.name.startsWith('.wh.')) {
+      const deletedName = entry.name.slice(4);
+      const deletedRel = parentRel ? `${parentRel}/${deletedName}` : deletedName;
+      snapshot.delete(deletedRel);
+      continue;
+    }
+    if (shouldSkipQuarantinePath(fullPath, root)) continue;
+    if (entry.isDirectory()) {
+      await applyOverlayUpperSnapshot(root, fullPath, snapshot);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const rel = path.relative(root, fullPath).replace(/\\/g, '/');
+    try {
+      const stat = await fsp.stat(fullPath);
+      const content = stat.size <= MAX_INLINE_SNAPSHOT_BYTES
+        ? await fsp.readFile(fullPath)
+        : null;
+      snapshot.set(rel, {
+        size: stat.size,
+        digest: content ? digestBuffer(content) : await digestFile(fullPath),
+        text: content && stat.size <= MAX_TEXT_DIFF_BYTES && isLikelyText(content)
+          ? content.toString('utf8')
+          : undefined,
+        base64: content && !isLikelyText(content)
+          ? content.toString('base64')
+          : undefined,
+        contentEncoding: content && !isLikelyText(content) ? 'base64' : undefined,
+      });
+    } catch (_) {}
+  }
 }
 
 function codeSiteQuarantineManifestPath(baseDir, workspaceSlug, quarantineId) {
@@ -2160,6 +2280,7 @@ module.exports = {
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteFS,
+  createCodeSiteOverlayWorkspace,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,

@@ -47,8 +47,8 @@ function sameSet(a = [], b = []) {
 
 /**
  * @param {object} opts
- * @param {() => Array<{slug:string,userId:string}>} opts.listContainers - active runtime containers
- * @param {(slug:string,userId:string,argv:string[]) => Promise<string>} opts.runOnce - one-shot exec
+ * @param {() => Array<{slug:string,userId:string,containerId?:string,host?:string,runtimeOptions?:object,runtimeIdentity?:object}>} opts.listContainers - active runtime containers
+ * @param {(slug:string,userId:string,argv:string[],runtimeOptions?:object) => Promise<string>} opts.runOnce - one-shot exec
  * @param {(slug:string,userId:string,ports:number[]) => void} opts.onPortsChanged
  * @param {number} [opts.intervalMs]
  * @param {object} [opts.logger]
@@ -64,42 +64,55 @@ function createContainerPortMonitor({
   if (typeof runOnce !== 'function') throw new TypeError('runOnce is required');
   if (typeof onPortsChanged !== 'function') throw new TypeError('onPortsChanged is required');
 
-  const keyOf = (slug, userId) => `${slug} ${userId}`;
+  const keyOf = (container = {}) => {
+    const identity = container.runtimeKey ||
+      container.containerId ||
+      container.host ||
+      (container.runtimeIdentity ? JSON.stringify(container.runtimeIdentity) : '');
+    return `${container.slug} ${container.userId}${identity ? ` ${identity}` : ''}`;
+  };
   /** key -> last reported (baseline-subtracted) sorted port array */
   const lastPorts = new Map();
   /** key -> Set of infra ports present when the container was first seen */
   const baseline = new Map();
+  /** key -> last observed routing identity for teardown notifications */
+  const containerMeta = new Map();
   let timer = null;
 
   async function _scanOnce() {
     // listContainers may be sync (local manager map) or async (k8s Deployment
     // list for the Sysbox runtime pods) — await handles both.
     const active = (await listContainers()) || [];
-    const activeKeys = new Set(active.map((c) => keyOf(c.slug, c.userId)));
+    const activeKeys = new Set(active.map((container) => keyOf(container)));
 
     // Containers that went away → emit [] once (if we'd reported any), then forget
     // both the reported set and the baseline so a re-created container re-baselines.
     for (const key of [...baseline.keys()]) {
       if (!activeKeys.has(key)) {
-        const [slug, userId] = key.split(' ');
+        const meta = containerMeta.get(key) || {};
+        const slug = meta.slug || key.split(' ')[0];
+        const userId = meta.userId || key.split(' ')[1] || '';
         if ((lastPorts.get(key) || []).length) {
           try { onPortsChanged(slug, userId, []); } catch (_) {}
         }
         lastPorts.delete(key);
         baseline.delete(key);
+        containerMeta.delete(key);
       }
     }
 
-    for (const { slug, userId } of active) {
+    for (const container of active) {
+      const { slug, userId } = container;
+      const key = keyOf(container);
+      containerMeta.set(key, { slug, userId });
       let raw = [];
       try {
-        const out = await runOnce(slug, userId, ['/bin/sh', '-lc', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null']);
+        const out = await runOnce(slug, userId, ['/bin/sh', '-lc', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null'], container.runtimeOptions || {});
         raw = parseListeningPorts(out);
       } catch (err) {
         // Container vanished mid-scan etc. — skip this round for this workspace.
         continue;
       }
-      const key = keyOf(slug, userId);
       // Snapshot the infra baseline (rootless dockerd ~2376, ephemeral containerd
       // port, etc.) so the Ports panel only shows ports the user opens AFTER
       // startup. Capture it on the first scan where SOMETHING is listening — the

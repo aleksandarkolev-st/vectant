@@ -15,6 +15,7 @@ const {
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteFS,
+  createCodeSiteOverlayWorkspace,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
@@ -1149,6 +1150,70 @@ test('quarantines raw terminal workspace changes and records them as evidence', 
     const listed = await listCodeSiteQuarantineManifests(baseDir, 'acme', { transactionId: 'txn-1' });
     assert.deepStrictEqual(listed.map((item) => item.quarantineId), [quarantine.quarantineId]);
     assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
+  } finally {
+    await fs.rm(source, { recursive: true, force: true });
+    await fs.rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('docker overlay workspaces diff upperdir changes without deleting untouched base files', async () => {
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-overlay-src-'));
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-overlay-records-'));
+  await fs.mkdir(path.join(source, 'src'), { recursive: true });
+  await fs.writeFile(path.join(source, 'src', 'app.js'), 'before\n');
+  await fs.writeFile(path.join(source, 'src', 'old.js'), 'old\n');
+  await fs.writeFile(path.join(source, 'src', 'untouched.js'), 'keep\n');
+  const recordedBodies = [];
+  const fetch = async (_url, options) => {
+    recordedBodies.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      ok: false,
+      quarantined: true,
+      policyDecision: { reasonCodes: ['raw_terminal_quarantine'] },
+    }), { status: 200 });
+  };
+  const context = {
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-overlay',
+    mutationLeaseId: 'lease-1',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  };
+
+  try {
+    const overlay = await createCodeSiteOverlayWorkspace(context, source, {
+      baseDir,
+      operation: 'overlay-runtime',
+      overlayId: 'ovl-test',
+    });
+    await fs.mkdir(path.join(overlay.upperRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(overlay.upperRoot, 'src', 'app.js'), 'after\n');
+    await fs.writeFile(path.join(overlay.upperRoot, 'src', 'new.js'), 'new\n');
+    await fs.writeFile(path.join(overlay.upperRoot, 'src', '.wh.old.js'), '');
+
+    const result = await finalizeCodeSiteQuarantineWorkspace(context, overlay, { fetch });
+
+    assert.strictEqual(overlay.mountMode, 'docker-overlay');
+    assert.deepStrictEqual(result.changes.map((change) => `${change.kind}:${change.path}`), [
+      'modified:src/app.js',
+      'created:src/new.js',
+      'deleted:src/old.js',
+    ]);
+    assert.strictEqual(result.changes.some((change) => change.path === 'src/untouched.js'), false);
+    assert.strictEqual(result.changes[0].quarantineEvidence.beforeText, 'before\n');
+    assert.strictEqual(result.changes[0].quarantineEvidence.afterText, 'after\n');
+    assert.strictEqual(recordedBodies.length, 3);
+    assert.deepStrictEqual(recordedBodies.map((body) => body.path), ['src/app.js', 'src/new.js', 'src/old.js']);
+    assert.strictEqual(recordedBodies[0].codesiteFsEvent.details.quarantine_root, overlay.root);
+    assert.strictEqual(recordedBodies[0].codesiteFsEvent.details.change_kind, 'modified');
+    const manifest = await readCodeSiteQuarantineManifest(baseDir, 'acme', overlay.quarantineId);
+    assert.strictEqual(manifest.mountMode, 'docker-overlay');
+    assert.strictEqual(manifest.upperRoot, overlay.upperRoot);
+    assert.deepStrictEqual(manifest.changes.map((change) => change.path), ['src/app.js', 'src/new.js', 'src/old.js']);
+    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
+    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'old.js'), 'utf8'), 'old\n');
+    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'untouched.js'), 'utf8'), 'keep\n');
   } finally {
     await fs.rm(source, { recursive: true, force: true });
     await fs.rm(baseDir, { recursive: true, force: true });

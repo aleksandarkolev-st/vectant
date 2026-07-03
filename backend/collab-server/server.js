@@ -12,7 +12,7 @@ const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessio
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
-const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
+const { createRuntimeManager } = require('./workspaceRuntimeContainer');
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
@@ -39,6 +39,7 @@ const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
   codeSiteContextFromRequest,
+  createCodeSiteOverlayWorkspace,
   codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
@@ -132,13 +133,14 @@ function queueHeadlessCommandStart(ptyProcess, command) {
 }
 
 // ── Container runtime (hybrid Phase 1) ───────────────────────────────────────
-// When ENABLE_CONTAINER_RUNTIME=1, `container`-type programs run inside a
-// per-workspace rootless-Docker runtime container (managed via dockerode) and
-// their published ports are reverse-proxied through /wsport/<slug>/<port>/.
-// When the flag is unset everything below is null and container programs fall
-// back to the existing headless PTY path — so this slice can merge dark.
+// ENABLE_CONTAINER_RUNTIME keeps the original opt-in behavior for ordinary
+// terminals/programs. ENABLE_CODESITE_DOCKER_RUNTIME is default-on because active
+// CodeSite managed sessions need a real Docker overlay boundary instead of a
+// host-shell fallback.
 const ENABLE_CONTAINER_RUNTIME = process.env.ENABLE_CONTAINER_RUNTIME === '1';
-const workspaceRuntime = ENABLE_CONTAINER_RUNTIME
+const ENABLE_CODESITE_DOCKER_RUNTIME = process.env.ENABLE_CODESITE_DOCKER_RUNTIME !== '0';
+const ENABLE_WORKSPACE_RUNTIME = ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME;
+const workspaceRuntime = ENABLE_WORKSPACE_RUNTIME
   ? createRuntimeManager({
       docker: new (require('dockerode'))({
         socketPath: process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock',
@@ -146,17 +148,18 @@ const workspaceRuntime = ENABLE_CONTAINER_RUNTIME
       logger,
     })
   : null;
-const containerPortProxy = ENABLE_CONTAINER_RUNTIME
+const containerPortProxy = ENABLE_WORKSPACE_RUNTIME
   ? createContainerPortProxy({
       // Resolve the running runtime-container host for a slug. Dev is effectively
-      // single-user per workspace, so match the first session keyed by `${slug} `.
+      // single-user per workspace, but CodeSite overlay sessions carry runtime
+      // identity options, so ask the manager for explicit live session metadata.
       resolveHost: (slug) => {
-        const match = [...workspaceRuntime._sessions.keys()].find((k) => k.startsWith(`${slug} `));
-        if (!match) return null;
-        // Keys are `${slug} ${userId}`; split on the FIRST space only so a userId
-        // that itself contains a space is reconstructed intact.
-        const spaceIdx = match.indexOf(' ');
-        return runtimeContainerHost(match.slice(0, spaceIdx), match.slice(spaceIdx + 1));
+        const sessions = typeof workspaceRuntime.listRuntimeSessions === 'function'
+          ? workspaceRuntime.listRuntimeSessions()
+          : [];
+        const match = sessions.find((session) => session.slug === slug && session.mode === 'readwrite')
+          || sessions.find((session) => session.slug === slug);
+        return match?.host || null;
       },
       // Stream auto-login: hand the proxy the per-session KasmVNC credential so it
       // injects Authorization: Basic for webGui desktop streams (DBeaver/Postman).
@@ -168,14 +171,18 @@ const containerPortProxy = ENABLE_CONTAINER_RUNTIME
 // Phase 2b — detect ports opened by servers INSIDE the runtime container (e.g.
 // `npm run dev` from the in-app terminal) and push the live set to the frontend
 // Ports panel. Reads /proc/net/tcp[6] via runOnce; broadcasts over notifyWss.
-const containerPortMonitor = ENABLE_CONTAINER_RUNTIME
+const containerPortMonitor = ENABLE_WORKSPACE_RUNTIME
   ? createContainerPortMonitor({
-      // Active runtime containers, keyed `${slug} ${userId}` in the manager.
-      listContainers: () => [...workspaceRuntime._sessions.keys()].map((k) => {
-        const i = k.indexOf(' ');
-        return { slug: k.slice(0, i), userId: k.slice(i + 1) };
-      }),
-      runOnce: (slug, userId, argv) => workspaceRuntime.runOnce(slug, userId, argv),
+      // Active runtime containers. Overlay sessions include runtimeOptions so
+      // runOnce addresses the same isolated container identity.
+      listContainers: () => (typeof workspaceRuntime.listRuntimeSessions === 'function'
+        ? workspaceRuntime.listRuntimeSessions().map((session) => ({
+            slug: session.slug,
+            userId: session.userId,
+            runtimeOptions: session.runtimeOptions || {},
+          }))
+        : []),
+      runOnce: (slug, userId, argv, runtimeOptions) => workspaceRuntime.runOnce(slug, userId, argv, runtimeOptions),
       onPortsChanged: (slug, _userId, ports) => broadcastContainerPorts(slug, ports),
       logger,
     })
@@ -214,10 +221,13 @@ const managedProgramRuntime = createProgramRuntimeManager({
     // Sysbox runtime POD when the backend is on (its own validated, isolated
     // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
     // Everything else keeps the existing shared-collab headless PTY path.
+    const codeSiteHybridAvailable = Boolean(workspaceRuntime) && Boolean(ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME);
+    const nonCodeSiteHybridAvailable = Boolean(workspaceRuntime) && ENABLE_CONTAINER_RUNTIME;
+    const hasHybrid = codesiteContext?.active ? codeSiteHybridAvailable : nonCodeSiteHybridAvailable;
     const { target } = programRuntimeTarget({
       runtimeType,
       sysboxEnabled: isSysboxRuntimeEnabled(),
-      hasHybrid: Boolean(workspaceRuntime),
+      hasHybrid,
     });
     if (target === 'sysbox-pod') {
       const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
@@ -239,21 +249,29 @@ const managedProgramRuntime = createProgramRuntimeManager({
             reason: 'program_runtime_hybrid',
           });
           const cwd = await resolveWorkspaceCwd(workspaceSlug, userId);
-          codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codesiteContext, cwd, {
+          codeSiteQuarantine = await createCodeSiteOverlayWorkspace(codesiteContext, cwd, {
             operation: 'program-runtime',
             baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
           });
           runtimeOptions = {
             codesiteContext,
-            codeSiteQuarantineRoot: codeSiteQuarantine?.root || '',
-            codeSiteQuarantineId: codeSiteQuarantine?.root || '',
+            codeSiteBaseRoot: codeSiteQuarantine?.baseRoot || codeSiteQuarantine?.originalCwd || '',
+            codeSiteOverlayRoot: codeSiteQuarantine?.root || '',
+            codeSiteOverlayUpperRoot: codeSiteQuarantine?.upperRoot || '',
+            codeSiteOverlayWorkRoot: codeSiteQuarantine?.workRoot || '',
+            codeSiteOverlayId: codeSiteQuarantine?.overlayId || codeSiteQuarantine?.quarantineId || '',
           };
         }
         await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId, runtimeOptions);
         // The rootless dockerd inside the runtime container takes ~15-25s to be
         // ready; wait for it so the program's first `docker ...` command doesn't
         // race a not-yet-listening daemon.
-        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId, runtimeOptions);
+        const ready = await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId, runtimeOptions);
+        if (!ready) {
+          const error = new Error('codesite_runtime_overlay_unavailable');
+          error.code = 'CODESITE_RUNTIME_OVERLAY_UNAVAILABLE';
+          throw error;
+        }
         const handle = await workspaceRuntime.execInRuntime(workspaceSlug, userId, {
           command,
           env,
@@ -2671,7 +2689,7 @@ const server = http.createServer(async (req, res) => {
         codeSiteContext,
         runtimeType: launchConfig.runtimeType || 'cli',
         sysboxEnabled: isSysboxRuntimeEnabled(),
-        hasHybrid: Boolean(workspaceRuntime),
+        hasHybrid: Boolean(workspaceRuntime && (ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME)),
       });
       if (launchMode === 'block-runtime' || launchMode === 'block-host') {
         writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:launch-program');
@@ -6329,6 +6347,7 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
 const terminalWss = createTerminalWSS({
   enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
+  enableCodeSiteDockerRuntime: ENABLE_CODESITE_DOCKER_RUNTIME,
   workspaceRuntime,
   flushWorkspaceDocsToDisk,
 });

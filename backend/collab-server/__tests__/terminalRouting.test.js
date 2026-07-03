@@ -21,7 +21,7 @@ test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slu
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: rt, workspaceSlug: '' }), false);
 });
 
-test('CodeSite terminal launch mode blocks host shells and permits container quarantine', () => {
+test('CodeSite terminal launch mode blocks host shells and permits container overlay runtime', () => {
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: null,
     workspaceSlug: 'repo',
@@ -43,7 +43,7 @@ test('CodeSite terminal launch mode blocks host shells and permits container qua
     enableContainerRuntime: true,
     workspaceRuntime: {},
     workspaceSlug: 'repo',
-  }), 'quarantine-runtime');
+  }), 'overlay-runtime');
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec
@@ -75,7 +75,7 @@ test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
 });
 
-test('CodeSite program runtime mode blocks headless host launches and permits hybrid quarantine', () => {
+test('CodeSite program runtime mode blocks headless host launches and permits hybrid overlay runtime', () => {
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: null,
     runtimeType: 'container',
@@ -93,7 +93,7 @@ test('CodeSite program runtime mode blocks headless host launches and permits hy
     runtimeType: 'container',
     sysboxEnabled: false,
     hasHybrid: true,
-  }), 'quarantine-runtime');
+  }), 'overlay-runtime');
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: { active: true },
     runtimeType: 'container',

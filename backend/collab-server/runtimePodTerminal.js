@@ -74,7 +74,7 @@ function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
 function codeSiteProgramRuntimeLaunchMode({ codeSiteContext, runtimeType, sysboxEnabled, hasHybrid } = {}) {
   if (!codeSiteContext?.active) return 'normal';
   const { target } = programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid });
-  if (target === 'hybrid') return 'quarantine-runtime';
+  if (target === 'hybrid') return 'overlay-runtime';
   if (target === 'headless') return 'block-host';
   return 'block-runtime';
 }
