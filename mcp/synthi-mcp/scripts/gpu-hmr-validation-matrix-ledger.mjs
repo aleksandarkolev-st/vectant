@@ -112,12 +112,25 @@ const MATRIX_JSON_OUTPUT_ARRAY_ENTRY_LIMIT = 200;
 const MATRIX_JSON_OUTPUT_ARRAY_SAMPLE_LIMIT = 32;
 const MATRIX_JSON_OUTPUT_STRING_LIMIT = 256 * 1024;
 const MATRIX_JSON_OUTPUT_STRING_PREFIX_LIMIT = 4096;
+const MATRIX_JSON_OUTPUT_DETAIL_SCHEMA_VERSION =
+  'synthi.gpu_hmr.validation_matrix_row_detail.v1';
+const MATRIX_JSON_OUTPUT_DETAIL_REF_SCHEMA_VERSION =
+  'synthi.gpu_hmr.validation_matrix_row_detail_ref.v1';
 
 function sha256Hex(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
 function matrixOutputProjectionHash(value) {
+  if (Array.isArray(value)) {
+    const hash = createHash('sha256');
+    hash.update(`array:${value.length}:`);
+    for (const entry of value) {
+      hash.update(sha256Hex(JSON.stringify(entry)));
+      hash.update('\n');
+    }
+    return `sha256:${hash.digest('hex')}`;
+  }
   return `sha256:${sha256Hex(JSON.stringify(value))}`;
 }
 
@@ -139,10 +152,158 @@ function isMatrixRowLike(value) {
     );
 }
 
-function compactMatrixRowRefForJsonOutput(row = {}) {
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) return value;
+  }
+  return null;
+}
+
+function arrayField(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function compactObjectField(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value;
+}
+
+function safePathSegment(value) {
+  const text = String(value ?? 'row');
+  const normalized = text.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return (normalized || 'row').slice(0, 96);
+}
+
+function compactMatrixRowRefForJsonOutput(row = {}, detailRef = null) {
   const acceptedForGpuHmr = firstBool(row.acceptedForGpuHmr, row.accepted_for_gpu_hmr) === true;
   const gpuHmrSuccess = firstBool(row.gpuHmrSuccess, row.gpu_hmr_success) === true;
   const safetyAccepted = firstBool(row.safety?.accepted, row.safety_accepted) === true;
+  const proofIds = arrayField(row.proofIds, row.proof_ids);
+  const openGaps = arrayField(row.openGaps, row.open_gaps);
+  const reasons = arrayField(row.reasons, row.reasonCodes, row.reason_codes);
+  const visual = compactObjectField(row.visual) ?? {};
+  const ledger = compactObjectField(row.ledger) ?? {};
+  const runtimeProof = compactObjectField(row.runtimeProof) ?? compactObjectField(row.runtime_proof) ?? {};
+  const compact = {
+    schemaVersion: 'synthi.gpu_hmr.validation_matrix_row_json_projection.v1',
+    schema_version: 'synthi.gpu_hmr.validation_matrix_row_json_projection.v1',
+    rowId: row.rowId ?? row.row_id ?? null,
+    row_id: row.rowId ?? row.row_id ?? null,
+    matrixKey: row.matrixKey ?? row.matrix_key ?? null,
+    matrix_key: row.matrixKey ?? row.matrix_key ?? null,
+    attemptKey: row.attemptKey ?? row.attempt_key ?? null,
+    attempt_key: row.attemptKey ?? row.attempt_key ?? null,
+    artifactPath: row.artifactPath ?? row.artifact_path ?? null,
+    artifact_path: row.artifactPath ?? row.artifact_path ?? null,
+    updatedAt: row.updatedAt ?? row.updated_at ?? null,
+    updated_at: row.updatedAt ?? row.updated_at ?? null,
+    backend: row.backend ?? null,
+    targetId: row.targetId ?? row.target_id ?? null,
+    target_id: row.targetId ?? row.target_id ?? null,
+    profileId: row.profileId ?? row.profile_id ?? null,
+    profile_id: row.profileId ?? row.profile_id ?? null,
+    proofMode: row.proofMode ?? row.proof_mode ?? null,
+    proof_mode: row.proofMode ?? row.proof_mode ?? null,
+    evidenceKind: row.evidenceKind ?? row.evidence_kind ?? null,
+    evidence_kind: row.evidenceKind ?? row.evidence_kind ?? null,
+    matrixOutcome: row.matrixOutcome ?? row.matrix_outcome ?? null,
+    matrix_outcome: row.matrixOutcome ?? row.matrix_outcome ?? null,
+    acceptanceClass: row.acceptanceClass ?? row.acceptance_class ?? null,
+    acceptance_class: row.acceptanceClass ?? row.acceptance_class ?? null,
+    acceptanceScope: row.acceptanceScope ?? row.acceptance_scope ?? null,
+    acceptance_scope: row.acceptanceScope ?? row.acceptance_scope ?? null,
+    claimScope: row.claimScope ?? row.claim_scope ?? null,
+    claim_scope: row.claimScope ?? row.claim_scope ?? null,
+    supportedPipelineScope: row.supportedPipelineScope ?? row.supported_pipeline_scope ?? null,
+    supported_pipeline_scope: row.supportedPipelineScope ?? row.supported_pipeline_scope ?? null,
+    validationTargetScope: row.validationTargetScope ?? row.validation_target_scope ?? null,
+    validation_target_scope: row.validationTargetScope ?? row.validation_target_scope ?? null,
+    acceptedForGpuHmr,
+    accepted_for_gpu_hmr: acceptedForGpuHmr,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
+    visualProfileAccepted: firstBool(row.visualProfileAccepted, row.visual_profile_accepted) === true,
+    visual_profile_accepted: firstBool(row.visualProfileAccepted, row.visual_profile_accepted) === true,
+    refusalProven: firstBool(row.refusalProven, row.refusal_proven) === true,
+    refusal_proven: firstBool(row.refusalProven, row.refusal_proven) === true,
+    proofChainAccepted: firstBool(row.proofChainAccepted, row.proof_chain_accepted) === true,
+    proof_chain_accepted: firstBool(row.proofChainAccepted, row.proof_chain_accepted) === true,
+    proofChain: row.proofChain ?? row.proof_chain ?? null,
+    proof_chain: row.proofChain ?? row.proof_chain ?? null,
+    ledgerProofId: firstDefined(row.ledgerProofId, row.ledger_proof_id, ledger.proofId, ledger.proof_id),
+    ledger_proof_id: firstDefined(row.ledgerProofId, row.ledger_proof_id, ledger.proofId, ledger.proof_id),
+    runtimeProofId: firstDefined(
+      row.runtimeProofId,
+      row.runtime_proof_id,
+      runtimeProof.proofId,
+      runtimeProof.proof_id,
+    ),
+    runtime_proof_id: firstDefined(
+      row.runtimeProofId,
+      row.runtime_proof_id,
+      runtimeProof.proofId,
+      runtimeProof.proof_id,
+    ),
+    changedPixelRatio: firstDefined(row.changedPixelRatio, row.changed_pixel_ratio, visual.changedPixelRatio),
+    changed_pixel_ratio: firstDefined(row.changedPixelRatio, row.changed_pixel_ratio, visual.changedPixelRatio),
+    safetyAccepted,
+    safety_accepted: safetyAccepted,
+    proofIds,
+    proof_ids: proofIds,
+    reasons,
+    reason_codes: reasons,
+    openGaps,
+    open_gaps: openGaps,
+    sourceTreeIntakeAccepted:
+      firstBool(row.sourceTreeIntakeAccepted, row.source_tree_intake_accepted) === true,
+    source_tree_intake_accepted:
+      firstBool(row.sourceTreeIntakeAccepted, row.source_tree_intake_accepted) === true,
+    sourceRelevantFileCount:
+      firstDefined(row.sourceRelevantFileCount, row.source_relevant_file_count),
+    source_relevant_file_count:
+      firstDefined(row.sourceRelevantFileCount, row.source_relevant_file_count),
+    gpuSourceFileCount:
+      firstDefined(row.gpuSourceFileCount, row.gpu_source_file_count),
+    gpu_source_file_count:
+      firstDefined(row.gpuSourceFileCount, row.gpu_source_file_count),
+    runtimeBoundaryEventManifestTemplateAccepted:
+      firstBool(
+        row.runtimeBoundaryEventManifestTemplateAccepted,
+        row.runtime_boundary_event_manifest_template_accepted,
+      ) === true,
+    runtime_boundary_event_manifest_template_accepted:
+      firstBool(
+        row.runtimeBoundaryEventManifestTemplateAccepted,
+        row.runtime_boundary_event_manifest_template_accepted,
+      ) === true,
+    outputProjection: {
+      schemaVersion: 'synthi.gpu_hmr.validation_matrix_row_json_projection.v1',
+      schema_version: 'synthi.gpu_hmr.validation_matrix_row_json_projection.v1',
+      proofAuthority: 'cli_row_json_projection_only_not_gpu_hmr_acceptance',
+      proof_authority: 'cli_row_json_projection_only_not_gpu_hmr_acceptance',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+    },
+  };
+  compact.output_projection = compact.outputProjection;
+  if (detailRef) {
+    compact.detailRef = detailRef;
+    compact.detail_ref = detailRef;
+  }
+  return compact;
+}
+
+function compactMatrixRowTinyRefForJsonOutput(row = {}) {
+  const acceptedForGpuHmr = firstBool(row.acceptedForGpuHmr, row.accepted_for_gpu_hmr) === true;
+  const gpuHmrSuccess = firstBool(row.gpuHmrSuccess, row.gpu_hmr_success) === true;
+  const proofIds = arrayField(row.proofIds, row.proof_ids);
   return {
     rowId: row.rowId ?? row.row_id ?? null,
     row_id: row.rowId ?? row.row_id ?? null,
@@ -159,48 +320,13 @@ function compactMatrixRowRefForJsonOutput(row = {}) {
     accepted_for_gpu_hmr: acceptedForGpuHmr,
     gpuHmrSuccess,
     gpu_hmr_success: gpuHmrSuccess,
-    safetyAccepted,
-    safety_accepted: safetyAccepted,
-    proofIds: Array.isArray(row.proofIds) ? row.proofIds : Array.isArray(row.proof_ids) ? row.proof_ids : [],
-    proof_ids: Array.isArray(row.proof_ids) ? row.proof_ids : Array.isArray(row.proofIds) ? row.proofIds : [],
-    openGaps: Array.isArray(row.openGaps) ? row.openGaps : [],
-    open_gaps: Array.isArray(row.open_gaps) ? row.open_gaps : [],
+    proofIds,
+    proof_ids: proofIds,
   };
 }
 
-function matrixRowForJsonOutput(row = {}) {
-  if (!row || typeof row !== 'object' || row.proofMode !== 'random_large_project_cold_path') {
-    return row;
-  }
-  const projected = { ...row };
-  delete projected.sourceIntakeEvidence;
-  delete projected.source_intake_evidence;
-  projected.outputProjection = {
-    schemaVersion: 'synthi.gpu_hmr.validation_matrix_row_json_output_projection.v1',
-    schema_version: 'synthi.gpu_hmr.validation_matrix_row_json_output_projection.v1',
-    proofAuthority: 'cli_row_json_size_projection_only_not_gpu_hmr_acceptance',
-    proof_authority: 'cli_row_json_size_projection_only_not_gpu_hmr_acceptance',
-    omittedRawCarriers: ['sourceIntakeEvidence', 'source_intake_evidence'],
-    omitted_raw_carriers: ['sourceIntakeEvidence', 'source_intake_evidence'],
-    retainedValidatedSummaries: [
-      'coldSourceTreeIntake',
-      'sourceIntakeTransportFallback',
-      'randomColdBackendEvidence',
-    ],
-    retained_validated_summaries: [
-      'coldSourceTreeIntake',
-      'sourceIntakeTransportFallback',
-      'randomColdBackendEvidence',
-    ],
-    acceptedForGpuHmr: false,
-    accepted_for_gpu_hmr: false,
-    gpuHmrSuccess: false,
-    gpu_hmr_success: false,
-    canSatisfyRuntimeProof: false,
-    can_satisfy_runtime_proof: false,
-  };
-  projected.output_projection = projected.outputProjection;
-  return projected;
+function matrixRowForJsonOutput(row = {}, detailRef = null) {
+  return compactMatrixRowRefForJsonOutput(row, detailRef);
 }
 
 function matrixOutputJsonReplacer(key, value) {
@@ -215,7 +341,7 @@ function matrixOutputJsonReplacer(key, value) {
       || (key !== 'rows' && key !== 'refs' && value.some(isMatrixRowLike))
     )
   ) {
-    if (key === 'rows') return value.map((row) => matrixRowForJsonOutput(row));
+    if (key === 'rows') return value;
     const contentHash = matrixOutputProjectionHash(value);
     const refs = value.map((row) => compactMatrixRowRefForJsonOutput(row));
     return {
@@ -263,9 +389,106 @@ function matrixOutputJsonReplacer(key, value) {
   return value;
 }
 
-function matrixLedgerForJsonOutput(ledger) {
+function matrixRowDetailPayload(row, ledger) {
+  return {
+    schemaVersion: MATRIX_JSON_OUTPUT_DETAIL_SCHEMA_VERSION,
+    schema_version: MATRIX_JSON_OUTPUT_DETAIL_SCHEMA_VERSION,
+    proofAuthority: 'validation_matrix_row_detail_transport_only_not_gpu_hmr_acceptance',
+    proof_authority: 'validation_matrix_row_detail_transport_only_not_gpu_hmr_acceptance',
+    ledgerProofId: ledger.proofId,
+    ledger_proof_id: ledger.proofId,
+    rowId: row.rowId ?? row.row_id ?? null,
+    row_id: row.rowId ?? row.row_id ?? null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    row,
+  };
+}
+
+async function writeMatrixRowDetailSidecars(ledger, args, stamp) {
+  const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  if (rows.length === 0) return { refsByRowId: new Map(), manifest: null };
+  const detailDirName = `gpu-hmr-validation-matrix-${stamp}-rows`;
+  const detailDir = path.join(args.outputDir, detailDirName);
+  await fs.mkdir(detailDir, { recursive: true });
+  const refs = [];
+  const refsByRowId = new Map();
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const rowId = row?.rowId ?? row?.row_id ?? `row-${index + 1}`;
+    const fileName = `${String(index + 1).padStart(4, '0')}-${safePathSegment(rowId)}-${sha256Hex(rowId).slice(0, 16)}.json`;
+    const detailPath = path.join(detailDir, fileName);
+    const detailPayload = matrixRowDetailPayload(row, ledger);
+    const detailJson = `${JSON.stringify(detailPayload, matrixOutputJsonReplacer, 2)}\n`;
+    await fs.writeFile(detailPath, detailJson);
+    const detailHash = `sha256:${sha256Hex(detailJson)}`;
+    const byteLength = Buffer.byteLength(detailJson);
+    const relativePath = path.relative(args.outputDir, detailPath).split(path.sep).join('/');
+    const ref = {
+      schemaVersion: MATRIX_JSON_OUTPUT_DETAIL_REF_SCHEMA_VERSION,
+      schema_version: MATRIX_JSON_OUTPUT_DETAIL_REF_SCHEMA_VERSION,
+      proofAuthority: 'row_detail_transport_only_not_gpu_hmr_acceptance',
+      proof_authority: 'row_detail_transport_only_not_gpu_hmr_acceptance',
+      rowId,
+      row_id: rowId,
+      rowDetailPath: relativePath,
+      row_detail_path: relativePath,
+      rowDetailHash: detailHash,
+      row_detail_hash: detailHash,
+      byteLength,
+      byte_length: byteLength,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+    };
+    refs.push(ref);
+    refsByRowId.set(rowId, ref);
+  }
+  const manifestHash = matrixOutputProjectionHash(refs);
+  const manifest = {
+    schemaVersion: 'synthi.gpu_hmr.validation_matrix_row_detail_manifest.v1',
+    schema_version: 'synthi.gpu_hmr.validation_matrix_row_detail_manifest.v1',
+    proofAuthority: 'row_detail_manifest_transport_only_not_gpu_hmr_acceptance',
+    proof_authority: 'row_detail_manifest_transport_only_not_gpu_hmr_acceptance',
+    directory: detailDirName,
+    rowCount: refs.length,
+    row_count: refs.length,
+    manifestHash,
+    manifest_hash: manifestHash,
+    refs,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  return { refsByRowId, manifest };
+}
+
+function matrixLedgerForJsonOutput(ledger, rowDetailRefsById = new Map(), rowDetailManifest = null) {
+  const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  const summary = matrixSummaryForJsonOutput(ledger.summary);
+  const attemptHistory = matrixAttemptHistoryForJsonOutput(ledger.attemptHistory);
   return {
     ...ledger,
+    summary,
+    attemptHistory,
+    attempt_history: attemptHistory,
+    rows: rows.map((row) => {
+      const rowId = row?.rowId ?? row?.row_id ?? null;
+      return matrixRowForJsonOutput(row, rowId ? rowDetailRefsById.get(rowId) : null);
+    }),
+    query: matrixQueryForJsonOutput(ledger.query, summary, attemptHistory),
+    rowDetailManifest,
+    row_detail_manifest: rowDetailManifest,
     outputProjection: {
       schemaVersion: 'synthi.gpu_hmr.validation_matrix_json_output_projection.v1',
       schema_version: 'synthi.gpu_hmr.validation_matrix_json_output_projection.v1',
@@ -281,7 +504,241 @@ function matrixLedgerForJsonOutput(ledger) {
       array_entry_limit: MATRIX_JSON_OUTPUT_ARRAY_ENTRY_LIMIT,
       stringByteLimit: MATRIX_JSON_OUTPUT_STRING_LIMIT,
       string_byte_limit: MATRIX_JSON_OUTPUT_STRING_LIMIT,
+      rowDetailSidecars: rowDetailManifest !== null,
+      row_detail_sidecars: rowDetailManifest !== null,
     },
+  };
+}
+
+function compactCoverageRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => compactMatrixRowTinyRefForJsonOutput(row));
+}
+
+function compactPrimitiveArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry) =>
+    entry === null
+    || typeof entry === 'string'
+    || typeof entry === 'number'
+    || typeof entry === 'boolean'
+  );
+}
+
+function compactPrimitiveArraySample(value, limit = 32) {
+  const entries = compactPrimitiveArray(value);
+  return {
+    entries: entries.slice(0, limit),
+    count: entries.length,
+    truncated: entries.length > limit,
+    contentHash: entries.length > limit ? matrixOutputProjectionHash(entries) : null,
+  };
+}
+
+function compactPlanCoverageEntry(entry = {}) {
+  const rows = compactCoverageRows(entry.rows);
+  const openGaps = compactPrimitiveArraySample(entry.openGaps ?? entry.open_gaps, 32);
+  return {
+    id: entry.id ?? null,
+    requirement: entry.requirement ?? null,
+    status: entry.status ?? null,
+    claimScope: entry.claimScope ?? entry.claim_scope ?? null,
+    claim_scope: entry.claimScope ?? entry.claim_scope ?? null,
+    acceptanceScopes: compactPrimitiveArray(entry.acceptanceScopes ?? entry.acceptance_scopes),
+    acceptance_scopes: compactPrimitiveArray(entry.acceptanceScopes ?? entry.acceptance_scopes),
+    rowCount: Number.isSafeInteger(Number(entry.rowCount ?? entry.row_count))
+      ? Number(entry.rowCount ?? entry.row_count)
+      : rows.length,
+    row_count: Number.isSafeInteger(Number(entry.rowCount ?? entry.row_count))
+      ? Number(entry.rowCount ?? entry.row_count)
+      : rows.length,
+    openGaps: openGaps.entries,
+    open_gaps: openGaps.entries,
+    openGapCount: openGaps.count,
+    open_gap_count: openGaps.count,
+    openGapsTruncated: openGaps.truncated,
+    open_gaps_truncated: openGaps.truncated,
+    openGapsHash: openGaps.contentHash,
+    open_gaps_hash: openGaps.contentHash,
+    rows,
+  };
+}
+
+function compactBroadLibraryAgnosticReadiness(readiness = {}) {
+  if (!readiness || typeof readiness !== 'object') return null;
+  return {
+    schemaVersion: readiness.schemaVersion ?? readiness.schema_version ?? null,
+    schema_version: readiness.schemaVersion ?? readiness.schema_version ?? null,
+    accepted: firstBool(readiness.accepted) === true,
+    proofId: readiness.proofId ?? readiness.proof_id ?? null,
+    proof_id: readiness.proofId ?? readiness.proof_id ?? null,
+    proofAuthority: readiness.proofAuthority ?? readiness.proof_authority ?? null,
+    proof_authority: readiness.proofAuthority ?? readiness.proof_authority ?? null,
+    backendFamilies: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
+    backend_families: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
+    acceptanceScopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
+    acceptance_scopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
+    visualOracleScopes: compactPrimitiveArray(readiness.visualOracleScopes ?? readiness.visual_oracle_scopes),
+    visual_oracle_scopes: compactPrimitiveArray(readiness.visualOracleScopes ?? readiness.visual_oracle_scopes),
+    computeOracleScopes: compactPrimitiveArray(readiness.computeOracleScopes ?? readiness.compute_oracle_scopes),
+    compute_oracle_scopes: compactPrimitiveArray(readiness.computeOracleScopes ?? readiness.compute_oracle_scopes),
+    adversarialRefusalRows:
+      Number.isSafeInteger(Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows))
+        ? Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows)
+        : null,
+    adversarial_refusal_rows:
+      Number.isSafeInteger(Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows))
+        ? Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows)
+        : null,
+    failedGates: compactPrimitiveArray(readiness.failedGates ?? readiness.failed_gates),
+    failed_gates: compactPrimitiveArray(readiness.failedGates ?? readiness.failed_gates),
+    rowRefs: compactCoverageRows(readiness.rowRefs ?? readiness.row_refs ?? readiness.rows),
+    row_refs: compactCoverageRows(readiness.rowRefs ?? readiness.row_refs ?? readiness.rows),
+  };
+}
+
+function matrixSummaryForJsonOutput(summary = {}) {
+  const refusalTargets = compactPrimitiveArraySample(summary.refusalTargets, 80);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.validation_matrix_summary_json_projection.v1',
+    schema_version: 'synthi.gpu_hmr.validation_matrix_summary_json_projection.v1',
+    rowCount: summary.rowCount,
+    byOutcome: summary.byOutcome,
+    byBackend: summary.byBackend,
+    acceptedFullRuntimeGpuHmrRows: summary.acceptedFullRuntimeGpuHmrRows,
+    acceptedFullRuntimeTargets: summary.acceptedFullRuntimeTargets,
+    acceptedFullRuntimeClaimScopeBreakdown: summary.acceptedFullRuntimeClaimScopeBreakdown,
+    broadFullRuntimeGpuHmrRows: summary.broadFullRuntimeGpuHmrRows,
+    broadFullRuntimeTargets: summary.broadFullRuntimeTargets,
+    scopedFullRuntimeGpuHmrRows: summary.scopedFullRuntimeGpuHmrRows,
+    scopedFullRuntimeTargets: summary.scopedFullRuntimeTargets,
+    allFullRuntimeGpuHmrRows: summary.allFullRuntimeGpuHmrRows,
+    allFullRuntimeTargets: summary.allFullRuntimeTargets,
+    fullRuntimeScopeBreakdown: summary.fullRuntimeScopeBreakdown,
+    fullRuntimeGeneralityBreakdown: summary.fullRuntimeGeneralityBreakdown,
+    visualProfileAcceptedRows: summary.visualProfileAcceptedRows,
+    visualProfileTargets: summary.visualProfileTargets,
+    refusalProvenRows: summary.refusalProvenRows,
+    refusalTargets: refusalTargets.entries,
+    refusal_targets: refusalTargets.entries,
+    refusalTargetCount: refusalTargets.count,
+    refusal_target_count: refusalTargets.count,
+    refusalTargetsTruncated: refusalTargets.truncated,
+    refusal_targets_truncated: refusalTargets.truncated,
+    refusalTargetsHash: refusalTargets.contentHash,
+    refusal_targets_hash: refusalTargets.contentHash,
+    preflightOnlyRows: summary.preflightOnlyRows,
+    preflightOnlyTargets: summary.preflightOnlyTargets,
+    unprovenRows: summary.unprovenRows,
+    unprovenTargets: summary.unprovenTargets,
+    broadLibraryAgnosticReadiness:
+      compactBroadLibraryAgnosticReadiness(summary.broadLibraryAgnosticReadiness),
+    planCoverage: Array.isArray(summary.planCoverage)
+      ? summary.planCoverage.map((entry) => compactPlanCoverageEntry(entry))
+      : [],
+    includeInvalidated: summary.includeInvalidated,
+    includeUnproven: summary.includeUnproven,
+    omittedInvalidatedRows: summary.omittedInvalidatedRows,
+    omitted_invalidated_rows: summary.omitted_invalidated_rows ?? summary.omittedInvalidatedRows,
+    omittedUnprovenRows: summary.omittedUnprovenRows,
+    omitted_unproven_rows: summary.omitted_unproven_rows ?? summary.omittedUnprovenRows,
+    outputProjection: {
+      schemaVersion: 'synthi.gpu_hmr.validation_matrix_summary_json_projection.v1',
+      schema_version: 'synthi.gpu_hmr.validation_matrix_summary_json_projection.v1',
+      proofAuthority: 'cli_summary_json_projection_only_not_gpu_hmr_acceptance',
+      proof_authority: 'cli_summary_json_projection_only_not_gpu_hmr_acceptance',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+    },
+  };
+}
+
+function matrixAttemptHistoryForJsonOutput(attemptHistory = []) {
+  if (!Array.isArray(attemptHistory)) return attemptHistory;
+  return attemptHistory.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    return {
+      targetId: entry.targetId ?? entry.target_id ?? null,
+      target_id: entry.targetId ?? entry.target_id ?? null,
+      backend: entry.backend ?? null,
+      selectedRowId: entry.selectedRowId ?? entry.selected_row_id ?? null,
+      selected_row_id: entry.selectedRowId ?? entry.selected_row_id ?? null,
+      candidateCount: entry.candidateCount ?? entry.candidate_count ?? null,
+      candidate_count: entry.candidateCount ?? entry.candidate_count ?? null,
+      selectedOutcome: entry.selectedOutcome ?? entry.selected_outcome ?? null,
+      selected_outcome: entry.selectedOutcome ?? entry.selected_outcome ?? null,
+      supportScore: entry.supportScore ?? entry.support_score ?? null,
+      support_score: entry.supportScore ?? entry.support_score ?? null,
+    };
+  });
+}
+
+function matrixQueryForJsonOutput(query = {}, summary = {}, attemptHistory = []) {
+  return {
+    schemaVersion: query.schemaVersion ?? query.schema_version ?? null,
+    schema_version: query.schemaVersion ?? query.schema_version ?? null,
+    proofId: query.proofId ?? query.proof_id ?? null,
+    proof_id: query.proofId ?? query.proof_id ?? null,
+    accepted: query.accepted === true,
+    failedGates: compactPrimitiveArray(query.failedGates ?? query.failed_gates),
+    failed_gates: compactPrimitiveArray(query.failedGates ?? query.failed_gates),
+    summary,
+    attemptHistory,
+    attempt_history: attemptHistory,
+  };
+}
+
+function matrixSummaryForConsole(summary = {}) {
+  const projected = matrixSummaryForJsonOutput(summary);
+  return {
+    ...projected,
+    refusalTargets: projected.refusalTargets.slice(0, 20),
+    refusal_targets: projected.refusal_targets.slice(0, 20),
+    planCoverage: projected.planCoverage.map((entry) => ({
+      id: entry.id,
+      requirement: entry.requirement,
+      status: entry.status,
+      claimScope: entry.claimScope,
+      claim_scope: entry.claim_scope,
+      acceptanceScopes: entry.acceptanceScopes,
+      acceptance_scopes: entry.acceptance_scopes,
+      rowCount: entry.rowCount,
+      row_count: entry.row_count,
+      openGaps: entry.openGaps.slice(0, 8),
+      open_gaps: entry.open_gaps.slice(0, 8),
+      openGapCount: entry.openGapCount,
+      open_gap_count: entry.open_gap_count,
+      openGapsTruncated: entry.openGapsTruncated,
+      open_gaps_truncated: entry.open_gaps_truncated,
+      openGapsHash: entry.openGapsHash,
+      open_gaps_hash: entry.open_gaps_hash,
+    })),
+  };
+}
+
+function pathsForConsole(paths = {}) {
+  const manifest = paths.rowDetailManifest
+    ? {
+        schemaVersion: paths.rowDetailManifest.schemaVersion,
+        schema_version: paths.rowDetailManifest.schema_version,
+        proofAuthority: paths.rowDetailManifest.proofAuthority,
+        proof_authority: paths.rowDetailManifest.proof_authority,
+        directory: paths.rowDetailManifest.directory,
+        rowCount: paths.rowDetailManifest.rowCount,
+        row_count: paths.rowDetailManifest.row_count,
+        manifestHash: paths.rowDetailManifest.manifestHash,
+        manifest_hash: paths.rowDetailManifest.manifest_hash,
+      }
+    : null;
+  return {
+    jsonPath: paths.jsonPath ?? null,
+    markdownPath: paths.markdownPath ?? null,
+    rowDetailManifest: manifest,
+    row_detail_manifest: manifest,
   };
 }
 
@@ -290,8 +747,11 @@ async function writeLedger(ledger, args) {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const jsonPath = path.join(args.outputDir, `gpu-hmr-validation-matrix-${stamp}.json`);
   const markdownPath = path.join(args.outputDir, `gpu-hmr-validation-matrix-${stamp}.md`);
+  let rowDetailManifest = null;
   if (args.format === 'json' || args.format === 'both') {
-    const jsonLedger = matrixLedgerForJsonOutput(ledger);
+    const sidecars = await writeMatrixRowDetailSidecars(ledger, args, stamp);
+    rowDetailManifest = sidecars.manifest;
+    const jsonLedger = matrixLedgerForJsonOutput(ledger, sidecars.refsByRowId, rowDetailManifest);
     await fs.writeFile(
       jsonPath,
       `${JSON.stringify(jsonLedger, matrixOutputJsonReplacer, 2)}\n`,
@@ -303,6 +763,7 @@ async function writeLedger(ledger, args) {
   return {
     jsonPath: args.format === 'markdown' ? null : jsonPath,
     markdownPath: args.format === 'json' ? null : markdownPath,
+    rowDetailManifest,
   };
 }
 
@@ -333,7 +794,7 @@ async function main() {
         ok: true,
         schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
         proofId: ledger.proofId,
-        summary: ledger.summary,
+        summary: matrixSummaryForConsole(ledger.summary),
       },
       matrixOutputJsonReplacer,
       2,
@@ -341,13 +802,14 @@ async function main() {
     return;
   }
   const paths = await writeLedger(ledger, args);
+  const consolePaths = pathsForConsole(paths);
   console.log(JSON.stringify(
     {
       ok: true,
       schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
       proofId: ledger.proofId,
-      summary: ledger.summary,
-      ...paths,
+      summary: matrixSummaryForConsole(ledger.summary),
+      ...consolePaths,
     },
     matrixOutputJsonReplacer,
     2,

@@ -198,14 +198,59 @@ function jsonStoredValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function projectedSummaryComparableFields(summary = {}) {
+  const planCoverageById = new Map((summary.planCoverage ?? []).map((entry) => [entry.id, entry]));
+  return {
+    rowCount: summary.rowCount,
+    byOutcome: summary.byOutcome,
+    byBackend: summary.byBackend,
+    acceptedFullRuntimeGpuHmrRows: summary.acceptedFullRuntimeGpuHmrRows,
+    broadFullRuntimeGpuHmrRows: summary.broadFullRuntimeGpuHmrRows,
+    scopedFullRuntimeGpuHmrRows: summary.scopedFullRuntimeGpuHmrRows,
+    allFullRuntimeGpuHmrRows: summary.allFullRuntimeGpuHmrRows,
+    fullRuntimeScopeBreakdown: summary.fullRuntimeScopeBreakdown,
+    visualProfileAcceptedRows: summary.visualProfileAcceptedRows,
+    refusalProvenRows: summary.refusalProvenRows,
+    preflightOnlyRows: summary.preflightOnlyRows,
+    unprovenRows: summary.unprovenRows,
+    includeInvalidated: summary.includeInvalidated,
+    includeUnproven: summary.includeUnproven,
+    omittedInvalidatedRows: summary.omittedInvalidatedRows,
+    omittedUnprovenRows: summary.omittedUnprovenRows,
+    planCoverage: Array.from(planCoverageById.keys()).sort().map((id) => {
+      const entry = planCoverageById.get(id);
+      const openGaps = entry.openGaps ?? [];
+      return {
+        id,
+        status: entry.status,
+        rowCount: entry.rowCount,
+        openGapCount: entry.openGapCount ?? openGaps.length,
+        openGapsPrefix: openGaps.slice(0, 8),
+      };
+    }),
+  };
+}
+
+function assertSavedSummaryMatchesLive(name, savedSummary, liveSummary) {
+  if (savedSummary?.schemaVersion === 'synthi.gpu_hmr.validation_matrix_summary_json_projection.v1') {
+    assert.deepEqual(
+      projectedSummaryComparableFields(savedSummary),
+      projectedSummaryComparableFields(liveSummary),
+      `${name} saved projected summary must match live aggregation summary fields`,
+    );
+    return;
+  }
+  assert.deepEqual(
+    savedSummary,
+    jsonStoredValue(liveSummary),
+    `${name} saved summary must match live aggregation`,
+  );
+}
+
 function assertSavedMatrixMatchesLive(name, saved, live) {
   assert.equal(live.query?.accepted, true, `${name} live matrix query must accept`);
   assert.equal(saved.json.proofId, live.proofId, `${name} saved proofId must match live aggregation`);
-  assert.deepEqual(
-    saved.json.summary,
-    jsonStoredValue(live.summary),
-    `${name} saved summary must match live aggregation`,
-  );
+  assertSavedSummaryMatchesLive(name, saved.json.summary, live.summary);
   assert.deepEqual(sortedRowIds(saved.json), sortedRowIds(live), `${name} saved row set must match live aggregation`);
 }
 
