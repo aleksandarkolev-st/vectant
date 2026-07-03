@@ -62,6 +62,11 @@ const CFG = {
   gpuArchSource: process.env.SYNTHI_GPU_ARCH ? 'env:SYNTHI_GPU_ARCH' : null,
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 180000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 15000),
+  httpTimeoutMs: Number(
+    process.env.SYNTHI_GPU_AGENT_HTTP_TIMEOUT_MS
+      ?? process.env.SYNTHI_GPU_HMR_HTTP_TIMEOUT_MS
+      ?? 30000,
+  ),
   strictProofRetryEnabled: process.env.SYNTHI_GPU_HMR_STRICT_PROOF_RETRY !== '0',
   strictProofRetryTimeoutMs: Number(process.env.SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_TIMEOUT_MS ?? 45000),
   strictProofRetryDelayMs: Number(process.env.SYNTHI_GPU_HMR_STRICT_PROOF_RETRY_DELAY_MS ?? 250),
@@ -1053,17 +1058,46 @@ function setDetectedGpuArch(arch, source) {
   return normalized;
 }
 
-async function httpJson(method, url, body, headers = {}) {
-  const res = await fetch(url, {
-    method,
-    headers: { 'content-type': 'application/json', ...headers },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let json = null;
-  try { json = JSON.parse(text); } catch { /* ignore */ }
-  if (!res.ok) throw new Error(`${method} ${url} -> ${res.status}: ${text.slice(0, 500)}`);
-  return json ?? {};
+function httpFailureMessage(method, url, err, timeoutMs) {
+  const cause = err?.cause ?? {};
+  const parts = [
+    `${method} ${url} failed`,
+    `timeout_ms=${timeoutMs}`,
+    err?.name ? `error_name=${err.name}` : '',
+    err?.code ? `error_code=${err.code}` : '',
+    cause?.name ? `cause_name=${cause.name}` : '',
+    cause?.code ? `cause_code=${cause.code}` : '',
+    err?.message ? `message=${err.message}` : '',
+    cause?.message ? `cause_message=${cause.message}` : '',
+  ].filter(Boolean);
+  return parts.join(' ');
+}
+
+async function httpJson(method, url, body, headers = {}, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.floor(options.timeoutMs)
+    : Number.isFinite(CFG.httpTimeoutMs) && CFG.httpTimeoutMs > 0
+      ? Math.floor(CFG.httpTimeoutMs)
+      : 30000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { 'content-type': 'application/json', ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* ignore */ }
+    if (!res.ok) throw new Error(`${method} ${url} -> ${res.status}: ${text.slice(0, 500)}`);
+    return json ?? {};
+  } catch (err) {
+    throw new Error(httpFailureMessage(method, url, err, timeoutMs), { cause: err });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function execText(cmd, args, timeoutMs = 10000, rejectOnError = false, options = {}) {
@@ -6008,6 +6042,50 @@ function selfCheckMcpStartupCleanup() {
   console.log('MCP startup cleanup self-check passed');
 }
 
+async function selfCheckHttpWorkspaceTimeoutDiagnostics() {
+  const timeoutCause = new Error('headers timeout');
+  timeoutCause.name = 'HeadersTimeoutError';
+  timeoutCause.code = 'UND_ERR_HEADERS_TIMEOUT';
+  const fetchError = new TypeError('fetch failed');
+  fetchError.cause = timeoutCause;
+  const diagnostic = httpFailureMessage('POST', 'http://127.0.0.1:1234/git/example/write-files-batch', fetchError, 1234);
+  if (
+    !diagnostic.includes('timeout_ms=1234')
+    || !diagnostic.includes('cause_code=UND_ERR_HEADERS_TIMEOUT')
+    || !diagnostic.includes('cause_name=HeadersTimeoutError')
+  ) {
+    throw new Error(`HTTP timeout diagnostic self-check failed: ${diagnostic}`);
+  }
+
+  const originalFallback = process.env.SYNTHI_VALIDATION_AUTHLESS_WORKSPACE;
+  process.env.SYNTHI_VALIDATION_AUTHLESS_WORKSPACE = '1';
+  try {
+    const workspace = await createValidationWorkspace({
+      frontendUrl: 'http://127.0.0.1:3000',
+      name: 'self-check-workspace-timeout',
+      slug: 'self-check-workspace-timeout',
+      httpJson: async () => {
+        throw new Error(diagnostic, { cause: fetchError });
+      },
+      record: () => {},
+    });
+    if (
+      workspace?.validationOnly !== true
+      || workspace?.fallbackReason !== 'workspace_api_unavailable'
+      || workspace?.slug !== 'self-check-workspace-timeout'
+    ) {
+      throw new Error(`workspace timeout fallback self-check failed: ${JSON.stringify(workspace)}`);
+    }
+  } finally {
+    if (originalFallback === undefined) {
+      delete process.env.SYNTHI_VALIDATION_AUTHLESS_WORKSPACE;
+    } else {
+      process.env.SYNTHI_VALIDATION_AUTHLESS_WORKSPACE = originalFallback;
+    }
+  }
+  console.log('HTTP workspace timeout diagnostic self-check passed');
+}
+
 function literalOccurrenceCount(source, needle) {
   if (!needle) return 0;
   let count = 0;
@@ -8095,6 +8173,7 @@ if (process.argv.includes('--self-check')) {
     await selfCheckProofFinalizationRetry();
     selfCheckRequestedProofStateGate();
     selfCheckMcpStartupCleanup();
+    await selfCheckHttpWorkspaceTimeoutDiagnostics();
   } catch (err) {
     console.error(err.stack || err.message);
     process.exitCode = 1;
