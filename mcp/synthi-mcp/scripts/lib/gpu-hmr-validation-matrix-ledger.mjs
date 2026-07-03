@@ -29248,8 +29248,26 @@ function planCoverage(rows, context = {}) {
     randomColdPathBroadReadinessFreshnessGaps(randomColdRows, context);
   const qualifyingRandomColdDistinctSourceIdentities =
     randomColdPathDistinctSourceIdentityHashList(qualifyingRandomColdRows);
+  const qualifyingRandomColdDistinctSourceContentOnlyIdentities =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(qualifyingRandomColdRows);
   const candidateRandomColdDistinctSourceIdentities =
     randomColdPathDistinctSourceIdentityHashList(candidateRandomColdRows);
+  const randomColdDistinctSourceFloorAccepted =
+    qualifyingRandomColdDistinctSourceIdentities.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT;
+  const randomColdDistinctSourceContentOnlyFloorAccepted =
+    qualifyingRandomColdDistinctSourceContentOnlyIdentities.length
+      >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT;
+  const randomColdSampleFloorAccepted =
+    randomColdDistinctSourceFloorAccepted
+    && randomColdDistinctSourceContentOnlyFloorAccepted;
+  const randomColdSampleFloorGaps = compactStringList([
+    randomColdDistinctSourceFloorAccepted
+      ? null
+      : 'random_large_project_cold_path_more_distinct_sources_required',
+    randomColdDistinctSourceContentOnlyFloorAccepted
+      ? null
+      : 'random_large_project_cold_path_more_distinct_source_content_required',
+  ]);
 
   return [
     coverageEntry({
@@ -29293,7 +29311,7 @@ function planCoverage(rows, context = {}) {
     coverageEntry({
       id: 'random_large_arbitrary_project_cold_path',
       requirement: 'Random large arbitrary-project cold-path intake with immutable source, build metadata, runtime-boundary expectation, and fail-closed proof gaps',
-      status: qualifyingRandomColdRows.length > 0
+      status: qualifyingRandomColdRows.length > 0 && randomColdSampleFloorAccepted
         ? 'refused'
         : candidateRandomColdRows.length > 0
           ? 'candidate_only'
@@ -29304,7 +29322,10 @@ function planCoverage(rows, context = {}) {
               : 'missing',
       rows: randomColdRows,
       openGaps: qualifyingRandomColdRows.length > 0
-        ? compactStringList(randomColdRows.flatMap((row) => row.openGaps))
+        ? compactStringList([
+          ...randomColdSampleFloorGaps,
+          ...randomColdRows.flatMap((row) => row.openGaps),
+        ])
         : candidateRandomColdRows.length > 0
           ? [
             'random_large_project_cold_path_large_source_required',
@@ -29325,12 +29346,27 @@ function planCoverage(rows, context = {}) {
       qualifying_distinct_source_identity_count: qualifyingRandomColdDistinctSourceIdentities.length,
       qualifyingDistinctSourceIdentityHashes: qualifyingRandomColdDistinctSourceIdentities,
       qualifying_distinct_source_identity_hashes: qualifyingRandomColdDistinctSourceIdentities,
+      qualifyingDistinctSourceContentOnlyIdentityCount:
+        qualifyingRandomColdDistinctSourceContentOnlyIdentities.length,
+      qualifying_distinct_source_content_only_identity_count:
+        qualifyingRandomColdDistinctSourceContentOnlyIdentities.length,
+      qualifyingDistinctSourceContentOnlyIdentityHashes:
+        qualifyingRandomColdDistinctSourceContentOnlyIdentities,
+      qualifying_distinct_source_content_only_identity_hashes:
+        qualifyingRandomColdDistinctSourceContentOnlyIdentities,
       candidateRowCount: candidateRandomColdRows.length,
       candidate_row_count: candidateRandomColdRows.length,
       candidateDistinctSourceIdentityCount: candidateRandomColdDistinctSourceIdentities.length,
       candidate_distinct_source_identity_count: candidateRandomColdDistinctSourceIdentities.length,
       candidateDistinctSourceIdentityHashes: candidateRandomColdDistinctSourceIdentities,
       candidate_distinct_source_identity_hashes: candidateRandomColdDistinctSourceIdentities,
+      minimumDistinctSourceIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+      minimum_distinct_source_identity_count: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+      minimumDistinctSourceContentOnlyIdentityCount: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+      minimum_distinct_source_content_only_identity_count:
+        BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+      sampleFloorAccepted: randomColdSampleFloorAccepted,
+      sample_floor_accepted: randomColdSampleFloorAccepted,
       freshnessGaps: randomColdFreshnessGaps,
       freshness_gaps: randomColdFreshnessGaps,
       refusalRowCount: randomColdRefusalRows.length,

@@ -12658,6 +12658,11 @@ const repeatedSourceColdCoverage = new Map(
 );
 assert.equal(
   repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.status,
+  'candidate_only',
+);
+assert.equal(
+  repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
     ?.qualifyingRowCount,
   5,
 );
@@ -12665,6 +12670,15 @@ assert.equal(
   repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
     ?.qualifyingDistinctSourceIdentityCount,
   1,
+);
+assert.equal(
+  repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.sampleFloorAccepted,
+  false,
+);
+assert.ok(
+  repeatedSourceColdCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.openGaps.includes('random_large_project_cold_path_more_distinct_sources_required'),
 );
 const variedInputChannelSets = [
   ['cli_arg_source_url', 'cli_arg_commit'],
@@ -12765,6 +12779,29 @@ assert.equal(
 assert.ok(
   broadReadinessWithDifferentLabelsSameContentColdQuery.summary.broadLibraryAgnosticReadiness
     .openGaps.includes('broad_acceptance_requires_distinct_random_large_project_cold_content'),
+);
+const differentLabelsSameContentCoverage = new Map(
+  broadReadinessWithDifferentLabelsSameContentColdQuery.summary.planCoverage
+    .map((entry) => [entry.id, entry])
+);
+assert.equal(
+  differentLabelsSameContentCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.status,
+  'candidate_only',
+);
+assert.equal(
+  differentLabelsSameContentCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.qualifyingDistinctSourceIdentityCount,
+  5,
+);
+assert.equal(
+  differentLabelsSameContentCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.qualifyingDistinctSourceContentOnlyIdentityCount,
+  1,
+);
+assert.ok(
+  differentLabelsSameContentCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.openGaps.includes('random_large_project_cold_path_more_distinct_source_content_required'),
 );
 const rotatedContentSourceListingManifest = randomColdSourceListingManifestFixture({
   targetId: 'rotated-random-cold-content-only',
@@ -13764,6 +13801,15 @@ assert.equal(
 assert.equal(
   broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
   5,
+);
+assert.equal(
+  broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')
+    ?.qualifyingDistinctSourceContentOnlyIdentityCount,
+  5,
+);
+assert.equal(
+  broadReadinessCoverage.get('random_large_arbitrary_project_cold_path')?.sampleFloorAccepted,
+  true,
 );
 assert.equal(
   broadReadinessCoverage.get('source_first_uncompiled_project_validation')?.status,
