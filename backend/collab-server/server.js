@@ -38,6 +38,7 @@ const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
+const { assertCodeSiteWorkspaceMutationAllowed } = require('./codesiteActiveBoundary');
 const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
@@ -1253,7 +1254,10 @@ async function flushDocToDisk(docName, options = {}) {
       tool: 'file_write',
       ...codeSiteWriteEvidence(options, derivedLineProvenance),
     }],
-  }, async () => gitService.writeFile(slug, filePath, content, effectiveUserId), { repoRoot: repoPath });
+  }, async () => gitService.writeFile(slug, filePath, content, effectiveUserId), {
+    repoRoot: repoPath,
+    workspaceSlug: slug,
+  });
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -1379,6 +1383,9 @@ function codeSiteEnforceOptions(context, options = {}) {
 }
 
 async function runCodeSiteMutationBoundary(context, operation, applyFn, options = {}) {
+  assertCodeSiteWorkspaceMutationAllowed(options.workspaceSlug || context?.workspaceSlug, context, operation, {
+    surface: options.surface || operation.operation || operation.kind,
+  });
   const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
   return codesiteFs.run(operation, applyFn, options);
 }
@@ -1400,6 +1407,9 @@ function codeSiteProvisioningAttempt(kind) {
 }
 
 async function enforceCodeSiteProvisioningAllowed(context, kind, options = {}) {
+  assertCodeSiteWorkspaceMutationAllowed(options.workspaceSlug || context?.workspaceSlug, context, codeSiteProvisioningAttempt(kind), {
+    surface: kind,
+  });
   if (!context?.active) return null;
   return enforceCodeSiteWriteAllowed(
     context,
@@ -1583,7 +1593,10 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   }, async () => {
     await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
     await fsPromises.writeFile(fullPath, content, 'utf-8');
-  }, { repoRoot: repoPath });
+  }, {
+    repoRoot: repoPath,
+    workspaceSlug: slug,
+  });
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
 }

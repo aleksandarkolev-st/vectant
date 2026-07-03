@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CodeSite Active Mutation Boundary Proof</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f8f5;color:#151a16;color-scheme:light}
+body{margin:0;background:#f7f8f5;color:#151a16}
+main{width:min(1200px,calc(100vw - 56px));margin:0 auto;padding:38px 0 52px}
+header{display:grid;grid-template-columns:1fr auto;gap:30px;align-items:end;border-bottom:1px solid #cfd7ca;padding-bottom:24px}
+h1{margin:0;font-size:36px;line-height:1.05;font-weight:790;letter-spacing:0}
+.sub{margin:12px 0 0;color:#59645a;max-width:900px;line-height:1.55}
+.stamp{border:1px solid #236a4d;background:#e6f4eb;color:#0b5938;padding:12px 34px;font-weight:790}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0}
+.card,section{background:#fcfdfa;border:1px solid #cfd7ca}
+.card{padding:16px;min-height:82px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#626e62}
+.value{font-size:27px;font-weight:790;margin-top:10px}
+section{padding:20px;margin-top:18px}
+h2{font-size:19px;margin:0 0 14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-top:1px solid #e1e8de;padding:10px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5d685d}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+pre{background:#111811;color:#edf4ed;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
+.cwd{color:#687366;font-size:12px;margin-top:4px}
+.ok{color:#0c6840;font-weight:760}
+.fail{color:#a93225;font-weight:760}
+@media(max-width:900px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<h1>CodeSite Active Mutation Boundary Proof</h1>
+<p class="sub">Verified 2026-07-03T19:39:17.251Z. Active CodeSite workspaces now reject contextless or mismatched real-tree mutations through the shared collab mutation boundary and direct gitService mutation wrapper while preserving ordinary non-CodeSite writes when no transaction is active.</p>
+</div>
+<div class="stamp">PASS</div>
+</header>
+<div class="cards">
+<div class="card"><div class="label">Boundary Unit</div><div class="value">3/3</div></div>
+<div class="card"><div class="label">GitService</div><div class="value">37/37</div></div>
+<div class="card"><div class="label">Docker Replay</div><div class="value">40/40</div></div>
+<div class="card"><div class="label">Assertions</div><div class="value">13/13</div></div>
+</div>
+<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>shared boundary rejects contextless active-workspace mutations</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>shared boundary rejects mismatched transaction contexts</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>collab server mutation and provisioning helpers use active workspace gate</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>Yjs flush paths pass workspace slug into the active boundary</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>direct gitService mutations use active workspace gate</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>unit tests cover required, mismatch, and matching contexts</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>gitService tests prove active-only denial without breaking ordinary writes</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>syntaxActiveBoundary command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/codesiteActiveBoundary.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxServer command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/server.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxGitService command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/gitService.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>activeBoundaryTests command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:3,&quot;suites&quot;:0,&quot;pass&quot;:3,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>gitServiceBoundaryTests command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:37,&quot;suites&quot;:0,&quot;pass&quot;:37,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>dockerReplay command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codesiteActiveBoundary.js &amp;&amp; node --check backend/collab-server/server.js &amp;&amp; node --check backend/collab-server/gitService.js &amp;&amp; node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:40,&quot;suites&quot;:0,&quot;pass&quot;:40,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
+<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/codesiteActiveBoundary.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/server.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/gitService.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js</code><div class="cwd">.</div></td><td>3/3</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js</code><div class="cwd">.</div></td><td>37/37</td></tr><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codesiteActiveBoundary.js &amp;&amp; node --check backend/collab-server/server.js &amp;&amp; node --check backend/collab-server/gitService.js &amp;&amp; node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js</code><div class="cwd">.</div></td><td>40/40</td></tr></tbody></table></section>
+<section><h2>Git Binding</h2><pre>{
+  &quot;head&quot;: &quot;b366f2b89b19e4b1ccf8680c445efbbfdabd41bf&quot;,
+  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
+  &quot;statusShort&quot;: &quot;M backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js\n M backend/collab-server/gitService.js\n M backend/collab-server/server.js\n?? backend/collab-server/__tests__/codesiteActiveBoundary.test.js\n?? backend/collab-server/codesiteActiveBoundary.js&quot;
+}</pre></section>
+<section><h2>Boundary Snapshot</h2><pre>{
+  &quot;denied&quot;: [
+    &quot;active workspace + no CodeSite context =&gt; CODESITE_WRITE_DENIED before disk write&quot;,
+    &quot;active workspace + mismatched transaction id =&gt; CODESITE_WRITE_DENIED before disk write&quot;
+  ],
+  &quot;allowed&quot;: [
+    &quot;no active workspace transaction =&gt; legacy direct write remains allowed&quot;,
+    &quot;active workspace + matching transaction id/lease =&gt; CodeSiteFS authoritative boundary still runs&quot;
+  ],
+  &quot;surfaces&quot;: [
+    &quot;collab runCodeSiteMutationBoundary&quot;,
+    &quot;collab provisioning guard&quot;,
+    &quot;Yjs save/pre-stage flushes&quot;,
+    &quot;direct gitService mutation wrapper&quot;
+  ],
+  &quot;dockerReplay&quot;: &quot;node:20-bookworm reruns syntax plus active-boundary/gitService behavioral suites against the mounted checkout&quot;
+}</pre></section>
+</main>
+</body>
+</html>

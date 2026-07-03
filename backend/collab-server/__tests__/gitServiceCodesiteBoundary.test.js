@@ -6,6 +6,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const config = require('../config');
+const activityRegistry = require('../codesiteActivityRegistry');
 const gitService = require('../gitService');
 
 const execFileAsync = promisify(execFile);
@@ -158,6 +159,8 @@ async function initTrackedRepo(repoPath, files = { 'src/app.js': 'before\n' }) {
 }
 
 test('legacy direct gitService.writeFile still writes without CodeSite context', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
   const slug = uniqueSlug('legacy-write');
   const userId = 'user-1';
   await withTempGitService(t, slug, userId, async ({ repoPath }) => {
@@ -165,6 +168,57 @@ test('legacy direct gitService.writeFile still writes without CodeSite context',
 
     assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'legacy write\n');
     assert.strictEqual(gitService.safeWriteFile, undefined);
+  });
+});
+
+test('direct gitService.writeFile denies contextless writes while CodeSite transaction is active', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-write');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-active',
+      mutationLeaseId: 'lease-active',
+      status: 'open',
+    });
+
+    await assert.rejects(
+      () => gitService.writeFile(slug, 'src/app.js', 'should not write\n', userId),
+      (error) => (
+        error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.details.reason_codes.includes('codesite_active_workspace_context_required')
+        && error.event.details.active_transactions[0].transactionId === 'txn-active'
+      ),
+    );
+
+    assert.strictEqual(await exists(path.join(repoPath, 'src/app.js')), false);
+  });
+});
+
+test('direct gitService.writeFile accepts matching CodeSite context while registry is active', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-write-match');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+
+    await gitService.writeFile(slug, 'src/app.js', 'codesite write\n', userId, {
+      codesiteContext: codeSiteContext(slug),
+      fetch,
+    });
+
+    assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'codesite write\n');
+    assert.strictEqual(recordBodies.length, 1);
   });
 });
 

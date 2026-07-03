@@ -12,6 +12,7 @@ const {
     createCodeSiteFS,
     normalizeRepoRelativePath,
 } = require('./codesiteFs');
+const { assertCodeSiteWorkspaceMutationAllowed } = require('./codesiteActiveBoundary');
 
 let NodeGit = null;
 let nodeGitLoadError = null;
@@ -1290,6 +1291,9 @@ class GitService {
     async _runCodeSiteMutationBoundary(slug, userId, options = {}, operation = {}, applyFn, repoPath = null) {
         const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
         const context = codeSiteContextFromOptions(options);
+        assertCodeSiteWorkspaceMutationAllowed(slug, context, operation, {
+            surface: options.operation || operation.operation || operation.kind,
+        });
         const boundaryOptions = this._codeSiteBoundaryOptions(context, options, effectiveRepoPath);
         if (!boundaryOptions) {
             return applyFn({ repoPath: effectiveRepoPath });
