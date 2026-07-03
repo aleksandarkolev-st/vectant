@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const gitService = require('../gitService');
+const activityRegistry = require('../codesiteActivityRegistry');
 const { ensureRuntimeFilesystem } = require('../runtimeFilesystem');
 
 function patchGitService(overrides) {
@@ -20,6 +21,7 @@ function patchGitService(overrides) {
 }
 
 test('active CodeSite runtime filesystem refuses real repo provisioning before overlay launch', async () => {
+  activityRegistry.resetRegistry();
   const calls = [];
   const restore = patchGitService({
     isUserRepoInitialized: () => false,
@@ -49,11 +51,13 @@ test('active CodeSite runtime filesystem refuses real repo provisioning before o
     );
     assert.deepEqual(calls, []);
   } finally {
+    activityRegistry.resetRegistry();
     restore();
   }
 });
 
 test('active CodeSite runtime filesystem reuses an already initialized repo without hydrating', async () => {
+  activityRegistry.resetRegistry();
   const calls = [];
   const restore = patchGitService({
     isUserRepoInitialized: () => true,
@@ -84,11 +88,54 @@ test('active CodeSite runtime filesystem reuses an already initialized repo with
     assert.equal(result.codeSiteProvisioningSkipped, true);
     assert.deepEqual(calls, []);
   } finally {
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});
+
+test('runtime filesystem blocks legacy hydration when workspace has a recorded active CodeSite transaction', async () => {
+  activityRegistry.resetRegistry();
+  activityRegistry.markTransactionActive({
+    workspaceSlug: 'runtime-registry-guard',
+    transactionId: 'txn-registry',
+    mutationLeaseId: 'lease-registry',
+    actorUserId: 'user-1',
+    effectiveUserId: 'user-1',
+  });
+  const calls = [];
+  const restore = patchGitService({
+    initRepo: async (...args) => {
+      calls.push(['initRepo', ...args]);
+      return { success: true };
+    },
+    ensureUserRepo: async (...args) => {
+      calls.push(['ensureUserRepo', ...args]);
+      return { path: '/tmp/should-not-run', created: true };
+    },
+    getEffectiveRepoPath: (slug, userId) => `/tmp/${slug}/${userId || ''}`,
+  });
+  try {
+    await assert.rejects(
+      () => ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-registry-guard',
+        filesystemUserId: 'user-1',
+        reason: 'ordinary_runtime',
+      }),
+      (error) => (
+        error.code === 'CODESITE_RUNTIME_FILESYSTEM_ACTIVE_TRANSACTION'
+        && error.status === 409
+        && error.details.activeTransactions[0].transactionId === 'txn-registry'
+      ),
+    );
+    assert.deepEqual(calls, []);
+  } finally {
+    activityRegistry.resetRegistry();
     restore();
   }
 });
 
 test('inactive runtime filesystem keeps legacy hydration behavior', async () => {
+  activityRegistry.resetRegistry();
   const calls = [];
   const restore = patchGitService({
     initRepo: async (...args) => {
@@ -114,6 +161,7 @@ test('inactive runtime filesystem keeps legacy hydration behavior', async () => 
       ['ensureUserRepo', 'runtime-legacy', 'user-1'],
     ]);
   } finally {
+    activityRegistry.resetRegistry();
     restore();
   }
 });

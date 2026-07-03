@@ -1,0 +1,422 @@
+{
+  "schemaVersion": "synthi.codesite.activeTransactionRegistryProof.v1",
+  "generatedAt": "2026-07-03T19:29:20.406Z",
+  "ok": true,
+  "git": {
+    "head": "ed9f1abfbcefa09532cffb1e575435f7a8ee897b",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M backend/collab-server/__tests__/runtimeFilesystem.test.js\n M backend/collab-server/__tests__/workspacePrepManager.test.js\n M backend/collab-server/codesiteFs.js\n M backend/collab-server/runtimeFilesystem.js\n M backend/collab-server/server.js\n M backend/collab-server/workspacePrepManager.js\n M synthi/src/app/api/workspace/[slug]/codesite/[[...path]]/route.js\n M synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js\n?? backend/collab-server/__tests__/codesiteActivityRegistry.test.js\n?? backend/collab-server/codesiteActivityRegistry.js"
+  },
+  "assertions": [
+    {
+      "name": "activity registry supports open and close lifecycle",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "blocked landing attempts remain active in the registry until explicit close",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "CodeSite request and authoritative contexts publish registry records",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "runtime filesystem fails closed on recorded active workspace without request context",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "workspace prep rechecks active transactions at queue start and per task",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "collab server exposes lifecycle activity endpoint",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "Next CodeSite route publishes open and close lifecycle events",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "runtime test proves no hydration call under registry guard",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "prep test proves no repo acquire under registry guard",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "route tests prove collab activity notification payloads",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "syntaxRegistry command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/codesiteActivityRegistry.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxCodesiteFs command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/codesiteFs.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxRuntime command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/runtimeFilesystem.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxPrep command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/workspacePrepManager.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxServer command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/server.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "registryTests command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js",
+        "summary": {
+          "tests": 3,
+          "suites": 0,
+          "pass": 3,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "runner": "node:test"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "boundaryTests command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js",
+        "summary": {
+          "tests": 6,
+          "suites": 0,
+          "pass": 6,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "runner": "node:test"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "routeTests command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "npm exec -- vitest run --environment node src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
+        "summary": {
+          "tests": 29,
+          "pass": 29,
+          "fail": 0,
+          "runner": "vitest"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerReplay command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codesiteActivityRegistry.js && node --check backend/collab-server/runtimeFilesystem.js && node --check backend/collab-server/workspacePrepManager.js && node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js",
+        "summary": {
+          "tests": 9,
+          "suites": 0,
+          "pass": 9,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "runner": "node:test"
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "syntaxRegistry",
+      "command": "node --check backend/collab-server/codesiteActivityRegistry.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxCodesiteFs",
+      "command": "node --check backend/collab-server/codesiteFs.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxRuntime",
+      "command": "node --check backend/collab-server/runtimeFilesystem.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxPrep",
+      "command": "node --check backend/collab-server/workspacePrepManager.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxServer",
+      "command": "node --check backend/collab-server/server.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "registryTests",
+      "command": "node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 3,
+        "suites": 0,
+        "pass": 3,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "runner": "node:test"
+      },
+      "outputTail": [
+        "  ...",
+        "# Subtest: CodeSite request contexts publish active transaction state to the registry",
+        "ok 2 - CodeSite request contexts publish active transaction state to the registry",
+        "  ---",
+        "  duration_ms: 0.688447",
+        "  ...",
+        "# Subtest: blocked landing attempts remain active until an explicit close event",
+        "ok 3 - blocked landing attempts remain active until an explicit close event",
+        "  ---",
+        "  duration_ms: 0.211169",
+        "  ...",
+        "1..3",
+        "# tests 3",
+        "# suites 0",
+        "# pass 3",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 268.818863"
+      ]
+    },
+    {
+      "name": "boundaryTests",
+      "command": "node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 6,
+        "suites": 0,
+        "pass": 6,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "runner": "node:test"
+      },
+      "outputTail": [
+        "# [Spawner] Using process backend",
+        "# Subtest: active CodeSite workspace prep fails before real repo materialization",
+        "ok 5 - active CodeSite workspace prep fails before real repo materialization",
+        "  ---",
+        "  duration_ms: 3.89532",
+        "  ...",
+        "# Subtest: workspace prep fails before repo materialization when registry has active transaction",
+        "ok 6 - workspace prep fails before repo materialization when registry has active transaction",
+        "  ---",
+        "  duration_ms: 0.536294",
+        "  ...",
+        "1..6",
+        "# tests 6",
+        "# suites 0",
+        "# pass 6",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 28582.494709"
+      ]
+    },
+    {
+      "name": "routeTests",
+      "command": "npm exec -- vitest run --environment node src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
+      "cwd": "synthi",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 29,
+        "pass": 29,
+        "fail": 0,
+        "runner": "vitest"
+      },
+      "outputTail": [
+        " RUN  v2.1.9 /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi",
+        " ✓ src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js (29 tests) 64ms",
+        " Test Files  1 passed (1)",
+        "      Tests  29 passed (29)",
+        "   Start at  19:28:38",
+        "   Duration  4.83s (transform 509ms, setup 0ms, collect 2.29s, tests 64ms, environment 0ms, prepare 1.23s)"
+      ]
+    },
+    {
+      "name": "dockerReplay",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codesiteActivityRegistry.js && node --check backend/collab-server/runtimeFilesystem.js && node --check backend/collab-server/workspacePrepManager.js && node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 9,
+        "suites": 0,
+        "pass": 9,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "runner": "node:test"
+      },
+      "outputTail": [
+        "# [Spawner] Using process backend",
+        "# Subtest: active CodeSite workspace prep fails before real repo materialization",
+        "ok 8 - active CodeSite workspace prep fails before real repo materialization",
+        "  ---",
+        "  duration_ms: 3.527063",
+        "  ...",
+        "# Subtest: workspace prep fails before repo materialization when registry has active transaction",
+        "ok 9 - workspace prep fails before repo materialization when registry has active transaction",
+        "  ---",
+        "  duration_ms: 0.258063",
+        "  ...",
+        "1..9",
+        "# tests 9",
+        "# suites 0",
+        "# pass 9",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 35935.061329"
+      ]
+    }
+  ],
+  "workflowSnapshot": {
+    "lifecycle": [
+      "Next CodeSite route opens transaction and posts transaction_opened to collab /codesite/activity/:slug",
+      "collab records active transaction keyed by workspace slug with actor/effective user and lease metadata",
+      "later runtime filesystem calls without CodeSite context see the active workspace and throw before gitService hydration",
+      "later workspace prep calls without CodeSite context see the active workspace and throw before repoCache.acquire",
+      "successful commit with proof bundle or abort posts a closing event that removes the active registry record",
+      "blocked commit validation posts transaction_blocked and remains active until explicit close"
+    ],
+    "dockerReplay": "node:20-bookworm reruns syntax plus registry/runtime/prep behavioral tests against the mounted checkout",
+    "visualEvidence": "This HTML was rendered to PNG with Playwright and stored under tmp/codesite-dojo-proof."
+  }
+}

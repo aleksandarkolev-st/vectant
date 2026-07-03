@@ -2,6 +2,7 @@
 
 const gitService = require('./gitService');
 const repoCache = require('./repoCache');
+const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 
 const hydrationLocks = new Map();
 const runtimePins = new Map();
@@ -78,6 +79,21 @@ async function existingCodeSiteRuntimeFilesystem(slug, userId, reason) {
   };
 }
 
+function activeWorkspaceRuntimeBlocked(slug, userId, reason) {
+  const error = new Error(
+    `CodeSite runtime filesystem blocked: active transaction owns ${slug}${userId ? '/' + userId : ''} for ${reason}. Launch through a CodeSite overlay/runtime route or close the transaction before real-tree hydration.`,
+  );
+  error.code = 'CODESITE_RUNTIME_FILESYSTEM_ACTIVE_TRANSACTION';
+  error.status = 409;
+  error.details = {
+    workspaceSlug: slug,
+    filesystemUserId: userId || null,
+    reason,
+    activeTransactions: codeSiteActivityRegistry.activeTransactionsForWorkspace(slug),
+  };
+  return error;
+}
+
 async function ensureRuntimeFilesystem({
   workspaceSlug,
   filesystemUserId = '',
@@ -95,11 +111,20 @@ async function ensureRuntimeFilesystem({
   const userId = normalize(filesystemUserId);
   const activeCodeSiteContext = codeSiteContextFromOptions({ codesiteContext, codeSiteContext });
   if (activeCodeSiteContext?.active) {
+    codeSiteActivityRegistry.recordCodeSiteContext({
+      ...activeCodeSiteContext,
+      workspaceSlug: activeCodeSiteContext.workspaceSlug || slug,
+      effectiveUserId: activeCodeSiteContext.effectiveUserId || userId || null,
+    }, { source: 'runtime_filesystem_context' });
     const existing = await existingCodeSiteRuntimeFilesystem(slug, userId, reason);
     if (pin && runtimeScope) {
       pinRuntimeFilesystem(runtimeScope, slug, userId);
     }
     return existing;
+  }
+
+  if (codeSiteActivityRegistry.isWorkspaceActive(slug)) {
+    throw activeWorkspaceRuntimeBlocked(slug, userId, reason);
   }
 
   const key = pinKey(slug, userId);

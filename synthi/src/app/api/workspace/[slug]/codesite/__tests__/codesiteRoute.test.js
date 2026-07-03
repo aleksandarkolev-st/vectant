@@ -12,7 +12,9 @@ const {
   checkLimit: vi.fn(),
   resolveActor: vi.fn(),
   controlPlane: {
+    abortTransaction: vi.fn(),
     acknowledgeInboxItem: vi.fn(),
+    commitTransaction: vi.fn(),
     listProjects: vi.fn(),
     createDocument: vi.fn(),
     createProject: vi.fn(),
@@ -27,6 +29,7 @@ const {
     getLineProvenance: vi.fn(),
     getSourceStateSince: vi.fn(),
     listProjectMembers: vi.fn(),
+    openTransaction: vi.fn(),
     preflightCodeSiteFsWrite: vi.fn(),
     recordTransactionRead: vi.fn(),
     validateTransaction: vi.fn(),
@@ -163,6 +166,156 @@ describe('CodeSite catch-all route', () => {
       expect.objectContaining({ userId: 'user-1' }),
       { title: 'Signup' },
     );
+  });
+
+  it('notifies collab when a CodeSite transaction opens', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    controlPlane.openTransaction.mockResolvedValue({
+      id: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      status: 'open',
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/mutation-leases/lease-1/transactions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ readSet: ['src/app.js'], writeSet: ['src/app.js'] }),
+    });
+
+    const response = await POST(request, params(['mutation-leases', 'lease-1', 'transactions']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual({
+      transaction: {
+        id: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        status: 'open',
+      },
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL('http://collab.test/codesite/activity/acme'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'content-type': 'application/json',
+          'x-user-id': 'user-1',
+          'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+        }),
+      }),
+    );
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      event: 'transaction_opened',
+      workspaceSlug: 'acme',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      status: 'open',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
+    });
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('notifies collab when a CodeSite transaction closes through commit', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    controlPlane.commitTransaction.mockResolvedValue({
+      decision: { ok: true },
+      transaction: {
+        id: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        status: 'committed',
+        proofBundleDigest: 'bundle-digest-1',
+      },
+      proofBundle: { bundleDigest: 'bundle-digest-1' },
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/transactions/txn-1/commit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commitSha: 'abc123' }),
+    });
+
+    const response = await POST(request, params(['transactions', 'txn-1', 'commit']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      decision: { ok: true },
+      transaction: {
+        id: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        status: 'committed',
+        proofBundleDigest: 'bundle-digest-1',
+      },
+      proofBundle: { bundleDigest: 'bundle-digest-1' },
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL('http://collab.test/codesite/activity/acme'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      event: 'transaction_committed',
+      workspaceSlug: 'acme',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      status: 'committed',
+      proofBundleDigest: 'bundle-digest-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+    });
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
+  });
+
+  it('keeps collab activity active when commit validation blocks landing', async () => {
+    process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    controlPlane.commitTransaction.mockResolvedValue({
+      decision: { ok: false, reasonCodes: ['repo_snapshot_changed'] },
+      transaction: {
+        id: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        status: 'blocked',
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const request = new Request('http://app.test/api/workspace/acme/codesite/transactions/txn-1/commit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commitSha: 'abc123' }),
+    });
+
+    const response = await POST(request, params(['transactions', 'txn-1', 'commit']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      decision: { ok: false, reasonCodes: ['repo_snapshot_changed'] },
+      transaction: {
+        id: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        status: 'blocked',
+      },
+    });
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
+      event: 'transaction_blocked',
+      workspaceSlug: 'acme',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      status: 'blocked',
+      proofBundleDigest: null,
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+    });
+    fetchSpy.mockRestore();
+    delete process.env.COLLAB_SERVER_URL;
   });
 
   it('keeps project creation write-gated for plain workspace members', async () => {

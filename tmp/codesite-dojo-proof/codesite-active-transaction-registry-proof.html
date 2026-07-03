@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CodeSite Active Transaction Registry Proof</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7f8;color:#11191c;color-scheme:light}
+body{margin:0;background:#f5f7f8;color:#11191c}
+main{width:min(1200px,calc(100vw - 56px));margin:0 auto;padding:38px 0 52px}
+header{display:grid;grid-template-columns:1fr auto;gap:30px;align-items:end;border-bottom:1px solid #c9d3d7;padding-bottom:24px}
+h1{margin:0;font-size:36px;line-height:1.05;font-weight:790;letter-spacing:0}
+.sub{margin:12px 0 0;color:#546368;max-width:880px;line-height:1.55}
+.stamp{border:1px solid #1b6d56;background:#e5f5ee;color:#0a5a42;padding:12px 34px;font-weight:790}
+.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:24px 0}
+.card,section{background:#fcfdfb;border:1px solid #c9d3d7}
+.card{padding:16px;min-height:82px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5e6d72}
+.value{font-size:27px;font-weight:790;margin-top:10px}
+section{padding:20px;margin-top:18px}
+h2{font-size:19px;margin:0 0 14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-top:1px solid #e2e8ea;padding:10px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#59686d}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+pre{background:#0e171a;color:#eaf2f4;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
+.cwd{color:#65757a;font-size:12px;margin-top:4px}
+.ok{color:#0c684e;font-weight:760}
+.fail{color:#a93225;font-weight:760}
+@media(max-width:940px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<h1>CodeSite Active Transaction Registry Proof</h1>
+<p class="sub">Verified 2026-07-03T19:29:20.406Z. This proof shows active CodeSite transactions are recorded from request/control-plane contexts, open/close lifecycle events are published from the app route, and unannotated runtime or workspace-prep paths fail closed before real-tree hydration or materialization.</p>
+</div>
+<div class="stamp">PASS</div>
+</header>
+<div class="cards">
+<div class="card"><div class="label">Registry</div><div class="value">3/3</div></div>
+<div class="card"><div class="label">Runtime/Prep</div><div class="value">6/6</div></div>
+<div class="card"><div class="label">Route</div><div class="value">29/29</div></div>
+<div class="card"><div class="label">Docker</div><div class="value">9/9</div></div>
+<div class="card"><div class="label">Assertions</div><div class="value">19/19</div></div>
+</div>
+<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>activity registry supports open and close lifecycle</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>blocked landing attempts remain active in the registry until explicit close</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>CodeSite request and authoritative contexts publish registry records</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>runtime filesystem fails closed on recorded active workspace without request context</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>workspace prep rechecks active transactions at queue start and per task</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>collab server exposes lifecycle activity endpoint</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>Next CodeSite route publishes open and close lifecycle events</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>runtime test proves no hydration call under registry guard</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>prep test proves no repo acquire under registry guard</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>route tests prove collab activity notification payloads</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>syntaxRegistry command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/codesiteActivityRegistry.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxCodesiteFs command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/codesiteFs.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxRuntime command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/runtimeFilesystem.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxPrep command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/workspacePrepManager.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>syntaxServer command exited successfully</td><td>{&quot;command&quot;:&quot;node --check backend/collab-server/server.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>registryTests command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:3,&quot;suites&quot;:0,&quot;pass&quot;:3,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>boundaryTests command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:6,&quot;suites&quot;:0,&quot;pass&quot;:6,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>routeTests command exited successfully</td><td>{&quot;command&quot;:&quot;npm exec -- vitest run --environment node src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:29,&quot;pass&quot;:29,&quot;fail&quot;:0,&quot;runner&quot;:&quot;vitest&quot;},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>dockerReplay command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codesiteActivityRegistry.js &amp;&amp; node --check backend/collab-server/runtimeFilesystem.js &amp;&amp; node --check backend/collab-server/workspacePrepManager.js &amp;&amp; node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:9,&quot;suites&quot;:0,&quot;pass&quot;:9,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
+<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/codesiteActivityRegistry.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/codesiteFs.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/runtimeFilesystem.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/workspacePrepManager.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --check backend/collab-server/server.js</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js</code><div class="cwd">.</div></td><td>3/3</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js</code><div class="cwd">.</div></td><td>6/6</td></tr><tr><td class="ok">PASS</td><td><code>npm exec -- vitest run --environment node src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code><div class="cwd">synthi</div></td><td>29/29</td></tr><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codesiteActivityRegistry.js &amp;&amp; node --check backend/collab-server/runtimeFilesystem.js &amp;&amp; node --check backend/collab-server/workspacePrepManager.js &amp;&amp; node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js</code><div class="cwd">.</div></td><td>9/9</td></tr></tbody></table></section>
+<section><h2>Git Binding</h2><pre>{
+  &quot;head&quot;: &quot;ed9f1abfbcefa09532cffb1e575435f7a8ee897b&quot;,
+  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
+  &quot;statusShort&quot;: &quot;M backend/collab-server/__tests__/runtimeFilesystem.test.js\n M backend/collab-server/__tests__/workspacePrepManager.test.js\n M backend/collab-server/codesiteFs.js\n M backend/collab-server/runtimeFilesystem.js\n M backend/collab-server/server.js\n M backend/collab-server/workspacePrepManager.js\n M synthi/src/app/api/workspace/[slug]/codesite/[[...path]]/route.js\n M synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js\n?? backend/collab-server/__tests__/codesiteActivityRegistry.test.js\n?? backend/collab-server/codesiteActivityRegistry.js&quot;
+}</pre></section>
+<section><h2>Workflow Snapshot</h2><pre>{
+  &quot;lifecycle&quot;: [
+    &quot;Next CodeSite route opens transaction and posts transaction_opened to collab /codesite/activity/:slug&quot;,
+    &quot;collab records active transaction keyed by workspace slug with actor/effective user and lease metadata&quot;,
+    &quot;later runtime filesystem calls without CodeSite context see the active workspace and throw before gitService hydration&quot;,
+    &quot;later workspace prep calls without CodeSite context see the active workspace and throw before repoCache.acquire&quot;,
+    &quot;successful commit with proof bundle or abort posts a closing event that removes the active registry record&quot;,
+    &quot;blocked commit validation posts transaction_blocked and remains active until explicit close&quot;
+  ],
+  &quot;dockerReplay&quot;: &quot;node:20-bookworm reruns syntax plus registry/runtime/prep behavioral tests against the mounted checkout&quot;,
+  &quot;visualEvidence&quot;: &quot;This HTML was rendered to PNG with Playwright and stored under tmp/codesite-dojo-proof.&quot;
+}</pre></section>
+</main>
+</body>
+</html>

@@ -220,7 +220,17 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'transactions') {
-      return okJson({ transaction: await openTransaction(slug, route[1], body, access.actor) }, { status: 201 });
+      const transaction = await openTransaction(slug, route[1], body, access.actor);
+      await notifyCollabCodeSiteActivity(request, slug, {
+        event: 'transaction_opened',
+        transactionId: transaction.id,
+        mutationLeaseId: transaction.mutationLeaseId || route[1],
+        agentSessionId: transaction.agentSessionId || body.agentSessionId || body.agent_session_id || null,
+        status: transaction.status || 'open',
+        actorUserId: access.actor?.userId || null,
+        effectiveUserId: access.actor?.workspaceUserId || access.actor?.userId || null,
+      });
+      return okJson({ transaction }, { status: 201 });
     }
 
     if (route[0] === 'mutation-leases' && route[2] === 'revoke') {
@@ -264,11 +274,38 @@ export async function POST(request, { params }) {
     }
 
     if (route[0] === 'transactions' && route[2] === 'commit') {
-      return okJson(await commitTransaction(slug, route[1], body, access.actor));
+      const result = await commitTransaction(slug, route[1], body, access.actor);
+      const transactionStatus = result.transaction?.status || result.status || (result.decision?.ok ? 'validated' : 'blocked');
+      const proofBundleDigest = result.proofBundle?.bundleDigest
+        || result.proofBundle?.digest
+        || result.transaction?.proofBundleDigest
+        || null;
+      const committed = transactionStatus === 'committed' && Boolean(proofBundleDigest || result.proofBundle);
+      await notifyCollabCodeSiteActivity(request, slug, {
+        event: committed ? 'transaction_committed' : 'transaction_blocked',
+        transactionId: route[1],
+        mutationLeaseId: result.transaction?.mutationLeaseId || result.mutationLeaseId || body.mutationLeaseId || body.mutation_lease_id || null,
+        agentSessionId: result.transaction?.agentSessionId || result.agentSessionId || body.agentSessionId || body.agent_session_id || null,
+        status: transactionStatus,
+        proofBundleDigest,
+        actorUserId: access.actor?.userId || null,
+        effectiveUserId: access.actor?.workspaceUserId || access.actor?.userId || null,
+      });
+      return okJson(result);
     }
 
     if (route[0] === 'transactions' && route[2] === 'abort') {
-      return okJson({ transaction: await abortTransaction(slug, route[1], body, access.actor) });
+      const transaction = await abortTransaction(slug, route[1], body, access.actor);
+      await notifyCollabCodeSiteActivity(request, slug, {
+        event: 'transaction_aborted',
+        transactionId: route[1],
+        mutationLeaseId: transaction.mutationLeaseId || body.mutationLeaseId || body.mutation_lease_id || null,
+        agentSessionId: transaction.agentSessionId || body.agentSessionId || body.agent_session_id || null,
+        status: transaction.status || 'aborted',
+        actorUserId: access.actor?.userId || null,
+        effectiveUserId: access.actor?.workspaceUserId || access.actor?.userId || null,
+      });
+      return okJson({ transaction });
     }
 
     if (route[0] === 'transactions' && route[2] === 'source-state-since') {
@@ -605,6 +642,53 @@ function resolveServerCollabHttpUrl() {
     || process.env.COLLAB_URL
     || 'http://localhost:1234'
   ).replace(/\/+$/, '').replace(/^ws/i, 'http');
+}
+
+function resolveConfiguredCollabHttpUrl() {
+  const configured = process.env.COLLAB_SERVER_URL
+    || process.env.SYNTHI_COLLAB_SERVER_URL
+    || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
+    || process.env.COLLAB_URL;
+  return configured ? String(configured).replace(/\/+$/, '').replace(/^ws/i, 'http') : '';
+}
+
+function shortNotificationSignal(ms = 1500) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  return undefined;
+}
+
+async function notifyCollabCodeSiteActivity(request, slug, payload = {}) {
+  const collabUrl = resolveConfiguredCollabHttpUrl();
+  if (!collabUrl || typeof fetch !== 'function') return null;
+  const requestUrl = new URL(request.url);
+  const targetUrl = new URL(`/codesite/activity/${encodeURIComponent(slug)}`, `${collabUrl}/`);
+  try {
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': payload.actorUserId || '',
+        'x-codesite-control-plane-url': codeSiteApiBaseUrl(request, requestUrl, slug),
+      },
+      body: JSON.stringify({
+        ...payload,
+        workspaceSlug: slug,
+        controlPlaneUrl: codeSiteApiBaseUrl(request, requestUrl, slug),
+        source: payload.source || 'next_codesite_route',
+      }),
+      signal: shortNotificationSignal(),
+    });
+    return { ok: response.ok, status: response.status };
+  } catch (error) {
+    console.warn('[CodeSite] Failed to notify collab activity registry', {
+      workspaceSlug: slug,
+      transactionId: payload.transactionId || null,
+      reason: error?.cause?.code || error?.code || error?.message || 'fetch_failed',
+    });
+    return null;
+  }
 }
 
 function codeSiteApiBaseUrl(request, url, slug) {

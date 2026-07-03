@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
+const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 
 const MAX_INLINE_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_DIFF_BYTES = 64 * 1024;
@@ -282,6 +283,7 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     hasCodeSitePayload ||
     Object.keys(payload).length > 0,
   );
+  codeSiteActivityRegistry.recordCodeSiteContext(context, { source: 'collab_request_context' });
   return context;
 }
 
@@ -921,7 +923,7 @@ async function authoritativeCodeSiteContext(context, options = {}) {
     if (allowedPaths.length === 0) {
       return withHydrationFailure(base, ['codesite_transaction_write_set_required'], { transactionStatus: transaction.status });
     }
-    return {
+    const authoritative = {
       ...base,
       authoritative: true,
       authoritativeSource: 'control_plane_transaction',
@@ -931,6 +933,8 @@ async function authoritativeCodeSiteContext(context, options = {}) {
       allowedPaths,
       blockedPaths: [],
     };
+    codeSiteActivityRegistry.recordCodeSiteContext(authoritative, { source: 'control_plane_transaction' });
+    return authoritative;
   } catch (error) {
     return withHydrationFailure(base, ['codesite_transaction_load_failed'], { error: error?.message || String(error) });
   }
@@ -964,7 +968,7 @@ async function authoritativeCodeSiteReadContext(context, options = {}) {
     if (!isWritableTransactionStatus(transaction.status)) {
       return withHydrationFailure(base, ['codesite_transaction_not_open'], { transactionStatus: transaction.status });
     }
-    return {
+    const authoritative = {
       ...base,
       authoritative: true,
       authoritativeSource: 'control_plane_transaction_read',
@@ -973,6 +977,8 @@ async function authoritativeCodeSiteReadContext(context, options = {}) {
       agentSessionId: transaction.agentSessionId || base.agentSessionId || null,
       blockedPaths: parsePatternList(base.blockedPaths),
     };
+    codeSiteActivityRegistry.recordCodeSiteContext(authoritative, { source: 'control_plane_transaction_read' });
+    return authoritative;
   } catch (error) {
     return withHydrationFailure(base, ['codesite_transaction_load_failed'], { error: error?.message || String(error) });
   }

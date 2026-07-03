@@ -37,6 +37,7 @@ const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
+const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
@@ -1443,6 +1444,32 @@ function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
   });
 }
 
+async function readJsonRequestBody(req) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  if (!body.trim()) return {};
+  return JSON.parse(body);
+}
+
+function writeJsonResponse(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+function codeSiteActivityFromRequest(slug, payload = {}, req = null) {
+  return {
+    ...payload,
+    workspaceSlug: slug,
+    transactionId: payload.transactionId || payload.transaction_id || payload.id,
+    mutationLeaseId: payload.mutationLeaseId || payload.mutation_lease_id || payload.leaseId || payload.lease_id,
+    agentSessionId: payload.agentSessionId || payload.agent_session_id,
+    actorUserId: payload.actorUserId || payload.actor_user_id || payload.userId || req?.headers?.['x-user-id'] || null,
+    effectiveUserId: payload.effectiveUserId || payload.effective_user_id || payload.filesystemUserId || payload.filesystem_user_id || null,
+    status: payload.status || (payload.event === 'transaction_opened' ? 'open' : undefined),
+    source: payload.source || 'codesite_route_activity',
+  };
+}
+
 function runtimeCodeSiteEnv(context, processAncestry) {
   return codeSiteRuntimeEnv(context, { processAncestry });
 }
@@ -2336,6 +2363,45 @@ const server = http.createServer(async (req, res) => {
   // GET /ports — list active dev-server ports
   if (req.method === 'GET' && (req.url === '/ports' || req.url.startsWith('/ports?'))) {
     proxyService.handlePortsStatus(req, res);
+    return;
+  }
+
+  const codeSiteActivityMatch = new URL(req.url, `http://${req.headers.host}`).pathname.match(/^\/codesite\/activity\/([^/]+)$/);
+  if (codeSiteActivityMatch) {
+    const slug = decodeURIComponent(codeSiteActivityMatch[1]);
+    if (req.method === 'GET') {
+      writeJsonResponse(res, 200, {
+        workspaceSlug: slug,
+        activeTransactions: codeSiteActivityRegistry.activeTransactionsForWorkspace(slug),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      let payload;
+      try {
+        payload = await readJsonRequestBody(req);
+      } catch (_) {
+        writeJsonResponse(res, 400, { error: 'invalid_json_body' });
+        return;
+      }
+      const activity = codeSiteActivityFromRequest(slug, payload, req);
+      const status = String(activity.status || '').toLowerCase();
+      const event = String(payload.event || payload.eventType || payload.event_type || '').toLowerCase();
+      const closesTransaction = ['transaction_committed', 'transaction_aborted', 'transaction_closed', 'closed'].includes(event)
+        || (status && !codeSiteActivityRegistry.isWritableTransactionStatus(status));
+      const record = closesTransaction
+        ? codeSiteActivityRegistry.markTransactionClosed(activity, { source: activity.source })
+        : codeSiteActivityRegistry.markTransactionActive(activity, { source: activity.source });
+      writeJsonResponse(res, 200, {
+        ok: true,
+        workspaceSlug: slug,
+        action: closesTransaction ? 'closed' : 'active',
+        record,
+        activeTransactions: codeSiteActivityRegistry.activeTransactionsForWorkspace(slug),
+      });
+      return;
+    }
+    writeJsonResponse(res, 405, { error: 'method_not_allowed', allow: ['GET', 'POST'] });
     return;
   }
 

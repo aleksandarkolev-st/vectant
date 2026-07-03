@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const repoCache = require('../repoCache');
+const activityRegistry = require('../codesiteActivityRegistry');
 const workspacePrepManager = require('../workspacePrepManager');
 
 function patchRepoCache(overrides) {
@@ -20,6 +21,7 @@ function patchRepoCache(overrides) {
 }
 
 test('active CodeSite workspace prep fails before real repo materialization', async () => {
+  activityRegistry.resetRegistry();
   const calls = [];
   const restore = patchRepoCache({
     acquire: async (...args) => {
@@ -44,6 +46,44 @@ test('active CodeSite workspace prep fails before real repo materialization', as
     );
     assert.deepEqual(calls, []);
   } finally {
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});
+
+test('workspace prep fails before repo materialization when registry has active transaction', async () => {
+  activityRegistry.resetRegistry();
+  activityRegistry.markTransactionActive({
+    workspaceSlug: 'codesite-prep-registry-proof',
+    transactionId: 'txn-prep-registry',
+    mutationLeaseId: 'lease-prep-registry',
+    actorUserId: 'user-1',
+    effectiveUserId: 'user-1',
+  });
+  const calls = [];
+  const restore = patchRepoCache({
+    acquire: async (...args) => {
+      calls.push(['acquire', ...args]);
+      return '/tmp/should-not-materialize';
+    },
+    release: (...args) => {
+      calls.push(['release', ...args]);
+    },
+  });
+  try {
+    await assert.rejects(
+      () => workspacePrepManager.ensureWorkspacePrepared('codesite-prep-registry-proof', 'user-1', {
+        trigger: 'workspace_load',
+      }),
+      (error) => (
+        error.code === 'CODESITE_WORKSPACE_PREP_REQUIRES_ISOLATION'
+        && error.status === 409
+        && error.details.activeTransactions[0].transactionId === 'txn-prep-registry'
+      ),
+    );
+    assert.deepEqual(calls, []);
+  } finally {
+    activityRegistry.resetRegistry();
     restore();
   }
 });
