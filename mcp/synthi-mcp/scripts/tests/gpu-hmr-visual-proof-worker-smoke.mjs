@@ -407,6 +407,23 @@ assert.equal(serialized.acceptedForGpuHmr, false);
 assert.equal(serialized.inputArtifacts.before.transportKind, 'serialized_fallback');
 assert.ok((await readFile(diffPath)).byteLength > 0);
 
+const originalExecArgv = [...process.execArgv];
+try {
+  process.execArgv.push('--input-type=module');
+  const inlineDiagnosticParentProof = await computeAsyncVisualProof({
+    before: { casManifest: beforeManifest },
+    after: { casManifest: afterManifest },
+  }, {
+    allowedRoots: [casRoot],
+    timeoutMs: 30000,
+  });
+  assert.equal(inlineDiagnosticParentProof.accepted, true);
+  assert.equal(inlineDiagnosticParentProof.acceptedForGpuHmr, false);
+  assert.ok(!inlineDiagnosticParentProof.reasons.includes('visual_worker_error'));
+} finally {
+  process.execArgv.splice(0, process.execArgv.length, ...originalExecArgv);
+}
+
 async function pngFromRegions({ width, height, regions }) {
   const raw = Buffer.alloc(width * height * 4);
   for (let i = 0; i < raw.length; i += 4) {

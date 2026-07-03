@@ -73,6 +73,7 @@ export async function computeAsyncVisualProof(input = {}, options = {}) {
 
     try {
       worker = new Worker(workerUrl, {
+        execArgv: visualWorkerExecArgv(process.execArgv),
         workerData: {
           request,
           options: {
@@ -108,6 +109,20 @@ export async function computeAsyncVisualProof(input = {}, options = {}) {
       }
     });
   });
+}
+
+function visualWorkerExecArgv(execArgv = []) {
+  const sanitized = [];
+  for (let index = 0; index < execArgv.length; index += 1) {
+    const arg = String(execArgv[index] ?? '');
+    if (arg === '--input-type') {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--input-type=')) continue;
+    sanitized.push(execArgv[index]);
+  }
+  return sanitized;
 }
 
 export function failClosedWorkerResult(reason, details = {}) {
