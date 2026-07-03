@@ -43,12 +43,49 @@ async function hydrateWorkspace(slug, userId, reason = 'runtime') {
   };
 }
 
+function codeSiteContextFromOptions(options = {}) {
+  const context = options.codesiteContext || options.codeSiteContext || options.codeSite || options.codesite || null;
+  return context && typeof context === 'object' ? context : null;
+}
+
+async function isRuntimeFilesystemInitialized(slug, userId) {
+  if (userId && typeof gitService.isUserRepoInitialized === 'function') {
+    return gitService.isUserRepoInitialized(slug, userId);
+  }
+  if (typeof gitService.isRepoInitialized === 'function') {
+    return gitService.isRepoInitialized(slug, userId || null);
+  }
+  return false;
+}
+
+async function existingCodeSiteRuntimeFilesystem(slug, userId, reason) {
+  const initialized = await isRuntimeFilesystemInitialized(slug, userId);
+  if (!initialized) {
+    const error = new Error(
+      `CodeSite runtime filesystem blocked: ${slug}${userId ? '/' + userId : ''} is not provisioned for ${reason}. Provision it through a CodeSite git_provisioning clearance before launching runtime overlay sessions.`,
+    );
+    error.code = 'CODESITE_RUNTIME_FILESYSTEM_PROVISIONING_REQUIRED';
+    error.status = 409;
+    throw error;
+  }
+  return {
+    slug,
+    userId,
+    path: gitService.getEffectiveRepoPath(slug, userId || null),
+    created: false,
+    reusedExisting: true,
+    codeSiteProvisioningSkipped: true,
+  };
+}
+
 async function ensureRuntimeFilesystem({
   workspaceSlug,
   filesystemUserId = '',
   runtimeScope = '',
   pin = false,
   reason = 'runtime',
+  codesiteContext = null,
+  codeSiteContext = null,
 } = {}) {
   const slug = normalize(workspaceSlug);
   if (!slug) {
@@ -56,6 +93,15 @@ async function ensureRuntimeFilesystem({
   }
 
   const userId = normalize(filesystemUserId);
+  const activeCodeSiteContext = codeSiteContextFromOptions({ codesiteContext, codeSiteContext });
+  if (activeCodeSiteContext?.active) {
+    const existing = await existingCodeSiteRuntimeFilesystem(slug, userId, reason);
+    if (pin && runtimeScope) {
+      pinRuntimeFilesystem(runtimeScope, slug, userId);
+    }
+    return existing;
+  }
+
   const key = pinKey(slug, userId);
   let lock = hydrationLocks.get(key);
   if (!lock) {

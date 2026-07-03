@@ -247,6 +247,7 @@ const managedProgramRuntime = createProgramRuntimeManager({
             filesystemUserId: userId,
             runtimeScope: '',
             reason: 'program_runtime_hybrid',
+            codesiteContext,
           });
           const cwd = await resolveWorkspaceCwd(workspaceSlug, userId);
           codeSiteQuarantine = await createCodeSiteOverlayWorkspace(codesiteContext, cwd, {
@@ -707,12 +708,13 @@ function quarantineManifestEventDetails(manifest = {}) {
   };
 }
 
-async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason) {
+async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason, codeSiteContext = null) {
   await ensureRuntimeFilesystem({
     workspaceSlug: slug,
     filesystemUserId,
     runtimeScope,
     reason,
+    codesiteContext: codeSiteContext?.active ? codeSiteContext : null,
   });
   const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
   const baseDir = codeSiteRuntimeQuarantineBaseDir(cwd)
@@ -2970,8 +2972,14 @@ const server = http.createServer(async (req, res) => {
       || (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '')
       || actorUserId;
     const runtimeScope = programRuntimeUrl.searchParams.get('runtimeScope') || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const collectionCodeSiteData = Object.fromEntries(programRuntimeUrl.searchParams.entries());
+    const collectionCodeSiteContext = runtimeCodeSiteContext(req, collectionCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
     try {
-      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list');
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list', collectionCodeSiteContext);
       const quarantines = await listCodeSiteQuarantineManifests(storage.baseDir, slug, {
         transactionId: programRuntimeUrl.searchParams.get('transactionId') || null,
         status: programRuntimeUrl.searchParams.get('status') || null,
@@ -3017,7 +3025,7 @@ const server = http.createServer(async (req, res) => {
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     try {
-      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, `codesitefs-quarantine-${action || 'get'}`);
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, `codesitefs-quarantine-${action || 'get'}`, codeSiteContext);
       const quarantine = await readCodeSiteQuarantineManifest(storage.baseDir, slug, quarantineId);
       if (!action && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3256,7 +3264,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantine-apply');
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantine-apply', codeSiteContext);
       const replay = await prepareCodeSiteQuarantineReplayPlan({
         slug,
         changes: parsed.changes || parsed.quarantineChanges || parsed.quarantine_changes || parsed.files || [],

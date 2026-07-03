@@ -1817,6 +1817,7 @@ function createTerminalWSS({
         filesystemUserId: requestedFilesystemUserId,
         runtimeScope,
         reason: 'interactive_terminal',
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
       cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
     } catch (err) {
