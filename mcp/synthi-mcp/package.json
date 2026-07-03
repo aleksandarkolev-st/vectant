@@ -157,6 +157,7 @@
     "proof:hiprt:target-progression:self-check": "node scripts/gpu-hmr-hiprt-target-progression-probe.mjs --self-check",
     "proof:oidn:preflight": "node scripts/gpu-hmr-oidn-preflight.mjs",
     "proof:oidn:preflight:self-check": "node scripts/gpu-hmr-oidn-preflight.mjs --self-check",
+    "proof:oidn:runtime:self-check": "node scripts/gpu-hmr-oidn-preflight.mjs --runtime-boundary-self-check",
     "proof:opencl:preflight": "node scripts/gpu-hmr-opencl-preflight.mjs",
     "proof:opencl:preflight:self-check": "node scripts/gpu-hmr-opencl-preflight.mjs --self-check",
     "proof:opencl:runtime": "node scripts/gpu-hmr-opencl-runtime-proof.mjs",

@@ -6,6 +6,10 @@ import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildComputeOracleArtifactsFromByteEvidence,
+  buildRuntimeBoundaryRunModeProof,
+} from './lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +47,11 @@ const CFG = {
   allowRejected: process.env.SYNTHI_OIDN_ALLOW_REJECTED === '1',
   outputOracleManifestPath: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH
     ?? argValue('--output-oracle-manifest')
+    ?? '',
+  runtimeBoundaryEventsPath: process.env.SYNTHI_OIDN_RUNTIME_BOUNDARY_EVENTS_PATH
+    ?? process.env.SYNTHI_OIDN_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH
+    ?? argValue('--runtime-boundary-events')
+    ?? argValue('--runtime-boundary-event-manifest')
     ?? '',
   outputOracleAllowedRoots: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_ALLOWED_ROOTS ?? '',
 };
@@ -102,6 +111,19 @@ function authorityClaimsSuccess(object) {
     || object.gpu_hmr_success === true
     || object.canSatisfyRuntimeProof === true
     || object.can_satisfy_runtime_proof === true;
+}
+
+function runtimeBoundaryManifestClaimsSuccess(object) {
+  if (!object || typeof object !== 'object') return false;
+  if (authorityClaimsSuccess(object)) return true;
+  const events = [
+    ...(Array.isArray(object.runtimeBoundaryEvents) ? object.runtimeBoundaryEvents : []),
+    ...(Array.isArray(object.runtime_boundary_events) ? object.runtime_boundary_events : []),
+    ...(Array.isArray(object.adapterRuntimeBoundaryEvents) ? object.adapterRuntimeBoundaryEvents : []),
+    ...(Array.isArray(object.adapter_runtime_boundary_events) ? object.adapter_runtime_boundary_events : []),
+    ...(Array.isArray(object.events) ? object.events : []),
+  ];
+  return events.some((event) => authorityClaimsSuccess(event));
 }
 
 function isPathInside(child, root) {
@@ -355,6 +377,189 @@ async function buildOidnOutputOracleEvidence(manifestPath) {
     ...facetBase,
     outputOracleHash: `sha256:${sha256Json(facetBase)}`,
     output_oracle_hash: `sha256:${sha256Json(facetBase)}`,
+  };
+}
+
+function oidnOutputOracleFile(outputOracle, role) {
+  const files = Array.isArray(outputOracle?.files) ? outputOracle.files : [];
+  return files.find((file) => file?.role === role) ?? null;
+}
+
+function timestampValue(...values) {
+  for (const value of values) {
+    if (Number.isFinite(value) && value >= 0) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+    }
+  }
+  return null;
+}
+
+function runtimeBoundaryOutputEvent(events = []) {
+  return (Array.isArray(events) ? events : []).find((event) => {
+    const kind = firstText(event?.kind, event?.eventKind, event?.event_kind, event?.stage, event?.stageKind, event?.stage_kind)
+      ?.toLowerCase()
+      .replace(/-/g, '_');
+    return ['output_oracle', 'compute_oracle', 'visual_oracle', 'readback_oracle'].includes(kind);
+  }) ?? null;
+}
+
+function oidnComputeOracleArtifactsFromOutputOracle(outputOracle, runtimeOutputEvent = null) {
+  if (!outputOracle?.accepted) return null;
+  const noisy = oidnOutputOracleFile(outputOracle, 'noisy_input');
+  const denoised = oidnOutputOracleFile(outputOracle, 'denoised_output');
+  const expected = oidnOutputOracleFile(outputOracle, 'expected_output');
+  if (!denoised?.sha256 || !denoised?.byteLength) return null;
+  return buildComputeOracleArtifactsFromByteEvidence({
+    rawReadbackHash: denoised.sha256,
+    rawReadbackByteLength: denoised.byteLength,
+    checksumBefore: noisy?.sha256 ?? outputOracle.expectedOutputSha256,
+    checksumAfter: denoised.sha256,
+    deterministicSliceHash: expected?.sha256 ?? outputOracle.expectedOutputSha256 ?? denoised.sha256,
+    sliceOffset: 0,
+    sliceLength: denoised.byteLength,
+    timestampAfterDispatch: timestampValue(
+      outputOracle.timestampAfterDispatch,
+      outputOracle.timestamp_after_dispatch,
+      runtimeOutputEvent?.timestampMonotonicNs,
+      runtimeOutputEvent?.timestamp_monotonic_ns,
+      runtimeOutputEvent?.timestamp,
+      runtimeOutputEvent?.timestampNs,
+      runtimeOutputEvent?.timestamp_ns,
+    ),
+    epoch: firstText(outputOracle.epoch, outputOracle.epoch_id, runtimeOutputEvent?.epoch, runtimeOutputEvent?.epochId, runtimeOutputEvent?.epoch_id),
+    rawReadbackSource: 'runtime_readback',
+    producer: 'oidn_runtime_output_oracle',
+    rawReadbackHashVerified: true,
+    deterministicSliceHashVerified: true,
+    expectedOutputVerified: outputOracle.expectedOutputMatched === true || outputOracle.expected_output_matched === true,
+    expectedOutputHash: outputOracle.expectedOutputSha256 ?? outputOracle.expected_output_sha256,
+    expectedOutputChange: outputOracle.outputDistinctFromInput === true || outputOracle.output_distinct_from_input === true,
+    evidenceRefs: outputOracle.evidenceRefs ?? outputOracle.evidence_refs ?? [],
+  });
+}
+
+async function readOidnRuntimeBoundaryManifest(manifestPath) {
+  if (!manifestPath) {
+    return {
+      present: false,
+      accepted: false,
+      manifestPath: null,
+      manifest_path: null,
+      events: [],
+      metadata: {},
+      failedGates: ['oidn_runtime_boundary_event_manifest_missing'],
+      failed_gates: ['oidn_runtime_boundary_event_manifest_missing'],
+    };
+  }
+  const resolvedPath = path.resolve(manifestPath);
+  try {
+    const bytes = await readFile(resolvedPath);
+    const manifest = JSON.parse(bytes.toString('utf8'));
+    const failedGates = [];
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      failedGates.push('oidn_runtime_boundary_event_manifest_not_object');
+    }
+    if (runtimeBoundaryManifestClaimsSuccess(manifest)) {
+      failedGates.push('oidn_runtime_boundary_event_manifest_claims_gpu_hmr_success');
+    }
+    const events = [
+      ...(Array.isArray(manifest.runtimeBoundaryEvents) ? manifest.runtimeBoundaryEvents : []),
+      ...(Array.isArray(manifest.runtime_boundary_events) ? manifest.runtime_boundary_events : []),
+      ...(Array.isArray(manifest.adapterRuntimeBoundaryEvents) ? manifest.adapterRuntimeBoundaryEvents : []),
+      ...(Array.isArray(manifest.adapter_runtime_boundary_events) ? manifest.adapter_runtime_boundary_events : []),
+      ...(Array.isArray(manifest.events) ? manifest.events : []),
+    ];
+    if (events.length === 0) failedGates.push('oidn_runtime_boundary_event_manifest_events_missing');
+    return {
+      present: true,
+      accepted: failedGates.length === 0,
+      manifestPath: resolvedPath,
+      manifest_path: resolvedPath,
+      manifestSha256: `sha256:${sha256Buffer(bytes)}`,
+      manifest_sha256: `sha256:${sha256Buffer(bytes)}`,
+      events,
+      metadata: manifest,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  } catch {
+    return {
+      present: true,
+      accepted: false,
+      manifestPath: resolvedPath,
+      manifest_path: resolvedPath,
+      events: [],
+      metadata: {},
+      failedGates: ['oidn_runtime_boundary_event_manifest_unreadable'],
+      failed_gates: ['oidn_runtime_boundary_event_manifest_unreadable'],
+    };
+  }
+}
+
+async function buildOidnRuntimeBoundaryRunModeProof({ outputOracle, classification }) {
+  const manifest = await readOidnRuntimeBoundaryManifest(CFG.runtimeBoundaryEventsPath);
+  if (!manifest.present) return null;
+  const metadata = manifest.metadata ?? {};
+  const computeOracleArtifacts = oidnComputeOracleArtifactsFromOutputOracle(
+    outputOracle,
+    runtimeBoundaryOutputEvent(manifest.events),
+  );
+  const failedGates = [
+    ...manifest.failedGates,
+    outputOracle?.accepted === true ? null : 'oidn_output_oracle_not_accepted_for_runtime_boundary',
+    classification?.oidnHipRuntimePreflightAccepted === true
+      ? null
+      : 'oidn_hip_runtime_preflight_not_accepted_for_runtime_boundary',
+    computeOracleArtifacts ? null : 'oidn_compute_oracle_artifacts_not_derived',
+  ].filter(Boolean);
+  const proof = failedGates.length === 0
+    ? buildRuntimeBoundaryRunModeProof({
+      backend: firstText(metadata.backend, metadata.gpuBackend, metadata.gpu_backend, 'hip'),
+      projectId: firstText(metadata.projectId, metadata.project_id, metadata.workspaceSlug, metadata.workspace_slug),
+      editId: firstText(metadata.editId, metadata.edit_id, metadata.sourceEditId, metadata.source_edit_id),
+      targetId: firstText(metadata.targetId, metadata.target_id, metadata.validationTargetId, metadata.validation_target_id),
+      sourcePaths: Array.isArray(metadata.sourcePaths)
+        ? metadata.sourcePaths
+        : Array.isArray(metadata.source_paths)
+          ? metadata.source_paths
+          : [],
+      entryPoint: firstText(metadata.entryPoint, metadata.entry_point, metadata.kernelName, metadata.kernel_name),
+      compileTarget: firstText(metadata.compileTarget, metadata.compile_target, metadata.gpuArch, metadata.gpu_arch),
+      compiler: firstText(metadata.compiler),
+      compilerArgsHash: firstText(metadata.compilerArgsHash, metadata.compiler_args_hash),
+      artifactHashBefore: firstText(metadata.artifactHashBefore, metadata.artifact_hash_before),
+      artifactHashAfter: firstText(metadata.artifactHashAfter, metadata.artifact_hash_after),
+      contractHash: firstText(metadata.contractHash, metadata.contract_hash),
+      runtimeBoundaryEvents: manifest.events,
+      computeOracleArtifacts,
+      metricScope: firstText(metadata.metricScope, metadata.metric_scope, 'hot_delta_1'),
+      cacheState: firstText(metadata.cacheState, metadata.cache_state, 'compiler_cache_warm'),
+      timings: metadata.timings,
+      modelProvenance: metadata.modelProvenance ?? metadata.model_provenance,
+    })
+    : null;
+  const adapterGates = proof?.runtimeBoundaryProofAdapter?.failedGates ?? proof?.runtime_boundary_proof_adapter?.failed_gates ?? [];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge.v1',
+    proofAuthority: 'oidn_output_oracle_to_generic_runtime_boundary_adapter_not_success_authority',
+    proof_authority: 'oidn_output_oracle_to_generic_runtime_boundary_adapter_not_success_authority',
+    accepted: proof?.accepted === true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: proof?.accepted === true,
+    can_satisfy_runtime_proof: proof?.accepted === true,
+    manifest,
+    runtimeBoundaryRunModeProof: proof,
+    runtime_boundary_run_mode_proof: proof,
+    computeOracleArtifacts,
+    compute_oracle_artifacts: computeOracleArtifacts,
+    failedGates: [...new Set([...failedGates, ...adapterGates])],
+    failed_gates: [...new Set([...failedGates, ...adapterGates])],
   };
 }
 
@@ -723,6 +928,10 @@ async function buildProof() {
     pathIntegrity,
     outputOracle,
   });
+  const runtimeBoundaryBridge = await buildOidnRuntimeBoundaryRunModeProof({
+    outputOracle,
+    classification,
+  });
   const ended = process.hrtime.bigint();
   const durationNs = Number(ended - started);
   const timingMetrics = oidnPreflightTimingMetrics({ durationNs, classification });
@@ -754,6 +963,10 @@ async function buildProof() {
     }),
     outputOracle,
     output_oracle: outputOracle,
+    runtimeBoundaryBridge,
+    runtime_boundary_bridge: runtimeBoundaryBridge,
+    runtimeBoundaryRunModeProof: runtimeBoundaryBridge?.runtimeBoundaryRunModeProof ?? null,
+    runtime_boundary_run_mode_proof: runtimeBoundaryBridge?.runtimeBoundaryRunModeProof ?? null,
     classification,
     acceptance: {
       acceptedForOidnHipRuntimePreflight: classification.oidnHipRuntimePreflightAccepted,
@@ -761,6 +974,8 @@ async function buildProof() {
       acceptedForOidnHipOutputProof: classification.oidnHipOutputProofAccepted,
       outputOracleProven: classification.oidnHipOutputOracleProven,
       output_oracle_proven: classification.oidnHipOutputOracleProven,
+      runtimeBoundaryProofAccepted: runtimeBoundaryBridge?.accepted === true,
+      runtime_boundary_proof_accepted: runtimeBoundaryBridge?.accepted === true,
       gpuHmrSuccess: false,
       reason: classification.oidnHipOutputProofAccepted
         ? 'preflight_output_oracle_only_full_runtime_hmr_ledger_still_required'
@@ -797,6 +1012,8 @@ async function writeProof(proof) {
     `oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`,
     `oidn_output_oracle_manifest=${proof.outputOracle?.manifestPath ?? 'none'}`,
     `oidn_output_oracle_accepted=${proof.outputOracle?.accepted ?? false}`,
+    `oidn_runtime_boundary_manifest=${proof.runtimeBoundaryBridge?.manifest?.manifestPath ?? 'none'}`,
+    `oidn_runtime_boundary_accepted=${proof.runtimeBoundaryBridge?.accepted ?? false}`,
     `oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`,
     `open_gaps=${proof.classification.openGaps.join(',') || 'none'}`,
     `missing_libraries=${proof.classification.missingLibraries.join(',') || 'none'}`,
@@ -954,8 +1171,166 @@ async function runOutputOracleSelfCheck() {
   );
 }
 
+function syntheticHash(label) {
+  return `sha256:${sha256Buffer(Buffer.from(label))}`;
+}
+
+async function runRuntimeBoundaryBridgeSelfCheck() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'synthi-oidn-runtime-boundary-'));
+  const noisyPath = path.join(dir, 'noisy.bin');
+  const denoisedPath = path.join(dir, 'denoised.bin');
+  const expectedPath = path.join(dir, 'expected.bin');
+  await writeFile(noisyPath, Buffer.from([1, 2, 3, 4, 5, 6]));
+  await writeFile(denoisedPath, Buffer.from([2, 4, 6, 8, 10, 12]));
+  await writeFile(expectedPath, Buffer.from([2, 4, 6, 8, 10, 12]));
+  const denoisedHash = normalizeSha256(sha256Buffer(await readFile(denoisedPath)));
+  const oraclePath = path.join(dir, 'oracle.json');
+  await writeFile(oraclePath, JSON.stringify({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    backend: 'oidn_hip',
+    device: 'hip',
+    noisyInputPath: noisyPath,
+    denoisedOutputPath: denoisedPath,
+    expectedOutputPath: expectedPath,
+    expectedOutputSha256: denoisedHash,
+  }, null, 2));
+  const outputOracle = await buildOidnOutputOracleEvidence(oraclePath);
+  const artifactBefore = syntheticHash('oidn-runtime-artifact-before');
+  const artifactAfter = syntheticHash('oidn-runtime-artifact-after');
+  const contractHash = syntheticHash('oidn-runtime-contract');
+  const compilerArgsHash = syntheticHash('oidn-runtime-compile-args');
+  const dispatchTableBefore = syntheticHash('oidn-runtime-dispatch-table-before');
+  const dispatchTableAfter = syntheticHash('oidn-runtime-dispatch-table-after');
+  const runtimeBoundaryPath = path.join(dir, 'runtime-boundary.json');
+  const runtimeSession = 'oidn-runtime-session-1';
+  const dispatchId = 'oidn-dispatch-1';
+  const processId = 'pid-oidn-1';
+  await writeFile(runtimeBoundaryPath, JSON.stringify({
+    schemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+    proofAuthority: 'runtime_boundary_event_manifest_only_not_gpu_hmr_success',
+    backend: 'hip',
+    projectId: 'oidn-runtime-boundary-self-check',
+    editId: 'oidn-gpu-artifact-edit',
+    targetId: 'oidn-runtime-boundary-target',
+    sourcePaths: ['runtime-boundary://oidn-device-source'],
+    entryPoint: 'oidn_hip_denoise_kernel',
+    compileTarget: 'gfx1201',
+    compiler: 'hipcc',
+    compilerArgsHash,
+    artifactHashBefore: artifactBefore,
+    artifactHashAfter: artifactAfter,
+    contractHash,
+    runtimeBoundaryEvents: [
+      {
+        kind: 'artifact_transport',
+        eventId: 'oidn-load-1',
+        artifactHash: artifactAfter,
+        processId,
+        runtimeSession,
+        timestampMonotonicNs: 100,
+        evidenceRefs: ['runtime-boundary:oidn:artifact-transport'],
+      },
+      {
+        kind: 'epoch_publication',
+        eventId: 'oidn-publish-1',
+        artifactHash: artifactAfter,
+        epoch: 'epoch-oidn-2',
+        processId,
+        runtimeSession,
+        timestampMonotonicNs: 200,
+        dispatchTableHashBefore: dispatchTableBefore,
+        dispatchTableHashAfter: dispatchTableAfter,
+        evidenceRefs: ['runtime-boundary:oidn:epoch-publication'],
+      },
+      {
+        kind: 'synthi_gpu_launch',
+        eventId: dispatchId,
+        artifactHash: artifactAfter,
+        epoch: 'epoch-oidn-2',
+        dispatchId,
+        processId,
+        runtimeSession,
+        stream: 'stream-oidn-1',
+        dispatchTableEntry: 'oidn_hip_denoise_kernel:epoch-oidn-2',
+        timestampMonotonicNs: 300,
+        evidenceRefs: [
+          `worker-log:synthi_gpu_launch:${runtimeSession}:${dispatchId}`,
+          `worker-log:launch_arg_provenance:${runtimeSession}:${dispatchId}:output`,
+        ],
+      },
+      {
+        kind: 'host_identity',
+        eventId: 'oidn-host-1',
+        processId,
+        runtimeSession,
+        deviceUuid: 'device-oidn-1',
+        contextId: 'ctx-oidn-1',
+        stream: 'stream-oidn-1',
+        timestampMonotonicNs: 310,
+        evidenceRefs: [
+          'worker-log:host_identity:runner_process',
+          'worker-log:host_identity:host_state',
+          'worker-log:host_identity:stream_context',
+          `worker-log:host_identity_snapshot:${runtimeSession}:runner_process:1->2`,
+          `worker-log:host_identity_snapshot:${runtimeSession}:host_state:1->2`,
+          `worker-log:host_identity_snapshot:${runtimeSession}:stream_context:1->2`,
+        ],
+      },
+      {
+        kind: 'output_oracle',
+        eventId: 'oidn-output-1',
+        artifactHash: artifactAfter,
+        epoch: 'epoch-oidn-2',
+        afterDispatchId: dispatchId,
+        processId,
+        runtimeSession,
+        outputTargetId: 'oidn-denoised-output',
+        oracleKind: 'buffer_checksum',
+        timestampMonotonicNs: 400,
+        evidenceRefs: [`worker-log:output_oracle:${runtimeSession}:${dispatchId}`],
+      },
+    ],
+  }, null, 2));
+  const previousPath = CFG.runtimeBoundaryEventsPath;
+  CFG.runtimeBoundaryEventsPath = runtimeBoundaryPath;
+  const accepted = await buildOidnRuntimeBoundaryRunModeProof({
+    outputOracle,
+    classification: {
+      oidnHipRuntimePreflightAccepted: true,
+    },
+  });
+  assert(accepted.accepted === true, `OIDN runtime boundary bridge should accept: ${accepted.failedGates.join(',')}`);
+  assert(accepted.gpuHmrSuccess === false, 'OIDN bridge facet itself cannot claim GPU HMR success');
+  assert(
+    accepted.runtimeBoundaryRunModeProof?.runtimeProofArtifact?.gpuHmrSuccess === true,
+    'nested generic runtime proof should be strict-gate accepted',
+  );
+
+  const forgedPath = path.join(dir, 'runtime-boundary-forged.json');
+  const forgedManifest = JSON.parse(await readFile(runtimeBoundaryPath, 'utf8'));
+  forgedManifest.gpuHmrSuccess = true;
+  await writeFile(forgedPath, JSON.stringify(forgedManifest, null, 2));
+  CFG.runtimeBoundaryEventsPath = forgedPath;
+  const forged = await buildOidnRuntimeBoundaryRunModeProof({
+    outputOracle,
+    classification: {
+      oidnHipRuntimePreflightAccepted: true,
+    },
+  });
+  CFG.runtimeBoundaryEventsPath = previousPath;
+  assert(forged.accepted === false, 'forged OIDN runtime boundary manifest should reject');
+  assert(
+    forged.failedGates.includes('oidn_runtime_boundary_event_manifest_claims_gpu_hmr_success'),
+    `forged manifest gate missing: ${forged.failedGates.join(',')}`,
+  );
+  console.log('[ok] OIDN runtime-boundary bridge self-check passed');
+}
+
 if (args.has('--self-check')) {
   await runSelfCheck();
+} else if (args.has('--runtime-boundary-self-check')) {
+  await runRuntimeBoundaryBridgeSelfCheck();
 } else {
   const proof = await buildProof();
   const paths = await writeProof(proof);
