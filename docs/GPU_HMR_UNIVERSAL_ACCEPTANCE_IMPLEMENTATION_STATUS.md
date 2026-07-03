@@ -1,8 +1,72 @@
 # GPU HMR Universal Acceptance Implementation Status
 
-Status date: 2026-07-01
+Status date: 2026-07-03
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
+
+## 2026-07-03 Generic Proof Status And Visual Evidence Checkpoint
+
+The current work remains generic and evidence-driven: no row, adapter, bridge, visual profile, or cold-path result may become GPU HMR acceptance because of a project name, fixture name, target string, or scenario label. The latest fixes and reruns added two project-agnostic hardening points:
+
+- `56cf0083b fix(gpu-hmr): harden random cold runtime bridge validation` makes validation-matrix ingestion recompute and safety-check `synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1`. The matrix rejects hidden success authority, malformed content hashes, `present:false` bypasses, and serialized failed-gate claims. The bridge remains cold-path/runtime-profile evidence only until the normal same-process loader, epoch, dispatch, host identity, output-oracle, firewall, and strict ledger gates close.
+- `86ed4c61b fix(gpu-hmr): disambiguate hiprt visual acceptance` separates HIPRT visual proof from GPU HMR acceptance in the live runner summary. Source-adapted HIPRT CameraRays can report `visualProofAccepted=true` and `visualEvidenceAccepted=true` while keeping `accepted=false`, `acceptedForGpuHmr=false`, and `gpuHmrSuccess=false` when strict same-process full-runtime proof is missing.
+
+Latest strict matrix rerun:
+
+```text
+command: npm run proof:validation-matrix
+matrix: gpu-validation-matrix-ledger:sha256:7161f54d016f7360937cdab78efb834cc939f9dee9bab906a8b2135af86fa341
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260703T120031Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260703T120031Z.md
+rows: 202
+outcomes: refusal_proven=172, cold_split_proven=10, full_runtime_gpu_hmr=15, deterministic_fission_proven=2, visual_profile_accepted=2, preflight_only=1
+backend families observed: hip=158, webgpu=13, vulkan=7, hiprt=6, oidn_hip=7, opencl=5, unknown=5, bevy_wgsl=1
+broad matrix proof: gpu-hmr-broad-library-agnostic-proof:sha256:9438e6672a69ed1f4eecc90f44fe7d9d7a7fcbc61fc7e2412fe3729f43a26c5b
+random cold-path coverage: 10 candidates, 9 qualifying direct rows, 9 distinct source/content identities
+```
+
+Latest source-first realistic ROCm/HIP visual proof started from source files, not a precompiled device artifact:
+
+```text
+command: npm run proof:rocm:source-first:realistic-visual
+workspace: gpu-agent-split-1783078881125
+preview: http://localhost:3000/workspace/gpu-agent-split-1783078881125
+source profile: agent-realistic-raytrace-scene
+source hash: sha256:20f72849bfe5ac1328a3bec28c39501eb78fe48cff6ecd48a86af81129bce96e
+source-first ingestion proof: agent-split-source-first-ingestion:sha256:64575a77c0ebdf6cab9f840ba9da97228f9149181ec865ed171d662d555c0d91
+cold compile proof: gpu-proof:49de4861b24274d8103464f103b71fd25d79692444430b3be0f407ed57a7afb1
+hot delta 1 runtime proof: gpu-runtime-proof:sha256:06f0e6393cb54527caa2fe6e4d4ca6b0c2100d9e90296efb7f5fae9875fae4de
+hot delta 1 ledger: gpu-ledger-proof:sha256:73c703fb7879b96b3059c888b5fca2e3217f12c88a51974b9c645484295da08c
+hot delta 1 visual delta: changed=73.73%, mean_abs=18.37
+hot delta 2 runtime proof: gpu-runtime-proof:sha256:1fb994e8d0f743a0d9d09f277dd037763362ab77831bdf1dd50aacd74eb14d6b
+hot delta 2 ledger: gpu-ledger-proof:sha256:8d9597cd63e4946cef3fbd0c34c6ef14debad6f5db13eef40130fedcacb4b943
+hot delta 2 visual delta: changed=99.50%, mean_abs=37.27
+visual artifacts inspected: after-hmr-second.png and hot-delta-2-diff.png under mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/gpu-agent-split-1783078881125/
+```
+
+The inspected source-first visual artifacts are nonblank and show a realistic ray-traced scene with faceted gem/diamond geometry, reflections, storefront/vehicle geometry, and strong diff output. This is the current "wow" visual proof lane for the generated/source-first ROCm/HIP path, but it is still accepted only because the strict runtime proof, ledger, dispatch, output-oracle, and negative-edit gates closed for that row.
+
+Latest HIPRT same-process CameraRays visual run remains deliberately split between visual evidence and GPU HMR acceptance:
+
+```text
+command: SYNTHI_HIPRT_WARM_ALLOW_REJECTED=1 npm run proof:hiprt:same-process:camera-rays
+accepted: false
+acceptedForGpuHmr: false
+gpuHmrSuccess: false
+visualProofAccepted: true
+visualEvidenceAccepted: true
+representative visual delta: changedPixelRatioThreshold4=0.914019, meanAbsDelta8bit=53.127
+```
+
+This preserves the required distinction: impressive HIPRT visual proof is useful evidence, but source-adapted or incomplete app-hook proof cannot be counted as arbitrary HIPRT project hot reload.
+
+Current fail-closed boundaries after the July 3 checkpoint:
+
+- Random large-project cold paths are now tested as user-like source ingress and runtime-profile bridge evidence, but cold-path readiness is not runtime success.
+- Large ROCm packages such as MIOpen, Composable Kernel, hipBLASLt, HIPRT/OIDN paths, and visual external projects remain refused unless they produce the generic runtime-boundary chain and output bytes/images required by the ledger.
+- OIDN HIP remains diagnostic/refusal evidence here until a matching ROCm HIP backend, output oracle, and strict ledger proof exist.
+- CUDA remains unvalidated on this AMD ROCm machine.
+- The matrix broad proof is a recomputed generalization over accepted strict rows and adversarial refusals. It is not a claim that every arbitrary GPU project is production accepted without its own same-process loader, epoch publication, dispatch trace, host identity, visual or compute output oracle, firewall, and strict proof-ledger closure.
 
 ## 2026-07-01 Source-First Visual Broad Selector Recompute
 
