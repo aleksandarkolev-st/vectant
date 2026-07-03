@@ -6,7 +6,57 @@ This document records the current implementation status against `GPU_HMR_UNIVERS
 
 ## 2026-07-03 Generic Proof Status And Visual Evidence Checkpoint
 
-The current work remains generic and evidence-driven: no row, adapter, bridge, visual profile, or cold-path result may become GPU HMR acceptance because of a project name, fixture name, target string, or scenario label. The latest fixes and reruns added two project-agnostic hardening points:
+Latest continuation update on 2026-07-03:
+
+- `e8e911748 fix(gpu-hmr): require per-gate large project closure` removes accepted-full-runtime fallbacks from large arbitrary-project runtime closure. A large cold or real ROCm row can count only when each generic gate is independently satisfied: cold source intake, adapter/app-hook contract, artifact transport, epoch publication, dispatch trace, host identity, output oracle, CPU/GPU firewall, same-process oracle, runtime chain, and strict runtime ledger.
+- `dff0b47da fix(gpu-hmr): require evidence shape for rocm coverage` prevents ROCm coverage from turning serialized capability booleans such as `canSatisfyRuntimeProof` into contract proof unless the matching generic evidence shape is present.
+- `1e62939e3 fix(gpu-hmr): require visual closure for webgpu coverage` requires WebGPU visual layout coverage to be backed by visual output-oracle closure, strict visual ledger binding, declared scope evidence, and native WebGPU runtime evidence. Compute-only rows cannot satisfy visual-layout coverage by carrying profiled resource fields.
+- `d358f8378 fix(gpu-hmr): require hiprt profile proof shape` keeps HIPRT visual-profile coverage diagnostic unless strict runtime proof, recomputed ledger binding, runtime visual proof binding, output-oracle evidence, and firewall fields are present.
+- `bec134f60 fix(gpu-hmr): require accepted compute oracle facet` keeps compute proof cards supplemental. Compute GPU HMR output closure now requires an accepted `compute_oracle` output facet; a rendered card cannot substitute for raw readback/schema/checksum proof.
+- `129d48aa7 fix(gpu-hmr): require strict oracle authority for broad proof` makes broad-readiness visual/compute target counts use recomputed strict full-runtime oracle authority instead of row-carried oracle booleans.
+
+Latest verification for this continuation:
+
+```text
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
+  passed
+  proof: gpu-validation-matrix-ledger:sha256:39e6f7bae70b2deb64fd70b115e90cb6fdbd7372312ec1f0d567fd123fb3981a
+  rows: 77
+
+npm run proof:random-large-project:cold:self-check
+  passed
+  runtime profile result: mcp/synthi-mcp/.gpu-hmr-test-logs/random-large-project-cold-path/runtime-profile-results/direct-runtime-bridge-large-20260703T155535399-adapter-result.json
+
+npm run proof:random-large-project:cold:dry-run
+  passed
+  selectedIds: unprofiled-dawn-webgpu-stack
+  resultStatuses: selected_not_executed_dry_run
+
+npm run proof:validation-matrix
+  passed
+  matrix: gpu-validation-matrix-ledger:sha256:fd49f404650534f735f65349d4463e8171b220cc5984c386dd94ad97d3b75daf
+  json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260703T160507Z.json
+  rows: 205
+  outcomes: refusal_proven=175, cold_split_proven=10, full_runtime_gpu_hmr=15, deterministic_fission_proven=2, visual_profile_accepted=2, preflight_only=1
+  backend families observed: hip=161, webgpu=13, vulkan=7, hiprt=6, oidn_hip=7, opencl=5, unknown=5, bevy_wgsl=1
+  broad matrix proof: gpu-hmr-broad-library-agnostic-proof:sha256:cf2f8ebfe56284325824a8db010c764027081785257d8c9905769e7052f7cf7f
+  random cold-path coverage: 10 candidates, 9 qualifying direct rows, 9 distinct source/content identities
+
+npm run proof:rocm:source-first:realistic-visual
+  passed
+  workspace: gpu-agent-split-1783094723928
+  preview: http://localhost:3000/workspace/gpu-agent-split-1783094723928
+  source-first ingestion proof: agent-split-source-first-ingestion:sha256:1c24dbec6e5d331a0e8c4fd4b8072b8360e777d02a707d88c9b4fa80e9c42fa2
+  cold compile proof: gpu-proof:72bc2f6c9a531f812aba8565ef0080aca94113147902f03199e9013fc120da7b
+  hot delta 1 runtime proof: gpu-runtime-proof:sha256:ba12f5a8503793254c441541131354718475336136a9b19c31c39a684ea45efe
+  hot delta 1 ledger: gpu-ledger-proof:sha256:d5ae0dae46c75fb84e4009c6df13b354c2f88f243084ea535a1d5e5bfe8705a3
+  hot delta 1 visual delta: changed=73.73%, mean_abs=18.37
+  hot delta 2 runtime proof: gpu-runtime-proof:sha256:9be160d9e47196be9373b1a59e1b6d82896b6080a29341c333849b1ec1d290ce
+  hot delta 2 ledger: gpu-ledger-proof:sha256:b3a2a0d1e4b92ca512b83ec874c6f922c292c2ea199b62f1febc6b862a9ab080
+  hot delta 2 visual delta: changed=99.50%, mean_abs=37.29
+```
+
+The current work remains generic and evidence-driven: no row, adapter, bridge, visual profile, or cold-path result may become GPU HMR acceptance because of a project name, fixture name, target string, or scenario label. Earlier July 3 fixes and reruns added these project-agnostic hardening points:
 
 - `56cf0083b fix(gpu-hmr): harden random cold runtime bridge validation` makes validation-matrix ingestion recompute and safety-check `synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1`. The matrix rejects hidden success authority, malformed content hashes, `present:false` bypasses, and serialized failed-gate claims. The bridge remains cold-path/runtime-profile evidence only until the normal same-process loader, epoch, dispatch, host identity, output-oracle, firewall, and strict ledger gates close.
 - `86ed4c61b fix(gpu-hmr): disambiguate hiprt visual acceptance` separates HIPRT visual proof from GPU HMR acceptance in the live runner summary. Source-adapted HIPRT CameraRays can report `visualProofAccepted=true` and `visualEvidenceAccepted=true` while keeping `accepted=false`, `acceptedForGpuHmr=false`, and `gpuHmrSuccess=false` when strict same-process full-runtime proof is missing.
