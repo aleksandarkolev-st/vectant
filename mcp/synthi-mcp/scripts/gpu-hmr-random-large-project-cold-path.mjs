@@ -37,6 +37,10 @@ const RUNTIME_BOUNDARY_EVENT_TEMPLATE_SCHEMA =
   'synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1';
 const RUNTIME_BOUNDARY_EVENT_TEMPLATE_AUTHORITY =
   'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
+const RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA =
+  'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
+const RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
+  'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success';
 const REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS = Object.freeze([
   'artifact_transport',
   'epoch_publication',
@@ -209,6 +213,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--commit' || arg === '--immutable-commit') out.immutableCommit = argv[++i];
     else if (arg === '--source-id') out.sourceId = argv[++i];
     else if (arg === '--backend-family') out.backendFamily = argv[++i];
+    else if (arg === '--runtime-profile' || arg === '--runtime-profile-path') out.runtimeProofProfilePath = argv[++i];
     else if (arg === '--output-dir') out.outputDir = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -314,6 +319,15 @@ function cleanCandidate(
       ?? 'unknown_gpu_project',
   ).trim().toLowerCase();
   const profilePath = String(candidate.profilePath ?? candidate.profile_path ?? '').trim();
+  const runtimeProofProfilePath = String(
+    candidate.runtimeProofProfilePath
+      ?? candidate.runtime_proof_profile_path
+      ?? candidate.runtimeProfilePath
+      ?? candidate.runtime_profile_path
+      ?? candidate.strictRuntimeProfilePath
+      ?? candidate.strict_runtime_profile_path
+      ?? '',
+  ).trim();
   const sourceUrl = String(candidate.sourceUrl ?? candidate.source_url ?? candidate.repo?.url ?? '').trim();
   const localRepoPath = String(
     candidate.localRepoPath
@@ -340,6 +354,8 @@ function cleanCandidate(
     throw new Error(`candidate[${index}] immutableCommit must be a git commit hash`);
   }
   const resolvedProfilePath = profilePath ? path.resolve(profilePath) : null;
+  const resolvedRuntimeProofProfilePath =
+    resolveRepoBoundPath(runtimeProofProfilePath, 'candidate.runtimeProofProfilePath');
   const profileMode = resolvedProfilePath
     ? 'profile_driven_real_rocm_runner'
     : 'unprofiled_arbitrary_project_cold_intake';
@@ -349,6 +365,20 @@ function cleanCandidate(
     profilePath: resolvedProfilePath,
     profileMode,
     profile_mode: profileMode,
+    runtimeProofProfilePath: resolvedRuntimeProofProfilePath,
+    runtime_proof_profile_path: resolvedRuntimeProofProfilePath,
+    runtimeProofProfileRelativePath: resolvedRuntimeProofProfilePath
+      ? repoRelativePath(resolvedRuntimeProofProfilePath)
+      : null,
+    runtime_proof_profile_relative_path: resolvedRuntimeProofProfilePath
+      ? repoRelativePath(resolvedRuntimeProofProfilePath)
+      : null,
+    runtimeProofProfileMode: resolvedRuntimeProofProfilePath
+      ? 'declared_generic_runtime_profile'
+      : 'none',
+    runtime_proof_profile_mode: resolvedRuntimeProofProfilePath
+      ? 'declared_generic_runtime_profile'
+      : 'none',
     candidateSource,
     candidate_source: candidateSource,
     directInputEvidence,
@@ -453,6 +483,7 @@ function directCandidateFromInput({
   immutableCommit,
   sourceId,
   backendFamily,
+  runtimeProofProfilePath,
   inputChannels = [],
 } = {}) {
   const url = String(sourceUrl ?? '').trim();
@@ -478,6 +509,7 @@ function directCandidateFromInput({
     {
       id,
       backendFamily: backendFamily || 'unknown_gpu_project',
+      runtimeProofProfilePath,
       sourceUrl: effectiveSourceUrl,
       localRepoPath: resolvedRepo,
       immutableCommit: commit,
@@ -522,6 +554,7 @@ function directInputChannelsFromArgsEnv(args = {}, env = process.env) {
   pushChannel('commit', args.immutableCommit, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_COMMIT');
   pushChannel('source_id', args.sourceId, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID');
   pushChannel('backend_family', args.backendFamily, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY');
+  pushChannel('runtime_profile', args.runtimeProofProfilePath, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_RUNTIME_PROFILE_PATH');
   return channels;
 }
 
@@ -770,6 +803,7 @@ function coldPathSelectionAudit({
       profileMode: candidate.profileMode,
       backendFamily: candidate.backendFamily,
       immutableCommit: candidate.immutableCommit,
+      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath ?? null,
       directInputEvidenceHash: candidate.directInputEvidence?.evidenceHash ?? null,
     })))),
     candidate_pool_hash: contentHash(stableJson(candidateList.map((candidate) => ({
@@ -778,6 +812,7 @@ function coldPathSelectionAudit({
       profileMode: candidate.profileMode,
       backendFamily: candidate.backendFamily,
       immutableCommit: candidate.immutableCommit,
+      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath ?? null,
       directInputEvidenceHash: candidate.directInputEvidence?.evidenceHash ?? null,
     })))),
     selectedIdentityHash: contentHash(stableJson(selectionSeed)),
@@ -800,6 +835,25 @@ function tail(text, max = 8000) {
 
 function makeStamp(date = new Date()) {
   return date.toISOString().replace(/[-:.]/g, '').replace('T', 'T').slice(0, 18);
+}
+
+function isInsideDirectory(baseDir, targetPath) {
+  const relative = path.relative(baseDir, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function repoRelativePath(filePath) {
+  return path.relative(REPO_ROOT, path.resolve(filePath)).replace(/\\/g, '/');
+}
+
+function resolveRepoBoundPath(rawPath, fieldName) {
+  const raw = String(rawPath ?? '').trim();
+  if (!raw) return null;
+  const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(REPO_ROOT, raw);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`${fieldName} must stay inside the repo: ${raw}`);
+  }
+  return resolved;
 }
 
 function killChildTree(child) {
@@ -3237,6 +3291,186 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
   });
 }
 
+async function readJsonArtifact(filePath) {
+  if (!filePath) return { present: false, value: null, textSha256: null, byteLength: 0, error: null };
+  try {
+    const text = await readFile(filePath, 'utf8');
+    return {
+      present: true,
+      value: JSON.parse(text),
+      textSha256: contentHash(text),
+      byteLength: Buffer.byteLength(text, 'utf8'),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      present: false,
+      value: null,
+      textSha256: null,
+      byteLength: 0,
+      error: error?.message ?? String(error),
+    };
+  }
+}
+
+async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
+  const profilePath = candidate.runtimeProofProfilePath;
+  if (!profilePath) return null;
+  const profileRead = await readJsonArtifact(profilePath);
+  const resultPath = path.join(
+    LOG_DIR,
+    'runtime-profile-results',
+    `${safeSlug(candidate.id)}-${makeStamp()}-adapter-result.json`,
+  );
+  let runnerResult = null;
+  if (profileRead.present) {
+    runnerResult = await runProcess(
+      process.execPath,
+      [
+        path.join(SCRIPT_DIR, 'gpu-hmr-runtime-profile-proof.mjs'),
+        '--profile',
+        repoRelativePath(profilePath),
+        '--result-path',
+        repoRelativePath(resultPath),
+      ],
+      {
+        cwd: REPO_ROOT,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeoutMs: runnerTimeoutMs,
+        stdoutMax: 64000,
+        stderrMax: 64000,
+      },
+    );
+  }
+  const adapterResultRead = await readJsonArtifact(resultPath);
+  const adapterResult = adapterResultRead.value && typeof adapterResultRead.value === 'object'
+    ? adapterResultRead.value
+    : null;
+  const strictRuntimeProofAccepted =
+    adapterResult?.strictRuntimeProofAccepted === true
+    || adapterResult?.strict_runtime_proof_accepted === true;
+  const strictRuntimeProofId =
+    adapterResult?.strictRuntimeProofId
+    ?? adapterResult?.strict_runtime_proof_id
+    ?? null;
+  const proofLedgerId =
+    adapterResult?.proofLedgerId
+    ?? adapterResult?.proof_ledger_id
+    ?? null;
+  const authorityClaims = [];
+  if (claimsGpuHmrAuthority(candidate)) authorityClaims.push('candidate_claimed_gpu_hmr_authority');
+  if (claimsGpuHmrAuthority(adapterResult)) {
+    authorityClaims.push('runtime_profile_adapter_result_claimed_gpu_hmr_authority');
+  }
+  const blockingGaps = [
+    profileRead.present ? null : 'runtime_profile_path_unreadable',
+    runnerResult ? null : 'runtime_profile_proof_runner_not_attempted',
+    runnerResult?.timedOut ? 'runtime_profile_proof_runner_timeout' : null,
+    runnerResult && runnerResult.exitCode !== 0 ? 'runtime_profile_proof_runner_failed' : null,
+    adapterResultRead.present ? null : 'runtime_profile_adapter_result_missing',
+    authorityClaims.length > 0 ? 'runtime_profile_bridge_authority_claim_rejected' : null,
+    strictRuntimeProofAccepted ? null : 'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+  ].filter(Boolean);
+  const acceptedAsBridge =
+    profileRead.present === true
+    && Boolean(runnerResult)
+    && runnerResult.timedOut !== true
+    && adapterResultRead.present === true
+    && authorityClaims.length === 0;
+  const facetSeed = {
+    schemaVersion: RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA,
+    candidateId: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+    runtimeProofProfileSha256: profileRead.textSha256,
+    runtimeProfileAdapterResultSha256: adapterResultRead.textSha256,
+    strictRuntimeProofAccepted,
+    strictRuntimeProofId,
+    proofLedgerId,
+    authorityClaims,
+    blockingGaps,
+  };
+  const facetHash = contentHash(stableJson(facetSeed));
+  return {
+    schemaVersion: RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA,
+    schema_version: RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA,
+    proofAuthority: RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY,
+    proof_authority: RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY,
+    accepted: acceptedAsBridge,
+    acceptedAsRuntimeProfileProofBridge: acceptedAsBridge,
+    accepted_as_runtime_profile_proof_bridge: acceptedAsBridge,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    candidateId: candidate.id,
+    candidate_id: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    source_url: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    immutable_commit: candidate.immutableCommit,
+    runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+    runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+    runtimeProofProfileSha256: profileRead.textSha256,
+    runtime_proof_profile_sha256: profileRead.textSha256,
+    runtimeProofProfileByteLength: profileRead.byteLength,
+    runtime_proof_profile_byte_length: profileRead.byteLength,
+    runtimeProofProfileReadError: profileRead.error,
+    runtime_proof_profile_read_error: profileRead.error,
+    runtimeProfileProofRunner: 'gpu-hmr-runtime-profile-proof.mjs',
+    runtime_profile_proof_runner: 'gpu-hmr-runtime-profile-proof.mjs',
+    runnerAttempted: Boolean(runnerResult),
+    runner_attempted: Boolean(runnerResult),
+    runnerExitCode: runnerResult?.exitCode ?? null,
+    runner_exit_code: runnerResult?.exitCode ?? null,
+    runnerTimedOut: runnerResult?.timedOut === true,
+    runner_timed_out: runnerResult?.timedOut === true,
+    runnerTimeoutMs: runnerResult?.timeoutMs ?? runnerTimeoutMs,
+    runner_timeout_ms: runnerResult?.timeoutMs ?? runnerTimeoutMs,
+    runnerStdoutSha256: runnerResult ? contentHash(runnerResult.stdout ?? '') : null,
+    runner_stdout_sha256: runnerResult ? contentHash(runnerResult.stdout ?? '') : null,
+    runnerStderrSha256: runnerResult ? contentHash(runnerResult.stderr ?? '') : null,
+    runner_stderr_sha256: runnerResult ? contentHash(runnerResult.stderr ?? '') : null,
+    runnerStdoutTail: runnerResult ? tail(runnerResult.stdout ?? '', 2000) : null,
+    runner_stdout_tail: runnerResult ? tail(runnerResult.stdout ?? '', 2000) : null,
+    runnerStderrTail: runnerResult ? tail(runnerResult.stderr ?? '', 2000) : null,
+    runner_stderr_tail: runnerResult ? tail(runnerResult.stderr ?? '', 2000) : null,
+    runtimeProfileAdapterResultPath: repoRelativePath(resultPath),
+    runtime_profile_adapter_result_path: repoRelativePath(resultPath),
+    runtimeProfileAdapterResultPresent: adapterResultRead.present,
+    runtime_profile_adapter_result_present: adapterResultRead.present,
+    runtimeProfileAdapterResultSha256: adapterResultRead.textSha256,
+    runtime_profile_adapter_result_sha256: adapterResultRead.textSha256,
+    runtimeProfileAdapterResultByteLength: adapterResultRead.byteLength,
+    runtime_profile_adapter_result_byte_length: adapterResultRead.byteLength,
+    runtimeProfileAdapterResultReadError: adapterResultRead.error,
+    runtime_profile_adapter_result_read_error: adapterResultRead.error,
+    strictRuntimeProofAccepted,
+    strict_runtime_proof_accepted: strictRuntimeProofAccepted,
+    strictRuntimeProofId,
+    strict_runtime_proof_id: strictRuntimeProofId,
+    proofLedgerId,
+    proof_ledger_id: proofLedgerId,
+    adapterResultBlockingGaps: Array.isArray(adapterResult?.blockingGaps)
+      ? adapterResult.blockingGaps
+      : [],
+    adapter_result_blocking_gaps: Array.isArray(adapterResult?.blocking_gaps)
+      ? adapterResult.blocking_gaps
+      : [],
+    authorityClaims,
+    authority_claims: authorityClaims,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    facetHash,
+    facet_hash: facetHash,
+  };
+}
+
 async function runSelectedCandidate(
   candidate,
   { dryRun, timeoutMs, runnerTimeoutMs, sourceIntake, sourceIntakeTimeoutMs },
@@ -3249,6 +3483,10 @@ async function runSelectedCandidate(
       backend_family: candidate.backendFamily,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
+      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+      runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+      runtimeProofProfileMode: candidate.runtimeProofProfileMode,
+      runtime_proof_profile_mode: candidate.runtimeProofProfileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
       sourceUrl: candidate.sourceUrl,
@@ -3295,34 +3533,63 @@ async function runSelectedCandidate(
       sourceIntakeEvidence?.gpuSourceSignalCount,
       sourceIntakeEvidence?.gpu_source_signal_count,
     );
+    const runtimeProfileProofBridge = await runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs });
+    const runtimeProfileProofBridgeAccepted =
+      runtimeProfileProofBridge?.acceptedAsRuntimeProfileProofBridge === true
+      || runtimeProfileProofBridge?.accepted_as_runtime_profile_proof_bridge === true;
+    const runtimeProfileStrictRuntimeProofAccepted =
+      runtimeProfileProofBridge?.strictRuntimeProofAccepted === true
+      || runtimeProfileProofBridge?.strict_runtime_proof_accepted === true;
     const buildMetadataGap = buildMetadataContentAccepted
       ? 'semantic_build_metadata_execution_missing'
       : (buildMetadataDiscoveryAccepted
         ? 'semantic_build_metadata_verification_missing'
         : 'build_metadata_unverified');
-    const blockingGaps = [
-      'runtime_profile_contract_missing',
+    const runtimeProfileBridgeGaps = runtimeProfileProofBridge
+      ? [
+        ...(Array.isArray(runtimeProfileProofBridge.blockingGaps)
+          ? runtimeProfileProofBridge.blockingGaps
+          : []),
+        ...(Array.isArray(runtimeProfileProofBridge.blocking_gaps)
+          ? runtimeProfileProofBridge.blocking_gaps
+          : []),
+      ]
+      : [];
+    const missingRuntimeGaps = runtimeProfileStrictRuntimeProofAccepted
+      ? ['cold_path_runtime_profile_proof_requires_matrix_ingestion']
+      : [
+        runtimeProfileProofBridgeAccepted ? null : 'runtime_profile_contract_missing',
+        'same_process_loader_unproven',
+        'epoch_publication_unproven',
+        'dispatch_trace_unproven',
+        'host_identity_unproven',
+        'output_oracle_unproven',
+        'strict_runtime_ledger_missing',
+        ...runtimeProfileBridgeGaps,
+      ];
+    const blockingGaps = uniqueSortedStrings([
       buildMetadataGap,
-      'same_process_loader_unproven',
-      'epoch_publication_unproven',
-      'dispatch_trace_unproven',
-      'host_identity_unproven',
-      'output_oracle_unproven',
-      'strict_runtime_ledger_missing',
-    ];
+      ...missingRuntimeGaps,
+    ]);
     if (!sourceTreeIntakeAccepted) {
       blockingGaps.unshift('source_tree_intake_missing');
     }
-    if (candidate.backendFamily !== 'real_rocm') {
+    if (candidate.backendFamily !== 'real_rocm' && !runtimeProfileProofBridge) {
       blockingGaps.unshift('local_backend_runner_unavailable');
     }
     return {
       candidateId: candidate.id,
-      status: 'unprofiled_arbitrary_project_cold_intake_refused',
+      status: runtimeProfileProofBridge
+        ? 'unprofiled_arbitrary_project_cold_intake_runtime_profile_bridged_refused'
+        : 'unprofiled_arbitrary_project_cold_intake_refused',
       backendFamily: candidate.backendFamily,
       backend_family: candidate.backendFamily,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
+      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+      runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+      runtimeProofProfileMode: candidate.runtimeProofProfileMode,
+      runtime_proof_profile_mode: candidate.runtimeProofProfileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
       directInputEvidence: candidate.directInputEvidence ?? null,
@@ -3361,6 +3628,12 @@ async function runSelectedCandidate(
         sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate ?? null,
       runtime_boundary_event_manifest_template:
         sourceIntakeEvidence?.runtime_boundary_event_manifest_template ?? null,
+      runtimeProfileProofBridgeAccepted,
+      runtime_profile_proof_bridge_accepted: runtimeProfileProofBridgeAccepted,
+      runtimeProfileStrictRuntimeProofAccepted,
+      runtime_profile_strict_runtime_proof_accepted: runtimeProfileStrictRuntimeProofAccepted,
+      runtimeProfileProofBridge,
+      runtime_profile_proof_bridge: runtimeProfileProofBridge,
       sourceIntakeEvidence,
       source_intake_evidence: sourceIntakeEvidence,
       blockingGaps,
@@ -3604,6 +3877,10 @@ function createManifest({
       backend_family: candidate.backendFamily,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
+      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+      runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+      runtimeProofProfileMode: candidate.runtimeProofProfileMode,
+      runtime_proof_profile_mode: candidate.runtimeProofProfileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
       directInputEvidence: candidate.directInputEvidence,
@@ -3631,6 +3908,10 @@ function createManifest({
       profile_path: candidate.profilePath,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
+      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+      runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+      runtimeProofProfileMode: candidate.runtimeProofProfileMode,
+      runtime_proof_profile_mode: candidate.runtimeProofProfileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
       directInputEvidence: candidate.directInputEvidence,
@@ -3928,6 +4209,58 @@ async function selfCheck() {
     )
   ) {
     throw new Error('random large-project cold-path direct candidate batch self-check failed');
+  }
+  const runtimeBridgeProfile = path.join(
+    'mcp/synthi-mcp/.gpu-hmr-test-logs/random-large-project-cold-path/self-check-runtime-profile.json',
+  );
+  const runtimeBridgeProfilePath = path.resolve(REPO_ROOT, runtimeBridgeProfile);
+  await mkdir(path.dirname(runtimeBridgeProfilePath), { recursive: true });
+  await writeFile(runtimeBridgeProfilePath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu.hmr.runtime_profile.v1',
+    id: 'random-cold-runtime-bridge-self-check',
+    adapter: {
+      family: 'random-cold-runtime-bridge-self-check',
+      proofRunner: 'profile-runner',
+      runnerKind: 'node-script',
+      runnerPath: 'mcp/synthi-mcp/scripts/fixtures/runtime-profile-external-adapter-smoke.mjs',
+    },
+    runtime: {
+      targetName: 'generic-target',
+      requiredKernels: ['generic_kernel'],
+      reload: {
+        kernelName: 'generic_kernel',
+        kernelSymbol: 'generic_kernel',
+      },
+    },
+    source: {
+      file: 'src/generic_device.hip',
+      before: 'return 1;',
+      after: 'return 2;',
+    },
+  }, null, 2)}\n`);
+  const runtimeBridgeCandidate = cleanCandidate({
+    id: 'direct-runtime-bridge-large',
+    backendFamily: 'unknown_gpu_project',
+    runtimeProofProfilePath: runtimeBridgeProfile,
+    sourceUrl: 'https://example.invalid/direct-runtime-bridge.git',
+    immutableCommit: '8888888888888888888888888888888888888888',
+  });
+  const runtimeBridgeFacet = await runRuntimeProfileProofBridge(runtimeBridgeCandidate, {
+    runnerTimeoutMs: 60000,
+  });
+  if (
+    runtimeBridgeCandidate.runtimeProofProfileRelativePath !== runtimeBridgeProfile.replace(/\\/g, '/')
+    || runtimeBridgeFacet?.schemaVersion !== RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA
+    || runtimeBridgeFacet?.proofAuthority !== RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY
+    || runtimeBridgeFacet?.acceptedForGpuHmr !== false
+    || runtimeBridgeFacet?.gpuHmrSuccess !== false
+    || runtimeBridgeFacet?.canSatisfyRuntimeProof !== false
+    || runtimeBridgeFacet?.acceptedAsRuntimeProfileProofBridge !== true
+    || runtimeBridgeFacet?.strictRuntimeProofAccepted !== false
+    || !runtimeBridgeFacet?.blockingGaps?.includes('runtime_profile_adapter_strict_runtime_proof_not_accepted')
+    || !runtimeBridgeFacet?.adapterResultBlockingGaps?.includes('runtime_profile_adapter_proof_path_missing')
+  ) {
+    throw new Error('random large-project cold-path runtime profile bridge self-check failed');
   }
   const spoofedDirectPool = await loadCandidates({
     candidatesJson: JSON.stringify([
@@ -4648,6 +4981,9 @@ async function main() {
     immutableCommit: args.immutableCommit ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_COMMIT,
     sourceId: args.sourceId ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID,
     backendFamily: args.backendFamily ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY,
+    runtimeProofProfilePath:
+      args.runtimeProofProfilePath
+      ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_RUNTIME_PROFILE_PATH,
     inputChannels: directInputChannelsFromArgsEnv(args),
   });
   const directCandidates = directCandidate ? [] : await loadDirectCandidates({
