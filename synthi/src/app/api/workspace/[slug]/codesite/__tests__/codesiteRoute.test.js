@@ -28,6 +28,7 @@ const {
     recordTransactionWrite: vi.fn(),
     getLineProvenance: vi.fn(),
     getSourceStateSince: vi.fn(),
+    listActiveTransactions: vi.fn(),
     listProjectMembers: vi.fn(),
     openTransaction: vi.fn(),
     preflightCodeSiteFsWrite: vi.fn(),
@@ -88,6 +89,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getSchemas',
     'getSourceStateSince',
     'getTransaction',
+    'listActiveTransactions',
     'listProjectMembers',
     'listProjects',
     'openTransaction',
@@ -135,6 +137,7 @@ describe('CodeSite catch-all route', () => {
     ));
     delete process.env.COLLAB_SERVER_URL;
     delete process.env.SYNTHI_CODESITE_API_BASE_URL;
+    delete process.env.COLLAB_INTERNAL_TOKEN;
   });
 
   it('lists projects through the read-gated projects endpoint', async () => {
@@ -147,6 +150,55 @@ describe('CodeSite catch-all route', () => {
     expect(canReadScope).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-1' }),
       { scope: 'workspace', workspaceSlug: 'acme' },
+    );
+  });
+
+  it('lists active transactions through the shared control-plane endpoint', async () => {
+    controlPlane.listActiveTransactions.mockResolvedValue([
+      {
+        id: 'txn-1',
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        actorUserId: 'user-1',
+        effectiveUserId: 'user-1',
+        status: 'open',
+      },
+      {
+        id: 'txn-blocked',
+        mutationLeaseId: 'lease-2',
+        agentSessionId: 'agent-2',
+        actorUserId: 'user-1',
+        effectiveUserId: 'user-1',
+        status: 'blocked',
+      },
+    ]);
+
+    const response = await GET(new Request('http://test/api/workspace/acme/codesite/transactions/active'), params(['transactions', 'active']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual({
+      activeTransactions: [
+        {
+          id: 'txn-1',
+          mutationLeaseId: 'lease-1',
+          agentSessionId: 'agent-1',
+          actorUserId: 'user-1',
+          effectiveUserId: 'user-1',
+          status: 'open',
+        },
+        {
+          id: 'txn-blocked',
+          mutationLeaseId: 'lease-2',
+          agentSessionId: 'agent-2',
+          actorUserId: 'user-1',
+          effectiveUserId: 'user-1',
+          status: 'blocked',
+        },
+      ],
+    });
+    expect(controlPlane.listActiveTransactions).toHaveBeenCalledWith(
+      'acme',
+      expect.objectContaining({ userId: 'user-1' }),
     );
   });
 
@@ -170,6 +222,7 @@ describe('CodeSite catch-all route', () => {
 
   it('notifies collab when a CodeSite transaction opens', async () => {
     process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    process.env.COLLAB_INTERNAL_TOKEN = 'collab-internal-test-token';
     controlPlane.openTransaction.mockResolvedValue({
       id: 'txn-1',
       mutationLeaseId: 'lease-1',
@@ -202,6 +255,7 @@ describe('CodeSite catch-all route', () => {
           'content-type': 'application/json',
           'x-user-id': 'user-1',
           'x-codesite-control-plane-url': 'http://app.test/api/workspace/acme/codesite',
+          'x-collab-internal-token': 'collab-internal-test-token',
         }),
       }),
     );
@@ -218,10 +272,12 @@ describe('CodeSite catch-all route', () => {
     });
     fetchSpy.mockRestore();
     delete process.env.COLLAB_SERVER_URL;
+    delete process.env.COLLAB_INTERNAL_TOKEN;
   });
 
   it('notifies collab when a CodeSite transaction closes through commit', async () => {
     process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    process.env.COLLAB_INTERNAL_TOKEN = 'collab-internal-test-token';
     controlPlane.commitTransaction.mockResolvedValue({
       decision: { ok: true },
       transaction: {
@@ -256,7 +312,12 @@ describe('CodeSite catch-all route', () => {
     });
     expect(fetchSpy).toHaveBeenCalledWith(
       new URL('http://collab.test/codesite/activity/acme'),
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'x-collab-internal-token': 'collab-internal-test-token',
+        }),
+      }),
     );
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({
       event: 'transaction_committed',
@@ -271,10 +332,12 @@ describe('CodeSite catch-all route', () => {
     });
     fetchSpy.mockRestore();
     delete process.env.COLLAB_SERVER_URL;
+    delete process.env.COLLAB_INTERNAL_TOKEN;
   });
 
   it('keeps collab activity active when commit validation blocks landing', async () => {
     process.env.COLLAB_SERVER_URL = 'http://collab.test';
+    process.env.COLLAB_INTERNAL_TOKEN = 'collab-internal-test-token';
     controlPlane.commitTransaction.mockResolvedValue({
       decision: { ok: false, reasonCodes: ['repo_snapshot_changed'] },
       transaction: {
@@ -316,6 +379,7 @@ describe('CodeSite catch-all route', () => {
     });
     fetchSpy.mockRestore();
     delete process.env.COLLAB_SERVER_URL;
+    delete process.env.COLLAB_INTERNAL_TOKEN;
   });
 
   it('keeps project creation write-gated for plain workspace members', async () => {

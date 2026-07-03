@@ -94,6 +94,23 @@ function activeWorkspaceRuntimeBlocked(slug, userId, reason) {
   return error;
 }
 
+async function refreshActiveWorkspaceAuthority(slug, context = null) {
+  try {
+    await codeSiteActivityRegistry.refreshWorkspaceFromControlPlane(slug, {
+      controlPlaneUrl: context?.controlPlaneUrl,
+      controlPlaneTrusted: context?.controlPlaneTrusted,
+      authToken: context?.authToken,
+      cookie: context?.cookie,
+      requireAuthority: true,
+    });
+  } catch (error) {
+    const blocked = activeWorkspaceRuntimeBlocked(slug, context?.effectiveUserId || '', 'active_authority_unavailable');
+    blocked.status = 503;
+    blocked.details.authorityError = error.code || error.message;
+    throw blocked;
+  }
+}
+
 async function ensureRuntimeFilesystem({
   workspaceSlug,
   filesystemUserId = '',
@@ -111,11 +128,7 @@ async function ensureRuntimeFilesystem({
   const userId = normalize(filesystemUserId);
   const activeCodeSiteContext = codeSiteContextFromOptions({ codesiteContext, codeSiteContext });
   if (activeCodeSiteContext?.active) {
-    codeSiteActivityRegistry.recordCodeSiteContext({
-      ...activeCodeSiteContext,
-      workspaceSlug: activeCodeSiteContext.workspaceSlug || slug,
-      effectiveUserId: activeCodeSiteContext.effectiveUserId || userId || null,
-    }, { source: 'runtime_filesystem_context' });
+    await refreshActiveWorkspaceAuthority(slug, activeCodeSiteContext);
     const existing = await existingCodeSiteRuntimeFilesystem(slug, userId, reason);
     if (pin && runtimeScope) {
       pinRuntimeFilesystem(runtimeScope, slug, userId);
@@ -123,6 +136,7 @@ async function ensureRuntimeFilesystem({
     return existing;
   }
 
+  await refreshActiveWorkspaceAuthority(slug, null);
   if (codeSiteActivityRegistry.isWorkspaceActive(slug)) {
     throw activeWorkspaceRuntimeBlocked(slug, userId, reason);
   }

@@ -8,6 +8,10 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
+const {
+  configuredControlPlaneBaseUrl,
+  trustedControlPlaneBaseUrl,
+} = require('./codesiteControlPlaneTrust');
 
 const MAX_INLINE_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_DIFF_BYTES = 64 * 1024;
@@ -283,7 +287,6 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     hasCodeSitePayload ||
     Object.keys(payload).length > 0,
   );
-  codeSiteActivityRegistry.recordCodeSiteContext(context, { source: 'collab_request_context' });
   return context;
 }
 
@@ -879,6 +882,7 @@ function evaluateCodeSiteDurableContext(context, options = {}) {
   if (!context?.active || context.mode === 'monitor') return null;
   const reasonCodes = [];
   reasonCodes.push(...asArray(context.hydrationFailure?.reasonCodes));
+  if (hasUntrustedControlPlaneUrl(context)) reasonCodes.push('codesite_control_plane_url_untrusted');
   if (!context.transactionId) reasonCodes.push('codesite_transaction_required');
   if (!resolveControlPlaneBaseUrl(context)) reasonCodes.push('codesite_control_plane_url_required');
   if (typeof (options.fetch || global.fetch) !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
@@ -902,6 +906,7 @@ async function authoritativeCodeSiteContext(context, options = {}) {
   const fetchImpl = options.fetch || global.fetch;
   const baseUrl = resolveControlPlaneBaseUrl(base);
   const reasonCodes = [];
+  if (hasUntrustedControlPlaneUrl(base)) reasonCodes.push('codesite_control_plane_url_untrusted');
   if (!baseUrl) reasonCodes.push('codesite_control_plane_url_required');
   if (typeof fetchImpl !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
   if (reasonCodes.length) return withHydrationFailure(base, reasonCodes);
@@ -928,6 +933,8 @@ async function authoritativeCodeSiteContext(context, options = {}) {
       authoritative: true,
       authoritativeSource: 'control_plane_transaction',
       authoritativeTransactionStatus: transaction.status || null,
+      controlPlaneUrl: baseUrl,
+      controlPlaneTrusted: true,
       mutationLeaseId: transaction.mutationLeaseId || base.mutationLeaseId || null,
       agentSessionId: transaction.agentSessionId || base.agentSessionId || null,
       allowedPaths,
@@ -954,6 +961,7 @@ async function authoritativeCodeSiteReadContext(context, options = {}) {
   const fetchImpl = options.fetch || global.fetch;
   const baseUrl = resolveControlPlaneBaseUrl(base);
   const reasonCodes = [];
+  if (hasUntrustedControlPlaneUrl(base)) reasonCodes.push('codesite_control_plane_url_untrusted');
   if (!baseUrl) reasonCodes.push('codesite_control_plane_url_required');
   if (typeof fetchImpl !== 'function') reasonCodes.push('codesite_control_plane_fetch_unavailable');
   if (reasonCodes.length) return withHydrationFailure(base, reasonCodes);
@@ -973,6 +981,8 @@ async function authoritativeCodeSiteReadContext(context, options = {}) {
       authoritative: true,
       authoritativeSource: 'control_plane_transaction_read',
       authoritativeTransactionStatus: transaction.status || null,
+      controlPlaneUrl: baseUrl,
+      controlPlaneTrusted: true,
       mutationLeaseId: transaction.mutationLeaseId || base.mutationLeaseId || null,
       agentSessionId: transaction.agentSessionId || base.agentSessionId || null,
       blockedPaths: parsePatternList(base.blockedPaths),
@@ -2015,14 +2025,20 @@ function safeSegment(value) {
   return String(value || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || 'unknown';
 }
 
-function resolveControlPlaneBaseUrl(context) {
-  const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
-  if (explicit) {
-    return trimTrailingSlash(String(explicit).replace('{workspace_slug}', encodeURIComponent(context.workspaceSlug || '')));
+function hasUntrustedControlPlaneUrl(context = {}) {
+  if (!context.controlPlaneUrl) return false;
+  return !trustedControlPlaneBaseUrl(context.controlPlaneUrl, context.workspaceSlug || '', {
+    controlPlaneTrusted: context.controlPlaneTrusted,
+  });
+}
+
+function resolveControlPlaneBaseUrl(context = {}) {
+  if (context.controlPlaneUrl) {
+    return trustedControlPlaneBaseUrl(context.controlPlaneUrl, context.workspaceSlug || '', {
+      controlPlaneTrusted: context.controlPlaneTrusted,
+    });
   }
-  const appBase = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL;
-  if (!appBase || !context.workspaceSlug) return null;
-  return `${trimTrailingSlash(appBase)}/api/workspace/${encodeURIComponent(context.workspaceSlug)}/codesite`;
+  return configuredControlPlaneBaseUrl(context.workspaceSlug || '');
 }
 
 async function readJsonBody(response) {
@@ -2033,10 +2049,6 @@ async function readJsonBody(response) {
   } catch (_) {
     return { text };
   }
-}
-
-function trimTrailingSlash(value) {
-  return String(value || '').replace(/\/+$/, '');
 }
 
 function asArray(value) {

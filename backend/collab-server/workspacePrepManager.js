@@ -123,16 +123,30 @@ function workspacePrepIsolationError(slug, userId, reason, context = null) {
   return error;
 }
 
-function assertWorkspacePrepAllowed(slug, userId, options = {}) {
+async function refreshWorkspacePrepAuthority(slug, context = null) {
+  try {
+    await codeSiteActivityRegistry.refreshWorkspaceFromControlPlane(slug, {
+      controlPlaneUrl: context?.controlPlaneUrl,
+      controlPlaneTrusted: context?.controlPlaneTrusted,
+      authToken: context?.authToken,
+      cookie: context?.cookie,
+      requireAuthority: true,
+    });
+  } catch (error) {
+    const blocked = workspacePrepIsolationError(slug, context?.effectiveUserId || null, 'active_authority_unavailable', context);
+    blocked.status = 503;
+    blocked.details.authorityError = error.code || error.message;
+    throw blocked;
+  }
+}
+
+async function assertWorkspacePrepAllowed(slug, userId, options = {}) {
   const context = codeSiteContextFromOptions(options);
   if (context?.active) {
-    codeSiteActivityRegistry.recordCodeSiteContext({
-      ...context,
-      workspaceSlug: context.workspaceSlug || slug,
-      effectiveUserId: context.effectiveUserId || userId || null,
-    }, { source: 'workspace_prep_context' });
+    await refreshWorkspacePrepAuthority(slug, context);
     throw workspacePrepIsolationError(slug, userId, 'active_request_context', context);
   }
+  if (slug) await refreshWorkspacePrepAuthority(slug, context);
   if (slug && codeSiteActivityRegistry.isWorkspaceActive(slug)) {
     throw workspacePrepIsolationError(slug, userId, options.reason || 'active_workspace_transaction', context);
   }
@@ -187,7 +201,7 @@ async function loadState(state) {
 }
 
 async function planScope(slug, userId) {
-  assertWorkspacePrepAllowed(slug, userId, { reason: 'workspace_prep_plan' });
+  await assertWorkspacePrepAllowed(slug, userId, { reason: 'workspace_prep_plan' });
   await repoCache.acquire(slug, userId);
   try {
     const repoPath = gitService.getEffectiveRepoPath(slug, userId);
@@ -269,7 +283,7 @@ async function runQueuedPlan(state) {
   if (!plan) return;
   state.queuedPlan = null;
   try {
-    assertWorkspacePrepAllowed(state.slug, state.userId, { reason: 'workspace_prep_queue_start' });
+    await assertWorkspacePrepAllowed(state.slug, state.userId, { reason: 'workspace_prep_queue_start' });
   } catch (error) {
     state.lastAttemptAt = Date.now();
     markQueuedPlanBlocked(state, plan, error);
@@ -317,7 +331,7 @@ async function runQueuedPlan(state) {
       const task = plan.tasks[index];
       const taskStatus = state.tasks[index];
       try {
-        assertWorkspacePrepAllowed(state.slug, state.userId, { reason: 'workspace_prep_task' });
+        await assertWorkspacePrepAllowed(state.slug, state.userId, { reason: 'workspace_prep_task' });
       } catch (error) {
         taskStatus.status = 'blocked';
         taskStatus.message = error.message;
@@ -396,7 +410,7 @@ async function getWorkspacePrepStatus(slug, userId) {
 }
 
 async function ensureWorkspacePrepared(slug, userId, options = {}) {
-  assertWorkspacePrepAllowed(slug, userId, options);
+  await assertWorkspacePrepAllowed(slug, userId, options);
   const { force = false, trigger = 'workspace_load' } = options;
   const state = getState(slug, userId);
   await loadState(state);

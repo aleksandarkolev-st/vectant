@@ -1552,6 +1552,35 @@ export async function getTransaction(workspaceSlug, transactionId, actor = null)
   return transactionProjection(transaction);
 }
 
+const WORKSPACE_ACTIVE_TRANSACTION_STATUSES = ['open', 'validated', 'blocked'];
+
+export async function listActiveTransactions(workspaceSlug, actor = null) {
+  const transactions = await prisma.codeSiteMutationTransaction.findMany({
+    where: {
+      project: { workspaceSlug },
+      status: { in: WORKSPACE_ACTIVE_TRANSACTION_STATUSES },
+    },
+    include: {
+      project: {
+        include: {
+          members: true,
+          agentSessions: true,
+        },
+      },
+      mutationLease: true,
+      agentSession: true,
+    },
+    orderBy: { openedAt: 'desc' },
+  });
+  const visible = [];
+  for (const transaction of transactions) {
+    if (await actorCanAccessProject(transaction.project, actor, 'read')) {
+      visible.push(activeTransactionProjection(transaction));
+    }
+  }
+  return visible;
+}
+
 export async function recordTransactionRead(workspaceSlug, transactionId, body = {}, actor = null) {
   const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const path = normalizePath(body.path || body.filePath || body.file_path);
@@ -7345,6 +7374,21 @@ function transactionProjection(transaction) {
     assumptionRefs: parseJson(transaction.assumptionRefsJson, []),
     commitDecision: parseJson(transaction.commitDecisionJson, null),
     proofBundleDigest: transaction.proofBundleDigest,
+    openedAt: transaction.openedAt,
+    closedAt: transaction.closedAt,
+  };
+}
+
+function activeTransactionProjection(transaction) {
+  const projected = transactionProjection(transaction);
+  return {
+    ...projected,
+    workspaceSlug: transaction.project?.workspaceSlug || null,
+    mutationLeaseId: transaction.mutationLeaseId,
+    agentSessionId: transaction.agentSessionId,
+    actorUserId: transaction.agentSession?.ownerUserId || null,
+    effectiveUserId: transaction.agentSession?.ownerUserId || null,
+    displayCallsign: transaction.mutationLease?.displayCallsign || transaction.agentSession?.displayCallsign || null,
     openedAt: transaction.openedAt,
     closedAt: transaction.closedAt,
   };

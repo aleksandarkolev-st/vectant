@@ -38,7 +38,15 @@ const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
-const { assertCodeSiteWorkspaceMutationAllowed } = require('./codesiteActiveBoundary');
+const { assertCodeSiteWorkspaceMutationAllowedAsync } = require('./codesiteActiveBoundary');
+const {
+  configuredControlPlaneBaseUrl,
+  trustedControlPlaneBaseUrl,
+} = require('./codesiteControlPlaneTrust');
+const {
+  codeSiteActivityInternalToken,
+  handleCodeSiteActivityRequest,
+} = require('./codesiteActivityEndpoint');
 const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
@@ -455,8 +463,8 @@ function enforceOrigin(req, res) {
     // Allow if an explicit cross-service bypass header is configured, to
     // support service-to-service calls in trusted networks.
     const internalToken = req.headers['x-collab-internal-token'];
-    if (internalToken && process.env.COLLAB_INTERNAL_TOKEN &&
-        internalToken === process.env.COLLAB_INTERNAL_TOKEN) {
+    const expectedInternalToken = codeSiteActivityInternalToken();
+    if (internalToken && expectedInternalToken && internalToken === expectedInternalToken) {
       return true;
     }
     // When no allowlist is configured we keep legacy permissive behaviour.
@@ -865,15 +873,13 @@ function quarantineReplayAppliedRecord(item) {
 }
 
 function codeSiteControlPlaneBaseUrl(context = {}) {
-  const explicit = context.controlPlaneUrl || process.env.SYNTHI_CODESITE_API_BASE_URL;
-  if (explicit) {
-    return String(explicit)
-      .replace('{workspace_slug}', encodeURIComponent(context.workspaceSlug || ''))
-      .replace(/\/+$/, '');
+  const workspaceSlug = context.workspaceSlug || context.slug || '';
+  if (context.controlPlaneUrl) {
+    return trustedControlPlaneBaseUrl(context.controlPlaneUrl, workspaceSlug, {
+      controlPlaneTrusted: context.controlPlaneTrusted,
+    });
   }
-  const appBase = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL;
-  if (!appBase || !context.workspaceSlug) return null;
-  return `${String(appBase).replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(context.workspaceSlug)}/codesite`;
+  return configuredControlPlaneBaseUrl(workspaceSlug);
 }
 
 async function recordCodeSiteQuarantineTimelineEvent(context, eventType, body = {}) {
@@ -1383,8 +1389,13 @@ function codeSiteEnforceOptions(context, options = {}) {
 }
 
 async function runCodeSiteMutationBoundary(context, operation, applyFn, options = {}) {
-  assertCodeSiteWorkspaceMutationAllowed(options.workspaceSlug || context?.workspaceSlug, context, operation, {
+  await assertCodeSiteWorkspaceMutationAllowedAsync(options.workspaceSlug || context?.workspaceSlug, context, operation, {
     surface: options.surface || operation.operation || operation.kind,
+    controlPlaneUrl: options.controlPlaneUrl || context?.controlPlaneUrl,
+    controlPlaneTrusted: options.controlPlaneTrusted || context?.controlPlaneTrusted,
+    fetch: options.fetch || options.codesiteFetch || options.codeSiteFetch,
+    authToken: options.authToken || context?.authToken,
+    cookie: options.cookie || context?.cookie,
   });
   const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
   return codesiteFs.run(operation, applyFn, options);
@@ -1407,8 +1418,13 @@ function codeSiteProvisioningAttempt(kind) {
 }
 
 async function enforceCodeSiteProvisioningAllowed(context, kind, options = {}) {
-  assertCodeSiteWorkspaceMutationAllowed(options.workspaceSlug || context?.workspaceSlug, context, codeSiteProvisioningAttempt(kind), {
+  await assertCodeSiteWorkspaceMutationAllowedAsync(options.workspaceSlug || context?.workspaceSlug, context, codeSiteProvisioningAttempt(kind), {
     surface: kind,
+    controlPlaneUrl: options.controlPlaneUrl || context?.controlPlaneUrl,
+    controlPlaneTrusted: options.controlPlaneTrusted || context?.controlPlaneTrusted,
+    fetch: options.fetch || options.codesiteFetch || options.codeSiteFetch,
+    authToken: options.authToken || context?.authToken,
+    cookie: options.cookie || context?.cookie,
   });
   if (!context?.active) return null;
   return enforceCodeSiteWriteAllowed(
@@ -1479,20 +1495,6 @@ async function readJsonRequestBody(req) {
 function writeJsonResponse(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
-}
-
-function codeSiteActivityFromRequest(slug, payload = {}, req = null) {
-  return {
-    ...payload,
-    workspaceSlug: slug,
-    transactionId: payload.transactionId || payload.transaction_id || payload.id,
-    mutationLeaseId: payload.mutationLeaseId || payload.mutation_lease_id || payload.leaseId || payload.lease_id,
-    agentSessionId: payload.agentSessionId || payload.agent_session_id,
-    actorUserId: payload.actorUserId || payload.actor_user_id || payload.userId || req?.headers?.['x-user-id'] || null,
-    effectiveUserId: payload.effectiveUserId || payload.effective_user_id || payload.filesystemUserId || payload.filesystem_user_id || null,
-    status: payload.status || (payload.event === 'transaction_opened' ? 'open' : undefined),
-    source: payload.source || 'codesite_route_activity',
-  };
 }
 
 function runtimeCodeSiteEnv(context, processAncestry) {
@@ -2397,39 +2399,11 @@ const server = http.createServer(async (req, res) => {
   const codeSiteActivityMatch = new URL(req.url, `http://${req.headers.host}`).pathname.match(/^\/codesite\/activity\/([^/]+)$/);
   if (codeSiteActivityMatch) {
     const slug = decodeURIComponent(codeSiteActivityMatch[1]);
-    if (req.method === 'GET') {
-      writeJsonResponse(res, 200, {
-        workspaceSlug: slug,
-        activeTransactions: codeSiteActivityRegistry.activeTransactionsForWorkspace(slug),
-      });
-      return;
-    }
-    if (req.method === 'POST') {
-      let payload;
-      try {
-        payload = await readJsonRequestBody(req);
-      } catch (_) {
-        writeJsonResponse(res, 400, { error: 'invalid_json_body' });
-        return;
-      }
-      const activity = codeSiteActivityFromRequest(slug, payload, req);
-      const status = String(activity.status || '').toLowerCase();
-      const event = String(payload.event || payload.eventType || payload.event_type || '').toLowerCase();
-      const closesTransaction = ['transaction_committed', 'transaction_aborted', 'transaction_closed', 'closed'].includes(event)
-        || (status && !codeSiteActivityRegistry.isWritableTransactionStatus(status));
-      const record = closesTransaction
-        ? codeSiteActivityRegistry.markTransactionClosed(activity, { source: activity.source })
-        : codeSiteActivityRegistry.markTransactionActive(activity, { source: activity.source });
-      writeJsonResponse(res, 200, {
-        ok: true,
-        workspaceSlug: slug,
-        action: closesTransaction ? 'closed' : 'active',
-        record,
-        activeTransactions: codeSiteActivityRegistry.activeTransactionsForWorkspace(slug),
-      });
-      return;
-    }
-    writeJsonResponse(res, 405, { error: 'method_not_allowed', allow: ['GET', 'POST'] });
+    await handleCodeSiteActivityRequest(slug, req, res, {
+      activityRegistry: codeSiteActivityRegistry,
+      readJsonRequestBody,
+      writeJsonResponse,
+    });
     return;
   }
 

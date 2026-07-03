@@ -20,6 +20,31 @@ function patchGitService(overrides) {
   };
 }
 
+function withControlPlaneActiveList(workspaceSlug, activeTransactions, fn) {
+  const previousBaseUrl = process.env.SYNTHI_CODESITE_API_BASE_URL;
+  const previousFetch = global.fetch;
+  const calls = [];
+  process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://codesite.test/api/workspace/{workspace_slug}/codesite';
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    assert.equal(
+      String(url),
+      `http://codesite.test/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/transactions/active`,
+    );
+    return new Response(JSON.stringify({ activeTransactions }), { status: 200 });
+  };
+  return Promise.resolve()
+    .then(() => fn(calls))
+    .finally(() => {
+      if (previousBaseUrl === undefined) {
+        delete process.env.SYNTHI_CODESITE_API_BASE_URL;
+      } else {
+        process.env.SYNTHI_CODESITE_API_BASE_URL = previousBaseUrl;
+      }
+      global.fetch = previousFetch;
+    });
+}
+
 test('active CodeSite runtime filesystem refuses real repo provisioning before overlay launch', async () => {
   activityRegistry.resetRegistry();
   const calls = [];
@@ -36,19 +61,31 @@ test('active CodeSite runtime filesystem refuses real repo provisioning before o
     getEffectiveRepoPath: () => '/tmp/should-not-run',
   });
   try {
-    await assert.rejects(
-      () => ensureRuntimeFilesystem({
-        workspaceSlug: 'runtime-codesite-proof',
-        filesystemUserId: 'user-1',
-        reason: 'interactive_terminal',
-        codesiteContext: {
-          active: true,
-          transactionId: 'txn-1',
-          mutationLeaseId: 'lease-1',
-        },
-      }),
-      (error) => error.code === 'CODESITE_RUNTIME_FILESYSTEM_PROVISIONING_REQUIRED',
-    );
+    await withControlPlaneActiveList('runtime-codesite-proof', [{
+      id: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      status: 'open',
+    }], async () => {
+      await assert.rejects(
+        () => ensureRuntimeFilesystem({
+          workspaceSlug: 'runtime-codesite-proof',
+          filesystemUserId: 'user-1',
+          reason: 'interactive_terminal',
+          codesiteContext: {
+            active: true,
+            transactionId: 'txn-1',
+            mutationLeaseId: 'lease-1',
+            agentSessionId: 'agent-1',
+            actorUserId: 'user-1',
+            effectiveUserId: 'user-1',
+          },
+        }),
+        (error) => error.code === 'CODESITE_RUNTIME_FILESYSTEM_PROVISIONING_REQUIRED',
+      );
+    });
     assert.deepEqual(calls, []);
   } finally {
     activityRegistry.resetRegistry();
@@ -72,20 +109,32 @@ test('active CodeSite runtime filesystem reuses an already initialized repo with
     getEffectiveRepoPath: (slug, userId) => `/tmp/${slug}/${userId}`,
   });
   try {
-    const result = await ensureRuntimeFilesystem({
-      workspaceSlug: 'runtime-codesite-ready',
-      filesystemUserId: 'user-1',
-      reason: 'program_runtime_hybrid',
-      codesiteContext: {
-        active: true,
-        transactionId: 'txn-1',
-        mutationLeaseId: 'lease-1',
-      },
+    await withControlPlaneActiveList('runtime-codesite-ready', [{
+      id: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: 'agent-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      status: 'open',
+    }], async () => {
+      const result = await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-codesite-ready',
+        filesystemUserId: 'user-1',
+        reason: 'program_runtime_hybrid',
+        codesiteContext: {
+          active: true,
+          transactionId: 'txn-1',
+          mutationLeaseId: 'lease-1',
+          agentSessionId: 'agent-1',
+          actorUserId: 'user-1',
+          effectiveUserId: 'user-1',
+        },
+      });
+      assert.equal(result.path, '/tmp/runtime-codesite-ready/user-1');
+      assert.equal(result.created, false);
+      assert.equal(result.reusedExisting, true);
+      assert.equal(result.codeSiteProvisioningSkipped, true);
     });
-    assert.equal(result.path, '/tmp/runtime-codesite-ready/user-1');
-    assert.equal(result.created, false);
-    assert.equal(result.reusedExisting, true);
-    assert.equal(result.codeSiteProvisioningSkipped, true);
     assert.deepEqual(calls, []);
   } finally {
     activityRegistry.resetRegistry();
@@ -123,10 +172,60 @@ test('runtime filesystem blocks legacy hydration when workspace has a recorded a
       }),
       (error) => (
         error.code === 'CODESITE_RUNTIME_FILESYSTEM_ACTIVE_TRANSACTION'
-        && error.status === 409
+        && error.status === 503
+        && error.details.reason === 'active_authority_unavailable'
+        && error.details.authorityError === 'CODESITE_ACTIVITY_CONTROL_PLANE_UNAVAILABLE'
         && error.details.activeTransactions[0].transactionId === 'txn-registry'
       ),
     );
+    assert.deepEqual(calls, []);
+  } finally {
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});
+
+test('runtime filesystem reads active transaction authority before legacy hydration', async () => {
+  activityRegistry.resetRegistry();
+  const calls = [];
+  const restore = patchGitService({
+    initRepo: async (...args) => {
+      calls.push(['initRepo', ...args]);
+      return { success: true };
+    },
+    ensureUserRepo: async (...args) => {
+      calls.push(['ensureUserRepo', ...args]);
+      return { path: '/tmp/should-not-run', created: true };
+    },
+    getEffectiveRepoPath: (slug, userId) => `/tmp/${slug}/${userId || ''}`,
+  });
+  try {
+    await withControlPlaneActiveList('runtime-control-plane-guard', [{
+      id: 'txn-runtime-control',
+      transactionId: 'txn-runtime-control',
+      mutationLeaseId: 'lease-runtime-control',
+      agentSessionId: 'agent-runtime-control',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      status: 'open',
+    }], async (authorityCalls) => {
+      await assert.rejects(
+        () => ensureRuntimeFilesystem({
+          workspaceSlug: 'runtime-control-plane-guard',
+          filesystemUserId: 'user-1',
+          reason: 'ordinary_runtime',
+        }),
+        (error) => (
+          error.code === 'CODESITE_RUNTIME_FILESYSTEM_ACTIVE_TRANSACTION'
+          && error.status === 409
+          && error.details.activeTransactions[0].transactionId === 'txn-runtime-control'
+          && error.details.activeTransactions[0].authoritative === true
+        ),
+      );
+      assert.deepEqual(authorityCalls, [
+        'http://codesite.test/api/workspace/runtime-control-plane-guard/codesite/transactions/active',
+      ]);
+    });
     assert.deepEqual(calls, []);
   } finally {
     activityRegistry.resetRegistry();
@@ -149,13 +248,15 @@ test('inactive runtime filesystem keeps legacy hydration behavior', async () => 
     getEffectiveRepoPath: (slug, userId) => `/tmp/${slug}/${userId || ''}`,
   });
   try {
-    const result = await ensureRuntimeFilesystem({
-      workspaceSlug: 'runtime-legacy',
-      filesystemUserId: 'user-1',
-      reason: 'ordinary_runtime',
+    await withControlPlaneActiveList('runtime-legacy', [], async () => {
+      const result = await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-legacy',
+        filesystemUserId: 'user-1',
+        reason: 'ordinary_runtime',
+      });
+      assert.equal(result.path, '/tmp/runtime-legacy/user-1');
+      assert.equal(result.created, true);
     });
-    assert.equal(result.path, '/tmp/runtime-legacy/user-1');
-    assert.equal(result.created, true);
     assert.deepEqual(calls, [
       ['initRepo', 'runtime-legacy', null, 'user-1'],
       ['ensureUserRepo', 'runtime-legacy', 'user-1'],

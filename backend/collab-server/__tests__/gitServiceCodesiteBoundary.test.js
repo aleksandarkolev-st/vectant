@@ -22,7 +22,11 @@ function codeSiteContext(slug, overrides = {}) {
     workspaceSlug: slug,
     transactionId: 'txn-direct-1',
     mutationLeaseId: 'lease-direct-1',
+    agentSessionId: 'agent-direct-1',
+    actorUserId: 'user-1',
+    effectiveUserId: 'user-1',
     controlPlaneUrl: `http://codesite.test/api/workspace/${slug}/codesite`,
+    controlPlaneTrusted: true,
     allowedPaths: ['forged-client-path/**'],
     allowedTools: ['file_write', 'file_delete', 'file_rename'],
     evidenceRefs: ['context:proof'],
@@ -65,6 +69,7 @@ function createCodeSiteFetch({
   recordBodies = [],
   readBodies = [],
   commitBodies = [],
+  activeTransactions = null,
   proofBundle = null,
   commitResponse = null,
   commitStatus = 200,
@@ -72,6 +77,18 @@ function createCodeSiteFetch({
   const calls = [];
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
+    if (String(url).endsWith('/transactions/active')) {
+      return new Response(JSON.stringify({
+        activeTransactions: activeTransactions || [{
+          id: 'txn-direct-1',
+          mutationLeaseId: 'lease-direct-1',
+          agentSessionId: 'agent-direct-1',
+          actorUserId: 'user-1',
+          effectiveUserId: 'user-1',
+          status: 'open',
+        }],
+      }), { status: 200 });
+    }
     if (String(url).endsWith('/transactions/txn-direct-1')) {
       return new Response(JSON.stringify({
         transaction: {
@@ -136,12 +153,32 @@ function createCodeSiteFetch({
 
 async function withTempGitService(t, slug, userId, fn) {
   const previousBaseDir = gitService.baseDir;
+  const previousBaseUrl = process.env.SYNTHI_CODESITE_API_BASE_URL;
+  const previousFetch = global.fetch;
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitservice-codesite-'));
   gitService.baseDir = baseDir;
+  process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://codesite.test/api/workspace/{workspace_slug}/codesite';
+  global.fetch = async (url) => {
+    assert.strictEqual(
+      String(url),
+      `http://codesite.test/api/workspace/${encodeURIComponent(slug)}/codesite/transactions/active`,
+    );
+    return new Response(JSON.stringify({
+      activeTransactions: activityRegistry.activeTransactionsForWorkspace(slug),
+    }), { status: 200 });
+  };
   const repoPath = gitService.getEffectiveRepoPath(slug, userId);
+  activityRegistry.markTransactionClosed({ workspaceSlug: slug });
   await fs.mkdir(repoPath, { recursive: true });
   t.after(async () => {
+    activityRegistry.markTransactionClosed({ workspaceSlug: slug });
     gitService.baseDir = previousBaseDir;
+    if (previousBaseUrl === undefined) {
+      delete process.env.SYNTHI_CODESITE_API_BASE_URL;
+    } else {
+      process.env.SYNTHI_CODESITE_API_BASE_URL = previousBaseUrl;
+    }
+    global.fetch = previousFetch;
     await fs.rm(baseDir, { recursive: true, force: true });
     await fs.rm(path.join(config.REPO_CACHE_DIR, slug), { recursive: true, force: true });
   });
@@ -196,6 +233,7 @@ test('direct gitService.writeFile denies contextless writes while CodeSite trans
       workspaceSlug: slug,
       transactionId: 'txn-active',
       mutationLeaseId: 'lease-active',
+      source: 'next_codesite_route',
       status: 'open',
     });
 
@@ -222,6 +260,10 @@ test('direct gitService.writeFile accepts matching CodeSite context while regist
       workspaceSlug: slug,
       transactionId: 'txn-direct-1',
       mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
       status: 'open',
     });
     const recordBodies = [];
@@ -248,6 +290,7 @@ test('direct gitService git config mutations deny contextless active workspaces 
       workspaceSlug: slug,
       transactionId: 'txn-active',
       mutationLeaseId: 'lease-active',
+      source: 'next_codesite_route',
       status: 'open',
     });
 
@@ -276,6 +319,10 @@ test('direct gitService git config mutations accept matching CodeSite context wh
       workspaceSlug: slug,
       transactionId: 'txn-direct-1',
       mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
       status: 'open',
     });
     const recordBodies = [];
@@ -307,6 +354,7 @@ test('direct gitService git refs mutations deny contextless active workspaces be
       workspaceSlug: slug,
       transactionId: 'txn-active',
       mutationLeaseId: 'lease-active',
+      source: 'next_codesite_route',
       status: 'open',
     });
 
@@ -335,6 +383,10 @@ test('direct gitService git refs mutations accept matching CodeSite context whil
       workspaceSlug: slug,
       transactionId: 'txn-direct-1',
       mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
       status: 'open',
     });
     const recordBodies = [];
@@ -399,6 +451,7 @@ test('direct gitService remaining refs and config mutators deny contextless acti
         workspaceSlug: slug,
         transactionId: 'txn-active',
         mutationLeaseId: 'lease-active',
+        source: 'next_codesite_route',
         status: 'open',
       });
 
@@ -427,6 +480,10 @@ test('direct gitService remote update and removal record git_config boundaries w
       workspaceSlug: slug,
       transactionId: 'txn-direct-1',
       mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
       status: 'open',
     });
     const recordBodies = [];
@@ -479,6 +536,10 @@ test('direct gitService refs mutators record git_refs boundaries while active', 
       workspaceSlug: slug,
       transactionId: 'txn-direct-1',
       mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
       status: 'open',
     });
     const recordBodies = [];
@@ -532,6 +593,10 @@ test('direct gitService push requires git_config clearance before auto-adding wo
       workspaceSlug: slug,
       transactionId: 'txn-direct-1',
       mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
       status: 'open',
     });
     const recordBodies = [];
@@ -675,7 +740,7 @@ test('direct gitService.commit without CodeSite context stays a plain user commi
     await initTrackedRepo(repoPath, { 'src/app.js': 'before\n' });
     await fs.writeFile(path.join(repoPath, 'src/app.js'), 'plain after\n');
     await git(repoPath, ['add', 'src/app.js']);
-    const { fetch, calls } = createCodeSiteFetch();
+    const { fetch, calls } = createCodeSiteFetch({ activeTransactions: [] });
 
     await gitService.commit(slug, 'Plain user commit', userId, false, null, { fetch });
 
@@ -683,7 +748,7 @@ test('direct gitService.commit without CodeSite context stays a plain user commi
     assert.match(message, /Plain user commit/);
     assert.doesNotMatch(message, /CodeSite-Transaction:/);
     assert.doesNotMatch(message, /CodeSite-Proof-Digest:/);
-    assert.strictEqual(calls.length, 0);
+    assert.deepStrictEqual(calls.map((call) => String(call.url).split('/codesite/')[1]), ['transactions/active']);
   });
 });
 
@@ -1624,6 +1689,18 @@ test('nested CodeSite options can override authoritative hydration', async (t) =
     const calls = [];
     const fetch = async (url, options = {}) => {
       calls.push({ url, options });
+      if (String(url).endsWith('/transactions/active')) {
+        return new Response(JSON.stringify({
+          activeTransactions: [{
+            id: 'txn-direct-1',
+            mutationLeaseId: 'lease-direct-1',
+            agentSessionId: 'agent-direct-1',
+            actorUserId: 'user-1',
+            effectiveUserId: 'user-1',
+            status: 'open',
+          }],
+        }), { status: 200 });
+      }
       if (String(url).endsWith('/transactions/txn-direct-1')) {
         return new Response(JSON.stringify({ error: 'unexpected_hydration' }), { status: 500 });
       }

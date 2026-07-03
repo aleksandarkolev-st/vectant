@@ -27,6 +27,16 @@ const {
   resolveCodeSiteRepoPath,
 } = require('../codesiteFs');
 
+const previousCodeSiteApiBaseUrl = process.env.SYNTHI_CODESITE_API_BASE_URL;
+process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://app.test/api/workspace/{workspace_slug}/codesite';
+test.after(() => {
+  if (previousCodeSiteApiBaseUrl === undefined) {
+    delete process.env.SYNTHI_CODESITE_API_BASE_URL;
+  } else {
+    process.env.SYNTHI_CODESITE_API_BASE_URL = previousCodeSiteApiBaseUrl;
+  }
+});
+
 test('normalizes repo-relative paths and rejects traversal', () => {
   assert.strictEqual(normalizeRepoRelativePath('src\\app/page.jsx'), 'src/app/page.jsx');
   assert.strictEqual(normalizeRepoRelativePath('/src/app/page.jsx'), 'src/app/page.jsx');
@@ -147,8 +157,7 @@ test('empty legacy requests stay inactive but declared CodeSite requests fail cl
         kind: 'write-file',
       }, { fetch: async () => new Response('{}') }),
       (error) => error.code === 'CODESITE_WRITE_DENIED'
-        && error.event.details.reason_codes.includes('codesite_transaction_required')
-        && error.event.details.reason_codes.includes('codesite_control_plane_url_required'),
+        && error.event.details.reason_codes.includes('codesite_transaction_required'),
     );
   }
 });
@@ -971,8 +980,7 @@ test('enforcement fails closed without durable CodeSite control-plane context', 
     }, { fetch: async () => new Response('{}') }),
     (error) => error.code === 'CODESITE_WRITE_DENIED'
       && error.event.type === 'write_denied'
-      && error.event.details.reason_codes.includes('codesite_transaction_required')
-      && error.event.details.reason_codes.includes('codesite_control_plane_url_required'),
+      && error.event.details.reason_codes.includes('codesite_transaction_required'),
   );
 });
 

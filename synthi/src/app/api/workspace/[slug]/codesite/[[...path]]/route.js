@@ -28,6 +28,7 @@ import {
   getSchemas,
   getSourceStateSince,
   getTransaction,
+  listActiveTransactions,
   listProjectMembers,
   listProjects,
   openTransaction,
@@ -124,6 +125,10 @@ export async function GET(request, { params }) {
         includeContent: search.get('include') === 'content',
         ...(Number.isFinite(maxContentBytes) ? { maxContentBytes } : {}),
       }, access.actor));
+    }
+
+    if (route[0] === 'transactions' && route[1] === 'active' && route.length === 2) {
+      return okJson({ activeTransactions: await listActiveTransactions(slug, access.actor) });
     }
 
     if (route[0] === 'transactions' && route.length === 2) {
@@ -664,14 +669,17 @@ async function notifyCollabCodeSiteActivity(request, slug, payload = {}) {
   if (!collabUrl || typeof fetch !== 'function') return null;
   const requestUrl = new URL(request.url);
   const targetUrl = new URL(`/codesite/activity/${encodeURIComponent(slug)}`, `${collabUrl}/`);
+  const internalToken = process.env.COLLAB_INTERNAL_TOKEN || process.env.SYNTHI_COLLAB_INTERNAL_TOKEN || '';
+  const headers = {
+    'content-type': 'application/json',
+    'x-user-id': payload.actorUserId || '',
+    'x-codesite-control-plane-url': codeSiteApiBaseUrl(request, requestUrl, slug),
+  };
+  if (internalToken) headers['x-collab-internal-token'] = internalToken;
   try {
     const response = await fetch(targetUrl, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': payload.actorUserId || '',
-        'x-codesite-control-plane-url': codeSiteApiBaseUrl(request, requestUrl, slug),
-      },
+      headers,
       body: JSON.stringify({
         ...payload,
         workspaceSlug: slug,
