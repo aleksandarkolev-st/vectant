@@ -93,6 +93,42 @@ test('extracts CodeSite context from payload and headers', () => {
   assert.strictEqual(context.displayCallsign, 'CODEX-04');
 });
 
+test('extracts CodeSite context from runtime client codeSiteContext bodies', () => {
+  const context = codeSiteContextFromRequest({ headers: {} }, {
+    sessionId: 'program-session-1',
+    command: 'npm run dev',
+    codeSiteContext: {
+      transactionId: 'txn-runtime-1',
+      mutationLeaseId: 'lease-runtime-1',
+      displayCallsign: 'RUNTIME-07',
+      agentSessionId: 'agent-runtime-1',
+      agentProvider: 'codex',
+      agentRuntime: 'codex-cli',
+      allowedPaths: ['apps/web/**'],
+      blockedPaths: ['api/auth/**'],
+      allowedTools: ['program_runtime', 'terminal'],
+      processAncestry: ['runtimeClient', 'program-runtime'],
+      controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+    },
+  }, { workspaceSlug: 'acme', actorUserId: 'owner-1', effectiveUserId: 'fs-1' });
+
+  assert.strictEqual(context.active, true);
+  assert.strictEqual(context.transactionId, 'txn-runtime-1');
+  assert.strictEqual(context.mutationLeaseId, 'lease-runtime-1');
+  assert.strictEqual(context.displayCallsign, 'RUNTIME-07');
+  assert.strictEqual(context.agentSessionId, 'agent-runtime-1');
+  assert.strictEqual(context.agentProvider, 'codex');
+  assert.strictEqual(context.agentRuntime, 'codex-cli');
+  assert.deepStrictEqual(context.allowedPaths, ['apps/web/**']);
+  assert.deepStrictEqual(context.blockedPaths, ['api/auth/**']);
+  assert.deepStrictEqual(context.allowedTools, ['program_runtime', 'terminal']);
+  assert.deepStrictEqual(context.processAncestry, ['runtimeClient', 'program-runtime']);
+  assert.strictEqual(context.controlPlaneUrl, 'http://app.test/api/workspace/acme/codesite');
+  assert.strictEqual(context.actorUserId, 'owner-1');
+  assert.strictEqual(context.effectiveUserId, 'fs-1');
+  assert.strictEqual(context.managedAgent, true);
+});
+
 test('empty legacy requests stay inactive but declared CodeSite requests fail closed', async () => {
   const legacy = codeSiteContextFromRequest({ headers: {} }, {}, { workspaceSlug: 'acme' });
   assert.strictEqual(legacy.active, false);
@@ -101,6 +137,7 @@ test('empty legacy requests stay inactive but declared CodeSite requests fail cl
     codeSiteContextFromRequest({ headers: { 'x-codesite-required': '1' } }, {}, { workspaceSlug: 'acme' }),
     codeSiteContextFromRequest({ headers: { 'x-codesite-mode': 'enforce' } }, {}, { workspaceSlug: 'acme' }),
     codeSiteContextFromRequest({ headers: {} }, { codesite: {} }, { workspaceSlug: 'acme' }),
+    codeSiteContextFromRequest({ headers: {} }, { codeSiteContext: {} }, { workspaceSlug: 'acme' }),
   ]) {
     assert.strictEqual(context.active, true);
     await assert.rejects(

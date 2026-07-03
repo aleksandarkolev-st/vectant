@@ -166,8 +166,11 @@ function codeSitePathError(code, message) {
 
 function codeSiteContextFromRequest(req, data = {}, extra = {}) {
   const hasCodeSitePayload = Object.prototype.hasOwnProperty.call(data, 'codesite')
-    || Object.prototype.hasOwnProperty.call(data, 'codeSite');
-  const payload = data.codesite || data.codeSite || {};
+    || Object.prototype.hasOwnProperty.call(data, 'codeSite')
+    || Object.prototype.hasOwnProperty.call(data, 'codesiteContext')
+    || Object.prototype.hasOwnProperty.call(data, 'codeSiteContext')
+    || Object.prototype.hasOwnProperty.call(data, 'code_site_context');
+  const payload = data.codesite || data.codeSite || data.codesiteContext || data.codeSiteContext || data.code_site_context || {};
   const header = (name) => req?.headers?.[name] || req?.headers?.[name.toLowerCase()];
   const explicitMode = value(payload.mode, header('x-codesite-mode'));
   const required = truthy(value(
