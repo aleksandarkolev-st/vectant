@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { deflateSync } from 'node:zlib';
 import {
   buildComputeOracleArtifactsFromByteEvidence,
   buildRuntimeBoundaryInputEvidence,
@@ -13,6 +17,68 @@ const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 const HASH_C = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 const HASH_D = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
 const HASH_E = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data = Buffer.alloc(0)) {
+  const typeBytes = Buffer.from(type, 'ascii');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])), 0);
+  return Buffer.concat([length, typeBytes, data, crc]);
+}
+
+function tinyRgbPng(red, green, blue) {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const idat = deflateSync(Buffer.from([0, red, green, blue]));
+  return Buffer.concat([
+    signature,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', idat),
+    pngChunk('IEND'),
+  ]);
+}
+
+function sha256Buffer(buffer) {
+  return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+function writeVisualFixturePngs() {
+  const relativeDir = path.join('.gpu-hmr-test-logs', 'runtime-boundary-adapter-visual-smoke');
+  const absoluteDir = path.resolve(relativeDir);
+  mkdirSync(absoluteDir, { recursive: true });
+  const roles = [
+    ['before', tinyRgbPng(255, 0, 0)],
+    ['after', tinyRgbPng(0, 255, 0)],
+    ['diff', tinyRgbPng(0, 0, 255)],
+  ];
+  return Object.fromEntries(roles.flatMap(([role, bytes]) => {
+    const file = path.join(relativeDir, `${role}.png`);
+    writeFileSync(path.resolve(file), bytes);
+    return [
+      [`${role}Image`, file],
+      [`${role}ImageHash`, sha256Buffer(bytes)],
+    ];
+  }));
+}
 
 function boundaryEvents(overrides = {}) {
   const session = overrides.session ?? 'runtime-session-1';
@@ -158,6 +224,99 @@ assert.equal(runModeProof.schemaVersion, 'synthi.gpu.hmr.runtime_run_mode_proof.
 assert.equal(runModeProof.accepted, true, runModeProof.failedGates.join(','));
 assert.equal(runModeProof.runtimeProofArtifact.gpuHmrSuccess, true);
 assert.equal(runModeProof.runtimeBoundaryProofAdapter.gpuHmrSuccess, false);
+
+const visualFixture = writeVisualFixturePngs();
+const visualInput = adapterInput({
+  backend: 'hip',
+  outputTargetId: 'framebuffer-1',
+  computeOracleArtifacts: null,
+  events: {
+    outputOracle: {
+      outputTargetId: 'framebuffer-1',
+      oracleKind: 'render_target_hash',
+      cameraStateHash: HASH_C,
+      swapchainSize: [1, 1],
+      framebufferIdentity: 'framebuffer-1',
+      captureBackend: 'png-smoke',
+      frameNumber: 12,
+      evidenceRefs: [
+        'worker-log:output_oracle:runtime-session-1:dispatch-1',
+        'validation:output-oracle:visual-pngs',
+      ],
+    },
+  },
+  deterministicVisualMode: {
+    schemaVersion: 'synthi.gpu_hmr.deterministic_visual_mode.v1',
+    fixedSeed: true,
+    seedPolicyFixed: true,
+    frozenCamera: true,
+    temporalAccumulationNotApplicable: true,
+    taaNotApplicable: true,
+    denoiserNotApplicable: true,
+    fixedResolution: true,
+    fixedSwapchainImageCount: true,
+    frameCaptureAfterEpochDispatch: true,
+    presentationFenceOrFrameBoundary: true,
+  },
+  visualOracleArtifacts: {
+    beforeImage: visualFixture.beforeImage,
+    beforeImageHash: visualFixture.beforeImageHash,
+    afterImage: visualFixture.afterImage,
+    afterImageHash: visualFixture.afterImageHash,
+    diffImage: visualFixture.diffImage,
+    diffImageHash: visualFixture.diffImageHash,
+    blankFrameRejection: true,
+    sameFrameRejection: true,
+    newEpochWatermarkOrTrace: 'dispatch-1',
+    cameraStateHash: HASH_C,
+    swapchainSize: [1, 1],
+    captureBackend: 'png-smoke',
+    frameNumber: 12,
+    timestampAfterDispatch: 400,
+    changedPixelRatio: 1,
+    perceptualDiff: 1,
+    visiblePixelCount: 1,
+    pixelMetricsVerified: true,
+    evidenceRefs: ['validation:output-oracle:visual-pngs'],
+  },
+});
+const visualStageEvidence = buildRuntimeBoundaryStageEvidence(visualInput.runtimeBoundaryEvents);
+assert.equal(visualStageEvidence.accepted, true, visualStageEvidence.failedGates.join(','));
+assert.equal(buildRuntimeBoundaryInputEvidence(visualInput).accepted, true);
+const visualAccepted = buildRuntimeBoundaryProofAdapter(visualInput);
+assert.equal(visualAccepted.accepted, true, visualAccepted.failedGates.join(','));
+assert.equal(visualAccepted.gpuHmrSuccess, false, 'adapter facet must stay evidence-only for visual proof');
+assert.equal(visualAccepted.runtimeProofArtifact.gpuHmrSuccess, true);
+assert.equal(visualAccepted.runtimeProofArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+const visualLedgerRecord = visualAccepted.runtimeProofArtifact.proofLedger.records[0];
+const visualLedgerOracleArtifacts = visualLedgerRecord.oracle_artifacts
+  ?? visualLedgerRecord.oracleArtifacts
+  ?? {};
+const visualLedgerArtifacts = visualLedgerOracleArtifacts.visual_oracle_artifacts
+  ?? visualLedgerOracleArtifacts.visualOracleArtifacts;
+assert.ok(visualLedgerArtifacts, Object.keys(visualLedgerRecord).join(','));
+assert.equal(visualLedgerArtifacts.after_image_hash, visualFixture.afterImageHash);
+assert.equal(visualAccepted.strictGate.status, 'pass', visualAccepted.strictGate.detail);
+
+const visualMissingFramebuffer = buildRuntimeBoundaryProofAdapter({
+  ...visualInput,
+  runtimeBoundaryEvents: boundaryEvents({
+    outputOracle: {
+      outputTargetId: 'framebuffer-1',
+      oracleKind: 'render_target_hash',
+      cameraStateHash: HASH_C,
+      swapchainSize: [1, 1],
+      captureBackend: 'png-smoke',
+      frameNumber: 12,
+      evidenceRefs: ['worker-log:output_oracle:runtime-session-1:dispatch-1'],
+    },
+  }),
+});
+assert.equal(visualMissingFramebuffer.accepted, false);
+assert.ok(
+  visualMissingFramebuffer.failedGates.includes('output_oracle_visual_framebuffer_identity_missing'),
+  visualMissingFramebuffer.failedGates.join(','),
+);
 
 const missingOutput = buildRuntimeBoundaryProofAdapter({
   ...adapterInput(),
