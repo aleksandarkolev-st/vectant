@@ -26284,6 +26284,26 @@ function rowHasAcceptedVisualOutputOracle(row) {
     && rowHasAcceptedVisualEvidence(row);
 }
 
+function rowHasAcceptedStrictFullRuntimeOutputOracle(row, oracleKind) {
+  if (!acceptedFullRuntimeRow(row)) return false;
+  const authority = fullRuntimeEvidenceAuthorityFacet(row);
+  if (
+    firstBool(authority.accepted) !== true
+    || firstText(authority.authority) !== 'strict_runtime_proof_artifact'
+  ) {
+    return false;
+  }
+  if (oracleKind === 'visual_oracle') {
+    return firstBool(authority.visualOracleAccepted, authority.visual_oracle_accepted) === true
+      && rowHasAcceptedVisualOutputOracle(row);
+  }
+  if (oracleKind === 'compute_oracle') {
+    return firstBool(authority.computeOracleAccepted, authority.compute_oracle_accepted) === true
+      && rowHasAcceptedComputeEvidence(row);
+  }
+  return false;
+}
+
 function rowHasAcceptedOutputOracleClosure(row) {
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
   const kind = firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind);
@@ -26471,10 +26491,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
     const sourceFirst = sourceFirstIngestionFacet(row);
     const serializedAsyncVisual = compactObject(row.asyncVisualCasBundle ?? row.async_visual_cas_bundle);
     const asyncVisual = asyncVisualCasBundleFacet(row, compactObject(row.visual));
-    const runtimeAuthority = compactObject(
-      row.fullRuntimeEvidenceAuthority
-      ?? row.full_runtime_evidence_authority,
-    );
+    const runtimeAuthority = fullRuntimeEvidenceAuthorityFacet(row);
     const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
     const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
     const userOwnedSourceFirst =
@@ -26539,6 +26556,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
       && firstText(runtimeAuthority.authority) === 'strict_runtime_proof_artifact'
       && firstBool(runtimeAuthority.accepted) === true
       && firstBool(runtimeAuthority.visualOracleAccepted, runtimeAuthority.visual_oracle_accepted) === true
+      && rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle')
       && (!requireOutputOracleFacet || (
         firstBool(outputOracle.accepted) === true
         && firstText(outputOracle.kind, outputOracle.oracleKind, outputOracle.oracle_kind)
@@ -27726,10 +27744,14 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
   const visualTargets = compactStringList(
-    fullRuntimeRows.filter(rowHasAcceptedVisualOutputOracle).map((row) => row.targetId),
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle'))
+      .map((row) => row.targetId),
   );
   const computeTargets = compactStringList(
-    fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle'))
+      .map((row) => row.targetId),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
   const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
@@ -27770,12 +27792,16 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       : 'broad_acceptance_requires_more_acceptance_scopes',
     visualTargets.length > 0
       ? null
-      : fullRuntimeCandidateRows.some(rowHasAcceptedVisualOutputOracle)
+      : fullRuntimeCandidateRows.some((row) =>
+        rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle')
+      )
         ? 'broad_acceptance_requires_fresh_visual_oracle_rows'
         : 'broad_acceptance_requires_visual_oracle_rows',
     computeTargets.length > 0
       ? null
-      : fullRuntimeCandidateRows.some(rowHasAcceptedComputeEvidence)
+      : fullRuntimeCandidateRows.some((row) =>
+        rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle')
+      )
         ? 'broad_acceptance_requires_fresh_compute_oracle_rows'
         : 'broad_acceptance_requires_compute_oracle_rows',
     refusalRowsForReadiness.length >= BROAD_LIBRARY_MIN_ADVERSARIAL_REFUSAL_COUNT
@@ -28161,10 +28187,14 @@ function broadLibraryAgnosticReadiness(
   const acceptanceScopes = compactStringList(fullRuntimeRows.map((row) => row.acceptanceScope));
   const proofModes = compactStringList(fullRuntimeRows.map((row) => row.proofMode));
   const visualTargets = compactStringList(
-    fullRuntimeRows.filter(rowHasAcceptedVisualOutputOracle).map((row) => row.targetId),
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle'))
+      .map((row) => row.targetId),
   );
   const computeTargets = compactStringList(
-    fullRuntimeRows.filter(rowHasAcceptedComputeEvidence).map((row) => row.targetId),
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle'))
+      .map((row) => row.targetId),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
   const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
