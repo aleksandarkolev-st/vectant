@@ -552,6 +552,50 @@ test('CodeSiteFS run validates every attempt before applying a multi-file mutati
   }
 });
 
+test('CodeSiteFS run preserves legacy pathless operations when CodeSite is inactive', async () => {
+  const codesiteFs = createCodeSiteFS({ active: false });
+  let applied = false;
+
+  const result = await codesiteFs.run({
+    operation: 'legacy-refresh',
+    tool: 'workspace_refresh',
+  }, async ({ attempts }) => {
+    applied = true;
+    assert.deepStrictEqual(attempts, []);
+    return { refreshed: true };
+  });
+
+  assert.strictEqual(applied, true);
+  assert.strictEqual(result.phase, 'applied');
+  assert.deepStrictEqual(result.applyResult, { refreshed: true });
+});
+
+test('CodeSiteFS run blocks active pathless operations before applying', async () => {
+  const codesiteFs = createCodeSiteFS({
+    active: true,
+    workspaceSlug: 'acme',
+    transactionId: 'txn-pathless',
+    mutationLeaseId: 'lease-pathless',
+    allowedPaths: ['src/**'],
+    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
+  }, { fetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }) });
+  let applied = false;
+
+  await assert.rejects(
+    () => codesiteFs.run({
+      operation: 'unknown-write-wrapper',
+      tool: 'file_write',
+    }, async () => {
+      applied = true;
+    }),
+    (error) => error.code === 'CODESITE_WRITE_DENIED'
+      && error.event.path === null
+      && error.event.details.reason_codes.includes('codesite_write_attempt_required'),
+  );
+
+  assert.strictEqual(applied, false);
+});
+
 test('CodeSiteFS run blocks a mixed multi-file mutation before emitting allowed events', async () => {
   const calls = [];
   const fetch = async (_url, options) => {

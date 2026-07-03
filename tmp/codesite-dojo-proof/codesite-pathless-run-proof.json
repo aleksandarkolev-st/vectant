@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "synthi.codesite.pathlessRunProof.v1",
+  "generatedAt": "2026-07-03T15:34:13.564Z",
+  "ok": true,
+  "assertions": [
+    {
+      "name": "legacy inactive pathless operation still applies",
+      "ok": true
+    },
+    {
+      "name": "active CodeSite pathless operation throws CODESITE_WRITE_DENIED",
+      "ok": true
+    },
+    {
+      "name": "active CodeSite pathless operation never calls applyFn",
+      "ok": true
+    },
+    {
+      "name": "denial carries codesite_write_attempt_required",
+      "ok": true
+    },
+    {
+      "name": "focused CodeSiteFS tests passed",
+      "ok": true
+    }
+  ],
+  "testSummary": {
+    "tests": 43,
+    "pass": 43,
+    "fail": 0,
+    "skipped": 0
+  },
+  "legacyResult": {
+    "phase": "applied",
+    "operation": {
+      "operation": "legacy-refresh",
+      "tool": "workspace_refresh"
+    },
+    "attempts": [],
+    "applyResult": {
+      "refreshed": true
+    },
+    "verification": [],
+    "rollbackHints": []
+  },
+  "denial": {
+    "code": "CODESITE_WRITE_DENIED",
+    "path": null,
+    "reasonCodes": [
+      "codesite_write_attempt_required"
+    ],
+    "reason": "CodeSiteFS refused to apply an active operation with no normalized write attempts."
+  }
+}

@@ -643,6 +643,28 @@ class CodeSiteFS {
   async run(operation = {}, applyFn = null, options = {}) {
     const attempts = codeSiteFSOperationAttempts(operation);
     if (!attempts.length) {
+      if (this.context?.active && this.context?.mode !== 'monitor') {
+        const effectiveContext = await authoritativeCodeSiteContext(this.context, this.options);
+        const durableFailure = evaluateCodeSiteDurableContext(effectiveContext, this.options);
+        const reasonCodes = unique([
+          'codesite_write_attempt_required',
+          ...asArray(durableFailure?.reasonCodes),
+        ]);
+        const event = buildEvent(
+          effectiveContext,
+          {
+            kind: operation.kind || operation.operation || 'write',
+            tool: operation.tool || 'file_write',
+            evidenceRefs: operation.evidenceRefs || operation.evidence_refs,
+            processAncestry: operation.processAncestry || operation.process_ancestry,
+          },
+          null,
+          'write_denied',
+          reasonCodes,
+          'CodeSiteFS refused to apply an active operation with no normalized write attempts.',
+        );
+        throw new CodeSiteFSDeniedError(event);
+      }
       const applyResult = typeof applyFn === 'function'
         ? await applyFn({ operation, attempts: [] })
         : null;
