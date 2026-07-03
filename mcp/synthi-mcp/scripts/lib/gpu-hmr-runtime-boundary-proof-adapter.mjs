@@ -447,6 +447,78 @@ export function buildComputeOracleArtifactsFromByteEvidence(input = {}) {
   };
 }
 
+export function buildRuntimeBoundaryInputEvidence(input = {}) {
+  const sourcePaths = compactStringList(input.sourcePaths ?? input.source_paths);
+  const entryPoint = firstText(input.entryPoint, input.entry_point, input.kernelName, input.kernel_name);
+  const compileTarget = firstText(input.compileTarget, input.compile_target, input.gpuArch, input.gpu_arch);
+  const compiler = firstText(input.compiler);
+  const compilerArgsHash = normalizeSha256(firstText(input.compilerArgsHash, input.compiler_args_hash));
+  const artifactHashBefore = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
+  const artifactHashAfter = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
+  const contractHash = normalizeSha256(firstText(input.contractHash, input.contract_hash));
+  const projectId = firstText(input.projectId, input.project_id, input.workspaceSlug, input.workspace_slug);
+  const editId = firstText(input.editId, input.edit_id, input.sourceEditId, input.source_edit_id);
+  const targetId = firstText(input.targetId, input.target_id);
+  const backend = firstText(input.backend);
+  const computeOracleArtifacts = objectOrNull(input.computeOracleArtifacts)
+    ?? objectOrNull(input.compute_oracle_artifacts)
+    ?? objectOrNull(input.computeOracleByteEvidence)
+    ?? objectOrNull(input.compute_oracle_byte_evidence);
+  const failedGates = [
+    projectId ? null : 'runtime_boundary_project_id_missing',
+    editId ? null : 'runtime_boundary_edit_id_missing',
+    targetId ? null : 'runtime_boundary_target_id_missing',
+    backend ? null : 'runtime_boundary_backend_missing',
+    sourcePaths.length > 0 ? null : 'runtime_boundary_source_paths_missing',
+    entryPoint ? null : 'runtime_boundary_entry_point_missing',
+    compileTarget ? null : 'runtime_boundary_compile_target_missing',
+    compiler ? null : 'runtime_boundary_compiler_missing',
+    compilerArgsHash ? null : 'runtime_boundary_compiler_args_hash_missing',
+    artifactHashBefore ? null : 'runtime_boundary_artifact_hash_before_missing',
+    artifactHashAfter ? null : 'runtime_boundary_artifact_hash_after_missing',
+    artifactHashBefore && artifactHashAfter && artifactHashBefore === artifactHashAfter
+      ? 'runtime_boundary_artifact_hash_unchanged'
+      : null,
+    contractHash ? null : 'runtime_boundary_contract_hash_missing',
+    computeOracleArtifacts ? null : 'runtime_boundary_compute_oracle_artifacts_missing',
+  ].filter(Boolean);
+  return {
+    schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
+    schema_version: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
+    proofAuthority: RUNTIME_BOUNDARY_PROOF_ADAPTER_AUTHORITY,
+    proof_authority: RUNTIME_BOUNDARY_PROOF_ADAPTER_AUTHORITY,
+    accepted: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    sourcePaths,
+    source_paths: sourcePaths,
+    entryPoint,
+    entry_point: entryPoint,
+    compileTarget,
+    compile_target: compileTarget,
+    compiler,
+    compilerArgsHash,
+    compiler_args_hash: compilerArgsHash,
+    artifactHashBefore,
+    artifact_hash_before: artifactHashBefore,
+    artifactHashAfter,
+    artifact_hash_after: artifactHashAfter,
+    contractHash,
+    contract_hash: contractHash,
+    projectId,
+    project_id: projectId,
+    editId,
+    edit_id: editId,
+    targetId,
+    target_id: targetId,
+    backend,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function defaultModelProvenance() {
   const availabilitySource = 'https://ai.google.dev/gemini-api/docs/deprecations';
   return {
@@ -902,13 +974,14 @@ function runtimeProofFailureCodes(runtimeProofArtifact, strictGate, stageEvidenc
 
 export function buildRuntimeBoundaryProofAdapter(input = {}) {
   const stageEvidence = buildRuntimeBoundaryStageEvidence(input.runtimeBoundaryEvents ?? input.runtime_boundary_events ?? []);
+  const inputEvidence = buildRuntimeBoundaryInputEvidence(input);
   let components = null;
   let runtimeProofArtifact = null;
   let strictGate = null;
   let fullRuntimeProof = null;
   let acceptanceContract = null;
 
-  if (stageEvidence.accepted === true) {
+  if (stageEvidence.accepted === true && inputEvidence.accepted === true) {
     components = buildBoundaryProofComponents(input, stageEvidence);
     fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: components.sourceProofs,
@@ -991,12 +1064,17 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
   }
 
   const failedGates = runtimeProofFailureCodes(runtimeProofArtifact, strictGate, stageEvidence);
+  const allFailedGates = compactStringList([
+    ...failedGates,
+    ...inputEvidence.failedGates,
+  ]);
   const accepted =
     stageEvidence.accepted === true
+    && inputEvidence.accepted === true
     && fullRuntimeProof?.fullRuntimeProven === true
     && runtimeProofArtifact?.gpuHmrSuccess === true
     && strictGate?.status === 'pass'
-    && failedGates.length === 0;
+    && allFailedGates.length === 0;
   return {
     schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
     schema_version: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
@@ -1011,6 +1089,8 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
     can_satisfy_runtime_proof: accepted,
     stageEvidence,
     stage_evidence: stageEvidence,
+    inputEvidence,
+    input_evidence: inputEvidence,
     fullRuntimeProof,
     full_runtime_proof: fullRuntimeProof,
     runtimeProofArtifact,
@@ -1020,13 +1100,13 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
     acceptanceContract,
     acceptance_contract: acceptanceContract,
     components,
-    failedGates,
-    failed_gates: failedGates,
+    failedGates: allFailedGates,
+    failed_gates: allFailedGates,
     proofId: sha256Stable({
       schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
       stageEvidenceHash: sha256Stable(stageEvidence.normalizedEvents),
       runtimeProofArtifactId: runtimeProofArtifact?.proofId ?? null,
-      failedGates,
+      failedGates: allFailedGates,
     }).replace('sha256:', 'runtime-boundary-proof-adapter:sha256:'),
   };
 }

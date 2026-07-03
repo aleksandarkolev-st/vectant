@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   buildComputeOracleArtifactsFromByteEvidence,
+  buildRuntimeBoundaryInputEvidence,
   buildRuntimeBoundaryProofAdapter,
   buildRuntimeBoundaryRunModeProof,
   buildRuntimeBoundaryStageEvidence,
@@ -124,6 +125,7 @@ const stageEvidence = buildRuntimeBoundaryStageEvidence(boundaryEvents());
 assert.equal(stageEvidence.accepted, true, stageEvidence.failedGates.join(','));
 assert.equal(stageEvidence.normalizedEvents.length, 5);
 assert.equal(stageEvidence.gpuHmrSuccess, false);
+assert.equal(buildRuntimeBoundaryInputEvidence(adapterInput()).accepted, true);
 
 const accepted = buildRuntimeBoundaryProofAdapter(adapterInput());
 assert.equal(accepted.accepted, true, accepted.failedGates.join(','));
@@ -203,6 +205,17 @@ assert.ok(
   missingOracleBytes.failedGates.includes('compute_oracle_raw_readback_hash_unverified')
     || missingOracleBytes.failedGates.includes('proof_ledger_recomputed_query_rejected'),
   missingOracleBytes.failedGates.join(','),
+);
+
+const missingSourceIdentity = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  sourcePaths: [],
+});
+assert.equal(missingSourceIdentity.accepted, false);
+assert.equal(missingSourceIdentity.runtimeProofArtifact, null);
+assert.ok(
+  missingSourceIdentity.failedGates.includes('runtime_boundary_source_paths_missing'),
+  missingSourceIdentity.failedGates.join(','),
 );
 
 console.log('[ok] GPU HMR runtime-boundary proof adapter self-check passed');
