@@ -13757,6 +13757,60 @@ assert.equal(
   true,
 );
 assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.acceptanceBoundary,
+  'matrix_generalization_requires_per_project_strict_ledger',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.universalProjectAcceptance,
+  false,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.productionEveryArbitraryProjectAccepted,
+  false,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.requiresPerProjectStrictLedger,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.requiresSameProcessLoader,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.requiresEpochDispatchOutputOracle,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .acceptanceBoundary,
+  'matrix_generalization_requires_per_project_strict_ledger',
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .universalProjectAcceptance,
+  false,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .productionEveryArbitraryProjectAccepted,
+  false,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .requiresPerProjectStrictLedger,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .requiresSameProcessLoader,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .requiresEpochDispatchOutputOracle,
+  true,
+);
+assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof.authority,
   'matrix_recomputed_from_strict_full_runtime_rows',
 );
