@@ -12888,6 +12888,58 @@ assert.ok(
   broadReadinessWithNewerWeakAttemptLedger.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('latest_attempt_unselected_by_priority_selection'),
 );
+const broadReadinessRowsWithNewerPendingColdAttempt =
+  JSON.parse(JSON.stringify(broadReadinessRowsWithRandomCold));
+const pendingColdSelectedIndex = broadReadinessRows.length;
+broadReadinessRowsWithNewerPendingColdAttempt[pendingColdSelectedIndex].attemptKey =
+  'generic-random-cold-pending-warning-attempt';
+broadReadinessRowsWithNewerPendingColdAttempt[pendingColdSelectedIndex].attempt_key =
+  'generic-random-cold-pending-warning-attempt';
+const newerPendingRandomColdAttempt = {
+  ...JSON.parse(JSON.stringify(broadReadinessRowsWithNewerPendingColdAttempt[pendingColdSelectedIndex])),
+  rowId: `gpu-validation-matrix-row:sha256:${sha256Hex('generic-random-cold-newer-pending')}`,
+  row_id: `gpu-validation-matrix-row:sha256:${sha256Hex('generic-random-cold-newer-pending')}`,
+  matrixOutcome: 'unproven',
+  matrix_outcome: 'unproven',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  proofChainAccepted: false,
+  proof_chain_accepted: false,
+  updatedAt: '2999-01-02T00:00:00.000Z',
+  updated_at: '2999-01-02T00:00:00.000Z',
+  artifactPath: 'generic-random-cold-newer-pending.json',
+  artifact_path: 'generic-random-cold-newer-pending.json',
+  reasons: ['random_large_project_cold_path_pending_not_finalized'],
+  openGaps: ['random_large_project_cold_path_pending_not_finalized'],
+  open_gaps: ['random_large_project_cold_path_pending_not_finalized'],
+};
+const broadReadinessWithNewerPendingColdAttemptLedger = buildGpuHmrValidationMatrixLedger([
+  ...broadReadinessRowsWithNewerPendingColdAttempt,
+  newerPendingRandomColdAttempt,
+], {
+  generatedAt: '2026-06-30T21:05:00.000Z',
+});
+assert.equal(broadReadinessWithNewerPendingColdAttemptLedger.query.accepted, true);
+assert.equal(
+  broadReadinessWithNewerPendingColdAttemptLedger.attemptHistory.latestUnselectedAttemptWarning,
+  true,
+);
+assert.equal(
+  broadReadinessWithNewerPendingColdAttemptLedger.summary.broadLibraryAgnosticReadiness
+    .latestAcceptedFullRuntimeUnselectedAttemptCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithNewerPendingColdAttemptLedger.summary.broadLibraryAgnosticReadiness
+    .latestAttemptUnselectedBlocksReadiness,
+  false,
+);
+assert.equal(
+  broadReadinessWithNewerPendingColdAttemptLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  true,
+);
 const broadReadinessSerializedAsyncVisualOnlyQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   rows: broadReadinessRowsWithRandomCold.map((row) =>
@@ -24814,15 +24866,16 @@ assert.ok(
 assert.equal(
   completenessSelectionLedger.summary.broadLibraryAgnosticReadiness
     .latestAttemptUnselectedBlocksReadiness,
-  true,
+  false,
 );
 assert.equal(
   completenessSelectionLedger.summary.broadLibraryAgnosticReadiness.latestUnselectedAttemptCount,
   1,
 );
-assert.ok(
-  completenessSelectionLedger.summary.broadLibraryAgnosticReadiness.openGaps
-    .includes('latest_attempt_unselected_by_priority_selection'),
+assert.equal(
+  completenessSelectionLedger.summary.broadLibraryAgnosticReadiness
+    .latestAcceptedFullRuntimeUnselectedAttemptCount,
+  0,
 );
 
 const completenessSelectionLedgerWithHistory = await collectGpuHmrValidationMatrixLedger({

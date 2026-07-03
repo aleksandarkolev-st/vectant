@@ -24926,7 +24926,14 @@ function validationAttemptHistory(rows, selectedRows, { enabled = true } = {}) {
   const latestUnselectedAttemptCount = allAttempts.filter((attempt) =>
     attempt.latestAttemptIsUnselected === true
   ).length;
+  const latestAcceptedFullRuntimeUnselectedAttemptCount = allAttempts.filter((attempt) =>
+    attempt.latestAttemptIsUnselected === true
+    && firstText(attempt.selected?.matrixOutcome, attempt.selected?.matrix_outcome)
+      === 'full_runtime_gpu_hmr'
+  ).length;
   const latestUnselectedAttemptWarning = latestUnselectedAttemptCount > 0;
+  const latestAcceptedFullRuntimeUnselectedAttemptWarning =
+    latestAcceptedFullRuntimeUnselectedAttemptCount > 0;
   return {
     schemaVersion: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
     schema_version: 'synthi.gpu_hmr.validation_matrix_attempt_history.v1',
@@ -24948,10 +24955,22 @@ function validationAttemptHistory(rows, selectedRows, { enabled = true } = {}) {
     latest_unselected_attempt_count: latestUnselectedAttemptCount,
     latestUnselectedAttemptWarning,
     latest_unselected_attempt_warning: latestUnselectedAttemptWarning,
+    latestAcceptedFullRuntimeUnselectedAttemptCount,
+    latest_accepted_full_runtime_unselected_attempt_count:
+      latestAcceptedFullRuntimeUnselectedAttemptCount,
+    latestAcceptedFullRuntimeUnselectedAttemptWarning,
+    latest_accepted_full_runtime_unselected_attempt_warning:
+      latestAcceptedFullRuntimeUnselectedAttemptWarning,
     warningGaps: latestUnselectedAttemptWarning
       ? ['latest_attempt_unselected_by_priority_selection']
       : [],
     warning_gaps: latestUnselectedAttemptWarning
+      ? ['latest_attempt_unselected_by_priority_selection']
+      : [],
+    blockingGaps: latestAcceptedFullRuntimeUnselectedAttemptWarning
+      ? ['latest_attempt_unselected_by_priority_selection']
+      : [],
+    blocking_gaps: latestAcceptedFullRuntimeUnselectedAttemptWarning
       ? ['latest_attempt_unselected_by_priority_selection']
       : [],
     attempts,
@@ -26760,9 +26779,18 @@ function broadReadinessAttemptFreshness(attemptHistory = {}) {
       attemptHistory.latestUnselectedAttemptCount
       ?? attemptHistory.latest_unselected_attempt_count,
     ) ?? 0;
+  const latestAcceptedFullRuntimeUnselectedAttemptCount =
+    finiteNumber(
+      attemptHistory.latestAcceptedFullRuntimeUnselectedAttemptCount
+      ?? attemptHistory.latest_accepted_full_runtime_unselected_attempt_count,
+    ) ?? 0;
   const warningGaps = compactStringList([
     ...(Array.isArray(attemptHistory.warningGaps) ? attemptHistory.warningGaps : []),
     ...(Array.isArray(attemptHistory.warning_gaps) ? attemptHistory.warning_gaps : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(attemptHistory.blockingGaps) ? attemptHistory.blockingGaps : []),
+    ...(Array.isArray(attemptHistory.blocking_gaps) ? attemptHistory.blocking_gaps : []),
   ]);
   const latestUnselectedAttemptWarning =
     firstBool(
@@ -26771,7 +26799,14 @@ function broadReadinessAttemptFreshness(attemptHistory = {}) {
     ) === true
     || latestUnselectedAttemptCount > 0
     || warningGaps.includes('latest_attempt_unselected_by_priority_selection');
-  const openGaps = latestUnselectedAttemptWarning
+  const latestAcceptedFullRuntimeUnselectedAttemptWarning =
+    firstBool(
+      attemptHistory.latestAcceptedFullRuntimeUnselectedAttemptWarning,
+      attemptHistory.latest_accepted_full_runtime_unselected_attempt_warning,
+    ) === true
+    || latestAcceptedFullRuntimeUnselectedAttemptCount > 0
+    || blockingGaps.includes('latest_attempt_unselected_by_priority_selection');
+  const openGaps = latestAcceptedFullRuntimeUnselectedAttemptWarning
     ? ['latest_attempt_unselected_by_priority_selection']
     : [];
   return {
@@ -26779,8 +26814,16 @@ function broadReadinessAttemptFreshness(attemptHistory = {}) {
     latest_unselected_attempt_count: latestUnselectedAttemptCount,
     latestUnselectedAttemptWarning,
     latest_unselected_attempt_warning: latestUnselectedAttemptWarning,
-    latestAttemptUnselectedBlocksReadiness: latestUnselectedAttemptWarning,
-    latest_attempt_unselected_blocks_readiness: latestUnselectedAttemptWarning,
+    latestAcceptedFullRuntimeUnselectedAttemptCount,
+    latest_accepted_full_runtime_unselected_attempt_count:
+      latestAcceptedFullRuntimeUnselectedAttemptCount,
+    latestAcceptedFullRuntimeUnselectedAttemptWarning,
+    latest_accepted_full_runtime_unselected_attempt_warning:
+      latestAcceptedFullRuntimeUnselectedAttemptWarning,
+    latestAttemptUnselectedBlocksReadiness:
+      latestAcceptedFullRuntimeUnselectedAttemptWarning,
+    latest_attempt_unselected_blocks_readiness:
+      latestAcceptedFullRuntimeUnselectedAttemptWarning,
     openGaps,
     open_gaps: openGaps,
   };
@@ -26916,6 +26959,14 @@ function broadLibraryAgnosticReadiness(
     latest_unselected_attempt_count: attemptFreshness.latestUnselectedAttemptCount,
     latestUnselectedAttemptWarning: attemptFreshness.latestUnselectedAttemptWarning,
     latest_unselected_attempt_warning: attemptFreshness.latestUnselectedAttemptWarning,
+    latestAcceptedFullRuntimeUnselectedAttemptCount:
+      attemptFreshness.latestAcceptedFullRuntimeUnselectedAttemptCount,
+    latest_accepted_full_runtime_unselected_attempt_count:
+      attemptFreshness.latestAcceptedFullRuntimeUnselectedAttemptCount,
+    latestAcceptedFullRuntimeUnselectedAttemptWarning:
+      attemptFreshness.latestAcceptedFullRuntimeUnselectedAttemptWarning,
+    latest_accepted_full_runtime_unselected_attempt_warning:
+      attemptFreshness.latestAcceptedFullRuntimeUnselectedAttemptWarning,
     latestAttemptUnselectedBlocksReadiness:
       attemptFreshness.latestAttemptUnselectedBlocksReadiness,
     latest_attempt_unselected_blocks_readiness:
