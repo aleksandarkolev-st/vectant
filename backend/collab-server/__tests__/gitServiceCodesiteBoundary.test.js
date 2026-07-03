@@ -43,7 +43,16 @@ function codeSiteIndexContext(slug, overrides = {}) {
   });
 }
 
-function createCodeSiteFetch({ writeSet = ['src/**'], readSet = [], recordBodies = [], readBodies = [] } = {}) {
+function createCodeSiteFetch({
+  writeSet = ['src/**'],
+  readSet = [],
+  recordBodies = [],
+  readBodies = [],
+  commitBodies = [],
+  proofBundle = null,
+  commitResponse = null,
+  commitStatus = 200,
+} = {}) {
   const calls = [];
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
@@ -78,9 +87,35 @@ function createCodeSiteFetch({ writeSet = ['src/**'], readSet = [], recordBodies
       recordBodies.push(body);
       return new Response(JSON.stringify({ ok: true, eventId: `event-${recordBodies.length}` }), { status: 200 });
     }
+    if (String(url).endsWith('/transactions/txn-direct-1/commit')) {
+      const body = JSON.parse(options.body || '{}');
+      commitBodies.push(body);
+      if (commitResponse) {
+        return new Response(JSON.stringify(commitResponse), { status: commitStatus });
+      }
+      return new Response(JSON.stringify({
+        transaction: { id: 'txn-direct-1' },
+        proofBundle: proofBundle || {
+          projectId: 'project-direct',
+          displayCallsign: 'ATLAS-DIRECT',
+          transactionId: 'txn-direct-1',
+          mutationLeaseId: 'lease-direct-1',
+          readSetDigest: 'sha256:read-direct',
+          writeSetDigest: 'sha256:write-direct',
+          bundleDigest: 'sha256:bundle-direct',
+          portableDigest: 'sha256:portable-direct',
+          invariants: ['unit:pass'],
+          landingStatus: 'landed',
+          proofSignature: {
+            keyId: 'codesite-test-authority',
+            signature: 'hmac-sha256:test-signature',
+          },
+        },
+      }), { status: 200 });
+    }
     return new Response(JSON.stringify({ ok: false, error: 'unexpected_url' }), { status: 404 });
   };
-  return { fetch, calls, recordBodies, readBodies };
+  return { fetch, calls, recordBodies, readBodies, commitBodies };
 }
 
 async function withTempGitService(t, slug, userId, fn) {
@@ -239,6 +274,126 @@ test('direct gitService.stageFile blocks unauthorized index writes before stagin
     assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool, body.codesiteFsEvent.type]), [
       ['api/auth/signup.ts', 'git_index', 'write_denied'],
     ]);
+  });
+});
+
+test('direct gitService.commit without CodeSite context stays a plain user commit', async (t) => {
+  const slug = uniqueSlug('plain-commit');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'before\n' });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'plain after\n');
+    await git(repoPath, ['add', 'src/app.js']);
+    const { fetch, calls } = createCodeSiteFetch();
+
+    await gitService.commit(slug, 'Plain user commit', userId, false, null, { fetch });
+
+    const { stdout: message } = await git(repoPath, ['log', '-1', '--pretty=%B']);
+    assert.match(message, /Plain user commit/);
+    assert.doesNotMatch(message, /CodeSite-Transaction:/);
+    assert.doesNotMatch(message, /CodeSite-Proof-Digest:/);
+    assert.strictEqual(calls.length, 0);
+  });
+});
+
+test('direct gitService.commit completes CodeSite proof and writes portable trailers', async (t) => {
+  const slug = uniqueSlug('codesite-commit-proof');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'before\n' });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after\n');
+    await git(repoPath, ['add', 'src/app.js']);
+    const commitBodies = [];
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], commitBodies, recordBodies });
+
+    await gitService.commit(slug, 'Land CodeSite transaction', userId, false, null, {
+      codesiteContext: codeSiteContext(slug, { allowedTools: ['git_refs'] }),
+      fetch,
+      evidenceRefs: ['direct:commit'],
+      data: {
+        evidenceRefs: ['payload:evidence'],
+        repoState: { supplied: true },
+      },
+    });
+
+    const { stdout: message } = await git(repoPath, ['log', '-1', '--pretty=%B']);
+    assert.match(message, /Land CodeSite transaction/);
+    assert.match(message, /CodeSite-Clearance: lease-direct-1/);
+    assert.match(message, /CodeSite-Transaction: txn-direct-1/);
+    assert.match(message, /CodeSite-Lease: lease-direct-1/);
+    assert.match(message, /CodeSite-Read-Set: sha256:read-direct/);
+    assert.match(message, /CodeSite-Write-Set: sha256:write-direct/);
+    assert.match(message, /CodeSite-Black-Box: sha256:bundle-direct/);
+    assert.match(message, /CodeSite-Proof-Digest: sha256:portable-direct/);
+    assert.match(message, /CodeSite-Proof-Authority: codesite-test-authority/);
+    assert.match(message, /CodeSite-Proof-Signature: hmac-sha256:test-signature/);
+    assert.strictEqual(commitBodies.length, 1);
+    assert.deepStrictEqual(commitBodies[0].evidenceRefs, ['payload:evidence', 'direct:commit']);
+    assert.deepStrictEqual(commitBodies[0].repoState, { supplied: true });
+    assert.strictEqual(recordBodies.length, 1);
+    assert.strictEqual(recordBodies[0].path, '**');
+    assert.strictEqual(recordBodies[0].tool, 'git_refs');
+    assert.strictEqual(recordBodies[0].codesiteFsEvent.type, 'write_allowed');
+    assert.strictEqual(recordBodies[0].codesiteFsEvent.details.operation, 'commit');
+  });
+});
+
+test('direct gitService.commit blocks managed CodeSite commits without a transaction', async (t) => {
+  const slug = uniqueSlug('codesite-commit-no-transaction');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'before\n' });
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after\n');
+    await git(repoPath, ['add', 'src/app.js']);
+
+    await assert.rejects(
+      () => gitService.commit(slug, 'Plain managed commit', userId, false, null, {
+        codesiteContext: codeSiteContext(slug, {
+          transactionId: null,
+          agentSessionId: 'agent-direct-1',
+          managedAgent: true,
+        }),
+      }),
+      (error) => error.code === 'CODESITE_COMMIT_BLOCKED'
+        && error.details.reasonCodes.includes('codesite_transaction_required'),
+    );
+
+    const { stdout: lastMessage } = await git(repoPath, ['log', '-1', '--pretty=%s']);
+    assert.strictEqual(lastMessage.trim(), 'initial');
+  });
+});
+
+test('direct gitService.commit leaves HEAD unchanged when proof validation rejects', async (t) => {
+  const slug = uniqueSlug('codesite-commit-proof-rejected');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath, { 'src/app.js': 'before\n' });
+    const { stdout: beforeHead } = await git(repoPath, ['rev-parse', 'HEAD']);
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'after rejected\n');
+    await git(repoPath, ['add', 'src/app.js']);
+    const commitBodies = [];
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({
+      writeSet: ['src/**'],
+      commitBodies,
+      recordBodies,
+      commitResponse: { decision: { ok: false, reasonCodes: ['landing_inspection_required'] } },
+    });
+
+    await assert.rejects(
+      () => gitService.commit(slug, 'Rejected CodeSite transaction', userId, false, null, {
+        codesiteContext: codeSiteContext(slug, { allowedTools: ['git_refs'] }),
+        fetch,
+      }),
+      (error) => error.code === 'CODESITE_COMMIT_BLOCKED'
+        && error.details.reasonCodes.includes('landing_inspection_required'),
+    );
+
+    const { stdout: afterHead } = await git(repoPath, ['rev-parse', 'HEAD']);
+    assert.strictEqual(afterHead.trim(), beforeHead.trim());
+    assert.strictEqual(commitBodies.length, 1);
+    assert.strictEqual(recordBodies.length, 0);
   });
 });
 

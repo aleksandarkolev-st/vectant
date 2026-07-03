@@ -259,6 +259,25 @@ test('allows writes inside lease route and blocks no-fly or out-of-route writes'
   );
 });
 
+test('repo-scoped Git ref writes honor tool clearance without requiring fake file globs', () => {
+  const context = {
+    active: true,
+    mutationLeaseId: 'lease-1',
+    transactionId: 'txn-1',
+    allowedPaths: ['synthi/src/components/**'],
+    allowedTools: ['git_refs'],
+  };
+
+  const refWrite = evaluateCodeSiteWrite(context, { path: '**', kind: 'commit', tool: 'git_refs' });
+  assert.strictEqual(refWrite.ok, true);
+  assert.strictEqual(refWrite.tool, 'git_refs');
+  assert.deepStrictEqual(refWrite.event.details.reason_codes, ['inside_clearance_route']);
+
+  const fileWrite = evaluateCodeSiteWrite(context, { path: 'docs/outside.md', tool: 'file_write' });
+  assert.strictEqual(fileWrite.ok, false);
+  assert.deepStrictEqual(fileWrite.event.details.reason_codes, ['tool_not_in_clearance']);
+});
+
 test('CodeSiteFS lifecycle applies an allowed write through prepare, emit, apply, and verify', async () => {
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-boundary-'));
   await fs.mkdir(path.join(repo, 'src'), { recursive: true });
@@ -909,15 +928,26 @@ test('formats proof-carrying CodeSite commit trailers', () => {
       invariants: ['typecheck:pass', 'visual:pass'],
       landingStatus: 'landed',
       blackBoxDigest: 'sha256:blackbox',
+      proofBundle: {
+        portableDigest: 'sha256:portable',
+        proofSignature: {
+          keyId: 'codesite-test-authority',
+          signature: 'hmac-sha256:test',
+        },
+      },
     },
   });
 
   assert.match(message, /Implement checkout\n\nCodeSite-Project: site-checkout/);
   assert.match(message, /CodeSite-Flight: ATLAS-1/);
+  assert.match(message, /CodeSite-Clearance: lease-1/);
   assert.match(message, /CodeSite-Transaction: txn-1/);
   assert.match(message, /CodeSite-Lease: lease-1/);
   assert.match(message, /CodeSite-Invariants: typecheck:pass,visual:pass/);
   assert.match(message, /CodeSite-Black-Box: sha256:blackbox/);
+  assert.match(message, /CodeSite-Proof-Digest: sha256:portable/);
+  assert.match(message, /CodeSite-Proof-Authority: codesite-test-authority/);
+  assert.match(message, /CodeSite-Proof-Signature: hmac-sha256:test/);
 });
 
 test('does not duplicate existing CodeSite trailers', () => {

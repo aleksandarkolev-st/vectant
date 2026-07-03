@@ -38,12 +38,10 @@ const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const {
-  codeSiteCommitMessage,
   codeSiteContextFromRequest,
   codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
-  completeCodeSiteCommitProof,
   createCodeSiteFS,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
@@ -5448,30 +5446,17 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'commit':
-                    {
-                      const boundary = await runGitBoundary(async () => {
-                        const codeSiteCommitProof = await completeCodeSiteCommitProof(codeSiteContext, data, {
-                          repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
-                        });
-                        const codeSiteCommitPayload = codeSiteCommitProof?.proofBundle
-                          ? {
-                            ...data,
-                            codesite: {
-                              ...(data.codesite || data.codeSite || {}),
-                              proofBundle: codeSiteCommitProof.proofBundle,
-                            },
-                          }
-                          : data;
-                        return withTelemetry('git:commit', () => gitService.commit(
-                          slug,
-                          codeSiteCommitMessage(data.message, codeSiteCommitPayload),
-                          effectiveUserId,
-                          data.amend,
-                          commitIdentity,
-                        ));
-                      });
-                      result = boundary.applyResult;
-                    }
+                    result = await withTelemetry('git:commit', () => gitService.commit(
+                        slug,
+                        data.message,
+                        effectiveUserId,
+                        data.amend,
+                        commitIdentity,
+                        {
+                          codesiteContext: codeSiteContext,
+                          data,
+                        },
+                    ));
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':

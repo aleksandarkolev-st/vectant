@@ -330,6 +330,7 @@ function codeSiteCommitTrailers(payload = {}) {
   return [
     ['CodeSite-Project', value(payload.projectId, payload.project_id, proof.projectId)],
     ['CodeSite-Flight', value(payload.displayCallsign, payload.callsign, payload.flight, proof.displayCallsign)],
+    ['CodeSite-Clearance', value(payload.mutationLeaseId, payload.mutation_lease_id, payload.leaseId, payload.clearance, proof.mutationLeaseId)],
     ['CodeSite-Transaction', value(payload.transactionId, payload.transaction_id, proof.transactionId)],
     ['CodeSite-Lease', value(payload.mutationLeaseId, payload.mutation_lease_id, payload.leaseId, payload.clearance, proof.mutationLeaseId)],
     ['CodeSite-Read-Set', value(payload.readSetDigest, payload.read_set_digest, proof.readSetDigest)],
@@ -337,6 +338,9 @@ function codeSiteCommitTrailers(payload = {}) {
     ['CodeSite-Invariants', Array.isArray(invariants) ? invariants.join(',') : invariants],
     ['CodeSite-Landing', value(payload.landingStatus, payload.landing_status, payload.landing)],
     ['CodeSite-Black-Box', blackBox],
+    ['CodeSite-Proof-Digest', value(payload.proofDigest, payload.proof_digest, proof.portableDigest, proof.proofDigest, proof.proof_digest)],
+    ['CodeSite-Proof-Authority', value(payload.proofAuthority, payload.proof_authority, proof.proofSignature?.keyId, proof.proofSignature?.key_id)],
+    ['CodeSite-Proof-Signature', value(payload.proofSignatureValue, payload.proof_signature_value, proof.proofSignature?.signature, proof.proofSignature?.value)],
   ].filter(([, trailerValue]) => trailerValue !== undefined && trailerValue !== null && trailerValue !== '');
 }
 
@@ -1890,6 +1894,7 @@ function asArray(value) {
 function evaluateCodeSiteWrite(context, attempt = {}) {
   const relPath = normalizeRepoRelativePath(attempt.path || attempt.filePath || attempt.newPath || attempt.oldPath);
   const tool = attempt.tool || attempt.kind || 'file_write';
+  const repoScopedTool = isRepoScopedCodeSiteTool(tool);
   const active = Boolean(context?.active);
   const base = {
     ok: true,
@@ -1905,10 +1910,14 @@ function evaluateCodeSiteWrite(context, attempt = {}) {
   if (context.blockedPaths?.some((pattern) => matchPathPattern(relPath, pattern))) {
     return denied(context, attempt, relPath, ['entered_no_fly_zone']);
   }
-  if (context.allowedPaths?.length && !context.allowedPaths.some((pattern) => matchPathPattern(relPath, pattern))) {
+  if (!repoScopedTool && context.allowedPaths?.length && !context.allowedPaths.some((pattern) => matchPathPattern(relPath, pattern))) {
     return denied(context, attempt, relPath, ['outside_clearance_route']);
   }
   return base;
+}
+
+function isRepoScopedCodeSiteTool(tool) {
+  return ['git_refs', 'git_config', 'git_provisioning'].includes(String(tool || ''));
 }
 
 function evaluateCodeSiteRead(context, attempt = {}) {

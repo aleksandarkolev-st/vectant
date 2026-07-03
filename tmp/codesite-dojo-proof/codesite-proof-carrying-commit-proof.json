@@ -1,0 +1,80 @@
+{
+  "ok": true,
+  "schemaVersion": "synthi.codesite.proofCarryingCommitProof.v1",
+  "generatedAt": "2026-07-03T14:50:24.025Z",
+  "assertions": {
+    "proofCommitCreated": true,
+    "hasClearanceTrailer": true,
+    "hasTransactionTrailer": true,
+    "hasLeaseTrailer": true,
+    "hasReadSetTrailer": true,
+    "hasWriteSetTrailer": true,
+    "hasBlackBoxTrailer": true,
+    "hasProofDigestTrailer": true,
+    "hasProofAuthorityTrailer": true,
+    "hasProofSignatureTrailer": true,
+    "gitRefsBoundaryRecorded": true,
+    "plainCommitHasNoCodeSiteTrailers": true,
+    "proofRejectionPreservesHead": true
+  },
+  "proofCommit": {
+    "message": "Land visual proof transaction\n\nCodeSite-Project: visual-proof-project\nCodeSite-Flight: ATLAS-VISUAL\nCodeSite-Clearance: lease-proof-visual\nCodeSite-Transaction: txn-proof-visual\nCodeSite-Lease: lease-proof-visual\nCodeSite-Read-Set: sha256:read-visual\nCodeSite-Write-Set: sha256:write-visual\nCodeSite-Invariants: unit:pass,docker:pass,visual:pass\nCodeSite-Black-Box: sha256:blackbox-visual\nCodeSite-Proof-Digest: sha256:portable-visual\nCodeSite-Proof-Authority: codesite-visual-authority\nCodeSite-Proof-Signature: hmac-sha256:visual-signature",
+    "commitRequest": {
+      "evidenceRefs": [
+        "proof:visual-generator"
+      ],
+      "dojoEvidenceRefs": [],
+      "repoState": {
+        "suppliedBy": "visual-proof-generator"
+      }
+    },
+    "gitRefsRecord": {
+      "path": "**",
+      "tool": "git_refs",
+      "evidenceRefs": [
+        "visual-proof:commit",
+        "proof:visual-generator"
+      ],
+      "processAncestry": [
+        "visual-proof-generator"
+      ],
+      "lineProvenance": [],
+      "codesiteFsEvent": {
+        "type": "write_allowed",
+        "transaction_id": "txn-proof-visual",
+        "mutation_lease_id": "lease-proof-visual",
+        "display_callsign": null,
+        "workspace_slug": "visual-proof-1783090217925",
+        "actor_user_id": null,
+        "effective_user_id": null,
+        "path": "**",
+        "tool": "git_refs",
+        "wall_time": "2026-07-03T14:50:18.733Z",
+        "evidence_refs": [
+          "visual-proof:commit",
+          "proof:visual-generator"
+        ],
+        "details": {
+          "reason": "inside_clearance_route",
+          "reason_codes": [
+            "inside_clearance_route"
+          ],
+          "process_ancestry": [
+            "visual-proof-generator"
+          ],
+          "operation": "commit"
+        }
+      }
+    }
+  },
+  "plainCommit": {
+    "message": "Plain user commit",
+    "calls": 0
+  },
+  "rejectedCommit": {
+    "errorCode": "CODESITE_COMMIT_BLOCKED",
+    "beforeHead": "8384129ac1029e6610b3ad17f18adc0dcb89f76b",
+    "afterHead": "8384129ac1029e6610b3ad17f18adc0dcb89f76b",
+    "recordWriteCalls": 0
+  }
+}

@@ -5,7 +5,13 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const config = require('./config');
 const repoCache = require('./repoCache');
-const { createCodeSiteFS, normalizeRepoRelativePath } = require('./codesiteFs');
+const {
+    CodeSiteCommitBlockedError,
+    codeSiteCommitMessage,
+    completeCodeSiteCommitProof,
+    createCodeSiteFS,
+    normalizeRepoRelativePath,
+} = require('./codesiteFs');
 
 let NodeGit = null;
 let nodeGitLoadError = null;
@@ -1215,7 +1221,7 @@ class GitService {
 
     // Centralized error mapper for git errors
     mapGitError(e, slug) {
-        if (e?.code === 'CODESITE_WRITE_DENIED' || e?.code === 'PATCH_PATH_MISMATCH') {
+        if (e?.code === 'CODESITE_WRITE_DENIED' || e?.code === 'CODESITE_COMMIT_BLOCKED' || e?.code === 'PATCH_PATH_MISMATCH') {
             return e;
         }
 
@@ -1304,6 +1310,15 @@ class GitService {
             operation: kind,
             tool: 'git_index',
             attempts: attemptPaths.map((attemptPath) => codeSiteAttempt(attemptPath || '**', kind, 'git_index', options)),
+        }, applyFn, effectiveRepoPath);
+    }
+
+    async _runCodeSiteGitRefsBoundary(slug, userId, options = {}, kind, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_refs',
+            attempts: [codeSiteAttempt('**', kind, 'git_refs', options)],
         }, applyFn, effectiveRepoPath);
     }
 
@@ -2227,10 +2242,75 @@ class GitService {
         return env;
     }
 
-    async commit(slug, message, userId, amend = false, commitIdentity = null) {
+    async _prepareCodeSiteCommitMessage(slug, userId, message, options = {}, repoPath = null) {
+        const context = codeSiteContextFromOptions(options);
+        const data = options.data || options.commitData || options.commit_data || {};
+        const explicitCodeSite = options.codesite || options.codeSite || {};
+        const payloadCodeSite = data.codesite || data.codeSite || {};
+        const proofBundle = options.proofBundle || options.proof_bundle || explicitCodeSite.proofBundle || explicitCodeSite.proof_bundle || payloadCodeSite.proofBundle || payloadCodeSite.proof_bundle;
+        const requiresProof = options.requireCodeSiteProof
+            ?? options.require_code_site_proof
+            ?? options.requireProof
+            ?? (context?.active && context.mode !== 'monitor');
+
+        const evidence = mergeCodeSiteEvidence(
+            data,
+            payloadCodeSite,
+            explicitCodeSite,
+            options,
+        );
+        const commitData = {
+            ...data,
+            evidenceRefs: evidence.evidenceRefs.length ? evidence.evidenceRefs : data.evidenceRefs,
+            processAncestry: evidence.processAncestry.length ? evidence.processAncestry : data.processAncestry,
+            codesite: {
+                ...payloadCodeSite,
+                ...explicitCodeSite,
+                ...(proofBundle ? { proofBundle } : {}),
+            },
+        };
+
+        if (!context?.active) {
+            if (proofBundle) return codeSiteCommitMessage(message, commitData);
+            return String(message || '');
+        }
+        if (!context.transactionId) {
+            if (requiresProof) {
+                throw new CodeSiteCommitBlockedError('codesite_commit_transaction_required', {
+                    reasonCodes: ['codesite_transaction_required'],
+                    context: {
+                        workspaceSlug: context.workspaceSlug || slug,
+                        agentSessionId: context.agentSessionId || null,
+                        managedAgent: Boolean(context.managedAgent),
+                    },
+                });
+            }
+            return String(message || '');
+        }
+        if (context.mode === 'monitor') {
+            return proofBundle ? codeSiteCommitMessage(message, commitData) : String(message || '');
+        }
+
+        const fetchImpl = options.fetch || options.codesiteFetch || options.codeSiteFetch;
+        const proof = await completeCodeSiteCommitProof(context, commitData, {
+            fetch: fetchImpl,
+            repoRoot: repoPath || this.getEffectiveRepoPath(slug, userId),
+            repoState: options.repoState || options.repo_state,
+        });
+        return codeSiteCommitMessage(message, {
+            ...commitData,
+            codesite: {
+                ...commitData.codesite,
+                proofBundle: proof.proofBundle,
+            },
+        });
+    }
+
+    async commit(slug, message, userId, amend = false, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
                 // Check if there are staged changes before committing
                 // (skip for amend — amend can just rewrite the message).
                 if (!amend) {
@@ -2244,11 +2324,14 @@ class GitService {
                 }
                 const env = this._buildCommitEnv(commitIdentity);
                 const gitWithEnv = git.env(env);
-                if (amend) {
-                    await gitWithEnv.commit(message, { '--amend': null });
-                } else {
-                    await gitWithEnv.commit(message);
-                }
+                const commitMessage = await this._prepareCodeSiteCommitMessage(slug, userId, message, options, repoPath);
+                await this._runCodeSiteGitRefsBoundary(slug, userId, options, 'commit', async () => {
+                    if (amend) {
+                        await gitWithEnv.commit(commitMessage, { '--amend': null });
+                    } else {
+                        await gitWithEnv.commit(commitMessage);
+                    }
+                }, repoPath);
                 await this._propagateToBare(slug, userId, git, { amend });
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);

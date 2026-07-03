@@ -1,0 +1,68 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8" /><title>CodeSite Proof-Carrying Commit</title><style>:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a0f;color:#f5f7fb;color-scheme:dark}body{margin:0;padding:32px;background:#080a0f}main{max-width:1160px;margin:0 auto}.hero,.panel{border:1px solid #2b354f;background:#121724;border-radius:8px;padding:22px;margin-bottom:14px}.badge{display:inline-flex;background:#0f6b3b;color:#fff;font-size:12px;font-weight:800;border-radius:4px;padding:5px 10px;letter-spacing:.04em}h1{font-size:30px;line-height:1.15;margin:12px 0 8px;letter-spacing:0}h2{font-size:17px;margin:0 0 12px;letter-spacing:0}p{margin:0;color:#b8c3de;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #242d43;padding:10px 0}.row:last-child{border-bottom:0}.good{color:#83ffaf}.bad{color:#ff9999}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#070a12;border:1px solid #242d43;border-radius:6px;padding:14px;font-size:12px;line-height:1.45;color:#d9e0f2;margin:10px 0 0}@media(max-width:800px){body{padding:14px}.grid{grid-template-columns:1fr}h1{font-size:24px}}</style></head><body><main><section class="hero"><span class="badge">PASS</span><h1>CodeSite Proof-Carrying Commit</h1><p>Real gitService workflow proving managed commits complete transaction proof, append portable trailers, record git_refs through CodeSiteFS, keep plain commits plain, and preserve HEAD on proof rejection.</p></section><section class="grid"><div class="panel"><h2>Assertions</h2><div class="row"><span>proofCommitCreated</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasClearanceTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasTransactionTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasLeaseTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasReadSetTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasWriteSetTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasBlackBoxTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasProofDigestTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasProofAuthorityTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>hasProofSignatureTrailer</span><strong class="good">PASS</strong></div>
+<div class="row"><span>gitRefsBoundaryRecorded</span><strong class="good">PASS</strong></div>
+<div class="row"><span>plainCommitHasNoCodeSiteTrailers</span><strong class="good">PASS</strong></div>
+<div class="row"><span>proofRejectionPreservesHead</span><strong class="good">PASS</strong></div></div><div class="panel"><h2>Proof Commit Message</h2><pre>Land visual proof transaction
+
+CodeSite-Project: visual-proof-project
+CodeSite-Flight: ATLAS-VISUAL
+CodeSite-Clearance: lease-proof-visual
+CodeSite-Transaction: txn-proof-visual
+CodeSite-Lease: lease-proof-visual
+CodeSite-Read-Set: sha256:read-visual
+CodeSite-Write-Set: sha256:write-visual
+CodeSite-Invariants: unit:pass,docker:pass,visual:pass
+CodeSite-Black-Box: sha256:blackbox-visual
+CodeSite-Proof-Digest: sha256:portable-visual
+CodeSite-Proof-Authority: codesite-visual-authority
+CodeSite-Proof-Signature: hmac-sha256:visual-signature</pre></div></section><section class="panel"><h2>Boundary Event</h2><pre>{
+  &quot;path&quot;: &quot;**&quot;,
+  &quot;tool&quot;: &quot;git_refs&quot;,
+  &quot;evidenceRefs&quot;: [
+    &quot;visual-proof:commit&quot;,
+    &quot;proof:visual-generator&quot;
+  ],
+  &quot;processAncestry&quot;: [
+    &quot;visual-proof-generator&quot;
+  ],
+  &quot;lineProvenance&quot;: [],
+  &quot;codesiteFsEvent&quot;: {
+    &quot;type&quot;: &quot;write_allowed&quot;,
+    &quot;transaction_id&quot;: &quot;txn-proof-visual&quot;,
+    &quot;mutation_lease_id&quot;: &quot;lease-proof-visual&quot;,
+    &quot;display_callsign&quot;: null,
+    &quot;workspace_slug&quot;: &quot;visual-proof-1783090217925&quot;,
+    &quot;actor_user_id&quot;: null,
+    &quot;effective_user_id&quot;: null,
+    &quot;path&quot;: &quot;**&quot;,
+    &quot;tool&quot;: &quot;git_refs&quot;,
+    &quot;wall_time&quot;: &quot;2026-07-03T14:50:18.733Z&quot;,
+    &quot;evidence_refs&quot;: [
+      &quot;visual-proof:commit&quot;,
+      &quot;proof:visual-generator&quot;
+    ],
+    &quot;details&quot;: {
+      &quot;reason&quot;: &quot;inside_clearance_route&quot;,
+      &quot;reason_codes&quot;: [
+        &quot;inside_clearance_route&quot;
+      ],
+      &quot;process_ancestry&quot;: [
+        &quot;visual-proof-generator&quot;
+      ],
+      &quot;operation&quot;: &quot;commit&quot;
+    }
+  }
+}</pre></section><section class="panel"><h2>Rejected Commit</h2><pre>{
+  &quot;errorCode&quot;: &quot;CODESITE_COMMIT_BLOCKED&quot;,
+  &quot;beforeHead&quot;: &quot;8384129ac1029e6610b3ad17f18adc0dcb89f76b&quot;,
+  &quot;afterHead&quot;: &quot;8384129ac1029e6610b3ad17f18adc0dcb89f76b&quot;,
+  &quot;recordWriteCalls&quot;: 0
+}</pre></section></main></body></html>
