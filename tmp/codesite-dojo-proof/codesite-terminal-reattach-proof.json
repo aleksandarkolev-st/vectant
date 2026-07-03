@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "synthi.codesite.terminalReattachProof.v1",
+  "generatedAt": "2026-07-03T15:30:22.362Z",
+  "ok": true,
+  "assertions": [
+    {
+      "name": "legacy request can reattach normally",
+      "ok": true,
+      "decision": {
+        "ok": true
+      }
+    },
+    {
+      "name": "active request blocks unmanaged existing PTY",
+      "ok": true,
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "existing_session_unmanaged",
+        "message": "CodeSite terminal blocked: active transactions cannot reattach to an unmanaged terminal session."
+      }
+    },
+    {
+      "name": "active request blocks transaction mismatch",
+      "ok": true,
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "transaction_mismatch",
+        "message": "CodeSite terminal blocked: requested transaction does not match the existing terminal session."
+      }
+    },
+    {
+      "name": "active request blocks non-overlay CodeSite PTY",
+      "ok": true,
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "overlay_missing",
+        "message": "CodeSite terminal blocked: existing terminal session is not backed by a Docker overlay runtime."
+      }
+    },
+    {
+      "name": "active request permits matching overlay PTY",
+      "ok": true,
+      "decision": {
+        "ok": true
+      }
+    },
+    {
+      "name": "focused terminal routing tests passed",
+      "ok": true,
+      "decision": {
+        "pass": 12,
+        "fail": 0,
+        "skipped": 1
+      }
+    }
+  ],
+  "testSummary": {
+    "tests": 13,
+    "pass": 12,
+    "fail": 0,
+    "skipped": 1
+  }
+}

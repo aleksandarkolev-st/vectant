@@ -39,7 +39,7 @@ const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
-const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('./terminalRouting');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('./terminalRouting');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 const {
@@ -1645,6 +1645,18 @@ function createTerminalWSS({
     // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
     if (existingSession && existingSession.pty) {
+      const reattachDecision = codeSiteTerminalReattachDecision({ codeSiteContext, existingSession });
+      if (!reattachDecision.ok) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: reattachDecision.code,
+          reason: reattachDecision.reason,
+          message: reattachDecision.message,
+          codesite: codeSiteMetadata,
+        }));
+        ws.close(1008, 'CodeSite terminal reattach denied');
+        return;
+      }
       const sessionId = requestedSessionId;
       const { pty: ptyProcess, shell, cwd } = existingSession;
       const outputBuffer = Array.isArray(existingSession.outputBuffer) ? existingSession.outputBuffer : [];

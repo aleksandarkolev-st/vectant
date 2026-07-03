@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('../terminalRouting');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('../terminalRouting');
 const {
   runtimeTerminalTarget,
   programRuntimeTarget,
@@ -44,6 +44,68 @@ test('CodeSite terminal launch mode blocks host shells and permits container ove
     workspaceRuntime: {},
     workspaceSlug: 'repo',
   }), 'overlay-runtime');
+});
+
+test('CodeSite terminal reattach blocks unmanaged or mismatched existing sessions', () => {
+  const request = {
+    active: true,
+    workspaceSlug: 'repo',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    agentSessionId: 'agent-1',
+  };
+  assert.deepEqual(codeSiteTerminalReattachDecision({
+    codeSiteContext: null,
+    existingSession: { codesiteContext: null },
+  }), { ok: true });
+  assert.equal(codeSiteTerminalReattachDecision({
+    codeSiteContext: request,
+    existingSession: { codesiteContext: null },
+  }).reason, 'existing_session_unmanaged');
+  assert.equal(codeSiteTerminalReattachDecision({
+    codeSiteContext: request,
+    existingSession: {
+      codesiteContext: { active: true, workspaceSlug: 'repo', transactionId: 'txn-2', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' },
+      runtimeOptions: { codeSiteOverlayId: 'overlay-1' },
+    },
+  }).reason, 'transaction_mismatch');
+  assert.equal(codeSiteTerminalReattachDecision({
+    codeSiteContext: request,
+    existingSession: {
+      codesiteContext: { active: true, workspaceSlug: 'repo', transactionId: 'txn-1', mutationLeaseId: 'lease-2', agentSessionId: 'agent-1' },
+      runtimeOptions: { codeSiteOverlayId: 'overlay-1' },
+    },
+  }).reason, 'lease_mismatch');
+  assert.equal(codeSiteTerminalReattachDecision({
+    codeSiteContext: request,
+    existingSession: {
+      codesiteContext: { active: true, workspaceSlug: 'repo', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' },
+    },
+  }).reason, 'overlay_missing');
+});
+
+test('CodeSite terminal reattach permits only matching overlay-backed sessions', () => {
+  const request = {
+    active: true,
+    workspaceSlug: 'repo',
+    transactionId: 'txn-1',
+    mutationLeaseId: 'lease-1',
+    agentSessionId: 'agent-1',
+  };
+  assert.deepEqual(codeSiteTerminalReattachDecision({
+    codeSiteContext: request,
+    existingSession: {
+      codesiteContext: { active: true, workspaceSlug: 'repo', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' },
+      runtimeOptions: { codeSiteOverlayId: 'overlay-1' },
+    },
+  }), { ok: true });
+  assert.deepEqual(codeSiteTerminalReattachDecision({
+    codeSiteContext: request,
+    existingSession: {
+      codesiteContext: { active: true, workspaceSlug: 'repo', transactionId: 'txn-1', mutationLeaseId: 'lease-1', agentSessionId: 'agent-1' },
+      codesiteQuarantine: { mountMode: 'docker-overlay', overlayId: 'overlay-1' },
+    },
+  }), { ok: true });
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec
