@@ -566,14 +566,98 @@ function compactPlanCoverageEntry(entry = {}) {
 
 function compactBroadLibraryAgnosticReadiness(readiness = {}) {
   if (!readiness || typeof readiness !== 'object') return null;
+  const broadProof =
+    compactObjectField(readiness.broadLibraryAgnosticProof ?? readiness.broad_library_agnostic_proof)
+    ?? {};
+  const proofId = readiness.proofId
+    ?? readiness.proof_id
+    ?? broadProof.proofId
+    ?? broadProof.proof_id
+    ?? null;
+  const proofAuthority = readiness.proofAuthority
+    ?? readiness.proof_authority
+    ?? readiness.authority
+    ?? broadProof.proofAuthority
+    ?? broadProof.proof_authority
+    ?? broadProof.authority
+    ?? null;
+  const numberField = (...values) => {
+    for (const value of values) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) return numeric;
+    }
+    return null;
+  };
+  const openGaps = compactPrimitiveArraySample(
+    readiness.openGaps ?? readiness.open_gaps ?? broadProof.openGaps ?? broadProof.open_gaps,
+    32,
+  );
+  const failedGates = compactPrimitiveArraySample(
+    readiness.failedGates ?? readiness.failed_gates,
+    32,
+  );
+  const randomColdPathTargets = compactPrimitiveArraySample(
+    readiness.randomColdPathTargets
+      ?? readiness.random_cold_path_targets
+      ?? broadProof.randomColdPathTargets
+      ?? broadProof.random_cold_path_targets,
+    32,
+  );
+  const randomColdPathSourceHashes = compactPrimitiveArraySample(
+    readiness.randomColdPathDistinctSourceIdentityHashes
+      ?? readiness.random_cold_path_distinct_source_identity_hashes
+      ?? broadProof.randomColdPathDistinctSourceIdentityHashes
+      ?? broadProof.random_cold_path_distinct_source_identity_hashes,
+    32,
+  );
+  const randomColdPathContentOnlyHashes = compactPrimitiveArraySample(
+    readiness.randomColdPathDistinctSourceContentOnlyIdentityHashes
+      ?? readiness.random_cold_path_distinct_source_content_only_identity_hashes
+      ?? broadProof.randomColdPathDistinctSourceContentOnlyIdentityHashes
+      ?? broadProof.random_cold_path_distinct_source_content_only_identity_hashes,
+    32,
+  );
+  const sourceFirstVisualSourceHashes = compactPrimitiveArraySample(
+    readiness.sourceFirstVisualSourceIdentityHashes
+      ?? readiness.source_first_visual_source_identity_hashes
+      ?? broadProof.sourceFirstVisualSourceIdentityHashes
+      ?? broadProof.source_first_visual_source_identity_hashes,
+    32,
+  );
   return {
     schemaVersion: readiness.schemaVersion ?? readiness.schema_version ?? null,
     schema_version: readiness.schemaVersion ?? readiness.schema_version ?? null,
     accepted: firstBool(readiness.accepted) === true,
-    proofId: readiness.proofId ?? readiness.proof_id ?? null,
-    proof_id: readiness.proofId ?? readiness.proof_id ?? null,
-    proofAuthority: readiness.proofAuthority ?? readiness.proof_authority ?? null,
-    proof_authority: readiness.proofAuthority ?? readiness.proof_authority ?? null,
+    proofId,
+    proof_id: proofId,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    matrixGeneralizationAccepted:
+      firstBool(readiness.matrixGeneralizationAccepted, readiness.matrix_generalization_accepted)
+      ?? null,
+    matrix_generalization_accepted:
+      firstBool(readiness.matrixGeneralizationAccepted, readiness.matrix_generalization_accepted)
+      ?? null,
+    acceptedFullRuntimeRows:
+      numberField(readiness.acceptedFullRuntimeRows, readiness.accepted_full_runtime_rows),
+    accepted_full_runtime_rows:
+      numberField(readiness.acceptedFullRuntimeRows, readiness.accepted_full_runtime_rows),
+    matrixGeneralizationRuntimeRows:
+      numberField(
+        readiness.matrixGeneralizationRuntimeRows,
+        readiness.matrix_generalization_runtime_rows,
+        broadProof.matrixGeneralizationRuntimeRows,
+        broadProof.matrix_generalization_runtime_rows,
+      ),
+    matrix_generalization_runtime_rows:
+      numberField(
+        readiness.matrixGeneralizationRuntimeRows,
+        readiness.matrix_generalization_runtime_rows,
+        broadProof.matrixGeneralizationRuntimeRows,
+        broadProof.matrix_generalization_runtime_rows,
+      ),
+    scopedRuntimeRows: numberField(readiness.scopedRuntimeRows, readiness.scoped_runtime_rows),
+    scoped_runtime_rows: numberField(readiness.scopedRuntimeRows, readiness.scoped_runtime_rows),
     backendFamilies: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
     backend_families: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
     acceptanceScopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
@@ -590,8 +674,146 @@ function compactBroadLibraryAgnosticReadiness(readiness = {}) {
       Number.isSafeInteger(Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows))
         ? Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows)
         : null,
-    failedGates: compactPrimitiveArray(readiness.failedGates ?? readiness.failed_gates),
-    failed_gates: compactPrimitiveArray(readiness.failedGates ?? readiness.failed_gates),
+    randomColdPathRowCount:
+      numberField(readiness.randomColdPathRowCount, readiness.random_cold_path_row_count),
+    random_cold_path_row_count:
+      numberField(readiness.randomColdPathRowCount, readiness.random_cold_path_row_count),
+    randomColdPathCandidateRowCount:
+      numberField(
+        readiness.randomColdPathCandidateRowCount,
+        readiness.random_cold_path_candidate_row_count,
+        broadProof.randomColdPathCandidateRows,
+        broadProof.random_cold_path_candidate_rows,
+      ),
+    random_cold_path_candidate_row_count:
+      numberField(
+        readiness.randomColdPathCandidateRowCount,
+        readiness.random_cold_path_candidate_row_count,
+        broadProof.randomColdPathCandidateRows,
+        broadProof.random_cold_path_candidate_rows,
+      ),
+    randomColdPathDistinctSourceIdentityCount:
+      numberField(
+        readiness.randomColdPathDistinctSourceIdentityCount,
+        readiness.random_cold_path_distinct_source_identity_count,
+        broadProof.randomColdPathDistinctSourceIdentityCount,
+        broadProof.random_cold_path_distinct_source_identity_count,
+      ),
+    random_cold_path_distinct_source_identity_count:
+      numberField(
+        readiness.randomColdPathDistinctSourceIdentityCount,
+        readiness.random_cold_path_distinct_source_identity_count,
+        broadProof.randomColdPathDistinctSourceIdentityCount,
+        broadProof.random_cold_path_distinct_source_identity_count,
+      ),
+    randomColdPathDistinctSourceContentOnlyIdentityCount:
+      numberField(
+        readiness.randomColdPathDistinctSourceContentOnlyIdentityCount,
+        readiness.random_cold_path_distinct_source_content_only_identity_count,
+        broadProof.randomColdPathDistinctSourceContentOnlyIdentityCount,
+        broadProof.random_cold_path_distinct_source_content_only_identity_count,
+      ),
+    random_cold_path_distinct_source_content_only_identity_count:
+      numberField(
+        readiness.randomColdPathDistinctSourceContentOnlyIdentityCount,
+        readiness.random_cold_path_distinct_source_content_only_identity_count,
+        broadProof.randomColdPathDistinctSourceContentOnlyIdentityCount,
+        broadProof.random_cold_path_distinct_source_content_only_identity_count,
+      ),
+    minimumRandomColdPathDistinctSourceIdentityCount:
+      numberField(
+        readiness.minimumRandomColdPathDistinctSourceIdentityCount,
+        readiness.minimum_random_cold_path_distinct_source_identity_count,
+        broadProof.minimumRandomColdPathDistinctSourceIdentityCount,
+        broadProof.minimum_random_cold_path_distinct_source_identity_count,
+      ),
+    minimum_random_cold_path_distinct_source_identity_count:
+      numberField(
+        readiness.minimumRandomColdPathDistinctSourceIdentityCount,
+        readiness.minimum_random_cold_path_distinct_source_identity_count,
+        broadProof.minimumRandomColdPathDistinctSourceIdentityCount,
+        broadProof.minimum_random_cold_path_distinct_source_identity_count,
+      ),
+    minimumRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      numberField(
+        readiness.minimumRandomColdPathDistinctSourceContentOnlyIdentityCount,
+        readiness.minimum_random_cold_path_distinct_source_content_only_identity_count,
+      ),
+    minimum_random_cold_path_distinct_source_content_only_identity_count:
+      numberField(
+        readiness.minimumRandomColdPathDistinctSourceContentOnlyIdentityCount,
+        readiness.minimum_random_cold_path_distinct_source_content_only_identity_count,
+      ),
+    randomColdPathTargets: randomColdPathTargets.entries,
+    random_cold_path_targets: randomColdPathTargets.entries,
+    randomColdPathTargetsCount: randomColdPathTargets.count,
+    random_cold_path_targets_count: randomColdPathTargets.count,
+    randomColdPathTargetsTruncated: randomColdPathTargets.truncated,
+    random_cold_path_targets_truncated: randomColdPathTargets.truncated,
+    randomColdPathTargetsHash: randomColdPathTargets.contentHash,
+    random_cold_path_targets_hash: randomColdPathTargets.contentHash,
+    randomColdPathDistinctSourceIdentityHashes: randomColdPathSourceHashes.entries,
+    random_cold_path_distinct_source_identity_hashes: randomColdPathSourceHashes.entries,
+    randomColdPathDistinctSourceIdentityHashesCount: randomColdPathSourceHashes.count,
+    random_cold_path_distinct_source_identity_hashes_count: randomColdPathSourceHashes.count,
+    randomColdPathDistinctSourceIdentityHashesTruncated: randomColdPathSourceHashes.truncated,
+    random_cold_path_distinct_source_identity_hashes_truncated: randomColdPathSourceHashes.truncated,
+    randomColdPathDistinctSourceIdentityHashesHash: randomColdPathSourceHashes.contentHash,
+    random_cold_path_distinct_source_identity_hashes_hash: randomColdPathSourceHashes.contentHash,
+    randomColdPathDistinctSourceContentOnlyIdentityHashes:
+      randomColdPathContentOnlyHashes.entries,
+    random_cold_path_distinct_source_content_only_identity_hashes:
+      randomColdPathContentOnlyHashes.entries,
+    randomColdPathDistinctSourceContentOnlyIdentityHashesCount:
+      randomColdPathContentOnlyHashes.count,
+    random_cold_path_distinct_source_content_only_identity_hashes_count:
+      randomColdPathContentOnlyHashes.count,
+    randomColdPathDistinctSourceContentOnlyIdentityHashesTruncated:
+      randomColdPathContentOnlyHashes.truncated,
+    random_cold_path_distinct_source_content_only_identity_hashes_truncated:
+      randomColdPathContentOnlyHashes.truncated,
+    randomColdPathDistinctSourceContentOnlyIdentityHashesHash:
+      randomColdPathContentOnlyHashes.contentHash,
+    random_cold_path_distinct_source_content_only_identity_hashes_hash:
+      randomColdPathContentOnlyHashes.contentHash,
+    sourceFirstVisualRowCount:
+      numberField(readiness.sourceFirstVisualRowCount, readiness.source_first_visual_row_count),
+    source_first_visual_row_count:
+      numberField(readiness.sourceFirstVisualRowCount, readiness.source_first_visual_row_count),
+    sourceFirstVisualSourceIdentityCount:
+      numberField(
+        readiness.sourceFirstVisualSourceIdentityCount,
+        readiness.source_first_visual_source_identity_count,
+      ),
+    source_first_visual_source_identity_count:
+      numberField(
+        readiness.sourceFirstVisualSourceIdentityCount,
+        readiness.source_first_visual_source_identity_count,
+      ),
+    sourceFirstVisualSourceIdentityHashes: sourceFirstVisualSourceHashes.entries,
+    source_first_visual_source_identity_hashes: sourceFirstVisualSourceHashes.entries,
+    sourceFirstVisualSourceIdentityHashesCount: sourceFirstVisualSourceHashes.count,
+    source_first_visual_source_identity_hashes_count: sourceFirstVisualSourceHashes.count,
+    sourceFirstVisualSourceIdentityHashesTruncated: sourceFirstVisualSourceHashes.truncated,
+    source_first_visual_source_identity_hashes_truncated: sourceFirstVisualSourceHashes.truncated,
+    sourceFirstVisualSourceIdentityHashesHash: sourceFirstVisualSourceHashes.contentHash,
+    source_first_visual_source_identity_hashes_hash: sourceFirstVisualSourceHashes.contentHash,
+    openGaps: openGaps.entries,
+    open_gaps: openGaps.entries,
+    openGapsCount: openGaps.count,
+    open_gaps_count: openGaps.count,
+    openGapsTruncated: openGaps.truncated,
+    open_gaps_truncated: openGaps.truncated,
+    openGapsHash: openGaps.contentHash,
+    open_gaps_hash: openGaps.contentHash,
+    failedGates: failedGates.entries,
+    failed_gates: failedGates.entries,
+    failedGatesCount: failedGates.count,
+    failed_gates_count: failedGates.count,
+    failedGatesTruncated: failedGates.truncated,
+    failed_gates_truncated: failedGates.truncated,
+    failedGatesHash: failedGates.contentHash,
+    failed_gates_hash: failedGates.contentHash,
     rowRefs: compactCoverageRows(readiness.rowRefs ?? readiness.row_refs ?? readiness.rows),
     row_refs: compactCoverageRows(readiness.rowRefs ?? readiness.row_refs ?? readiness.rows),
   };
