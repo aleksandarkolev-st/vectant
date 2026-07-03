@@ -14703,9 +14703,62 @@ assert.equal(oidnHipRefusedPreflightCoverage.get('oidn_hip_runtime_preflight')?.
 assert.ok(oidnHipRefusedPreflightCoverage.get('oidn_hip_runtime_preflight')?.openGaps.includes(
   'oidn_runtime_preflight_failed',
 ));
-assert.equal(oidnHipRefusedPreflightCoverage.get('oidn_hip_output')?.status, 'refused');
+assert.equal(oidnHipRefusedPreflightCoverage.get('oidn_hip_output')?.status, 'missing');
 assert.ok(oidnHipRefusedPreflightCoverage.get('oidn_hip_output')?.openGaps.includes(
-  'oidn_runtime_preflight_failed',
+  'oidn_output_oracle_attempt_required',
+));
+
+const oidnHipOutputAttemptRefusalQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.gpu_hmr.oidn_preflight.v1',
+    artifactPath: 'synthetic/refused-oidn-hip-output-attempt.json',
+    updatedAt: '2026-06-09T00:00:00.071Z',
+    backend: 'oidn_hip',
+    targetId: 'refused-oidn-hip-output-attempt',
+    profileId: 'refused-oidn-hip-output-attempt',
+    proofMode: 'runtime_preflight',
+    evidenceKind: 'runtime_preflight_refusal',
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: true,
+    proofChain: 'runtime_preflight_and_output_oracle_only',
+    proofIds: ['oidn-preflight-proof:sha256:output-attempt-refused'],
+    backendEvidence: {
+      accepted: true,
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+      failedGates: [],
+    },
+    outputOracleFacet: {
+      schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      schema_version: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      present: true,
+      accepted: false,
+      failedGates: [{ code: 'oidn_output_oracle_recomputed_hash_mismatch' }],
+      failed_gates: [{ code: 'oidn_output_oracle_recomputed_hash_mismatch' }],
+    },
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: ['output_oracle_failed'],
+    },
+    reasons: ['oidn_output_oracle_recomputed_hash_mismatch'],
+    openGaps: ['oidn_output_oracle_recomputed_hash_mismatch'],
+  })],
+});
+const oidnHipOutputAttemptRefusalCoverage = new Map(
+  oidnHipOutputAttemptRefusalQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(oidnHipOutputAttemptRefusalCoverage.get('oidn_hip_output')?.status, 'refused');
+assert.ok(oidnHipOutputAttemptRefusalCoverage.get('oidn_hip_output')?.openGaps.includes(
+  'oidn_output_oracle_recomputed_hash_mismatch',
 ));
 
 const forgedOidnHipOutputBroadRow = withQueryRecomputedRowId({

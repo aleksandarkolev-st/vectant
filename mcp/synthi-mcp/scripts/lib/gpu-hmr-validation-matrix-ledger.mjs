@@ -28814,6 +28814,40 @@ function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, r
   });
 }
 
+function oidnOutputProofAttempted(row = {}) {
+  const proofChain = firstText(row.proofChain, row.proof_chain);
+  const outputOracleFacet = compactObject(
+    row.outputOracleFacet
+    ?? row.output_oracle_facet
+    ?? row.outputOracle
+    ?? row.output_oracle,
+  );
+  return row.backend === 'oidn_hip'
+    && (
+      firstBool(outputOracleFacet.present) === true
+      || firstBool(outputOracleFacet.accepted) === true
+      || Boolean(firstText(outputOracleFacet.schemaVersion, outputOracleFacet.schema_version))
+      || proofChain.includes('output_oracle')
+    );
+}
+
+function oidnHipOutputCoverage(rows) {
+  const oidnRows = rows.filter((row) => row.backend === 'oidn_hip');
+  const attemptedOutputRows = oidnRows.filter(oidnOutputProofAttempted);
+  return acceptedOrRefusedCoverage({
+    rows,
+    id: 'oidn_hip_output',
+    requirement: 'OIDN HIP output proof on ROCm-compatible runtime',
+    acceptedPredicate: (row) => row.backend === 'oidn_hip',
+    refusalPredicate: oidnOutputProofAttempted,
+    missingGap: oidnRows.length === 0
+      ? 'oidn_hip_runtime_proof_required'
+      : attemptedOutputRows.length > 0
+        ? 'oidn_hip_runtime_proof_required'
+        : 'oidn_output_oracle_attempt_required',
+  });
+}
+
 const ROCM_LOCAL_BACKENDS = new Set(['hip', 'hiprt', 'oidn_hip']);
 
 function rowCarriesRocmEvidence(row) {
@@ -29295,13 +29329,7 @@ function planCoverage(rows, context = {}) {
         ),
       missingGap: 'bevy_full_runtime_ledger_required',
     }),
-    acceptedOrRefusedCoverage({
-      rows,
-      id: 'oidn_hip_output',
-      requirement: 'OIDN HIP output proof on ROCm-compatible runtime',
-      acceptedPredicate: (row) => row.backend === 'oidn_hip',
-      missingGap: 'oidn_hip_runtime_proof_required',
-    }),
+    oidnHipOutputCoverage(rows),
     acceptedOrRefusedCoverage({
       rows,
       id: 'opencl_dispatch_readback',
