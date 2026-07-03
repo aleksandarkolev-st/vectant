@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 
 const releaseModulePromise = import("../../scripts/dojo-therapeutic-tomography-release-evidence.mjs");
+const visualReportModulePromise = import("../../scripts/dojo-therapeutic-tomography-visual-report.mjs");
 
 function productionEnv(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -418,6 +419,51 @@ describe("therapeutic tomography production release evidence gate", () => {
     } finally {
       restore();
     }
+  });
+
+  it("generates visual proof only from validated production evidence", async () => {
+    const { generateTherapeuticTomographyVisualReport } = await visualReportModulePromise;
+    const dir = await mkdtemp(join(tmpdir(), "therapeutic-prod-visual-"));
+    const evidencePath = join(dir, "evidence.json");
+    const invalidEvidencePath = join(dir, "invalid-evidence.json");
+    await writeFile(
+      evidencePath,
+      `${JSON.stringify(productionArtifact(), null, 2)}\n`,
+      "utf8"
+    );
+    await writeFile(
+      invalidEvidencePath,
+      `${JSON.stringify({
+        schema_version: "synthi.dojo.therapeuticTomographyReleaseEvidence.v1",
+        hosted_runtime: { url: "https://runtime.example.test/session/demo", authorized: true },
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const result = await generateTherapeuticTomographyVisualReport({
+      evidencePath,
+      outDir: join(dir, "visual"),
+    });
+    expect(existsSync(result.html_path)).toBe(true);
+    expect(existsSync(result.manifest_path)).toBe(true);
+    const html = await readFile(result.html_path, "utf8");
+    const manifest = JSON.parse(await readFile(result.manifest_path, "utf8"));
+    expect(html).toContain("Therapeutic Tomography Production Proof");
+    expect(html).toContain("validated production evidence");
+    expect(html).toContain("https://runtime.prod.synthi.ai/session/session-prod-001");
+    expect(html).toContain("https://probe.prod.synthi.ai/therapeutic/incident-response");
+    expect(manifest).toMatchObject({
+      schema_version: "synthi.dojo.therapeuticTomographyVisualProof.v1",
+      production_evidence_validated: true,
+      hosted_runtime_url: "https://runtime.prod.synthi.ai/session/session-prod-001",
+      signing_provider: "managed-key-service",
+    });
+
+    await expect(generateTherapeuticTomographyVisualReport({
+      evidencePath: invalidEvidencePath,
+      outDir: join(dir, "invalid-visual"),
+    })).rejects.toThrow("therapeutic_tomography_visual_report_invalid_production_evidence");
+    expect(existsSync(join(dir, "invalid-visual", "therapeutic-tomography-production-proof.html"))).toBe(false);
   });
 });
 

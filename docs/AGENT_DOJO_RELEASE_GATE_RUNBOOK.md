@@ -1055,8 +1055,10 @@ Run this sequence for a release candidate:
 11. Run deployed MCP host conformance.
 12. Run therapeutic tomography production evidence against deployed runtime,
     deployed probe service, external durable store, and managed signing.
-13. Run live chaos and soak gates using GKE-safe commands.
-14. Run the release gate verifier over the produced evidence.
+13. Generate the therapeutic tomography visual proof sheet from the validated
+    production evidence artifact.
+14. Run live chaos and soak gates using GKE-safe commands.
+15. Run the release gate verifier over the produced evidence.
 
 Suggested evidence directory layout:
 
@@ -1073,6 +1075,20 @@ tmp/dojo-release/<yyyy-mm-dd>-<git-sha>/
   visual/
   release-gate-verifier.json
 ```
+
+The therapeutic tomography visual proof sheet is generated from the strict
+production JSON artifact and refuses stale, local, loopback, demo, or mocked
+evidence:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-therapeutic-tomography-visual-report.mjs `
+  --evidence docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json `
+  --out-dir tmp/dojo-release/<yyyy-mm-dd>-<git-sha>/visual
+```
+
+Archive the resulting HTML and manifest with the release evidence. Browser or
+PDF screenshots of that HTML are acceptable visual proof only because the HTML
+is generated after strict production evidence validation passes.
 
 ### GKE Live Chaos Command Examples
 
