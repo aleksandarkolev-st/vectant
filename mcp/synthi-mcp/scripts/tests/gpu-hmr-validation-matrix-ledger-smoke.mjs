@@ -2753,6 +2753,53 @@ assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
 assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_runtime_profile_bridge_facet_hash_invalid'
 ));
+const strictAcceptedBridgeDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-strict-accepted',
+);
+await writeJson(
+  path.join(strictAcceptedBridgeDir, 'random-cold-runtime-bridge-strict-accepted.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-strict-accepted',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-strict-accepted.git',
+    immutableCommit: sha256Hex('runtime-bridge-strict-accepted:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofId: 'gpu-runtime-proof:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        strict_runtime_proof_id: 'gpu-runtime-proof:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        proofLedgerId: 'gpu-ledger-proof:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        proof_ledger_id: 'gpu-ledger-proof:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        blockingGaps: [],
+        blocking_gaps: [],
+        adapterResultBlockingGaps: [],
+        adapter_result_blocking_gaps: [],
+      }),
+    },
+  }),
+);
+const strictAcceptedBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [strictAcceptedBridgeDir],
+  includeInvalidated: true,
+});
+const strictAcceptedBridgeCoverage = new Map(
+  strictAcceptedBridgeLedger.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+const strictAcceptedBridgeRuntimeClosure =
+  strictAcceptedBridgeCoverage.get('large_arbitrary_project_runtime_closure');
+const strictAcceptedBridgeRow = strictAcceptedBridgeLedger.rows.find(
+  (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-strict-accepted',
+);
+assert.equal(strictAcceptedBridgeRow?.acceptedForGpuHmr, false);
+assert.equal(strictAcceptedBridgeRow.gpuHmrSuccess, false);
+assert.equal(strictAcceptedBridgeRuntimeClosure?.runtimeProfileBridgeAcceptedCount, 1);
+assert.equal(strictAcceptedBridgeRuntimeClosure.strictRuntimeProofAcceptedCount, 1);
+assert.equal(strictAcceptedBridgeRuntimeClosure.matrixRuntimeIngestionRequired, true);
+assert.equal(strictAcceptedBridgeRuntimeClosure.acceptedForGpuHmr, false);
+assert.equal(strictAcceptedBridgeRuntimeClosure.gpuHmrSuccess, false);
 assert.ok(randomColdRow.openGaps.includes('strict_runtime_ledger_missing'));
 const randomColdCoverage = new Map(
   randomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
@@ -2777,6 +2824,28 @@ assert.ok(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
+const randomColdRuntimeClosure = randomColdCoverage.get('large_arbitrary_project_runtime_closure');
+assert.equal(randomColdRuntimeClosure?.status, 'refused');
+assert.equal(randomColdRuntimeClosure.acceptedForGpuHmr, false);
+assert.equal(randomColdRuntimeClosure.gpuHmrSuccess, false);
+assert.equal(
+  randomColdRuntimeClosure.proofAuthority,
+  'large_arbitrary_project_runtime_closure_obligations_only_not_gpu_hmr_success',
+);
+assert.equal(randomColdRuntimeClosure.runtimeClosureAttempted, true);
+assert.equal(randomColdRuntimeClosure.randomColdPathRowCount, 1);
+assert.equal(randomColdRuntimeClosure.realRocmRowCount, 0);
+assert.equal(randomColdRuntimeClosure.gateCoverage.cold_source_intake.accepted, true);
+assert.equal(
+  randomColdRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted,
+  false,
+);
+assert.ok(randomColdRuntimeClosure.openGaps.includes(
+  'large_arbitrary_project_runtime_adapter_or_app_hook_contract_required',
+));
+assert.ok(randomColdRuntimeClosure.openGaps.includes(
+  'large_arbitrary_project_output_or_visual_oracle_required',
+));
 
 const resultOnlyDirectInputPathDir = path.join(
   tmpRoot,
@@ -16850,6 +16919,29 @@ assert.equal(largeRocmCoverage.sidecarRuntimeConsistency.proven, false);
 assert.equal(largeRocmCoverage.sidecarRuntimeConsistency.status, 'consistency_missing_or_unproven');
 assert.ok(largeRocmCoverage.sidecarRuntimeConsistency.blockingGaps.includes(
   'sidecar_runtime_sidecar_observation_missing',
+));
+const largeArbitraryRuntimeClosure = coverageById.get('large_arbitrary_project_runtime_closure');
+assert.equal(largeArbitraryRuntimeClosure?.status, 'refused');
+assert.equal(largeArbitraryRuntimeClosure.acceptedForGpuHmr, false);
+assert.equal(largeArbitraryRuntimeClosure.gpuHmrSuccess, false);
+assert.equal(
+  largeArbitraryRuntimeClosure.proofAuthority,
+  'large_arbitrary_project_runtime_closure_obligations_only_not_gpu_hmr_success',
+);
+assert.equal(largeArbitraryRuntimeClosure.runtimeClosureAttempted, true);
+assert.equal(
+  largeArbitraryRuntimeClosure.realRocmRowCount,
+  ledger.rows.filter((row) => row.proofMode === 'real_rocm_repo_validation').length,
+);
+assert.equal(largeArbitraryRuntimeClosure.randomColdPathRowCount, 0);
+assert.equal(largeArbitraryRuntimeClosure.gateCoverage.cold_source_intake.accepted, true);
+assert.equal(
+  largeArbitraryRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted,
+  true,
+);
+assert.equal(largeArbitraryRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, false);
+assert.ok(largeArbitraryRuntimeClosure.openGaps.includes(
+  'large_arbitrary_project_strict_runtime_ledger_required',
 ));
 
 const contradictoryRealRocmCoverageQuery = queryGpuHmrValidationMatrixLedger({

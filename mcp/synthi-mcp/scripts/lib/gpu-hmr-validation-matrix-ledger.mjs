@@ -214,6 +214,10 @@ const RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY =
   'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.large_arbitrary_project_runtime_closure_coverage.v1';
+const LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_AUTHORITY =
+  'large_arbitrary_project_runtime_closure_obligations_only_not_gpu_hmr_success';
 const RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1';
 const RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_AUTHORITY =
@@ -29181,6 +29185,326 @@ function realRocmRepositoryTargetCoverage(rows) {
   return coverage;
 }
 
+const LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES = Object.freeze([
+  {
+    key: 'cold_source_intake',
+    gap: 'large_arbitrary_project_cold_source_intake_required',
+  },
+  {
+    key: 'runtime_adapter_or_app_hook_contract',
+    gap: 'large_arbitrary_project_runtime_adapter_or_app_hook_contract_required',
+  },
+  {
+    key: 'artifact_transport',
+    gap: 'large_arbitrary_project_artifact_transport_required',
+  },
+  {
+    key: 'epoch_publication',
+    gap: 'large_arbitrary_project_epoch_publication_required',
+  },
+  {
+    key: 'dispatch_trace',
+    gap: 'large_arbitrary_project_dispatch_trace_required',
+  },
+  {
+    key: 'host_identity',
+    gap: 'large_arbitrary_project_host_identity_required',
+  },
+  {
+    key: 'output_or_visual_oracle',
+    gap: 'large_arbitrary_project_output_or_visual_oracle_required',
+  },
+  {
+    key: 'cpu_gpu_firewall',
+    gap: 'large_arbitrary_project_cpu_gpu_firewall_required',
+  },
+  {
+    key: 'same_process_runtime_oracle',
+    gap: 'large_arbitrary_project_same_process_runtime_oracle_required',
+  },
+  {
+    key: 'runtime_chain',
+    gap: 'large_arbitrary_project_runtime_chain_required',
+  },
+  {
+    key: 'strict_runtime_ledger',
+    gap: 'large_arbitrary_project_strict_runtime_ledger_required',
+  },
+]);
+
+const RUNTIME_ADAPTER_STAGE_CAMEL_KEYS = Object.freeze({
+  artifact_transport: 'artifactTransport',
+  epoch_publication: 'epochPublication',
+  dispatch_trace: 'dispatchTrace',
+  host_identity: 'hostIdentity',
+  output_oracle: 'outputOracle',
+});
+
+function runtimeClosureStageObserved(stageEvents, stage) {
+  const events = compactObject(stageEvents);
+  const stageResults = compactObject(events.stageResults ?? events.stage_results);
+  const stageResult = compactObject(
+    stageResults[stage]
+    ?? stageResults[RUNTIME_ADAPTER_STAGE_CAMEL_KEYS[stage]]
+  );
+  return firstBool(
+    stageResult.observed,
+    stageResult.runtimeObserved,
+    stageResult.runtime_observed,
+  ) === true;
+}
+
+function runtimeClosureRowSignals(row = {}) {
+  const proofMode = firstText(row.proofMode, row.proof_mode);
+  const randomColdPath = proofMode === 'random_large_project_cold_path';
+  const realRocmRepo = proofMode === 'real_rocm_repo_validation';
+  const coldSourceTreeIntake = compactObject(
+    row.coldSourceTreeIntake
+    ?? row.cold_source_tree_intake
+  );
+  const coldTemplate = compactObject(
+    row.coldRuntimeBoundaryEventManifestTemplate
+    ?? row.cold_runtime_boundary_event_manifest_template
+  );
+  const runtimeBridge = compactObject(
+    row.randomColdRuntimeProfileProofBridge
+    ?? row.random_cold_runtime_profile_proof_bridge
+    ?? row.runtimeProfileProofBridge
+    ?? row.runtime_profile_proof_bridge
+  );
+  const runtimeChain = compactObject(
+    row.realRocmRuntimeChain
+    ?? row.real_rocm_runtime_chain
+    ?? row.runtimeChain
+    ?? row.runtime_chain
+  );
+  const stageEvents = compactObject(
+    row.realRocmRuntimeAdapterStageEvents
+    ?? row.real_rocm_runtime_adapter_stage_events
+    ?? row.runtimeAdapterStageEvents
+    ?? row.runtime_adapter_stage_events
+  );
+  const appHookGate = compactObject(
+    row.realRocmAppHookContractGate
+    ?? row.real_rocm_app_hook_contract_gate
+  );
+  const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
+  const firewall = compactObject(row.realRocmFirewall ?? row.real_rocm_firewall);
+  const sameProcessGate = compactObject(
+    row.realRocmSameProcessRuntimeOracleGate
+    ?? row.real_rocm_same_process_runtime_oracle_gate
+  );
+  const targetProcessProvenance = compactObject(
+    row.realRocmRuntimeBoundaryTargetProcessProvenance
+    ?? row.real_rocm_runtime_boundary_target_process_provenance
+  );
+  const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
+  const ledger = compactObject(row.ledger);
+  const fullRuntimeAccepted = acceptedFullRuntimeRow(row);
+  const strictRuntimeProofAccepted =
+    firstBool(runtimeBridge.strictRuntimeProofAccepted, runtimeBridge.strict_runtime_proof_accepted) === true
+    || (
+      runtimeProofArtifact.accepted === true
+      && ledger.present === true
+      && ledger.gpuHmrSuccess === true
+    );
+  const runtimeProfileBridgePresent = runtimeBridge.present === true;
+  const runtimeProfileBridgeAccepted =
+    runtimeProfileBridgePresent
+    && (
+      runtimeBridge.accepted === true
+      || runtimeBridge.acceptedAsRuntimeProfileProofBridge === true
+      || runtimeBridge.accepted_as_runtime_profile_proof_bridge === true
+    );
+  const runtimeClosureAttempted =
+    fullRuntimeAccepted
+    || realRocmRepo
+    || randomColdPath
+    || runtimeProfileBridgePresent
+    || firstBool(row.actualAttempt, row.actual_attempt) === true;
+  const gateAccepted = {
+    cold_source_intake:
+      coldSourceTreeIntake.accepted === true
+      || compactObject(row.realRocmSourceTreeTransport ?? row.real_rocm_source_tree_transport)
+        .accepted === true
+      || fullRuntimeAccepted,
+    runtime_adapter_or_app_hook_contract: appHookGate.accepted === true || fullRuntimeAccepted,
+    artifact_transport:
+      fullRuntimeAccepted
+      || (
+        runtimeChain.accepted === true
+        && Boolean(firstText(runtimeChain.artifactHash, runtimeChain.artifact_hash))
+        && Boolean(firstText(runtimeChain.selectedLoaderTransport, runtimeChain.selected_loader_transport))
+      ),
+    epoch_publication:
+      fullRuntimeAccepted
+      || (
+        runtimeChain.accepted === true
+        && Boolean(firstText(runtimeChain.epoch))
+      ),
+    dispatch_trace:
+      fullRuntimeAccepted
+      || (
+        runtimeChain.accepted === true
+        && Boolean(firstText(runtimeChain.dispatchId, runtimeChain.dispatch_id))
+      ),
+    host_identity:
+      fullRuntimeAccepted
+      || (
+        runtimeChain.accepted === true
+        && Boolean(firstText(runtimeChain.processId, runtimeChain.process_id))
+        && (
+          targetProcessProvenance.accepted === true
+          || sameProcessGate.accepted === true
+        )
+      ),
+    output_or_visual_oracle: outputOracle.accepted === true || fullRuntimeAccepted,
+    cpu_gpu_firewall: firewall.accepted === true || fullRuntimeAccepted,
+    same_process_runtime_oracle: sameProcessGate.accepted === true || fullRuntimeAccepted,
+    runtime_chain: runtimeChain.accepted === true || fullRuntimeAccepted,
+    strict_runtime_ledger: (
+      runtimeProofArtifact.accepted === true
+      && ledger.present === true
+      && ledger.gpuHmrSuccess === true
+    ) || fullRuntimeAccepted,
+  };
+  const gateObserved = {
+    cold_source_intake:
+      gateAccepted.cold_source_intake
+      || coldSourceTreeIntake.present === true,
+    runtime_adapter_or_app_hook_contract:
+      gateAccepted.runtime_adapter_or_app_hook_contract
+      || appHookGate.required === true
+      || coldTemplate.acceptedAsSupportEvidence === true
+      || runtimeProfileBridgePresent,
+    artifact_transport:
+      gateAccepted.artifact_transport
+      || runtimeClosureStageObserved(stageEvents, 'artifact_transport'),
+    epoch_publication:
+      gateAccepted.epoch_publication
+      || runtimeClosureStageObserved(stageEvents, 'epoch_publication'),
+    dispatch_trace:
+      gateAccepted.dispatch_trace
+      || runtimeClosureStageObserved(stageEvents, 'dispatch_trace'),
+    host_identity:
+      gateAccepted.host_identity
+      || runtimeClosureStageObserved(stageEvents, 'host_identity')
+      || targetProcessProvenance.present === true,
+    output_or_visual_oracle:
+      gateAccepted.output_or_visual_oracle
+      || runtimeClosureStageObserved(stageEvents, 'output_oracle')
+      || outputOracle.present === true,
+    cpu_gpu_firewall:
+      gateAccepted.cpu_gpu_firewall
+      || Boolean(firstText(firewall.firewallEvidenceSource, firewall.firewall_evidence_source)),
+    same_process_runtime_oracle:
+      gateAccepted.same_process_runtime_oracle
+      || sameProcessGate.required === true,
+    runtime_chain:
+      gateAccepted.runtime_chain
+      || Boolean(firstText(runtimeChain.schemaVersion, runtimeChain.schema_version)),
+    strict_runtime_ledger:
+      gateAccepted.strict_runtime_ledger
+      || runtimeProofArtifact.present === true
+      || strictRuntimeProofAccepted,
+  };
+  return {
+    row,
+    randomColdPath,
+    realRocmRepo,
+    runtimeClosureAttempted,
+    runtimeProfileBridgePresent,
+    runtimeProfileBridgeAccepted,
+    strictRuntimeProofAccepted,
+    runtimeBoundaryTemplateAccepted:
+      coldTemplate.acceptedAsSupportEvidence === true
+      || coldTemplate.accepted_as_support_evidence === true,
+    gateAccepted,
+    gateObserved,
+  };
+}
+
+function largeArbitraryProjectRuntimeClosureCoverage(rows) {
+  const closureRows = rows.filter((row) =>
+    row.proofMode === 'random_large_project_cold_path'
+    || row.proofMode === 'real_rocm_repo_validation'
+  );
+  const signals = closureRows.map(runtimeClosureRowSignals);
+  const acceptedClosureRows = closureRows.filter(acceptedFullRuntimeRow);
+  const refusalClosureRows = closureRows.filter((row) => row.matrixOutcome === 'refusal_proven');
+  const gateCoverage = Object.fromEntries(LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES.map((gate) => {
+    const acceptedRows = signals.filter((signal) => signal.gateAccepted[gate.key] === true);
+    const observedRows = signals.filter((signal) => signal.gateObserved[gate.key] === true);
+    return [gate.key, {
+      accepted: acceptedRows.length > 0,
+      observed: observedRows.length > 0,
+      acceptedRowCount: acceptedRows.length,
+      accepted_row_count: acceptedRows.length,
+      observedRowCount: observedRows.length,
+      observed_row_count: observedRows.length,
+      missingGap: gate.gap,
+      missing_gap: gate.gap,
+    }];
+  }));
+  const missingGateGaps = LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES
+    .filter((gate) => gateCoverage[gate.key].accepted !== true)
+    .map((gate) => gate.gap);
+  const runtimeProfileBridgePresentCount =
+    signals.filter((signal) => signal.runtimeProfileBridgePresent).length;
+  const runtimeProfileBridgeAcceptedCount =
+    signals.filter((signal) => signal.runtimeProfileBridgeAccepted).length;
+  const strictRuntimeProofAcceptedCount =
+    signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
+  const status = acceptedClosureRows.length > 0
+    ? 'accepted'
+    : refusalClosureRows.length > 0
+      ? 'refused'
+      : closureRows.length > 0
+        ? 'candidate_only'
+        : 'missing';
+  return coverageEntry({
+    id: 'large_arbitrary_project_runtime_closure',
+    requirement: 'Large arbitrary project runtime closure through cold intake, adapter/app-hook contract, same-process artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, runtime chain, and strict proof ledger',
+    status,
+    rows: closureRows,
+    openGaps: closureRows.length > 0
+      ? missingGateGaps
+      : ['large_arbitrary_project_runtime_closure_rows_required'],
+    schemaVersion: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION,
+    schema_version: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION,
+    proofAuthority: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_AUTHORITY,
+    proof_authority: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    runtimeClosureAttempted: signals.some((signal) => signal.runtimeClosureAttempted),
+    runtime_closure_attempted: signals.some((signal) => signal.runtimeClosureAttempted),
+    randomColdPathRowCount: signals.filter((signal) => signal.randomColdPath).length,
+    random_cold_path_row_count: signals.filter((signal) => signal.randomColdPath).length,
+    realRocmRowCount: signals.filter((signal) => signal.realRocmRepo).length,
+    real_rocm_row_count: signals.filter((signal) => signal.realRocmRepo).length,
+    runtimeProfileBridgePresentCount,
+    runtime_profile_bridge_present_count: runtimeProfileBridgePresentCount,
+    runtimeProfileBridgeAcceptedCount,
+    runtime_profile_bridge_accepted_count: runtimeProfileBridgeAcceptedCount,
+    strictRuntimeProofAcceptedCount,
+    strict_runtime_proof_accepted_count: strictRuntimeProofAcceptedCount,
+    matrixRuntimeIngestionRequired:
+      strictRuntimeProofAcceptedCount > 0 && acceptedClosureRows.length === 0,
+    matrix_runtime_ingestion_required:
+      strictRuntimeProofAcceptedCount > 0 && acceptedClosureRows.length === 0,
+    requiredClosureGates: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES.map((gate) => gate.key),
+    required_closure_gates: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES.map((gate) => gate.key),
+    gateCoverage,
+    gate_coverage: gateCoverage,
+  });
+}
+
 function planCoverage(rows, context = {}) {
   const hipRuntimeRows = acceptedRows(rows, (row) =>
     row.backend === 'hip'
@@ -29376,6 +29700,7 @@ function planCoverage(rows, context = {}) {
       proofAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
       proof_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     }),
+    largeArbitraryProjectRuntimeClosureCoverage(rows),
     hiprtVisualPathCoverage({ rows, fullRuntimeRows: hiprtRows }),
     hiprtRunModeCoverage({
       rows,
