@@ -1300,7 +1300,15 @@ async function runRuntimeBoundaryBridgeSelfCheck() {
       oidnHipRuntimePreflightAccepted: true,
     },
   });
-  assert(accepted.accepted === true, `OIDN runtime boundary bridge should accept: ${accepted.failedGates.join(',')}`);
+  assert(
+    accepted.accepted === true,
+    `OIDN runtime boundary bridge should accept: ${JSON.stringify({
+      failedGates: accepted.failedGates,
+      ledgerFailures: accepted.runtimeBoundaryRunModeProof?.runtimeProofArtifact?.proofLedgerQuery?.failedInvariants,
+      limitations: accepted.runtimeBoundaryRunModeProof?.runtimeProofArtifact?.limitations,
+      computeOracleArtifacts: accepted.computeOracleArtifacts,
+    })}`,
+  );
   assert(accepted.gpuHmrSuccess === false, 'OIDN bridge facet itself cannot claim GPU HMR success');
   assert(
     accepted.runtimeBoundaryRunModeProof?.runtimeProofArtifact?.gpuHmrSuccess === true,
