@@ -54,6 +54,45 @@ npm run proof:rocm:source-first:realistic-visual
   hot delta 2 runtime proof: gpu-runtime-proof:sha256:9be160d9e47196be9373b1a59e1b6d82896b6080a29341c333849b1ec1d290ce
   hot delta 2 ledger: gpu-ledger-proof:sha256:b3a2a0d1e4b92ca512b83ec874c6f922c292c2ea199b62f1febc6b862a9ab080
   hot delta 2 visual delta: changed=99.50%, mean_abs=37.29
+
+npm run proof:flow:source-first:visual
+  first sandboxed attempt failed with spawn EPERM while resolving Docker containers
+  rerun with Docker/MCP process permission passed
+  workspace: gpu-agent-split-1783095508609
+  preview: http://localhost:3000/workspace/gpu-agent-split-1783095508609
+  source hash: sha256:9363600ec85c4e9da9ad780cefbe83cb6117ab55976d4eb2ebdb0e3eb6cfde3a
+  source-first ingestion proof: agent-split-source-first-ingestion:sha256:b323108ed74840f9c3ddbcaa41bb61187fb4fb613859dce8c5432aca4881b8e7
+  cold compile proof: gpu-proof:80a750537a81672ca9a46cb018e0ec3460e87a805eeab2f239ab6cb919cd7d18
+  hot delta 1 runtime proof: gpu-runtime-proof:sha256:26e47f9bc2dfd3f909c8c55af1e88b53eea626632c996ba274000a61968ef204
+  hot delta 1 ledger: gpu-ledger-proof:sha256:9e6ab2ede838cc39d2c10d1c855b9f3ad54b11067ac015aa78c414816c6ef6bc
+  hot delta 1 visual delta: changed=2.53%, mean_abs=3.38
+  hot delta 2 runtime proof: gpu-runtime-proof:sha256:19866a9f7887d52a65a897eb364433ec5cacf92f62929956b2aed47448e84175
+  hot delta 2 ledger: gpu-ledger-proof:sha256:28b7f32024c7544691be40f38bfc8c8cba7beb3b330c2d3d97ae09b8f270b12f
+  hot delta 2 visual delta: changed=2.52%, mean_abs=3.42
+  negative ABI edit: refused before GPU HMR
+
+npm run proof:hiprt:runtime-boundary:self-check
+  passed
+  proof: hiprt-warm-runtime-proof:sha256:a971819b66a9a0aa2a041353a5a7683fee2816153f7ca35ee804898bbda9b70f
+  runtime proof artifact: gpu-runtime-proof:sha256:f2645f2cec2c8e20823d999b2660b212f8b3c189dc3ae84a7a815df088bd3cf9
+  matrix proof: gpu-validation-matrix-ledger:sha256:7c03975e9272a0436e20293ea47b0af37ea55f73af8bcdc56af27673b6f24d25
+  row: gpu-validation-matrix-row:sha256:a423aae8614f275a780a491ff3a58a80b4b1c83d89214702541da45943c52a59
+  source-adapted and missing-output paths: rejected
+
+npm run proof:oidn:preflight:self-check
+  passed
+
+npm run proof:validation-matrix
+  passed after Flow/HIPRT/OIDN proof refresh
+  matrix: gpu-validation-matrix-ledger:sha256:1fe771ded2c7b413f23dc09430808e3873d460e3b79f24f86f218e31069d5d00
+  json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260703T163139Z.json
+  rows: 207
+  outcomes: refusal_proven=175, cold_split_proven=10, full_runtime_gpu_hmr=17, deterministic_fission_proven=2, visual_profile_accepted=2, preflight_only=1
+  backends: bevy_wgsl=1, hip=163, hiprt=6, oidn_hip=7, opencl=5, unknown=5, vulkan=7, webgpu=13
+  broad proof: gpu-hmr-broad-library-agnostic-proof:sha256:d92611e746bccd4a437f26d28543d5b785dee8a7685ff647b83dfeff2e855242
+  random cold-path rows: 9
+  source-first visual rows: 4
+  open broad gaps: none
 ```
 
 The current work remains generic and evidence-driven: no row, adapter, bridge, visual profile, or cold-path result may become GPU HMR acceptance because of a project name, fixture name, target string, or scenario label. Earlier July 3 fixes and reruns added these project-agnostic hardening points:
