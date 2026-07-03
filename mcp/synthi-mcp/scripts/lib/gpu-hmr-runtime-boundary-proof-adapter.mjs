@@ -302,15 +302,28 @@ function boundaryEventByStage(events) {
   return map;
 }
 
+function boundaryEventsByStage(events) {
+  const map = new Map();
+  for (const event of events) {
+    if (!event.stage) continue;
+    const existing = map.get(event.stage) ?? [];
+    existing.push(event);
+    map.set(event.stage, existing);
+  }
+  return map;
+}
+
 function runtimeBoundaryFieldFailures(stage, event) {
   if (!event) return [`runtime_boundary_stage_${stage}_missing`];
   const failures = [];
   if (event.successAuthorityClaimed) failures.push('runtime_boundary_event_claims_success_authority');
+  if (event.evidenceRefs.length === 0) failures.push(`${stage}_evidence_refs_missing`);
   if (!event.processId) failures.push(`${stage}_process_id_missing`);
   if (!event.runtimeSessionId) failures.push(`${stage}_runtime_session_missing`);
   if (!event.timestampMonotonicNs && event.timestampMonotonicNs !== 0) {
     failures.push(`${stage}_timestamp_missing`);
   }
+  if (stage !== 'host_identity' && !event.artifactHash) failures.push(`${stage}_artifact_hash_missing`);
   if (stage !== 'host_identity' && !event.artifactId) failures.push(`${stage}_artifact_identity_missing`);
   if (stage === 'epoch_publication' && !event.epoch) failures.push('epoch_publication_epoch_missing');
   if (stage === 'dispatch_trace') {
@@ -335,8 +348,17 @@ function runtimeBoundaryFieldFailures(stage, event) {
 export function buildRuntimeBoundaryStageEvidence(events = []) {
   const normalizedEvents = normalizeRuntimeBoundaryEvents(events);
   const eventMap = boundaryEventByStage(normalizedEvents);
+  const eventGroups = boundaryEventsByStage(normalizedEvents);
   const failedGates = [];
+  for (const event of normalizedEvents) {
+    if (!event.stage) failedGates.push('runtime_boundary_event_stage_unknown');
+    if (event.successAuthorityClaimed) failedGates.push('runtime_boundary_event_claims_success_authority');
+    if (event.evidenceRefs.length === 0) failedGates.push('runtime_boundary_event_evidence_refs_missing');
+  }
   for (const stage of REQUIRED_BOUNDARY_STAGES) {
+    if ((eventGroups.get(stage) ?? []).length > 1) {
+      failedGates.push(`runtime_boundary_stage_${stage}_duplicate`);
+    }
     failedGates.push(...runtimeBoundaryFieldFailures(stage, eventMap.get(stage)));
   }
   const runtimeSessions = compactStringList(normalizedEvents.map((event) => event.runtimeSessionId));
@@ -349,6 +371,13 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
       .filter(Boolean),
   );
   if (afterArtifactIds.length > 1) failedGates.push('runtime_boundary_artifact_identity_mismatch');
+  const afterArtifactHashes = compactStringList(
+    REQUIRED_BOUNDARY_STAGES
+      .filter((stage) => stage !== 'host_identity')
+      .map((stage) => eventMap.get(stage)?.artifactHash)
+      .filter(Boolean),
+  );
+  if (afterArtifactHashes.length > 1) failedGates.push('runtime_boundary_artifact_hash_mismatch');
   const epoch = eventMap.get('epoch_publication')?.epoch;
   const dispatchEpoch = eventMap.get('dispatch_trace')?.epoch;
   const outputEpoch = eventMap.get('output_oracle')?.epoch;
@@ -390,12 +419,18 @@ export function buildRuntimeBoundaryStageEvidence(events = []) {
     stage_events: Object.fromEntries(REQUIRED_BOUNDARY_STAGES.map((stage) => [stage, eventMap.get(stage) ?? null])),
     boundaryLineHashes: normalizedEvents.map((event) => event.lineHash),
     boundary_line_hashes: normalizedEvents.map((event) => event.lineHash),
+    artifactHashAfter: afterArtifactHashes[0] ?? null,
+    artifact_hash_after: afterArtifactHashes[0] ?? null,
     failedGates: [...new Set(failedGates)],
     failed_gates: [...new Set(failedGates)],
   };
 }
 
 export function buildComputeOracleArtifactsFromByteEvidence(input = {}) {
+  const verificationInput = {
+    ...objectOrNull(input.rawReadbackVerification),
+    ...objectOrNull(input.raw_readback_verification),
+  };
   const rawReadbackHash = normalizeSha256(firstText(input.rawReadbackHash, input.raw_readback_hash));
   const checksumBefore = normalizeSha256(firstText(input.checksumBefore, input.checksum_before));
   const checksumAfter = normalizeSha256(firstText(input.checksumAfter, input.checksum_after));
@@ -408,12 +443,32 @@ export function buildComputeOracleArtifactsFromByteEvidence(input = {}) {
   const byteLength = Number(input.rawReadbackByteLength ?? input.raw_readback_byte_length ?? input.byteLength ?? input.byte_length);
   const sliceOffset = Number(input.sliceOffset ?? input.slice_offset ?? objectOrNull(input.deterministicSlice)?.offset ?? 0);
   const sliceLength = Number(input.sliceLength ?? input.slice_length ?? objectOrNull(input.deterministicSlice)?.length ?? byteLength);
+  const rawReadbackHashVerified =
+    firstBool(input.rawReadbackHashVerified, input.raw_readback_hash_verified, verificationInput.hash_verified) === true
+    && rawReadbackHash !== null;
+  const deterministicSliceHashVerified =
+    firstBool(
+      input.deterministicSliceHashVerified,
+      input.deterministic_slice_hash_verified,
+      verificationInput.deterministic_slice_hash_verified,
+    ) === true
+    && deterministicSliceHash !== null;
+  const expectedOutputVerified =
+    firstBool(input.expectedOutputVerified, input.expected_output_verified, verificationInput.expected_output_verified) === true;
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(input.evidenceRefs) ? input.evidenceRefs : []),
+    ...(Array.isArray(input.evidence_refs) ? input.evidence_refs : []),
+    ...(Array.isArray(verificationInput.evidenceRefs) ? verificationInput.evidenceRefs : []),
+    ...(Array.isArray(verificationInput.evidence_refs) ? verificationInput.evidence_refs : []),
+  ]);
   return {
     raw_readback_bin: firstText(input.rawReadbackBin, input.raw_readback_bin) ?? 'runtime-boundary://raw-readback',
     readback_schema_json: firstText(input.readbackSchemaJson, input.readback_schema_json) ?? 'runtime-boundary://readback-schema',
     checksum_before: checksumBefore,
     checksum_after: checksumAfter,
-    expected_output_change: firstBool(input.expectedOutputChange, input.expected_output_change) ?? true,
+    expected_output_change: firstBool(input.expectedOutputChange, input.expected_output_change),
+    expected_output_verified: expectedOutputVerified,
+    expected_output_hash: normalizeSha256(firstText(input.expectedOutputHash, input.expected_output_hash)),
     deterministic_slice: {
       offset: Number.isFinite(sliceOffset) ? sliceOffset : 0,
       length: Number.isFinite(sliceLength) && sliceLength > 0 ? sliceLength : byteLength,
@@ -421,16 +476,17 @@ export function buildComputeOracleArtifactsFromByteEvidence(input = {}) {
       hash: deterministicSliceHash,
     },
     raw_readback_hash: rawReadbackHash,
-    raw_readback_hash_verified: input.rawReadbackHashVerified !== false && rawReadbackHash !== null,
+    raw_readback_hash_verified: rawReadbackHashVerified,
     raw_readback_byte_length: Number.isFinite(byteLength) && byteLength > 0 ? byteLength : null,
     raw_readback_source: firstText(input.rawReadbackSource, input.raw_readback_source) ?? 'runtime_readback',
     deterministic_slice_hash: deterministicSliceHash,
-    deterministic_slice_hash_verified: input.deterministicSliceHashVerified !== false && deterministicSliceHash !== null,
+    deterministic_slice_hash_verified: deterministicSliceHashVerified,
     raw_readback_verification: {
-      hash_verified: input.rawReadbackHashVerified !== false && rawReadbackHash !== null,
+      hash_verified: rawReadbackHashVerified,
       byte_length: Number.isFinite(byteLength) && byteLength > 0 ? byteLength : null,
       deterministic_slice_hash: deterministicSliceHash,
-      deterministic_slice_hash_verified: input.deterministicSliceHashVerified !== false && deterministicSliceHash !== null,
+      deterministic_slice_hash_verified: deterministicSliceHashVerified,
+      expected_output_verified: expectedOutputVerified,
       slice_bounds_verified:
         Number.isFinite(byteLength)
         && byteLength > 0
@@ -444,7 +500,86 @@ export function buildComputeOracleArtifactsFromByteEvidence(input = {}) {
     producer: firstText(input.producer) ?? 'runtime_boundary_proof_adapter',
     timestamp_after_dispatch: firstTimestamp(input.timestampAfterDispatch, input.timestamp_after_dispatch),
     epoch: firstText(input.epoch),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
   };
+}
+
+function computeOracleArtifactsFromInput(input = {}, fallback = {}) {
+  const explicit = objectOrNull(input.computeOracleArtifacts) ?? objectOrNull(input.compute_oracle_artifacts);
+  if (explicit) return explicit;
+  const byteEvidence = {
+    ...objectOrNull(input.computeOracleByteEvidence),
+    ...objectOrNull(input.compute_oracle_byte_evidence),
+  };
+  if (Object.keys(byteEvidence).length === 0) return null;
+  return buildComputeOracleArtifactsFromByteEvidence({
+    ...byteEvidence,
+    ...fallback,
+  });
+}
+
+function computeOracleEvidenceRefs(artifacts) {
+  const source = objectOrNull(artifacts) ?? {};
+  const verification = {
+    ...objectOrNull(source.rawReadbackVerification),
+    ...objectOrNull(source.raw_readback_verification),
+  };
+  return compactStringList([
+    ...(Array.isArray(source.evidenceRefs) ? source.evidenceRefs : []),
+    ...(Array.isArray(source.evidence_refs) ? source.evidence_refs : []),
+    ...(Array.isArray(verification.evidenceRefs) ? verification.evidenceRefs : []),
+    ...(Array.isArray(verification.evidence_refs) ? verification.evidence_refs : []),
+  ]);
+}
+
+function computeOracleVerificationFailures(computeOracleArtifacts) {
+  const source = objectOrNull(computeOracleArtifacts);
+  if (!source) return ['runtime_boundary_compute_oracle_artifacts_missing'];
+  const verification = {
+    ...objectOrNull(source.rawReadbackVerification),
+    ...objectOrNull(source.raw_readback_verification),
+  };
+  const rawHash = normalizeSha256(firstText(source.rawReadbackHash, source.raw_readback_hash));
+  const slice = objectOrNull(source.deterministicSlice) ?? objectOrNull(source.deterministic_slice) ?? {};
+  const deterministicSliceHash = normalizeSha256(firstText(
+    source.deterministicSliceHash,
+    source.deterministic_slice_hash,
+    slice.hash,
+  ));
+  const checksumBefore = normalizeSha256(firstText(source.checksumBefore, source.checksum_before));
+  const checksumAfter = normalizeSha256(firstText(source.checksumAfter, source.checksum_after));
+  const byteLength = Number(
+    source.rawReadbackByteLength
+    ?? source.raw_readback_byte_length
+    ?? verification.byte_length
+    ?? verification.byteLength,
+  );
+  const rawHashVerified =
+    firstBool(source.rawReadbackHashVerified, source.raw_readback_hash_verified, verification.hash_verified) === true;
+  const deterministicSliceHashVerified =
+    firstBool(
+      source.deterministicSliceHashVerified,
+      source.deterministic_slice_hash_verified,
+      verification.deterministic_slice_hash_verified,
+    ) === true;
+  const expectedOutputVerified =
+    firstBool(source.expectedOutputVerified, source.expected_output_verified, verification.expected_output_verified) === true;
+  const expectedOutputChange = firstBool(source.expectedOutputChange, source.expected_output_change);
+  return [
+    rawHash ? null : 'runtime_boundary_compute_oracle_raw_readback_hash_missing',
+    rawHashVerified ? null : 'runtime_boundary_compute_oracle_raw_readback_hash_unverified',
+    Number.isFinite(byteLength) && byteLength > 0 ? null : 'runtime_boundary_compute_oracle_raw_readback_bytes_missing',
+    deterministicSliceHash ? null : 'runtime_boundary_compute_oracle_deterministic_slice_hash_missing',
+    deterministicSliceHashVerified ? null : 'runtime_boundary_compute_oracle_deterministic_slice_hash_unverified',
+    checksumBefore ? null : 'runtime_boundary_compute_oracle_checksum_before_missing',
+    checksumAfter ? null : 'runtime_boundary_compute_oracle_checksum_after_missing',
+    expectedOutputVerified ? null : 'runtime_boundary_compute_oracle_expected_output_not_verified',
+    expectedOutputChange === true && checksumBefore && checksumAfter && checksumBefore === checksumAfter
+      ? 'runtime_boundary_compute_oracle_expected_change_missing'
+      : null,
+    computeOracleEvidenceRefs(source).length > 0 ? null : 'runtime_boundary_compute_oracle_evidence_refs_missing',
+  ].filter(Boolean);
 }
 
 export function buildRuntimeBoundaryInputEvidence(input = {}) {
@@ -460,10 +595,7 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
   const editId = firstText(input.editId, input.edit_id, input.sourceEditId, input.source_edit_id);
   const targetId = firstText(input.targetId, input.target_id);
   const backend = firstText(input.backend);
-  const computeOracleArtifacts = objectOrNull(input.computeOracleArtifacts)
-    ?? objectOrNull(input.compute_oracle_artifacts)
-    ?? objectOrNull(input.computeOracleByteEvidence)
-    ?? objectOrNull(input.compute_oracle_byte_evidence);
+  const computeOracleArtifacts = computeOracleArtifactsFromInput(input);
   const failedGates = [
     projectId ? null : 'runtime_boundary_project_id_missing',
     editId ? null : 'runtime_boundary_edit_id_missing',
@@ -480,7 +612,7 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
       ? 'runtime_boundary_artifact_hash_unchanged'
       : null,
     contractHash ? null : 'runtime_boundary_contract_hash_missing',
-    computeOracleArtifacts ? null : 'runtime_boundary_compute_oracle_artifacts_missing',
+    ...computeOracleVerificationFailures(computeOracleArtifacts),
   ].filter(Boolean);
   return {
     schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
@@ -514,6 +646,41 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
     targetId,
     target_id: targetId,
     backend,
+    computeOracleEvidenceRefs: computeOracleEvidenceRefs(computeOracleArtifacts),
+    compute_oracle_evidence_refs: computeOracleEvidenceRefs(computeOracleArtifacts),
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvidence) {
+  const failedGates = [
+    stageEvidence.artifactHashAfter ? null : 'runtime_boundary_observed_artifact_hash_after_missing',
+    inputEvidence.artifactHashAfter
+      && stageEvidence.artifactHashAfter
+      && inputEvidence.artifactHashAfter !== stageEvidence.artifactHashAfter
+      ? 'runtime_boundary_input_artifact_hash_after_mismatch'
+      : null,
+    inputEvidence.artifactHashBefore
+      && stageEvidence.artifactHashAfter
+      && inputEvidence.artifactHashBefore === stageEvidence.artifactHashAfter
+      ? 'runtime_boundary_observed_artifact_matches_before_hash'
+      : null,
+  ].filter(Boolean);
+  return {
+    schemaVersion: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
+    schema_version: RUNTIME_BOUNDARY_PROOF_ADAPTER_SCHEMA_VERSION,
+    proofAuthority: RUNTIME_BOUNDARY_PROOF_ADAPTER_AUTHORITY,
+    proof_authority: RUNTIME_BOUNDARY_PROOF_ADAPTER_AUTHORITY,
+    accepted: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    inputArtifactHashAfter: inputEvidence.artifactHashAfter,
+    input_artifact_hash_after: inputEvidence.artifactHashAfter,
+    observedArtifactHashAfter: stageEvidence.artifactHashAfter,
+    observed_artifact_hash_after: stageEvidence.artifactHashAfter,
     failedGates,
     failed_gates: failedGates,
   };
@@ -592,8 +759,8 @@ function buildBoundaryProofComponents(input, stageEvidence) {
   const dispatch = stages.dispatch_trace;
   const host = stages.host_identity;
   const output = stages.output_oracle;
-  const backend = firstText(input.backend) ?? 'hip';
-  const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after, artifactTransport?.artifactHash));
+  const backend = firstText(input.backend);
+  const artifactAfterHash = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const artifactBeforeHash = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
   const artifactAfterId = artifactIdFromHash(artifactAfterHash);
   const artifactBeforeId = artifactIdFromHash(artifactBeforeHash) ?? 'no-old-generation';
@@ -608,22 +775,12 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     input.kernelName,
     input.kernel_name,
     dispatch?.dispatchTableEntry?.split(':')[0],
-    'runtime_boundary_kernel',
   );
-  const sourcePaths = compactStringList(input.sourcePaths ?? input.source_paths ?? ['runtime-boundary://device-source']);
-  const compileTarget = firstText(input.compileTarget, input.compile_target, input.gpuArch, input.gpu_arch) ?? 'runtime-boundary-target';
-  const compiler = firstText(input.compiler) ?? (backend === 'opencl' ? 'opencl-c' : 'hipcc');
-  const compilerArgsHash = normalizeSha256(firstText(input.compilerArgsHash, input.compiler_args_hash)) ?? sha256Stable({
-    sourcePaths,
-    entryPoint,
-    compileTarget,
-  });
-  const contractHash = normalizeSha256(firstText(input.contractHash, input.contract_hash)) ?? sha256Stable({
-    backend,
-    artifactAfterHash,
-    dispatchId,
-    outputTargetId,
-  });
+  const sourcePaths = compactStringList(input.sourcePaths ?? input.source_paths);
+  const compileTarget = firstText(input.compileTarget, input.compile_target, input.gpuArch, input.gpu_arch);
+  const compiler = firstText(input.compiler);
+  const compilerArgsHash = normalizeSha256(firstText(input.compilerArgsHash, input.compiler_args_hash));
+  const contractHash = normalizeSha256(firstText(input.contractHash, input.contract_hash));
   const evidencePrefix = `runtime-boundary:${runtimeSessionId}:${dispatchId}`;
   const boundaryRefs = runtimeBoundaryEvidenceRefs(stageEvidence);
   const compileRefs = compactStringList([
@@ -776,7 +933,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         retirementStrategy: 'stream_event',
       },
     },
-    evidenceRefs: [epoch.evidenceRefs[0] ?? `runtime-boundary:epoch:${epoch.lineHash}`],
+    evidenceRefs: epoch.evidenceRefs,
   };
   const artifactTransportProof = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
@@ -791,7 +948,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     processId,
     eventId: artifactTransport.eventId ?? `${evidencePrefix}:load`,
     timestampMonotonicNs: artifactTransport.timestampMonotonicNs,
-    evidenceRefs: [artifactTransport.evidenceRefs[0] ?? `runtime-boundary:artifact-transport:${artifactTransport.lineHash}`],
+    evidenceRefs: artifactTransport.evidenceRefs,
   };
   const kernelParam = {
     name: 'output',
@@ -800,7 +957,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     allocationId: outputTargetId,
     runtime_proven: true,
     runtimeProven: true,
-    evidenceRefs: [`worker-log:launch_arg_provenance:${runtimeSessionId}:${dispatchId}:output`],
+    evidenceRefs: dispatch.evidenceRefs,
   };
   const dispatchProof = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
@@ -812,7 +969,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     runtimeSessionConsistent: true,
     argProvenanceObserved: true,
     argProvenanceComplete: true,
-    argProvenanceEvidenceRefs: [`worker-log:launch_arg_provenance:${runtimeSessionId}:${dispatchId}:output`],
+    argProvenanceEvidenceRefs: dispatch.evidenceRefs,
     argProvenanceRecords: [kernelParam],
     unknownArgCount: 0,
     abiProof,
@@ -840,16 +997,12 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     kernelName: entryPoint,
     launchApi: firstText(input.launchApi, input.launch_api) ?? 'synthi_gpu_launch',
     kernelParams: [kernelParam],
-    evidenceRefs: [dispatch.evidenceRefs[0] ?? `worker-log:synthi_gpu_launch:${runtimeSessionId}:${dispatchId}`],
+    evidenceRefs: dispatch.evidenceRefs,
   };
-  const computeOracleArtifacts = objectOrNull(input.computeOracleArtifacts)
-    ?? objectOrNull(input.compute_oracle_artifacts)
-    ?? buildComputeOracleArtifactsFromByteEvidence({
-      ...objectOrNull(input.computeOracleByteEvidence),
-      ...objectOrNull(input.compute_oracle_byte_evidence),
-      epoch: epoch.epoch,
-      timestampAfterDispatch: output.timestampMonotonicNs,
-    });
+  const computeOracleArtifacts = computeOracleArtifactsFromInput(input, {
+    epoch: epoch.epoch,
+    timestampAfterDispatch: output.timestampMonotonicNs,
+  });
   const outputProof = {
     schemaVersion: 'synthi.gpu.hmr.proof.v1',
     resultState: 'gpu-hmr-output-oracle-proven',
@@ -864,7 +1017,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
       kind: 'compute',
       target_id: outputTargetId,
       compute_only_target_verified: true,
-      evidence_refs: [output.evidenceRefs[0] ?? `worker-log:output_oracle:${runtimeSessionId}:${dispatchId}`],
+      evidence_refs: output.evidenceRefs,
     },
     outputOracle: {
       kind: output.oracleKind === 'output_oracle' ? 'buffer_checksum' : output.oracleKind,
@@ -885,13 +1038,13 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         kind: 'compute',
         target_id: outputTargetId,
         compute_only_target_verified: true,
-        evidence_refs: [output.evidenceRefs[0] ?? `worker-log:output_oracle:${runtimeSessionId}:${dispatchId}`],
+        evidence_refs: output.evidenceRefs,
       },
     },
     oracleArtifacts: {
       compute_oracle_artifacts: computeOracleArtifacts,
     },
-    evidenceRefs: [output.evidenceRefs[0] ?? `worker-log:output_oracle:${runtimeSessionId}:${dispatchId}`],
+    evidenceRefs: output.evidenceRefs,
   };
   const hostPreservationProof = classifyGpuHmrHostPreservationProof({
     identityChecksPassed: true,
@@ -899,22 +1052,14 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     identitySnapshotObserved: true,
     identitySnapshotLineageObserved: true,
     requiredIdentityRolesObserved: true,
-    identityEvidenceRefs: [
-      `worker-log:host_identity:runner_process`,
-      `worker-log:host_identity:host_state`,
-      `worker-log:host_identity:stream_context`,
-    ],
-    identitySnapshotEvidenceRefs: [
-      `worker-log:host_identity_snapshot:${runtimeSessionId}:runner_process:1->2`,
-      `worker-log:host_identity_snapshot:${runtimeSessionId}:host_state:1->2`,
-      `worker-log:host_identity_snapshot:${runtimeSessionId}:stream_context:1->2`,
-    ],
+    identityEvidenceRefs: host.evidenceRefs,
+    identitySnapshotEvidenceRefs: host.evidenceRefs,
   });
   return {
     backend,
-    projectId: firstText(input.projectId, input.project_id, input.workspaceSlug, input.workspace_slug) ?? 'runtime-boundary-project',
-    editId: firstText(input.editId, input.edit_id, input.sourceEditId, input.source_edit_id) ?? 'runtime-boundary-gpu-edit',
-    targetId: firstText(input.targetId, input.target_id) ?? `${backend}-runtime-boundary`,
+    projectId: firstText(input.projectId, input.project_id, input.workspaceSlug, input.workspace_slug),
+    editId: firstText(input.editId, input.edit_id, input.sourceEditId, input.source_edit_id),
+    targetId: firstText(input.targetId, input.target_id),
     artifactAfterHash,
     artifactAfterId,
     artifactBeforeHash,
@@ -975,13 +1120,18 @@ function runtimeProofFailureCodes(runtimeProofArtifact, strictGate, stageEvidenc
 export function buildRuntimeBoundaryProofAdapter(input = {}) {
   const stageEvidence = buildRuntimeBoundaryStageEvidence(input.runtimeBoundaryEvents ?? input.runtime_boundary_events ?? []);
   const inputEvidence = buildRuntimeBoundaryInputEvidence(input);
+  const inputStageBindingEvidence = buildRuntimeBoundaryInputStageBindingEvidence(inputEvidence, stageEvidence);
   let components = null;
   let runtimeProofArtifact = null;
   let strictGate = null;
   let fullRuntimeProof = null;
   let acceptanceContract = null;
 
-  if (stageEvidence.accepted === true && inputEvidence.accepted === true) {
+  if (
+    stageEvidence.accepted === true
+    && inputEvidence.accepted === true
+    && inputStageBindingEvidence.accepted === true
+  ) {
     components = buildBoundaryProofComponents(input, stageEvidence);
     fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: components.sourceProofs,
@@ -1067,6 +1217,7 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
   const allFailedGates = compactStringList([
     ...failedGates,
     ...inputEvidence.failedGates,
+    ...inputStageBindingEvidence.failedGates,
   ]);
   const accepted =
     stageEvidence.accepted === true
@@ -1091,6 +1242,8 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
     stage_evidence: stageEvidence,
     inputEvidence,
     input_evidence: inputEvidence,
+    inputStageBindingEvidence,
+    input_stage_binding_evidence: inputStageBindingEvidence,
     fullRuntimeProof,
     full_runtime_proof: fullRuntimeProof,
     runtimeProofArtifact,

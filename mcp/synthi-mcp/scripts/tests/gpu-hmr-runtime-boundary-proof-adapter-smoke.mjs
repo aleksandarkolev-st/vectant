@@ -55,7 +55,10 @@ function boundaryEvents(overrides = {}) {
       stream: 'stream-1',
       dispatchTableEntry: 'generic_kernel:epoch-7',
       timestampMonotonicNs: 300,
-      evidenceRefs: [`worker-log:synthi_gpu_launch:${session}:${dispatchId}`],
+      evidenceRefs: [
+        `worker-log:synthi_gpu_launch:${session}:${dispatchId}`,
+        `worker-log:launch_arg_provenance:${session}:${dispatchId}:output`,
+      ],
       ...(overrides.dispatchTrace ?? {}),
     },
     {
@@ -67,7 +70,14 @@ function boundaryEvents(overrides = {}) {
       contextId: 'ctx-1',
       stream: 'stream-1',
       timestampMonotonicNs: 310,
-      evidenceRefs: ['runtime-boundary:host-identity'],
+      evidenceRefs: [
+        'worker-log:host_identity:runner_process',
+        'worker-log:host_identity:host_state',
+        'worker-log:host_identity:stream_context',
+        `worker-log:host_identity_snapshot:${session}:runner_process:1->2`,
+        `worker-log:host_identity_snapshot:${session}:host_state:1->2`,
+        `worker-log:host_identity_snapshot:${session}:stream_context:1->2`,
+      ],
       ...(overrides.hostIdentity ?? {}),
     },
     {
@@ -98,6 +108,12 @@ function computeOracle() {
     sliceLength: 64,
     timestampAfterDispatch: 400,
     epoch: 'epoch-7',
+    rawReadbackHashVerified: true,
+    deterministicSliceHashVerified: true,
+    expectedOutputVerified: true,
+    expectedOutputHash: HASH_B,
+    expectedOutputChange: true,
+    evidenceRefs: ['compute-oracle:raw-readback-bytes'],
   });
 }
 
@@ -202,7 +218,8 @@ const missingOracleBytes = buildRuntimeBoundaryProofAdapter({
 });
 assert.equal(missingOracleBytes.accepted, false);
 assert.ok(
-  missingOracleBytes.failedGates.includes('compute_oracle_raw_readback_hash_unverified')
+  missingOracleBytes.failedGates.includes('runtime_boundary_compute_oracle_raw_readback_hash_unverified')
+    || missingOracleBytes.failedGates.includes('compute_oracle_raw_readback_hash_unverified')
     || missingOracleBytes.failedGates.includes('proof_ledger_recomputed_query_rejected'),
   missingOracleBytes.failedGates.join(','),
 );
@@ -216,6 +233,76 @@ assert.equal(missingSourceIdentity.runtimeProofArtifact, null);
 assert.ok(
   missingSourceIdentity.failedGates.includes('runtime_boundary_source_paths_missing'),
   missingSourceIdentity.failedGates.join(','),
+);
+
+const missingEventEvidenceRefs = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  runtimeBoundaryEvents: boundaryEvents().map((event) => ({
+    ...event,
+    evidenceRefs: [],
+  })),
+});
+assert.equal(missingEventEvidenceRefs.accepted, false);
+assert.equal(missingEventEvidenceRefs.runtimeProofArtifact, null);
+assert.ok(
+  missingEventEvidenceRefs.failedGates.includes('runtime_boundary_event_evidence_refs_missing')
+    || missingEventEvidenceRefs.failedGates.includes('artifact_transport_evidence_refs_missing'),
+  missingEventEvidenceRefs.failedGates.join(','),
+);
+
+const inputEventArtifactMismatch = buildRuntimeBoundaryProofAdapter(adapterInput({
+  artifactHashAfter: HASH_E,
+}));
+assert.equal(inputEventArtifactMismatch.accepted, false);
+assert.equal(inputEventArtifactMismatch.runtimeProofArtifact, null);
+assert.ok(
+  inputEventArtifactMismatch.failedGates.includes('runtime_boundary_input_artifact_hash_after_mismatch'),
+  inputEventArtifactMismatch.failedGates.join(','),
+);
+
+const duplicateForgedStage = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  runtimeBoundaryEvents: [
+    ...boundaryEvents(),
+    {
+      ...boundaryEvents().find((event) => event.kind === 'output_oracle'),
+      eventId: 'output-forged-duplicate',
+      gpuHmrSuccess: true,
+      evidenceRefs: ['runtime-boundary:forged-duplicate-output'],
+    },
+  ],
+});
+assert.equal(duplicateForgedStage.accepted, false);
+assert.equal(duplicateForgedStage.runtimeProofArtifact, null);
+assert.ok(
+  duplicateForgedStage.failedGates.includes('runtime_boundary_stage_output_oracle_duplicate'),
+  duplicateForgedStage.failedGates.join(','),
+);
+assert.ok(
+  duplicateForgedStage.failedGates.includes('runtime_boundary_event_claims_success_authority'),
+  duplicateForgedStage.failedGates.join(','),
+);
+
+const declaredOnlyOracle = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  computeOracleArtifacts: buildComputeOracleArtifactsFromByteEvidence({
+    rawReadbackHash: HASH_B,
+    checksumBefore: HASH_A,
+    checksumAfter: HASH_B,
+    deterministicSliceHash: HASH_C,
+    rawReadbackByteLength: 128,
+    sliceOffset: 0,
+    sliceLength: 64,
+    timestampAfterDispatch: 400,
+    epoch: 'epoch-7',
+  }),
+});
+assert.equal(declaredOnlyOracle.accepted, false);
+assert.equal(declaredOnlyOracle.runtimeProofArtifact, null);
+assert.ok(
+  declaredOnlyOracle.failedGates.includes('runtime_boundary_compute_oracle_expected_output_not_verified')
+    || declaredOnlyOracle.failedGates.includes('runtime_boundary_compute_oracle_evidence_refs_missing'),
+  declaredOnlyOracle.failedGates.join(','),
 );
 
 console.log('[ok] GPU HMR runtime-boundary proof adapter self-check passed');
