@@ -15783,12 +15783,34 @@ async function hiprtWarmRow(json, filePath, context) {
     ?? runtimeProofArtifact.proofLedger
     ?? runtimeProofArtifact.proof_ledger,
   );
+  const acceptanceContract = compactObject(
+    json.acceptanceContract
+    ?? json.acceptance_contract
+    ?? runtimeProofArtifact.acceptanceContract
+    ?? runtimeProofArtifact.acceptance_contract,
+  );
+  const contractOutputOracleTargetBinding = ledgerRecordMissingOutputTargetBinding(ledgerRecord)
+    ? outputOracleTargetSupplementalBinding(
+      firstOutputOracleTargetValue(
+        json.outputOracleTarget,
+        json.output_oracle_target,
+        runtimeProofArtifact.outputOracleTarget,
+        runtimeProofArtifact.output_oracle_target,
+        acceptanceContract.outputOracleTarget,
+        acceptanceContract.output_oracle_target,
+      ),
+      ledgerRecord,
+    )
+    : null;
   const outputOracleFacet = await ledgerOutputOracleFacet(
     ledger,
     proofLedger,
     visual,
     context.repoRoot,
     path.dirname(filePath),
+    {
+      supplementalBindings: compactObjectList([contractOutputOracleTargetBinding]),
+    },
   );
   const oracleRegionAccepted =
     acceptance.oracleRegionNonBlank === true
@@ -15799,12 +15821,6 @@ async function hiprtWarmRow(json, filePath, context) {
     && oracleRegionRecomputed.blankFrameRejected === true
     && finiteNumber(oracleRegion.changed?.visiblePixelRatio) > 0
     && finiteNumber(oracleRegion.changed?.visiblePixels) > 0;
-  const acceptanceContract = compactObject(
-    json.acceptanceContract
-    ?? json.acceptance_contract
-    ?? runtimeProofArtifact.acceptanceContract
-    ?? runtimeProofArtifact.acceptance_contract,
-  );
   const hiprtContract = hiprtContractEvidenceFacet(
     { acceptanceContract },
     runtimeProofArtifact,
@@ -20844,6 +20860,22 @@ function runtimeChainOutputOracleBindingOverlay(runtimeChain) {
     afterDispatchId,
     evidenceRef: firstText(chain.proofId, chain.proof_id, chain.runtimeChainId, chain.runtime_chain_id),
   };
+}
+
+function firstOutputOracleTargetValue(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    const objectValue = compactObject(value);
+    if (Object.keys(objectValue).length > 0) return objectValue;
+  }
+  return null;
+}
+
+function ledgerRecordMissingOutputTargetBinding(ledgerRecord = {}) {
+  const record = compactObject(ledgerRecord);
+  const dispatchEvent = compactObject(record.dispatchEvent ?? record.dispatch_event);
+  const outputEvent = compactObject(record.outputEvent ?? record.output_event);
+  return !eventOutputTargetId(dispatchEvent) || !eventOutputTargetId(outputEvent);
 }
 
 function outputOracleTargetSupplementalBinding(targetValue = {}, ledgerRecord = {}) {

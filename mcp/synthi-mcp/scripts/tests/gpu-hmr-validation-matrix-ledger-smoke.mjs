@@ -1364,6 +1364,31 @@ function runtimeProofMaterialsWithRecordOutputTarget(scope, options = {}) {
   return mutated;
 }
 
+function runtimeProofMaterialsWithoutEventOutputTargets(scope, options = {}) {
+  const materials = runtimeProofMaterials(scope, options);
+  const record = cloneJson(materials.proofLedgerQuery.record ?? materials.proofLedger.records[0]);
+  record.dispatchEvent = withoutOutputTargetFields(record.dispatchEvent ?? record.dispatch_event);
+  record.outputEvent = withoutOutputTargetFields(record.outputEvent ?? record.output_event);
+  delete record.dispatch_event;
+  delete record.output_event;
+  delete record.outputOracleTarget;
+  delete record.output_oracle_target;
+
+  const proofLedger = buildGpuHmrProofLedger(record);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const mutated = cloneJson(materials);
+  mutated.proofLedger = proofLedger;
+  mutated.proof_ledger = proofLedger;
+  mutated.proofLedgerQuery = proofLedgerQuery;
+  mutated.proof_ledger_query = proofLedgerQuery;
+  mutated.runtimeProofArtifact.proofLedger = proofLedger;
+  mutated.runtimeProofArtifact.proof_ledger = proofLedger;
+  mutated.runtimeProofArtifact.proofLedgerQuery = proofLedgerQuery;
+  mutated.runtimeProofArtifact.proof_ledger_query = proofLedgerQuery;
+  mutated.runtime_proof_artifact = mutated.runtimeProofArtifact;
+  return mutated;
+}
+
 function computeProofLedgerMaterials(scope, {
   projectId,
   backend = 'hip',
@@ -1614,12 +1639,27 @@ function hiprtWarmProofArtifact({
     minChangedPixelRatio: 0.01,
     minMeanAbsDelta8bit: 1,
   },
+  stripLedgerEventOutputTargets = false,
+  bindRuntimeVisualArtifacts = false,
 }) {
-  const materials = runtimeProofMaterials('hot_delta_1', {
+  const runtimeMaterialsOptions = {
     projectId: profileId,
     visualRoot: path.dirname(diffPath),
     sourceAdaptedVisualProfile: true,
-  });
+  };
+  const baseMaterials = stripLedgerEventOutputTargets
+    ? runtimeProofMaterialsWithoutEventOutputTargets('hot_delta_1', runtimeMaterialsOptions)
+    : runtimeProofMaterials('hot_delta_1', runtimeMaterialsOptions);
+  const materials = bindRuntimeVisualArtifacts
+    ? withVisualOracleArtifacts(
+      baseMaterials,
+      completeVisualOracleArtifacts('hot_delta_1', path.dirname(diffPath), visualArtifactSet({
+        before: baselinePath,
+        after: changedPath,
+        diff: diffPath,
+      })),
+    )
+    : baseMaterials;
   const runtimeProbeInstrumentation = hiprtRuntimeProbeInstrumentation(profileId);
   const acceptanceContract = hiprtAcceptanceContract(`hiprt:${slug}`, {
     projectId: profileId,
@@ -8604,6 +8644,22 @@ await writeJson(path.join(hiprtDir, 'accepted-hiprt-proof.json'), hiprtWarmProof
   diffPath: hiprtAcceptedDiff,
   oracleRegionClaimNonBlank: true,
 }));
+const hiprtContractTargetProof = hiprtWarmProofArtifact({
+  slug: 'accepted-hiprt-contract-output-target',
+  profileId: 'accepted-hiprt-contract-output-target',
+  baselinePath: hiprtAcceptedBefore,
+  changedPath: hiprtAcceptedAfter,
+  diffPath: hiprtAcceptedDiff,
+  oracleRegionClaimNonBlank: true,
+  stripLedgerEventOutputTargets: true,
+  bindRuntimeVisualArtifacts: true,
+});
+hiprtContractTargetProof.coverageObligations = { perTargetRunModes: false };
+hiprtContractTargetProof.coverage_obligations = { per_target_run_modes: false };
+await writeJson(
+  path.join(hiprtDir, 'accepted-hiprt-contract-output-target-proof.json'),
+  hiprtContractTargetProof,
+);
 await writeJson(path.join(hiprtDir, 'forged-hiprt-visual-threshold-proof.json'), hiprtWarmProofArtifact({
   slug: 'forged-hiprt-visual-threshold',
   profileId: 'forged-hiprt-visual-threshold',
@@ -15942,6 +15998,28 @@ assert.equal(acceptedHiprt.visual.visualThresholdValidation.accepted, true);
 assert.equal(acceptedHiprt.visual.visualThresholdValidation.source, 'matrix_recomputed_png_pixels_declared_thresholds');
 assert.ok(acceptedHiprt.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 assert.ok(acceptedHiprt.openGaps.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
+
+const contractTargetHiprt = ledger.rows.find((row) => {
+  const contractTarget = row.acceptanceContract?.output_oracle_target?.target_id
+    ?? row.acceptanceContract?.outputOracleTarget?.targetId;
+  const binding = row.outputOracleFacet?.outputBinding;
+  return row.backend === 'hiprt'
+    && row.proofMode === 'same-process'
+    && contractTarget
+    && row.visualProfileAccepted === true
+    && row.acceptedForGpuHmr === false
+    && binding?.accepted === true
+    && binding.outputTargetId === contractTarget
+    && binding.dispatchOutputTargetId === contractTarget
+    && binding.oracleOutputTargetId === contractTarget
+    && binding.supplementalBindingSources?.includes('proof_artifact_output_oracle_target_binding');
+});
+assert.equal(contractTargetHiprt?.matrixOutcome, 'visual_profile_accepted');
+assert.equal(contractTargetHiprt.acceptedForGpuHmr, false);
+assert.equal(contractTargetHiprt.visualProfileAccepted, true);
+assert.equal(contractTargetHiprt.sourceAdaptedProfile, true);
+assert.equal(contractTargetHiprt.outputOracleFacet.accepted, true);
+assert.ok(contractTargetHiprt.reasons.includes('source_adapted_profile_not_no_shim_gpu_hmr'));
 
 const forgedHiprtVisualThreshold = ledger.rows.find(
   (row) => row.targetId === 'forged-hiprt-visual-threshold',
