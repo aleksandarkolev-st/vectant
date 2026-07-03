@@ -30,7 +30,7 @@
     <header>
       <div>
         <h1>CodeSite Docker Overlay Runtime Proof</h1>
-        <p class="subtitle">Verified 2026-07-03T15:20:42.563Z. Active CodeSite runtime sessions require explicit overlay roots, mount a read-only base plus writable overlay, run rootless writes through /workspace, preserve the base repo, and address overlay sessions by explicit runtime identity.</p>
+        <p class="subtitle">Verified 2026-07-03T22:39:23.252Z. Active CodeSite runtime sessions require explicit overlay roots, mount a read-only base plus writable overlay, run rootless writes through /workspace, preserve the base repo, and address overlay sessions by explicit runtime identity.</p>
       </div>
       <div class="stamp">PASS</div>
     </header>
@@ -38,13 +38,13 @@
     <section>
       <h2>Assertions</h2>
       <table><thead><tr><th>Status</th><th>Assertion</th></tr></thead><tbody>
-        <tr><td class="ok">PASS</td><td>All host focused tests passed</td></tr><tr><td class="ok">PASS</td><td>Dockerized Node runtime tests passed</td></tr><tr><td class="ok">PASS</td><td>Live Docker overlay smoke passed</td></tr><tr><td class="ok">PASS</td><td>Overlay mount is visible at /workspace</td></tr><tr><td class="ok">PASS</td><td>Rootless user wrote through /workspace</td></tr><tr><td class="ok">PASS</td><td>Read-only base repo stayed unchanged</td></tr><tr><td class="ok">PASS</td><td>Merged view changed after overlay write</td></tr><tr><td class="ok">PASS</td><td>Overlay upperdir captured rootless changes</td></tr>
+        <tr><td class="ok">PASS</td><td>All host focused tests passed without skipped cases</td></tr><tr><td class="ok">PASS</td><td>Dockerized Node runtime tests passed without skipped cases</td></tr><tr><td class="ok">PASS</td><td>Live Docker overlay smoke passed</td></tr><tr><td class="ok">PASS</td><td>Overlay mount is visible at /workspace</td></tr><tr><td class="ok">PASS</td><td>Rootless user wrote through /workspace</td></tr><tr><td class="ok">PASS</td><td>Read-only base repo stayed unchanged</td></tr><tr><td class="ok">PASS</td><td>Merged view changed after overlay write</td></tr><tr><td class="ok">PASS</td><td>Overlay upperdir captured rootless changes</td></tr>
       </tbody></table>
     </section>
     <section>
       <h2>Focused Tests</h2>
-      <table><thead><tr><th>Surface</th><th>Status</th><th>Pass</th><th>Fail</th><th>Command</th></tr></thead><tbody>
-        <tr><td>host:workspaceRuntimeContainer.test.js</td><td class="ok">PASS</td><td>29</td><td>0</td><td>node --test backend/collab-server/__tests__/workspaceRuntimeContainer.test.js</td></tr><tr><td>host:containerPortMonitor.test.js</td><td class="ok">PASS</td><td>6</td><td>0</td><td>node --test backend/collab-server/__tests__/containerPortMonitor.test.js</td></tr><tr><td>host:codesiteFs.test.js</td><td class="ok">PASS</td><td>40</td><td>0</td><td>node --test backend/collab-server/__tests__/codesiteFs.test.js</td></tr><tr><td>host:terminalRouting.test.js</td><td class="ok">PASS</td><td>10</td><td>0</td><td>node --test backend/collab-server/__tests__/terminalRouting.test.js</td></tr><tr><td>docker-node:workspaceRuntimeContainer.test.js</td><td class="ok">PASS</td><td>29</td><td>0</td><td>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/workspaceRuntimeContainer.test.js</td></tr><tr><td>docker-node:containerPortMonitor.test.js</td><td class="ok">PASS</td><td>6</td><td>0</td><td>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/containerPortMonitor.test.js</td></tr>
+      <table><thead><tr><th>Surface</th><th>Status</th><th>Pass</th><th>Fail</th><th>Skipped</th><th>Command</th></tr></thead><tbody>
+        <tr><td>host:workspaceRuntimeContainer.test.js</td><td class="ok">PASS</td><td>29</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/workspaceRuntimeContainer.test.js</td></tr><tr><td>host:containerPortMonitor.test.js</td><td class="ok">PASS</td><td>6</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/containerPortMonitor.test.js</td></tr><tr><td>host:codesiteFs.test.js</td><td class="ok">PASS</td><td>45</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/codesiteFs.test.js</td></tr><tr><td>host:terminalRouting.test.js</td><td class="ok">PASS</td><td>13</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/terminalRouting.test.js</td></tr><tr><td>docker-node:workspaceRuntimeContainer.test.js</td><td class="ok">PASS</td><td>29</td><td>0</td><td>0</td><td>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/workspaceRuntimeContainer.test.js</td></tr><tr><td>docker-node:containerPortMonitor.test.js</td><td class="ok">PASS</td><td>6</td><td>0</td><td>0</td><td>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/containerPortMonitor.test.js</td></tr>
       </tbody></table>
     </section>
     <section>
@@ -55,32 +55,32 @@
         <tr><th>Rootless Write</th><td class="ok">Observed</td></tr>
         <tr><th>Base Preservation</th><td class="ok">Preserved</td></tr>
       </tbody></table>
-      <pre># docker-volume-create-base\ncodesite_overlay_base_be390194df60
-\n\n# docker-volume-create-overlay\ncodesite_overlay_work_be390194df60
-\n\n# docker-seed-base\n\n\n# docker-start-runtime\ncd2b0624ef182eb851a3611a05b9ef49279de77961e71a9aad7dd594cb19ec62
+      <pre># docker-volume-create-base\ncodesite_overlay_base_6bb70254d8fa
+\n\n# docker-volume-create-overlay\ncodesite_overlay_work_6bb70254d8fa
+\n\n# docker-seed-base\n\n\n# docker-start-runtime\nbfe45c7975af06e506b0d446ec0c4a70ec6939995d1e8f86b965f4df99c19830
 \n\n# docker-overlay-setup-as-root\noverlay /workspace overlay rw,relatime,lowerdir=/codesite/base,upperdir=/codesite/overlay/upper,workdir=/codesite/overlay/work,uuid=on 0 0
 \n\n# docker-rootless-workspace-write\ntotal 16
-drwxr-xr-x    1 rootless rootless      4096 Jul  3 15:20 .
-drwxr-xr-x    1 rootless rootless      4096 Jul  3 15:20 ..
--rw-r--r--    1 rootless rootless         7 Jul  3 15:20 app.txt
--rw-r--r--    1 rootless rootless         4 Jul  3 15:20 old.txt
+drwxr-xr-x    1 rootless rootless      4096 Jul  3 22:39 .
+drwxr-xr-x    1 rootless rootless      4096 Jul  3 22:39 ..
+-rw-r--r--    1 rootless rootless         7 Jul  3 22:39 app.txt
+-rw-r--r--    1 rootless rootless         4 Jul  3 22:39 old.txt
 \n\n# docker-overlay-inspect\noverlay /workspace overlay rw,relatime,lowerdir=/codesite/base,upperdir=/codesite/overlay/upper,workdir=/codesite/overlay/work,uuid=on 0 0
 MERGED_APP=after
 BASE_APP=before
 /codesite/overlay/upper:
 total 16
-drwxr-xr-x    3 rootless rootless      4096 Jul  3 15:20 .
-drwxr-xr-x    4 root     root          4096 Jul  3 15:20 ..
-drwxr-xr-x    2 rootless rootless      4096 Jul  3 15:20 src
+drwxr-xr-x    3 rootless rootless      4096 Jul  3 22:39 .
+drwxr-xr-x    4 root     root          4096 Jul  3 22:39 ..
+drwxr-xr-x    2 rootless rootless      4096 Jul  3 22:39 src
 
 /codesite/overlay/upper/src:
 total 20
-drwxr-xr-x    2 rootless rootless      4096 Jul  3 15:20 .
-drwxr-xr-x    3 rootless rootless      4096 Jul  3 15:20 ..
--rw-r--r--    1 rootless rootless         6 Jul  3 15:20 app.txt
--rw-r--r--    1 rootless rootless         4 Jul  3 15:20 new.txt
-c---------    2 root     root        0,   0 Jul  3 15:20 old.txt
--rw-r--r--    1 rootless rootless         0 Jul  3 15:20 rootless-proof.txt
+drwxr-xr-x    2 rootless rootless      4096 Jul  3 22:39 .
+drwxr-xr-x    3 rootless rootless      4096 Jul  3 22:39 ..
+-rw-r--r--    1 rootless rootless         6 Jul  3 22:39 app.txt
+-rw-r--r--    1 rootless rootless         4 Jul  3 22:39 new.txt
+c---------    2 root     root        0,   0 Jul  3 22:39 old.txt
+-rw-r--r--    1 rootless rootless         0 Jul  3 22:39 rootless-proof.txt
 </pre>
     </section>
   </main>

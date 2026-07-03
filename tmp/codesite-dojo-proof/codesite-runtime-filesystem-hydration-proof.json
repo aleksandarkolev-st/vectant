@@ -1,6 +1,6 @@
 {
   "schemaVersion": "synthi.codesite.runtimeFilesystemHydrationProof.v1",
-  "generatedAt": "2026-07-03T18:46:51.567Z",
+  "generatedAt": "2026-07-03T22:38:56.211Z",
   "ok": true,
   "assertions": [
     {
@@ -47,6 +47,17 @@
       }
     },
     {
+      "name": "syntaxRuntimeFs command completed with no skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        }
+      }
+    },
+    {
       "name": "syntaxTerminal command exited successfully",
       "ok": true,
       "details": {
@@ -57,6 +68,17 @@
           "fail": 0
         },
         "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxTerminal command completed with no skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        }
       }
     },
     {
@@ -73,20 +95,46 @@
       }
     },
     {
+      "name": "syntaxServer command completed with no skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        }
+      }
+    },
+    {
       "name": "runtimeFs command exited successfully",
       "ok": true,
       "details": {
         "command": "node --test backend/collab-server/__tests__/runtimeFilesystem.test.js",
         "summary": {
-          "tests": 3,
+          "tests": 5,
           "suites": 0,
-          "pass": 3,
+          "pass": 5,
           "fail": 0,
           "cancelled": 0,
           "skipped": 0,
           "todo": 0
         },
         "exitCode": 0
+      }
+    },
+    {
+      "name": "runtimeFs command completed with no skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 5,
+          "suites": 0,
+          "pass": 5,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
       }
     },
     {
@@ -97,13 +145,28 @@
         "summary": {
           "tests": 51,
           "suites": 0,
-          "pass": 50,
+          "pass": 51,
           "fail": 0,
           "cancelled": 0,
-          "skipped": 1,
+          "skipped": 0,
           "todo": 0
         },
         "exitCode": 0
+      }
+    },
+    {
+      "name": "runtimeSurface command completed with no skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 51,
+          "suites": 0,
+          "pass": 51,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
       }
     },
     {
@@ -112,15 +175,30 @@
       "details": {
         "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/runtimeFilesystem.js && node --test backend/collab-server/__tests__/runtimeFilesystem.test.js",
         "summary": {
-          "tests": 3,
+          "tests": 5,
           "suites": 0,
-          "pass": 3,
+          "pass": 5,
           "fail": 0,
           "cancelled": 0,
           "skipped": 0,
           "todo": 0
         },
         "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerRuntimeFs command completed with no skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 5,
+          "suites": 0,
+          "pass": 5,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
       }
     }
   ],
@@ -167,33 +245,33 @@
       "exitCode": 0,
       "signal": null,
       "summary": {
-        "tests": 3,
+        "tests": 5,
         "suites": 0,
-        "pass": 3,
+        "pass": 5,
         "fail": 0,
         "cancelled": 0,
         "skipped": 0,
         "todo": 0
       },
       "outputTail": [
-        "ok 2 - active CodeSite runtime filesystem reuses an already initialized repo without hydrating",
+        "ok 4 - runtime filesystem reads active transaction authority before legacy hydration",
         "  ---",
-        "  duration_ms: 0.201942",
+        "  duration_ms: 383.171893",
         "  ...",
         "# Subtest: inactive runtime filesystem keeps legacy hydration behavior",
-        "ok 3 - inactive runtime filesystem keeps legacy hydration behavior",
+        "ok 5 - inactive runtime filesystem keeps legacy hydration behavior",
         "  ---",
-        "  duration_ms: 0.753775",
+        "  duration_ms: 307.34958",
         "  ...",
-        "1..3",
-        "# tests 3",
+        "1..5",
+        "# tests 5",
         "# suites 0",
-        "# pass 3",
+        "# pass 5",
         "# fail 0",
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 5859.687975"
+        "# duration_ms 12228.056725"
       ]
     },
     {
@@ -204,31 +282,31 @@
       "summary": {
         "tests": 51,
         "suites": 0,
-        "pass": 50,
+        "pass": 51,
         "fail": 0,
         "cancelled": 0,
-        "skipped": 1,
+        "skipped": 0,
         "todo": 0
       },
       "outputTail": [
         "ok 50 - buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected",
         "  ---",
-        "  duration_ms: 0.451708",
+        "  duration_ms: 0.408224",
         "  ...",
         "# Subtest: pickRuntimeScopeForSlug matches slug → runtimeScope, else null",
         "ok 51 - pickRuntimeScopeForSlug matches slug → runtimeScope, else null",
         "  ---",
-        "  duration_ms: 0.372412",
+        "  duration_ms: 0.154598",
         "  ...",
         "1..51",
         "# tests 51",
         "# suites 0",
-        "# pass 50",
+        "# pass 51",
         "# fail 0",
         "# cancelled 0",
-        "# skipped 1",
+        "# skipped 0",
         "# todo 0",
-        "# duration_ms 222.790944"
+        "# duration_ms 517.980385"
       ]
     },
     {
@@ -237,33 +315,33 @@
       "exitCode": 0,
       "signal": null,
       "summary": {
-        "tests": 3,
+        "tests": 5,
         "suites": 0,
-        "pass": 3,
+        "pass": 5,
         "fail": 0,
         "cancelled": 0,
         "skipped": 0,
         "todo": 0
       },
       "outputTail": [
-        "ok 2 - active CodeSite runtime filesystem reuses an already initialized repo without hydrating",
+        "ok 4 - runtime filesystem reads active transaction authority before legacy hydration",
         "  ---",
-        "  duration_ms: 0.364152",
+        "  duration_ms: 144.821363",
         "  ...",
         "# Subtest: inactive runtime filesystem keeps legacy hydration behavior",
-        "ok 3 - inactive runtime filesystem keeps legacy hydration behavior",
+        "ok 5 - inactive runtime filesystem keeps legacy hydration behavior",
         "  ---",
-        "  duration_ms: 0.920322",
+        "  duration_ms: 97.395943",
         "  ...",
-        "1..3",
-        "# tests 3",
+        "1..5",
+        "# tests 5",
         "# suites 0",
-        "# pass 3",
+        "# pass 5",
         "# fail 0",
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 5681.02463"
+        "# duration_ms 17984.472029"
       ]
     }
   ],

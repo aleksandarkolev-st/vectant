@@ -125,10 +125,6 @@ test('runtimeTerminalTarget picks the runtime container under the sysbox flag, e
   assert.deepEqual(runtimeTerminalTarget(false), { useSysboxRuntime: false, container: 'worker' });
 });
 
-// S3-T2 — DEFERRED (written + skipped): a real terminal execs into the runtime pod
-// and `docker build/run/compose` work against the workspace's own daemon.
-test('terminal execs into the runtime pod and docker works', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
-
 // Slice-1 (real programs) — pure launch-target decision for a managed program.
 // container + sysbox → the runtime pod (precedence); container + hybrid only →
 // the dev-hybrid container; container + neither → unavailable (fail loud);

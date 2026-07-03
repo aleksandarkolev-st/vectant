@@ -23,12 +23,18 @@ function compact(text, max = 6000) {
 function parseTap(output) {
   const text = String(output || '');
   const read = (name) => Number(text.match(new RegExp(`# ${name} (\\d+)`))?.[1] || 0);
+  const fail = read('fail');
+  const skipped = read('skipped');
+  const cancelled = read('cancelled');
+  const todo = read('todo');
   return {
     tests: read('tests'),
     pass: read('pass'),
-    fail: read('fail'),
-    skipped: read('skipped'),
-    ok: read('fail') === 0 && read('pass') > 0,
+    fail,
+    cancelled,
+    skipped,
+    todo,
+    ok: fail === 0 && skipped === 0 && cancelled === 0 && todo === 0 && read('pass') > 0,
   };
 }
 
@@ -224,8 +230,8 @@ function renderHtml(proof) {
     </section>
     <section>
       <h2>Focused Tests</h2>
-      <table><thead><tr><th>Surface</th><th>Status</th><th>Pass</th><th>Fail</th><th>Command</th></tr></thead><tbody>
-        ${[...proof.hostTests, ...proof.dockerNodeTests].map((test) => `<tr><td>${escapeHtml(test.name)}</td><td class="${test.ok ? 'ok' : 'fail'}">${test.ok ? 'PASS' : 'FAIL'}</td><td>${test.tap?.pass || 0}</td><td>${test.tap?.fail || 0}</td><td>${escapeHtml(test.command)}</td></tr>`).join('')}
+      <table><thead><tr><th>Surface</th><th>Status</th><th>Pass</th><th>Fail</th><th>Skipped</th><th>Command</th></tr></thead><tbody>
+        ${[...proof.hostTests, ...proof.dockerNodeTests].map((test) => `<tr><td>${escapeHtml(test.name)}</td><td class="${test.ok && test.tap?.ok ? 'ok' : 'fail'}">${test.ok && test.tap?.ok ? 'PASS' : 'FAIL'}</td><td>${test.tap?.pass || 0}</td><td>${test.tap?.fail || 0}</td><td>${test.tap?.skipped || 0}</td><td>${escapeHtml(test.command)}</td></tr>`).join('')}
       </tbody></table>
     </section>
     <section>
@@ -291,8 +297,8 @@ try {
 }
 
 const assertions = [
-  { name: 'All host focused tests passed', ok: hostTests.every((test) => test.ok) },
-  { name: 'Dockerized Node runtime tests passed', ok: dockerNodeTests.every((test) => test.ok) },
+  { name: 'All host focused tests passed without skipped cases', ok: hostTests.every((test) => test.ok && test.tap?.ok) },
+  { name: 'Dockerized Node runtime tests passed without skipped cases', ok: dockerNodeTests.every((test) => test.ok && test.tap?.ok) },
   { name: 'Live Docker overlay smoke passed', ok: Boolean(dockerOverlaySmoke.ok) },
   { name: 'Overlay mount is visible at /workspace', ok: /\/workspace/.test(dockerOverlaySmoke.mountLine || '') },
   { name: 'Rootless user wrote through /workspace', ok: Boolean(dockerOverlaySmoke.rootlessWriteObserved) },

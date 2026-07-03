@@ -179,6 +179,14 @@ async function main() {
       summary: command.summary,
       exitCode: command.exitCode,
     });
+    assert(
+      Number(command.summary?.skipped || 0) === 0
+        && Number(command.summary?.todo || 0) === 0
+        && Number(command.summary?.cancelled || 0) === 0,
+      `${command.name} command completed with no skipped/todo/cancelled tests`,
+      assertions,
+      { summary: command.summary },
+    );
   }
 
   const proof = {
