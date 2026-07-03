@@ -26,12 +26,15 @@ Options:
   --vendor auto|cuda|rocm  GPU target for validation scripts. Default: auto.
   --arch ARCH              Override GPU arch hint, e.g. gfx1201, sm_80, sm_120.
   --slug SLUG              Workspace slug for validation.
-  --validate NAME          none | agent-split | dynamic | flow | vector.
+  --validate NAME          none | agent-split | dynamic | flow | flow-source-first | realistic-raytrace | vector.
                            Default: none.
   --help, -h               Show this help.
 
-Recommended full user-path validation:
-  scripts/run-project.sh --build --validate agent-split
+Recommended source-first visual validation:
+  scripts/run-project.sh --build --validate flow-source-first
+
+High-fidelity deterministic visual validation:
+  scripts/run-project.sh --build --validate realistic-raytrace
 
 Use --vendor/--arch only when you want to override auto detection.
 
@@ -111,9 +114,9 @@ case "$vendor" in
 esac
 
 case "$validation" in
-  none|agent-split|dynamic|flow|vector) ;;
+  none|agent-split|dynamic|flow|flow-source-first|realistic-raytrace|vector) ;;
   *)
-    echo "--validate must be none, agent-split, dynamic, flow, or vector" >&2
+    echo "--validate must be none, agent-split, dynamic, flow, flow-source-first, realistic-raytrace, or vector" >&2
     exit 2
     ;;
 esac
@@ -252,6 +255,8 @@ if [ -z "$slug" ]; then
     agent-split) slug="gpu-agent-split-${ts}" ;;
     dynamic) slug="gpu-dynamic-${ts}" ;;
     flow) slug="gpu-flow-${ts}" ;;
+    flow-source-first) slug="gpu-flow-source-first-${ts}" ;;
+    realistic-raytrace) slug="gpu-realistic-raytrace-${ts}" ;;
     vector) slug="gpu-vector-${ts}" ;;
   esac
 fi
@@ -279,6 +284,12 @@ case "$validation" in
     export SYNTHI_GPU_HMR_FIXTURE=flow
     export ONLY_PHASES=FLOW
     node scripts/gpu-hmr-test.mjs
+    ;;
+  flow-source-first)
+    node scripts/gpu-hmr-source-first-visual-proof.mjs --fixture flow
+    ;;
+  realistic-raytrace)
+    node scripts/gpu-hmr-source-first-visual-proof.mjs --profile scripts/profiles/agent-realistic-raytrace-scene.json
     ;;
   vector)
     export SYNTHI_GPU_HMR_FIXTURE=vector
