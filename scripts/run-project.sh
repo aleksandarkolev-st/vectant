@@ -12,6 +12,9 @@ slug=""
 vendor="${SYNTHI_GPU_VENDOR:-auto}"
 arch="${SYNTHI_GPU_ARCH:-}"
 arch_source=""
+source_manifest="${SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH:-}}"
+source_root="${SYNTHI_GPU_AGENT_SOURCE_ROOT:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT:-}}"
+source_authority="${SYNTHI_GPU_AGENT_SOURCE_AUTHORITY:-${SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY:-}}"
 
 usage() {
   cat <<'USAGE'
@@ -26,8 +29,13 @@ Options:
   --vendor auto|cuda|rocm  GPU target for validation scripts. Default: auto.
   --arch ARCH              Override GPU arch hint, e.g. gfx1201, sm_80, sm_120.
   --slug SLUG              Workspace slug for validation.
-  --validate NAME          none | agent-split | dynamic | flow | flow-source-first | realistic-raytrace | vector.
+  --validate NAME          none | agent-split | dynamic | flow | flow-source-first | realistic-raytrace |
+                           source-first-visual | vector.
                            Default: none.
+  --source-manifest PATH   Source-tree manifest for --validate source-first-visual.
+  --source-root PATH       Source root for --validate source-first-visual.
+  --source-authority NAME  Source authority for --validate source-first-visual, e.g.
+                           direct_local_git_repo_path, user_source_files, workspace_source_files.
   --help, -h               Show this help.
 
 Recommended source-first visual validation:
@@ -35,6 +43,9 @@ Recommended source-first visual validation:
 
 High-fidelity deterministic visual validation:
   scripts/run-project.sh --build --validate realistic-raytrace
+
+Generic arbitrary source-first visual validation:
+  scripts/run-project.sh --validate source-first-visual --source-root /path/to/project --source-authority direct_local_git_repo_path
 
 Use --vendor/--arch only when you want to override auto detection.
 
@@ -92,6 +103,30 @@ while [ "$#" -gt 0 ]; do
       fi
       validation="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
       ;;
+    --source-manifest)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--source-manifest requires a value" >&2
+        exit 2
+      fi
+      source_manifest="$1"
+      ;;
+    --source-root)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--source-root requires a value" >&2
+        exit 2
+      fi
+      source_root="$1"
+      ;;
+    --source-authority)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--source-authority requires a value" >&2
+        exit 2
+      fi
+      source_authority="$1"
+      ;;
     --help|-h)
       usage
       exit 0
@@ -114,12 +149,17 @@ case "$vendor" in
 esac
 
 case "$validation" in
-  none|agent-split|dynamic|flow|flow-source-first|realistic-raytrace|vector) ;;
+  none|agent-split|dynamic|flow|flow-source-first|realistic-raytrace|source-first-visual|vector) ;;
   *)
-    echo "--validate must be none, agent-split, dynamic, flow, flow-source-first, realistic-raytrace, or vector" >&2
+    echo "--validate must be none, agent-split, dynamic, flow, flow-source-first, realistic-raytrace, source-first-visual, or vector" >&2
     exit 2
     ;;
 esac
+
+if [ "$validation" = "source-first-visual" ] && [ -z "$source_manifest" ] && [ -z "$source_root" ]; then
+  echo "--validate source-first-visual requires --source-manifest or --source-root" >&2
+  exit 2
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required but was not found in PATH" >&2
@@ -257,6 +297,7 @@ if [ -z "$slug" ]; then
     flow) slug="gpu-flow-${ts}" ;;
     flow-source-first) slug="gpu-flow-source-first-${ts}" ;;
     realistic-raytrace) slug="gpu-realistic-raytrace-${ts}" ;;
+    source-first-visual) slug="gpu-source-first-visual-${ts}" ;;
     vector) slug="gpu-vector-${ts}" ;;
   esac
 fi
@@ -269,6 +310,17 @@ echo "    slug: $SLUG"
 echo "    vendor: $SYNTHI_GPU_VENDOR"
 if [ -n "${SYNTHI_GPU_ARCH:-}" ]; then
   echo "    arch: $SYNTHI_GPU_ARCH"
+fi
+if [ "$validation" = "source-first-visual" ]; then
+  if [ -n "$source_manifest" ]; then
+    echo "    source manifest: $source_manifest"
+  fi
+  if [ -n "$source_root" ]; then
+    echo "    source root: $source_root"
+  fi
+  if [ -n "$source_authority" ]; then
+    echo "    source authority: $source_authority"
+  fi
 fi
 
 cd "$repo_root/mcp/synthi-mcp"
@@ -290,6 +342,19 @@ case "$validation" in
     ;;
   realistic-raytrace)
     node scripts/gpu-hmr-source-first-visual-proof.mjs --profile scripts/profiles/agent-realistic-raytrace-scene.json
+    ;;
+  source-first-visual)
+    source_first_args=()
+    if [ -n "$source_manifest" ]; then
+      source_first_args+=(--source-manifest "$source_manifest")
+    fi
+    if [ -n "$source_root" ]; then
+      source_first_args+=(--source-root "$source_root")
+    fi
+    if [ -n "$source_authority" ]; then
+      source_first_args+=(--source-authority "$source_authority")
+    fi
+    node scripts/gpu-hmr-source-first-visual-proof.mjs "${source_first_args[@]}"
     ;;
   vector)
     export SYNTHI_GPU_HMR_FIXTURE=vector
