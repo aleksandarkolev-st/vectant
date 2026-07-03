@@ -214,6 +214,10 @@ const RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY =
   'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1';
+const RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_AUTHORITY =
+  'random_large_project_selection_audit_only_not_gpu_hmr_success';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY =
@@ -2741,6 +2745,170 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
   };
 }
 
+function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
+  const raw = compactObject(facet);
+  if (Object.keys(raw).length === 0) {
+    return {
+      present: false,
+      accepted: true,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(raw.schemaVersion, raw.schema_version, raw.schema);
+  const proofAuthority = firstText(raw.proofAuthority, raw.proof_authority, raw.authority);
+  const accepted = firstBool(raw.accepted, raw.acceptedAsSelectionAudit, raw.accepted_as_selection_audit);
+  const acceptedForGpuHmr = firstBool(raw.acceptedForGpuHmr, raw.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(raw.gpuHmrSuccess, raw.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    raw.canSatisfyRuntimeProof,
+    raw.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    raw.canSatisfyDispatchProof,
+    raw.can_satisfy_dispatch_proof,
+  );
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(raw.projectNameWhitelist) ? raw.projectNameWhitelist : []),
+    ...(Array.isArray(raw.project_name_whitelist) ? raw.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(raw.specificTargetIdsAllowed) ? raw.specificTargetIdsAllowed : []),
+    ...(Array.isArray(raw.specific_target_ids_allowed) ? raw.specific_target_ids_allowed : []),
+  ]);
+  const authorityClaims = compactStringList([
+    ...(Array.isArray(raw.authorityClaims) ? raw.authorityClaims : []),
+    ...(Array.isArray(raw.authority_claims) ? raw.authority_claims : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(raw.blockingGaps) ? raw.blockingGaps : []),
+    ...(Array.isArray(raw.blocking_gaps) ? raw.blocking_gaps : []),
+  ]);
+  const selectedResultsMatch = firstBool(
+    raw.selectedResultsMatch,
+    raw.selected_results_match,
+  );
+  const selectedCount = finiteNumber(raw.selectedCount ?? raw.selected_count);
+  const expectedSelectedCount = finiteNumber(context.selectedCount);
+  const resultCount = finiteNumber(raw.resultCount ?? raw.result_count);
+  const expectedResultCount = finiteNumber(context.resultCount);
+  const directSourceRequired = firstBool(raw.directSourceRequired, raw.direct_source_required);
+  const directUserSourceCount = finiteNumber(
+    raw.directUserSourceCount
+    ?? raw.direct_user_source_count,
+  );
+  const sourceMode = firstText(raw.sourceMode, raw.source_mode);
+  const samplePoolExplicitlyRequested = firstBool(
+    raw.samplePoolExplicitlyRequested,
+    raw.sample_pool_explicitly_requested,
+  );
+  const failedGates = compactStringList([
+    schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_SCHEMA_VERSION
+      ? null
+      : 'random_large_project_cold_path_selection_audit_schema_invalid',
+    proofAuthority === RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_AUTHORITY
+      ? null
+      : 'random_large_project_cold_path_selection_audit_authority_invalid',
+    accepted === true ? null : 'random_large_project_cold_path_selection_audit_not_accepted',
+    acceptedForGpuHmr === false
+      ? null
+      : 'random_large_project_cold_path_selection_audit_claimed_gpu_hmr_acceptance',
+    gpuHmrSuccess === false
+      ? null
+      : 'random_large_project_cold_path_selection_audit_claimed_gpu_hmr_success',
+    canSatisfyRuntimeProof === false
+      ? null
+      : 'random_large_project_cold_path_selection_audit_claimed_runtime_authority',
+    canSatisfyDispatchProof === false
+      ? null
+      : 'random_large_project_cold_path_selection_audit_claimed_dispatch_authority',
+    firstBool(raw.targetNameIndependent, raw.target_name_independent) === true
+      ? null
+      : 'random_large_project_cold_path_selection_audit_target_name_dependent',
+    projectNameWhitelist.length === 0
+      ? null
+      : 'random_large_project_cold_path_selection_audit_project_whitelist_present',
+    specificTargetIdsAllowed.length === 0
+      ? null
+      : 'random_large_project_cold_path_selection_audit_target_whitelist_present',
+    selectedResultsMatch === true
+      ? null
+      : 'random_large_project_cold_path_selection_audit_result_mismatch',
+    expectedSelectedCount === null || selectedCount === null || selectedCount === expectedSelectedCount
+      ? null
+      : 'random_large_project_cold_path_selection_audit_selected_count_mismatch',
+    expectedResultCount === null || resultCount === null || resultCount === expectedResultCount
+      ? null
+      : 'random_large_project_cold_path_selection_audit_result_count_mismatch',
+    authorityClaims.length === 0
+      ? null
+      : 'random_large_project_cold_path_selection_audit_authority_claim_present',
+    blockingGaps.length === 0
+      ? null
+      : 'random_large_project_cold_path_selection_audit_blocking_gap_present',
+    directSourceRequired === true && !(directUserSourceCount > 0)
+      ? 'random_large_project_cold_path_selection_audit_direct_source_missing'
+      : null,
+    sourceMode === 'configured_sample_pool' && samplePoolExplicitlyRequested !== true
+      ? 'random_large_project_cold_path_selection_audit_sample_pool_not_explicit'
+      : null,
+  ]);
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceMode,
+    source_mode: sourceMode,
+    deterministicSelectionAlgorithm: firstText(
+      raw.deterministicSelectionAlgorithm,
+      raw.deterministic_selection_algorithm,
+    ),
+    deterministic_selection_algorithm: firstText(
+      raw.deterministicSelectionAlgorithm,
+      raw.deterministic_selection_algorithm,
+    ),
+    targetNameIndependent: firstBool(raw.targetNameIndependent, raw.target_name_independent) === true,
+    target_name_independent: firstBool(raw.targetNameIndependent, raw.target_name_independent) === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    directSourceRequired: directSourceRequired === true,
+    direct_source_required: directSourceRequired === true,
+    samplePoolExplicitlyRequested: samplePoolExplicitlyRequested === true,
+    sample_pool_explicitly_requested: samplePoolExplicitlyRequested === true,
+    directUserSourceCount: directUserSourceCount ?? null,
+    direct_user_source_count: directUserSourceCount ?? null,
+    configuredPoolCount: finiteNumber(raw.configuredPoolCount ?? raw.configured_pool_count) ?? null,
+    configured_pool_count: finiteNumber(raw.configuredPoolCount ?? raw.configured_pool_count) ?? null,
+    selectedResultsMatch: selectedResultsMatch === true,
+    selected_results_match: selectedResultsMatch === true,
+    candidatePoolHash: normalizeSha256(firstText(raw.candidatePoolHash, raw.candidate_pool_hash)),
+    candidate_pool_hash: normalizeSha256(firstText(raw.candidatePoolHash, raw.candidate_pool_hash)),
+    selectedIdentityHash: normalizeSha256(firstText(raw.selectedIdentityHash, raw.selected_identity_hash)),
+    selected_identity_hash: normalizeSha256(firstText(raw.selectedIdentityHash, raw.selected_identity_hash)),
+    auditHash: normalizeSha256(firstText(raw.auditHash, raw.audit_hash)),
+    audit_hash: normalizeSha256(firstText(raw.auditHash, raw.audit_hash)),
+    authorityClaims,
+    authority_claims: authorityClaims,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const selection = compactObject(json.selection);
   const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
@@ -2749,6 +2917,7 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     ...(Array.isArray(selection.selectedIds) ? selection.selectedIds : []),
     ...(Array.isArray(selection.selected_ids) ? selection.selected_ids : []),
   ]);
+  const manifestResults = compactObjectList(json.results);
   const candidateIds = compactStringList([
     ...selectedCandidates.map((entry) => firstText(entry.id, entry.candidateId, entry.candidate_id)),
     ...candidates.map((entry) => firstText(entry.id, entry.candidateId, entry.candidate_id)),
@@ -2817,6 +2986,13 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     repoPath,
     immutableCommit,
   });
+  const selectionAudit = randomColdPathSelectionAuditFacet(firstCompactObject(
+    json.selectionAudit,
+    json.selection_audit,
+  ), {
+    selectedCount: selectedIds.length,
+    resultCount: manifestResults.length || (resultCandidateId ? 1 : null),
+  });
   const failedGates = compactStringList([
     schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION
       ? null
@@ -2855,6 +3031,10 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
       ? 'random_cold_direct_input_evidence_invalid'
       : null,
     ...(directInputEvidence.present === true ? directInputEvidence.failedGates : []),
+    selectionAudit.present === true && selectionAudit.accepted !== true
+      ? 'random_large_project_cold_path_selection_audit_invalid'
+      : null,
+    ...(selectionAudit.present === true ? selectionAudit.failedGates : []),
   ]);
   return {
     present: true,
@@ -2892,6 +3072,8 @@ function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
     candidate_source: candidateSource,
     directInputEvidence,
     direct_input_evidence: directInputEvidence,
+    selectionAudit: selectionAudit.present === true ? selectionAudit : null,
+    selection_audit: selectionAudit.present === true ? selectionAudit : null,
     sizeSignals: firstCompactObject(
       result.sizeSignals,
       result.size_signals,
@@ -14028,6 +14210,29 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_path_cannot_claim_runtime_authority' });
     }
+    const selectionAuditRaw = firstCompactObject(
+      row.randomColdPathSelectionAudit,
+      row.random_cold_path_selection_audit,
+      coldPathFacet.selectionAudit,
+      coldPathFacet.selection_audit,
+    );
+    const selectionAuditPresent = Object.keys(selectionAuditRaw).length > 0;
+    if (selectionAuditPresent) {
+      const selectionAudit = randomColdPathSelectionAuditFacet(selectionAuditRaw, {
+        selectedCount: compactStringList(
+          coldPathFacet.selectedCandidateIds
+          ?? coldPathFacet.selected_candidate_ids,
+        ).length || null,
+        resultCount: null,
+      });
+      if (selectionAudit.accepted !== true) {
+        failures.push({ code: 'random_large_project_cold_path_selection_audit_invalid' });
+        failures.push(...compactStringList([
+          ...(Array.isArray(selectionAudit.failedGates) ? selectionAudit.failedGates : []),
+          ...(Array.isArray(selectionAudit.failed_gates) ? selectionAudit.failed_gates : []),
+        ]).map((code) => ({ code })));
+      }
+    }
     const coldTemplateRaw = firstCompactObject(
       row.coldRuntimeBoundaryEventManifestTemplate,
       row.cold_runtime_boundary_event_manifest_template,
@@ -24013,6 +24218,8 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
       : null,
     randomLargeProjectColdPath.selectionHash,
     randomLargeProjectColdPath.pendingManifestHash,
+    randomLargeProjectColdPath.selectionAudit?.auditHash,
+    randomLargeProjectColdPath.selection_audit?.audit_hash,
     coldSourceTreeIntake.sourceListingHash,
     coldSourceTreeIntake.facetHash,
     coldSourceTreeIntake.buildMetadataContentHash,
@@ -24045,6 +24252,8 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     refusal_proven: matrixOutcome === 'refusal_proven',
     randomLargeProjectColdPath,
     random_large_project_cold_path: randomLargeProjectColdPath,
+    randomColdPathSelectionAudit: randomLargeProjectColdPath.selectionAudit,
+    random_cold_path_selection_audit: randomLargeProjectColdPath.selection_audit,
     randomColdPathDirectInputEvidence,
     random_cold_path_direct_input_evidence: randomColdPathDirectInputEvidence,
     randomColdBackendEvidence,

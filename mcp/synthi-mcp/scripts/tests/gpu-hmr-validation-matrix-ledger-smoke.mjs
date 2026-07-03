@@ -2227,6 +2227,82 @@ function randomColdPathManifest({
     can_satisfy_runtime_proof: false,
     ...resultOverrides,
   };
+  const selectionAudit = {
+    schemaVersion: 'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1',
+    schema_version: 'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1',
+    proofAuthority: 'random_large_project_selection_audit_only_not_gpu_hmr_success',
+    proof_authority: 'random_large_project_selection_audit_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsSelectionAudit: true,
+    accepted_as_selection_audit: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceMode: 'direct_user_source',
+    source_mode: 'direct_user_source',
+    deterministicSelectionAlgorithm: 'sha256_seed_candidate_identity_sort_v1',
+    deterministic_selection_algorithm: 'sha256_seed_candidate_identity_sort_v1',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    directSourceRequired: true,
+    direct_source_required: true,
+    samplePoolExplicitlyRequested: false,
+    sample_pool_explicitly_requested: false,
+    directUserSourceCount: 1,
+    direct_user_source_count: 1,
+    configuredPoolCount: 0,
+    configured_pool_count: 0,
+    candidateCount: 1,
+    candidate_count: 1,
+    selectedCount: 1,
+    selected_count: 1,
+    resultCount: 1,
+    result_count: 1,
+    candidateSources: ['direct_source_url_commit'],
+    candidate_sources: ['direct_source_url_commit'],
+    profileModes: ['unprofiled_arbitrary_project_cold_intake'],
+    profile_modes: ['unprofiled_arbitrary_project_cold_intake'],
+    backendFamilies: ['unknown_gpu_project'],
+    backend_families: ['unknown_gpu_project'],
+    selectedResultsMatch: true,
+    selected_results_match: true,
+    candidatePoolHash: hashValue(`${candidateId}:selection-audit-candidate-pool`),
+    candidate_pool_hash: hashValue(`${candidateId}:selection-audit-candidate-pool`),
+    selectedIdentityHash: hashValue(`${candidateId}:selection-audit-selected`),
+    selected_identity_hash: hashValue(`${candidateId}:selection-audit-selected`),
+    authorityClaims: [],
+    authority_claims: [],
+    blockingGaps: [],
+    blocking_gaps: [],
+    auditHash: hashValue(`${candidateId}:selection-audit`),
+    audit_hash: hashValue(`${candidateId}:selection-audit`),
+    evidenceRef: `random-cold-path-selection-audit:${hashValue(`${candidateId}:selection-audit`)}`,
+    evidence_ref: `random-cold-path-selection-audit:${hashValue(`${candidateId}:selection-audit`)}`,
+  };
+  const selectionShapeOverridden = [
+    'selection',
+    'selection_audit',
+    'selectionAudit',
+    'candidates',
+    'selectedCandidates',
+    'selected_candidates',
+    'results',
+  ].some((key) => Object.prototype.hasOwnProperty.call(topLevelOverrides, key));
+  const generatedSelectionAuditFields = selectionShapeOverridden
+    ? {}
+    : {
+      selectionAudit,
+      selection_audit: selectionAudit,
+    };
   return {
     schemaVersion: 'synthi.gpu_hmr.random_large_project_cold_path.v1',
     schema_version: 'synthi.gpu_hmr.random_large_project_cold_path.v1',
@@ -2293,6 +2369,7 @@ function randomColdPathManifest({
     pendingManifestHash: hashValue(`${candidateId}:pending-manifest`),
     pending_manifest_hash: hashValue(`${candidateId}:pending-manifest`),
     results: [result],
+    ...generatedSelectionAuditFields,
     ...topLevelOverrides,
   };
 }
@@ -2315,6 +2392,13 @@ assert.equal(randomColdRow?.matrixOutcome, 'refusal_proven');
 assert.equal(randomColdRow.acceptedForGpuHmr, false);
 assert.equal(randomColdRow.gpuHmrSuccess, false);
 assert.equal(randomColdRow.safety.accepted, true);
+assert.equal(randomColdRow.randomColdPathSelectionAudit.accepted, true);
+assert.equal(randomColdRow.randomColdPathSelectionAudit.proofAuthority, 'random_large_project_selection_audit_only_not_gpu_hmr_success');
+assert.equal(randomColdRow.randomColdPathSelectionAudit.sourceMode, 'direct_user_source');
+assert.equal(randomColdRow.randomColdPathSelectionAudit.directSourceRequired, true);
+assert.equal(randomColdRow.randomColdPathSelectionAudit.acceptedForGpuHmr, false);
+assert.equal(randomColdRow.randomColdPathSelectionAudit.gpuHmrSuccess, false);
+assert.equal(randomColdRow.randomColdPathSelectionAudit.canSatisfyRuntimeProof, false);
 assert.equal(randomColdRow.randomColdPathDirectInputEvidence.acceptedAsDirectInputEvidence, true);
 assert.equal(randomColdRow.backend, 'hip');
 assert.equal(randomColdRow.randomColdBackendEvidence.backendSource, 'source_tree_intake_backend_candidates');
@@ -2352,6 +2436,59 @@ assert.equal(
   randomColdRow.coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence,
   true,
 );
+const forgedSelectionAuditDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-selection-audit-forged',
+);
+const forgedSelectionAuditManifest = randomColdPathManifest({
+  candidateId: 'direct-random-arbitrary-selection-audit-forged',
+  sourceUrl: 'https://example.invalid/arbitrary/selection-audit-forged.git',
+  immutableCommit: sha256Hex('selection-audit-forged:commit').slice(0, 40),
+});
+forgedSelectionAuditManifest.selectionAudit = {
+  ...forgedSelectionAuditManifest.selectionAudit,
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  authorityClaims: ['result:direct-random-arbitrary-selection-audit-forged'],
+  authority_claims: ['result:direct-random-arbitrary-selection-audit-forged'],
+  blockingGaps: ['cold_path_selection_authority_claim_present'],
+  blocking_gaps: ['cold_path_selection_authority_claim_present'],
+};
+forgedSelectionAuditManifest.selection_audit = forgedSelectionAuditManifest.selectionAudit;
+await writeJson(
+  path.join(forgedSelectionAuditDir, 'random-cold-selection-audit-forged.json'),
+  forgedSelectionAuditManifest,
+);
+const forgedSelectionAuditLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedSelectionAuditDir],
+  includeInvalidated: true,
+});
+const forgedSelectionAuditRow = forgedSelectionAuditLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedSelectionAuditRow?.safety.accepted, false);
+assert.equal(forgedSelectionAuditRow.acceptedForGpuHmr, false);
+assert.equal(forgedSelectionAuditRow.gpuHmrSuccess, false);
+assert.ok(forgedSelectionAuditRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_path_selection_audit_invalid'
+));
+assert.ok(forgedSelectionAuditRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_path_selection_audit_claimed_gpu_hmr_success'
+));
+assert.ok(forgedSelectionAuditRow.randomColdPathSelectionAudit.failedGates
+  .includes('random_large_project_cold_path_selection_audit_authority_claim_present'));
+const forgedSelectionAuditDefaultLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedSelectionAuditDir],
+});
+assert.equal(forgedSelectionAuditDefaultLedger.summary.omittedInvalidatedRows, 1);
 assert.ok(randomColdRow.openGaps.includes('strict_runtime_ledger_missing'));
 const randomColdCoverage = new Map(
   randomColdLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
@@ -2662,6 +2799,8 @@ await writeJson(
     selectedCandidates: multiColdCandidateManifests
       .flatMap((manifest) => manifest.selectedCandidates),
     results: multiColdCandidateManifests.flatMap((manifest) => manifest.results),
+    selectionAudit: null,
+    selection_audit: null,
   },
 );
 const multiRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
@@ -2743,6 +2882,8 @@ await writeJson(
     selectedCandidates: aliasColdCandidateManifests.flatMap((manifest) => manifest.selectedCandidates),
     selected_candidates: aliasColdCandidateManifests.flatMap((manifest) => manifest.selectedCandidates),
     results: aliasColdCandidateManifests.flatMap((manifest) => manifest.results),
+    selectionAudit: null,
+    selection_audit: null,
   },
 );
 const aliasRandomColdLedger = await collectGpuHmrValidationMatrixLedger({

@@ -11,6 +11,9 @@ const LOG_DIR = path.join(MCP_ROOT, '.gpu-hmr-test-logs', 'random-large-project-
 const SOURCE_INTAKE_DIR = path.join(LOG_DIR, 'source-intake');
 const SCHEMA = 'synthi.gpu_hmr.random_large_project_cold_path.v1';
 const AUTHORITY = 'random_large_project_cold_path_selection_only_not_gpu_hmr_success';
+const SELECTION_AUDIT_SCHEMA = 'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1';
+const SELECTION_AUDIT_AUTHORITY =
+  'random_large_project_selection_audit_only_not_gpu_hmr_success';
 const DIRECT_SOURCE_INPUT_SCHEMA = 'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
 const DIRECT_SOURCE_INPUT_AUTHORITY =
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
@@ -241,6 +244,21 @@ function stableJson(value) {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function firstBoolean(...values) {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value;
+  }
+  return null;
+}
+
+function claimsGpuHmrAuthority(value) {
+  const object = value && typeof value === 'object' ? value : {};
+  return firstBoolean(object.acceptedForGpuHmr, object.accepted_for_gpu_hmr) === true
+    || firstBoolean(object.gpuHmrSuccess, object.gpu_hmr_success) === true
+    || firstBoolean(object.canSatisfyRuntimeProof, object.can_satisfy_runtime_proof) === true
+    || firstBoolean(object.canSatisfyDispatchProof, object.can_satisfy_dispatch_proof) === true;
 }
 
 function canonicalSourceListingIdentity(files = []) {
@@ -592,6 +610,183 @@ function selectCandidates({ candidates, seed, count, candidateId }) {
       selectionRank: rank + 1,
       selectionKey: entry.selectionKey,
     }));
+}
+
+function inferColdPathSourceMode(candidates = []) {
+  const candidateSources = uniqueSortedStrings(
+    candidates.map((candidate) => candidate.candidateSource ?? candidate.candidate_source),
+  );
+  if (
+    candidateSources.length > 0
+    && candidateSources.every((source) =>
+      source === 'direct_source_url_commit' || source === 'direct_local_git_repo_path')
+  ) {
+    return candidateSources.length === 1 && candidateSources[0] === 'direct_local_git_repo_path'
+      ? 'direct_local_user_source'
+      : 'direct_user_source_batch';
+  }
+  if (candidateSources.length === 1 && candidateSources[0] === 'configured_candidate_pool') {
+    return 'configured_candidate_pool';
+  }
+  return 'mixed_candidate_sources';
+}
+
+function coldPathSelectionAudit({
+  seed,
+  count,
+  candidateId,
+  dryRun,
+  candidates,
+  selected,
+  results,
+  sourceMode = null,
+  requireDirectSource = false,
+  samplePool = false,
+} = {}) {
+  const candidateList = Array.isArray(candidates) ? candidates : [];
+  const selectedList = Array.isArray(selected) ? selected : [];
+  const resultList = Array.isArray(results) ? results : [];
+  const selectedIds = selectedList.map((candidate) => candidate.id).filter(Boolean);
+  const resultIds = resultList.map((result) => result?.candidateId).filter(Boolean);
+  const sourceModeValue = sourceMode ?? inferColdPathSourceMode(candidateList);
+  const candidateSources = uniqueSortedStrings(
+    candidateList.map((candidate) => candidate.candidateSource ?? candidate.candidate_source),
+  );
+  const profileModes = uniqueSortedStrings(
+    candidateList.map((candidate) => candidate.profileMode ?? candidate.profile_mode),
+  );
+  const backendFamilies = uniqueSortedStrings(
+    candidateList.map((candidate) => candidate.backendFamily ?? candidate.backend_family),
+  );
+  const selectedResultsMatch =
+    selectedIds.length === resultIds.length
+    && stableJson([...selectedIds].sort()) === stableJson([...resultIds].sort());
+  const directUserSourceCount = candidateList.filter((candidate) =>
+    candidate.candidateSource === 'direct_source_url_commit'
+    || candidate.candidateSource === 'direct_local_git_repo_path'
+  ).length;
+  const configuredPoolCount = candidateList.filter((candidate) =>
+    candidate.candidateSource === 'configured_candidate_pool'
+  ).length;
+  const authorityClaims = [];
+  for (const candidate of candidateList) {
+    if (claimsGpuHmrAuthority(candidate)) authorityClaims.push(`candidate:${candidate.id}`);
+    if (claimsGpuHmrAuthority(candidate.directInputEvidence ?? candidate.direct_input_evidence)) {
+      authorityClaims.push(`direct_input_evidence:${candidate.id}`);
+    }
+  }
+  for (const result of resultList) {
+    if (claimsGpuHmrAuthority(result)) authorityClaims.push(`result:${result?.candidateId ?? 'unknown'}`);
+    if (claimsGpuHmrAuthority(result?.directInputEvidence ?? result?.direct_input_evidence)) {
+      authorityClaims.push(`result_direct_input_evidence:${result?.candidateId ?? 'unknown'}`);
+    }
+  }
+  const selectionSeed = {
+    seed,
+    count: Number(count) || 1,
+    candidateId: candidateId || null,
+    sourceMode: sourceModeValue,
+    candidateSources,
+    profileModes,
+    backendFamilies,
+    candidateIds: candidateList.map((candidate) => candidate.id),
+    selectedIds,
+  };
+  const blockingGaps = [
+    candidateList.length > 0 ? null : 'cold_path_selection_candidate_pool_empty',
+    selectedIds.length > 0 ? null : 'cold_path_selection_selected_ids_missing',
+    selectedResultsMatch ? null : 'cold_path_selection_results_mismatch',
+    authorityClaims.length === 0 ? null : 'cold_path_selection_authority_claim_present',
+    requireDirectSource && directUserSourceCount === 0
+      ? 'cold_path_direct_source_required_but_not_selected'
+      : null,
+    sourceModeValue === 'configured_sample_pool' && samplePool !== true
+      ? 'cold_path_sample_pool_mode_not_explicitly_requested'
+      : null,
+  ].filter(Boolean);
+  const auditHash = contentHash(stableJson({
+    ...selectionSeed,
+    dryRun: dryRun === true,
+    requireDirectSource: requireDirectSource === true,
+    samplePool: samplePool === true,
+    authorityClaims,
+    blockingGaps,
+  }));
+  return {
+    schemaVersion: SELECTION_AUDIT_SCHEMA,
+    schema_version: SELECTION_AUDIT_SCHEMA,
+    proofAuthority: SELECTION_AUDIT_AUTHORITY,
+    proof_authority: SELECTION_AUDIT_AUTHORITY,
+    accepted: blockingGaps.length === 0,
+    acceptedAsSelectionAudit: blockingGaps.length === 0,
+    accepted_as_selection_audit: blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceMode: sourceModeValue,
+    source_mode: sourceModeValue,
+    deterministicSelectionAlgorithm: 'sha256_seed_candidate_identity_sort_v1',
+    deterministic_selection_algorithm: 'sha256_seed_candidate_identity_sort_v1',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    directSourceRequired: requireDirectSource === true,
+    direct_source_required: requireDirectSource === true,
+    samplePoolExplicitlyRequested: samplePool === true,
+    sample_pool_explicitly_requested: samplePool === true,
+    directUserSourceCount,
+    direct_user_source_count: directUserSourceCount,
+    configuredPoolCount,
+    configured_pool_count: configuredPoolCount,
+    candidateCount: candidateList.length,
+    candidate_count: candidateList.length,
+    selectedCount: selectedIds.length,
+    selected_count: selectedIds.length,
+    resultCount: resultIds.length,
+    result_count: resultIds.length,
+    candidateSources,
+    candidate_sources: candidateSources,
+    profileModes,
+    profile_modes: profileModes,
+    backendFamilies,
+    backend_families: backendFamilies,
+    selectedResultsMatch,
+    selected_results_match: selectedResultsMatch,
+    candidatePoolHash: contentHash(stableJson(candidateList.map((candidate) => ({
+      id: candidate.id,
+      candidateSource: candidate.candidateSource,
+      profileMode: candidate.profileMode,
+      backendFamily: candidate.backendFamily,
+      immutableCommit: candidate.immutableCommit,
+      directInputEvidenceHash: candidate.directInputEvidence?.evidenceHash ?? null,
+    })))),
+    candidate_pool_hash: contentHash(stableJson(candidateList.map((candidate) => ({
+      id: candidate.id,
+      candidateSource: candidate.candidateSource,
+      profileMode: candidate.profileMode,
+      backendFamily: candidate.backendFamily,
+      immutableCommit: candidate.immutableCommit,
+      directInputEvidenceHash: candidate.directInputEvidence?.evidenceHash ?? null,
+    })))),
+    selectedIdentityHash: contentHash(stableJson(selectionSeed)),
+    selected_identity_hash: contentHash(stableJson(selectionSeed)),
+    authorityClaims,
+    authority_claims: authorityClaims,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    auditHash,
+    audit_hash: auditHash,
+    evidenceRef: `random-cold-path-selection-audit:${auditHash}`,
+    evidence_ref: `random-cold-path-selection-audit:${auditHash}`,
+  };
 }
 
 function tail(text, max = 8000) {
@@ -3100,6 +3295,9 @@ async function buildManifest({
   sourceIntakeTimeoutMs,
   candidates,
   outputDir,
+  sourceMode = null,
+  requireDirectSource = false,
+  samplePool = false,
   runCandidate = runSelectedCandidate,
 }) {
   const selected = selectCandidates({ candidates, seed, count, candidateId });
@@ -3119,6 +3317,9 @@ async function buildManifest({
       sourceIntakeTimeoutMs,
       candidates,
       selected,
+      sourceMode,
+      requireDirectSource,
+      samplePool,
       startedAt,
       finishedAt: null,
       eventType: 'cold_path_pending',
@@ -3167,6 +3368,9 @@ async function buildManifest({
     sourceIntakeTimeoutMs,
     candidates,
     selected,
+    sourceMode,
+    requireDirectSource,
+    samplePool,
     startedAt,
     finishedAt,
     eventType: 'cold_path_complete',
@@ -3190,6 +3394,9 @@ function createManifest({
   sourceIntakeTimeoutMs,
   candidates,
   selected,
+  sourceMode,
+  requireDirectSource = false,
+  samplePool = false,
   startedAt,
   finishedAt,
   eventType,
@@ -3197,6 +3404,22 @@ function createManifest({
   results,
   pendingWritten = null,
 }) {
+  const selectionHash = contentHash(stableJson(selected.map((candidate) => ({
+    id: candidate.id,
+    key: candidate.selectionKey,
+  }))));
+  const selectionAudit = coldPathSelectionAudit({
+    seed,
+    count,
+    candidateId,
+    dryRun,
+    candidates,
+    selected,
+    results,
+    sourceMode,
+    requireDirectSource,
+    samplePool,
+  });
   return {
     schemaVersion: SCHEMA,
     schema_version: SCHEMA,
@@ -3227,15 +3450,11 @@ function createManifest({
       candidate_count: candidates.length,
       selectedIds: selected.map((candidate) => candidate.id),
       selected_ids: selected.map((candidate) => candidate.id),
-      selectionHash: contentHash(stableJson(selected.map((candidate) => ({
-        id: candidate.id,
-        key: candidate.selectionKey,
-      })))),
-      selection_hash: contentHash(stableJson(selected.map((candidate) => ({
-        id: candidate.id,
-        key: candidate.selectionKey,
-      })))),
+      selectionHash,
+      selection_hash: selectionHash,
     },
+    selectionAudit,
+    selection_audit: selectionAudit,
     candidates: candidates.map((candidate) => ({
       id: candidate.id,
       backendFamily: candidate.backendFamily,
@@ -3437,6 +3656,16 @@ async function selfCheck() {
     multiResultSelectedIds.length !== 3
     || multiResultIds.length !== multiResultSelectedIds.length
     || stableJson([...multiResultIds].sort()) !== stableJson([...multiResultSelectedIds].sort())
+    || multiResultManifest.selectionAudit?.schemaVersion !== SELECTION_AUDIT_SCHEMA
+    || multiResultManifest.selectionAudit?.proofAuthority !== SELECTION_AUDIT_AUTHORITY
+    || multiResultManifest.selectionAudit?.accepted !== true
+    || multiResultManifest.selectionAudit?.acceptedForGpuHmr !== false
+    || multiResultManifest.selectionAudit?.gpuHmrSuccess !== false
+    || multiResultManifest.selectionAudit?.canSatisfyRuntimeProof !== false
+    || multiResultManifest.selectionAudit?.targetNameIndependent !== true
+    || multiResultManifest.selectionAudit?.projectNameWhitelist?.length !== 0
+    || multiResultManifest.selectionAudit?.specificTargetIdsAllowed?.length !== 0
+    || multiResultManifest.selectionAudit?.selectedResultsMatch !== true
   ) {
     throw new Error('random large-project cold-path multi-result manifest did not preserve one result per selected candidate');
   }
@@ -3530,11 +3759,17 @@ async function selfCheck() {
     sourceIntakeTimeoutMs: 1,
     candidates: directBatchCandidates,
     outputDir: path.join(LOG_DIR, 'self-check'),
+    sourceMode: 'direct_user_source_batch',
   });
   if (
     directBatchCandidates.length !== 2
     || directBatchManifest.selection.selectedIds.length !== 2
     || directBatchManifest.results.length !== 2
+    || directBatchManifest.selectionAudit?.sourceMode !== 'direct_user_source_batch'
+    || directBatchManifest.selectionAudit?.directUserSourceCount !== 2
+    || directBatchManifest.selectionAudit?.configuredPoolCount !== 0
+    || directBatchManifest.selectionAudit?.acceptedForGpuHmr !== false
+    || directBatchManifest.selectionAudit?.gpuHmrSuccess !== false
     || directBatchManifest.candidates.some((candidate) =>
       candidate.candidateSource !== 'direct_source_url_commit'
       || candidate.directInputEvidence?.acceptedAsDirectInputEvidence !== true
@@ -3840,12 +4075,20 @@ async function selfCheck() {
     sourceIntake: false,
     candidates: [directCandidate],
     outputDir: path.join(LOG_DIR, 'self-check'),
+    sourceMode: 'direct_user_source',
+    requireDirectSource: true,
   });
   const directResult = directManifest.results[0] ?? {};
   if (
     directManifest.candidates[0]?.candidateSource !== 'direct_source_url_commit'
     || directManifest.candidates[0]?.directInputEvidence?.acceptedAsDirectInputEvidence !== true
     || !directManifest.candidates[0]?.directInputEvidence?.inputChannels?.includes('cli_arg_source_url')
+    || directManifest.selectionAudit?.sourceMode !== 'direct_user_source'
+    || directManifest.selectionAudit?.directSourceRequired !== true
+    || directManifest.selectionAudit?.directUserSourceCount !== 1
+    || directManifest.selectionAudit?.accepted !== true
+    || directManifest.selectionAudit?.acceptedForGpuHmr !== false
+    || directManifest.selectionAudit?.gpuHmrSuccess !== false
     || directResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || directResult.sourceTreeIntakeAccepted !== false
     || !directResult.blockingGaps?.includes('source_tree_intake_missing')
@@ -3909,6 +4152,8 @@ async function selfCheck() {
     sourceIntakeTimeoutMs: 30000,
     candidates: [localCandidate],
     outputDir: path.join(LOG_DIR, 'self-check'),
+    sourceMode: 'direct_local_user_source',
+    requireDirectSource: true,
   });
   const localResult = localManifest.results[0] ?? {};
   const localBuildContentFiles = localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.buildFiles ?? [];
@@ -3916,6 +4161,12 @@ async function selfCheck() {
     localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
     || localManifest.candidates[0]?.directInputEvidence?.acceptedAsDirectInputEvidence !== true
     || localManifest.candidates[0]?.directInputEvidence?.sourceKind !== 'local_repo_path_commit'
+    || localManifest.selectionAudit?.sourceMode !== 'direct_local_user_source'
+    || localManifest.selectionAudit?.directSourceRequired !== true
+    || localManifest.selectionAudit?.directUserSourceCount !== 1
+    || localManifest.selectionAudit?.accepted !== true
+    || localManifest.selectionAudit?.acceptedForGpuHmr !== false
+    || localManifest.selectionAudit?.gpuHmrSuccess !== false
     || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
     || localResult.sourceTreeIntakeAccepted !== true
     || localResult.buildMetadataDiscoveryAccepted !== true
@@ -4152,6 +4403,30 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path dirty local git commit-snapshot self-check failed');
   }
+  const forgedSelectionAudit = coldPathSelectionAudit({
+    seed: 'forged-selection-audit-self-check',
+    count: 1,
+    candidates: [directCandidate],
+    selected: [{ ...directCandidate, selectionKey: 'forged-selection-key' }],
+    results: [{
+      candidateId: directCandidate.id,
+      status: 'forged_success',
+      acceptedForGpuHmr: true,
+      gpuHmrSuccess: true,
+      canSatisfyRuntimeProof: true,
+    }],
+    sourceMode: 'direct_user_source',
+    requireDirectSource: true,
+  });
+  if (
+    forgedSelectionAudit.accepted !== false
+    || !forgedSelectionAudit.blockingGaps?.includes('cold_path_selection_authority_claim_present')
+    || forgedSelectionAudit.acceptedForGpuHmr !== false
+    || forgedSelectionAudit.gpuHmrSuccess !== false
+    || forgedSelectionAudit.canSatisfyRuntimeProof !== false
+  ) {
+    throw new Error('random large-project cold-path selection audit accepted forged GPU HMR authority');
+  }
   console.log('random large-project cold-path self-check passed');
 }
 
@@ -4196,6 +4471,13 @@ async function main() {
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_JSON,
     candidatesPath: args.candidatesPath ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_CANDIDATES_PATH,
   });
+  const sourceMode = directCandidate
+    ? 'direct_user_source'
+    : directCandidates.length > 0
+      ? 'direct_user_source_batch'
+      : samplePoolModeRequested(args)
+        ? 'configured_sample_pool'
+        : 'configured_candidate_pool';
   const effectiveCandidateId = directCandidate ? directCandidate.id : candidateId;
   const defaultCount = directCandidate ? 1 : directCandidates.length > 0 ? directCandidates.length : 1;
   const count = Number(args.count ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_COUNT ?? defaultCount);
@@ -4210,6 +4492,9 @@ async function main() {
     sourceIntake,
     sourceIntakeTimeoutMs,
     candidates,
+    sourceMode,
+    requireDirectSource,
+    samplePool: samplePoolModeRequested(args),
     outputDir: path.resolve(args.outputDir ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR ?? LOG_DIR),
   });
   console.log(JSON.stringify({
@@ -4217,11 +4502,7 @@ async function main() {
     schemaVersion: SCHEMA,
     manifestPath: written.filePath,
     manifestHash: written.hash,
-    sourceMode: directCandidate
-      ? 'direct_user_source'
-      : directCandidates.length > 0
-        ? 'direct_user_source_batch'
-        : 'configured_sample_pool',
+    sourceMode,
     selectedIds: manifest.selection.selectedIds,
     dryRun,
     resultStatuses: manifest.results.map((result) => result.status),
