@@ -20,6 +20,7 @@ export const DOJO_POSTGRES_REQUIRED_TABLES = [
   "dojo_source_snapshots",
   "dojo_source_tokens",
   "dojo_evidence_records",
+  "dojo_therapeutic_runtime_states",
   "dojo_ledger_checkpoints",
   "dojo_checkride_runs",
   "dojo_scenario_runs",
@@ -711,6 +712,29 @@ export const DOJO_POSTGRES_MIGRATIONS: DojoPostgresMigration[] = [
         END IF;
       END;
       $$`,
+    ],
+  },
+  {
+    id: "008_dojo_therapeutic_runtime_states",
+    description: "Create tenant-scoped therapeutic tomography runtime state records for production reconstruction.",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS dojo_therapeutic_runtime_states (
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        state_sha256 TEXT NOT NULL,
+        state_text TEXT NOT NULL,
+        state_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, workspace_id, record_id),
+        FOREIGN KEY (tenant_id, workspace_id) REFERENCES dojo_workspaces(tenant_id, workspace_id) ON DELETE RESTRICT,
+        CHECK (state_sha256 ~ '^[A-Fa-f0-9]{64}$'),
+        CHECK (jsonb_typeof(state_json) = 'object')
+      )`,
+      "CREATE INDEX IF NOT EXISTS dojo_therapeutic_runtime_states_task_idx ON dojo_therapeutic_runtime_states (tenant_id, workspace_id, task_id, created_at DESC)",
+      "CREATE INDEX IF NOT EXISTS dojo_therapeutic_runtime_states_created_idx ON dojo_therapeutic_runtime_states (tenant_id, workspace_id, created_at DESC)",
     ],
   },
 ];

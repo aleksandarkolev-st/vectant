@@ -913,6 +913,129 @@ The conformance run must prove:
 - only licensed skills are visible
 - revocation propagates
 
+### Therapeutic Tomography Production Evidence
+
+The therapeutic tomography production gate is:
+
+```text
+dojo_therapeutic_tomography_production_release
+```
+
+It runs:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:therapeutic-tomography:release-evidence
+```
+
+This gate is production-only. It fails before writing
+`docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json` unless every dependency is
+real, non-loopback, externally backed, and reconstructable.
+
+Required environment:
+
+```powershell
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_URL = "https://<deployed-runtime>/session/<id>"
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_TOKEN = "<runtime bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_SESSION_ID = "<deployed session id>"
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_URL = "https://<deployed-probe-service>/therapeutic/incident-response"
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_AUTH_TOKEN = "<probe bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_STORE_URL = "https://<deployed-control-plane>/therapeutic/runtime-state"
+$env:SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN = "<store bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_TENANT_ID = "<production tenant id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ORGANIZATION_ID = "<production organization id>"
+$env:SYNTHI_THERAPEUTIC_PROD_WORKSPACE_ID = "<production workspace id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ACTOR_ID = "<production actor id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ACTOR_ROLES = "incident_commander,therapeutic_proof_broker"
+$env:SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "managed-key-service"
+$env:SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = "<managed key id>"
+$env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND = "<managed signer command>"
+$env:SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI = "<managed key uri>"
+$env:SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = "<public verification key pem>"
+```
+
+Optional:
+
+```powershell
+$env:SYNTHI_THERAPEUTIC_PROD_STORE_READ_URL_TEMPLATE = "https://<deployed-control-plane>/therapeutic/runtime-state/{record_id}"
+$env:SYNTHI_THERAPEUTIC_PROD_SERVICE_NAME = "checkout-api"
+$env:SYNTHI_THERAPEUTIC_PROD_TIME_WINDOW = "last_30m"
+$env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = '["--json"]'
+$env:SYNTHI_DOJO_PROOF_SIGNING_TIMEOUT_MS = "5000"
+```
+
+The hosted runtime URL is called with `GET` and bearer authorization. The
+runtime response must prove the deployed session authorization context by
+returning `session_id`, `tenant_id`, `organization_id`, `workspace_id`,
+`actor_id`, and `roles` either as JSON fields, nested authorization fields, or
+`X-Synthi-*` response headers. Those values must match the production env
+inputs, and the release artifact's tenant/RBAC section is sourced from that
+runtime authorization response. The probe service is called with the existing
+therapeutic HTTPS probe adapter using `POST` JSON requests and must return
+shape-valid aggregate probe results for `service_health_rollup` and
+`blast_radius_summary`.
+
+The production evidence records response fingerprints for every external
+dependency. Runtime authorization must include response header and body SHA-256
+hashes. Each probe call must include the probe name, production HTTPS URL, 2xx
+status, redacted request body SHA-256, response body SHA-256, and observation
+timestamp. The durable store append and readback calls must include 2xx status
+codes, response body SHA-256 hashes, and the production HTTPS readback URL.
+
+The durable control-plane store must implement:
+
+- `POST $env:SYNTHI_THERAPEUTIC_PROD_STORE_URL` with a
+  `synthi.dojo.therapeuticProductionStateAppend.v1` body and a JSON response
+  containing `record_id` or `id`.
+- `GET <store-url>/<record_id>` or the configured read URL template, returning
+  the same runtime state plus a matching `state_sha256`.
+
+The bundled `synthi-mcp-http` server can host those production endpoints when
+deployed with an external HTTPS ingress and a production Postgres control-plane
+database:
+
+```powershell
+$env:SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED = "1"
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_TOKEN = "<runtime bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_RUNTIME_SESSION_ID = "<deployed session id>"
+$env:SYNTHI_THERAPEUTIC_PROD_TENANT_ID = "<production tenant id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ORGANIZATION_ID = "<production organization id>"
+$env:SYNTHI_THERAPEUTIC_PROD_WORKSPACE_ID = "<production workspace id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ACTOR_ID = "<production actor id>"
+$env:SYNTHI_THERAPEUTIC_PROD_ACTOR_ROLES = "incident_commander,therapeutic_proof_broker"
+$env:SYNTHI_THERAPEUTIC_PROD_POSTGRES_URL = "<production postgres connection string>"
+$env:SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN = "<store bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_AUTH_TOKEN = "<probe bearer token>"
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_URL = "https://<real-observability-or-probe-provider>/..."
+$env:SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_AUTH_TOKEN = "<upstream bearer token>"
+```
+
+`SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_CONTEXT_PATH` defaults to
+`/therapeutic/runtime-authorization`, `SYNTHI_THERAPEUTIC_PROD_STORE_PATH`
+defaults to `/therapeutic/runtime-state`, and
+`SYNTHI_THERAPEUTIC_PROD_PROBE_PATH` defaults to
+`/therapeutic/incident-response`. The server refuses to enable the production
+endpoints without runtime bearer authorization context, Postgres, store/probe
+tokens, and a non-loopback HTTPS probe upstream. The state endpoint stores
+exact JSON text for release hash reconstruction and JSONB for database
+inspection.
+
+The release artifact must prove:
+
+- real deployed hosted runtime URL and session authorization
+- real deployed probe endpoint evidence
+- production tenant/RBAC context
+- external durable state reconstruction
+- external or managed-key proof signing and verification
+- unauthorized protected-tool bypass denied before grant
+- scoped grant approved through broker/proof
+- protected dispatch succeeds only while grant is active
+- dispatch denied after revocation
+- narrative-only broad access denied for mutation, raw logs, model weights,
+  admin privileges, and full DB access
+
+Do not edit `docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json` by hand. The
+production script is the only writer for a releasable update to that file.
+
 ### Google Cloud Release Gate Sequence
 
 Run this sequence for a release candidate:
@@ -930,8 +1053,12 @@ Run this sequence for a release candidate:
 9. Run hosted browser workflow E2E against the hosted runtime.
 10. Run private tool acceptance against the deployed MCP host.
 11. Run deployed MCP host conformance.
-12. Run live chaos and soak gates using GKE-safe commands.
-13. Run the release gate verifier over the produced evidence.
+12. Run therapeutic tomography production evidence against deployed runtime,
+    deployed probe service, external durable store, and managed signing.
+13. Generate the therapeutic tomography visual proof sheet from the validated
+    production evidence artifact.
+14. Run live chaos and soak gates using GKE-safe commands.
+15. Run the release gate verifier over the produced evidence.
 
 Suggested evidence directory layout:
 
@@ -948,6 +1075,20 @@ tmp/dojo-release/<yyyy-mm-dd>-<git-sha>/
   visual/
   release-gate-verifier.json
 ```
+
+The therapeutic tomography visual proof sheet is generated from the strict
+production JSON artifact and refuses stale, local, loopback, demo, or mocked
+evidence:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-therapeutic-tomography-visual-report.mjs `
+  --evidence docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json `
+  --out-dir tmp/dojo-release/<yyyy-mm-dd>-<git-sha>/visual
+```
+
+Archive the resulting HTML and manifest with the release evidence. Browser or
+PDF screenshots of that HTML are acceptable visual proof only because the HTML
+is generated after strict production evidence validation passes.
 
 ### GKE Live Chaos Command Examples
 

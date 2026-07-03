@@ -32,6 +32,7 @@ const REQUIRED_CONFIG_KEYS = [
   "SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING",
   "SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER",
   "SYNTHI_DOJO_EVIDENCE_LEDGER_STORE",
+  "SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED",
   "SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST",
   "SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS",
   "SYNTHI_TENANT_ID",
@@ -50,6 +51,22 @@ const REQUIRED_EXTERNAL_SECRET_KEYS = [
   "SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM",
   "SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM",
   "SYNTHI_DOJO_MCP_BEARER_TOKEN",
+  "SYNTHI_THERAPEUTIC_PROD_RUNTIME_URL",
+  "SYNTHI_THERAPEUTIC_PROD_RUNTIME_AUTH_TOKEN",
+  "SYNTHI_THERAPEUTIC_PROD_RUNTIME_SESSION_ID",
+  "SYNTHI_THERAPEUTIC_PROD_PROBE_URL",
+  "SYNTHI_THERAPEUTIC_PROD_PROBE_AUTH_TOKEN",
+  "SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_URL",
+  "SYNTHI_THERAPEUTIC_PROD_PROBE_UPSTREAM_AUTH_TOKEN",
+  "SYNTHI_THERAPEUTIC_PROD_STORE_URL",
+  "SYNTHI_THERAPEUTIC_PROD_STORE_READ_URL_TEMPLATE",
+  "SYNTHI_THERAPEUTIC_PROD_STORE_AUTH_TOKEN",
+  "SYNTHI_THERAPEUTIC_PROD_POSTGRES_URL",
+  "SYNTHI_THERAPEUTIC_PROD_TENANT_ID",
+  "SYNTHI_THERAPEUTIC_PROD_ORGANIZATION_ID",
+  "SYNTHI_THERAPEUTIC_PROD_WORKSPACE_ID",
+  "SYNTHI_THERAPEUTIC_PROD_ACTOR_ID",
+  "SYNTHI_THERAPEUTIC_PROD_ACTOR_ROLES",
   "SYNTHI_HOSTED_BROWSER_CDP_URL",
   "SYNTHI_HOSTED_BROWSER_WORKSPACE_URL",
   "SYNTHI_WORKSPACE_ID",
@@ -75,6 +92,12 @@ const DOJO_MCP_HOST = {
   port: "9467",
   bearerHeader: "X-Synthi-Dojo-Mcp-Token",
 };
+
+const THERAPEUTIC_PRODUCTION_INGRESS_PATHS = [
+  "/therapeutic/runtime-authorization",
+  "/therapeutic/runtime-state",
+  "/therapeutic/incident-response",
+];
 
 const REQUIRED_INGRESS_ROUTES = [
   { host: "beta.vectant.dev", path: "/collab", pathType: "Prefix", service: "collab-server", port: "1234" },
@@ -427,6 +450,15 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${dojoMcpHost.path} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
     });
   } else {
+    for (const therapeuticPath of THERAPEUTIC_PRODUCTION_INGRESS_PATHS) {
+      const route = { ...dojoMcpHost, path: therapeuticPath };
+      if (!ingressRoutesToService(ingress.doc, route)) {
+        failures.push({
+          code: "therapeutic_production_ingress_route_missing",
+          message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${therapeuticPath} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
+        });
+      }
+    }
     for (const route of REQUIRED_INGRESS_ROUTES) {
       if (!ingressRoutesToService(ingress.doc, route)) {
         failures.push({
@@ -620,6 +652,7 @@ data:
   SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "1"
   SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: "1"
   SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: postgres
+  SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED: "1"
   SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: https://beta.vectant.dev
   SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS: "true"
   SYNTHI_TENANT_ID: vectant
@@ -734,6 +767,27 @@ spec:
             name: dojo-mcp-host
             port:
               number: 9467
+      - path: /therapeutic/runtime-authorization
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/runtime-state
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/incident-response
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
       - path: /collab
         pathType: Prefix
         backend:
@@ -797,6 +851,27 @@ spec:
     http:
       paths:
       - path: /dojo/mcp
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/runtime-authorization
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/runtime-state
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/incident-response
         pathType: Prefix
         backend:
           service:

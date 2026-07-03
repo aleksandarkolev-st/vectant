@@ -31,6 +31,10 @@
       "types": "./dist/dojo/proof/capsule_service.d.ts",
       "import": "./dist/dojo/proof/capsule_service.js"
     },
+    "./dojo/tomography": {
+      "types": "./dist/dojo/tomography/index.d.ts",
+      "import": "./dist/dojo/tomography/index.js"
+    },
     "./dojo/license/kernel": {
       "types": "./dist/dojo/license/kernel.d.ts",
       "import": "./dist/dojo/license/kernel.js"
@@ -246,6 +250,9 @@
     "scripts/dojo-postgres-control-plane-self-check.mjs",
     "scripts/dojo-proof-self-check.mjs",
     "scripts/dojo-public-proof-verification-self-check.mjs",
+    "scripts/dojo-therapeutic-tomography-self-check.mjs",
+    "scripts/dojo-therapeutic-tomography-release-evidence.mjs",
+    "scripts/dojo-therapeutic-tomography-visual-report.mjs",
     "scripts/dojo-release-gate-runner.mjs",
     "scripts/dojo-release-gate-verify.mjs",
     "scripts/dojo-release-gate-manifest.mjs",
@@ -359,6 +366,10 @@
     "proof:dojo:managed-key-signing:observe": "node scripts/dojo-managed-key-signing-release-observation.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs --from-json ../../tmp/dojo-public-proof-verification/dojo-public-proof-verification.vitest.json --run-tests",
+    "proof:dojo:therapeutic-tomography:self-check": "node scripts/dojo-therapeutic-tomography-self-check.mjs",
+    "proof:dojo:therapeutic-tomography:release-evidence": "node scripts/dojo-therapeutic-tomography-release-evidence.mjs",
+    "proof:dojo:therapeutic-tomography:visual-report": "node scripts/dojo-therapeutic-tomography-visual-report.mjs",
+    "proof:dojo:therapeutic-tomography:visual-report:self-check": "node scripts/dojo-therapeutic-tomography-visual-report.mjs --self-check",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
     "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",

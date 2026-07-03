@@ -142,6 +142,30 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         antibodyCount: 0,
       },
     },
+    tomography: {
+      trace: null,
+      checkrideReports: [],
+      policyLearningRecords: [],
+      reviewRequests: [],
+      remediationVerifications: [],
+      grants: [],
+      evidenceRecords: [],
+      auditRecords: [],
+      proofMetrics: {},
+      outcomeMetrics: {},
+      metrics: {
+        probeCount: 0,
+        machineClaimCount: 0,
+        humanClaimCount: 0,
+        narrativeClaimCount: 0,
+        avoidedAccessCount: 0,
+        checkrideCount: 0,
+        policyLearningCount: 0,
+        pendingReviewCount: 0,
+        activeGrantCount: 0,
+        evidenceRecordCount: 0,
+      },
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -1372,6 +1396,326 @@ function normalizeCaseLawState(state, dojo) {
   };
 }
 
+function normalizeTomographyAccessRequest(item = {}) {
+  return {
+    id: item.id || item.request_id || item.requestId || '',
+    taskId: item.task_id || item.taskId || '',
+    authorityDose: Number(item.authority_dose ?? item.authorityDose ?? 0),
+    scope: item.scope || '',
+    mode: item.mode || '',
+    dataClasses: compactStrings(item.data_classes || item.dataClasses),
+    tools: compactStrings(item.tools),
+    expiration: item.expiration || item.expiration_condition || item.expirationCondition || '',
+    revocable: Boolean(item.revocable),
+    purpose: item.purpose || '',
+  };
+}
+
+function normalizeTomographyClaim(item = {}) {
+  return {
+    claim: item.claim || item.name || '',
+    expected: item.expected,
+    evidence: item.evidence || '',
+    verifier: item.verifier || '',
+    result: item.result || item.status || '',
+    actual: item.actual,
+    critical: Boolean(item.critical),
+    reviewerRole: item.reviewer_role || item.reviewerRole || '',
+    rationale: item.rationale || '',
+  };
+}
+
+function normalizeTomographyCheckrideReport(item = {}) {
+  const results = asArray(item.results).map((result) => ({
+    checkrideId: result.checkride_id || result.checkrideId || '',
+    kind: result.kind || '',
+    status: result.status || '',
+    finding: result.finding || '',
+    blockedBy: compactStrings(result.blocked_by || result.blockedBy),
+    evidenceRefs: compactStrings(result.evidence_refs || result.evidenceRefs),
+  })).filter((result) => result.kind);
+  return {
+    reportId: item.report_id || item.reportId || '',
+    taskId: item.task_id || item.taskId || '',
+    taskClass: item.task_class || item.taskClass || '',
+    generatedAt: item.generated_at || item.generatedAt || '',
+    results,
+    passedCount: Number(item.passed_count ?? item.passedCount ?? results.filter((result) => result.status === 'passed').length),
+    failedCount: Number(item.failed_count ?? item.failedCount ?? results.filter((result) => result.status === 'failed').length),
+    blockedCount: Number(item.blocked_count ?? item.blockedCount ?? results.filter((result) => result.status === 'blocked').length),
+    policyDeltaRecords: asArray(item.policy_delta_records || item.policyDeltaRecords),
+    caseLawRecords: asArray(item.case_law_records || item.caseLawRecords).map((record) => ({
+      caseId: record.case_id || record.caseId || '',
+      status: record.status || '',
+      finding: record.finding || '',
+      confidence: Number(record.confidence ?? 0),
+      expiresAt: record.expires_at || record.expiresAt || '',
+      revalidationStatus: record.revalidation_status || record.revalidationStatus || '',
+      autoGrantsBroaderAccess: Boolean(record.auto_grants_broader_access ?? record.autoGrantsBroaderAccess),
+    })),
+    autoGrantsBroaderFutureAccess: Boolean(item.auto_grants_broader_future_access ?? item.autoGrantsBroaderFutureAccess),
+  };
+}
+
+function normalizeTomographyTrace(state, dojo) {
+  const raw = dojo.therapeuticTomography
+    || dojo.therapeutic_tomography
+    || dojo.tomography
+    || state.therapeuticTomography
+    || state.therapeutic_tomography
+    || state.tomography
+    || null;
+  if (!raw) {
+    return {
+      trace: null,
+      checkrideReports: [],
+      policyLearningRecords: [],
+      reviewRequests: [],
+      remediationVerifications: [],
+      grants: [],
+      evidenceRecords: [],
+      auditRecords: [],
+      proofMetrics: {},
+      outcomeMetrics: {},
+      metrics: {
+        probeCount: 0,
+        machineClaimCount: 0,
+        humanClaimCount: 0,
+        narrativeClaimCount: 0,
+        avoidedAccessCount: 0,
+        checkrideCount: 0,
+        policyLearningCount: 0,
+        pendingReviewCount: 0,
+        activeGrantCount: 0,
+        evidenceRecordCount: 0,
+      },
+    };
+  }
+  const rawCheckrideReports = raw.checkride_reports
+    || raw.checkrideReports
+    || raw.runtime?.checkride_reports
+    || raw.runtime?.checkrideReports
+    || [];
+  const checkrideReports = asArray(rawCheckrideReports).map(normalizeTomographyCheckrideReport).filter((report) => report.results.length);
+  const rawPolicyLearningRecords = raw.policy_learning_records
+    || raw.policyLearningRecords
+    || raw.runtime?.policy_learning_records
+    || raw.runtime?.policyLearningRecords
+    || [];
+  const policyLearningRecords = asArray(rawPolicyLearningRecords).map((record) => ({
+    learningId: record.learning_id || record.learningId || '',
+    taskClass: record.task_class || record.taskClass || '',
+    learningKind: record.learning_kind || record.learningKind || '',
+    recommendation: record.recommendation || '',
+    confidence: Number(record.confidence ?? 0),
+    expiresAt: record.expires_at || record.expiresAt || '',
+    revalidationStatus: record.revalidation_status || record.revalidationStatus || '',
+    supportingEvidenceRefs: compactStrings(record.supporting_evidence_refs || record.supportingEvidenceRefs),
+    sourceTraceIds: compactStrings(record.source_trace_ids || record.sourceTraceIds),
+    sourceCheckrideReportIds: compactStrings(record.source_checkride_report_ids || record.sourceCheckrideReportIds),
+    autoGrantsBroaderAccess: Boolean(record.auto_grants_broader_access ?? record.autoGrantsBroaderAccess),
+  })).filter((record) => record.recommendation);
+  const rawReviewRequests = raw.review_requests
+    || raw.reviewRequests
+    || raw.runtime?.review_requests
+    || raw.runtime?.reviewRequests
+    || [];
+  const reviewRequests = asArray(rawReviewRequests).map((review) => ({
+    reviewId: review.review_id || review.reviewId || '',
+    taskId: review.task_id || review.taskId || '',
+    tier: Number(review.tier ?? 0),
+    decisionMechanism: review.decision_mechanism || review.decisionMechanism || '',
+    requiredGates: compactStrings(review.required_gates || review.requiredGates),
+    proofCapsuleId: review.proof_capsule_id || review.proofCapsuleId || '',
+    deterministicClaimResults: asArray(review.deterministic_claim_results || review.deterministicClaimResults).map(normalizeTomographyClaim),
+    judgmentClaims: asArray(review.judgment_claims || review.judgmentClaims).map(normalizeTomographyClaim),
+    narrativeClaims: asArray(review.narrative_claims || review.narrativeClaims).map(normalizeTomographyClaim),
+    status: review.status || '',
+    reviewerRole: review.reviewer_role || review.reviewerRole || '',
+    rationale: review.rationale || '',
+    autoGrantsBroaderAccess: Boolean(review.auto_grants_broader_access ?? review.autoGrantsBroaderAccess),
+    request: normalizeTomographyAccessRequest(review.request || {}),
+  })).filter((review) => review.reviewId || review.request.id);
+  const rawRemediationVerifications = raw.remediation_verifications
+    || raw.remediationVerifications
+    || raw.runtime?.remediation_verifications
+    || raw.runtime?.remediationVerifications
+    || [];
+  const remediationVerifications = asArray(rawRemediationVerifications).map((verification) => ({
+    verificationId: verification.verification_id || verification.verificationId || '',
+    remediationId: verification.remediation_id || verification.remediationId || '',
+    status: verification.status || '',
+    verifiedAt: verification.verified_at || verification.verifiedAt || '',
+    blockedBy: compactStrings(verification.blocked_by || verification.blockedBy),
+    postconditionResults: asArray(verification.postcondition_results || verification.postconditionResults).map((result) => ({
+      check: result.check || '',
+      status: result.status || '',
+      evidenceRef: result.evidence_ref || result.evidenceRef || '',
+      observed: result.observed || '',
+    })).filter((result) => result.check),
+  })).filter((verification) => verification.verificationId || verification.remediationId);
+  const rawGrants = raw.grants || raw.runtime?.grants || [];
+  const grants = asArray(rawGrants).map((grant) => ({
+    grantId: grant.grant_id || grant.grantId || '',
+    taskId: grant.task_id || grant.taskId || '',
+    status: grant.status || '',
+    approvedAt: grant.approved_at || grant.approvedAt || '',
+    expiresAt: grant.expires_at || grant.expiresAt || '',
+    revokedAt: grant.revoked_at || grant.revokedAt || '',
+    revokedBy: grant.revoked_by || grant.revokedBy || '',
+    revocationStatus: grant.revocation_status || grant.revocationStatus || '',
+    revocationReason: grant.revocation_reason || grant.revocationReason || '',
+    proofCapsuleId: grant.proof_capsule_id || grant.proofCapsuleId || '',
+    accessRequest: normalizeTomographyAccessRequest(grant.access_request || grant.accessRequest || {}),
+  })).filter((grant) => grant.grantId);
+  const evidenceRecords = asArray(raw.evidence_records || raw.evidenceRecords || raw.runtime?.evidence_records || raw.runtime?.evidenceRecords).map((record) => ({
+    evidenceId: record.evidence_id || record.evidenceId || '',
+    taskId: record.task_id || record.taskId || '',
+    kind: record.kind || '',
+    createdAt: record.created_at || record.createdAt || '',
+    payload: record.payload || {},
+  })).filter((record) => record.evidenceId || record.kind);
+  const auditRecords = asArray(raw.audit_records || raw.auditRecords || raw.runtime?.audit_records || raw.runtime?.auditRecords).map((record) => ({
+    auditId: record.audit_id || record.auditId || '',
+    taskId: record.task_id || record.taskId || '',
+    eventType: record.event_type || record.eventType || '',
+    createdAt: record.created_at || record.createdAt || '',
+    details: record.details || {},
+  })).filter((record) => record.auditId || record.eventType);
+  const rawProofMetrics = raw.proof_metrics || raw.proofMetrics || raw.runtime?.proof_metrics || raw.runtime?.proofMetrics || {};
+  const proofMetrics = {
+    proofVerificationLatencyP50: Number(rawProofMetrics.proof_verification_latency_p50 ?? rawProofMetrics.proofVerificationLatencyP50 ?? 0),
+    proofVerificationLatencyP95: Number(rawProofMetrics.proof_verification_latency_p95 ?? rawProofMetrics.proofVerificationLatencyP95 ?? 0),
+    percentDecisionsDeterministic: Number(rawProofMetrics.percent_decisions_deterministic ?? rawProofMetrics.percentDecisionsDeterministic ?? 0),
+    percentDecisionsLlmReviewed: Number(rawProofMetrics.percent_decisions_llm_reviewed ?? rawProofMetrics.percentDecisionsLlmReviewed ?? 0),
+    percentDecisionsHumanReviewed: Number(rawProofMetrics.percent_decisions_human_reviewed ?? rawProofMetrics.percentDecisionsHumanReviewed ?? 0),
+    averageTokensPerAccessDecision: Number(rawProofMetrics.average_tokens_per_access_decision ?? rawProofMetrics.averageTokensPerAccessDecision ?? 0),
+    cachedProofHitRate: Number(rawProofMetrics.cached_proof_hit_rate ?? rawProofMetrics.cachedProofHitRate ?? 0),
+    tier3EscalationRate: Number(rawProofMetrics.tier_3_escalation_rate ?? rawProofMetrics.tier3EscalationRate ?? 0),
+  };
+  const rawOutcomeMetrics = raw.outcome_metrics || raw.outcomeMetrics || raw.runtime?.outcome_metrics || raw.runtime?.outcomeMetrics || {};
+  const outcomeMetrics = {
+    authorityEfficiencyScore: Number(rawOutcomeMetrics.authority_efficiency_score ?? rawOutcomeMetrics.authorityEfficiencyScore ?? 0),
+    unnecessaryAccessAvoidedCount: Number(rawOutcomeMetrics.unnecessary_access_avoided_count ?? rawOutcomeMetrics.unnecessaryAccessAvoidedCount ?? 0),
+    minimalEscalationValidityRate: Number(rawOutcomeMetrics.minimal_escalation_validity_rate ?? rawOutcomeMetrics.minimalEscalationValidityRate ?? 0),
+    machineVerifiableClaimRatio: Number(rawOutcomeMetrics.machine_verifiable_claim_ratio ?? rawOutcomeMetrics.machineVerifiableClaimRatio ?? 0),
+    narrativeOnlyEscalationBlockRate: Number(rawOutcomeMetrics.narrative_only_escalation_block_rate ?? rawOutcomeMetrics.narrativeOnlyEscalationBlockRate ?? 0),
+    overEscalationRate: Number(rawOutcomeMetrics.over_escalation_rate ?? rawOutcomeMetrics.overEscalationRate ?? 0),
+    underEscalationRate: Number(rawOutcomeMetrics.under_escalation_rate ?? rawOutcomeMetrics.underEscalationRate ?? 0),
+    dataExposureScore: Number(rawOutcomeMetrics.data_exposure_score ?? rawOutcomeMetrics.dataExposureScore ?? 0),
+    probeInformationGain: Number(rawOutcomeMetrics.probe_information_gain ?? rawOutcomeMetrics.probeInformationGain ?? 0),
+    proofValidEscalationRate: Number(rawOutcomeMetrics.proof_valid_escalation_rate ?? rawOutcomeMetrics.proofValidEscalationRate ?? 0),
+    revocationSuccessRate: Number(rawOutcomeMetrics.revocation_success_rate ?? rawOutcomeMetrics.revocationSuccessRate ?? 0),
+    postRemediationSuccessRate: Number(rawOutcomeMetrics.post_remediation_success_rate ?? rawOutcomeMetrics.postRemediationSuccessRate ?? 0),
+    humanOverrideRate: Number(rawOutcomeMetrics.human_override_rate ?? rawOutcomeMetrics.humanOverrideRate ?? 0),
+  };
+  const proofCapsules = asArray(raw.proof_capsules || raw.proofCapsules).map((capsule) => ({
+    id: capsule.id || capsule.proof_id || capsule.proofId || '',
+    approved: Boolean(capsule.approved),
+    riskScore: Number(capsule.risk_score ?? capsule.riskScore ?? 0),
+    minimalityScore: Number(capsule.minimality_score ?? capsule.minimalityScore ?? 0),
+    reviewer: capsule.reviewer || '',
+    timestamp: capsule.timestamp || '',
+    failedClaims: compactStrings(capsule.failed_claims || capsule.failedClaims),
+    machineClaims: asArray(capsule.machine_verifiable_claims || capsule.machineVerifiableClaims)
+      .map(normalizeTomographyClaim)
+      .filter((claim) => claim.claim),
+    humanClaims: asArray(capsule.human_reviewed_claims || capsule.humanReviewedClaims)
+      .map(normalizeTomographyClaim)
+      .filter((claim) => claim.claim),
+    narrativeClaims: asArray(capsule.unverifiable_narrative_claims || capsule.unverifiableNarrativeClaims)
+      .map(normalizeTomographyClaim)
+      .filter((claim) => claim.claim),
+    requestedAccess: normalizeTomographyAccessRequest(capsule.requested_access || capsule.requestedAccess || {}),
+    evidenceLinks: compactStrings(capsule.evidence_links || capsule.evidenceLinks),
+  }));
+  const projectionProbes = asArray(raw.projection_probes || raw.projectionProbes).map((probe) => ({
+    id: probe.id || '',
+    name: probe.name || '',
+    status: probe.status || '',
+    targetUncertainty: probe.target_uncertainty || probe.targetUncertainty || '',
+    requiredAuthorityDose: Number(probe.required_authority_dose ?? probe.requiredAuthorityDose ?? 0),
+    privacyCost: Number(probe.privacy_cost ?? probe.privacyCost ?? 0),
+    expectedInformationGain: Number(probe.expected_information_gain ?? probe.expectedInformationGain ?? 0),
+    actualInformationGain: Number(probe.actual_information_gain ?? probe.actualInformationGain ?? 0),
+    confidence: Number(probe.confidence ?? 0),
+    allowedOutputShapeValid: Boolean(probe.allowed_output_shape_valid ?? probe.allowedOutputShapeValid),
+    resultSummary: probe.result_summary || probe.resultSummary || {},
+  })).filter((probe) => probe.name);
+  const blockedOverreachAttempts = asArray(raw.blocked_overreach_attempts || raw.blockedOverreachAttempts).map((attempt) => ({
+    requestedAccess: normalizeTomographyAccessRequest(attempt.requested_access || attempt.requestedAccess || {}),
+    decision: attempt.decision || '',
+    reason: compactStrings(attempt.reason || attempt.blocked_by || attempt.blockedBy),
+    suggestedAlternative: compactStrings(attempt.suggested_alternative || attempt.suggestedAlternative),
+  }));
+  const authorityDoses = asArray(raw.authority_doses || raw.authorityDoses).map((dose) => ({
+    id: dose.id || '',
+    level: Number(dose.level ?? 0),
+    scope: dose.scope || '',
+    decision: dose.decision || '',
+    mutationAllowed: Boolean(dose.mutation_allowed ?? dose.mutationAllowed),
+    permittedTools: compactStrings(dose.permitted_tools || dose.permittedTools),
+    permittedDataClasses: compactStrings(dose.permitted_data_classes || dose.permittedDataClasses),
+    forbiddenDataClasses: compactStrings(dose.forbidden_data_classes || dose.forbiddenDataClasses),
+    expirationCondition: dose.expiration_condition || dose.expirationCondition || '',
+    revokePlan: dose.revoke_plan || dose.revokePlan || '',
+    measuredEffect: dose.measured_effect || dose.measuredEffect || '',
+  }));
+  const trace = {
+    schemaVersion: raw.schema_version || raw.schemaVersion || '',
+    taskId: raw.task_id || raw.taskId || '',
+    taskClass: raw.task_class || raw.taskClass || '',
+    userGoal: raw.user_goal || raw.userGoal || '',
+    currentAuthorityDose: Number(raw.current_authority_dose ?? raw.currentAuthorityDose ?? 0),
+    uncertainties: asArray(raw.uncertainties).map((uncertainty) => ({
+      id: uncertainty.id || '',
+      description: uncertainty.description || '',
+      currentConfidence: Number(uncertainty.current_confidence ?? uncertainty.currentConfidence ?? 0),
+      possibleCauses: compactStrings(uncertainty.possible_causes || uncertainty.possibleCauses),
+      usefulProbes: compactStrings(uncertainty.useful_probes || uncertainty.usefulProbes),
+      blockingStatus: uncertainty.blocking_status || uncertainty.blockingStatus || '',
+      severity: uncertainty.severity || '',
+    })),
+    authorityDoses,
+    projectionProbes,
+    proofCapsules,
+    blockedOverreachAttempts,
+    suggestedLowerRiskAlternatives: compactStrings(raw.suggested_lower_risk_alternatives || raw.suggestedLowerRiskAlternatives),
+    finalOutcome: raw.final_outcome || raw.finalOutcome || '',
+    diagnosis: raw.diagnosis || '',
+    remediationPlan: raw.remediation_plan || raw.remediationPlan || '',
+    avoidedAccess: compactStrings(raw.avoided_access || raw.avoidedAccess),
+    overEscalationFlags: compactStrings(raw.over_escalation_flags || raw.overEscalationFlags),
+    underEscalationFlags: compactStrings(raw.under_escalation_flags || raw.underEscalationFlags),
+    learnedPolicyDelta: compactStrings(raw.learned_policy_delta || raw.learnedPolicyDelta),
+  };
+  const firstProof = proofCapsules[0] || {};
+  return {
+    trace,
+    checkrideReports,
+    policyLearningRecords,
+    reviewRequests,
+    remediationVerifications,
+    grants,
+    evidenceRecords,
+    auditRecords,
+    proofMetrics,
+    outcomeMetrics,
+    metrics: {
+      probeCount: projectionProbes.length,
+      machineClaimCount: firstProof.machineClaims?.length || 0,
+      humanClaimCount: firstProof.humanClaims?.length || 0,
+      narrativeClaimCount: firstProof.narrativeClaims?.length || 0,
+      avoidedAccessCount: trace.avoidedAccess.length,
+      checkrideCount: checkrideReports.reduce((sum, report) => sum + report.results.length, 0),
+      policyLearningCount: policyLearningRecords.length,
+      pendingReviewCount: reviewRequests.filter((review) => review.status === 'pending').length,
+      activeGrantCount: grants.filter((grant) => grant.status === 'active').length,
+      evidenceRecordCount: evidenceRecords.length,
+    },
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -1388,6 +1732,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       source: normalizeSourceState(state, dojo, null),
       evidence: normalizeEvidenceState(state, dojo, null),
       caseLaw: normalizeCaseLawState(state, dojo),
+      tomography: normalizeTomographyTrace(state, dojo),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -1447,6 +1792,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     source: skill.source,
     evidence: skill.evidence,
     caseLaw: skill.caseLaw,
+    tomography: normalizeTomographyTrace(state, dojo),
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
@@ -1454,6 +1800,150 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
 export async function getDojoWorkspaceSummary({ workspaceSlug = '', signal, url, token } = {}) {
   const state = await getAgentWorkflowState({ signal, url, token });
   return normalizeDojoWorkspaceSummary(state, workspaceSlug);
+}
+
+function summaryFromTherapeuticRuntimeBody(body, workspaceSlug) {
+  const runtime = body?.runtime || body?.result?.runtime || body?.result || {};
+  const trace = runtime.trace || body?.trace || body?.result?.trace || null;
+  if (!trace) return summaryFromToolBody(body, workspaceSlug);
+  return normalizeDojoWorkspaceSummary({
+    dojo: {
+      therapeuticTomography: {
+        ...trace,
+        runtime,
+        checkride_reports: runtime.checkride_reports,
+        policy_learning_records: runtime.policy_learning_records,
+        review_requests: runtime.review_requests,
+        remediation_verifications: runtime.remediation_verifications,
+        grants: runtime.grants,
+        evidence_records: runtime.evidence_records,
+        audit_records: runtime.audit_records,
+        proof_metrics: runtime.proof_metrics,
+        outcome_metrics: runtime.outcome_metrics,
+      },
+    },
+  }, workspaceSlug);
+}
+
+export async function reviewTherapeuticAccess({
+  review,
+  decision,
+  workspaceSlug = '',
+  reviewerRole = 'human_reviewer',
+  rationale = '',
+  tenantContext,
+  signal,
+  url,
+  token,
+} = {}) {
+  const reviewId = review?.reviewId || review?.review_id || '';
+  const taskId = review?.taskId || review?.task_id || review?.request?.taskId || review?.request?.task_id || '';
+  if (!taskId) throw new Error('dojo_therapeutic_task_id_required');
+  if (!reviewId) throw new Error('dojo_therapeutic_review_id_required');
+  if (decision !== 'approved' && decision !== 'denied') throw new Error('dojo_therapeutic_review_decision_required');
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: reviewId,
+  });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_therapeutic_review_access',
+    arguments: {
+      ...tenantArgs,
+      task_id: taskId,
+      review_id: reviewId,
+      status: decision,
+      reviewer_role: reviewerRole,
+      rationale: rationale || `UI ${decision} review ${reviewId}`,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_therapeutic_review_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromTherapeuticRuntimeBody(body, workspaceSlug),
+    message: `Review ${decision}: ${reviewId}`,
+  };
+}
+
+export async function revokeTherapeuticGrants({
+  trace,
+  grant,
+  workspaceSlug = '',
+  reason = 'ui_revocation',
+  tenantContext,
+  signal,
+  url,
+  token,
+} = {}) {
+  const taskId = trace?.taskId || trace?.task_id || grant?.taskId || grant?.task_id || '';
+  if (!taskId) throw new Error('dojo_therapeutic_task_id_required');
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: grant?.grantId || grant?.grant_id || taskId,
+  });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_therapeutic_revoke_grants',
+    arguments: {
+      ...tenantArgs,
+      task_id: taskId,
+      ...(grant?.grantId || grant?.grant_id ? { grant_id: grant.grantId || grant.grant_id } : {}),
+      reason,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_therapeutic_revoke_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromTherapeuticRuntimeBody(body, workspaceSlug),
+    message: `Grant revoked: ${grant?.grantId || grant?.grant_id || taskId}`,
+  };
+}
+
+export async function getTherapeuticRuntime({
+  taskId,
+  workspaceSlug = '',
+  tenantContext,
+  signal,
+  url,
+  token,
+} = {}) {
+  if (!taskId) throw new Error('dojo_therapeutic_task_id_required');
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: taskId,
+  });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_therapeutic_get_runtime',
+    arguments: {
+      ...tenantArgs,
+      task_id: taskId,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_therapeutic_get_runtime_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromTherapeuticRuntimeBody(body, workspaceSlug),
+    message: `Runtime loaded: ${taskId}`,
+  };
 }
 
 function bridgeToolActionError(body, fallbackCode) {

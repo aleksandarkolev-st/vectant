@@ -140,9 +140,13 @@ describe("browser workflow bridge", () => {
       ok: boolean;
       opened: { tab_id: string; navigation_started: boolean };
     };
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       ok: true,
       opened: {
+        tab_id: "external-auth-tab",
+        navigation_started: true,
+      },
+      workspaceBrowser: {
         tab_id: "external-auth-tab",
         navigation_started: true,
       },
