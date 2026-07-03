@@ -343,25 +343,43 @@ function selfCheckSourceRootManifest() {
 const args = process.argv.slice(2);
 const selfCheck = hasFlag(args, '--self-check');
 const prepareSourceManifestOnly = hasFlag(args, '--prepare-source-manifest-only');
-const fixture = readOption(args, '--fixture') || process.env.SYNTHI_GPU_AGENT_FIXTURE || '';
-const profile = readOption(args, '--profile') || process.env.SYNTHI_GPU_AGENT_PROFILE_PATH || '';
+const fixtureArg = readOption(args, '--fixture');
+const profileArg = readOption(args, '--profile');
+const sourceManifestArg = readOption(args, '--source-manifest');
+const sourceRootArg = readOption(args, '--source-root');
+const sourceEntryArg = readOption(args, '--source-entry');
+const sourceAuthorityArg = readOption(args, '--source-authority');
+const directSourceRequested = Boolean(
+  sourceManifestArg
+  || sourceRootArg
+  || process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
+  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
+  || process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT
+  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
+);
+const fixture = directSourceRequested && !fixtureArg
+  ? ''
+  : fixtureArg || process.env.SYNTHI_GPU_AGENT_FIXTURE || '';
+const profile = directSourceRequested && !profileArg
+  ? ''
+  : profileArg || process.env.SYNTHI_GPU_AGENT_PROFILE_PATH || '';
 let sourceManifest =
-  readOption(args, '--source-manifest')
+  sourceManifestArg
   || process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
   || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
   || '';
 const sourceRoot =
-  readOption(args, '--source-root')
+  sourceRootArg
   || process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT
   || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
   || '';
 const sourceEntry =
-  readOption(args, '--source-entry')
+  sourceEntryArg
   || process.env.SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH
   || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH
   || '';
 const sourceAuthority =
-  readOption(args, '--source-authority')
+  sourceAuthorityArg
   || process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY
   || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY
   || '';
@@ -369,6 +387,9 @@ const vendor = readOption(args, '--vendor') || process.env.SYNTHI_GPU_VENDOR || 
 
 if (fixture && profile) {
   throw new Error('choose either --fixture or --profile, not both');
+}
+if ((fixtureArg || profileArg) && (sourceManifestArg || sourceRootArg)) {
+  throw new Error('choose either fixture/profile inputs or direct source inputs, not both');
 }
 
 if (selfCheck) {
@@ -400,6 +421,10 @@ if (prepareSourceManifestOnly) {
 
 if (fixture) process.env.SYNTHI_GPU_AGENT_FIXTURE = fixture;
 if (profile) process.env.SYNTHI_GPU_AGENT_PROFILE_PATH = profile;
+if (sourceManifest || sourceRoot) {
+  delete process.env.SYNTHI_GPU_AGENT_FIXTURE;
+  delete process.env.SYNTHI_GPU_AGENT_PROFILE_PATH;
+}
 if (sourceManifest) {
   process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH = sourceManifest;
   process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH = sourceManifest;
