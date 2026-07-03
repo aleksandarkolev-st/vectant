@@ -29417,6 +29417,76 @@ function realRocmCoverageContractAudit(
     ...(Array.isArray(entry.blocking_gaps) ? entry.blocking_gaps : []),
   ];
   const entryHasBlockingProofGaps = (entry) => listEntries(entry).length > 0;
+  const entryEvidenceRefCount = (entry) => evidenceRefsFromValue(entry).length;
+  const entryHasRuntimeCompletenessShape = (entry) => {
+    const stageResults = compactObject(entry.stageResults ?? entry.stage_results);
+    const stagePlans = compactObject(entry.stagePlans ?? entry.stage_plans);
+    const allStageResultsObserved =
+      Object.keys(stageResults).length > 0
+      && REAL_ROCM_APP_HOOK_REQUIRED_STAGES.every((stage) => {
+        const camelStage = realRocmAppHookStageCamel(stage);
+        const result = compactObject(stageResults[stage] ?? stageResults[camelStage]);
+        return firstBool(
+          result.runtimeObserved,
+          result.runtime_observed,
+          result.observed,
+        ) === true;
+      });
+    const allStagePlansObserved =
+      Object.keys(stagePlans).length > 0
+      && REAL_ROCM_APP_HOOK_REQUIRED_STAGES.every((stage) => {
+        const camelStage = realRocmAppHookStageCamel(stage);
+        const plan = compactObject(stagePlans[stage] ?? stagePlans[camelStage]);
+        return firstBool(
+          plan.runtimeObserved,
+          plan.runtime_observed,
+          plan.planAvailable,
+          plan.plan_available,
+        ) === true;
+      });
+    return entryEvidenceRefCount(entry) > 0
+      && (
+        (
+          firstBool(entry.contractEvidenceComplete, entry.contract_evidence_complete) === true
+          && firstBool(entry.runtimeObservationComplete, entry.runtime_observation_complete) === true
+        )
+        || (
+          firstBool(entry.materializationComplete, entry.materialization_complete) === true
+          && firstBool(entry.runtimeObservedComplete, entry.runtime_observed_complete) === true
+        )
+        || (
+          firstBool(entry.sidecarEvidenceComplete, entry.sidecar_evidence_complete) === true
+          && firstBool(
+            entry.sidecarRuntimeObservationComplete,
+            entry.sidecar_runtime_observation_complete,
+          ) === true
+        )
+        || (
+          firstBool(entry.runtimeBackendRuntimeEvidenceAccepted, entry.runtime_backend_runtime_evidence_accepted) === true
+          && firstText(entry.runtimeBackendEvidenceAuthority, entry.runtime_backend_evidence_authority)
+            === 'strict_runtime_proof_backend_evidence'
+          && firstBool(entry.backendConsistent, entry.backend_consistent) === true
+        )
+        || (
+          firstBool(entry.artifactTransportObserved, entry.artifact_transport_observed) === true
+          && firstBool(entry.epochPublicationObserved, entry.epoch_publication_observed) === true
+          && firstBool(entry.dispatchTraceObserved, entry.dispatch_trace_observed) === true
+          && firstBool(entry.outputAfterDispatchObserved, entry.output_after_dispatch_observed) === true
+          && firstBool(entry.firewallAccepted, entry.firewall_accepted) === true
+        )
+        || allStageResultsObserved
+        || allStagePlansObserved
+      );
+  };
+  const facetClaimsRuntimeCoverage = (facet) =>
+    firstBool(
+      facet.accepted,
+      facet.proven,
+      facet.canSatisfyRuntimeProof,
+      facet.can_satisfy_runtime_proof,
+      facet.runtimeConsistencyAccepted,
+      facet.runtime_consistency_accepted,
+    ) === true;
   const proven = gates.some((gate) =>
     !entryHasBlockingProofGaps(gate)
     && (gate.accepted === true || gate.proven === true)
@@ -29424,19 +29494,29 @@ function realRocmCoverageContractAudit(
     !entryHasBlockingProofGaps(facet)
     && (
       facet.accepted === true
+      || facet.proven === true
       || facet.canSatisfyRuntimeProof === true
       || facet.can_satisfy_runtime_proof === true
       || facet.runtimeConsistencyAccepted === true
       || facet.runtime_consistency_accepted === true
     )
+    && entryHasRuntimeCompletenessShape(facet)
   );
   const statusValues = compactStringList([
     ...gates.map((gate) => firstText(gate.status, gate.reason)),
     ...facets.map((facet) => firstText(facet.status, facet.reason)),
   ]);
+  const proofShapeGaps = facets
+    .filter((facet) =>
+      !entryHasBlockingProofGaps(facet)
+      && facetClaimsRuntimeCoverage(facet)
+      && !entryHasRuntimeCompletenessShape(facet)
+    )
+    .map(() => 'real_rocm_contract_coverage_runtime_evidence_shape_missing');
   const blockingGaps = compactStringList([...gates, ...facets]
     .flatMap(listEntries)
-    .map((value) => firstText(value, compactObject(value).code)));
+    .map((value) => firstText(value, compactObject(value).code))
+    .concat(proofShapeGaps));
   return {
     present,
     required,
