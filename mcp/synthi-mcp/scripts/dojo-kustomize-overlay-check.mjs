@@ -93,6 +93,12 @@ const DOJO_MCP_HOST = {
   bearerHeader: "X-Synthi-Dojo-Mcp-Token",
 };
 
+const THERAPEUTIC_PRODUCTION_INGRESS_PATHS = [
+  "/therapeutic/runtime-authorization",
+  "/therapeutic/runtime-state",
+  "/therapeutic/incident-response",
+];
+
 const REQUIRED_INGRESS_ROUTES = [
   { host: "beta.vectant.dev", path: "/collab", pathType: "Prefix", service: "collab-server", port: "1234" },
   { host: "beta.vectant.dev", path: "/signal", pathType: "Prefix", service: "signaling-server", port: "9000" },
@@ -444,6 +450,15 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${dojoMcpHost.path} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
     });
   } else {
+    for (const therapeuticPath of THERAPEUTIC_PRODUCTION_INGRESS_PATHS) {
+      const route = { ...dojoMcpHost, path: therapeuticPath };
+      if (!ingressRoutesToService(ingress.doc, route)) {
+        failures.push({
+          code: "therapeutic_production_ingress_route_missing",
+          message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${therapeuticPath} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
+        });
+      }
+    }
     for (const route of REQUIRED_INGRESS_ROUTES) {
       if (!ingressRoutesToService(ingress.doc, route)) {
         failures.push({
@@ -752,6 +767,27 @@ spec:
             name: dojo-mcp-host
             port:
               number: 9467
+      - path: /therapeutic/runtime-authorization
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/runtime-state
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/incident-response
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
       - path: /collab
         pathType: Prefix
         backend:
@@ -815,6 +851,27 @@ spec:
     http:
       paths:
       - path: /dojo/mcp
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/runtime-authorization
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/runtime-state
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+      - path: /therapeutic/incident-response
         pathType: Prefix
         backend:
           service:

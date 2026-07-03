@@ -13,6 +13,8 @@ It does three things:
 - routes `collab-server` and `signaling-server` Redis through the
   externally-synced `synthi-dojo-release-secrets/REDIS_URL` value
 - adds fail-closed Dojo production posture values to `synthi-config`
+- exposes the deployed therapeutic tomography runtime authorization,
+  runtime-state, and probe adapter endpoints on the Dojo MCP host
 - syncs Dojo release-only Secret Manager values into a dedicated
   `synthi-dojo-release-secrets` Kubernetes Secret through External Secrets
   Operator
@@ -62,6 +64,22 @@ synthi-dojo-mcp-manifest-key-id
 synthi-dojo-mcp-manifest-private-key-pem
 synthi-dojo-mcp-manifest-public-key-pem
 synthi-dojo-mcp-bearer-token
+synthi-therapeutic-prod-runtime-url
+synthi-therapeutic-prod-runtime-auth-token
+synthi-therapeutic-prod-runtime-session-id
+synthi-therapeutic-prod-probe-url
+synthi-therapeutic-prod-probe-auth-token
+synthi-therapeutic-prod-probe-upstream-url
+synthi-therapeutic-prod-probe-upstream-auth-token
+synthi-therapeutic-prod-store-url
+synthi-therapeutic-prod-store-read-url-template
+synthi-therapeutic-prod-store-auth-token
+synthi-therapeutic-prod-postgres-url
+synthi-therapeutic-prod-tenant-id
+synthi-therapeutic-prod-organization-id
+synthi-therapeutic-prod-workspace-id
+synthi-therapeutic-prod-actor-id
+synthi-therapeutic-prod-actor-roles
 synthi-dojo-hosted-browser-cdp-url
 synthi-dojo-hosted-browser-workspace-url
 synthi-private-workflow-tool-scope
@@ -75,3 +93,8 @@ signing must go through `managed-key-service` or an external signing command.
 The MCP manifest signer still requires an Ed25519 private signing key in the
 current runtime and should be replaced with a managed signer before claiming
 full key-custody maturity.
+
+The therapeutic production URLs must resolve to externally reachable HTTPS
+origins. Loopback, local-only, example, test, demo, and file-backed values are
+rejected by the production release gate and cannot update
+`docs/THERAPEUTIC_TOMOGRAPHY_RELEASE_EVIDENCE.json`.
