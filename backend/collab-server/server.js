@@ -5306,7 +5306,12 @@ const server = http.createServer(async (req, res) => {
 
             switch (action) {
                 case 'init':
-                result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId, tokenUserId);
+                {
+                  const boundary = await runGitBoundary(
+                    async () => gitService.initRepo(slug, data.remoteUrl, bootstrapUserId, tokenUserId),
+                  );
+                  result = boundary.applyResult;
+                }
                 hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                 if (data.owner || data.name || data.showInRecent === true || data.addToRecent === true) {
                   workspaceManager.addWorkspace(slug, data.remoteUrl, data.owner, data.name, {
@@ -5343,7 +5348,12 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
                 case 'clone':
-                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId);
+                  {
+                    const boundary = await runGitBoundary(
+                      async () => gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId),
+                    );
+                    result = boundary.applyResult;
+                  }
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                   // Save metadata locally for the dashboard recent list. Callers can
                   // still opt out explicitly for short-lived internal workspaces.

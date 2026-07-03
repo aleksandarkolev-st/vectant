@@ -78,6 +78,7 @@ test('marks git actions whose callbacks run through the CodeSiteFS boundary', ()
     'check-merge-conflicts',
     'checkout',
     'cherry-pick',
+    'clone',
     'commit',
     'create-tag',
     'delete-tag',
@@ -85,6 +86,7 @@ test('marks git actions whose callbacks run through the CodeSiteFS boundary', ()
     'discard-all',
     'discard-lines',
     'fetch',
+    'init',
     'interactive-rebase',
     'mark-resolved',
     'merge-branch',
@@ -113,8 +115,6 @@ test('marks git actions whose callbacks run through the CodeSiteFS boundary', ()
   }
 
   for (const action of [
-    'init',
-    'clone',
     'status',
   ]) {
     assert.equal(shouldRunCodeSiteGitBoundary(action), false, action);

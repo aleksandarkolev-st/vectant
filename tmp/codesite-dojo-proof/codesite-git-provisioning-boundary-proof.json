@@ -1,0 +1,333 @@
+{
+  "schemaVersion": "synthi.codesite.gitProvisioningBoundaryProof.v1",
+  "generatedAt": "2026-07-03T15:52:07.903Z",
+  "ok": true,
+  "assertions": [
+    {
+      "name": "init maps to git_provisioning repo-scoped attempt",
+      "ok": true,
+      "details": {
+        "path": "**",
+        "kind": "init",
+        "tool": "git_provisioning"
+      }
+    },
+    {
+      "name": "clone maps to git_provisioning repo-scoped attempt",
+      "ok": true,
+      "details": {
+        "path": "**",
+        "kind": "clone",
+        "tool": "git_provisioning"
+      }
+    },
+    {
+      "name": "init callback runs through CodeSiteFS boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "clone callback runs through CodeSiteFS boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "server init branch wraps gitService.initRepo in runGitBoundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "server clone branch wraps gitService.cloneRepo in runGitBoundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "policy action set includes provisioning actions",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "syntax command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/server.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "policySyntax command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/codeSiteGitPolicy.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "policy command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js",
+        "summary": {
+          "tests": 7,
+          "suites": 0,
+          "pass": 7,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "gitService command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+        "summary": {
+          "tests": 35,
+          "suites": 0,
+          "pass": 35,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "codesiteFs command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/codesiteFs.test.js",
+        "summary": {
+          "tests": 44,
+          "suites": 0,
+          "pass": 44,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerPolicy command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codeSiteGitPolicy.js && node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js",
+        "summary": {
+          "tests": 7,
+          "suites": 0,
+          "pass": 7,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "policy": {
+    "init": {
+      "path": "**",
+      "kind": "init",
+      "tool": "git_provisioning"
+    },
+    "clone": {
+      "path": "**",
+      "kind": "clone",
+      "tool": "git_provisioning"
+    },
+    "boundaryActions": {
+      "init": true,
+      "clone": true,
+      "status": false
+    }
+  },
+  "commands": [
+    {
+      "name": "syntax",
+      "command": "node --check backend/collab-server/server.js",
+      "startedAt": "2026-07-03T15:49:13.103Z",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0
+      },
+      "outputTail": []
+    },
+    {
+      "name": "policySyntax",
+      "command": "node --check backend/collab-server/codeSiteGitPolicy.js",
+      "startedAt": "2026-07-03T15:49:13.266Z",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0
+      },
+      "outputTail": []
+    },
+    {
+      "name": "policy",
+      "command": "node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js",
+      "startedAt": "2026-07-03T15:49:13.504Z",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "ok 6 - maps tags, stash refs, and remotes to ref/config attempts",
+        "  ---",
+        "  duration_ms: 0.366371",
+        "  ...",
+        "# Subtest: leaves read-only and already path-gated file actions unmapped",
+        "ok 7 - leaves read-only and already path-gated file actions unmapped",
+        "  ---",
+        "  duration_ms: 0.109197",
+        "  ...",
+        "1..7",
+        "# tests 7",
+        "# suites 0",
+        "# pass 7",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 290.62061"
+      ]
+    },
+    {
+      "name": "gitService",
+      "command": "node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+      "startedAt": "2026-07-03T15:49:13.927Z",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 35,
+        "suites": 0,
+        "pass": 35,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "ok 34 - direct gitService.createDirectory can be required to fail closed without CodeSite context",
+        "  ---",
+        "  duration_ms: 261.471831",
+        "  ...",
+        "# Subtest: nested CodeSite options can override authoritative hydration",
+        "ok 35 - nested CodeSite options can override authoritative hydration",
+        "  ---",
+        "  duration_ms: 518.342173",
+        "  ...",
+        "1..35",
+        "# tests 35",
+        "# suites 0",
+        "# pass 35",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 164085.72621"
+      ]
+    },
+    {
+      "name": "codesiteFs",
+      "command": "node --test backend/collab-server/__tests__/codesiteFs.test.js",
+      "startedAt": "2026-07-03T15:51:58.192Z",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 44,
+        "suites": 0,
+        "pass": 44,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "ok 43 - raw terminal quarantine replaces symlink escapes before command execution",
+        "  ---",
+        "  duration_ms: 1529.379521",
+        "  ...",
+        "# Subtest: can record managed runtime quarantine evidence without closing the overlay",
+        "ok 44 - can record managed runtime quarantine evidence without closing the overlay",
+        "  ---",
+        "  duration_ms: 1697.179852",
+        "  ...",
+        "1..44",
+        "# tests 44",
+        "# suites 0",
+        "# pass 44",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 8121.95617"
+      ]
+    },
+    {
+      "name": "dockerPolicy",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codeSiteGitPolicy.js && node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js",
+      "startedAt": "2026-07-03T15:52:06.463Z",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "ok 6 - maps tags, stash refs, and remotes to ref/config attempts",
+        "  ---",
+        "  duration_ms: 0.523734",
+        "  ...",
+        "# Subtest: leaves read-only and already path-gated file actions unmapped",
+        "ok 7 - leaves read-only and already path-gated file actions unmapped",
+        "  ---",
+        "  duration_ms: 0.261044",
+        "  ...",
+        "1..7",
+        "# tests 7",
+        "# suites 0",
+        "# pass 7",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 132.81233"
+      ]
+    }
+  ]
+}
