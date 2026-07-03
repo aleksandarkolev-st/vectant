@@ -1437,6 +1437,21 @@ function codeSiteProvisioningOptions(context, options = {}) {
   };
 }
 
+function codeSiteGitServiceOptions(context, action, options = {}) {
+  return {
+    ...codeSiteEnforceOptions(context, options),
+    codesiteContext: context,
+    evidenceRefs: [
+      ...codeSiteArray(options.evidenceRefs),
+      `collab:git:${action}`,
+    ],
+    processAncestry: [
+      ...codeSiteArray(options.processAncestry),
+      `collab-server:git:${action}`,
+    ],
+  };
+}
+
 function needsCodeSiteUserRepoProvisioning(slug, userId) {
   if (!userId) return false;
   try {
@@ -5486,7 +5501,15 @@ const server = http.createServer(async (req, res) => {
                 case 'add-remote':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId),
+                        async () => gitService.addRemote(
+                          slug,
+                          data.name,
+                          data.url,
+                          effectiveUserId,
+                          data.token,
+                          tokenUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'add-remote'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }
@@ -5494,7 +5517,12 @@ const server = http.createServer(async (req, res) => {
                 case 'remove-remote':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.removeRemote(slug, data.name, effectiveUserId),
+                        async () => gitService.removeRemote(
+                          slug,
+                          data.name,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'remove-remote'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }
@@ -5502,7 +5530,15 @@ const server = http.createServer(async (req, res) => {
                 case 'set-remote-url':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId),
+                        async () => gitService.setRemoteUrl(
+                          slug,
+                          data.name,
+                          data.url,
+                          effectiveUserId,
+                          data.token,
+                          tokenUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'set-remote-url'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }
@@ -5765,7 +5801,15 @@ const server = http.createServer(async (req, res) => {
                     pauseWatcher(slug);
                     try {
                       const boundary = await runGitBoundary(
-                        async () => withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds)),
+                        async () => withTelemetry('git:push', () => gitService.push(
+                          slug,
+                          effectiveUserId,
+                          data.token,
+                          data.force,
+                          tokenUserId,
+                          tokenFallbackUserIds,
+                          codeSiteGitServiceOptions(codeSiteContext, 'push'),
+                        )),
                       );
                       result = boundary.applyResult;
                       broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
@@ -5958,7 +6002,12 @@ const server = http.createServer(async (req, res) => {
                 case 'stash-drop':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.stashDrop(slug, data.index, effectiveUserId),
+                        async () => gitService.stashDrop(
+                          slug,
+                          data.index,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'stash-drop'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }
@@ -6025,7 +6074,14 @@ const server = http.createServer(async (req, res) => {
                 case 'create-tag':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId),
+                        async () => gitService.createTag(
+                          slug,
+                          data.name,
+                          data.ref || 'HEAD',
+                          data.message,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'create-tag'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }
@@ -6033,7 +6089,12 @@ const server = http.createServer(async (req, res) => {
                 case 'delete-tag':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.deleteTag(slug, data.name, effectiveUserId),
+                        async () => gitService.deleteTag(
+                          slug,
+                          data.name,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'delete-tag'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }
@@ -6041,7 +6102,15 @@ const server = http.createServer(async (req, res) => {
                 case 'push-tag':
                     {
                       const boundary = await runGitBoundary(
-                        async () => gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds),
+                        async () => gitService.pushTag(
+                          slug,
+                          data.name,
+                          effectiveUserId,
+                          data.token,
+                          tokenUserId,
+                          tokenFallbackUserIds,
+                          codeSiteGitServiceOptions(codeSiteContext, 'push-tag'),
+                        ),
                       );
                       result = boundary.applyResult;
                     }

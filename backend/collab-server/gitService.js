@@ -1339,6 +1339,15 @@ class GitService {
         }, applyFn, effectiveRepoPath);
     }
 
+    async _runCodeSiteGitConfigBoundary(slug, userId, options = {}, kind, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_config',
+            attempts: [codeSiteAttempt('**', kind, 'git_config', options)],
+        }, applyFn, effectiveRepoPath);
+    }
+
     /**
      * Extract an auth token from the push URL of the first configured remote.
      * Supports formats like:
@@ -2047,59 +2056,68 @@ class GitService {
         }
     }
 
-    async createTag(slug, name, ref = 'HEAD', message, userId) {
-        return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
-            try {
-                if (message) {
-                    await git.tag(['-a', name, ref, '-m', message]);
-                } else {
-                    await git.tag([name, ref]);
-                }
-                return { name, ref };
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
-    }
-
-    async deleteTag(slug, name, userId) {
-        return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
-            try {
-                await git.tag(['-d', name]);
-                return { deleted: name };
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
-    }
-
-    async pushTag(slug, name, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
-        return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
-            try {
-                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
-                if (effectiveToken) {
-                    const remotes = await git.getRemotes(true);
-                    const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
-                    let authUrl = null;
-                    if (remoteUrl.startsWith('https://')) {
-                        try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
-                    }
-                    if (authUrl) {
-                        await git.raw(['push', authUrl, `refs/tags/${name}`]);
+    async createTag(slug, name, ref = 'HEAD', message, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'create-tag', async () => {
+            return this.withLock(slug, async () => {
+                const git = await this.getGit(slug, userId);
+                try {
+                    if (message) {
+                        await git.tag(['-a', name, ref, '-m', message]);
                     } else {
-                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', 'origin', `refs/tags/${name}`]);
+                        await git.tag([name, ref]);
                     }
-                } else {
-                    await git.push('origin', `refs/tags/${name}`);
+                    return { name, ref };
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
                 }
-                return { pushed: name };
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
+            }, userId);
+        }, repoPath);
+    }
+
+    async deleteTag(slug, name, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'delete-tag', async () => {
+            return this.withLock(slug, async () => {
+                const git = await this.getGit(slug, userId);
+                try {
+                    await git.tag(['-d', name]);
+                    return { deleted: name };
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
+                }
+            }, userId);
+        }, repoPath);
+    }
+
+    async pushTag(slug, name, userId, token, tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'push-tag', async () => {
+            return this.withLock(slug, async () => {
+                const git = await this.getGit(slug, userId);
+                try {
+                    const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
+                    if (effectiveToken) {
+                        const remotes = await git.getRemotes(true);
+                        const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
+                        let authUrl = null;
+                        if (remoteUrl.startsWith('https://')) {
+                            try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
+                        }
+                        if (authUrl) {
+                            await git.raw(['push', authUrl, `refs/tags/${name}`]);
+                        } else {
+                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', 'origin', `refs/tags/${name}`]);
+                        }
+                    } else {
+                        await git.push('origin', `refs/tags/${name}`);
+                    }
+                    return { pushed: name };
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
+                }
+            }, userId);
+        }, repoPath);
     }
 
     async checkout(slug, branchName, create = false, userId, mode = 'normal', tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
@@ -2736,8 +2754,10 @@ class GitService {
         }, userId);
     }
 
-    async push(slug, userId, token, force = false, tokenUserId = null, tokenFallbackUserIds = []) {
-        return this.withLock(slug, async () => {
+    async push(slug, userId, token, force = false, tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'push', async () => {
+            return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
@@ -2775,11 +2795,14 @@ class GitService {
                         const workspaceManager = require('./workspaceManager');
                         const ws = workspaceManager.getBySlug(slug);
                         if (ws && ws.repoUrl) {
-                            await git.addRemote('origin', ws.repoUrl);
+                            await this._runCodeSiteGitConfigBoundary(slug, userId, options, 'push-add-remote', async () => {
+                                await git.addRemote('origin', ws.repoUrl);
+                            }, repoPath);
                         } else {
                             throw new RemoteNotConfiguredError();
                         }
                     } catch (inner) {
+                        if (inner?.code === 'CODESITE_WRITE_DENIED' || inner?.code === 'CODESITE_COMMIT_BLOCKED' || inner?.code === 'PATCH_PATH_MISMATCH') throw inner;
                         if (inner instanceof RemoteNotConfiguredError) throw inner;
                         throw new RemoteNotConfiguredError();
                     }
@@ -2915,12 +2938,15 @@ class GitService {
                 }
             }
             return this.getStatus(slug, userId);
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
-    async addRemote(slug, name, url, userId, explicitToken = null, tokenUserId = null) {
-        return this.withLock(slug, async () => {
-            try {
+    async addRemote(slug, name, url, userId, explicitToken = null, tokenUserId = null, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitConfigBoundary(slug, userId, options, 'add-remote', async () => {
+            return this.withLock(slug, async () => {
+                try {
                 const git = await this.getGit(slug, userId);
                 const { cleanUrl, token: urlToken } = this._extractTokenFromHttpsUrl(url);
                 // URL-embedded credentials win when present (matches the
@@ -2938,19 +2964,23 @@ class GitService {
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
-    async removeRemote(slug, name, userId) {
-        return this.withLock(slug, async () => {
-            try {
+    async removeRemote(slug, name, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitConfigBoundary(slug, userId, options, 'remove-remote', async () => {
+            return this.withLock(slug, async () => {
+                try {
                 const git = await this.getGit(slug, userId);
                 await git.removeRemote(name);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
     /**
@@ -2960,9 +2990,11 @@ class GitService {
      * to `git remote add` when the named remote doesn't yet exist, so the
      * "edit remote" UI flow doesn't require the user to pre-create one.
      */
-    async setRemoteUrl(slug, name, url, userId, explicitToken = null, tokenUserId = null) {
-        return this.withLock(slug, async () => {
-            try {
+    async setRemoteUrl(slug, name, url, userId, explicitToken = null, tokenUserId = null, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitConfigBoundary(slug, userId, options, 'set-remote-url', async () => {
+            return this.withLock(slug, async () => {
+                try {
                 const git = await this.getGit(slug, userId);
                 const { cleanUrl, token: urlToken } = this._extractTokenFromHttpsUrl(url);
                 const finalToken = (typeof urlToken === 'string' && urlToken)
@@ -2983,7 +3015,8 @@ class GitService {
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
     async getRemotes(slug, userId) {
@@ -3711,16 +3744,19 @@ class GitService {
         }, userId);
     }
 
-    async stashDrop(slug, index = 0, userId) {
-        return this.withLock(slug, async () => {
-            try {
-                const git = await this.getGit(slug, userId);
-                await git.stash(['drop', `stash@{${index}}`]);
-                return this.stashList(slug, userId);
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
+    async stashDrop(slug, index = 0, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'stash-drop', async () => {
+            return this.withLock(slug, async () => {
+                try {
+                    const git = await this.getGit(slug, userId);
+                    await git.stash(['drop', `stash@{${index}}`]);
+                    return this.stashList(slug, userId);
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
+                }
+            }, userId);
+        }, repoPath);
     }
 
     async stashApply(slug, index = 0, userId, options = {}) {

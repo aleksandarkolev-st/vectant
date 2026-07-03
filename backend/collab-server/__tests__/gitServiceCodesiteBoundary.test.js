@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 const config = require('../config');
 const activityRegistry = require('../codesiteActivityRegistry');
 const gitService = require('../gitService');
+const workspaceManager = require('../workspaceManager');
 
 const execFileAsync = promisify(execFile);
 
@@ -40,6 +41,20 @@ function codeSiteWorktreeContext(slug, overrides = {}) {
 function codeSiteIndexContext(slug, overrides = {}) {
   return codeSiteContext(slug, {
     allowedTools: ['git_index'],
+    ...overrides,
+  });
+}
+
+function codeSiteGitRefsContext(slug, overrides = {}) {
+  return codeSiteContext(slug, {
+    allowedTools: ['git_refs'],
+    ...overrides,
+  });
+}
+
+function codeSiteGitConfigContext(slug, overrides = {}) {
+  return codeSiteContext(slug, {
+    allowedTools: ['git_config'],
     ...overrides,
   });
 }
@@ -219,6 +234,328 @@ test('direct gitService.writeFile accepts matching CodeSite context while regist
 
     assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'codesite write\n');
     assert.strictEqual(recordBodies.length, 1);
+  });
+});
+
+test('direct gitService git config mutations deny contextless active workspaces before remote changes', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-remotes');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath);
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-active',
+      mutationLeaseId: 'lease-active',
+      status: 'open',
+    });
+
+    await assert.rejects(
+      () => gitService.addRemote(slug, 'origin', 'https://github.com/example/repo.git', userId),
+      (error) => (
+        error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.tool === 'git_config'
+        && error.event.details.reason_codes.includes('codesite_active_workspace_context_required')
+      ),
+    );
+
+    assert.deepStrictEqual(await gitService.getRemotes(slug, userId), []);
+    assert.strictEqual(await exists(path.join(config.REPO_CACHE_DIR, slug, userId)), false);
+  });
+});
+
+test('direct gitService git config mutations accept matching CodeSite context while active', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-remotes-match');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath);
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies });
+
+    await gitService.addRemote(slug, 'origin', 'https://github.com/example/repo.git', userId, null, null, {
+      codesiteContext: codeSiteGitConfigContext(slug),
+      fetch,
+      evidenceRefs: ['direct:add-remote'],
+    });
+
+    const remotes = await gitService.getRemotes(slug, userId);
+    assert.strictEqual(remotes.length, 1);
+    assert.strictEqual(remotes[0].name, 'origin');
+    assert.strictEqual(recordBodies.length, 1);
+    assert.strictEqual(recordBodies[0].path, '**');
+    assert.strictEqual(recordBodies[0].tool, 'git_config');
+  });
+});
+
+test('direct gitService git refs mutations deny contextless active workspaces before tag changes', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-tags');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath);
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-active',
+      mutationLeaseId: 'lease-active',
+      status: 'open',
+    });
+
+    await assert.rejects(
+      () => gitService.createTag(slug, 'v1', 'HEAD', null, userId),
+      (error) => (
+        error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.tool === 'git_refs'
+        && error.event.details.reason_codes.includes('codesite_active_workspace_context_required')
+      ),
+    );
+
+    assert.deepStrictEqual(await gitService.getTags(slug, userId), []);
+    assert.strictEqual(await exists(path.join(config.REPO_CACHE_DIR, slug, userId)), false);
+  });
+});
+
+test('direct gitService git refs mutations accept matching CodeSite context while active', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-tags-match');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath);
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies });
+
+    await gitService.createTag(slug, 'v1', 'HEAD', null, userId, {
+      codesiteContext: codeSiteGitRefsContext(slug),
+      fetch,
+      evidenceRefs: ['direct:create-tag'],
+    });
+
+    const tags = await gitService.getTags(slug, userId);
+    assert.strictEqual(tags.length, 1);
+    assert.strictEqual(tags[0].name, 'v1');
+    assert.strictEqual(recordBodies.length, 1);
+    assert.strictEqual(recordBodies[0].path, '**');
+    assert.strictEqual(recordBodies[0].tool, 'git_refs');
+  });
+});
+
+test('direct gitService remaining refs and config mutators deny contextless active workspaces before repo materialization', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const userId = 'user-1';
+  const cases = [
+    {
+      name: 'delete-tag',
+      tool: 'git_refs',
+      run: (slug) => gitService.deleteTag(slug, 'v1', userId),
+    },
+    {
+      name: 'push-tag',
+      tool: 'git_refs',
+      run: (slug) => gitService.pushTag(slug, 'v1', userId),
+    },
+    {
+      name: 'push',
+      tool: 'git_refs',
+      run: (slug) => gitService.push(slug, userId),
+    },
+    {
+      name: 'stash-drop',
+      tool: 'git_refs',
+      run: (slug) => gitService.stashDrop(slug, 0, userId),
+    },
+    {
+      name: 'remove-remote',
+      tool: 'git_config',
+      run: (slug) => gitService.removeRemote(slug, 'origin', userId),
+    },
+    {
+      name: 'set-remote-url',
+      tool: 'git_config',
+      run: (slug) => gitService.setRemoteUrl(slug, 'origin', 'https://github.com/example/repo.git', userId),
+    },
+  ];
+
+  for (const item of cases) {
+    const slug = uniqueSlug(`active-registry-${item.name}`);
+    await withTempGitService(t, slug, userId, async () => {
+      activityRegistry.markTransactionActive({
+        workspaceSlug: slug,
+        transactionId: 'txn-active',
+        mutationLeaseId: 'lease-active',
+        status: 'open',
+      });
+
+      await assert.rejects(
+        () => item.run(slug),
+        (error) => (
+          error.code === 'CODESITE_WRITE_DENIED'
+          && error.event.tool === item.tool
+          && error.event.details.reason_codes.includes('codesite_active_workspace_context_required')
+        ),
+      );
+      assert.strictEqual(await exists(path.join(config.REPO_CACHE_DIR, slug, userId)), false);
+    });
+  }
+});
+
+test('direct gitService remote update and removal record git_config boundaries while active', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-remote-update-remove');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    await initTrackedRepo(repoPath);
+    await git(repoPath, ['remote', 'add', 'origin', 'https://github.com/example/old.git']);
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies });
+    const options = {
+      codesiteContext: codeSiteGitConfigContext(slug),
+      fetch,
+      evidenceRefs: ['direct:remote-config'],
+    };
+
+    const updatedRemotes = await gitService.setRemoteUrl(
+      slug,
+      'origin',
+      'https://github.com/example/new.git',
+      userId,
+      null,
+      null,
+      options,
+    );
+    assert.strictEqual(updatedRemotes[0].refs.fetch, 'https://github.com/example/new.git');
+
+    await gitService.removeRemote(slug, 'origin', userId, options);
+    assert.deepStrictEqual(await gitService.getRemotes(slug, userId), []);
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool]), [
+      ['**', 'git_config'],
+      ['**', 'git_config'],
+    ]);
+  });
+});
+
+test('direct gitService refs mutators record git_refs boundaries while active', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-refs-mutators');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ baseDir, repoPath }) => {
+    await initTrackedRepo(repoPath);
+    const remotePath = path.join(baseDir, 'remote.git');
+    await execFileAsync('git', ['init', '--bare', remotePath]);
+    await git(repoPath, ['remote', 'add', 'origin', remotePath]);
+    await git(repoPath, ['tag', 'v-delete']);
+    await git(repoPath, ['tag', 'v-push']);
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'stashed\n');
+    await git(repoPath, ['stash', 'push', '-m', 'saved change']);
+    await fs.writeFile(path.join(repoPath, 'src/app.js'), 'pushed\n');
+    await git(repoPath, ['add', 'src/app.js']);
+    await git(repoPath, ['commit', '-m', 'pushed change']);
+
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies });
+    const options = {
+      codesiteContext: codeSiteGitRefsContext(slug),
+      fetch,
+      evidenceRefs: ['direct:refs-mutators'],
+    };
+
+    await gitService.deleteTag(slug, 'v-delete', userId, options);
+    assert.deepStrictEqual((await gitService.getTags(slug, userId)).map((tag) => tag.name), ['v-push']);
+
+    await gitService.pushTag(slug, 'v-push', userId, null, null, [], options);
+    const { stdout: remoteTags } = await git(repoPath, ['ls-remote', '--tags', 'origin']);
+    assert.match(remoteTags, /refs\/tags\/v-push/);
+
+    await gitService.stashDrop(slug, 0, userId, options);
+    const { stdout: stashAfterDrop } = await git(repoPath, ['stash', 'list']);
+    assert.strictEqual(stashAfterDrop.trim(), '');
+
+    await gitService.push(slug, userId, null, false, null, [], options);
+    const { stdout: remoteHeads } = await git(repoPath, ['ls-remote', '--heads', 'origin']);
+    assert.match(remoteHeads, /refs\/heads\/main/);
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool]), [
+      ['**', 'git_refs'],
+      ['**', 'git_refs'],
+      ['**', 'git_refs'],
+      ['**', 'git_refs'],
+    ]);
+  });
+});
+
+test('direct gitService push requires git_config clearance before auto-adding workspace remote', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-push-auto-remote');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ baseDir, repoPath }) => {
+    await initTrackedRepo(repoPath);
+    const remotePath = path.join(baseDir, 'auto-remote.git');
+    await execFileAsync('git', ['init', '--bare', remotePath]);
+    workspaceManager.addWorkspace(slug, remotePath, 'example', 'repo', {
+      showInRecent: false,
+      source: 'codesite-test',
+    });
+    t.after(() => {
+      workspaceManager.workspaces.delete(slug);
+    });
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['**'], recordBodies });
+
+    await assert.rejects(
+      () => gitService.push(slug, userId, null, false, null, [], {
+        codesiteContext: codeSiteGitRefsContext(slug),
+        fetch,
+        evidenceRefs: ['direct:push-auto-remote'],
+      }),
+      (error) => (
+        error.code === 'CODESITE_WRITE_DENIED'
+        && error.event.tool === 'git_config'
+        && error.event.details.reason_codes.includes('tool_not_in_clearance')
+      ),
+    );
+
+    assert.deepStrictEqual(await gitService.getRemotes(slug, userId), []);
+    assert.deepStrictEqual(recordBodies.map((body) => [body.path, body.tool]), [
+      ['**', 'git_refs'],
+      ['**', 'git_config'],
+    ]);
+    assert.strictEqual(recordBodies[1].codesiteFsEvent.type, 'write_denied');
   });
 });
 
