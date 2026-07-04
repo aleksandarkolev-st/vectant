@@ -1,11 +1,11 @@
 {
   "schemaVersion": "synthi.codesite.serializableCommitRaceProof.v1",
-  "generatedAt": "2026-07-04T13:02:47.424Z",
+  "generatedAt": "2026-07-04T13:06:10.023Z",
   "ok": true,
   "git": {
-    "head": "835f68a7f714c08c9a115de1efe3c633f02b93e0",
+    "head": "31f90d1f170d2bdf5dff209ba9bf3b9f96f451e6",
     "branch": "codex/codesite-atc-full-from-dev-20260630",
-    "statusShort": "M backend/collab-server/__tests__/codesiteActivityRegistry.test.js\n M backend/collab-server/codesiteActivityRegistry.js\n M synthi/scripts/codesite-release-gate.mjs\n M synthi/src/lib/codesite/__tests__/controlPlane.test.js\n M synthi/src/lib/codesite/controlPlane.js"
+    "statusShort": "M tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs"
   },
   "assertions": [
     {
@@ -69,21 +69,6 @@
       "details": {}
     },
     {
-      "name": "dockerRaceTest command exited successfully",
-      "ok": true,
-      "details": {
-        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js --testNamePattern=\"serializes overlapping proof-carrying commit races\"",
-        "summary": {
-          "runner": "vitest",
-          "pass": 1,
-          "skipped": 85,
-          "tests": 86,
-          "fail": 0
-        },
-        "exitCode": 0
-      }
-    },
-    {
       "name": "dockerAffectedSuite command exited successfully",
       "ok": true,
       "details": {
@@ -119,33 +104,6 @@
   ],
   "commands": [
     {
-      "name": "dockerRaceTest",
-      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js --testNamePattern=\"serializes overlapping proof-carrying commit races\"",
-      "cwd": ".",
-      "exitCode": 0,
-      "signal": null,
-      "summary": {
-        "runner": "vitest",
-        "pass": 1,
-        "skipped": 85,
-        "tests": 86,
-        "fail": 0
-      },
-      "outputTail": [
-        "\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m",
-        " \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/controlPlane.test.js \u001b[2m(\u001b[22m\u001b[2m86 tests\u001b[22m\u001b[2m | \u001b[22m\u001b[33m85 skipped\u001b[39m\u001b[2m)\u001b[22m\u001b[32m 72\u001b[2mms\u001b[22m\u001b[39m",
-        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m",
-        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m\u001b[33m85 skipped\u001b[39m\u001b[90m (86)\u001b[39m",
-        "\u001b[2m   Start at \u001b[22m 13:02:23",
-        "\u001b[2m   Duration \u001b[22m 4.85s\u001b[2m (transform 3.64s, setup 0ms, import 3.93s, tests 72ms, environment 678ms)\u001b[22m",
-        "npm notice",
-        "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
-        "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
-        "npm notice To update run: npm install -g npm@11.18.0",
-        "npm notice"
-      ]
-    },
-    {
       "name": "dockerAffectedSuite",
       "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
       "cwd": ".",
@@ -160,13 +118,13 @@
       },
       "outputTail": [
         "\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m",
-        " \u001b[32m✓\u001b[39m src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js \u001b[2m(\u001b[22m\u001b[2m30 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 89\u001b[2mms\u001b[22m\u001b[39m",
-        " \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/controlPlane.test.js \u001b[2m(\u001b[22m\u001b[2m86 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 1442\u001b[2mms\u001b[22m\u001b[39m",
-        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m classifies landing inspection commands through first-class radar adapters \u001b[33m 501\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js \u001b[2m(\u001b[22m\u001b[2m30 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 58\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/controlPlane.test.js \u001b[2m(\u001b[22m\u001b[2m86 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 1187\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m classifies landing inspection commands through first-class radar adapters \u001b[33m 391\u001b[2mms\u001b[22m\u001b[39m",
         "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m2 passed\u001b[39m\u001b[22m\u001b[90m (2)\u001b[39m",
         "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m116 passed\u001b[39m\u001b[22m\u001b[90m (116)\u001b[39m",
-        "\u001b[2m   Start at \u001b[22m 13:02:33",
-        "\u001b[2m   Duration \u001b[22m 6.75s\u001b[2m (transform 5.12s, setup 0ms, import 5.79s, tests 1.53s, environment 1.42s)\u001b[22m",
+        "\u001b[2m   Start at \u001b[22m 13:05:56",
+        "\u001b[2m   Duration \u001b[22m 6.10s\u001b[2m (transform 4.90s, setup 0ms, import 5.77s, tests 1.25s, environment 1.37s)\u001b[22m",
         "npm notice",
         "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
         "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
@@ -194,17 +152,17 @@
         "# Subtest: authoritative CodeSite contexts publish active transaction state to the registry",
         "ok 9 - authoritative CodeSite contexts publish active transaction state to the registry",
         "  ---",
-        "  duration_ms: 495.953536",
+        "  duration_ms: 368.665433",
         "  ...",
         "# Subtest: blocked landing attempts remain active until an explicit close event",
         "ok 10 - blocked landing attempts remain active until an explicit close event",
         "  ---",
-        "  duration_ms: 922.112716",
+        "  duration_ms: 802.364245",
         "  ...",
         "# Subtest: committing landing attempts remain active until the commit closes them",
         "ok 11 - committing landing attempts remain active until the commit closes them",
         "  ---",
-        "  duration_ms: 752.624468",
+        "  duration_ms: 714.450024",
         "  ...",
         "1..11",
         "# tests 11",
@@ -214,7 +172,7 @@
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 6535.360959"
+        "# duration_ms 5715.336839"
       ]
     }
   ],

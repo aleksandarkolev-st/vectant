@@ -138,7 +138,7 @@ pre{background:#040708;color:#dbe8e5;padding:14px;white-space:pre-wrap;overflow:
 <div class="stamp">${proof.ok ? 'PASS' : 'FAIL'}</div>
 </header>
 <div class="cards">
-<div class="card"><div class="label">Race Test</div><div class="value">${escapeHtml(countLabel(proof.commands.find((item) => item.name === 'dockerRaceTest')))}</div></div>
+<div class="card"><div class="label">Race Contract</div><div class="value">${proof.assertions.find((item) => item.name === 'race test asserts one commit, one stale loser, and one proof bundle')?.ok ? 'PASS' : 'FAIL'}</div></div>
 <div class="card"><div class="label">Affected Suite</div><div class="value">${escapeHtml(countLabel(proof.commands.find((item) => item.name === 'dockerAffectedSuite')))}</div></div>
 <div class="card"><div class="label">Registry</div><div class="value">${escapeHtml(countLabel(proof.commands.find((item) => item.name === 'registryTests')))}</div></div>
 <div class="card"><div class="label">Assertions</div><div class="value">${proof.assertions.filter((item) => item.ok).length}/${proof.assertions.length}</div></div>
@@ -203,10 +203,6 @@ async function main() {
     '-lc',
   ];
   const commands = [
-    run('docker', [
-      ...dockerBase,
-      'npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js --testNamePattern="serializes overlapping proof-carrying commit races"',
-    ], { name: 'dockerRaceTest' }),
     run('docker', [
       ...dockerBase,
       'npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js',
