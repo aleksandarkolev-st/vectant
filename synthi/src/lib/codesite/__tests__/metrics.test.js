@@ -152,6 +152,18 @@ describe('CodeSite success metrics', () => {
           bundleDigest: 'sha256:bundle',
           evidenceRefs: ['proof:evidence'],
         }],
+        documentReviews: [{
+          id: 'review-1',
+          documentId: 'document-1',
+          status: 'completed',
+          decision: 'approved',
+          reasonCodes: ['document_approved'],
+          body: {
+            reviewTimeMs: 90_000,
+            baselineReviewTimeMs: 300_000,
+          },
+          evidenceRefs: ['document-review:evidence'],
+        }],
         lineProvenance: [{
           id: 'line-1',
           filePath: 'api/auth/route.ts',
@@ -202,14 +214,51 @@ describe('CodeSite success metrics', () => {
     expect(metrics.summary.flightsReroutedByTower).toBe(0);
     expect(metrics.summary.percentageWritesWithValidClearance).toBe(0.3333);
     expect(metrics.summary.repeatedNearMissesConvertedToAirspaceRules).toBe(1);
+    expect(metrics.summary.humanReviewTimeSavedMs).toBe(210_000);
     expect(metrics.sections.trust.find((row) => row.key === 'humanReviewTimeSavedMs')).toMatchObject({
-      status: 'not_instrumented',
-      value: null,
+      status: 'measured',
+      value: 210_000,
+      detail: {
+        samples: 1,
+        baselineReviewTimeMs: 300_000,
+        reviewTimeMs: 90_000,
+        reviewOverrunMs: 0,
+      },
     });
+    expect(metrics.sections.trust.find((row) => row.key === 'humanReviewTimeSavedMs').evidenceRefs)
+      .toEqual(expect.arrayContaining(['document-review:review-1', 'document-review:evidence']));
+    expect(metrics.evidence.dataSources.documentReviews).toBe(1);
     expect(metrics.evidence.reasonCodeCounts).toMatchObject({
       entered_no_fly_zone: expect.any(Number),
       collision_avoidance_hold: 1,
+      document_approved: 1,
     });
+  });
+
+  it('keeps human review savings uninstrumented until review baselines exist', () => {
+    const metrics = buildCodeSiteMetrics({
+      workspaceSlug: 'acme',
+      project: {
+        id: 'project-review-gap',
+        workspaceSlug: 'acme',
+        documentReviews: [{
+          id: 'review-without-baseline',
+          status: 'completed',
+          decision: 'approved',
+          body: { reviewTimeMs: 45_000 },
+          evidenceRefs: ['document-review:no-baseline'],
+        }],
+      },
+    });
+
+    const row = metrics.sections.trust.find((item) => item.key === 'humanReviewTimeSavedMs');
+    expect(row).toMatchObject({
+      status: 'not_instrumented',
+      value: null,
+      source: 'instrumentation_gap',
+    });
+    expect(row.detail).toContain('baselineReviewTimeMs');
+    expect(metrics.evidence.dataSources.documentReviews).toBe(1);
   });
 
   it('does not treat stored proof bundles as externally verified without verifier evidence', () => {

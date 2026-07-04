@@ -1,4 +1,4 @@
-import { asArray } from './json';
+import { asArray, parseJson } from './json';
 import { buildPilotLicenseHealthRecords } from './pilotLicense';
 
 const METRIC_SCHEMA_VERSION = 'synthi.codesite.metrics.v1';
@@ -44,9 +44,7 @@ const METRIC_DEFINITIONS = {
   ],
 };
 
-const NOT_INSTRUMENTED = new Set([
-  'humanReviewTimeSavedMs',
-]);
+const NOT_INSTRUMENTED = new Set();
 
 const UNHEALTHY_PILOT_LICENSE_STATUSES = new Set(['grounded', 'expired', 'suspended', 'unlicensed']);
 const BLOCKING_DECISION_STATUSES = new Set(['block', 'blocked', 'deny', 'denied', 'hold', 'holding', 'quarantine', 'quarantined']);
@@ -89,6 +87,7 @@ export function buildCodeSiteMetrics({ project, controlState = null, workspaceSl
         proofBundles: context.proofBundles.length,
         lineProvenance: context.lineProvenance.length,
         counterfactualRuns: context.counterfactualRuns.length,
+        documentReviews: context.documentReviews.length,
         assumptions: context.assumptions.length,
         pilotLicenseHealth: context.pilotLicenseHealth.length,
       },
@@ -115,6 +114,7 @@ function normalizeMetricProject(project) {
     lineProvenance: asArray(project.lineProvenance),
     counterfactualRuns: asArray(project.counterfactualRuns),
     policyDeltas: asArray(project.policyDeltas),
+    documentReviews: asArray(project.documentReviews),
     documents: asArray(project.documents),
     inboxItems: asArray(project.inboxItems),
   };
@@ -128,6 +128,7 @@ function buildMetricContext(project, controlState, generatedAt) {
   const leases = project.mutationLeases.map(normalizeLease);
   const incidents = project.incidents.map(normalizeIncident);
   const counterfactualRuns = project.counterfactualRuns.map(normalizeCounterfactualRun);
+  const documentReviews = project.documentReviews.map(normalizeDocumentReview);
   const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth).length
     ? asArray(controlState.pilotLicenseHealth)
     : buildPilotLicenseHealthRecords(project);
@@ -137,6 +138,7 @@ function buildMetricContext(project, controlState, generatedAt) {
     ...transactions.flatMap((txn) => asArray(txn.commitDecision?.reasonCodes)),
     ...inspections.flatMap((run) => inspectionSignals(run).flatMap((signal) => asArray(signal.reasonCodes))),
     ...counterfactualRuns.flatMap((run) => counterfactualReasonCodes(run)),
+    ...documentReviews.flatMap((review) => review.reasonCodes),
     ...pilotLicenseHealth.flatMap((record) => asArray(record.reasonCodes)),
   ];
   return {
@@ -154,6 +156,7 @@ function buildMetricContext(project, controlState, generatedAt) {
     proofBundles: project.proofBundles,
     lineProvenance: project.lineProvenance,
     counterfactualRuns,
+    documentReviews,
     policyDeltas: project.policyDeltas,
     reasonCodeCounts: countBy(reasonCodes, (code) => code),
   };
@@ -254,6 +257,7 @@ function computeMetricValues(context) {
     context.pilotLicenseHealth.length + pilotWriteAttempts.length,
     pilotViolationAttempts.length,
   );
+  const reviewSavings = humanReviewSavings(context.documentReviews);
   const promotedNearMissRules = context.policyDeltas
     .filter((delta) => ['active', 'promoted', 'validated', 'accepted'].includes(String(delta.promotionState || '').toLowerCase()))
     .filter((delta) => asArray(delta.learnedFromIncidents).length > 0);
@@ -300,7 +304,14 @@ function computeMetricValues(context) {
     blackBoxCompletenessScore: blackBoxScores.length
       ? ratio(sum(blackBoxScores), blackBoxScores.length, evidenceIds(context.incidents))
       : notInstrumented('Incident replay completeness is available after black-box replay generation.'),
-    humanReviewTimeSavedMs: notInstrumented('Human review baseline timing is not recorded yet.'),
+    humanReviewTimeSavedMs: reviewSavings.length
+      ? measured(sum(reviewSavings.map((sample) => sample.savedMs)), evidenceIds(reviewSavings), {
+        samples: reviewSavings.length,
+        baselineReviewTimeMs: sum(reviewSavings.map((sample) => sample.baselineReviewTimeMs)),
+        reviewTimeMs: sum(reviewSavings.map((sample) => sample.reviewTimeMs)),
+        reviewOverrunMs: sum(reviewSavings.map((sample) => sample.overrunMs)),
+      })
+      : notInstrumented('Document reviews require both baselineReviewTimeMs and reviewTimeMs before human review savings can be measured.'),
     pilotLicenseViolationRate: rateOrNotInstrumented(
       pilotViolationAttempts.length,
       pilotLicenseSampleSize,
@@ -433,6 +444,15 @@ function normalizeCounterfactualRun(run = {}) {
   };
 }
 
+function normalizeDocumentReview(review = {}) {
+  return {
+    ...review,
+    reasonCodes: parseJson(review.reasonCodesJson, asArray(review.reasonCodes)),
+    body: parseJson(review.bodyJson, review.body || {}),
+    evidenceRefs: parseJson(review.evidenceRefsJson, asArray(review.evidenceRefs)),
+  };
+}
+
 function eventsOfType(context, eventType) {
   return context.events.filter((event) => event.eventType === eventType);
 }
@@ -548,6 +568,25 @@ function counterfactualReasonCodes(run) {
     ...asArray(run.arbiterVerdict?.reasonCodes),
     ...counterfactualUniverses(run).flatMap((universe) => asArray(universe.reasonCodes)),
   ];
+}
+
+function humanReviewSavings(reviews) {
+  return asArray(reviews)
+    .map((review) => {
+      const baselineReviewTimeMs = Number(review?.body?.baselineReviewTimeMs ?? review?.body?.baseline_review_time_ms);
+      const reviewTimeMs = Number(review?.body?.reviewTimeMs ?? review?.body?.review_time_ms);
+      if (!Number.isFinite(baselineReviewTimeMs) || !Number.isFinite(reviewTimeMs)) return null;
+      if (baselineReviewTimeMs < 0 || reviewTimeMs < 0) return null;
+      return {
+        id: review.id ? `document-review:${review.id}` : null,
+        evidenceRefs: review.evidenceRefs,
+        baselineReviewTimeMs,
+        reviewTimeMs,
+        savedMs: Math.max(0, baselineReviewTimeMs - reviewTimeMs),
+        overrunMs: Math.max(0, reviewTimeMs - baselineReviewTimeMs),
+      };
+    })
+    .filter(Boolean);
 }
 
 function normalizeEventPaths(event) {

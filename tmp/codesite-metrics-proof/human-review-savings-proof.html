@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodeSite Human Review Savings Metric Proof</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080a0d;
+      --panel: #11161c;
+      --panel-2: #151d25;
+      --ink: #f1f5f9;
+      --muted: #8fa0b4;
+      --grid: #243140;
+      --good: #39d98a;
+      --warn: #ffcc66;
+      --blue: #78b7ff;
+      --line: rgba(255, 255, 255, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(90deg, rgba(120, 183, 255, 0.07) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(120, 183, 255, 0.06) 1px, transparent 1px),
+        radial-gradient(circle at 12% 8%, rgba(57, 217, 138, 0.16), transparent 32rem),
+        var(--bg);
+      background-size: 48px 48px, 48px 48px, auto, auto;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 42px 0 48px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: end;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      margin: 10px 0 0;
+      max-width: 820px;
+      font-size: clamp(32px, 6vw, 74px);
+      line-height: 0.92;
+      letter-spacing: 0;
+    }
+
+    .stamp {
+      min-width: 230px;
+      border: 1px solid var(--line);
+      background: rgba(17, 22, 28, 0.82);
+      padding: 16px;
+    }
+
+    .stamp strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .stamp span {
+      display: block;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 14px;
+      color: var(--ink);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.75fr;
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(21, 29, 37, 0.96), rgba(10, 14, 19, 0.98));
+      box-shadow: 0 30px 70px rgba(0, 0, 0, 0.28);
+    }
+
+    .panel h2 {
+      margin: 0;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--line);
+    }
+
+    .metric div {
+      min-height: 172px;
+      padding: 22px;
+      background: rgba(17, 22, 28, 0.98);
+    }
+
+    .metric span {
+      display: block;
+      margin-bottom: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .metric b {
+      display: block;
+      font-size: clamp(30px, 5vw, 56px);
+      line-height: 0.95;
+      letter-spacing: 0;
+    }
+
+    .metric small {
+      display: block;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .saved b {
+      color: var(--good);
+    }
+
+    .timeline {
+      padding: 22px;
+    }
+
+    .rail {
+      position: relative;
+      height: 86px;
+      border: 1px solid var(--grid);
+      background: rgba(8, 10, 13, 0.52);
+      overflow: hidden;
+    }
+
+    .rail::before,
+    .rail::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(90deg, transparent 0 53px, rgba(255,255,255,0.08) 54px);
+    }
+
+    .bar {
+      position: absolute;
+      left: 0;
+      height: 18px;
+      border-radius: 0;
+    }
+
+    .baseline {
+      top: 20px;
+      width: 100%;
+      background: rgba(255, 204, 102, 0.82);
+    }
+
+    .actual {
+      top: 50px;
+      width: 30%;
+      background: rgba(57, 217, 138, 0.92);
+    }
+
+    .labels {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .proof-list {
+      display: grid;
+      gap: 12px;
+      padding: 18px;
+    }
+
+    .proof-item {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 14px;
+      border: 1px solid var(--line);
+      background: rgba(8, 10, 13, 0.44);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      margin-top: 5px;
+      background: var(--good);
+      box-shadow: 0 0 0 4px rgba(57, 217, 138, 0.12);
+    }
+
+    .proof-item strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .proof-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .terminal {
+      margin-top: 18px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      background: #05070a;
+      color: #c8d7e5;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        width: min(100vw - 24px, 680px);
+        padding: 28px 0;
+      }
+
+      header,
+      .grid,
+      .metric {
+        grid-template-columns: 1fr;
+      }
+
+      .stamp {
+        min-width: 0;
+      }
+
+      .metric div {
+        min-height: 132px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">CodeSite metrics proof</div>
+        <h1>Human review savings is measured from document review timing evidence.</h1>
+      </div>
+      <div class="stamp">
+        <strong>Patch base</strong>
+        <span>36ae5035a8aa</span>
+        <strong style="margin-top:14px">Runtime</strong>
+        <span>Docker Node 22.23.1</span>
+      </div>
+    </header>
+
+    <section class="grid" aria-label="Metric proof">
+      <article class="panel">
+        <h2>Review timing sample</h2>
+        <div class="metric">
+          <div>
+            <span>Baseline</span>
+            <b>300s</b>
+            <small>Baseline review expectation from the document review body.</small>
+          </div>
+          <div>
+            <span>Actual</span>
+            <b>90s</b>
+            <small>Measured review duration recorded by the governance workflow.</small>
+          </div>
+          <div class="saved">
+            <span>Saved</span>
+            <b>210s</b>
+            <small>Metric value: 210,000 ms with document-review evidence refs.</small>
+          </div>
+        </div>
+        <div class="timeline">
+          <div class="rail" aria-hidden="true">
+            <div class="bar baseline"></div>
+            <div class="bar actual"></div>
+          </div>
+          <div class="labels">
+            <span>0 ms</span>
+            <span>baselineReviewTimeMs 300,000</span>
+          </div>
+        </div>
+      </article>
+
+      <aside class="panel">
+        <h2>Validation</h2>
+        <div class="proof-list">
+          <div class="proof-item">
+            <span class="dot"></span>
+            <div>
+              <strong>Generic metric path</strong>
+              <p>Reads any CodeSite document review with both baselineReviewTimeMs and reviewTimeMs. Reviews without baselines remain not instrumented.</p>
+            </div>
+          </div>
+          <div class="proof-item">
+            <span class="dot"></span>
+            <div>
+              <strong>Evidence refs preserved</strong>
+              <p>Output includes document-review:review-1 and document-review:evidence for release-gate traceability.</p>
+            </div>
+          </div>
+          <div class="proof-item">
+            <span class="dot"></span>
+            <div>
+              <strong>Docker test passed</strong>
+              <p>metrics.test.js ran in Node 22 with 6 tests passing before this patch was committed.</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="terminal" aria-label="Validated command">
+      docker run --rm -v "$PWD":/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc 'node -v &amp;&amp; npm exec vitest -- src/lib/codesite/__tests__/metrics.test.js --run --testTimeout=60000'
+    </section>
+  </main>
+</body>
+</html>
