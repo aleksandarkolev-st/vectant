@@ -21,6 +21,7 @@
 import * as storeModule from './store';
 import { runHardGates } from './hardGates';
 import { scanImage } from './imageScanner';
+import { evaluateImageSize } from './imageSize';
 import { reHostImage, communityImageTarget, pinManifestImage } from './reHoster';
 import { assessSubmission, aiDecision } from './aiReviewer';
 
@@ -32,6 +33,7 @@ function defaultDeps() {
     store: storeModule,
     hardGates: runHardGates,
     scanner: scanImage,
+    sizer: evaluateImageSize,
     reHost: reHostImage,
     target: communityImageTarget,
     pin: pinManifestImage,
@@ -96,7 +98,7 @@ async function finishAfterScan(versionId, { config, sourceImageRef, scanSummary,
  * advanced row is safe.
  */
 async function runPipeline(versionId, { config, sourceImageRef }, deps) {
-  const { store, hardGates, scanner } = deps;
+  const { store, hardGates, scanner, sizer } = deps;
   const gate = hardGates({ config, sourceImageRef });
   if (!gate.ok) {
     await store.transitionReview(versionId, { fromState: 'submitted', toState: 'rejected', actorUserId: null, reason: gate.reasons });
@@ -113,6 +115,17 @@ async function runPipeline(versionId, { config, sourceImageRef }, deps) {
     if (!scan.ok) {
       await store.transitionReview(versionId, { fromState: 'scanning', toState: 'rejected', actorUserId: null, reason: [{ code: 'cve_over_threshold', message: 'image failed CVE scan' }], patch: scanPatch });
       return { versionId, reviewState: 'rejected', reasons: [{ code: 'cve_over_threshold' }] };
+    }
+
+    // Deterministic size gate: reject oversized (or unmeasurable) images before the
+    // AI ever sees them. Fail-closed like the CVE gate — see imageSize.js.
+    const size = await sizer(sourceImageRef, {});
+    if (!size.ok) {
+      const reason = size.summary?.error
+        ? [{ code: 'image_size_error', message: `could not determine image size: ${size.summary.error}` }]
+        : [{ code: 'image_too_large', message: `image exceeds size limit (${size.summary.sizeBytes} > ${size.summary.limitBytes} bytes)` }];
+      await store.transitionReview(versionId, { fromState: 'scanning', toState: 'rejected', actorUserId: null, reason, patch: scanPatch });
+      return { versionId, reviewState: 'rejected', reasons: reason };
     }
   }
   return finishAfterScan(versionId, { config, sourceImageRef, scanSummary, scanPatch }, deps);

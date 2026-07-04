@@ -28,6 +28,7 @@ beforeEach(() => {
     },
     hardGates: vi.fn().mockReturnValue({ ok: true, reasons: [] }),
     scanner: vi.fn().mockResolvedValue({ ok: true, summary: { decisiveCves: [] } }),
+    sizer: vi.fn().mockResolvedValue({ ok: true, summary: { sizeBytes: 100, limitBytes: 5000 } }),
     reHost: vi.fn().mockResolvedValue({ ref: 'ar.host/p/community/team/tool@sha256:dead', digest: 'sha256:dead' }),
     target: vi.fn().mockReturnValue('ar.host/p/community/team/tool'),
     pin: vi.fn().mockImplementation((cfg) => ({ ...cfg, launch: 'docker run ar.host/p/community/team/tool@sha256:dead' })),
@@ -85,6 +86,33 @@ describe('processSubmission (worker drives the pipeline)', () => {
     const res = await processSubmission('ver1', deps);
     expect(res.reviewState).toBe('rejected');
     expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({ fromState: 'scanning', toState: 'rejected' }));
+  });
+
+  it('oversized image → rejected (never reaches AI/publish)', async () => {
+    deps.sizer.mockResolvedValue({ ok: false, summary: { sizeBytes: 9000, limitBytes: 5000 } });
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
+    expect(res.reviewState).toBe('rejected');
+    expect(deps.store.transitionReview).toHaveBeenCalledWith('ver1', expect.objectContaining({
+      fromState: 'scanning', toState: 'rejected', reason: [expect.objectContaining({ code: 'image_too_large' })],
+    }));
+    expect(deps.reHost).not.toHaveBeenCalled();
+  });
+
+  it('unmeasurable image size (crane failed) → rejected fail-closed', async () => {
+    deps.sizer.mockResolvedValue({ ok: false, summary: { limitBytes: 5000, error: 'crane: MANIFEST_UNKNOWN' } });
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
+    expect(res.reviewState).toBe('rejected');
+    expect(res.reasons[0].code).toBe('image_size_error');
+  });
+
+  it('a clean under-limit image proceeds past the size gate', async () => {
+    deps.aiEnabled = false;
+    deps.store.getReviewVersionById.mockResolvedValue(submittedRow());
+    const res = await processSubmission('ver1', deps);
+    expect(res.reviewState).toBe('pending_review');
+    expect(deps.sizer).toHaveBeenCalledWith('reg.io/me/tool:1', expect.anything());
   });
 
   it('flag ON + auto_approve → ai_review → published (rehost + publish)', async () => {
