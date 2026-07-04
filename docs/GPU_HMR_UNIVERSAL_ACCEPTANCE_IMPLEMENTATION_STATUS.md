@@ -10,6 +10,7 @@ Latest continuation update on 2026-07-04:
 
 - `aa9185cdb fix(gpu-hmr): rank cold build metadata generically` makes random large-project cold intake prefer root/project-owned build metadata over vendored dependency trees. The ranking is path-structure and content-evidence based, not project-name based, and the self-check rejects the old vendored-first shortcut. A direct Blender cold-path run accepted source/build intake for commit `60a476b09ff45865b6cea339a0b8b5477ee29284` with 20,256 listed files, 11,291 source/build-relevant files, and 632 GPU signals, while still remaining refusal-only for GPU HMR because runtime artifact transport, epoch publication, dispatch trace, host identity, output oracle, runtime chain, and strict ledger closure were not observed.
 - `633a52116 fix(gpu-hmr): broaden oidn runtime discovery` adds generic configured-path, worker `PATH`, package-build, and system-library discovery for `oidnTest` and `libOpenImageDenoise_device_hip.so`. The probe records configured discovery inputs and timing identity, but it does not turn tool discovery, preflight, or output-file shape into GPU HMR authority.
+- `4db333965 fix(gpu-hmr): stage oidn worker output oracle` adds an explicit worker-side output-oracle transport path for OIDN. A configured worker manifest can now point to noisy input, denoised output, and expected output bytes; the runner copies those files out of the worker, verifies worker-root containment, byte length, SHA-256, expected-output match, output/input distinctness, and no success-authority claims, then re-validates the local manifest through the existing OIDN output-oracle verifier. The new `synthi.gpu_hmr.oidn_worker_output_oracle_transport.v1` facet is transport/support evidence only with `acceptedForGpuHmr=false`, `gpuHmrSuccess=false`, and `canSatisfyRuntimeProof=false`.
 
 Latest verification for this continuation:
 
@@ -65,9 +66,55 @@ npm run proof:validation-matrix
   OIDN runtime preflight: refused
   OIDN output oracle support: missing
   OIDN output: missing with oidn_output_oracle_attempt_required
+
+node --check mcp/synthi-mcp/scripts/gpu-hmr-oidn-preflight.mjs
+  passed after worker output-oracle transport staging
+
+npm run proof:oidn:preflight:self-check
+  passed after worker output-oracle transport staging
+
+npm run proof:oidn:runtime:self-check
+  passed after worker output-oracle transport staging
+
+npm run proof:runtime-boundary-adapter:self-check
+  passed after worker output-oracle transport staging
+
+npm run proof:random-large-project:cold:self-check
+  passed after worker output-oracle transport staging
+  runtime profile result: mcp/synthi-mcp/.gpu-hmr-test-logs/random-large-project-cold-path/runtime-profile-results/direct-runtime-bridge-large-20260704T053508195-adapter-result.json
+
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
+  passed after worker output-oracle transport staging
+  proof: gpu-validation-matrix-ledger:sha256:01c57b8ffdb23f9e8815424af51d2108331f9933d531d0e572ec5a8876ddba2b
+  rows: 78
+
+npm run proof:validation-matrix:self-check
+  passed after worker output-oracle transport staging
+  smoke proof: gpu-validation-matrix-ledger:sha256:947feab21a9ab0f9f6590a87d87e2509dfdc4baa97d9480175d84a65fbca0562
+  collected proof: gpu-validation-matrix-ledger:sha256:9c5408ab7f5eb4054a1834979598bd4dfa1ce21bfe88b90508a296e6ca0802e5
+  rows: 235
+
+npm run proof:oidn:preflight
+  passed as refusal-only after worker output-oracle transport staging
+  proof: oidn-preflight-proof:sha256:34be49f0a510e0d392fe8f416537303612ab065e44062b34cc0545d0ecde5513
+  artifact: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-preflight-20260704055537-proof.json
+  result: oidn-hip-rejected
+  runtime preflight accepted: false
+  output proof accepted: false
+
+npm run proof:validation-matrix
+  passed after worker output-oracle transport staging and live OIDN preflight refresh
+  matrix: gpu-validation-matrix-ledger:sha256:d24cf5df1a1ef6dad2c2528da5a321c38d2a61a5302f4414a3ae7a0c23ae43ba
+  json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260704T060827Z.json
+  rows: 236
+  accepted full-runtime rows: 19
+  broad proof: gpu-hmr-broad-library-agnostic-proof:sha256:ff1bda2680cf66b5616c84b64e56c2c3404cbb1b78636c5477d69a9ca0befffc
+  random cold qualifying direct sources: 5
+  OIDN rows: 10
+  OIDN output: missing with oidn_output_oracle_attempt_required
 ```
 
-This checkpoint strengthens arbitrary-project cold-path evidence and OIDN runtime discovery without adding a whitelist. The current broad matrix proof is still a recomputed proof over accepted strict rows and adversarial refusals; it is not a production claim that every arbitrary GPU project will hot-reload. Large arbitrary projects and OIDN-HIP remain fail-closed until they produce same-process artifact transport, epoch publication, dispatch trace, host identity, visual or compute output-oracle bytes, firewall proof, runtime-chain closure, and accepted strict ledger proof. The next generic gap is an actual OIDN-HIP or large-project runtime/output oracle chain, not another project-specific branch.
+This checkpoint strengthens arbitrary-project cold-path evidence, OIDN runtime discovery, and OIDN worker output-oracle transport without adding a whitelist. The current broad matrix proof is still a recomputed proof over accepted strict rows and adversarial refusals; it is not a production claim that every arbitrary GPU project will hot-reload. Large arbitrary projects and OIDN-HIP remain fail-closed until they produce same-process artifact transport, epoch publication, dispatch trace, host identity, visual or compute output-oracle bytes, firewall proof, runtime-chain closure, and accepted strict ledger proof. The next generic gap is an actual OIDN-HIP or large-project runtime/output oracle chain that writes real oracle bytes and runtime-boundary events, not another project-specific branch or declaration.
 
 ## 2026-07-03 Generic Proof Status And Visual Evidence Checkpoint
 
