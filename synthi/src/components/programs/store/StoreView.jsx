@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Store, ArrowLeft, Search, FileInput, UploadCloud } from 'lucide-react';
+import { Store, ArrowLeft, Search, FileInput, UploadCloud, Sparkles } from 'lucide-react';
 import { PROGRAM_STYLE } from '../programTokens';
 import FilterStrip from './FilterStrip';
 import StoreTile from './StoreTile';
@@ -18,7 +18,7 @@ const FILTERS = [
 
 export default function StoreView({
   canManage, marketplace, query, onQueryChange, onBack,
-  onInstallManifest, onPublish, onInstallPublished,
+  onInstallManifest, onPublish, onGenerate, onInstallPublished,
   requestedScopes, consentItem, busy, onApprove,
 }) {
   const [activeFilter, setActiveFilter] = useState('all');
@@ -73,6 +73,12 @@ export default function StoreView({
               <UploadCloud className="w-3.5 h-3.5" /> Submit for review
             </button>
           </div>
+        ) : null}
+
+        {canManage ? (
+          <button type="button" data-testid="generate-manifest" onClick={onGenerate} style={{ ...action, width: '100%', justifyContent: 'center' }} className="inline-flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5" /> Generate manifest with AI
+          </button>
         ) : null}
 
         <FilterStrip items={FILTERS} activeId={activeFilter} onSelect={setActiveFilter} />

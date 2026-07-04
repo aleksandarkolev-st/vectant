@@ -14,6 +14,8 @@ import {
   submitForReview,
   fetchMySubmissions,
   unpublishProgram,
+  generateManifest,
+  saveWorkspaceManifest,
   fetchMarketplace,
   installPublishedProgram,
   scaffoldProgram,
@@ -39,6 +41,7 @@ import LibraryView from './library/LibraryView';
 import StoreView from './store/StoreView';
 import MyAppsView from './myapps/MyAppsView';
 import FirstPublishTutorial from './FirstPublishTutorial';
+import GenerateManifestDialog from './GenerateManifestDialog';
 import ConfirmDialog from './ConfirmDialog';
 
 /** Non-terminal review states — while any app is here, the My Apps tab polls. */
@@ -100,6 +103,7 @@ export default function ProgramsPanel() {
   const [detected, setDetected] = useState(null);
   const [submissions, setSubmissions] = useState([]);
   const [showTutorial, setShowTutorial] = useState(false);
+  const [genManifest, setGenManifest] = useState(null); // { manifest, errors } | null
   const [loading, setLoading] = useState(true);
   const [consent, setConsent] = useState(null); // { requested, published? }
   const [busy, setBusy] = useState(false);
@@ -339,6 +343,34 @@ export default function ProgramsPanel() {
     }
   }, [load, workspaceSlug]);
 
+  // AI manifest authoring: generate a draft → open the preview dialog → Save writes it.
+  const handleGenerate = useCallback(async () => {
+    if (!workspaceSlug) return;
+    const toastId = toast.loading('Generating vectant.programs.json…');
+    try {
+      const { manifest, errors } = await generateManifest(workspaceSlug);
+      toast.dismiss(toastId);
+      setGenManifest({ manifest, errors: errors || null });
+    } catch (error) {
+      toast.dismiss(toastId);
+      if (error?.status === 502) toast.error('AI generation is unavailable right now.');
+      else if (error?.status === 404) toast.error('No workspace files to base a manifest on.');
+      else toast.error(error.body?.message || error.message || 'Failed to generate manifest');
+    }
+  }, [workspaceSlug]);
+
+  const handleSaveManifest = useCallback(async (manifest) => {
+    if (!workspaceSlug) return;
+    try {
+      await saveWorkspaceManifest(workspaceSlug, manifest);
+      toast.success('Saved vectant.programs.json to your workspace');
+      setGenManifest(null);
+    } catch (error) {
+      if (error?.status === 422) toast.error(error.body?.message || 'Manifest is invalid');
+      else toast.error(error.body?.message || error.message || 'Failed to save manifest');
+    }
+  }, [workspaceSlug]);
+
   const handleInstallManifest = useCallback(async (grantScopes) => {
     if (!workspaceSlug) return;
     setBusy(true);
@@ -441,6 +473,7 @@ export default function ProgramsPanel() {
           onBack={() => { setView('library'); setConsent(null); }}
           onInstallManifest={() => handleInstallManifest()}
           onPublish={handlePublish}
+          onGenerate={handleGenerate}
           onInstallPublished={(item) => handleInstallPublished(item)}
           requestedScopes={consent?.requested || []}
           consentItem={consentItem}
@@ -450,6 +483,14 @@ export default function ProgramsPanel() {
       )}
 
       <FirstPublishTutorial userId={workspaceSlug || 'anon'} open={showTutorial} onClose={() => setShowTutorial(false)} />
+
+      <GenerateManifestDialog
+        open={!!genManifest}
+        manifest={genManifest?.manifest}
+        errors={genManifest?.errors}
+        onCancel={() => setGenManifest(null)}
+        onSave={handleSaveManifest}
+      />
 
       {removeTarget ? (
         <ConfirmDialog

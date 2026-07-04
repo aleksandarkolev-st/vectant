@@ -122,6 +122,16 @@ export async function unpublishProgram(workspaceSlug, packageId) {
   });
 }
 
+/** Ask Gemini to draft a vectant.programs.json → { manifest, valid, errors? }. */
+export async function generateManifest(workspaceSlug) {
+  return request(`${programsBase(workspaceSlug)}/generate-manifest`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+/** Save a reviewed manifest to the workspace (re-validated server-side). */
+export async function saveWorkspaceManifest(workspaceSlug, manifest) {
+  return request(`${programsBase(workspaceSlug)}/manifest`, { method: 'POST', body: JSON.stringify({ manifest }) });
+}
+
 /** Browse/search the global published catalog. */
 export async function fetchMarketplace(workspaceSlug, q = '') {
   if (!workspaceSlug) return [];
