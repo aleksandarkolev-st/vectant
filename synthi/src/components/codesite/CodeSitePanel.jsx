@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   Activity,
   AlertTriangle,
@@ -23,17 +24,26 @@ import {
   Upload,
 } from 'lucide-react';
 import {
+  applyCodeSiteRouteRevision,
   applyCodeSiteQuarantine,
   createCodeSiteProject,
   createEmptyCodeSiteRadarState,
   exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState,
+  issueCodeSitePermit,
+  proposeCodeSiteRouteRevision,
   replayCodeSiteQuarantine,
+  resumeCodeSiteMayday,
+  reviewCodeSiteDocument,
+  reviewCodeSiteRouteRevision,
   simulateCodeSiteShadowMerge,
+  subscribeCodeSiteProjectEvents,
 } from './codesiteClient';
 
 const POLL_MS = 5000;
+const MOTION_EASE = [0.16, 1, 0.3, 1];
+const RADAR_SWEEP_EASE = [0.45, 0, 0.55, 1];
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -41,6 +51,16 @@ function asArray(value) {
 
 function uniqueValues(values) {
   return [...new Set(asArray(values).filter(Boolean).map((value) => String(value)))];
+}
+
+function uniqueByEvent(events) {
+  const seen = new Set();
+  return asArray(events).filter((event, index) => {
+    const key = event?.id || event?.eventId || `${event?.eventType || 'event'}:${event?.createdAt || index}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function compact(value, fallback = 'none') {
@@ -143,6 +163,73 @@ function latestCounterfactualSimulation(runs) {
       baseSnapshot: verdict.baseSnapshot || latestRun.baseSnapshot,
     },
   };
+}
+
+function documentLabel(document = {}) {
+  return compact(document.title || document.subject || document.kind, 'document');
+}
+
+function documentNeedsReview(document = {}) {
+  const status = String(document.status || '').toLowerCase();
+  return !['approved', 'resolved', 'closed', 'accepted', 'answered', 'rejected'].includes(status);
+}
+
+function routeRevisionCanReview(revision = {}) {
+  return ['proposed', 'pending', 'review'].includes(String(revision.status || '').toLowerCase());
+}
+
+function routeRevisionCanApply(revision = {}) {
+  return ['approved', 'accepted', 'reviewed'].includes(String(revision.status || '').toLowerCase());
+}
+
+function firstRoutePattern(plan = {}) {
+  return asArray(plan.route).find(Boolean) || asArray(plan.lease?.allowedPaths).find(Boolean) || '**';
+}
+
+function incidentNeedsResume(incident = {}) {
+  const status = String(incident.status || '').toLowerCase();
+  const category = String(incident.category || '').toLowerCase();
+  return category === 'mayday' && !['resolved', 'closed', 'resumed'].includes(status);
+}
+
+function inspectionRunRelatesToIncident(run = {}, incident = {}) {
+  const affectedZones = asArray(incident.affectedZones);
+  const changedPaths = asArray(run.changedPaths);
+  const evidenceRefs = new Set(asArray(incident.evidenceRefs));
+  if (affectedZones.length && changedPaths.some((path) => affectedZones.some((zone) => pathsLikelyOverlap(path, zone)))) return true;
+  return asArray(run.evidenceRefs).some((ref) => evidenceRefs.has(ref));
+}
+
+function maydayResumeInspectionRefs(incident = {}, inspectionRuns = []) {
+  const replay = incident.incidentReplay || {};
+  const workflow = replay.maydayWorkflow || replay.mayday_workflow || {};
+  const explicitRefs = uniqueValues([
+    workflow.inspectorRunId,
+    workflow.inspectionRunId,
+    workflow.inspection_run_id,
+    ...asArray(workflow.inspectionRunIds || workflow.inspection_run_ids),
+    ...asArray(incident.inspectionRunIds || incident.inspection_run_ids),
+  ]);
+  if (explicitRefs.length) return explicitRefs;
+  return uniqueValues(asArray(inspectionRuns)
+    .filter((run) => inspectionRunRelatesToIncident(run, incident))
+    .map((run) => run.id));
+}
+
+function towerInstructionText(event = {}) {
+  const details = event.details || {};
+  return compact(
+    details.towerInstruction
+      || details.instruction
+      || details.summary
+      || details.title
+      || details.reason
+      || details.reasonCode
+      || details.reasonCodes?.[0]
+      || event.message
+      || event.eventType,
+    'tower event',
+  );
 }
 
 function hasEntries(value) {
@@ -494,9 +581,14 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
   );
 }
 
-function Section({ title, icon: Icon, children, right }) {
+function Section({ title, icon: Icon, children, right, sectionKey }) {
   return (
-    <section className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+    <section
+      id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
+      data-codesite-section={sectionKey || undefined}
+      className="border-t scroll-mt-48 md:scroll-mt-24"
+      style={{ borderColor: 'var(--border-subtle)' }}
+    >
       <div className="flex min-h-10 items-center justify-between gap-3 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent-primary)' }} />
@@ -1075,6 +1167,301 @@ function EmptyLine({ children = 'None' }) {
   );
 }
 
+function MobileSectionTabs({ sections, activeSection, onSelect }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <div
+      data-testid="codesite-mobile-section-tabs"
+      className="sticky top-0 z-20 border-b px-3 py-2 md:hidden"
+      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }}
+    >
+      <div className="flex min-w-0 gap-1 overflow-x-auto" role="tablist" aria-label="CodeSite sections">
+        {sections.map((section) => (
+          <button
+            key={section.key}
+            type="button"
+            role="tab"
+            aria-selected={activeSection === section.key}
+            aria-controls={`codesite-section-${section.key}`}
+            data-testid="codesite-mobile-section-tab"
+            onClick={() => onSelect(section.key)}
+            className="inline-flex h-11 shrink-0 items-center rounded border px-3 text-[11px] font-medium transition-transform active:scale-[0.98]"
+            style={{
+              borderColor: activeSection === section.key ? 'color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))' : 'var(--border-subtle)',
+              background: activeSection === section.key ? 'color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))' : 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
+              transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
+            }}
+          >
+            {section.label}
+          </button>
+        ))}
+      </div>
+      <div data-testid="codesite-mobile-action-drawer" className="mt-2 flex items-center justify-between gap-2 rounded border px-2 py-1.5 text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+        <span>Section</span>
+        <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{sections.find((section) => section.key === activeSection)?.label || 'Radar'}</span>
+        <span className="sr-only">{reduceMotion ? 'Reduced motion active' : 'Animated section jump active'}</span>
+      </div>
+    </div>
+  );
+}
+
+function TowerStreamPanel({ events, streamStatus }) {
+  const reduceMotion = useReducedMotion();
+  const rows = asArray(events).slice(0, 8);
+  return (
+    <div data-testid="codesite-tower-feed" className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+      <div className="rounded border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">Tower stream</div>
+            <div data-testid="codesite-event-stream-status" className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {streamStatus === 'live' ? 'EventSource live' : streamStatus === 'reconnecting' ? 'Reconnecting to tower stream' : 'Polling fallback active'}
+            </div>
+          </div>
+          <Pill tone={streamStatus === 'live' ? 'active' : streamStatus === 'reconnecting' ? 'warning' : 'idle'}>{streamStatus}</Pill>
+        </div>
+        <div data-testid="codesite-transponder-stream" className="mt-3 grid grid-cols-3 gap-2">
+          <Metric label="Events" value={rows.length} tone={rows.length ? 'active' : 'idle'} />
+          <Metric label="Instructions" value={rows.filter((event) => String(event.eventType || '').includes('tower')).length} />
+          <Metric label="Blocks" value={rows.filter((event) => /denied|quarantined|ground_stop/i.test(String(event.eventType || ''))).length} tone="holding" />
+        </div>
+      </div>
+      <div className="min-w-0 rounded border p-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+        <AnimatePresence initial={false}>
+          {rows.length ? rows.map((event, index) => (
+            <motion.div
+              key={event.id || `${event.eventType || 'event'}-${event.createdAt || index}`}
+              data-testid="codesite-tower-instruction-row"
+              layout={!reduceMotion}
+              initial={reduceMotion ? false : { opacity: 0, y: -8 }}
+              animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              transition={{ duration: reduceMotion ? 0 : 0.22, ease: MOTION_EASE }}
+              className="grid min-h-10 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2 border-t py-1.5 text-xs first:border-t-0"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(event.createdAt)}</span>
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{towerInstructionText(event)}</span>
+                <span className="ml-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(event.eventType, 'tower_event')}</span>
+              </span>
+              <Pill tone={event.eventType}>{compact(event.displayCallsign || event.actorType, 'tower')}</Pill>
+            </motion.div>
+          )) : <EmptyLine>No tower events received</EmptyLine>}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+function GovernanceConsole({
+  project,
+  activeFlights,
+  activeLeases,
+  incidents,
+  permitDraft,
+  routeDraft,
+  onPermitDraft,
+  onRouteDraft,
+  onIssuePermit,
+  onReviewDocument,
+  onProposeRouteRevision,
+  onReviewRouteRevision,
+  onApplyRouteRevision,
+  onResumeMayday,
+  actionState,
+  disabled,
+  inspectionRuns,
+}) {
+  const reduceMotion = useReducedMotion();
+  const permits = asArray(project?.permits);
+  const documents = asArray(project?.documents);
+  const routeRevisions = asArray(project?.routeRevisions);
+  const openDocuments = documents.filter(documentNeedsReview);
+  const maydayIncidents = incidents.filter(incidentNeedsResume);
+  const primaryPlan = activeFlights[0] || asArray(project?.executionPlans)[0] || {};
+  const lease = activeLeases[0] || {};
+  const defaultPermitRoute = firstRoutePattern(primaryPlan);
+  const draftRoute = permitDraft.route || defaultPermitRoute;
+  const permitAllowedPaths = draftRoute ? [draftRoute] : [];
+
+  return (
+    <div data-testid="codesite-governance-console" className="grid min-w-0 gap-3 xl:grid-cols-[minmax(260px,0.82fr)_minmax(0,1.18fr)]">
+      <motion.form
+        layout={!reduceMotion}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onIssuePermit({
+            title: permitDraft.title || `Restricted work permit for ${compact(primaryPlan.displayCallsign, 'flight')}`,
+            permitType: permitDraft.permitType || 'restricted_route',
+            executionPlanId: primaryPlan.id || null,
+            mutationLeaseId: lease.id || null,
+            allowedPaths: permitAllowedPaths,
+            route: permitAllowedPaths,
+            scope: { allowedPaths: permitAllowedPaths, route: permitAllowedPaths },
+            approval: { source: 'codesite_governance_console' },
+            evidenceRefs: [`codesite:ui:permit:${project?.id || 'project'}`],
+          });
+        }}
+        className="rounded border p-3"
+        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-semibold">Restricted work permit</div>
+            <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>Issue governance evidence for Class A/B paths before clearance.</div>
+          </div>
+          <Pill tone={permits.length ? 'active' : 'holding'}>{permits.length}</Pill>
+        </div>
+        <div className="mt-3 grid gap-2">
+          <label className="grid gap-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Permit title
+            <input
+              data-testid="codesite-permit-title-input"
+              value={permitDraft.title}
+              onChange={(event) => onPermitDraft({ ...permitDraft, title: event.target.value })}
+              placeholder={`Permit for ${compact(primaryPlan.displayCallsign, 'flight')}`}
+              className="h-10 rounded border px-2 text-xs outline-none"
+              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-primary)' }}
+            />
+          </label>
+          <label className="grid gap-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Route scope
+            <input
+              data-testid="codesite-permit-route-input"
+              value={draftRoute}
+              onChange={(event) => onPermitDraft({ ...permitDraft, route: event.target.value })}
+              placeholder="synthi/prisma/**"
+              className="h-10 rounded border px-2 font-mono text-xs outline-none"
+              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-primary)' }}
+            />
+          </label>
+          <IconButton title="Issue permit" type="submit" variant="primary" disabled={disabled || !project?.id} testId="codesite-issue-permit-button">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Issue permit
+          </IconButton>
+        </div>
+      </motion.form>
+
+      <div className="grid min-w-0 gap-3">
+        <div className="grid gap-2 md:grid-cols-2">
+          <div className="rounded border p-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold">Documents</div>
+              <Pill tone={openDocuments.length ? 'holding' : 'active'}>{openDocuments.length} open</Pill>
+            </div>
+            {documents.length ? documents.slice(0, 5).map((document) => (
+              <div key={document.id} data-testid="codesite-document-row" className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate font-medium">{documentLabel(document)}</span>
+                  <Pill tone={document.status}>{compact(document.status, 'open')}</Pill>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1" data-testid="codesite-document-review-actions">
+                  <IconButton title="Approve document" disabled={disabled || !documentNeedsReview(document)} onClick={() => onReviewDocument(document, 'approved')} testId="codesite-document-approve-button">
+                    <ClipboardCheck className="h-3.5 w-3.5" />
+                    Approve
+                  </IconButton>
+                  <IconButton title="Reject document" disabled={disabled || !documentNeedsReview(document)} onClick={() => onReviewDocument(document, 'rejected')} testId="codesite-document-reject-button">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Reject
+                  </IconButton>
+                </div>
+              </div>
+            )) : <EmptyLine>No RFIs or change orders filed</EmptyLine>}
+          </div>
+
+          <div className="rounded border p-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold">Route revisions</div>
+              <Pill tone={routeRevisions.length ? 'holding' : 'idle'}>{routeRevisions.length}</Pill>
+            </div>
+            <form
+              className="mb-2 grid gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onProposeRouteRevision(primaryPlan, {
+                  proposedRoute: [routeDraft.route || defaultPermitRoute],
+                  reason: routeDraft.reason || 'operator_reroute',
+                  affectedLeases: lease.id ? [lease.id] : [],
+                  evidenceRefs: [`codesite:ui:route-revision:${project?.id || 'project'}`],
+                });
+              }}
+            >
+              <input
+                data-testid="codesite-route-revision-input"
+                value={routeDraft.route}
+                onChange={(event) => onRouteDraft({ ...routeDraft, route: event.target.value })}
+                placeholder={defaultPermitRoute}
+                className="h-10 rounded border px-2 font-mono text-xs outline-none"
+                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-primary)' }}
+              />
+              <IconButton title="Propose route revision" type="submit" disabled={disabled || !primaryPlan.id} testId="codesite-route-propose-button">
+                <Route className="h-3.5 w-3.5" />
+                Propose reroute
+              </IconButton>
+            </form>
+            {routeRevisions.length ? routeRevisions.slice(0, 5).map((revision) => (
+              <div key={revision.id} data-testid="codesite-route-revision-row" className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <code className="min-w-0 truncate text-[10px]">{asArray(revision.proposedRoute).join(', ') || 'route pending'}</code>
+                  <Pill tone={revision.status}>{compact(revision.status, 'proposed')}</Pill>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  <IconButton title="Approve route revision" disabled={disabled || !routeRevisionCanReview(revision)} onClick={() => onReviewRouteRevision(revision, 'approved')} testId="codesite-route-review-button">
+                    <ClipboardCheck className="h-3.5 w-3.5" />
+                    Approve
+                  </IconButton>
+                  <IconButton title="Apply route revision" disabled={disabled || !routeRevisionCanApply(revision)} onClick={() => onApplyRouteRevision(revision)} testId="codesite-route-apply-button">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Apply
+                  </IconButton>
+                </div>
+              </div>
+            )) : null}
+          </div>
+        </div>
+
+        <div data-testid="codesite-mayday-banner" className="rounded border p-3" style={{ borderColor: maydayIncidents.length ? 'color-mix(in srgb, #ff5757 42%, var(--border-subtle))' : 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold">Mayday and ground stop recovery</div>
+              <div className="mt-1 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Resume only after replay, inspection, and recovery evidence.
+              </div>
+            </div>
+            <Pill tone={maydayIncidents.length ? 'critical' : 'active'}>{maydayIncidents.length} open</Pill>
+          </div>
+          {maydayIncidents.length ? maydayIncidents.slice(0, 3).map((incident) => {
+            const inspectionRunIds = maydayResumeInspectionRefs(incident, inspectionRuns);
+            return (
+              <div key={incident.id} data-testid="codesite-ground-stop-row" className="mt-2 grid gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[minmax(0,1fr)_auto]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{compact(incident.category, 'mayday')}</div>
+                  <PathList paths={incident.affectedZones} empty="no affected zones" maxVisible={4} />
+                  <div className="mt-1 truncate text-[10px]" style={{ color: inspectionRunIds.length ? 'var(--text-muted)' : '#ff8f8f' }}>
+                    {inspectionRunIds.length ? `inspection: ${inspectionRunIds.join(', ')}` : 'inspection evidence required'}
+                  </div>
+                </div>
+                <IconButton title="Resume mayday" disabled={disabled || inspectionRunIds.length === 0} onClick={() => onResumeMayday(incident, inspectionRunIds)} testId="codesite-resume-mayday-submit">
+                  <Siren className="h-3.5 w-3.5" />
+                  Resume
+                </IconButton>
+              </div>
+            );
+          }) : null}
+        </div>
+
+        {actionState.error || actionState.result ? (
+          <div data-testid="codesite-governance-action-result" className="rounded border px-3 py-2 text-xs" style={{ borderColor: actionState.error ? 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))' : 'color-mix(in srgb, #4ade80 40%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
+            {actionState.error || compact(actionState.result?.event?.eventType || actionState.result?.routeRevision?.status || actionState.result?.permit?.status || actionState.status, 'updated')}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function LoadingSkeleton() {
   return (
     <div className="space-y-3 p-3" data-testid="codesite-loading">
@@ -1292,6 +1679,7 @@ function replayCompletenessTone(completeness) {
 }
 
 function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
+  const reduceMotion = useReducedMotion();
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
   ];
@@ -1330,6 +1718,15 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                 const end = radarPoint(angle, 45);
                 return <line key={angle} x1="50" y1="50" x2={end.x} y2={end.y} stroke="var(--border-subtle)" strokeWidth="0.25" />;
               })}
+              <motion.g
+                data-testid="codesite-radar-sweep"
+                style={{ transformOrigin: '50% 50%' }}
+                animate={reduceMotion ? { rotate: 0 } : { rotate: 360 }}
+                transition={{ duration: 8, repeat: reduceMotion ? 0 : Infinity, ease: RADAR_SWEEP_EASE }}
+              >
+                <path d="M 50 50 L 50 5 A 45 45 0 0 1 72 11 Z" fill="color-mix(in srgb, var(--accent-primary) 42%, transparent)" opacity="0.22" />
+                <line x1="50" y1="50" x2="50" y2="5" stroke="color-mix(in srgb, var(--accent-primary) 76%, #8fd9ff)" strokeWidth="0.45" />
+              </motion.g>
               {lanes.slice(0, 6).map((zone, index) => {
                 const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
                 return (
@@ -1375,9 +1772,16 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                 const color = radarColor(flight.status, hasRisk ? 'high' : null);
                 const holding = ['holding', 'blocked', 'preflight'].includes(String(flight.status || '').toLowerCase());
                 return (
-                  <g key={`flight-dot-${flight.id || flight.displayCallsign || index}`} data-testid="codesite-flight-blip">
+                  <motion.g
+                    key={`flight-dot-${flight.id || flight.displayCallsign || index}`}
+                    data-testid="codesite-flight-blip"
+                    initial={{ opacity: 0.72, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.24, delay: reduceMotion ? 0 : index * 0.04, ease: MOTION_EASE }}
+                    style={{ transformOrigin: `${point.x}px ${point.y}px` }}
+                  >
                     {holding ? (
-                      <circle
+                      <motion.circle
                         data-testid="codesite-holding-pattern"
                         cx={point.x}
                         cy={point.y}
@@ -1387,13 +1791,16 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                         strokeWidth="0.45"
                         strokeDasharray="1.4 1.2"
                         opacity="0.92"
+                        animate={reduceMotion ? { rotate: 0 } : { rotate: 360 }}
+                        transition={{ duration: 3.2, repeat: reduceMotion ? 0 : Infinity, ease: RADAR_SWEEP_EASE }}
+                        style={{ transformOrigin: `${point.x}px ${point.y}px` }}
                       />
                     ) : null}
                     <circle cx={point.x} cy={point.y} r="2.2" fill={color} stroke="var(--bg-surface)" strokeWidth="0.8" />
                     <text x={Math.min(86, point.x + 3.4)} y={Math.max(9, point.y - 2.4)} fill="var(--text-primary)" fontSize="3.1" fontFamily="monospace">
                       {compact(flight.displayCallsign, 'agent').slice(0, 10)}
                     </text>
-                  </g>
+                  </motion.g>
                 );
               })}
               <circle cx="50" cy="50" r="1.4" fill="var(--accent-primary)" />
@@ -1491,6 +1898,7 @@ function JsonPreview({ value, maxLines = 10 }) {
 }
 
 export default function CodeSitePanel({ workspaceSlug }) {
+  const reduceMotion = useReducedMotion();
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [radarState, setRadarState] = useState(() => createEmptyCodeSiteRadarState(workspaceSlug));
   const [loading, setLoading] = useState(true);
@@ -1509,6 +1917,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
     apply: null,
     error: null,
   });
+  const [streamStatus, setStreamStatus] = useState('polling');
+  const [streamEvents, setStreamEvents] = useState([]);
+  const [activeSection, setActiveSection] = useState('radar');
+  const [permitDraft, setPermitDraft] = useState({ title: '', permitType: 'restricted_route', route: '' });
+  const [routeDraft, setRouteDraft] = useState({ route: '', reason: '' });
+  const [governanceAction, setGovernanceAction] = useState({ status: 'idle', result: null, error: null });
 
   const loadRadar = useCallback(async ({ silent = false, projectId = selectedProjectId } = {}) => {
     if (!workspaceSlug) {
@@ -1547,6 +1961,34 @@ export default function CodeSitePanel({ workspaceSlug }) {
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadRadar, radarState.selectedProjectId, workspaceSlug]);
+
+  useEffect(() => {
+    setStreamEvents([]);
+    if (!workspaceSlug || !radarState.selectedProjectId) {
+      setStreamStatus('polling');
+      return undefined;
+    }
+    return subscribeCodeSiteProjectEvents(workspaceSlug, radarState.selectedProjectId, {
+      onStatus: setStreamStatus,
+      onEvent: (event) => {
+        setStreamEvents((current) => {
+          const id = event?.id || event?.eventId || `${event?.eventType || 'event'}:${event?.createdAt || current.length}`;
+          const withoutDuplicate = current.filter((item) => (item?.id || item?.eventId) !== id);
+          return [event, ...withoutDuplicate].slice(0, 12);
+        });
+      },
+    });
+  }, [radarState.selectedProjectId, workspaceSlug]);
+
+  const handleSelectSection = useCallback((sectionKey) => {
+    setActiveSection(sectionKey);
+    if (typeof document !== 'undefined') {
+      document.querySelector(`[data-codesite-section="${sectionKey}"]`)?.scrollIntoView({
+        behavior: reduceMotion ? 'auto' : 'smooth',
+        block: 'start',
+      });
+    }
+  }, [reduceMotion]);
 
   const handleCreateProject = useCallback(async (event) => {
     event?.preventDefault?.();
@@ -1609,6 +2051,77 @@ export default function CodeSitePanel({ workspaceSlug }) {
     }
   }, [acting, loadRadar, radarState.selectedProjectId, simulationRun.result, workspaceSlug]);
 
+  const runGovernanceAction = useCallback(async (operation) => {
+    if (!workspaceSlug || acting) return;
+    setActing(true);
+    setGovernanceAction({ status: 'running', result: null, error: null });
+    try {
+      const result = await operation();
+      setGovernanceAction({ status: 'ready', result, error: null });
+      await loadRadar({ silent: true, projectId: radarState.selectedProjectId });
+    } catch (nextError) {
+      setGovernanceAction({
+        status: 'error',
+        result: nextError.body || null,
+        error: nextError.message || 'codesite_governance_action_failed',
+      });
+    } finally {
+      setActing(false);
+    }
+  }, [acting, loadRadar, radarState.selectedProjectId, workspaceSlug]);
+
+  const handleIssuePermit = useCallback((payload) => {
+    if (!radarState.selectedProjectId) return;
+    return runGovernanceAction(() => issueCodeSitePermit(workspaceSlug, radarState.selectedProjectId, payload));
+  }, [radarState.selectedProjectId, runGovernanceAction, workspaceSlug]);
+
+  const handleReviewDocument = useCallback((documentRecord, decision) => {
+    if (!documentRecord?.id) return;
+    return runGovernanceAction(() => reviewCodeSiteDocument(workspaceSlug, documentRecord.id, {
+      decision,
+      summary: `Reviewed from CodeSite governance console as ${decision}.`,
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+      evidenceRefs: [`codesite:ui:document-review:${documentRecord.id}`],
+    }));
+  }, [runGovernanceAction, workspaceSlug]);
+
+  const handleProposeRouteRevision = useCallback((plan, payload) => {
+    if (!plan?.id) return;
+    return runGovernanceAction(() => proposeCodeSiteRouteRevision(workspaceSlug, plan.id, payload));
+  }, [runGovernanceAction, workspaceSlug]);
+
+  const handleReviewRouteRevision = useCallback((revision, decision) => {
+    if (!revision?.id) return;
+    return runGovernanceAction(() => reviewCodeSiteRouteRevision(workspaceSlug, revision.id, {
+      decision,
+      reason: `Route revision ${decision} from CodeSite governance console.`,
+      evidenceRefs: [`codesite:ui:route-review:${revision.id}`],
+    }));
+  }, [runGovernanceAction, workspaceSlug]);
+
+  const handleApplyRouteRevision = useCallback((revision) => {
+    if (!revision?.id) return;
+    return runGovernanceAction(() => applyCodeSiteRouteRevision(workspaceSlug, revision.id, {
+      appliedBy: 'codesite_governance_console',
+      evidenceRefs: [`codesite:ui:route-apply:${revision.id}`],
+    }));
+  }, [runGovernanceAction, workspaceSlug]);
+
+  const handleResumeMayday = useCallback((incident, inspectionRunIds = []) => {
+    if (!incident?.id) return;
+    const rationale = 'Operator reviewed incident replay, stop-work document, suspended clearances, and passing inspection evidence.';
+    return runGovernanceAction(() => resumeCodeSiteMayday(workspaceSlug, incident.id, {
+      approved: true,
+      humanApproval: true,
+      rationale,
+      summary: rationale,
+      inspectionRunIds,
+      replayRefs: uniqueValues([incident.replayDigest, incident.incidentReplay?.replayDigest]),
+      evidenceRefs: [`codesite:ui:mayday-resume:${incident.id}`],
+    }));
+  }, [runGovernanceAction, workspaceSlug]);
+
   const currentProject = radarState.project;
   const controlState = radarState.controlState;
   const metrics = radarState.metrics;
@@ -1628,9 +2141,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const incidents = asArray(currentProject?.incidents);
   const replayHandovers = useMemo(() => causalReplayHandovers(incidents, proofBundles), [incidents, proofBundles]);
   const inboxItems = asArray(currentProject?.inboxItems);
+  const documents = asArray(currentProject?.documents);
+  const permits = asArray(currentProject?.permits);
+  const routeRevisions = asArray(currentProject?.routeRevisions);
+  const openMaydays = incidents.filter(incidentNeedsResume);
   const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
-  const events = asArray(radarState.events).slice(-12).reverse();
+  const events = uniqueByEvent([...streamEvents, ...asArray(radarState.events).slice().reverse()]).slice(0, 12);
   const allEvents = asArray(radarState.events);
   const quarantineRecords = useMemo(() => mergeQuarantineRecords(
     radarState.quarantines,
@@ -1695,6 +2212,9 @@ export default function CodeSitePanel({ workspaceSlug }) {
       apply: null,
       error: null,
     });
+    setPermitDraft({ title: '', permitType: 'restricted_route', route: '' });
+    setRouteDraft({ route: '', reason: '' });
+    setGovernanceAction({ status: 'idle', result: null, error: null });
   }, [currentProject?.id]);
 
   useEffect(() => {
@@ -1843,6 +2363,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
     if (error) return 'error';
     return controlState?.towerState || currentProject?.status || 'idle';
   }, [controlState?.towerState, currentProject?.status, error]);
+  const mobileSections = useMemo(() => [
+    { key: 'radar', label: 'Radar' },
+    { key: 'tower', label: 'Tower' },
+    { key: 'governance', label: 'Governance' },
+    { key: 'evidence', label: 'Evidence' },
+    { key: 'replay', label: 'Replay' },
+  ], []);
 
   return (
     <div
@@ -1903,6 +2430,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
         <LoadingSkeleton />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto pb-16" tabIndex={0} aria-label="CodeSite evidence sections">
+          <MobileSectionTabs sections={mobileSections} activeSection={activeSection} onSelect={handleSelectSection} />
           {error ? (
             <div className="m-3 rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 38%, var(--border-subtle))', color: 'var(--text-primary)' }}>
               {error.status ? `${error.status}: ` : null}{error.message}
@@ -1948,16 +2476,19 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     {currentProject.request}
                   </div>
                 </div>
-                <div className="grid grid-cols-[repeat(auto-fit,minmax(112px,1fr))] gap-2">
+                <div data-testid="codesite-responsive-proof-target" className="grid grid-cols-[repeat(auto-fit,minmax(112px,1fr))] gap-2">
                   <Metric label="Flights" value={radarState.counts.activeFlights} testId="codesite-metric-flights" />
                   <Metric label="Leases" value={radarState.counts.activeMutationLeases} />
                   <Metric label="Transactions" value={radarState.counts.activeTransactions} />
                   <Metric label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} />
                   <Metric label="Risk" value={compact(collisionForecast.riskLevel, 'unknown')} tone={collisionForecast.riskLevel} />
+                  <Metric label="Permits" value={permits.length} tone={permits.length ? 'active' : 'idle'} testId="codesite-metric-permits" />
+                  <Metric label="Documents" value={documents.length} tone={documents.filter(documentNeedsReview).length ? 'holding' : 'active'} />
+                  <Metric label="Reroutes" value={routeRevisions.length} tone={routeRevisions.filter(routeRevisionCanReview).length ? 'holding' : 'idle'} />
                 </div>
               </div>
 
-              <Section title="Success Metrics" icon={BarChart3} right={<Pill tone={metrics?.status || 'pending'}>{metrics ? 'measured' : 'no data'}</Pill>}>
+              <Section title="Success Metrics" icon={BarChart3} sectionKey="evidence" right={<Pill tone={metrics?.status || 'pending'}>{metrics ? 'measured' : 'no data'}</Pill>}>
                 {metrics ? (
                   <div data-testid="codesite-success-metrics" className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
                     <div className="grid min-w-0 gap-4 sm:grid-cols-2">
@@ -1982,7 +2513,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
-              <Section title="Airspace Map" icon={Map} right={<Pill>{zones.length || activeFlights.length}</Pill>}>
+              <Section title="Airspace Map" icon={Map} sectionKey="radar" right={<Pill>{zones.length || activeFlights.length}</Pill>}>
                 <AirspaceMap
                   zones={zones}
                   noFlyZones={noFlyZones}
@@ -1990,6 +2521,44 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   risks={risks}
                   events={events}
                   inspections={inspectionRuns}
+                />
+              </Section>
+
+              <Section
+                title="Tower Feed"
+                icon={Radar}
+                sectionKey="tower"
+                right={<Pill tone={streamStatus === 'live' ? 'active' : streamStatus === 'reconnecting' ? 'warning' : 'idle'}>{streamStatus}</Pill>}
+              >
+                <TowerStreamPanel events={events} streamStatus={streamStatus} />
+              </Section>
+
+              <Section
+                title="Governance Console"
+                icon={ClipboardCheck}
+                sectionKey="governance"
+                right={<Pill tone={(documents.filter(documentNeedsReview).length || routeRevisions.filter(routeRevisionCanReview).length || openMaydays.length) ? 'holding' : 'active'}>
+                  {permits.length}/{documents.length}/{routeRevisions.length}
+                </Pill>}
+              >
+                <GovernanceConsole
+                  project={currentProject}
+                  activeFlights={activeFlights}
+                  activeLeases={activeLeases}
+                  incidents={incidents}
+                  inspectionRuns={inspectionRuns}
+                  permitDraft={permitDraft}
+                  routeDraft={routeDraft}
+                  onPermitDraft={setPermitDraft}
+                  onRouteDraft={setRouteDraft}
+                  onIssuePermit={handleIssuePermit}
+                  onReviewDocument={handleReviewDocument}
+                  onProposeRouteRevision={handleProposeRouteRevision}
+                  onReviewRouteRevision={handleReviewRouteRevision}
+                  onApplyRouteRevision={handleApplyRouteRevision}
+                  onResumeMayday={handleResumeMayday}
+                  actionState={governanceAction}
+                  disabled={acting}
                 />
               </Section>
 
@@ -2321,7 +2890,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
-              <Section title="Causal Replay Handover" icon={ScrollText} right={<Pill tone={replayHandovers.length ? replayCompletenessTone(replayHandovers[0].completeness) : 'pending'}>{replayHandovers.length}</Pill>}>
+              <Section title="Causal Replay Handover" icon={ScrollText} sectionKey="replay" right={<Pill tone={replayHandovers.length ? replayCompletenessTone(replayHandovers[0].completeness) : 'pending'}>{replayHandovers.length}</Pill>}>
                 <div data-testid="codesite-causal-replay-handover" className="min-w-0">
                   {replayHandovers.length === 0 ? (
                     <EmptyLine>No black-box handover closed yet</EmptyLine>

@@ -5,13 +5,20 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
+  applyCodeSiteRouteRevision: vi.fn(),
   applyCodeSiteQuarantine: vi.fn(),
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
+  issueCodeSitePermit: vi.fn(),
+  proposeCodeSiteRouteRevision: vi.fn(),
   replayCodeSiteQuarantine: vi.fn(),
+  resumeCodeSiteMayday: vi.fn(),
+  reviewCodeSiteDocument: vi.fn(),
+  reviewCodeSiteRouteRevision: vi.fn(),
   simulateCodeSiteShadowMerge: vi.fn(),
+  subscribeCodeSiteProjectEvents: vi.fn(),
 }));
 
 function emptyState(workspaceSlug = 'acme') {
@@ -40,14 +47,21 @@ function emptyState(workspaceSlug = 'acme') {
 }
 
 vi.mock('../codesiteClient', () => ({
+  applyCodeSiteRouteRevision: h.applyCodeSiteRouteRevision,
   applyCodeSiteQuarantine: h.applyCodeSiteQuarantine,
   createCodeSiteProject: h.createCodeSiteProject,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
+  issueCodeSitePermit: h.issueCodeSitePermit,
+  proposeCodeSiteRouteRevision: h.proposeCodeSiteRouteRevision,
   replayCodeSiteQuarantine: h.replayCodeSiteQuarantine,
+  resumeCodeSiteMayday: h.resumeCodeSiteMayday,
+  reviewCodeSiteDocument: h.reviewCodeSiteDocument,
+  reviewCodeSiteRouteRevision: h.reviewCodeSiteRouteRevision,
   simulateCodeSiteShadowMerge: h.simulateCodeSiteShadowMerge,
+  subscribeCodeSiteProjectEvents: h.subscribeCodeSiteProjectEvents,
 }));
 
 import CodeSitePanel from '../CodeSitePanel';
@@ -202,6 +216,55 @@ function radarState() {
             },
           ],
         },
+      }, {
+        id: 'incident-mayday-1',
+        category: 'mayday',
+        status: 'open',
+        severity: 'high',
+        participants: ['ATLAS-1'],
+        affectedZones: ['api/checkout/**'],
+        evidenceRefs: ['incident:mayday:evidence'],
+        replayDigest: 'sha256:mayday-replay',
+        createdAt: '2026-06-29T23:38:00.000Z',
+        incidentReplay: {
+          maydayWorkflow: {
+            inspectorRunId: 'inspection-mayday-1',
+            suspendedLeases: [{ id: 'lease-1' }],
+          },
+        },
+      }],
+      documents: [{
+        id: 'doc-1',
+        kind: 'rfi',
+        title: 'Need schema owner',
+        status: 'pending',
+        bodyJson: { question: 'Who owns the checkout schema?' },
+        evidenceRefs: ['rfi:checkout-schema-owner'],
+      }],
+      permits: [{
+        id: 'permit-1',
+        permitType: 'restricted_route',
+        title: 'Checkout restricted route permit',
+        status: 'issued',
+        scope: { allowedPaths: ['api/checkout/**'], route: ['api/checkout/**'] },
+        evidenceRefs: ['permit:checkout'],
+      }],
+      routeRevisions: [{
+        id: 'route-rev-1',
+        executionPlanId: 'plan-1',
+        status: 'proposed',
+        previousRoute: ['api/checkout/**'],
+        proposedRoute: ['api/checkout/v2/**'],
+        affectedLeases: ['lease-1'],
+        evidenceRefs: ['route-revision:proposal'],
+      }, {
+        id: 'route-rev-2',
+        executionPlanId: 'plan-1',
+        status: 'approved',
+        previousRoute: ['api/checkout/**'],
+        proposedRoute: ['api/payments/**'],
+        affectedLeases: ['lease-1'],
+        evidenceRefs: ['route-revision:approved'],
       }],
       inspectionRuns: [{
         id: 'inspection-1',
@@ -210,6 +273,13 @@ function radarState() {
         changedPaths: ['api/checkout/**'],
         inspectionSignals: [{ type: 'test', status: 'passed' }],
         evidenceRefs: ['runtime:event:inspection-1', 'test:checkout'],
+      }, {
+        id: 'inspection-mayday-1',
+        displayCallsign: 'QA-MAYDAY',
+        status: 'passed',
+        changedPaths: ['api/checkout/**'],
+        inspectionSignals: [{ type: 'recovery', status: 'passed' }],
+        evidenceRefs: ['runtime:event:inspection-mayday-1', 'incident:mayday:evidence'],
       }],
       lineProvenance: [{
         id: 'line-1',
@@ -598,7 +668,7 @@ function radarState() {
       events: 3,
       proofBundles: 1,
       incidents: 1,
-      inspectionRuns: 1,
+      inspectionRuns: 2,
       quarantines: 1,
     },
     collisionForecast: {
@@ -613,6 +683,35 @@ describe('CodeSitePanel', () => {
     vi.clearAllMocks();
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
+    h.subscribeCodeSiteProjectEvents.mockImplementation((_workspaceSlug, _projectId, { onStatus } = {}) => {
+      onStatus?.('live');
+      return vi.fn();
+    });
+    h.issueCodeSitePermit.mockResolvedValue({
+      permit: { id: 'permit-2', status: 'issued' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.reviewCodeSiteDocument.mockResolvedValue({
+      document: { id: 'doc-1', status: 'approved' },
+      review: { id: 'doc-review-1', decision: 'approved' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.proposeCodeSiteRouteRevision.mockResolvedValue({
+      routeRevision: { id: 'route-rev-3', status: 'proposed' },
+      event: { eventType: 'route_deviation' },
+    });
+    h.reviewCodeSiteRouteRevision.mockResolvedValue({
+      routeRevision: { id: 'route-rev-1', status: 'approved' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.applyCodeSiteRouteRevision.mockResolvedValue({
+      routeRevision: { id: 'route-rev-2', status: 'applied' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.resumeCodeSiteMayday.mockResolvedValue({
+      incident: { id: 'incident-mayday-1', status: 'resumed' },
+      event: { eventType: 'mayday_resumed' },
+    });
     h.replayCodeSiteQuarantine.mockResolvedValue({
       ok: true,
       mode: 'replay',
@@ -792,6 +891,99 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('projects/proj-1/control-state.json');
     expect(container.textContent).toContain('towerState');
     expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-metric-permits"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-responsive-proof-target"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-radar-sweep"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-tower-feed"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('EventSource live');
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
+    expect(container.querySelector('[data-testid="codesite-route-revision-row"]').textContent).toContain('api/checkout/v2/**');
+    expect(container.querySelector('[data-testid="codesite-mayday-banner"]').textContent).toContain('1 open');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('mayday');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('inspection-mayday-1');
+    expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
+      'acme',
+      'proj-1',
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        onStatus: expect.any(Function),
+      }),
+    );
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-issue-permit-button"]')
+        .closest('form')
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(h.issueCodeSitePermit).toHaveBeenCalledWith('acme', 'proj-1', expect.objectContaining({
+      permitType: 'restricted_route',
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      allowedPaths: ['api/checkout/**'],
+      route: ['api/checkout/**'],
+      scope: { allowedPaths: ['api/checkout/**'], route: ['api/checkout/**'] },
+      evidenceRefs: ['codesite:ui:permit:proj-1'],
+    }));
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-document-approve-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.reviewCodeSiteDocument).toHaveBeenCalledWith('acme', 'doc-1', expect.objectContaining({
+      decision: 'approved',
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+      evidenceRefs: ['codesite:ui:document-review:doc-1'],
+    }));
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-route-propose-button"]')
+        .closest('form')
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(h.proposeCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'plan-1', expect.objectContaining({
+      proposedRoute: ['api/checkout/**'],
+      reason: 'operator_reroute',
+      affectedLeases: ['lease-1'],
+      evidenceRefs: ['codesite:ui:route-revision:proj-1'],
+    }));
+
+    const routeRows = [...container.querySelectorAll('[data-testid="codesite-route-revision-row"]')];
+    const proposedRouteRow = routeRows.find((row) => row.textContent.includes('api/checkout/v2/**'));
+    const approvedRouteRow = routeRows.find((row) => row.textContent.includes('api/payments/**'));
+    await act(async () => {
+      proposedRouteRow.querySelector('[data-testid="codesite-route-review-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.reviewCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-1', expect.objectContaining({
+      decision: 'approved',
+      evidenceRefs: ['codesite:ui:route-review:route-rev-1'],
+    }));
+
+    await act(async () => {
+      approvedRouteRow.querySelector('[data-testid="codesite-route-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.applyCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-2', expect.objectContaining({
+      appliedBy: 'codesite_governance_console',
+      evidenceRefs: ['codesite:ui:route-apply:route-rev-2'],
+    }));
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-resume-mayday-submit"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.resumeCodeSiteMayday).toHaveBeenCalledWith('acme', 'incident-mayday-1', expect.objectContaining({
+      approved: true,
+      humanApproval: true,
+      inspectionRunIds: ['inspection-mayday-1'],
+      replayRefs: ['sha256:mayday-replay'],
+      evidenceRefs: ['codesite:ui:mayday-resume:incident-mayday-1'],
+    }));
 
     h.fetchCodeSiteLineProvenance.mockResolvedValueOnce([{
       ...radarState().project.lineProvenance[0],

@@ -149,9 +149,127 @@ export async function fetchCodeSiteMetrics(workspaceSlug, projectId) {
   return body.metrics || null;
 }
 
+export function subscribeCodeSiteProjectEvents(workspaceSlug, projectId, { onEvent, onStatus } = {}) {
+  if (!workspaceSlug || !projectId || typeof window === 'undefined' || typeof window.EventSource !== 'function') {
+    onStatus?.('unavailable');
+    return () => {};
+  }
+
+  const source = new window.EventSource(`${projectBase(workspaceSlug, projectId)}/events/stream`);
+  const eventTypes = [
+    'tower_instruction',
+    'holding_pattern',
+    'ground_stop',
+    'mayday',
+    'mayday_resumed',
+    'near_miss',
+    'clearance_requested',
+    'clearance_issued',
+    'transponder_update',
+    'snapshot_taken',
+    'read_observed',
+    'write_attempted',
+    'write_allowed',
+    'write_denied',
+    'write_quarantined',
+    'quarantine_reviewed',
+    'quarantine_replayed',
+    'quarantine_applied',
+    'transaction_opened',
+    'transaction_validated',
+    'transaction_committed',
+    'transaction_aborted',
+    'policy_delta_proposed',
+    'policy_delta_promoted',
+    'policy_delta_rejected',
+    'rfi',
+    'change_order',
+    'route_deviation',
+    'landing_requested',
+    'inspection_result',
+    'radar_result',
+    'shadow_run',
+    'arbiter_verdict',
+    'black_box_closed',
+    'incident_reported',
+    'codesite_stream_error',
+  ];
+
+  const handleEvent = (event) => {
+    try {
+      onEvent?.(JSON.parse(event.data));
+    } catch (_) {
+      onEvent?.({ eventType: event.type, details: { raw: event.data } });
+    }
+  };
+
+  source.onopen = () => onStatus?.('live');
+  source.onerror = () => onStatus?.('reconnecting');
+  source.onmessage = handleEvent;
+  for (const eventType of eventTypes) {
+    source.addEventListener(eventType, handleEvent);
+  }
+
+  return () => {
+    for (const eventType of eventTypes) {
+      source.removeEventListener(eventType, handleEvent);
+    }
+    source.onmessage = null;
+    source.close();
+  };
+}
+
 export async function fetchCodeSiteArtifactPreview(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return null;
   return request(`${projectBase(workspaceSlug, projectId)}/artifacts/preview?include=content`);
+}
+
+export async function issueCodeSitePermit(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/permits`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reviewCodeSiteDocument(workspaceSlug, documentId, payload = {}) {
+  if (!workspaceSlug || !documentId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/documents/${encodeURIComponent(documentId)}/reviews`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function proposeCodeSiteRouteRevision(workspaceSlug, executionPlanId, payload = {}) {
+  if (!workspaceSlug || !executionPlanId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/execution-plans/${encodeURIComponent(executionPlanId)}/route-revisions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reviewCodeSiteRouteRevision(workspaceSlug, routeRevisionId, payload = {}) {
+  if (!workspaceSlug || !routeRevisionId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/route-revisions/${encodeURIComponent(routeRevisionId)}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function applyCodeSiteRouteRevision(workspaceSlug, routeRevisionId, payload = {}) {
+  if (!workspaceSlug || !routeRevisionId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/route-revisions/${encodeURIComponent(routeRevisionId)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resumeCodeSiteMayday(workspaceSlug, incidentId, payload = {}) {
+  if (!workspaceSlug || !incidentId) return null;
+  return request(`${codeSiteBase(workspaceSlug)}/incidents/${encodeURIComponent(incidentId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function fetchCodeSiteQuarantines(workspaceSlug, filters = {}) {
