@@ -12267,7 +12267,17 @@ function deriveCpuGpuFirewallEvidence({
 }
 
 async function compileViaMcp(args, timeoutMs, phaseName) {
+  writeEmergencyPhaseCheckpoint({
+    phaseName,
+    stage: 'before-mcp-attach',
+    reason: 'before_generic_mcp_attachment_for_compile_phase',
+  });
   const state = await ensureMcpAttached();
+  writeEmergencyPhaseCheckpoint({
+    phaseName,
+    stage: 'before-synthi-compile',
+    reason: 'before_generic_synthi_compile_call',
+  });
   const identityMonitor = await beginPhaseRuntimeIdentityMonitor(phaseName);
   const start = Date.now();
   let compile;
@@ -12304,6 +12314,11 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   }
   const waitStart = Date.now();
   const compileSummaryForScheduling = compileResponseBridgeSummary(compile);
+  writeEmergencyPhaseCheckpoint({
+    phaseName,
+    stage: 'before-synthi-wait-hmr',
+    reason: 'before_generic_synthi_wait_hmr_proof_finalization',
+  });
   const proofScheduling = recordRealRocmProofScheduling(realRocmProofSchedulingFacet({
     phaseName,
     requestedTimeoutMs: timeoutMs,
@@ -12746,6 +12761,11 @@ async function captureScreenshot(label, { required = CFG.expectScreenshot, wait 
   const attempts = Math.max(1, CFG.screenshotAttempts);
   let lastRow = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    writeEmergencyPhaseCheckpoint({
+      phaseName: label,
+      stage: `before-screenshot-attempt-${attempt}`,
+      reason: 'before_generic_synthi_screenshot_visual_capture',
+    });
     const screenshotArgs = mcpScreenshotArgsForFrameGate(wait, {
       freshnessMaxMs: CFG.screenshotFreshnessMaxMs,
       frameGateTimeoutMs: CFG.frameGateTimeoutMs,
@@ -26943,6 +26963,19 @@ function installTerminationCheckpointHandlers() {
       }
     });
   }
+}
+
+function writeEmergencyPhaseCheckpoint({
+  phaseName,
+  stage,
+  reason,
+} = {}) {
+  const phase = cleanIdentifier(phaseName ?? 'phase');
+  const checkpointStage = cleanIdentifier(stage ?? 'checkpoint');
+  return writeEmergencyRetainedCheckpointSync({
+    label: `${checkpointStage}-${phase}`.slice(0, 160),
+    reason: reason ?? `before_generic_${checkpointStage}`,
+  });
 }
 
 async function writeResults({ checkpointLabel = 'final' } = {}) {
