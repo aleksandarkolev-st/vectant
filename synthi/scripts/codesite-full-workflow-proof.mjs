@@ -1276,7 +1276,7 @@ function codexAgentOutputSchema() {
         minItems: 1,
         items: {
           type: 'object',
-          additionalProperties: true,
+          additionalProperties: false,
           required: ['kind', 'action'],
           properties: {
             kind: { type: 'string' },
