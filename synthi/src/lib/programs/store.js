@@ -242,6 +242,23 @@ export async function getMarketplaceProgramByPackageId(packageId) {
   return prisma.marketplaceProgram.findUnique({ where: { packageId } });
 }
 
+/**
+ * Record a payment webhook event exactly once (idempotency via the unique
+ * eventId). Returns true if newly recorded, false if this event was already
+ * processed (a Stripe retry / replay).
+ */
+export async function recordWebhookEventOnce({ eventId, type, reference, payloadJson }) {
+  try {
+    await prisma.paymentWebhookEvent.create({
+      data: { eventId, type, reference: reference || '', payloadJson: payloadJson || '' },
+    });
+    return true;
+  } catch (err) {
+    if (err?.code === 'P2002') return false; // duplicate eventId
+    throw err;
+  }
+}
+
 /** Resolve a published program + version + parsed manifest config (or null). */
 export async function getPublishedProgramVersion(packageId, version) {
   const program = await prisma.marketplaceProgram.findUnique({ where: { packageId } });
