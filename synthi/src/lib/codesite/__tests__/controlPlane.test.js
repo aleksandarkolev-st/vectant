@@ -2594,6 +2594,45 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.decision.reasonCodes).toContain('serializable_validation_passed');
   });
 
+  it('accepts persisted governance permits as durable governance radar evidence', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      mutationLease: {
+        ...transactionFixture().mutationLease,
+        leaseJson: JSON.stringify({
+          allowedPaths: ['synthi/prisma/**'],
+          blockedPaths: [],
+          allowedTools: ['file_write'],
+          requiredRadar: ['governance'],
+        }),
+      },
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-governance',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'SCHEMA-01',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([{
+        key: 'governance',
+        status: 'passed',
+        evidenceRefs: ['codesite:permit:permit-approved'],
+      }]),
+      evidenceRefsJson: JSON.stringify(['codesite:permit:permit-approved']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(true);
+    expect(result.decision.reasonCodes).toContain('serializable_validation_passed');
+  });
+
   it('returns source-state since a transaction without mutating validation state', async () => {
     prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
       ...transactionFixture(),

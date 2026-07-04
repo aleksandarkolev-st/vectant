@@ -2401,6 +2401,7 @@ function proofHtml(proof) {
     ['Workspace', proof.slug],
     ['Project', proof.project.title],
     ['Schema clearance', `${proof.clearance.callsign} ${proof.clearance.status}`],
+    ['Governance permit', `${proof.clearance.governancePermit?.id || 'missing'} ${proof.clearance.governancePolicy?.verified ? 'verified' : 'unverified'}`],
     ['Transaction', `${proof.transaction.id} ${proof.transaction.status}`],
     ['Auth actors', `${proof.auth.mode}: schema=${proof.auth.actors?.schema?.userId || 'missing'}, api=${proof.auth.actors?.api?.userId || 'missing'}`],
     ['Git commit', `${proof.git?.proofBundleCommitSha || 'missing'} trailers=${proof.git?.trailersPresent ? 'verified' : 'missing'}`],
@@ -2916,6 +2917,24 @@ async function main() {
   const apiPlan = requireValue(agentRegistrations.find((entry) => entry.spec.callsign === 'API-02')?.executionPlan, 'api execution plan missing');
   const testPlan = requireValue(agentRegistrations.find((entry) => entry.spec.callsign === 'TEST-03')?.executionPlan, 'test execution plan missing');
 
+  const schemaGovernancePermitResponse = await ownerApi(`/projects/${encodeURIComponent(createdProject.id)}/permits`, {
+    method: 'POST',
+    body: JSON.stringify({
+      permitType: 'schema_work_permit',
+      status: 'issued',
+      title: 'Schema runway work permit for full workflow proof',
+      executionPlanId: schemaPlan.id,
+      displayCallsign: 'SCHEMA-01',
+      allowedPaths: ['synthi/prisma/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.schema.v1'],
+      rationale: 'Permit the schema-first leader to enter restricted schema airspace after tower membership and execution-plan registration.',
+      evidenceRefs: ['codesite:governance:full-workflow-schema-permit'],
+    }),
+  });
+  const schemaGovernancePermit = schemaGovernancePermitResponse.permit;
+  assertProof(schemaGovernancePermit?.id, 'schema governance permit was not issued before restricted-airspace clearance');
+
   const leaseResponse = await api(`/execution-plans/${encodeURIComponent(schemaPlan.id)}/mutation-leases`, {
     method: 'POST',
     body: JSON.stringify({
@@ -2923,6 +2942,7 @@ async function main() {
       blockedPaths: ['secrets/**'],
       allowedTools: ['file_write'],
       requiredRadar: ['typecheck', 'tests'],
+      permitId: schemaGovernancePermit.id,
       ...dojoProof,
     }),
   });
@@ -3334,7 +3354,19 @@ async function main() {
         { key: 'typecheck', command: 'npm', args: ['run', 'typecheck'], timeoutMs: 60000 },
         { key: 'tests', command: 'npm', args: ['test'], timeoutMs: 60000 },
       ],
-      evidenceRefs: ['runtime:event:inspection-full-workflow'],
+      inspectionSignals: [{
+        key: 'governance',
+        status: 'passed',
+        evidenceRefs: [
+          `codesite:permit:${schemaGovernancePermit.id}`,
+          'codesite:governance:full-workflow-schema-permit',
+        ],
+        reasonCodes: ['governance_clearance_evidence_verified'],
+      }],
+      evidenceRefs: [
+        'runtime:event:inspection-full-workflow',
+        `codesite:permit:${schemaGovernancePermit.id}`,
+      ],
     }),
   });
   const schemaLandingHealthResponse = await testApi(`/projects/${encodeURIComponent(project.id)}/inspection-runs`, {
@@ -3787,6 +3819,8 @@ async function main() {
       status: lease.status,
       reasonCodes: lease.policyDecision?.reasonCodes || [],
       towerInstruction: lease.lease?.towerInstruction,
+      governancePermit: schemaGovernancePermit,
+      governancePolicy: lease.lease?.governancePolicy || null,
       dojoProofRef: lease.dojoProofRef,
       dojoDecisionDigest: lease.dojoDecisionDigest,
       dojoImplementationStatus: dojoProof.implementationStatus,
@@ -4045,6 +4079,12 @@ async function main() {
         ))
       )),
       schemaClearanceActive: lease.status === 'active',
+      restrictedAirspaceGovernanceVerified: schemaGovernancePermit.status === 'issued'
+        && schemaGovernancePermit.executionPlanId === schemaPlan.id
+        && schemaGovernancePermit.scope?.allowedPaths?.includes('synthi/prisma/**')
+        && lease.lease?.governancePolicy?.verified === true
+        && lease.lease?.governancePolicy?.evidence?.permits?.some((permit) => permit.id === schemaGovernancePermit.id)
+        && lease.policyDecision?.reasonCodes?.includes('governance_clearance_evidence_verified'),
       dojoPilotLicenseRuntimeVerified: dojoProof.implementationStatus?.executable === true
         && dojoProof.implementationStatus?.productionRuntime === true
         && lease.policyDecision?.reasonCodes?.includes('dojo_clearance_proof_verified')
@@ -4174,6 +4214,11 @@ async function main() {
         && testsInspectionExecuted
         && inspectionSignals.some((signal) => inspectionSignalRanNpmScript(signal, 'typecheck', 'typecheck:run:'))
         && inspectionSignals.some((signal) => inspectionSignalRanNpmScript(signal, 'test', 'test:run:')),
+      governanceInspectionSignalRecorded: inspectionSignals.some((signal) => (
+        String(signal.key || '').trim().toLowerCase().replace(/[-\s]+/g, '_') === 'governance'
+        && signal.status === 'passed'
+        && asArray(signal.evidenceRefs).includes(`codesite:permit:${schemaGovernancePermit.id}`)
+      )),
       lineProvenanceSeeded: lineRows.some((row) => row.filePath === changedPath && lineProvenance.some((line) => line.lineAnchor === row.lineAnchor)),
       lineInspectorCausalContext: lineInspectorRows.some((row) => (
         row.filePath === changedPath

@@ -3591,6 +3591,10 @@ function normalizeInspectionSignalPayload(signal) {
 function inspectionSignalHasDurableEvidence(run, signal) {
   const signalRefs = signalEvidenceRefs(signal);
   const refs = signalRefs.length ? signalRefs : inspectionEvidenceRefs(run);
+  if (canonicalInspectionSignal(signalKey(signal)) === 'governance'
+    && refs.some(isDurableGovernanceInspectionEvidenceRef)) {
+    return true;
+  }
   return refs.some(isDurableInspectionEvidenceRef);
 }
 
@@ -3601,6 +3605,10 @@ function signalEvidenceRefs(signal) {
 
 function isDurableInspectionEvidenceRef(ref) {
   return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|api-contract:run|security:scan|migration:plan|ui:screenshot|accessibility:audit|performance:budget|handover:packet|clearance:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
+}
+
+function isDurableGovernanceInspectionEvidenceRef(ref) {
+  return /^codesite:(permit|route-revision|document):/i.test(String(ref || ''));
 }
 
 async function seedLineProvenance(transaction, bundle, db = prisma) {
