@@ -1,27 +1,84 @@
 import { NextResponse } from 'next/server';
 import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
+import { requireWorkspaceAccess } from '@/lib/workspaceAccess';
 
 const storage = createGcsStorage();
 
 const BUCKET_NAME = getGcsBucketName('my-workspace-content-bucket');
 
+function badRequest(message) {
+    const error = new Error(message);
+    error.status = 400;
+    return error;
+}
+
+function normalizeWorkspaceItemPath(value, { allowFolder = true, requireFile = false } = {}) {
+    if (typeof value !== 'string') {
+        throw badRequest('Workspace item path is required.');
+    }
+
+    const raw = value.trim();
+    if (!raw) {
+        throw badRequest('Workspace item path is required.');
+    }
+    if (/[\0-\x1f\x7f]/.test(raw)) {
+        throw badRequest('Workspace item path contains control characters.');
+    }
+    if (raw.includes('\\')) {
+        throw badRequest('Workspace item path must use forward slashes.');
+    }
+    if (raw.startsWith('/') || /^[A-Za-z]:/.test(raw)) {
+        throw badRequest('Workspace item path must be relative.');
+    }
+
+    const isFolder = raw.endsWith('/');
+    if (isFolder && (!allowFolder || requireFile)) {
+        throw badRequest('Workspace item path must refer to a file.');
+    }
+
+    const segments = raw.split('/').filter((segment) => segment.length > 0);
+    if (segments.length === 0) {
+        throw badRequest('Workspace item path is required.');
+    }
+    for (const segment of segments) {
+        if (segment === '.' || segment === '..') {
+            throw badRequest('Workspace item path cannot contain traversal segments.');
+        }
+    }
+
+    return `${segments.join('/')}${isFolder ? '/' : ''}`;
+}
+
+async function requireAuthorizedWorkspace(workspaceId) {
+    if (!workspaceId) {
+        return { ok: false, response: NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 }) };
+    }
+
+    const access = await requireWorkspaceAccess(workspaceId);
+    if (!access.ok) {
+        return { ok: false, response: NextResponse.json({ error: access.error }, { status: access.status }) };
+    }
+
+    return {
+        ok: true,
+        workspaceSlug: access.workspace?.slug || workspaceId,
+    };
+}
 
 export async function GET(request, { params }) {
     const data = await params;
     const workspaceId = data.slug;
     const searchParams = request.nextUrl.searchParams;
-    const filePath = searchParams.get('filePath');
+    let filePath;
 
     try {
-        if (!filePath) {
-            return NextResponse.json({ error: 'filePath query parameter is required.' }, { status: 400 });
-        }
-        
-        if (filePath.endsWith('/')) {
-             return NextResponse.json({ error: 'Cannot GET folder content. Use the listing endpoint for directory contents.' }, { status: 400 });
+        const workspace = await requireAuthorizedWorkspace(workspaceId);
+        if (!workspace.ok) {
+            return workspace.response;
         }
 
-        const gcsFilePath = `workspaces/${workspaceId}/${filePath}`;
+        filePath = normalizeWorkspaceItemPath(searchParams.get('filePath'), { requireFile: true });
+        const gcsFilePath = `workspaces/${workspace.workspaceSlug}/${filePath}`;
 
         const file = storage.bucket(BUCKET_NAME).file(gcsFilePath);
         const [exists] = await file.exists();
@@ -61,7 +118,7 @@ export async function GET(request, { params }) {
         });
 
     } catch (error) {
-        const status = error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500);
+        const status = error.status || (error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500));
         console.error('API Error:', error);
         return NextResponse.json({ error: error.message || 'Internal server error during file retrieval.' }, { status });
     }
@@ -72,15 +129,16 @@ export async function POST(request, { params }) {
     const workspaceId = data.slug;
 
     try {
-        const formData = await request.formData();
-        const filePath = formData.get('filePath');
-        const fileContent = formData.get('file'); 
-
-        if (!filePath) {
-            return NextResponse.json({ error: 'filePath query parameter is required for POST.' }, { status: 400 });
+        const workspace = await requireAuthorizedWorkspace(workspaceId);
+        if (!workspace.ok) {
+            return workspace.response;
         }
 
-        const gcsFilePath = `workspaces/${workspaceId}/${filePath}`;
+        const formData = await request.formData();
+        const filePath = normalizeWorkspaceItemPath(formData.get('filePath'));
+        const fileContent = formData.get('file'); 
+
+        const gcsFilePath = `workspaces/${workspace.workspaceSlug}/${filePath}`;
         const file = storage.bucket(BUCKET_NAME).file(gcsFilePath);
 
         if (filePath.endsWith('/')) {
@@ -110,6 +168,9 @@ export async function POST(request, { params }) {
             }, { status: 201 });
 
         } else {
+            if (!fileContent || typeof fileContent.stream !== 'function') {
+                return NextResponse.json({ error: 'file field is required for file uploads.' }, { status: 400 });
+            }
             const contentType = request.headers.get('content-type') || 'application/octet-stream';
             
             const writeStream = file.createWriteStream({
@@ -149,7 +210,7 @@ export async function POST(request, { params }) {
         }
 
     } catch (error) {
-        const status = error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500);
+        const status = error.status || (error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500));
         console.error('GCS POST Error:', error);
         return NextResponse.json({ error: error.message || 'Internal server error during file creation.' }, { status });
     }
@@ -159,15 +220,15 @@ export async function PUT(request, { params }) {
     const data = await params;
     const workspaceId = data.slug;
 
-    const body = await request.json();
-    const itemPath = body.itemPath;
-    const newPath = body.newPath;
-
     try {
-
-        if (!itemPath) {
-            return NextResponse.json({ error: 'filePath query parameter is required for PUT.' }, { status: 400 });
+        const workspace = await requireAuthorizedWorkspace(workspaceId);
+        if (!workspace.ok) {
+            return workspace.response;
         }
+
+        const body = await request.json();
+        const itemPath = normalizeWorkspaceItemPath(body.itemPath);
+        const newPath = body.newPath ? normalizeWorkspaceItemPath(body.newPath) : '';
         
         if (newPath) {
             
@@ -176,8 +237,8 @@ export async function PUT(request, { params }) {
             }
 
             const isFolder = itemPath.endsWith('/');
-            const oldGcsPath = `workspaces/${workspaceId}/${itemPath}`;
-            const newGcsPath = `workspaces/${workspaceId}/${newPath}`;
+            const oldGcsPath = `workspaces/${workspace.workspaceSlug}/${itemPath}`;
+            const newGcsPath = `workspaces/${workspace.workspaceSlug}/${newPath}`;
 
             if (isFolder) {
                 
@@ -228,7 +289,7 @@ export async function PUT(request, { params }) {
                  return NextResponse.json({ error: 'Cannot PUT folder content. PUT is only for file content updates.' }, { status: 400 });
             }
 
-            const gcsFilePath = `workspaces/${workspaceId}/${itemPath}`;
+            const gcsFilePath = `workspaces/${workspace.workspaceSlug}/${itemPath}`;
             const file = storage.bucket(BUCKET_NAME).file(gcsFilePath);
             
             const contentType = request.headers.get('content-type') || 'application/octet-stream';
@@ -265,7 +326,7 @@ export async function PUT(request, { params }) {
         }
 
     } catch (error) {
-        const status = error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500);
+        const status = error.status || (error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500));
         console.error('GCS PUT Error:', error);
         return NextResponse.json({ error: error.message || 'Internal server error during update or rename.' }, { status });
     }
@@ -275,33 +336,27 @@ export async function PUT(request, { params }) {
 export async function DELETE(request, { params }) {
     const data = await params;
     const workspaceId = data.slug;
-    
-    const body = await request.json(); 
-    const itemPath = body.itemPath;
-
-    console.log('[DELETE] workspaceId:', workspaceId, 'itemPath:', itemPath, 'isFolder:', itemPath?.endsWith('/'));
 
     try {
-
-        if (!itemPath) {
-            return NextResponse.json({ error: 'filePath query parameter is required for DELETE.' }, { status: 400 });
+        const workspace = await requireAuthorizedWorkspace(workspaceId);
+        if (!workspace.ok) {
+            return workspace.response;
         }
 
-        const gcsFilePath = `workspaces/${workspaceId}/${itemPath}`;
-        console.log('[DELETE] gcsFilePath:', gcsFilePath);
+        const body = await request.json();
+        const itemPath = normalizeWorkspaceItemPath(body.itemPath);
+
+        const gcsFilePath = `workspaces/${workspace.workspaceSlug}/${itemPath}`;
 
         if (itemPath.endsWith('/')) {
             // For folders, we don't check if a folder "object" exists because
             // GCS folders are virtual - they exist only as prefixes of files.
             // Just delete all files with this prefix.
-            const prefix = gcsFilePath.endsWith('/') ? gcsFilePath.substring(0, gcsFilePath.length - 1) : gcsFilePath;
-            console.log('[DELETE] Listing files with prefix:', prefix);
+            const prefix = gcsFilePath;
             
             const [filesToDelete] = await storage.bucket(BUCKET_NAME).getFiles({
                 prefix: prefix,
             });
-            
-            console.log('[DELETE] Found files to delete:', filesToDelete.length, filesToDelete.map(f => f.name));
             
             if (filesToDelete.length === 0) {
                 // No files found with this prefix - folder doesn't exist
@@ -340,7 +395,7 @@ export async function DELETE(request, { params }) {
         }
 
     } catch (error) {
-        const status = error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500);
+        const status = error.status || (error.message.startsWith('Forbidden') ? 403 : (error.message.includes('required') ? 400 : 500));
         console.error('GCS DELETE Error:', error);
         return NextResponse.json({ error: error.message || 'Internal server error during file deletion.' }, { status });
     }
