@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "generatedAt": "2026-07-04T19:32:58.180Z",
+  "proofRoot": "tmp/codesite-dojo-proof/proof-suite-runner-validation",
+  "results": [
+    {
+      "name": "proofCarryingCommit",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/proof-suite-runner-validation/codesite-proof-carrying-commit-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/proof-suite-runner-validation/codesite-proof-carrying-commit-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/proof-suite-runner-validation/codesite-proof-carrying-commit-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofVerifierHelp",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    }
+  ]
+}
