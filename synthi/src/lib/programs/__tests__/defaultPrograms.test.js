@@ -116,8 +116,17 @@ describe('ensureDefaultPrograms', () => {
     const arg = prisma.marketplaceProgram.upsert.mock.calls.find(
       (c) => c[0].where.packageId === '@vectant/nextjs-dev',
     )[0];
-    expect(arg.create).toMatchObject({ packageId: '@vectant/nextjs-dev', publisher: 'vectant', verified: true, latestVersion: '1.0.0' });
-    expect(arg.update).toMatchObject({ verified: true, latestVersion: '1.0.0' });
+    expect(arg.create).toMatchObject({ packageId: '@vectant/nextjs-dev', publisher: 'vectant', verified: true, latestVersion: '1.0.0', publishedVersion: '1.0.0' });
+    expect(arg.update).toMatchObject({ verified: true, latestVersion: '1.0.0', publishedVersion: '1.0.0' });
+  });
+
+  it('marks defaults as live-published so the marketplace lists them (publishedVersion set)', async () => {
+    const prisma = makePrisma();
+    await ensureDefaultPrograms(prisma);
+    for (const call of prisma.marketplaceProgram.upsert.mock.calls) {
+      expect(call[0].create.publishedVersion).toBe('1.0.0');
+      expect(call[0].update.publishedVersion).toBe('1.0.0');
+    }
   });
 
   it('never writes installCount on update (preserves reputation on re-seed)', async () => {
