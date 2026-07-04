@@ -237,6 +237,11 @@ export async function listPublishedPrograms({ q = '', limit = 50 } = {}) {
   return rows.map(toPublicMarketplaceProgram);
 }
 
+/** The marketplace program row by packageId (or null). Used by pricing/checkout. */
+export async function getMarketplaceProgramByPackageId(packageId) {
+  return prisma.marketplaceProgram.findUnique({ where: { packageId } });
+}
+
 /** Resolve a published program + version + parsed manifest config (or null). */
 export async function getPublishedProgramVersion(packageId, version) {
   const program = await prisma.marketplaceProgram.findUnique({ where: { packageId } });
