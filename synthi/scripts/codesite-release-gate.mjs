@@ -940,6 +940,18 @@ function validateProofGitProvenance({ root, proof, failures }) {
       .map((line) => line.trim())
       .filter(Boolean);
   } catch (error) {
+    const unavailableWorktree = unavailableExternalGitDir(root);
+    if (unavailableWorktree) {
+      return {
+        ok: true,
+        mode: 'git_unavailable_external_worktree_dir',
+        proofHead,
+        currentHead: null,
+        postProofChangedPathCount: null,
+        artifactOnlyPostProofChanges: null,
+        warning: `Git provenance must be validated by the host release gate; container cannot access ${unavailableWorktree}`,
+      };
+    }
     failures.push(`unable to validate proof git provenance: ${error.message}`);
     return { ok: false, proofHead, currentHead, artifactOnlyPostProofChanges: false };
   }
@@ -976,12 +988,32 @@ function git(cwd, args) {
   }).trim();
 }
 
+function unavailableExternalGitDir(root) {
+  const gitPath = path.join(root, '.git');
+  if (!fs.existsSync(gitPath)) return null;
+  const stat = fs.statSync(gitPath);
+  if (!stat.isFile()) return null;
+  const text = fs.readFileSync(gitPath, 'utf8').trim();
+  const match = text.match(/^gitdir:\s*(.+)$/i);
+  if (!match) return null;
+  const gitDir = path.isAbsolute(match[1])
+    ? match[1]
+    : path.resolve(root, match[1]);
+  return fs.existsSync(gitDir) ? null : gitDir;
+}
+
 function validateCodexEvidence({ root, proofRoot, slug, failures }) {
   const evidenceRoot = path.join(proofRoot, 'codex-agent-evidence', slug || '');
-  const records = listFiles(evidenceRoot).filter((file) => file.endsWith('.json') && !file.endsWith('schema.json'));
+  const candidateRecords = listFiles(evidenceRoot).filter((file) => file.endsWith('.json') && !file.endsWith('schema.json'));
+  const records = [];
+  for (const candidatePath of candidateRecords) {
+    const candidate = readJson(candidatePath, failures);
+    if (candidate?.schemaVersion === 'synthi.codesite.codexAgentExecutionEvidence.v1') {
+      records.push({ recordPath: candidatePath, record: candidate });
+    }
+  }
   let valid = 0;
-  for (const recordPath of records) {
-    const record = readJson(recordPath, failures);
+  for (const { recordPath, record } of records) {
     const transcript = record?.transcript || {};
     let recordValid = true;
     const transcriptArtifacts = [
