@@ -15,6 +15,7 @@ const { prisma } = vi.hoisted(() => ({
       findFirst: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     codeSiteProject: {
       create: vi.fn(),
@@ -426,6 +427,7 @@ describe('CodeSite control plane transaction validation', () => {
       ...transaction,
       ...data,
     }));
+    prisma.codeSiteMutationTransaction.updateMany.mockResolvedValue({ count: 1 });
     prisma.codeSiteProject.findUnique.mockResolvedValue({
       id: 'project-1',
       zonePolicyJson: JSON.stringify({
@@ -3760,6 +3762,189 @@ describe('CodeSite control plane transaction validation', () => {
         promptSummary: 'Add auth schema field',
       }),
     }));
+  });
+
+  it('serializes overlapping proof-carrying commit races and blocks the stale loser', async () => {
+    const repoRoot = path.basename(process.cwd()) === 'synthi'
+      ? path.dirname(process.cwd())
+      : process.cwd();
+    const snapshot = await buildReadSnapshotEvidence(['synthi/prisma/schema.prisma'], { repoRoot });
+    const openedAt = new Date('2026-06-29T23:00:00.000Z');
+    const transactions = new Map([
+      ['txn-race-a', {
+        ...transactionFixture(),
+        id: 'txn-race-a',
+        readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        baseSnapshot: snapshot.snapshotDigest,
+        baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+        openedAt,
+      }],
+      ['txn-race-b', {
+        ...transactionFixture(),
+        id: 'txn-race-b',
+        readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        baseSnapshot: snapshot.snapshotDigest,
+        baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+        openedAt,
+      }],
+    ]);
+    const events = [
+      {
+        id: 'event-write-a',
+        projectId: 'project-1',
+        eventType: 'write_allowed',
+        actorId: 'txn-race-a',
+        displayCallsign: 'ATLAS-1',
+        createdAt: openedAt,
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-race-a',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L1-L2',
+            startLine: 1,
+            endLine: 2,
+            evidenceRefs: ['hunk:evidence:a'],
+          }],
+          evidenceRefs: ['write:evidence:a'],
+        }),
+      },
+      {
+        id: 'event-write-b',
+        projectId: 'project-1',
+        eventType: 'write_allowed',
+        actorId: 'txn-race-b',
+        displayCallsign: 'ATLAS-1',
+        createdAt: openedAt,
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-race-b',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L3-L4',
+            startLine: 3,
+            endLine: 4,
+            evidenceRefs: ['hunk:evidence:b'],
+          }],
+          evidenceRefs: ['write:evidence:b'],
+        }),
+      },
+    ];
+    const proofBundles = new Map();
+    let eventSeq = 0;
+    let proofSeq = 0;
+
+    prisma.codeSiteMutationTransaction.findFirst.mockImplementation(async ({ where } = {}) => {
+      const transaction = transactions.get(where?.id);
+      return transaction ? { ...transaction } : null;
+    });
+    prisma.codeSiteMutationTransaction.update.mockImplementation(async ({ where, data }) => {
+      const current = transactions.get(where.id);
+      const next = { ...current, ...data };
+      transactions.set(where.id, next);
+      return { ...next };
+    });
+    prisma.codeSiteMutationTransaction.updateMany.mockImplementation(async ({ where, data }) => {
+      const current = transactions.get(where.id);
+      const allowedStatuses = where.status?.in || [];
+      if (!current || !allowedStatuses.includes(current.status) || current.proofBundleDigest !== where.proofBundleDigest) {
+        return { count: 0 };
+      }
+      transactions.set(where.id, { ...current, ...data });
+      return { count: 1 };
+    });
+    prisma.codeSiteEvent.count.mockImplementation(async ({ where } = {}) => (
+      events.filter((event) => !where?.projectId || event.projectId === where.projectId).length
+    ));
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => {
+      const event = {
+        id: `event-${data.eventType}-${eventSeq += 1}`,
+        createdAt: new Date(`2026-06-29T23:04:${String(eventSeq).padStart(2, '0')}.000Z`),
+        ...data,
+      };
+      events.push(event);
+      return event;
+    });
+    prisma.codeSiteEvent.findMany.mockImplementation(async (query = {}) => {
+      const eventType = query.where?.eventType;
+      const createdAfter = query.where?.createdAt?.gt;
+      return events.filter((event) => {
+        if (query.where?.projectId && event.projectId !== query.where.projectId) return false;
+        if (typeof eventType === 'string' && event.eventType !== eventType) return false;
+        if (Array.isArray(eventType?.in) && !eventType.in.includes(event.eventType)) return false;
+        if (createdAfter && !(event.createdAt > createdAfter)) return false;
+        return true;
+      });
+    });
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-race',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-race'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-race'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-race']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+    prisma.codeSiteProofBundle.create.mockImplementation(async ({ data }) => {
+      const bundle = {
+        id: `proof-race-${proofSeq += 1}`,
+        createdAt: new Date(`2026-06-29T23:05:0${proofSeq}.000Z`),
+        ...data,
+      };
+      proofBundles.set(bundle.id, bundle);
+      return bundle;
+    });
+    prisma.codeSiteProofBundle.update.mockImplementation(async ({ where, data }) => {
+      const current = proofBundles.get(where.id);
+      const next = {
+        ...current,
+        ...data,
+        project: { id: 'project-1', workspaceSlug: 'acme', zonePolicyJson: JSON.stringify({ zones: [] }) },
+        transaction: {
+          ...transactions.get(current.transactionId),
+          project: { id: 'project-1', workspaceSlug: 'acme', zonePolicyJson: JSON.stringify({ zones: [] }) },
+          mutationLease: transactionFixture().mutationLease,
+          agentSession: transactionFixture().agentSession,
+        },
+      };
+      proofBundles.set(where.id, next);
+      return next;
+    });
+
+    const [first, second] = await Promise.all([
+      commitTransaction('acme', 'txn-race-a', { commitSha: 'abc123', repoState: repoStateFixture() }),
+      commitTransaction('acme', 'txn-race-b', { commitSha: 'def456', repoState: repoStateFixture() }),
+    ]);
+    const results = [first, second];
+    const committed = results.filter((result) => result.transaction?.status === 'committed');
+    const blocked = results.filter((result) => result.transaction?.status === 'blocked');
+    const commitEvents = events.filter((event) => event.eventType === 'transaction_committed');
+
+    expect(committed).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].decision.reasonCodes).toContain('stale_read_detected');
+    expect(blocked[0].decision.staleReads).toEqual([expect.objectContaining({
+      eventType: 'transaction_committed',
+      path: null,
+    })]);
+    expect(commitEvents).toHaveLength(1);
+    expect(JSON.parse(commitEvents[0].detailsJson)).toMatchObject({
+      writeSet: ['synthi/prisma/schema.prisma'],
+    });
+    expect(prisma.codeSiteProofBundle.create).toHaveBeenCalledTimes(1);
+    expect(prisma.codeSiteMutationTransaction.updateMany).toHaveBeenCalledTimes(1);
+    expect([...transactions.values()].filter((transaction) => transaction.status === 'committed')).toHaveLength(1);
+    expect([...transactions.values()].filter((transaction) => transaction.status === 'blocked')).toHaveLength(1);
   });
 
   it('scores aborted transaction black boxes against the aborted lifecycle', async () => {

@@ -76,6 +76,7 @@ const REQUIRED_MATURE_PROOFS = [
   { name: 'schemaFirstClearance', plan: '9, 17, 25.4', file: 'codesite-schema-first-clearance-proof.json', png: 'codesite-schema-first-clearance-proof.png' },
   { name: 'metrics', plan: '27', file: 'codesite-metrics-proof.json', png: 'codesite-metrics-proof.png' },
   { name: 'isolationContract', plan: '2A.1, 26.7', file: 'codesite-isolation-contract-proof.json', png: 'codesite-isolation-contract-proof.png' },
+  { name: 'serializableCommitRace', plan: '2A.1, 26.7', file: 'codesite-serializable-commit-race-proof.json', png: 'codesite-serializable-commit-race-proof.png' },
   { name: 'runtimeContext', plan: '20, 25.2C', file: 'codesite-runtime-context-proof.json', png: 'codesite-runtime-context-proof.png' },
   { name: 'contextAlias', plan: '20, 25.2C', file: 'codesite-context-alias-proof.json', png: 'codesite-context-alias-proof.png' },
   { name: 'monitorDowngrade', plan: '2A.3, 28', file: 'codesite-monitor-downgrade-proof.json', png: 'codesite-monitor-downgrade-proof.png' },

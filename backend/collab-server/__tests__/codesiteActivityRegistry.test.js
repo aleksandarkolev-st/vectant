@@ -459,3 +459,27 @@ test('blocked landing attempts remain active until an explicit close event', () 
     activityRegistry.resetRegistry();
   }
 });
+
+test('committing landing attempts remain active until the commit closes them', () => {
+  activityRegistry.resetRegistry();
+  try {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: 'registry-committing-proof',
+      transactionId: 'txn-committing',
+      status: 'committing',
+    }, { now: 10_000, ttlMs: 60_000 });
+
+    assert.equal(activityRegistry.isWorkspaceActive('registry-committing-proof', { now: 11_000 }), true);
+    assert.equal(activityRegistry.activeTransactionsForWorkspace('registry-committing-proof', { now: 11_000 })[0].status, 'committing');
+
+    activityRegistry.markTransactionClosed({
+      workspaceSlug: 'registry-committing-proof',
+      transactionId: 'txn-committing',
+      status: 'committed',
+    }, { now: 12_000 });
+
+    assert.equal(activityRegistry.isWorkspaceActive('registry-committing-proof', { now: 13_000 }), false);
+  } finally {
+    activityRegistry.resetRegistry();
+  }
+});

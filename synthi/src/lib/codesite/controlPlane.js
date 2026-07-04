@@ -70,6 +70,8 @@ const GOVERNANCE_APPROVED_PERMIT_STATUSES = new Set(['issued', 'active', 'approv
 const GOVERNANCE_APPROVED_DOCUMENT_STATUSES = new Set(['approved', 'resolved', 'closed', 'accepted', 'answered']);
 const GOVERNANCE_APPROVED_ROUTE_REVISION_STATUSES = new Set(['approved', 'applied']);
 const GOVERNANCE_DOCUMENT_KINDS = new Set(['change_order', 'rfi', 'submittal', 'permit']);
+const COMMITTABLE_TRANSACTION_STATUSES = new Set(['open', 'validated']);
+const projectCommitLandingLocks = new Map();
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
@@ -1771,7 +1773,7 @@ export async function getTransaction(workspaceSlug, transactionId, actor = null)
   return transactionProjection(transaction);
 }
 
-const WORKSPACE_ACTIVE_TRANSACTION_STATUSES = ['open', 'validated', 'blocked'];
+const WORKSPACE_ACTIVE_TRANSACTION_STATUSES = ['open', 'validated', 'committing', 'blocked'];
 
 export async function listActiveTransactions(workspaceSlug, actor = null) {
   const transactions = await prisma.codeSiteMutationTransaction.findMany({
@@ -2594,8 +2596,12 @@ export async function recordAssumption(workspaceSlug, transactionId, body = {}, 
 }
 
 export async function validateTransaction(workspaceSlug, transactionId, actor = null) {
-  const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
-  const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
+  return validateTransactionWithClient(prisma, workspaceSlug, transactionId, actor);
+}
+
+async function validateTransactionWithClient(db, workspaceSlug, transactionId, actor = null, options = {}) {
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor, db);
+  const project = await db.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const writeSet = parseJson(transaction.writeSetJson, []);
   const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
@@ -2607,13 +2613,13 @@ export async function validateTransaction(workspaceSlug, transactionId, actor = 
   const blockedWrites = [...new Set([...writeSet, ...observedWriteSet])]
     .map((path) => ({ path, evaluation: evaluatePathMutation({ lease, path, zonePolicy }) }))
     .filter((entry) => !entry.evaluation.ok);
-  const invalidAssumptions = await prisma.codeSiteAssumptionLease.findMany({
+  const invalidAssumptions = await db.codeSiteAssumptionLease.findMany({
     where: {
       id: { in: parseJson(transaction.assumptionRefsJson, []) },
       status: 'invalidated',
     },
   });
-  const staleReads = await findStaleReadEvents(transaction, unique([...readSet, ...semanticDependencyRefs]));
+  const staleReads = await findStaleReadEvents(transaction, unique([...readSet, ...semanticDependencyRefs]), db);
   const repoSnapshot = await validateTransactionSnapshot(transaction, snapshotReadSet);
   const ok = blockedWrites.length === 0 && invalidAssumptions.length === 0 && staleReads.length === 0 && repoSnapshot.ok;
   const decision = {
@@ -2633,20 +2639,43 @@ export async function validateTransaction(workspaceSlug, transactionId, actor = 
     repoSnapshot,
     validatedAt: new Date().toISOString(),
   };
-  const updated = await prisma.codeSiteMutationTransaction.update({
+  const updated = await db.codeSiteMutationTransaction.update({
     where: { id: transaction.id },
     data: {
       status: ok ? 'validated' : 'blocked',
       commitDecisionJson: stringifyJson(decision),
     },
   });
-  await recordEvent(transaction.projectId, {
+  await recordEventWithClient(db, transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'transaction_validated',
     displayCallsign: lease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
     details: { transactionId: transaction.id, decision },
+  }, { syncArtifacts: options.syncArtifacts });
+  return { decision, transaction: transactionProjection(updated) };
+}
+
+async function blockTransactionWithDecision(db, transaction, decision, towerInstruction = null) {
+  const updated = await db.codeSiteMutationTransaction.update({
+    where: { id: transaction.id },
+    data: {
+      status: 'blocked',
+      commitDecisionJson: stringifyJson(decision),
+    },
+  });
+  await recordEventWithClient(db, transaction.projectId, {
+    mutationLeaseId: transaction.mutationLeaseId,
+    eventType: 'transaction_validated',
+    displayCallsign: transaction.mutationLease.displayCallsign,
+    actorType: 'transaction',
+    actorId: transaction.id,
+    details: {
+      transactionId: transaction.id,
+      decision,
+      ...(towerInstruction ? { towerInstruction } : {}),
+    },
   });
   return { decision, transaction: transactionProjection(updated) };
 }
@@ -2685,8 +2714,8 @@ export async function getSourceStateSince(workspaceSlug, transactionId, actor = 
   };
 }
 
-async function sourceStateEventsSince(transaction) {
-  return prisma.codeSiteEvent.findMany({
+async function sourceStateEventsSince(transaction, db = prisma) {
+  return db.codeSiteEvent.findMany({
     where: {
       projectId: transaction.projectId,
       createdAt: { gt: transaction.openedAt },
@@ -2696,9 +2725,9 @@ async function sourceStateEventsSince(transaction) {
   });
 }
 
-async function findStaleReadEvents(transaction, readSet) {
+async function findStaleReadEvents(transaction, readSet, db = prisma) {
   if (!readSet.length) return [];
-  const events = await sourceStateEventsSince(transaction);
+  const events = await sourceStateEventsSince(transaction, db);
   return staleReadEventsFrom(transaction, readSet, events);
 }
 
@@ -2827,141 +2856,29 @@ function eventBelongsToTransaction(event, details, transaction) {
 }
 
 export async function commitTransaction(workspaceSlug, transactionId, body = {}, actor = null) {
-  const validation = await validateTransaction(workspaceSlug, transactionId, actor);
-  if (!validation.decision.ok) return validation;
   const transaction = await requireTransaction(workspaceSlug, transactionId, actor);
-  const inspectionDecision = await verifyLandingInspections(transaction);
-  if (!inspectionDecision.ok) {
-    const decision = {
-      ok: false,
-      isolation: transaction.isolation,
-      reasonCodes: inspectionDecision.reasonCodes,
-      missingInspectionPaths: inspectionDecision.missingPaths,
-      missingInspectionSignals: inspectionDecision.missingSignals,
-      inspectionRuns: inspectionDecision.inspectionRuns.map(inspectionProjection),
-      validatedAt: new Date().toISOString(),
-    };
-    const updated = await prisma.codeSiteMutationTransaction.update({
-      where: { id: transaction.id },
-      data: {
-        status: 'blocked',
-        commitDecisionJson: stringifyJson(decision),
-      },
-    });
-    await recordEvent(transaction.projectId, {
-      mutationLeaseId: transaction.mutationLeaseId,
-      eventType: 'transaction_validated',
-      displayCallsign: transaction.mutationLease.displayCallsign,
-      actorType: 'transaction',
-      actorId: transaction.id,
-      details: {
-        transactionId: transaction.id,
-        decision,
-        towerInstruction: 'Landing inspection evidence is required before a proof-carrying commit can land.',
-      },
-    });
-    return { decision, transaction: transactionProjection(updated) };
+  const landing = await withSerializableProjectCommitLanding(transaction.projectId, async (db) => (
+    landTransactionWithClient(db, workspaceSlug, transactionId, body, actor)
+  ));
+  if (!landing?.committed) {
+    if (landing?.artifactSync) await syncArtifactsForProject(landing.projectId, landing.artifactSync);
+    return landing;
   }
 
-  const repoStateDecision = verifyRepoStateEvidence(transaction, body);
-  if (!repoStateDecision.ok) {
-    const decision = {
-      ok: false,
-      isolation: transaction.isolation,
-      reasonCodes: repoStateDecision.reasonCodes,
-      missingRepoStatePaths: repoStateDecision.missingPaths,
-      repoState: repoStateDecision.repoState,
-      validatedAt: new Date().toISOString(),
-    };
-    const updated = await prisma.codeSiteMutationTransaction.update({
-      where: { id: transaction.id },
-      data: {
-        status: 'blocked',
-        commitDecisionJson: stringifyJson(decision),
-      },
-    });
-    await recordEvent(transaction.projectId, {
-      mutationLeaseId: transaction.mutationLeaseId,
-      eventType: 'transaction_validated',
-      displayCallsign: transaction.mutationLease.displayCallsign,
-      actorType: 'transaction',
-      actorId: transaction.id,
-      details: {
-        transactionId: transaction.id,
-        decision,
-        towerInstruction: 'Repo-state evidence is required before a proof-carrying commit can land.',
-      },
-    });
-    return { decision, transaction: transactionProjection(updated) };
-  }
-
-  const lineProvenanceDecision = await verifyLineProvenanceEvidence(transaction);
-  if (!lineProvenanceDecision.ok) {
-    const decision = {
-      ok: false,
-      isolation: transaction.isolation,
-      reasonCodes: lineProvenanceDecision.reasonCodes,
-      missingLineProvenancePaths: lineProvenanceDecision.missingPaths,
-      lineProvenance: lineProvenanceDecision,
-      validatedAt: new Date().toISOString(),
-    };
-    const updated = await prisma.codeSiteMutationTransaction.update({
-      where: { id: transaction.id },
-      data: {
-        status: 'blocked',
-        commitDecisionJson: stringifyJson(decision),
-      },
-    });
-    await recordEvent(transaction.projectId, {
-      mutationLeaseId: transaction.mutationLeaseId,
-      eventType: 'transaction_validated',
-      displayCallsign: transaction.mutationLease.displayCallsign,
-      actorType: 'transaction',
-      actorId: transaction.id,
-      details: {
-        transactionId: transaction.id,
-        decision,
-        towerInstruction: 'Line-level causal provenance is required for every changed path before landing.',
-      },
-    });
-    return { decision, transaction: transactionProjection(updated) };
-  }
-
-  const landingStatus = inspectionDecision.inspectionRuns.at(-1)?.status || 'committed';
-  let bundle = await createProofBundleForTransaction(transaction, {
-    ...body,
-    inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
-    inspectionRunRefs: inspectionDecision.inspectionRuns.map((run) => run.id),
-    repoState: repoStateDecision.repoState,
+  const {
+    updated,
+    transaction: landedTransaction,
+    bundle: landedBundle,
+    commitEvent,
+    validation,
+    inspectionDecision,
+    repoStateDecision,
+    lineProvenanceDecision,
     landingStatus,
-  });
-  const updated = await prisma.codeSiteMutationTransaction.update({
-    where: { id: transaction.id },
-    data: {
-      status: 'committed',
-      proofBundleDigest: bundle.bundleDigest,
-      closedAt: new Date(),
-    },
-  });
-  await seedLineProvenance(transaction, bundle);
-  const commitEvent = await recordEvent(transaction.projectId, {
-    mutationLeaseId: transaction.mutationLeaseId,
-    eventType: 'transaction_committed',
-    displayCallsign: transaction.mutationLease.displayCallsign,
-    actorType: 'transaction',
-    actorId: transaction.id,
-    details: {
-      transactionId: transaction.id,
-      proofBundleId: bundle.id,
-      proofBundleDigest: bundle.bundleDigest,
-      writeSet: parseJson(transaction.writeSetJson, []),
-      repoStateDigest: repoStateDecision.repoState?.evidenceDigest || null,
-      inspectionRunIds: inspectionDecision.inspectionRuns.map((run) => run.id),
-      inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
-    },
-  });
+  } = landing;
+  let bundle = landedBundle;
   const closeout = await closeTransactionBlackBox(workspaceSlug, {
-    ...transaction,
+    ...landedTransaction,
     status: updated.status,
     proofBundleDigest: bundle.bundleDigest,
     closedAt: updated.closedAt,
@@ -2979,11 +2896,224 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
   return {
     transaction: transactionProjection(updated),
     proofBundle: proofBundleProjection(bundle, {
-      transaction,
-      mutationLease: transaction.mutationLease,
+      transaction: landedTransaction,
+      mutationLease: landedTransaction.mutationLease,
       landingRuns: inspectionDecision.inspectionRuns,
     }),
   };
+}
+
+async function landTransactionWithClient(db, workspaceSlug, transactionId, body = {}, actor = null) {
+  const current = await requireTransaction(workspaceSlug, transactionId, actor, db);
+  if (!isCommittableTransactionStatus(current.status)) {
+    return {
+      committed: false,
+      projectId: current.projectId,
+      decision: {
+        ok: false,
+        isolation: current.isolation,
+        reasonCodes: ['transaction_not_committable'],
+        status: current.status,
+        validatedAt: new Date().toISOString(),
+      },
+      transaction: transactionProjection(current),
+    };
+  }
+
+  const validation = await validateTransactionWithClient(db, workspaceSlug, transactionId, actor, { syncArtifacts: false });
+  if (!validation.decision.ok) {
+    return {
+      ...validation,
+      committed: false,
+      projectId: current.projectId,
+      artifactSync: { reason: 'transaction_landing_blocked', eventId: null },
+    };
+  }
+
+  const transaction = await requireTransaction(workspaceSlug, transactionId, actor, db);
+  const inspectionDecision = await verifyLandingInspections(transaction, db);
+  if (!inspectionDecision.ok) {
+    const decision = {
+      ok: false,
+      isolation: transaction.isolation,
+      reasonCodes: inspectionDecision.reasonCodes,
+      missingInspectionPaths: inspectionDecision.missingPaths,
+      missingInspectionSignals: inspectionDecision.missingSignals,
+      inspectionRuns: inspectionDecision.inspectionRuns.map(inspectionProjection),
+      validatedAt: new Date().toISOString(),
+    };
+    const blocked = await blockTransactionWithDecision(
+      db,
+      transaction,
+      decision,
+      'Landing inspection evidence is required before a proof-carrying commit can land.',
+    );
+    return { ...blocked, committed: false, projectId: transaction.projectId, artifactSync: { reason: 'landing_inspection_blocked', eventId: null } };
+  }
+
+  const repoStateDecision = verifyRepoStateEvidence(transaction, body);
+  if (!repoStateDecision.ok) {
+    const decision = {
+      ok: false,
+      isolation: transaction.isolation,
+      reasonCodes: repoStateDecision.reasonCodes,
+      missingRepoStatePaths: repoStateDecision.missingPaths,
+      repoState: repoStateDecision.repoState,
+      validatedAt: new Date().toISOString(),
+    };
+    const blocked = await blockTransactionWithDecision(
+      db,
+      transaction,
+      decision,
+      'Repo-state evidence is required before a proof-carrying commit can land.',
+    );
+    return { ...blocked, committed: false, projectId: transaction.projectId, artifactSync: { reason: 'repo_state_blocked', eventId: null } };
+  }
+
+  const lineProvenanceDecision = await verifyLineProvenanceEvidence(transaction, db);
+  if (!lineProvenanceDecision.ok) {
+    const decision = {
+      ok: false,
+      isolation: transaction.isolation,
+      reasonCodes: lineProvenanceDecision.reasonCodes,
+      missingLineProvenancePaths: lineProvenanceDecision.missingPaths,
+      lineProvenance: lineProvenanceDecision,
+      validatedAt: new Date().toISOString(),
+    };
+    const blocked = await blockTransactionWithDecision(
+      db,
+      transaction,
+      decision,
+      'Line-level causal provenance is required for every changed path before landing.',
+    );
+    return { ...blocked, committed: false, projectId: transaction.projectId, artifactSync: { reason: 'line_provenance_blocked', eventId: null } };
+  }
+
+  const fence = await db.codeSiteMutationTransaction.updateMany({
+    where: {
+      id: transaction.id,
+      status: { in: [...COMMITTABLE_TRANSACTION_STATUSES] },
+      proofBundleDigest: null,
+    },
+    data: {
+      status: 'committing',
+      commitDecisionJson: stringifyJson({
+        ...validation.decision,
+        reasonCodes: unique([...validation.decision.reasonCodes, 'serializable_landing_gate_entered']),
+        landingGateEnteredAt: new Date().toISOString(),
+      }),
+    },
+  });
+  if (fence.count !== 1) {
+    const refreshed = await requireTransaction(workspaceSlug, transactionId, actor, db);
+    return {
+      committed: false,
+      projectId: transaction.projectId,
+      decision: {
+        ok: false,
+        isolation: refreshed.isolation,
+        reasonCodes: ['serializable_commit_fence_lost'],
+        status: refreshed.status,
+        validatedAt: new Date().toISOString(),
+      },
+      transaction: transactionProjection(refreshed),
+    };
+  }
+
+  const landingStatus = inspectionDecision.inspectionRuns.at(-1)?.status || 'committed';
+  const bundle = await createProofBundleForTransaction(transaction, {
+    ...body,
+    inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
+    inspectionRunRefs: inspectionDecision.inspectionRuns.map((run) => run.id),
+    repoState: repoStateDecision.repoState,
+    landingStatus,
+  }, db);
+  const committedAt = new Date();
+  const updated = await db.codeSiteMutationTransaction.update({
+    where: { id: transaction.id },
+    data: {
+      status: 'committed',
+      proofBundleDigest: bundle.bundleDigest,
+      commitDecisionJson: stringifyJson({
+        ...validation.decision,
+        reasonCodes: unique([...validation.decision.reasonCodes, 'serializable_commit_landed']),
+        committedAt: committedAt.toISOString(),
+      }),
+      closedAt: committedAt,
+    },
+  });
+  await seedLineProvenance(transaction, bundle, db);
+  const writeSet = unique([
+    ...parseJson(transaction.writeSetJson, []),
+    ...parseJson(transaction.observedWriteSetJson, []),
+  ]);
+  const commitEvent = await recordEventWithClient(db, transaction.projectId, {
+    mutationLeaseId: transaction.mutationLeaseId,
+    eventType: 'transaction_committed',
+    displayCallsign: transaction.mutationLease.displayCallsign,
+    actorType: 'transaction',
+    actorId: transaction.id,
+    details: {
+      transactionId: transaction.id,
+      proofBundleId: bundle.id,
+      proofBundleDigest: bundle.bundleDigest,
+      writeSet,
+      repoStateDigest: repoStateDecision.repoState?.evidenceDigest || null,
+      inspectionRunIds: inspectionDecision.inspectionRuns.map((run) => run.id),
+      inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
+    },
+  }, { syncArtifacts: false });
+  return {
+    committed: true,
+    projectId: transaction.projectId,
+    updated,
+    transaction,
+    bundle,
+    commitEvent,
+    validation,
+    inspectionDecision,
+    repoStateDecision,
+    lineProvenanceDecision,
+    landingStatus,
+  };
+}
+
+function isCommittableTransactionStatus(status) {
+  return COMMITTABLE_TRANSACTION_STATUSES.has(String(status || '').toLowerCase());
+}
+
+async function withSerializableProjectCommitLanding(projectId, callback) {
+  return enqueueProjectCommitLanding(projectId, async () => {
+    if (typeof prisma.$transaction === 'function') {
+      return prisma.$transaction(async (tx) => {
+        await lockProjectForSerializableCommit(tx, projectId);
+        return callback(tx);
+      }, { isolationLevel: 'Serializable' });
+    }
+    await lockProjectForSerializableCommit(prisma, projectId);
+    return callback(prisma);
+  });
+}
+
+function enqueueProjectCommitLanding(projectId, callback) {
+  const key = String(projectId || 'unknown');
+  const previous = projectCommitLandingLocks.get(key) || Promise.resolve();
+  const run = previous.catch(() => null).then(callback);
+  const cleanup = run.finally(() => {
+    if (projectCommitLandingLocks.get(key) === cleanup) {
+      projectCommitLandingLocks.delete(key);
+    }
+  });
+  projectCommitLandingLocks.set(key, cleanup);
+  return run;
+}
+
+async function lockProjectForSerializableCommit(db, projectId) {
+  if (!projectId || !db?.codeSiteProject?.update) return null;
+  return db.codeSiteProject.update({
+    where: { id: projectId },
+    data: { updatedAt: new Date() },
+  });
 }
 
 export async function abortTransaction(workspaceSlug, transactionId, body = {}, actor = null) {
@@ -3018,7 +3148,7 @@ export async function abortTransaction(workspaceSlug, transactionId, body = {}, 
   return transactionProjection(updated);
 }
 
-async function createProofBundleForTransaction(transaction, body = {}) {
+async function createProofBundleForTransaction(transaction, body = {}, db = prisma) {
   const readSet = parseJson(transaction.readSetJson, []);
   const writeSet = parseJson(transaction.writeSetJson, []);
   const invariants = parseJson(transaction.invariantsJson, []);
@@ -3040,7 +3170,7 @@ async function createProofBundleForTransaction(transaction, body = {}) {
     evidenceRefs,
     repoState,
   });
-  const created = await prisma.codeSiteProofBundle.create({
+  const created = await db.codeSiteProofBundle.create({
     data: {
       projectId: transaction.projectId,
       transactionId: transaction.id,
@@ -3060,7 +3190,7 @@ async function createProofBundleForTransaction(transaction, body = {}) {
     project: transaction.project,
     transaction,
     mutationLease: transaction.mutationLease,
-  });
+  }, db);
 }
 
 function normalizeProofLandingStatus(value) {
@@ -3068,7 +3198,7 @@ function normalizeProofLandingStatus(value) {
   return status || null;
 }
 
-async function signProofBundleRecord(bundle, context = {}) {
+async function signProofBundleRecord(bundle, context = {}, db = prisma) {
   const transaction = context.transaction || bundle.transaction || null;
   const mutationLease = context.mutationLease || transaction?.mutationLease || bundle.transaction?.mutationLease || null;
   const project = context.project || bundle.project || transaction?.project || null;
@@ -3100,7 +3230,7 @@ async function signProofBundleRecord(bundle, context = {}) {
       createdAt: bundle.createdAt,
     },
   });
-  return prisma.codeSiteProofBundle.update({
+  return db.codeSiteProofBundle.update({
     where: { id: bundle.id },
     data: {
       proofSignatureJson: stringifyJson(portable.proofSignature),
@@ -3180,7 +3310,7 @@ function normalizeRepoStateFiles(files) {
     .filter((item) => item.path);
 }
 
-async function verifyLandingInspections(transaction) {
+async function verifyLandingInspections(transaction, db = prisma) {
   const changedPaths = unique([
     ...parseJson(transaction.writeSetJson, []),
     ...parseJson(transaction.observedWriteSetJson, []),
@@ -3189,7 +3319,7 @@ async function verifyLandingInspections(transaction) {
     return { ok: true, reasonCodes: ['no_write_set_no_landing_required'], inspectionRuns: [], evidenceRefs: [] };
   }
 
-  const runs = await prisma.codeSiteInspectionRun.findMany({
+  const runs = await db.codeSiteInspectionRun.findMany({
     where: { projectId: transaction.projectId },
     orderBy: [{ completedAt: 'desc' }, { requestedAt: 'desc' }],
   });
@@ -3377,15 +3507,15 @@ function isDurableInspectionEvidenceRef(ref) {
   return /^(runtime:event|program:event|dojo:evidence|mcp:audit|shadow:job|test:run|typecheck:run|api-contract:run|security:scan|migration:plan|ui:screenshot|accessibility:audit|performance:budget|handover:packet|clearance:run|artifact:sha256|codesite:repo-state):/i.test(String(ref || ''));
 }
 
-async function seedLineProvenance(transaction, bundle) {
-  const eventRows = await lineProvenanceRowsFromWriteEvents(transaction, bundle);
+async function seedLineProvenance(transaction, bundle, db = prisma) {
+  const eventRows = await lineProvenanceRowsFromWriteEvents(transaction, bundle, db);
   for (const row of eventRows) {
-    await prisma.codeSiteLineProvenance.create({ data: row });
+    await db.codeSiteLineProvenance.create({ data: row });
   }
   return { seededRows: eventRows.length, coveredPaths: unique(eventRows.map((row) => row.filePath)) };
 }
 
-async function verifyLineProvenanceEvidence(transaction) {
+async function verifyLineProvenanceEvidence(transaction, db = prisma) {
   const paths = unique([
     ...parseJson(transaction.writeSetJson, []),
     ...parseJson(transaction.observedWriteSetJson, []),
@@ -3393,7 +3523,7 @@ async function verifyLineProvenanceEvidence(transaction) {
   if (!paths.length) {
     return { ok: true, reasonCodes: ['no_write_set_no_line_provenance_required'], missingPaths: [] };
   }
-  const events = await prisma.codeSiteEvent.findMany({
+  const events = await db.codeSiteEvent.findMany({
     where: {
       projectId: transaction.projectId,
       eventType: 'write_allowed',
@@ -3501,8 +3631,8 @@ async function persistAllowedWriteLineProvenance(transaction, event, writeEviden
   return rows.length;
 }
 
-async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
-  const events = await prisma.codeSiteEvent.findMany({
+async function lineProvenanceRowsFromWriteEvents(transaction, bundle, db = prisma) {
+  const events = await db.codeSiteEvent.findMany({
     where: {
       projectId: transaction.projectId,
       eventType: 'write_allowed',
@@ -6417,7 +6547,7 @@ function buildControlState(workspaceSlug, projection) {
     status: projection.status,
     activeFlights: projection.executionPlans.filter((plan) => ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding'].includes(plan.status)),
     activeMutationLeases: activeLeases,
-    activeTransactions: projection.mutationTxns.filter((txn) => ['open', 'validated', 'blocked'].includes(txn.status)),
+    activeTransactions: projection.mutationTxns.filter((txn) => WORKSPACE_ACTIVE_TRANSACTION_STATUSES.includes(txn.status)),
     allowedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.allowedPaths || []))),
     blockedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.blockedPaths || []))),
     pendingQuarantines,
@@ -7736,11 +7866,15 @@ function incidentReplayTimeline(incident, events) {
 }
 
 async function recordEvent(projectId, input) {
+  return recordEventWithClient(prisma, projectId, input);
+}
+
+async function recordEventWithClient(db, projectId, input, options = {}) {
   const eventType = validateCodeSiteEventType(input.eventType);
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
+    const logicalTime = await db.codeSiteEvent.count({ where: { projectId } });
     try {
-      const event = await prisma.codeSiteEvent.create({
+      const event = await db.codeSiteEvent.create({
         data: {
           projectId,
           mutationLeaseId: input.mutationLeaseId || null,
@@ -7753,7 +7887,9 @@ async function recordEvent(projectId, input) {
           logicalTime: logicalTime + 1,
         },
       });
-      await syncArtifactsForProject(projectId, { reason: 'event_recorded', eventId: event.id });
+      if (options.syncArtifacts !== false) {
+        await syncArtifactsForProject(projectId, { reason: 'event_recorded', eventId: event.id });
+      }
       return event;
     } catch (error) {
       if (!isLogicalTimeConflict(error)) throw error;
@@ -7871,8 +8007,8 @@ async function requireLease(workspaceSlug, mutationLeaseId) {
   return lease;
 }
 
-async function requireTransaction(workspaceSlug, transactionId, actor = null) {
-  const transaction = await prisma.codeSiteMutationTransaction.findFirst({
+async function requireTransaction(workspaceSlug, transactionId, actor = null, db = prisma) {
+  const transaction = await db.codeSiteMutationTransaction.findFirst({
     where: { id: transactionId, project: { workspaceSlug } },
     include: { project: true, mutationLease: true, agentSession: true },
   });

@@ -42,7 +42,7 @@ function normalizeTransactionId(input = {}) {
 }
 
 function isWritableTransactionStatus(status) {
-  return ['open', 'running', 'active', 'pending', 'validating', 'validated', 'blocked'].includes(String(status || 'open').toLowerCase());
+  return ['open', 'running', 'active', 'pending', 'validating', 'validated', 'committing', 'blocked'].includes(String(status || 'open').toLowerCase());
 }
 
 function isAuthoritativeSource(source) {
