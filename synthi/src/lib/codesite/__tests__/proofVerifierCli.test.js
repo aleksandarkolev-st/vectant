@@ -70,6 +70,30 @@ function runVerifier(args, envOverrides = {}) {
   };
 }
 
+function runGit(repo, args) {
+  const result = spawnSync('git', ['-C', repo, ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+  expect(result.status).toBe(0);
+  return String(result.stdout || '').trim();
+}
+
+function initProofRepo(root, message) {
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo, { recursive: true });
+  runGit(repo, ['init']);
+  runGit(repo, ['config', 'user.email', 'codesite@example.test']);
+  runGit(repo, ['config', 'user.name', 'CodeSite Test']);
+  fs.writeFileSync(path.join(repo, 'proof.txt'), 'proof\n');
+  runGit(repo, ['add', 'proof.txt']);
+  runGit(repo, ['commit', '-m', message]);
+  return {
+    repo,
+    commitSha: runGit(repo, ['rev-parse', 'HEAD']),
+  };
+}
+
 function withProofAuthorityEnvCleared(callback) {
   return withProcessEnv(Object.fromEntries(PROOF_AUTHORITY_ENV_KEYS.map((key) => [key, null])), callback);
 }
@@ -154,6 +178,88 @@ describe('CodeSite proof verifier CLI', () => {
         'proof_commit_trailers_match',
       ]),
     });
+  });
+
+  it('verifies proof trailers from the actual git commit object', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-git-'));
+    roots.push(root);
+    const bundle = makeBundle();
+    const bundlePath = path.join(root, 'txn-1.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+    const message = [
+      'Land proof',
+      '',
+      formatCommitTrailers(bundle),
+    ].join('\n');
+    const { repo, commitSha } = initProofRepo(root, message);
+
+    const result = runVerifier([
+      '--bundle',
+      bundlePath,
+      '--repo',
+      repo,
+      '--commit',
+      commitSha,
+      '--require-git-commit',
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.json).toMatchObject({
+      ok: true,
+      reasonCodes: expect.arrayContaining([
+        'proof_git_commit_loaded',
+        'proof_commit_trailers_match',
+        'proof_git_commit_trailers_match',
+      ]),
+      gitCommit: {
+        commitSha,
+        requestedCommitSha: commitSha,
+        messageDigest: expect.stringMatching(/^sha256:/),
+      },
+    });
+  });
+
+  it('fails when the actual git commit trailers do not match even if a sidecar trailer file does', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-git-'));
+    roots.push(root);
+    const bundle = makeBundle();
+    const bundlePath = path.join(root, 'txn-1.proof.json');
+    const trailersPath = path.join(root, 'txn-1.trailers.txt');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+    fs.writeFileSync(trailersPath, formatCommitTrailers(bundle));
+    const { repo, commitSha } = initProofRepo(root, [
+      'Land proof without CodeSite trailers',
+      '',
+      'CodeSite-Proof-Digest: sha256:forged',
+    ].join('\n'));
+
+    const result = runVerifier([
+      '--bundle',
+      bundlePath,
+      '--trailers',
+      trailersPath,
+      '--repo',
+      repo,
+      '--commit',
+      commitSha,
+      '--require-git-commit',
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_verification_failed',
+      ]),
+      errors: expect.arrayContaining([
+        expect.stringContaining('commit trailer CodeSite-Project mismatch'),
+        expect.stringContaining('commit trailer CodeSite-Proof-Digest mismatch'),
+      ]),
+      gitCommit: {
+        commitSha,
+      },
+    });
+    expect(result.json.reasonCodes).not.toContain('proof_git_commit_trailers_match');
   });
 
   it('fails when a proof bundle digest is tampered after export', () => {

@@ -442,6 +442,7 @@ export const CODESITE_TOOLS = [
   codeSiteTool("synthi_codesite_attach_proof_bundle_commit", "Attach a Git commit SHA and expected trailers to a CodeSite proof bundle.", {
     bundle_id: { type: "string" },
     commitSha: { type: "string" },
+    commitMessage: { type: "string" },
     trailers: { type: "object" },
   }, ["bundle_id"]),
   codeSiteTool("synthi_codesite_get_line_provenance", "Read causal line provenance for a workspace file and optional line/range selector.", {

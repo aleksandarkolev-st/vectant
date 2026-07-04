@@ -2273,7 +2273,7 @@ function trustedProofKeysPath(slug) {
   return null;
 }
 
-async function runVerifier({ proofBundle, exportPaths, slug }) {
+async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRoot, commitSha }) {
   const bundleRel = exportPaths.find((item) => item.endsWith(`/proof-bundles/${proofBundle.id}.proof.json`));
   const trailersRel = exportPaths.find((item) => item.endsWith(`/proof-bundles/${proofBundle.id}.trailers.txt`));
   if (!bundleRel || !trailersRel) {
@@ -2309,6 +2309,7 @@ async function runVerifier({ proofBundle, exportPaths, slug }) {
     '--trailers',
     trailersPath,
     '--require-trailers',
+    ...(gitRepoRoot && commitSha ? ['--repo', gitRepoRoot, '--commit', commitSha, '--require-git-commit'] : []),
     '--trusted-keys',
     trustedKeysPath,
     '--require-trusted-authority',
@@ -3584,6 +3585,7 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       commitSha: trailerCommit.sha,
+      commitMessage: trailerCommit.message,
       trailers: proofBundle.trailers,
       evidenceRefs: [`git:commit:${landingCommit.sha}`, `git:commit:${trailerCommit.sha}`],
     }),
@@ -3622,7 +3624,13 @@ async function main() {
     typeof file === 'string' ? file : file.relativePath || file.path
   )).filter(Boolean);
   const eventTypes = events.events.map((event) => event.eventType);
-  const verifier = await runVerifier({ proofBundle, exportPaths, slug });
+  const verifier = await runVerifier({
+    proofBundle,
+    exportPaths,
+    slug,
+    repoRoot: proofRepo.hostRoot,
+    commitSha: proofBundle.commitSha,
+  });
   const artifactPathHistoryPath = verifier.artifactRoot
     ? path.join(verifier.artifactRoot, 'artifact-path-history.jsonl')
     : null;
@@ -3949,6 +3957,7 @@ async function main() {
         trailersPath: verifier.trailersPath ? path.relative(repoRoot(), verifier.trailersPath) : null,
         checks: verifier.json?.checks || [],
         errors: verifier.json?.errors || [],
+        gitCommit: verifier.json?.gitCommit || null,
       },
     },
     controlState: {
@@ -4187,7 +4196,8 @@ async function main() {
       exportedProofVerifies: verifier.ok === true
         && verifier.json?.ok === true
         && verifier.json?.reasonCodes?.includes('proof_bundle_signature_valid')
-        && verifier.json?.reasonCodes?.includes('proof_commit_trailers_match'),
+        && verifier.json?.reasonCodes?.includes('proof_commit_trailers_match')
+        && verifier.json?.reasonCodes?.includes('proof_git_commit_trailers_match'),
       browserUiCaptured: fs.existsSync(browserShot)
         && fs.existsSync(browserProofSectionShot)
         && fs.existsSync(browserCoordinationShot)

@@ -4135,7 +4135,12 @@ describe('CodeSite control plane transaction validation', () => {
 
     const result = await attachProofBundleCommit('acme', 'proof-created', {
       commitSha: 'abc1234',
-      trailers,
+      commitMessage: [
+        'Land schema-first proof',
+        '',
+        ...Object.entries(trailers).map(([key, value]) => `${key}: ${value}`),
+      ].join('\n'),
+      trailers: { ...trailers, 'CodeSite-Proof-Digest': 'sha256:forged' },
       evidenceRefs: ['git:show:abc1234'],
     }, { userId: 'user-1' });
 
@@ -4161,6 +4166,7 @@ describe('CodeSite control plane transaction validation', () => {
     });
     expect(JSON.parse(commitEvent.evidenceRefsJson)).toEqual(expect.arrayContaining([
       'git:commit:abc1234',
+      expect.stringMatching(/^git:commit-message:sha256:/),
       'git:show:abc1234',
     ]));
     expect(JSON.parse(commitEvent.detailsJson)).toMatchObject({
@@ -4168,7 +4174,9 @@ describe('CodeSite control plane transaction validation', () => {
       proofBundleId: 'proof-created',
       transactionId: 'txn-1',
       commitSha: 'abc1234',
-      reasonCodes: ['proof_bundle_commit_trailers_verified'],
+      trailerSource: 'git_commit_message',
+      commitMessageDigest: expect.stringMatching(/^sha256:/),
+      reasonCodes: ['proof_bundle_actual_commit_trailers_verified'],
     });
   });
 

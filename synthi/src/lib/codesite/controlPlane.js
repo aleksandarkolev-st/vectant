@@ -7790,7 +7790,18 @@ export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}
 
   const commitSha = normalizeGitCommitSha(body.commitSha || body.commit_sha || body.sha);
   if (!commitSha) throw badRequest('git_commit_sha_required');
-  const suppliedTrailers = normalizeCommitTrailers(body.trailers || body.commitTrailers || body.commit_trailers);
+  const commitMessage = normalizeCommitMessage(
+    body.commitMessage
+      || body.commit_message
+      || body.gitCommitMessage
+      || body.git_commit_message
+      || body.gitCommit?.message
+      || body.git_commit?.message,
+  );
+  const suppliedTrailers = commitMessage
+    ? normalizeCommitTrailers(commitMessage)
+    : normalizeCommitTrailers(body.trailers || body.commitTrailers || body.commit_trailers);
+  const trailerSource = commitMessage ? 'git_commit_message' : 'supplied_commit_trailers';
   const expectedTrailers = proofBundleProjection(bundle, {
     transaction: bundle.transaction,
     mutationLease: bundle.transaction?.mutationLease,
@@ -7804,9 +7815,11 @@ export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}
   }
 
   const trailerDigest = digest(suppliedTrailers);
+  const commitMessageDigest = commitMessage ? digest(commitMessage) : null;
   const commitEvidenceRefs = unique([
     `git:commit:${commitSha}`,
     `git:trailers:${trailerDigest}`,
+    ...(commitMessageDigest ? [`git:commit-message:${commitMessageDigest}`] : []),
     ...asArray(body.evidenceRefs || body.evidence_refs),
   ]);
   const updated = await prisma.codeSiteProofBundle.update({
@@ -7837,14 +7850,23 @@ export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}
       transactionId: bundle.transactionId,
       commitSha,
       trailerDigest,
+      trailerSource,
+      commitMessageDigest,
       evidenceRefs: commitEvidenceRefs,
-      reasonCodes: ['proof_bundle_commit_trailers_verified'],
+      reasonCodes: trailerSource === 'git_commit_message'
+        ? ['proof_bundle_actual_commit_trailers_verified']
+        : ['proof_bundle_commit_trailers_verified'],
     },
   });
   return proofBundleProjection(updated, {
     transaction: updated.transaction,
     mutationLease: updated.transaction?.mutationLease,
   });
+}
+
+function normalizeCommitMessage(value) {
+  const text = String(value || '').trim();
+  return text ? text : null;
 }
 
 function normalizeGitCommitSha(value) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -30,6 +31,9 @@ function main(argv) {
   const result = verifyProofBundleFile(args.bundlePath, {
     trailersPath: args.trailersPath,
     requireTrailers: args.requireTrailers,
+    repoPath: args.repoPath,
+    commitSha: args.commitSha,
+    requireGitCommit: args.requireGitCommit,
     authoritySecret: args.authoritySecret,
     trustedKeysPath: args.trustedKeysPath,
     allowEmbeddedPublicKey: args.allowEmbeddedPublicKey,
@@ -104,7 +108,7 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
   }
   if (signatureResult.checked) reasonCodes.push(...signatureResult.reasonCodes);
   if (legacyDateDigestMatched) reasonCodes.push('proof_bundle_legacy_date_digest_valid');
-  if (trailerResult.checked) reasonCodes.push('proof_commit_trailers_match');
+  if (trailerResult.checked) reasonCodes.push(...trailerResult.reasonCodes);
   if (warnings.length > 0) reasonCodes.push('proof_bundle_warnings_present');
   if (errors.length > 0) reasonCodes.push('proof_bundle_verification_failed');
 
@@ -115,6 +119,7 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
     warnings,
     bundlePath: absoluteBundlePath,
     trailersPath: trailerResult.trailersPath,
+    gitCommit: trailerResult.gitCommit,
     expectedPortableDigest,
     legacyDatePortableDigest,
     observedPortableDigest: portableDigest || null,
@@ -129,20 +134,49 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
 
 function verifyTrailers(bundle, options) {
   const trailersPath = options.trailersPath ? path.resolve(options.trailersPath) : null;
+  const repoPath = options.repoPath ? path.resolve(options.repoPath) : null;
+  const commitSha = normalizeCommitSha(options.commitSha || options.commit || bundle.commitSha);
   const errors = [];
   const warnings = [];
-  if (!trailersPath) {
-    if (options.requireTrailers) errors.push('commit trailers are required but no trailers file was provided');
-    return { checked: false, errors, warnings, trailersPath };
+  const reasonCodes = [];
+  let trailerText = null;
+  let gitCommit = null;
+
+  if (repoPath && commitSha) {
+    try {
+      const commitMessage = gitOutput(repoPath, ['show', '-s', '--format=%B', commitSha]);
+      const resolvedCommitSha = gitOutput(repoPath, ['rev-parse', '--verify', `${commitSha}^{commit}`]);
+      const treeSha = gitOutput(repoPath, ['show', '-s', '--format=%T', resolvedCommitSha]);
+      trailerText = commitMessage;
+      gitCommit = {
+        repoPath,
+        requestedCommitSha: commitSha,
+        commitSha: resolvedCommitSha,
+        treeSha,
+        messageDigest: digest(commitMessage),
+      };
+      reasonCodes.push('proof_git_commit_loaded');
+    } catch (error) {
+      errors.push(`git commit unreadable: ${error?.message || String(error)}`);
+      return { checked: false, errors, warnings, trailersPath, gitCommit, reasonCodes };
+    }
+  } else if (options.requireGitCommit) {
+    errors.push('git commit verification is required but --repo and --commit were not both provided');
+    return { checked: false, errors, warnings, trailersPath, gitCommit, reasonCodes };
+  } else if (trailersPath) {
+    try {
+      trailerText = fs.readFileSync(trailersPath, 'utf8');
+    } catch (error) {
+      errors.push(`commit trailers unreadable: ${error?.message || String(error)}`);
+      return { checked: false, errors, warnings, trailersPath, gitCommit, reasonCodes };
+    }
+  } else {
+    if (options.requireTrailers) errors.push('commit trailers are required but no trailers file or git commit was provided');
+    return { checked: false, errors, warnings, trailersPath, gitCommit, reasonCodes };
   }
 
   let trailers = {};
-  try {
-    trailers = parseTrailers(fs.readFileSync(trailersPath, 'utf8'));
-  } catch (error) {
-    errors.push(`commit trailers unreadable: ${error?.message || String(error)}`);
-    return { checked: false, errors, warnings, trailersPath };
-  }
+  trailers = parseTrailers(trailerText);
 
   const expected = {
     'CodeSite-Project': bundle.projectId,
@@ -166,7 +200,23 @@ function verifyTrailers(bundle, options) {
       errors.push(`commit trailer ${key} mismatch: expected ${expectedValue}, observed ${observed || '<missing>'}`);
     }
   }
-  return { checked: true, errors, warnings, trailersPath };
+  if (errors.length === 0) {
+    reasonCodes.push('proof_commit_trailers_match');
+    if (gitCommit) reasonCodes.push('proof_git_commit_trailers_match');
+  }
+  return { checked: true, errors, warnings, trailersPath, gitCommit, reasonCodes };
+}
+
+function gitOutput(repoPath, args) {
+  return String(execFileSync('git', ['-C', repoPath, ...args], {
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  }) || '').trim();
+}
+
+function normalizeCommitSha(value) {
+  const sha = String(value || '').trim();
+  return /^[0-9a-f]{7,64}$/i.test(sha) ? sha : null;
 }
 
 function parseTrailers(text) {
@@ -365,6 +415,9 @@ function parseArgs(argv) {
     bundlePath: null,
     trailersPath: null,
     requireTrailers: false,
+    repoPath: null,
+    commitSha: null,
+    requireGitCommit: false,
     authoritySecret: null,
     trustedKeysPath: null,
     allowEmbeddedPublicKey: true,
@@ -381,6 +434,12 @@ function parseArgs(argv) {
       args.trailersPath = argv[++index];
     } else if (arg === '--require-trailers') {
       args.requireTrailers = true;
+    } else if (arg === '--repo') {
+      args.repoPath = argv[++index];
+    } else if (arg === '--commit') {
+      args.commitSha = argv[++index];
+    } else if (arg === '--require-git-commit') {
+      args.requireGitCommit = true;
     } else if (arg === '--authority-secret') {
       args.authoritySecret = argv[++index];
     } else if (arg === '--trusted-keys') {
@@ -401,7 +460,7 @@ function parseArgs(argv) {
 function printUsage(code) {
   const stream = code === 0 ? process.stdout : process.stderr;
   stream.write([
-    'Usage: node scripts/codesite-proof-verify.mjs --bundle <proof.json> [--trailers <trailers.txt>] [--require-trailers] [--trusted-keys keys.json] [--require-trusted-authority]',
+    'Usage: node scripts/codesite-proof-verify.mjs --bundle <proof.json> [--trailers <trailers.txt>] [--repo <repo> --commit <sha> --require-git-commit] [--require-trailers] [--trusted-keys keys.json] [--require-trusted-authority]',
     '',
     'Verifies a portable CodeSite proof bundle outside the UI and emits JSON.',
     '',

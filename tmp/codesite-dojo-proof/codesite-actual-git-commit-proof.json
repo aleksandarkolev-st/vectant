@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "synthi.codesite.actualGitCommitProof.v1",
+  "generatedAt": "2026-07-04T13:32:57.613Z",
+  "ok": true,
+  "git": {
+    "head": "4fb05559f4090aa2f0cbfd60823a85ea09757bee",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M mcp/synthi-mcp/src/tools/codesite.ts\n M synthi/scripts/codesite-full-workflow-proof.mjs\n M synthi/scripts/codesite-proof-verify.mjs\n M synthi/scripts/codesite-release-gate.mjs\n M synthi/src/lib/codesite/__tests__/controlPlane.test.js\n M synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js\n M synthi/src/lib/codesite/controlPlane.js"
+  },
+  "assertions": [
+    {
+      "name": "verifier loads trailers from actual git commit objects",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "verifier emits actual-git trailer match reason code",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "verifier test rejects sidecar-only trailer forgery",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "control plane records raw commit-message trailer verification",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "control-plane test proves raw commit message overrides forged parsed trailers",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "full workflow proof verifies exported bundle against the actual amended commit",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "MCP attach tool exposes raw commit message evidence",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "release gate requires the actual git commit proof",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "dockerVerifierSuite command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/proofVerifierCli.test.js src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
+        "summary": {
+          "runner": "vitest",
+          "pass": 125,
+          "skipped": 0,
+          "tests": 125,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "dockerVerifierSuite",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/proofVerifierCli.test.js src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "runner": "vitest",
+        "pass": 125,
+        "skipped": 0,
+        "tests": 125,
+        "fail": 0
+      },
+      "outputTail": [
+        "\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js \u001b[2m(\u001b[22m\u001b[2m30 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 59\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/proofVerifierCli.test.js \u001b[2m(\u001b[22m\u001b[2m8 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 660\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/controlPlane.test.js \u001b[2m(\u001b[22m\u001b[2m87 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 1374\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m classifies landing inspection commands through first-class radar adapters \u001b[33m 451\u001b[2mms\u001b[22m\u001b[39m",
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m3 passed\u001b[39m\u001b[22m\u001b[90m (3)\u001b[39m",
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m125 passed\u001b[39m\u001b[22m\u001b[90m (125)\u001b[39m",
+        "\u001b[2m   Start at \u001b[22m 13:32:52",
+        "\u001b[2m   Duration \u001b[22m 4.69s\u001b[2m (transform 3.22s, setup 0ms, import 3.88s, tests 2.09s, environment 2.94s)\u001b[22m",
+        "npm notice",
+        "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
+        "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
+        "npm notice To update run: npm install -g npm@11.18.0",
+        "npm notice"
+      ]
+    }
+  ],
+  "commitContract": {
+    "sourceOfTruth": "actual git commit object read by git show, not sidecar trailer text",
+    "verifierFlags": "--repo <repo> --commit <sha> --require-git-commit",
+    "attachPath": "raw commitMessage trailers take precedence over parsed trailers",
+    "workflowProof": "full workflow verifier checks proof bundle against the amended trailer commit",
+    "agentSurface": "MCP attach tool accepts commitMessage evidence"
+  }
+}
