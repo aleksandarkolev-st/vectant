@@ -37,6 +37,16 @@ Every published app is free to install today. `canPublish` already reserves a se
 
 The contract is two edges only: (a) an outbound **checkout hand-off** (we send `programId`, buyer, price, publisher payout ref, a signed `reference`), and (b) an inbound **signed webhook** (`purchase`/`refund` for a `reference`). Everything else stays inside each repo.
 
+### Payments integration reality (checkout-synthi, verified 2026-07-04)
+
+The existing checkout app (`../checkout-synthi`) is a **Stripe Payment Intents** flow (`stripe` + `@stripe/stripe-js`), today a *single* hardcoded product (`NEXT_PUBLIC_DEFAULT_PRODUCT_ID`): it fetches that product's price, creates a PaymentIntent for the amount, confirms client-side, and redirects to a display-only `/success`. It has **no webhook, no PaymentIntent metadata, and no per-buyer/per-program context** (env is only `STRIPE_SECRET_KEY` + publishable key). So:
+
+- **The webhook is Stripe-native, hosted by *this* repo.** Stripe → `POST /api/internal/payments/webhook`, verified with `stripe.webhooks.constructEvent(rawBody, sig, STRIPE_WEBHOOK_SECRET)`. `payment_intent.succeeded` → grant; `charge.refunded` → revoke. `PaymentWebhookEvent.eventId` = the Stripe **event id** (idempotency). The generic `{eventId, type, reference}` model above maps directly onto Stripe.
+- **Context rides PaymentIntent `metadata`.** The buyer/program/reference travel as `metadata.{programId, subjectId, reference}`; the webhook reads them to resolve the `Entitlement`.
+- **Payouts = Stripe Connect.** `payoutAccountRef` is the publisher's connected account id (`acct_…`). The charge is a destination charge: `transfer_data.destination = acct`, `application_fee_amount = round(priceCents × takeRateBps / 10000)`.
+
+**Required changes in checkout-synthi (separate repo — NOT in this cycle):** accept our hand-off context (programId, buyer, priceCents, currency, payoutAccountRef, reference), create the PaymentIntent with a dynamic `amount`/`currency` + `metadata` + `transfer_data`/`application_fee_amount`, and register the Stripe webhook to point at this repo. This cycle (PB1–PB3) builds only *our* control plane and does not modify checkout-synthi.
+
 ## Data model (new)
 
 ```prisma
@@ -97,7 +107,7 @@ model PaymentWebhookEvent {   // idempotency + audit for inbound webhooks
 
 ## Security invariants (fail-closed)
 
-- **Webhook signature verified** with a shared secret (`PAYMENTS_WEBHOOK_SECRET`); bad/missing signature → `401`, nothing written.
+- **Webhook signature verified** with Stripe's scheme (`stripe.webhooks.constructEvent` + `STRIPE_WEBHOOK_SECRET`) over the **raw** request body; bad/missing signature → `401`, nothing written.
 - **Idempotent**: `eventId` dedupe + unique `reference`; a replayed webhook is a no-op.
 - **Server-authoritative price**: the charged amount is derived from `ProgramPricing`, never from the client. The hand-off `reference` binds `programId`+`subject`+`priceCents` under HMAC.
 - **Entitlement is per-subject and unique**; a second purchase can't create a duplicate live grant.
