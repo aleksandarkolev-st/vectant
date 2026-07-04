@@ -1026,6 +1026,9 @@ async function loadAgentExecutionEvidence({ dir, slug, agentFlightSpecs }) {
       && command.status === 'completed'
       && command.transcriptEventId
     ));
+    if (successfulCommands.length !== record.commands.length) {
+      errors.push('transcript_command_failed');
+    }
     if (!successfulCommands.length) {
       errors.push('no_transcript_successful_command');
     }
@@ -1157,11 +1160,15 @@ function codexAgentOutputSchema() {
 }
 
 function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo }) {
-  const planPath = '/workspace/docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md';
-  const proofScriptPath = '/workspace/synthi/scripts/codesite-full-workflow-proof.mjs';
-  const proofRepoPackagePath = `${proofRepo.hostRoot}/package.json`;
-  const proofRepoSchemaPath = `${proofRepo.hostRoot}/synthi/prisma/schema.prisma`;
-  const proofRepoScriptsPath = `${proofRepo.hostRoot}/scripts`;
+  const hostRepoRoot = repoRoot();
+  const repoPath = (absolutePath) => path.relative(hostRepoRoot, absolutePath).split(path.sep).join('/');
+  const planPath = 'docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md';
+  const proofScriptPath = 'synthi/scripts/codesite-full-workflow-proof.mjs';
+  const proofRepoPath = repoPath(proofRepo.hostRoot);
+  const proofRepoPackagePath = `${proofRepoPath}/package.json`;
+  const proofRepoSchemaPath = `${proofRepoPath}/synthi/prisma/schema.prisma`;
+  const proofRepoTypecheckPath = `${proofRepoPath}/scripts/typecheck-schema.mjs`;
+  const proofRepoContractTestPath = `${proofRepoPath}/scripts/test-schema-contract.mjs`;
   const expectedRefsText = [
     'Expected CodeSite providerSessionRefs for this proof:',
     ...agentFlightSpecsForPrompt(spec).map((entry) => `- ${entry.callsign}: ${entry.providerSessionRef}`),
@@ -1171,7 +1178,7 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo }) {
       `Inspect ${planPath} for mutation transactions, CodeSiteFS, and proof-carrying commits.`,
       `Inspect ${proofScriptPath} for SCHEMA-01 registration and schema-first transaction evidence.`,
       `Inspect ${proofRepoSchemaPath} and ${proofRepoPackagePath} for the proof repo schema workflow.`,
-      `Run npm run typecheck in ${proofRepo.hostRoot} and report that command in commandsRun.`,
+      `Run cd ${proofRepoPath} && npm run typecheck and report that command in commandsRun.`,
     ],
     backend: [
       `Inspect ${planPath} for multi-user sessions, agent inbox, tower-mediated messages, and assumption invalidation.`,
@@ -1181,8 +1188,8 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo }) {
     ],
     inspection: [
       `Inspect ${planPath} for landings, inspections, black-box replay, filesystem boundary proof, and causal line inspector requirements.`,
-      `Inspect ${proofRepoPackagePath} and ${proofRepoScriptsPath} for npm-backed landing radar checks.`,
-      `Run npm test in ${proofRepo.hostRoot} and report that command in commandsRun.`,
+      `Inspect ${proofRepoPackagePath}, ${proofRepoTypecheckPath}, and ${proofRepoContractTestPath} for npm-backed landing radar checks.`,
+      `Run cd ${proofRepoPath} && npm test and report that command in commandsRun.`,
       `Inspect ${proofScriptPath} for inspection command execution, proof-bundle, black-box replay, and screenshot evidence.`,
     ],
   };
@@ -1195,9 +1202,12 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo }) {
     expectedRefsText,
     '',
     'Use shell read commands to inspect the files. You must execute shell commands; do not answer from memory or from this prompt alone.',
-    'Use exact paths from this prompt. Do not run broad find commands over /workspace, node_modules, .git, or tmp trees.',
+    `Use exact repo-relative paths from this prompt. The working directory is ${hostRepoRoot}.`,
+    'Do not substitute /workspace paths; this Codex proof session runs on the host with the repo as its working directory.',
+    'Do not run broad find commands over the repo root, node_modules, .git, or tmp trees.',
     'Prefer bounded commands such as pwd, sed -n, rg -n on an exact file, ls on an exact directory, and npm scripts in the proof repo.',
-    'The commandsRun array must list only commands that appear in the Codex command_execution transcript.',
+    'Only run commands that should exit 0; the workflow proof rejects failed command_execution transcript entries.',
+    'The commandsRun array must list only successful commands that appear in the Codex command_execution transcript.',
     'Do not edit files, stage, commit, or write repo artifacts.',
     'Perform these role-specific checks:',
     ...(roleChecks[spec.domain] || roleChecks.inspection).map((check) => `- ${check}`),
