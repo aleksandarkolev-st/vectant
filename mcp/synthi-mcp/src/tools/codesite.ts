@@ -1,9 +1,21 @@
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 export const CODESITE_TOOL_NAMES = [
+  "synthi_codesite_list_projects",
+  "synthi_codesite_create_project",
+  "synthi_codesite_get_project",
+  "synthi_codesite_update_zone_policy",
+  "synthi_codesite_update_control_plan",
+  "synthi_codesite_register_agent_session",
+  "synthi_codesite_list_project_members",
+  "synthi_codesite_upsert_project_member",
+  "synthi_codesite_revoke_project_member",
   "synthi_codesite_file_flight_plan",
   "synthi_codesite_request_clearance",
   "synthi_codesite_open_transaction",
+  "synthi_codesite_abort_transaction",
+  "synthi_codesite_revoke_clearance",
+  "synthi_codesite_record_policy_decision",
   "synthi_codesite_get_transaction_status",
   "synthi_codesite_preview_transaction",
   "synthi_codesite_dry_run_patch",
@@ -17,6 +29,10 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_source_state_since",
   "synthi_codesite_get_radar",
   "synthi_codesite_get_metrics",
+  "synthi_codesite_get_agent_manifest",
+  "synthi_codesite_get_schemas",
+  "synthi_codesite_get_active_state",
+  "synthi_codesite_list_active_transactions",
   "synthi_codesite_next_event",
   "synthi_codesite_get_inbox",
   "synthi_codesite_ack_event",
@@ -25,9 +41,25 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_report_counterfactual_run",
   "synthi_codesite_file_rfi",
   "synthi_codesite_file_change_order",
+  "synthi_codesite_list_permits",
+  "synthi_codesite_issue_permit",
+  "synthi_codesite_review_document",
+  "synthi_codesite_list_route_revisions",
+  "synthi_codesite_propose_route_revision",
+  "synthi_codesite_review_route_revision",
+  "synthi_codesite_apply_route_revision",
   "synthi_codesite_declare_mayday",
+  "synthi_codesite_get_incident_replay",
+  "synthi_codesite_resume_mayday",
+  "synthi_codesite_file_policy_delta",
+  "synthi_codesite_promote_policy_delta",
+  "synthi_codesite_reject_policy_delta",
   "synthi_codesite_request_landing",
+  "synthi_codesite_complete_landing",
   "synthi_codesite_generate_black_box",
+  "synthi_codesite_preview_artifacts",
+  "synthi_codesite_get_proof_bundle",
+  "synthi_codesite_attach_proof_bundle_commit",
   "synthi_codesite_get_line_provenance",
   "synthi_codesite_review_quarantine",
   "synthi_codesite_replay_quarantine",
@@ -54,17 +86,24 @@ const CONTROL_ARG_KEYS = new Set([
   "codesite_api_base_url",
   "collab_base_url",
   "cookie",
+  "document_id",
   "event_id",
   "execution_plan_id",
   "filesystem_user_id",
   "file_path",
   "incident_id",
+  "include",
+  "inspection_run_id",
   "line_anchor",
   "line_number",
+  "max_content_bytes",
+  "member_id",
   "mutation_lease_id",
   "path",
+  "policy_delta_id",
   "project_id",
   "quarantine_id",
+  "route_revision_id",
   "runtime_scope",
   "selected_paths",
   "since",
@@ -110,6 +149,53 @@ const COMMON_PROPERTIES = {
 } as const;
 
 export const CODESITE_TOOLS = [
+  codeSiteTool("synthi_codesite_list_projects", "List visible CodeSite projects for a workspace.", {}, []),
+  codeSiteTool("synthi_codesite_create_project", "Create a CodeSite project and owner membership for a workspace.", {
+    title: { type: "string" },
+    request: { type: "string" },
+    zonePolicy: { type: "object" },
+    controlPlan: { type: "object" },
+  }, []),
+  codeSiteTool("synthi_codesite_get_project", "Read one CodeSite project with its control-plane summary.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_update_zone_policy", "Update a CodeSite project zone policy.", {
+    project_id: { type: "string" },
+    zonePolicy: { type: "object" },
+    restrictedAirspace: { type: "array", items: {} },
+    noFlyZones: { type: "array", items: {} },
+  }, []),
+  codeSiteTool("synthi_codesite_update_control_plan", "Update a CodeSite project control plan.", {
+    project_id: { type: "string" },
+    controlPlan: { type: "object" },
+    towerMode: { type: "string" },
+    releaseGates: { type: "array", items: {} },
+  }, []),
+  codeSiteTool("synthi_codesite_register_agent_session", "Register a real agent session/callsign with the CodeSite tower.", {
+    project_id: { type: "string" },
+    providerSessionRef: { type: "string" },
+    agentProvider: { type: "string" },
+    agentRuntime: { type: "string" },
+    displayCallsign: { type: "string" },
+    permissions: { type: "array", items: {} },
+    dojoPilotLicenseRef: { type: "string" },
+    dojoProofRef: { type: "string" },
+    dojoEvidenceRefs: { type: "array", items: { type: "string" } },
+  }, []),
+  codeSiteTool("synthi_codesite_list_project_members", "List humans and agents with access to a CodeSite project.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_upsert_project_member", "Grant or update CodeSite project member permissions.", {
+    project_id: { type: "string" },
+    userId: { type: "string" },
+    role: { type: "string" },
+    permissions: { type: "array", items: { type: "string" } },
+  }, []),
+  codeSiteTool("synthi_codesite_revoke_project_member", "Revoke a CodeSite project member.", {
+    project_id: { type: "string" },
+    member_id: { type: "string" },
+    reason: { type: "string" },
+  }, ["member_id"]),
   codeSiteTool("synthi_codesite_file_flight_plan", "File an ATC flight plan by creating a CodeSite execution plan.", {
     agent_session_id: { type: "string" },
     route: { type: "array", items: { type: "string" } },
@@ -127,6 +213,23 @@ export const CODESITE_TOOLS = [
     readSet: { type: "array", items: { type: "string" } },
     writeSet: { type: "array", items: { type: "string" } },
     isolation: { type: "string" },
+  }, ["mutation_lease_id"]),
+  codeSiteTool("synthi_codesite_abort_transaction", "Abort a CodeSite mutation transaction and notify tower activity.", {
+    transaction_id: { type: "string" },
+    reason: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["transaction_id"]),
+  codeSiteTool("synthi_codesite_revoke_clearance", "Revoke a CodeSite mutation lease/clearance.", {
+    mutation_lease_id: { type: "string" },
+    reason: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["mutation_lease_id"]),
+  codeSiteTool("synthi_codesite_record_policy_decision", "Record a policy decision against a mutation lease.", {
+    mutation_lease_id: { type: "string" },
+    decision: { type: "string" },
+    reasonCodes: { type: "array", items: { type: "string" } },
+    decisionBody: { type: "object" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
   }, ["mutation_lease_id"]),
   codeSiteTool("synthi_codesite_get_transaction_status", "Read the current transaction status and validation decision.", {
     transaction_id: { type: "string" },
@@ -192,6 +295,14 @@ export const CODESITE_TOOLS = [
   }, ["transaction_id"]),
   codeSiteTool("synthi_codesite_get_radar", "Read machine-readable CodeSite radar/control state.", {}, []),
   codeSiteTool("synthi_codesite_get_metrics", "Read CodeSite ATC, transaction, software quality, and trust success metrics for the project.", {}, []),
+  codeSiteTool("synthi_codesite_get_agent_manifest", "Read the machine-consumable CodeSite agent manifest for a project.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_get_schemas", "Read CodeSite JSON schemas advertised to agents.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_get_active_state", "Read workspace-level CodeSite active enforcement and mayday state.", {}, []),
+  codeSiteTool("synthi_codesite_list_active_transactions", "List active CodeSite transactions for operator takeover and coordination.", {}, []),
   codeSiteTool("synthi_codesite_next_event", "Poll the next CodeSite event after an optional event id.", {
     since: { type: "string" },
   }, []),
@@ -220,17 +331,119 @@ export const CODESITE_TOOLS = [
     toSessionId: { type: "string" },
     blocking: { type: "boolean" },
   }, []),
+  codeSiteTool("synthi_codesite_list_permits", "List project permits that can satisfy restricted-route governance gates.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_issue_permit", "Issue a CodeSite governance permit for restricted routes, plans, leases, or documents.", {
+    project_id: { type: "string" },
+    executionPlanId: { type: "string" },
+    mutationLeaseId: { type: "string" },
+    documentId: { type: "string" },
+    permitType: { type: "string" },
+    title: { type: "string" },
+    scope: { type: "object" },
+    approval: { type: "object" },
+    expiresAt: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, []),
+  codeSiteTool("synthi_codesite_review_document", "Record a measured governance document review for an RFI, submittal, change order, or permit.", {
+    document_id: { type: "string" },
+    decision: { type: "string" },
+    summary: { type: "string" },
+    reviewTimeMs: { type: "number" },
+    baselineReviewTimeMs: { type: "number" },
+    permitId: { type: "string" },
+    routeRevisionId: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["document_id"]),
+  codeSiteTool("synthi_codesite_list_route_revisions", "List proposed, approved, and applied CodeSite route revisions for a project.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_propose_route_revision", "Propose a CodeSite route revision/change order for an execution plan.", {
+    execution_plan_id: { type: "string" },
+    proposedRoute: { type: "array", items: { type: "string" } },
+    documentId: { type: "string" },
+    affectedLeases: { type: "array", items: { type: "string" } },
+    reason: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["execution_plan_id"]),
+  codeSiteTool("synthi_codesite_review_route_revision", "Approve or reject a proposed CodeSite route revision.", {
+    route_revision_id: { type: "string" },
+    decision: { type: "string" },
+    reviewedBy: { type: "string" },
+    reason: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["route_revision_id"]),
+  codeSiteTool("synthi_codesite_apply_route_revision", "Apply an approved CodeSite route revision to its execution plan and affected leases.", {
+    route_revision_id: { type: "string" },
+    appliedBy: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["route_revision_id"]),
   codeSiteTool("synthi_codesite_declare_mayday", "Declare a mayday incident and record replay evidence.", {
     severity: { type: "string" },
     participants: { type: "array", items: { type: "string" } },
     affectedZones: { type: "array", items: { type: "string" } },
   }, []),
+  codeSiteTool("synthi_codesite_get_incident_replay", "Read mayday or near-miss incident replay evidence.", {
+    incident_id: { type: "string" },
+  }, ["incident_id"]),
+  codeSiteTool("synthi_codesite_resume_mayday", "Resume work from a mayday incident after replay and recovery evidence is attached.", {
+    incident_id: { type: "string" },
+    resolution: { type: "string" },
+    replayRefs: { type: "array", items: { type: "string" } },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["incident_id"]),
+  codeSiteTool("synthi_codesite_file_policy_delta", "Propose a CodeSite policy delta learned from replayed near-miss or incident evidence.", {
+    project_id: { type: "string" },
+    learnedFromIncidents: { type: "array", items: { type: "string" } },
+    ruleCandidate: { type: "object" },
+    triggerConditions: { type: "array", items: {} },
+    expectedRiskReduction: { type: "number" },
+    confidence: { type: "number" },
+    replayRefs: { type: "array", items: { type: "string" } },
+  }, []),
+  codeSiteTool("synthi_codesite_promote_policy_delta", "Promote a proposed CodeSite policy delta after validation/replay evidence.", {
+    project_id: { type: "string" },
+    policy_delta_id: { type: "string" },
+    targetState: { type: "string" },
+    validationStatus: { type: "string" },
+    reviewedBy: { type: "string" },
+    replayRefs: { type: "array", items: { type: "string" } },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["policy_delta_id"]),
+  codeSiteTool("synthi_codesite_reject_policy_delta", "Reject a proposed CodeSite policy delta with review and replay evidence.", {
+    project_id: { type: "string" },
+    policy_delta_id: { type: "string" },
+    reviewedBy: { type: "string" },
+    reason: { type: "string" },
+    replayRefs: { type: "array", items: { type: "string" } },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["policy_delta_id"]),
   codeSiteTool("synthi_codesite_request_landing", "Request a landing inspection run for changed paths.", {
     executionPlanId: { type: "string" },
     changedPaths: { type: "array", items: { type: "string" } },
     callsign: { type: "string" },
   }, []),
+  codeSiteTool("synthi_codesite_complete_landing", "Complete a landing inspection run with inspection evidence.", {
+    inspection_run_id: { type: "string" },
+    status: { type: "string" },
+    inspectionSignals: { type: "array", items: { type: "object" } },
+    evidenceRefs: { type: "array", items: { type: "string" } },
+  }, ["inspection_run_id"]),
   codeSiteTool("synthi_codesite_generate_black_box", "Generate/export the repo-local CodeSite black-box artifact projection.", {}, []),
+  codeSiteTool("synthi_codesite_preview_artifacts", "Preview repo-local CodeSite artifacts before export.", {
+    project_id: { type: "string" },
+    include: { type: "string" },
+    max_content_bytes: { type: "number" },
+  }, []),
+  codeSiteTool("synthi_codesite_get_proof_bundle", "Retrieve a CodeSite proof bundle with transaction, incident, landing, and line-provenance context.", {
+    bundle_id: { type: "string" },
+  }, ["bundle_id"]),
+  codeSiteTool("synthi_codesite_attach_proof_bundle_commit", "Attach a Git commit SHA and expected trailers to a CodeSite proof bundle.", {
+    bundle_id: { type: "string" },
+    commitSha: { type: "string" },
+    trailers: { type: "object" },
+  }, ["bundle_id"]),
   codeSiteTool("synthi_codesite_get_line_provenance", "Read causal line provenance for a workspace file and optional line/range selector.", {
     project_id: { type: "string" },
     file_path: { type: "string" },
@@ -334,6 +547,57 @@ function codeSiteTool(
 
 function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): CodeSiteRequest | null {
   switch (toolName) {
+    case "synthi_codesite_list_projects":
+      return {
+        method: "GET",
+        path: "/projects",
+      };
+    case "synthi_codesite_create_project":
+      return {
+        method: "POST",
+        path: "/projects",
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_get_project":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}`,
+      };
+    case "synthi_codesite_update_zone_policy":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/zone-policy`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_update_control_plan":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/control-plan`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_register_agent_session":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/agent-sessions`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_list_project_members":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/members`,
+      };
+    case "synthi_codesite_upsert_project_member":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/members`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_revoke_project_member":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/members/${encodeURIComponent(requiredString(args, "member_id"))}/revoke`,
+        body: bodyFromArgs(args),
+      };
     case "synthi_codesite_file_flight_plan":
       return {
         method: "POST",
@@ -350,6 +614,24 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
       return {
         method: "POST",
         path: `/mutation-leases/${encodeURIComponent(requiredString(args, "mutation_lease_id"))}/transactions`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_abort_transaction":
+      return {
+        method: "POST",
+        path: `/transactions/${encodeURIComponent(requiredString(args, "transaction_id"))}/abort`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_revoke_clearance":
+      return {
+        method: "POST",
+        path: `/mutation-leases/${encodeURIComponent(requiredString(args, "mutation_lease_id"))}/revoke`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_record_policy_decision":
+      return {
+        method: "POST",
+        path: `/mutation-leases/${encodeURIComponent(requiredString(args, "mutation_lease_id"))}/policy-decisions`,
         body: bodyFromArgs(args),
       };
     case "synthi_codesite_get_transaction_status":
@@ -425,6 +707,26 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         method: "GET",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/metrics`,
       };
+    case "synthi_codesite_get_agent_manifest":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/agent-manifest`,
+      };
+    case "synthi_codesite_get_schemas":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/schemas`,
+      };
+    case "synthi_codesite_get_active_state":
+      return {
+        method: "GET",
+        path: "/active-state",
+      };
+    case "synthi_codesite_list_active_transactions":
+      return {
+        method: "GET",
+        path: "/transactions/active",
+      };
     case "synthi_codesite_next_event":
       return {
         method: "GET",
@@ -472,11 +774,80 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/documents`,
         body: bodyFromArgs(args, { kind: "change_order" }),
       };
+    case "synthi_codesite_list_permits":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/permits`,
+      };
+    case "synthi_codesite_issue_permit":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/permits`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_review_document":
+      return {
+        method: "POST",
+        path: `/documents/${encodeURIComponent(requiredString(args, "document_id"))}/reviews`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_list_route_revisions":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/route-revisions`,
+      };
+    case "synthi_codesite_propose_route_revision":
+      return {
+        method: "POST",
+        path: `/execution-plans/${encodeURIComponent(requiredString(args, "execution_plan_id"))}/route-revisions`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_review_route_revision":
+      return {
+        method: "POST",
+        path: `/route-revisions/${encodeURIComponent(requiredString(args, "route_revision_id"))}/review`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_apply_route_revision":
+      return {
+        method: "POST",
+        path: `/route-revisions/${encodeURIComponent(requiredString(args, "route_revision_id"))}/apply`,
+        body: bodyFromArgs(args),
+      };
     case "synthi_codesite_declare_mayday":
       return {
         method: "POST",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/incidents`,
         body: bodyFromArgs(args, { category: "mayday" }),
+      };
+    case "synthi_codesite_get_incident_replay":
+      return {
+        method: "GET",
+        path: `/incidents/${encodeURIComponent(requiredString(args, "incident_id"))}/replay`,
+      };
+    case "synthi_codesite_resume_mayday":
+      return {
+        method: "POST",
+        path: `/incidents/${encodeURIComponent(requiredString(args, "incident_id"))}/resume`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_file_policy_delta":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/policy-deltas`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_promote_policy_delta":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/policy-deltas/${encodeURIComponent(requiredString(args, "policy_delta_id"))}/promote`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_reject_policy_delta":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/policy-deltas/${encodeURIComponent(requiredString(args, "policy_delta_id"))}/reject`,
+        body: bodyFromArgs(args),
       };
     case "synthi_codesite_request_landing":
       return {
@@ -484,10 +855,36 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/inspection-runs`,
         body: bodyFromArgs(args),
       };
+    case "synthi_codesite_complete_landing":
+      return {
+        method: "POST",
+        path: `/inspection-runs/${encodeURIComponent(requiredString(args, "inspection_run_id"))}/complete`,
+        body: bodyFromArgs(args),
+      };
     case "synthi_codesite_generate_black_box":
       return {
         method: "POST",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/artifacts/export`,
+        body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_preview_artifacts":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/artifacts/preview`,
+        query: {
+          ...(optionalString(args["include"]) ? { include: optionalString(args["include"]) as string } : {}),
+          ...(Number.isFinite(Number(args["max_content_bytes"])) ? { maxContentBytes: String(Number(args["max_content_bytes"])) } : {}),
+        },
+      };
+    case "synthi_codesite_get_proof_bundle":
+      return {
+        method: "GET",
+        path: `/proof-bundles/${encodeURIComponent(requiredString(args, "bundle_id"))}`,
+      };
+    case "synthi_codesite_attach_proof_bundle_commit":
+      return {
+        method: "POST",
+        path: `/proof-bundles/${encodeURIComponent(requiredString(args, "bundle_id"))}/commit`,
         body: bodyFromArgs(args),
       };
     case "synthi_codesite_get_line_provenance":
