@@ -13,7 +13,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -134,6 +134,7 @@ const EXPOSED_SPLIT_DIR = cleanVisibleWorkspaceDir(
 
 const results = [];
 const REDACTED_SECRET = '[REDACTED_SECRET]';
+let writingResultCheckpoint = false;
 
 function sanitizeProofLogString(value) {
   let text = String(value ?? '');
@@ -173,12 +174,101 @@ function sanitizeProofLogValue(value, depth = 0) {
   );
 }
 
+function resultTextFromRows(rows) {
+  return rows.map((row) =>
+    `${row.status.toUpperCase()} ${row.name}${row.detail ? ` - ${row.detail}` : ''}`
+  ).join('\n') + '\n';
+}
+
+function writeResultCheckpointSync(reason = 'incremental_record') {
+  if (process.env.SYNTHI_GPU_AGENT_INCREMENTAL_RESULTS === '0') return;
+  if (writingResultCheckpoint) return;
+  writingResultCheckpoint = true;
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    mkdirSync(ARTIFACT_DIR, { recursive: true });
+    const sanitizedResults = sanitizeProofLogValue(results);
+    const resultText = resultTextFromRows(sanitizedResults);
+    writeFileSync(RESULTS_JSON, `${JSON.stringify(sanitizedResults, null, 2)}\n`);
+    writeFileSync(RESULTS_TXT, resultText);
+    writeFileSync(
+      path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`),
+      `${JSON.stringify(sanitizedResults, null, 2)}\n`,
+    );
+    writeFileSync(path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`), resultText);
+    writeFileSync(
+      path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}-checkpoint.json`),
+      `${JSON.stringify({
+        schemaVersion: 'synthi.gpu_hmr.agent_split_result_checkpoint.v1',
+        schema_version: 'synthi.gpu_hmr.agent_split_result_checkpoint.v1',
+        proofAuthority: 'agent_split_result_checkpoint_only_not_gpu_hmr_acceptance',
+        proof_authority: 'agent_split_result_checkpoint_only_not_gpu_hmr_acceptance',
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: false,
+        can_satisfy_runtime_proof: false,
+        status: 'checkpoint_written',
+        reason,
+        slug: CFG.slug,
+        resultCount: sanitizedResults.length,
+        result_count: sanitizedResults.length,
+        updatedAt: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, null, 2)}\n`,
+    );
+  } catch {
+    // Best-effort transport only. This checkpoint cannot authorize GPU HMR.
+  } finally {
+    writingResultCheckpoint = false;
+  }
+}
+
 function record(name, status, detail = '') {
   const sanitizedDetail = sanitizeProofLogValue(detail);
   const row = { name, status, detail: sanitizedDetail, ts: new Date().toISOString() };
   results.push(row);
   const tag = status === 'pass' ? '[ok]' : status === 'fail' ? '[fail]' : '[warn]';
   console.log(`${tag} ${name}${sanitizedDetail ? ` - ${sanitizedDetail}` : ''}`);
+  writeResultCheckpointSync('record_update');
+}
+
+let emergencyResultHandled = false;
+
+function recordEmergencyResult(kind, detail) {
+  if (emergencyResultHandled) return;
+  emergencyResultHandled = true;
+  results.push({
+    name: 'fatal',
+    status: 'fail',
+    detail: sanitizeProofLogValue(`${kind}: ${detail}`),
+    ts: new Date().toISOString(),
+  });
+  writeResultCheckpointSync(kind);
+}
+
+function installEmergencyResultHandlers() {
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => {
+      recordEmergencyResult(`signal:${signal}`, 'agent split visual proof terminated before final result');
+      process.exit(1);
+    });
+  }
+  process.once('uncaughtException', (err) => {
+    recordEmergencyResult(
+      'uncaught_exception',
+      err?.stack || err?.message || String(err),
+    );
+    process.exit(1);
+  });
+  process.once('unhandledRejection', (reason) => {
+    recordEmergencyResult(
+      'unhandled_rejection',
+      reason?.stack || reason?.message || String(reason),
+    );
+    process.exit(1);
+  });
 }
 
 function cleanVisibleWorkspaceDir(value) {
@@ -8691,9 +8781,7 @@ async function writeResults() {
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const sanitizedResults = sanitizeProofLogValue(results);
   await writeFile(RESULTS_JSON, JSON.stringify(sanitizedResults, null, 2));
-  const resultText = sanitizedResults.map((r) =>
-    `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`
-  ).join('\n') + '\n';
+  const resultText = resultTextFromRows(sanitizedResults);
   await writeFile(RESULTS_TXT, resultText);
   const archivedJson = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.json`);
   const archivedTxt = path.join(ARTIFACT_DIR, `${RESULTS_BASENAME}.txt`);
@@ -8716,6 +8804,7 @@ if (process.argv.includes('--self-check')) {
     process.exitCode = 1;
   }
 } else {
+  installEmergencyResultHandlers();
   run()
     .catch(async (err) => {
       record('fatal', 'fail', err.stack || err.message);
