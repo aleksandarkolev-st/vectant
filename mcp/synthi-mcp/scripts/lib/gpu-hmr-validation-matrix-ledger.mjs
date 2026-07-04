@@ -19974,6 +19974,99 @@ async function oidnWorkerOutputOracleTransportFacet(input = {}, context = {}) {
   };
 }
 
+function oidnOutputOracleCommandExecutionFacet(input = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const failedGates = [];
+  if (!present) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_command_execution_matrix_facet.v1',
+      schema_version: 'synthi.gpu_hmr.oidn_output_oracle_command_execution_matrix_facet.v1',
+      present: false,
+      accepted: false,
+      failedGates: [{ code: 'oidn_output_oracle_command_execution_missing' }],
+      failed_gates: [{ code: 'oidn_output_oracle_command_execution_missing' }],
+    };
+  }
+  const schema = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  if (schema !== 'synthi.gpu_hmr.oidn_output_oracle_command_execution.v1') {
+    failedGates.push('oidn_output_oracle_command_execution_schema_mismatch');
+  }
+  const authority = firstText(facet.proofAuthority, facet.proof_authority);
+  if (authority !== 'oidn_output_oracle_command_execution_only_not_gpu_hmr_success') {
+    failedGates.push('oidn_output_oracle_command_execution_authority_mismatch');
+  }
+  if (
+    firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+    || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+    || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+    || firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+  ) {
+    failedGates.push('oidn_output_oracle_command_execution_claims_gpu_hmr_success');
+  }
+  const blockingGaps = Array.isArray(facet.blockingGaps)
+    ? facet.blockingGaps
+    : Array.isArray(facet.blocking_gaps)
+      ? facet.blocking_gaps
+      : [];
+  const serializedFailedGates = Array.isArray(facet.failedGates)
+    ? facet.failedGates
+    : Array.isArray(facet.failed_gates)
+      ? facet.failed_gates
+      : [];
+  const nestedFailed = compactStringList([
+    ...blockingGaps,
+    ...serializedFailedGates.map((gate) => firstText(gate?.code, gate)),
+  ]);
+  failedGates.push(...nestedFailed);
+  const commandHash = normalizeSha256(firstText(facet.commandHash, facet.command_hash));
+  const workerOutputOracleManifestPath = firstText(
+    facet.workerOutputOracleManifestPath,
+    facet.worker_output_oracle_manifest_path,
+  );
+  const rawStatus = firstText(facet.rawStatus, facet.raw_status);
+  const exitCodeText = firstText(facet.exitCodeText, facet.exit_code_text);
+  const evidenceRefs = compactStringList(facet.evidenceRefs ?? facet.evidence_refs);
+  if (facet.accepted === true) {
+    if (!/^sha256:[0-9a-f]{64}$/i.test(commandHash)) {
+      failedGates.push('oidn_output_oracle_command_execution_command_hash_missing');
+    }
+    if (!workerOutputOracleManifestPath) {
+      failedGates.push('oidn_output_oracle_command_execution_manifest_path_missing');
+    }
+    if (rawStatus !== 'pass') {
+      failedGates.push('oidn_output_oracle_command_execution_status_not_pass');
+    }
+    if (exitCodeText && exitCodeText !== '0') {
+      failedGates.push('oidn_output_oracle_command_execution_exit_code_nonzero');
+    }
+    if (evidenceRefs.length === 0) {
+      failedGates.push('oidn_output_oracle_command_execution_evidence_refs_missing');
+    }
+  }
+  const uniqueFailedGates = compactStringList(failedGates);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_command_execution_matrix_facet.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_output_oracle_command_execution_matrix_facet.v1',
+    present: true,
+    accepted: uniqueFailedGates.length === 0 && facet.accepted === true,
+    proofAuthority: authority || null,
+    proof_authority: authority || null,
+    commandHash: commandHash || null,
+    command_hash: commandHash || null,
+    workerOutputOracleManifestPath: workerOutputOracleManifestPath || null,
+    worker_output_oracle_manifest_path: workerOutputOracleManifestPath || null,
+    rawStatus: rawStatus || null,
+    raw_status: rawStatus || null,
+    exitCodeText: exitCodeText || null,
+    exit_code_text: exitCodeText || null,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: uniqueFailedGates.map((code) => ({ code })),
+    failed_gates: uniqueFailedGates.map((code) => ({ code })),
+  };
+}
+
 async function preflightRow(json, filePath, context) {
   const schema = firstText(json.schema, json.schemaVersion) ?? 'unknown';
   const backendEvidence = preflightBackendEvidenceFacet(json);
@@ -19996,6 +20089,11 @@ async function preflightRow(json, filePath, context) {
         repoRoot: context.repoRoot,
         baseDir: path.dirname(filePath),
       },
+    )
+    : null;
+  const oidnOutputOracleCommandExecution = backend === 'oidn_hip'
+    ? oidnOutputOracleCommandExecutionFacet(
+      json.outputOracleCommandExecution ?? json.output_oracle_command_execution,
     )
     : null;
   const proofAccepted = backend === 'oidn_hip'
@@ -20052,6 +20150,10 @@ async function preflightRow(json, filePath, context) {
       ?? compactObject(json.workerOutputOracleTransport ?? json.worker_output_oracle_transport),
     worker_output_oracle_transport_facet: oidnWorkerOutputOracleTransport
       ?? compactObject(json.workerOutputOracleTransport ?? json.worker_output_oracle_transport),
+    outputOracleCommandExecutionFacet: oidnOutputOracleCommandExecution
+      ?? compactObject(json.outputOracleCommandExecution ?? json.output_oracle_command_execution),
+    output_oracle_command_execution_facet: oidnOutputOracleCommandExecution
+      ?? compactObject(json.outputOracleCommandExecution ?? json.output_oracle_command_execution),
     matrixOutcome,
     acceptanceClass: matrixOutcome,
     acceptedForGpuHmr: false,
@@ -20091,6 +20193,9 @@ async function preflightRow(json, filePath, context) {
         : []),
       ...(backend === 'oidn_hip' && oidnWorkerOutputOracleTransport?.present === true
         ? (oidnWorkerOutputOracleTransport.failedGates ?? []).map((gate) => gate.code)
+        : []),
+      ...(backend === 'oidn_hip' && oidnOutputOracleCommandExecution?.present === true
+        ? (oidnOutputOracleCommandExecution.failedGates ?? []).map((gate) => gate.code)
         : []),
       ...unsupportedReasons,
       acceptance.reason,
