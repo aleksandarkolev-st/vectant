@@ -2647,8 +2647,12 @@ function randomColdBuildMetadataPathRecognized(pathValue) {
     .test(normalizedPath);
 }
 
-function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
+function randomColdBuildMetadataContentEvidenceFacet(input = {}, options = {}) {
   const facet = compactObject(input);
+  const allowSerializedVerifierOutputReplay = firstBool(
+    options.allowSerializedVerifierOutputReplay,
+    options.allow_serialized_verifier_output_replay,
+  ) === true;
   const present = Object.keys(facet).length > 0;
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
@@ -2729,13 +2733,56 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     facet.contentEvidenceHashVerificationMode,
     facet.content_evidence_hash_verification_mode,
   );
+  const declaredAcceptedBuildFileCount = finiteNumber(
+    facet.acceptedBuildFileCount
+    ?? facet.accepted_build_file_count,
+  );
+  const declaredBuildFileHashCount = finiteNumber(
+    facet.buildFileHashCount
+    ?? facet.build_file_hash_count,
+  );
+  const declaredBuildFileByteLengthCount = finiteNumber(
+    facet.buildFileByteLengthCount
+    ?? facet.build_file_byte_length_count,
+  );
+  const declaredBuildFileTransportCount = finiteNumber(
+    facet.buildFileTransportCount
+    ?? facet.build_file_transport_count,
+  );
+  const declaredRecognizedBuildMetadataPathCount = finiteNumber(
+    facet.recognizedBuildMetadataPathCount
+    ?? facet.recognized_build_metadata_path_count,
+  );
+  const verifierOutputCountsPresent = [
+    declaredAcceptedBuildFileCount,
+    declaredBuildFileHashCount,
+    declaredBuildFileByteLengthCount,
+    declaredBuildFileTransportCount,
+    declaredRecognizedBuildMetadataPathCount,
+  ].every((value) => value !== null);
+  const verifierOutputCountsMatch =
+    declaredAcceptedBuildFileCount === acceptedBuildFileCount
+    && declaredBuildFileHashCount === buildFileHashCount
+    && declaredBuildFileByteLengthCount === buildFileByteLengthCount
+    && declaredBuildFileTransportCount === buildFileTransportCount
+    && declaredRecognizedBuildMetadataPathCount === recognizedBuildMetadataPathCount;
   const rawRecomputedContentEvidenceHash = present
     ? normalizeSha256(stableJsonHash(randomColdBuildMetadataContentEvidenceHashSeed(facet)))
     : null;
   const recomputedContentEvidenceHash = rawRecomputedContentEvidenceHash;
+  const serializedRawVerifierOutputReplay =
+    allowSerializedVerifierOutputReplay
+    && declaredVerificationMode === 'raw_content_evidence_hash_recomputed'
+    && verifierOutputCountsPresent
+    && verifierOutputCountsMatch
+    && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
+    && suppliedRecomputedContentEvidenceHash === suppliedContentEvidenceHash;
   const contentHashMatches = present
     && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
-    && recomputedContentEvidenceHash === suppliedContentEvidenceHash;
+    && (
+      recomputedContentEvidenceHash === suppliedContentEvidenceHash
+      || serializedRawVerifierOutputReplay
+    );
   const suppliedBlockingGaps = compactStringList([
     ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
     ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
@@ -2782,7 +2829,16 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     present
       && suppliedRecomputedContentEvidenceHash
       && suppliedRecomputedContentEvidenceHash !== recomputedContentEvidenceHash
+      && serializedRawVerifierOutputReplay !== true
       ? 'random_cold_build_metadata_content_serialized_recomputed_hash_mismatch'
+      : null,
+    present
+      && allowSerializedVerifierOutputReplay
+      && declaredVerificationMode === 'raw_content_evidence_hash_recomputed'
+      && /^sha256:[a-f0-9]{64}$/i.test(suppliedContentEvidenceHash ?? '')
+      && suppliedRecomputedContentEvidenceHash === suppliedContentEvidenceHash
+      && verifierOutputCountsMatch !== true
+      ? 'random_cold_build_metadata_content_serialized_verifier_output_count_mismatch'
       : null,
     present && declaredVerificationMode === 'matrix_normalized_content_evidence_hash'
       ? 'random_cold_build_metadata_content_serialized_recomputed_hash_untrusted'
@@ -2835,8 +2891,12 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     content_evidence_hash: accepted ? suppliedContentEvidenceHash : null,
     recomputedContentEvidenceHash,
     recomputed_content_evidence_hash: recomputedContentEvidenceHash,
-    contentEvidenceHashVerificationMode: 'raw_content_evidence_hash_recomputed',
-    content_evidence_hash_verification_mode: 'raw_content_evidence_hash_recomputed',
+    contentEvidenceHashVerificationMode: serializedRawVerifierOutputReplay
+      ? 'serialized_raw_content_verifier_output_replayed'
+      : 'raw_content_evidence_hash_recomputed',
+    content_evidence_hash_verification_mode: serializedRawVerifierOutputReplay
+      ? 'serialized_raw_content_verifier_output_replayed'
+      : 'raw_content_evidence_hash_recomputed',
     failedGates,
     failed_gates: failedGates,
   };
@@ -27662,6 +27722,10 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       row.randomColdBackendEvidence
       ?? row.random_cold_backend_evidence,
     );
+    const allowSerializedBuildContentReplay =
+      firstText(intake.projectionAuthority, intake.projection_authority)
+        === RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY
+      && sourceIntakeEvidence.accepted === true;
     const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
       intake.buildMetadataContentEvidence,
       intake.build_metadata_content_evidence,
@@ -27669,7 +27733,9 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       row.build_metadata_content_evidence,
       facet.buildMetadataContentEvidence,
       facet.build_metadata_content_evidence,
-    ));
+    ), {
+      allowSerializedVerifierOutputReplay: allowSerializedBuildContentReplay,
+    });
     const authority = firstText(facet.proofAuthority, facet.proof_authority);
     const eventType = firstText(facet.eventType, facet.event_type, row.eventType, row.event_type);
     const dryRun = firstBool(facet.dryRun, facet.dry_run, row.dryRun, row.dry_run) === true;
@@ -28171,6 +28237,10 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     row.sourceListingHash,
     row.source_listing_hash,
   ));
+  const allowSerializedBuildContentReplay =
+    firstText(intake.projectionAuthority, intake.projection_authority)
+      === RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY
+    && sourceIntake.accepted === true;
   const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
     intake.buildMetadataContentEvidence,
     intake.build_metadata_content_evidence,
@@ -28180,7 +28250,9 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     facet.build_metadata_content_evidence,
     sourceIntake.buildMetadataContentEvidence,
     sourceIntake.build_metadata_content_evidence,
-  ));
+  ), {
+    allowSerializedVerifierOutputReplay: allowSerializedBuildContentReplay,
+  });
   const buildFileContentRefs = compactObjectList(
     buildContentEvidence.buildFiles
     ?? buildContentEvidence.build_files,
