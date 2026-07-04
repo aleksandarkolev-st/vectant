@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite ExecutionPlan",
+  "type": "object",
+  "required": [
+    "agentSessionId",
+    "mission",
+    "route"
+  ],
+  "properties": {
+    "agentSessionId": {
+      "type": "string"
+    },
+    "displayCallsign": {
+      "type": "string"
+    },
+    "mission": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string"
+    },
+    "route": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockedZones": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requestedTools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "abortConditions": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

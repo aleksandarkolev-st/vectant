@@ -1,0 +1,10 @@
+{
+  "id": "cmr5li7ha004qpm0z6piq4wqm",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "kind": "rfi",
+  "status": "open",
+  "title": "Confirm schema-first contract before API route",
+  "blocking": true,
+  "createdAt": "2026-07-03T23:59:45.502Z",
+  "resolvedAt": null
+}

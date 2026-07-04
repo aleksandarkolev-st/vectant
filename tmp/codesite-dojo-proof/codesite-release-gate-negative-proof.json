@@ -1,9 +1,9 @@
 {
   "ok": false,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-03T22:53:24.981Z",
-  "proofRoot": "tmp/codesite-release-gate-negative-proofroot",
-  "slug": "codesite-mature-full-proof-20260702bc",
+  "generatedAt": "2026-07-04T00:08:17.415Z",
+  "proofRoot": "tmp/codesite-dojo-proof",
+  "slug": "codesite-mature-full-proof-20260703-overlay8",
   "checks": [
     {
       "name": "workflowAssertions",
@@ -361,7 +361,7 @@
           "commands": 4,
           "dockerCommands": 2,
           "qualityCounters": 7,
-          "ok": false
+          "ok": true
         }
       ],
       "assertions": 359,
@@ -369,7 +369,7 @@
       "browserCaptures": 6,
       "commands": 85,
       "dockerCommands": 23,
-      "ok": false
+      "ok": true
     },
     {
       "name": "proofBundles",
@@ -380,14 +380,12 @@
     {
       "name": "codexAgentEvidence",
       "records": 3,
-      "valid": 3,
-      "ok": true
+      "valid": 2,
+      "ok": false
     }
   ],
   "warnings": [],
   "failures": [
-    "tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.png appears blank",
-    "tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json commands.0.summary.skipped must be 0, observed 1",
-    "tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json testSummary.skipped must be 0, observed 1"
+    "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay8/TEST-03.json commands.0 failed transcript command: status=failed exitCode=127"
   ]
 }

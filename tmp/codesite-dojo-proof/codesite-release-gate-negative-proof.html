@@ -30,9 +30,9 @@
       <p>Blocking release validation for committed CodeSite workflow proof, visual artifacts, runtime mount boundary evidence, trusted proof bundles, and real Codex agent transcripts.</p>
     </section>
     <section class="meta">
-      <div class="metric"><div class="label">Slug</div><div class="value">codesite-mature-full-proof-20260702bc</div></div>
-      <div class="metric"><div class="label">Proof root</div><div class="value">tmp/codesite-release-gate-negative-proofroot</div></div>
-      <div class="metric"><div class="label">Generated</div><div class="value">2026-07-03T22:53:24.981Z</div></div>
+      <div class="metric"><div class="label">Slug</div><div class="value">codesite-mature-full-proof-20260703-overlay8</div></div>
+      <div class="metric"><div class="label">Proof root</div><div class="value">tmp/codesite-dojo-proof</div></div>
+      <div class="metric"><div class="label">Generated</div><div class="value">2026-07-04T00:08:17.415Z</div></div>
     </section>
     <section class="grid">
     <section class="card">
@@ -85,7 +85,7 @@
 
     <section class="card">
       <div class="label">maturePlanProofSuite</div>
-      <div class="value bad">fail</div>
+      <div class="value good">pass</div>
       <pre>{
   &quot;name&quot;: &quot;maturePlanProofSuite&quot;,
   &quot;required&quot;: 30,
@@ -418,7 +418,7 @@
       &quot;commands&quot;: 4,
       &quot;dockerCommands&quot;: 2,
       &quot;qualityCounters&quot;: 7,
-      &quot;ok&quot;: false
+      &quot;ok&quot;: true
     }
   ],
   &quot;assertions&quot;: 359,
@@ -426,7 +426,7 @@
   &quot;browserCaptures&quot;: 6,
   &quot;commands&quot;: 85,
   &quot;dockerCommands&quot;: 23,
-  &quot;ok&quot;: false
+  &quot;ok&quot;: true
 }</pre>
     </section>
 
@@ -445,21 +445,19 @@
 
     <section class="card">
       <div class="label">codexAgentEvidence</div>
-      <div class="value good">pass</div>
+      <div class="value bad">fail</div>
       <pre>{
   &quot;name&quot;: &quot;codexAgentEvidence&quot;,
   &quot;records&quot;: 3,
-  &quot;valid&quot;: 3,
-  &quot;ok&quot;: true
+  &quot;valid&quot;: 2,
+  &quot;ok&quot;: false
 }</pre>
     </section>
   </section>
     <section class="card" style="margin-top:12px">
       <div class="label">Failures</div>
       <pre>[
-  &quot;tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.png appears blank&quot;,
-  &quot;tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json commands.0.summary.skipped must be 0, observed 1&quot;,
-  &quot;tmp/codesite-release-gate-negative-proofroot/codesite-terminal-reattach-proof.json testSummary.skipped must be 0, observed 1&quot;
+  &quot;tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay8/TEST-03.json commands.0 failed transcript command: status=failed exitCode=127&quot;
 ]</pre>
     </section>
   </main>

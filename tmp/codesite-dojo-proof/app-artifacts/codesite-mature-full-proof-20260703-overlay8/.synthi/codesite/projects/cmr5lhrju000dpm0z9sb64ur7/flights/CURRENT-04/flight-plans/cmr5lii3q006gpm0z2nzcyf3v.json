@@ -1,0 +1,20 @@
+{
+  "id": "cmr5lii3q006gpm0z2nzcyf3v",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "agentSessionId": "cmr5lihof006apm0z82mg6s07",
+  "displayCallsign": "CURRENT-04",
+  "mission": "Exercise current source pilot health",
+  "domain": "schema",
+  "status": "preflight",
+  "route": [
+    "synthi/prisma/**"
+  ],
+  "blockedZones": [],
+  "abortConditions": [],
+  "requestedTools": [
+    "npm_test"
+  ],
+  "estimatedDurationMs": null,
+  "filedAt": "2026-07-03T23:59:59.271Z",
+  "closedAt": null
+}

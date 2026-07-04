@@ -1,9 +1,9 @@
 {
   "ok": true,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-03T22:54:16.454Z",
+  "generatedAt": "2026-07-04T00:06:43.737Z",
   "proofRoot": "tmp/codesite-dojo-proof",
-  "slug": "codesite-mature-full-proof-20260702bc",
+  "slug": "codesite-mature-full-proof-20260703-overlay8",
   "checks": [
     {
       "name": "workflowAssertions",
