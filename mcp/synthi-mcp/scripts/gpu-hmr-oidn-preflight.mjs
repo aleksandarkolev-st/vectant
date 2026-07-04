@@ -76,6 +76,13 @@ const CFG = {
   seed: process.env.SYNTHI_OIDN_RNG_SEED ?? '12345',
   requireHip: process.env.SYNTHI_OIDN_REQUIRE_HIP === '1',
   allowRejected: process.env.SYNTHI_OIDN_ALLOW_REJECTED === '1',
+  outputOracleCommand: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_COMMAND
+    ?? argValue('--output-oracle-command')
+    ?? '',
+  outputOracleCommandWorkingDirectory: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_COMMAND_CWD
+    ?? argValue('--output-oracle-command-cwd')
+    ?? '',
+  outputOracleCommandTimeoutMs: Number(process.env.SYNTHI_OIDN_OUTPUT_ORACLE_COMMAND_TIMEOUT_MS ?? 300000),
   outputOracleManifestPath: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH
     ?? argValue('--output-oracle-manifest')
     ?? '',
@@ -139,6 +146,12 @@ function firstText(...values) {
   return '';
 }
 
+function compactStringList(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [values])
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter(Boolean))];
+}
+
 function authorityClaimsSuccess(object) {
   if (!object || typeof object !== 'object') return false;
   return object.acceptedForGpuHmr === true
@@ -191,6 +204,25 @@ function workerManifestFilePath(manifestDir, value) {
 function safeLocalArtifactName(role, workerPath) {
   const base = cleanToken(path.posix.basename(workerPath || role)) || `${role}.bin`;
   return `${role}-${base}`;
+}
+
+function outputOracleCommandHash(command = CFG.outputOracleCommand) {
+  return command ? `sha256:${sha256Buffer(Buffer.from(command))}` : null;
+}
+
+function defaultWorkerOutputOracleManifestPath() {
+  return `/tmp/synthi-oidn-output-oracle/${cleanToken(CFG.slug)}/oracle.json`;
+}
+
+function effectiveWorkerOutputOracleManifestPath() {
+  return CFG.workerOutputOracleManifestPath
+    || (CFG.outputOracleCommand ? defaultWorkerOutputOracleManifestPath() : '');
+}
+
+function metricValue(text, key) {
+  const escaped = String(key ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`\\b${escaped}=([^\\s]+)\\b`).exec(String(text ?? ''));
+  return match?.[1] ?? null;
 }
 
 async function safeRealpath(value) {
@@ -696,6 +728,119 @@ async function workerAllowedRoots(manifestPath) {
     if (resolved && !roots.includes(resolved)) roots.push(resolved);
   }
   return roots;
+}
+
+async function executeOidnOutputOracleCommand({
+  oidnTool,
+  hipDeviceLibrary,
+  execShell = execDockerShell,
+} = {}) {
+  const declared = Boolean(CFG.outputOracleCommand);
+  const commandHash = outputOracleCommandHash();
+  const workerManifestPath = effectiveWorkerOutputOracleManifestPath();
+  const workingDirectory = CFG.outputOracleCommandWorkingDirectory || CFG.repoPath;
+  if (!declared) {
+    return null;
+  }
+  const timeoutMs = Math.max(1000, Number.isFinite(CFG.outputOracleCommandTimeoutMs)
+    ? Math.trunc(CFG.outputOracleCommandTimeoutMs)
+    : 300000);
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const script = `
+set +e
+started=$(date +%s%3N)
+status=started
+exit_code=0
+skip_reason=none
+manifest_path=${shellQuote(workerManifestPath)}
+mkdir -p "$(dirname "$manifest_path")"
+if [ ! -d ${shellQuote(workingDirectory)} ]; then
+  status=failed
+  exit_code=127
+  skip_reason=oidn_output_oracle_command_working_directory_missing
+else
+  (
+    cd ${shellQuote(workingDirectory)}
+    export SYNTHI_GPU_HMR_OUTPUT_ORACLE=1
+    export SYNTHI_OIDN_OUTPUT_ORACLE=1
+    export SYNTHI_OIDN_OUTPUT_ORACLE_COMMAND_HASH=${shellQuote(commandHash)}
+    export SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH="$manifest_path"
+    export SYNTHI_GPU_HMR_OUTPUT_ORACLE_MANIFEST_PATH="$manifest_path"
+    export SYNTHI_OIDN_WORKER_REPO_PATH=${shellQuote(CFG.repoPath)}
+    export SYNTHI_OIDN_TEST_PATH=${shellQuote(oidnTool || '')}
+    export SYNTHI_OIDN_HIP_DEVICE_LIBRARY_PATH=${shellQuote(hipDeviceLibrary || '')}
+    export SYNTHI_OIDN_RNG_SEED=${shellQuote(CFG.seed)}
+    if command -v timeout >/dev/null 2>&1; then
+      timeout ${timeoutSeconds} sh -lc ${shellQuote(CFG.outputOracleCommand)}
+    else
+      sh -lc ${shellQuote(CFG.outputOracleCommand)}
+    fi
+  )
+  exit_code=$?
+  if [ "$exit_code" = "0" ]; then
+    status=pass
+  else
+    status=failed
+    skip_reason=oidn_output_oracle_command_failed
+  fi
+fi
+finished=$(date +%s%3N)
+elapsed_ms=$((finished-started))
+printf 'oidn_output_oracle_command_status=%s\\noidn_output_oracle_command_exit_code=%s\\noidn_output_oracle_command_skip_reason=%s\\noidn_output_oracle_command_ms=%s\\noidn_output_oracle_command_manifest_path=%s\\n' "$status" "$exit_code" "$skip_reason" "$elapsed_ms" "$manifest_path"
+exit 0
+`;
+  const result = await execShell(script, timeoutMs + 30000);
+  const output = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`;
+  const rawStatus = metricValue(output, 'oidn_output_oracle_command_status') || 'failed';
+  const exitCodeText = metricValue(output, 'oidn_output_oracle_command_exit_code') || String(result?.exitCode ?? 'unknown');
+  const skipReason = metricValue(output, 'oidn_output_oracle_command_skip_reason') || 'unknown';
+  const elapsedMsText = metricValue(output, 'oidn_output_oracle_command_ms');
+  const manifestPath = metricValue(output, 'oidn_output_oracle_command_manifest_path') || workerManifestPath;
+  const blockingGaps = [];
+  if (rawStatus !== 'pass') blockingGaps.push(`oidn_output_oracle_command_failed:${cleanToken(skipReason)}`);
+  if (!manifestPath) blockingGaps.push('oidn_output_oracle_command_manifest_path_missing');
+  const elapsedMs = Number(elapsedMsText);
+  const facet = {
+    schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_command_execution.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_output_oracle_command_execution.v1',
+    proofAuthority: 'oidn_output_oracle_command_execution_only_not_gpu_hmr_success',
+    proof_authority: 'oidn_output_oracle_command_execution_only_not_gpu_hmr_success',
+    declared,
+    accepted: rawStatus === 'pass' && blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    commandHash,
+    command_hash: commandHash,
+    workingDirectory,
+    working_directory: workingDirectory,
+    workerOutputOracleManifestPath: manifestPath,
+    worker_output_oracle_manifest_path: manifestPath,
+    rawStatus,
+    raw_status: rawStatus,
+    exitCodeText,
+    exit_code_text: exitCodeText,
+    skipReason,
+    skip_reason: skipReason,
+    elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    elapsed_ms: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs: compactStringList([
+      commandHash ? `oidn-output-oracle-command:${commandHash}` : null,
+      manifestPath ? `oidn-output-oracle-command-manifest:${manifestPath}` : null,
+    ]),
+    evidence_refs: compactStringList([
+      commandHash ? `oidn-output-oracle-command:${commandHash}` : null,
+      manifestPath ? `oidn-output-oracle-command-manifest:${manifestPath}` : null,
+    ]),
+  };
+  facet.executionHash = `sha256:${sha256Json(facet)}`;
+  facet.execution_hash = facet.executionHash;
+  return facet;
 }
 
 async function copyWorkerOutputOracleFile({ roleConfig, manifest, workerManifestDir, localDir, allowedRoots }) {
@@ -1207,6 +1352,10 @@ function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd, pathInt
       configured_hip_device_library_path: CFG.hipDeviceLibraryPath || null,
       configuredOutputOracleManifestPath: CFG.outputOracleManifestPath || null,
       configured_output_oracle_manifest_path: CFG.outputOracleManifestPath || null,
+      configuredOutputOracleCommand: Boolean(CFG.outputOracleCommand),
+      configured_output_oracle_command: Boolean(CFG.outputOracleCommand),
+      configuredOutputOracleCommandHash: outputOracleCommandHash(),
+      configured_output_oracle_command_hash: outputOracleCommandHash(),
       configuredWorkerOutputOracleManifestPath: CFG.workerOutputOracleManifestPath || null,
       configured_worker_output_oracle_manifest_path: CFG.workerOutputOracleManifestPath || null,
       toolFound: Boolean(toolProbe.tool),
@@ -1234,6 +1383,7 @@ function oidnPreflightTimingMetrics({ durationNs, classification }) {
     configured_hip_device_library_path: CFG.hipDeviceLibraryPath || null,
     seed: CFG.seed,
     outputOracleManifestPath: CFG.outputOracleManifestPath || null,
+    outputOracleCommandHash: outputOracleCommandHash(),
     workerOutputOracleManifestPath: CFG.workerOutputOracleManifestPath || null,
   });
   return {
@@ -1290,7 +1440,14 @@ async function buildProof() {
     tests.push(await runOidnTest(toolProbe.tool, 'buffer read/write', 'cpu'));
   }
   const ldd = await runLdd(libraryProbe.library);
-  const workerOutputOracleTransport = await stageWorkerOutputOracleManifest(CFG.workerOutputOracleManifestPath);
+  const outputOracleCommandExecution = await executeOidnOutputOracleCommand({
+    oidnTool: toolProbe.tool,
+    hipDeviceLibrary: libraryProbe.library,
+  });
+  const workerOutputOracleManifestPath = CFG.workerOutputOracleManifestPath
+    || outputOracleCommandExecution?.workerOutputOracleManifestPath
+    || '';
+  const workerOutputOracleTransport = await stageWorkerOutputOracleManifest(workerOutputOracleManifestPath);
   const outputOracleManifestPath = CFG.outputOracleManifestPath
     || (workerOutputOracleTransport?.accepted === true ? workerOutputOracleTransport.localManifestPath : '');
   const outputOracle = await buildOidnOutputOracleEvidence(outputOracleManifestPath);
@@ -1336,6 +1493,8 @@ async function buildProof() {
     }),
     outputOracle,
     output_oracle: outputOracle,
+    outputOracleCommandExecution,
+    output_oracle_command_execution: outputOracleCommandExecution,
     workerOutputOracleTransport,
     worker_output_oracle_transport: workerOutputOracleTransport,
     runtimeBoundaryBridge,
@@ -1387,6 +1546,8 @@ async function writeProof(proof) {
     `oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`,
     `oidn_output_oracle_manifest=${proof.outputOracle?.manifestPath ?? 'none'}`,
     `oidn_output_oracle_accepted=${proof.outputOracle?.accepted ?? false}`,
+    `oidn_output_oracle_command=${proof.outputOracleCommandExecution?.accepted ?? false}`,
+    `oidn_output_oracle_command_manifest=${proof.outputOracleCommandExecution?.workerOutputOracleManifestPath ?? 'none'}`,
     `oidn_worker_output_oracle_transport=${proof.workerOutputOracleTransport?.accepted ?? false}`,
     `oidn_worker_output_oracle_manifest=${proof.workerOutputOracleTransport?.workerManifestPath ?? 'none'}`,
     `oidn_runtime_boundary_manifest=${proof.runtimeBoundaryBridge?.manifest?.manifestPath ?? 'none'}`,
@@ -1592,6 +1753,72 @@ async function runOutputOracleSelfCheck() {
   );
   assert(isPosixPathInside('/tmp/oidn/oracle/noisy.bin', '/tmp/oidn'), 'worker POSIX root check should accept child paths');
   assert(!isPosixPathInside('/tmp/oidn-other/noisy.bin', '/tmp/oidn'), 'worker POSIX root check should reject prefix escapes');
+
+  const previousCommand = CFG.outputOracleCommand;
+  const previousCommandCwd = CFG.outputOracleCommandWorkingDirectory;
+  const previousWorkerManifest = CFG.workerOutputOracleManifestPath;
+  CFG.outputOracleCommand = 'printf oracle > "$SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH"';
+  CFG.outputOracleCommandWorkingDirectory = '/tmp';
+  CFG.workerOutputOracleManifestPath = '/tmp/synthi-oidn-command/oracle.json';
+  let observedScript = '';
+  const commandFacet = await executeOidnOutputOracleCommand({
+    oidnTool: '/opt/oidn/bin/oidnTest',
+    hipDeviceLibrary: '/opt/oidn/lib/libOpenImageDenoise_device_hip.so',
+    execShell: async (script) => {
+      observedScript = script;
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: [
+          'oidn_output_oracle_command_status=pass',
+          'oidn_output_oracle_command_exit_code=0',
+          'oidn_output_oracle_command_skip_reason=none',
+          'oidn_output_oracle_command_ms=42',
+          'oidn_output_oracle_command_manifest_path=/tmp/synthi-oidn-command/oracle.json',
+        ].join('\n'),
+        stderr: '',
+        durationMs: 1,
+        timedOut: false,
+      };
+    },
+  });
+  assert(commandFacet.accepted === true, 'OIDN output-oracle command facet should accept pass status');
+  assert(commandFacet.acceptedForGpuHmr === false, 'OIDN output-oracle command cannot accept GPU HMR');
+  assert(commandFacet.gpuHmrSuccess === false, 'OIDN output-oracle command cannot claim GPU HMR success');
+  assert(commandFacet.canSatisfyRuntimeProof === false, 'OIDN output-oracle command cannot satisfy runtime proof');
+  assert(commandFacet.commandHash === outputOracleCommandHash(), 'OIDN output-oracle command hash mismatch');
+  assert(
+    observedScript.includes('SYNTHI_GPU_HMR_OUTPUT_ORACLE_MANIFEST_PATH'),
+    'OIDN output-oracle command should export generic output oracle manifest alias',
+  );
+  assert(
+    observedScript.includes('SYNTHI_OIDN_TEST_PATH'),
+    'OIDN output-oracle command should expose detected oidnTest path',
+  );
+  const failedCommandFacet = await executeOidnOutputOracleCommand({
+    execShell: async () => ({
+      exitCode: 0,
+      signal: null,
+      stdout: [
+        'oidn_output_oracle_command_status=failed',
+        'oidn_output_oracle_command_exit_code=2',
+        'oidn_output_oracle_command_skip_reason=oidn_output_oracle_command_failed',
+        'oidn_output_oracle_command_ms=7',
+        'oidn_output_oracle_command_manifest_path=/tmp/synthi-oidn-command/oracle.json',
+      ].join('\n'),
+      stderr: '',
+      durationMs: 1,
+      timedOut: false,
+    }),
+  });
+  assert(failedCommandFacet.accepted === false, 'failed OIDN output-oracle command should not accept');
+  assert(
+    failedCommandFacet.blockingGaps.includes('oidn_output_oracle_command_failed:oidn_output_oracle_command_failed'),
+    `failed command gap missing: ${failedCommandFacet.blockingGaps.join(',')}`,
+  );
+  CFG.outputOracleCommand = previousCommand;
+  CFG.outputOracleCommandWorkingDirectory = previousCommandCwd;
+  CFG.workerOutputOracleManifestPath = previousWorkerManifest;
 }
 
 function syntheticHash(label) {
