@@ -771,7 +771,8 @@ function coldPathSelectionAudit({
     requireDirectSource && directUserSourceCount === 0
       ? 'cold_path_direct_source_required_but_not_selected'
       : null,
-    sourceModeValue === 'configured_sample_pool' && samplePool !== true
+    (sourceModeValue === 'configured_sample_pool' || sourceModeValue === 'configured_candidate_pool')
+      && samplePool !== true
       ? 'cold_path_sample_pool_mode_not_explicitly_requested'
       : null,
   ].filter(Boolean);
@@ -4165,6 +4166,36 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct/sample-pool mode parsing failed');
   }
+  const implicitSamplePoolAudit = coldPathSelectionAudit({
+    seed: 'implicit-sample-pool-self-check',
+    count: 1,
+    dryRun: true,
+    candidates,
+    selected: [first[0]],
+    results: [{ candidateId: first[0].id }],
+    sourceMode: 'configured_candidate_pool',
+    samplePool: false,
+  });
+  const explicitSamplePoolAudit = coldPathSelectionAudit({
+    seed: 'explicit-sample-pool-self-check',
+    count: 1,
+    dryRun: true,
+    candidates,
+    selected: [first[0]],
+    results: [{ candidateId: first[0].id }],
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
+  });
+  if (
+    implicitSamplePoolAudit.accepted !== false
+    || !implicitSamplePoolAudit.blockingGaps?.includes(
+      'cold_path_sample_pool_mode_not_explicitly_requested',
+    )
+    || explicitSamplePoolAudit.accepted !== true
+    || explicitSamplePoolAudit.blockingGaps?.length !== 0
+  ) {
+    throw new Error('random large-project cold-path sample-pool explicitness self-check failed');
+  }
   if (
     bloblessGitTreeSizeListingEnabled({}) !== false
     || bloblessGitTreeSizeListingEnabled({ SYNTHI_GPU_HMR_BLOBLESS_TREE_SIZE_LISTING: '1' }) !== true
@@ -4211,6 +4242,8 @@ async function selfCheck() {
     sourceIntake: false,
     sourceIntakeTimeoutMs: 1,
     candidates,
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
     outputDir: path.join(LOG_DIR, 'self-check'),
     runCandidate: async (candidate) => ({
       candidateId: candidate.id,
@@ -4683,6 +4716,8 @@ async function selfCheck() {
     timeoutMs: 1000,
     runnerTimeoutMs: 2000,
     candidates,
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
     outputDir: path.join(LOG_DIR, 'self-check'),
   });
   if (
@@ -4712,6 +4747,8 @@ async function selfCheck() {
     timeoutMs: 1000,
     runnerTimeoutMs: 2000,
     candidates,
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
     outputDir: path.join(LOG_DIR, 'self-check'),
     runCandidate: async (candidate) => ({
       candidateId: candidate.id,
@@ -4739,6 +4776,8 @@ async function selfCheck() {
     timeoutMs: 1000,
     runnerTimeoutMs: 2000,
     candidates,
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
     outputDir: path.join(LOG_DIR, 'self-check'),
   });
   const unprofiledResult = unprofiledManifest.results[0] ?? {};
