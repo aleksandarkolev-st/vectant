@@ -3,6 +3,10 @@ import prisma from '@/lib/prisma';
 import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
+import {
+    requireWorkspaceAccessById,
+    requireWorkspaceManageAccessById,
+} from '@/lib/workspaceAccess';
 
 
 const storage = createGcsStorage();
@@ -18,6 +22,11 @@ export async function GET(request) {
     }
 
     try {
+        const access = await requireWorkspaceAccessById(id);
+        if (!access.ok) {
+            return NextResponse.json({ error: access.error }, { status: access.status });
+        }
+
         const workspace = await prisma.workspace.findUnique({
             where: {
                 id
@@ -126,6 +135,11 @@ export async function PUT(request) {
     }
 
     try {
+        const access = await requireWorkspaceManageAccessById(id);
+        if (!access.ok) {
+            return NextResponse.json({ error: access.error }, { status: access.status });
+        }
+
         const { name } = await request.json();
 
         if (!name) {
@@ -156,7 +170,12 @@ export async function DELETE(request) {
     }
 
     try {
-        const storagePathPrefix = `workspaces/${id}/`;
+        const access = await requireWorkspaceManageAccessById(id);
+        if (!access.ok) {
+            return NextResponse.json({ error: access.error }, { status: access.status });
+        }
+
+        const storagePathPrefix = `workspaces/${access.workspace.slug}/`;
         
         await storage.bucket(BUCKET_NAME).deleteFiles({
             prefix: storagePathPrefix,
