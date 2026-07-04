@@ -1578,12 +1578,12 @@ function proofShadowExecutionPlan(proofRepo, changedPath) {
     commands: [
       {
         label: 'schema-typecheck',
-        command: process.execPath,
+        command: 'node',
         args: ['scripts/typecheck-schema.mjs'],
       },
       {
         label: 'schema-contract-test',
-        command: process.execPath,
+        command: 'node',
         args: ['scripts/test-schema-contract.mjs'],
       },
     ],
