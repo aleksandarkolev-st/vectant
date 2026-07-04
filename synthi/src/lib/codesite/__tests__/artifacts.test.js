@@ -692,6 +692,35 @@ describe('CodeSite artifact projection', () => {
     expect(history).toContain('"action":"remove"');
     expect(history).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
   });
+
+  it('compacts repo-local artifact path history while retaining current proof paths', async () => {
+    const previousMaxBytes = process.env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES;
+    process.env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES = '65536';
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-history-'));
+    const artifactRoot = path.join(root, '.synthi', 'codesite');
+    try {
+      for (let index = 0; index < 8; index += 1) {
+        await writeArtifactProjection({
+          ...projectFixture(),
+          id: `site_signup_email_verification_${index}`,
+          title: `Signup email verification ${index}`,
+        }, null, artifactRoot);
+      }
+
+      const historyPath = path.join(artifactRoot, 'artifact-path-history.jsonl');
+      const stat = await fs.stat(historyPath);
+      const history = await fs.readFile(historyPath, 'utf8');
+      expect(stat.size).toBeLessThan(131072);
+      expect(history).toContain('synthi.codesite.artifactPathHistory.compaction.v1');
+      expect(history).toContain('projects/site_signup_email_verification_7/proof-bundles/proof-1.proof.json');
+    } finally {
+      if (previousMaxBytes == null) {
+        delete process.env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES;
+      } else {
+        process.env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES = previousMaxBytes;
+      }
+    }
+  });
 });
 
 describe('CodeSite proof utilities', () => {

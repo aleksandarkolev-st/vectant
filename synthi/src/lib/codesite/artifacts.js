@@ -11,6 +11,7 @@ import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
 const ARTIFACT_PATH_HISTORY = 'artifact-path-history.jsonl';
+const DEFAULT_ARTIFACT_PATH_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 const artifactWriteQueues = new Map();
 
 export const CODESITE_MCP_TOOLS = [
@@ -1148,6 +1149,58 @@ async function appendArtifactPathHistory(root, entries) {
   const target = path.join(root, ARTIFACT_PATH_HISTORY);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.appendFile(target, `${entries.map((entry) => stableJson(entry)).join('\n')}\n`, 'utf8');
+  await compactArtifactPathHistory(target);
+}
+
+async function compactArtifactPathHistory(target) {
+  const maxBytes = artifactPathHistoryMaxBytes();
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return;
+  const stat = await fs.stat(target).catch(() => null);
+  if (!stat || stat.size <= maxBytes) return;
+  const text = await fs.readFile(target, 'utf8');
+  const lines = text.trimEnd().split('\n').filter(Boolean);
+  const parsed = lines.map((line) => {
+    try {
+      return { line, entry: JSON.parse(line) };
+    } catch (_) {
+      return { line, entry: null };
+    }
+  });
+  const latestGenerationId = [...parsed].reverse().find((item) => item.entry?.generationId)?.entry?.generationId || null;
+  const retainedIndexes = new Set();
+  if (latestGenerationId) {
+    parsed.forEach((item, index) => {
+      if (item.entry?.generationId === latestGenerationId) retainedIndexes.add(index);
+    });
+  }
+  let retainedBytes = [...retainedIndexes]
+    .reduce((sum, index) => sum + Buffer.byteLength(lines[index], 'utf8') + 1, 0);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (retainedIndexes.has(index)) continue;
+    const line = lines[index];
+    const lineBytes = Buffer.byteLength(line, 'utf8') + 1;
+    if (retainedIndexes.size && retainedBytes + lineBytes > maxBytes) break;
+    retainedIndexes.add(index);
+    retainedBytes += lineBytes;
+  }
+  const retained = [...retainedIndexes]
+    .sort((left, right) => left - right)
+    .map((index) => lines[index]);
+  const marker = stableJson({
+    schemaVersion: 'synthi.codesite.artifactPathHistory.compaction.v1',
+    action: 'compact',
+    originalBytes: stat.size,
+    retainedLineCount: retained.length,
+    prunedLineCount: Math.max(0, lines.length - retained.length),
+    maxBytes,
+    recordedAt: new Date().toISOString(),
+  });
+  await fs.writeFile(target, `${[marker, ...retained].join('\n')}\n`, 'utf8');
+}
+
+function artifactPathHistoryMaxBytes() {
+  const configured = Number(process.env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ARTIFACT_PATH_HISTORY_MAX_BYTES;
 }
 
 function resolveRepoRootCandidate() {
