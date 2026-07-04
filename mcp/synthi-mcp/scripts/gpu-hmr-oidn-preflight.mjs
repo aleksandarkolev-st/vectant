@@ -36,6 +36,14 @@ const CFG = {
     ?? process.env.SYNTHI_WORKER_CONTAINER
     ?? '',
   repoPath: process.env.SYNTHI_OIDN_REPO_PATH ?? '',
+  oidnTestPath: process.env.SYNTHI_OIDN_TEST_PATH
+    ?? process.env.SYNTHI_OIDNTEST_PATH
+    ?? argValue('--oidn-test-path')
+    ?? '',
+  hipDeviceLibraryPath: process.env.SYNTHI_OIDN_HIP_DEVICE_LIBRARY_PATH
+    ?? process.env.SYNTHI_OIDN_HIP_LIBRARY_PATH
+    ?? argValue('--hip-device-library-path')
+    ?? '',
   slug: process.env.SLUG
     ?? process.env.SYNTHI_OIDN_PREFLIGHT_SLUG
     ?? `oidn-preflight-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
@@ -587,11 +595,16 @@ function execDockerShell(command, timeoutMs = CFG.timeoutMs) {
 
 async function findTool() {
   const repo = shellQuote(CFG.repoPath);
+  const configuredTool = shellQuote(CFG.oidnTestPath);
   const probe = [
     `cd ${repo}`,
+    CFG.oidnTestPath
+      ? `p=${configuredTool}; if [ -x "$p" ]; then printf "%s\\n" "$p"; exit 0; fi`
+      : '',
+    'if command -v oidnTest >/dev/null 2>&1; then command -v oidnTest; exit 0; fi',
     'if [ -x build/_deps/oidnbinaries-src/bin/oidnTest ]; then printf "%s\\n" build/_deps/oidnbinaries-src/bin/oidnTest; exit 0; fi',
     'find . -path "*/bin/oidnTest" -type f -perm -111 2>/dev/null | sort | head -n 1',
-  ].join(' && ');
+  ].filter(Boolean).join(' && ');
   const result = await execDockerShell(probe, 30000);
   const tool = result.stdout.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] ?? '';
   return { tool, probe: summarizeCommand(result) };
@@ -599,10 +612,15 @@ async function findTool() {
 
 async function findHipDeviceLibrary() {
   const repo = shellQuote(CFG.repoPath);
+  const configuredLibrary = shellQuote(CFG.hipDeviceLibraryPath);
   const probe = [
     `cd ${repo}`,
+    CFG.hipDeviceLibraryPath
+      ? `p=${configuredLibrary}; if [ -f "$p" ]; then printf "%s\\n" "$p"; exit 0; fi`
+      : '',
+    'if command -v ldconfig >/dev/null 2>&1; then ldconfig -p 2>/dev/null | awk \'/libOpenImageDenoise_device_hip\\.so/{print $NF; exit}\' | head -n 1; fi',
     'find . -name "libOpenImageDenoise_device_hip.so*" -type f 2>/dev/null | sort | head -n 1',
-  ].join(' && ');
+  ].filter(Boolean).join(' && ');
   const result = await execDockerShell(probe, 30000);
   const library = result.stdout.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] ?? '';
   return { library, probe: summarizeCommand(result) };
@@ -844,6 +862,10 @@ function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd, pathInt
       probe: 'oidn_hip_device_preflight',
       workerContainer: CFG.workerContainer,
       repoPath: CFG.repoPath,
+      configuredOidnTestPath: CFG.oidnTestPath || null,
+      configured_oidn_test_path: CFG.oidnTestPath || null,
+      configuredHipDeviceLibraryPath: CFG.hipDeviceLibraryPath || null,
+      configured_hip_device_library_path: CFG.hipDeviceLibraryPath || null,
       toolFound: Boolean(toolProbe.tool),
       hipDeviceLibraryFound: Boolean(libraryProbe.library),
       hipTestCount: tests.filter((test) => test.device === 'hip').length,
@@ -863,6 +885,10 @@ function oidnPreflightTimingMetrics({ durationNs, classification }) {
   const editHash = sha256Stable({
     workerContainer: CFG.workerContainer,
     repoPath: CFG.repoPath,
+    configuredOidnTestPath: CFG.oidnTestPath || null,
+    configured_oidn_test_path: CFG.oidnTestPath || null,
+    configuredHipDeviceLibraryPath: CFG.hipDeviceLibraryPath || null,
+    configured_hip_device_library_path: CFG.hipDeviceLibraryPath || null,
     seed: CFG.seed,
     outputOracleManifestPath: CFG.outputOracleManifestPath || null,
   });
