@@ -1,14 +1,24 @@
 {
   "ok": true,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-04T00:06:43.737Z",
+  "generatedAt": "2026-07-04T00:55:05.336Z",
   "proofRoot": "tmp/codesite-dojo-proof",
-  "slug": "codesite-mature-full-proof-20260703-overlay8",
+  "slug": "codesite-mature-full-proof-20260703-overlay13",
   "checks": [
     {
       "name": "workflowAssertions",
-      "count": 43,
+      "count": 44,
       "ok": true
+    },
+    {
+      "name": "proofGitProvenance",
+      "ok": true,
+      "mode": "git_unavailable_external_worktree_dir",
+      "proofHead": "3c41db1df4e8577602e20a2b9925fc849ff399c2",
+      "currentHead": null,
+      "postProofChangedPathCount": null,
+      "artifactOnlyPostProofChanges": null,
+      "warning": "Git provenance must be validated by the host release gate; container cannot access /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.git/worktrees/codesite-atc-session"
     },
     {
       "name": "visualArtifacts",

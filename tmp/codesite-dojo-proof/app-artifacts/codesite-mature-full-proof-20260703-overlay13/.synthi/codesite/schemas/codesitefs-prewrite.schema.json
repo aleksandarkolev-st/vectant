@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite CodeSiteFSPrewrite",
+  "type": "object",
+  "required": [
+    "path",
+    "source",
+    "tool",
+    "disposition",
+    "reasonCodes",
+    "policyDecision"
+  ],
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "tool": {
+      "type": "string"
+    },
+    "disposition": {
+      "type": "string",
+      "enum": [
+        "write_allowed",
+        "write_denied",
+        "write_quarantined"
+      ]
+    },
+    "reasonCodes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "matchedLease": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "policyDecision": {
+      "type": "object"
+    },
+    "processAncestry": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

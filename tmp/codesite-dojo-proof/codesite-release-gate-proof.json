@@ -1,14 +1,23 @@
 {
   "ok": true,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-04T00:06:29.907Z",
+  "generatedAt": "2026-07-04T00:55:13.222Z",
   "proofRoot": "tmp/codesite-dojo-proof",
-  "slug": "codesite-mature-full-proof-20260703-overlay8",
+  "slug": "codesite-mature-full-proof-20260703-overlay13",
   "checks": [
     {
       "name": "workflowAssertions",
-      "count": 43,
+      "count": 44,
       "ok": true
+    },
+    {
+      "name": "proofGitProvenance",
+      "ok": true,
+      "proofHead": "3c41db1df4e8577602e20a2b9925fc849ff399c2",
+      "currentHead": "3c41db1df4e8577602e20a2b9925fc849ff399c2",
+      "postProofChangedPathCount": 0,
+      "artifactOnlyPostProofChanges": true,
+      "samplePostProofChangedPaths": []
     },
     {
       "name": "visualArtifacts",

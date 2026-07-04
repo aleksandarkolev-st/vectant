@@ -1,22 +1,22 @@
 {
   "schemaVersion": "synthi.codesite.fullWorkflowProofLatest.v1",
   "status": "validated",
-  "slug": "codesite-mature-full-proof-20260703-overlay8",
-  "publishedAt": "2026-07-04T00:03:56.639Z",
-  "runDir": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8",
-  "proof": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-proof.json",
-  "proofSha256": "sha256:eac802ebe90584c5ed1a575cdd7c363a00d0193a6f06fffec173a6002b193c9c",
-  "publication": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-publication.json",
-  "publicationSha256": "sha256:37ee326f073c956f7ac1727146838edab672315c1b96697c032089448ef0649d",
-  "html": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-proof.html",
-  "screenshot": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-proof.png",
-  "summaryScreenshot": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-proof-summary.png",
+  "slug": "codesite-mature-full-proof-20260703-overlay13",
+  "publishedAt": "2026-07-04T00:54:47.580Z",
+  "runDir": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13",
+  "proof": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-proof.json",
+  "proofSha256": "sha256:b18e536bb0fbe04b2610ec1bf6c739684aabbacad898e434e51de71c87f7a176",
+  "publication": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-publication.json",
+  "publicationSha256": "sha256:46735bd642453490a5c011a0af8473b1415126b6352a2cfcc054b4075f0240b9",
+  "html": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-proof.html",
+  "screenshot": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-proof.png",
+  "summaryScreenshot": "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-proof-summary.png",
   "browserScreenshots": [
-    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-ui.png",
-    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-ui-proof-section.png",
-    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-ui-coordination.png",
-    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-ui-line-inspector.png",
-    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-ui-causal-replay-handover.png",
-    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay8/codesite-full-workflow-ui-causal-replay-mobile.png"
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-ui.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-ui-proof-section.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-ui-coordination.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-ui-line-inspector.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-ui-causal-replay-handover.png",
+    "tmp/codesite-dojo-proof/runs/codesite-mature-full-proof-20260703-overlay13/codesite-full-workflow-ui-causal-replay-mobile.png"
   ]
 }

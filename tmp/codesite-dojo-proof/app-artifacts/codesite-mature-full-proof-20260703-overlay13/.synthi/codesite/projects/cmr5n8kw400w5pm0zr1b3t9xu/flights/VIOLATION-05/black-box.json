@@ -1,0 +1,406 @@
+{
+  "displayCallsign": "VIOLATION-05",
+  "session": {
+    "id": "cmr5n9blb012ypm0zyvxhbl7l",
+    "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+    "ownerUserId": "cmr5n8iyu00w2pm0zi27o1klg",
+    "agentProvider": "codesite-proof-harness",
+    "agentRuntime": "pilot-license-violation-proof",
+    "providerSessionRef": "codesite-health:codesite-mature-full-proof-20260703-overlay13:violation",
+    "displayCallsign": "VIOLATION-05",
+    "status": "registered",
+    "permissions": [
+      "synthi_codesite_request_landing"
+    ],
+    "redactionPolicy": {
+      "acceptsTowerMessages": true,
+      "redactSecrets": true,
+      "redactPrivatePrompts": true,
+      "allowAttachments": false,
+      "visibleZones": [
+        "**"
+      ],
+      "allowedDocumentKinds": [
+        "rfi",
+        "change_order",
+        "inspection_request",
+        "inspection_result",
+        "mayday",
+        "handoff",
+        "stop_work",
+        "punch",
+        "tower_instruction"
+      ]
+    },
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoEvidenceRefs": [
+      "dojo:evidence:landing-health-checkride"
+    ],
+    "dojoDecisionDigest": "sha256:88bcf3a38c512166a5b10f336d052ce0c1d2881e28d6bbacda603d35b7a5d433",
+    "pilotLicenseSnapshot": {
+      "licenseLevel": "IFR",
+      "licenseStatus": "active",
+      "repoScope": "codesite-mature-full-proof-20260703-overlay13",
+      "authorizedAirspace": [
+        "synthi/prisma/**"
+      ],
+      "requiredRadar": [
+        "security",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:landing-health-checkride"
+      ],
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "evidenceRefs": [
+        "dojo:evidence:landing-health-checkride"
+      ]
+    },
+    "createdAt": "2026-07-04T00:48:50.159Z",
+    "endedAt": null
+  },
+  "flightPlans": [
+    {
+      "id": "cmr5n9c1y0134pm0zjdy4u38z",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "agentSessionId": "cmr5n9blb012ypm0zyvxhbl7l",
+      "displayCallsign": "VIOLATION-05",
+      "mission": "Exercise failed landing health",
+      "domain": "inspection",
+      "status": "holding",
+      "route": [
+        "synthi/prisma/**"
+      ],
+      "blockedZones": [],
+      "abortConditions": [],
+      "requestedTools": [
+        "npm_test"
+      ],
+      "estimatedDurationMs": null,
+      "filedAt": "2026-07-04T00:48:50.758Z",
+      "closedAt": null
+    }
+  ],
+  "clearances": [],
+  "transactions": [],
+  "assumptions": [],
+  "inbox": [],
+  "events": [
+    {
+      "id": "cmr5n9blw0132pm0zteyjzoej",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "mutationLeaseId": null,
+      "eventType": "transponder_update",
+      "displayCallsign": "VIOLATION-05",
+      "actorType": "agent_session",
+      "actorId": "cmr5n9blb012ypm0zyvxhbl7l",
+      "details": {
+        "status": "registered",
+        "provider": "codesite-proof-harness",
+        "runtime": "pilot-license-violation-proof",
+        "permissions": [
+          "synthi_codesite_request_landing"
+        ],
+        "instruction": "VIOLATION-05 registered with tower."
+      },
+      "evidenceRefs": [],
+      "logicalTime": 66,
+      "createdAt": "2026-07-04T00:48:50.181Z"
+    },
+    {
+      "id": "cmr5n9c230136pm0zazpiksjq",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "mutationLeaseId": null,
+      "eventType": "flight_plan_filed",
+      "displayCallsign": "VIOLATION-05",
+      "actorType": "agent_session",
+      "actorId": "cmr5n9blb012ypm0zyvxhbl7l",
+      "details": {
+        "executionPlanId": "cmr5n9c1y0134pm0zjdy4u38z",
+        "mission": "Exercise failed landing health",
+        "route": [
+          "synthi/prisma/**"
+        ],
+        "blockedZones": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 67,
+      "createdAt": "2026-07-04T00:48:50.763Z"
+    },
+    {
+      "id": "cmr5n9cep013apm0zs4hcez42",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "VIOLATION-05",
+      "actorType": "inspection",
+      "actorId": "cmr5n9cec0138pm0z6r7n9bd9",
+      "details": {
+        "inspectionRunId": "cmr5n9cec0138pm0z6r7n9bd9",
+        "status": "failed",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "security:failed:violation-proof-1"
+        ]
+      },
+      "evidenceRefs": [
+        "security:failed:violation-proof-1"
+      ],
+      "logicalTime": 68,
+      "createdAt": "2026-07-04T00:48:51.218Z"
+    },
+    {
+      "id": "cmr5n9cr5013epm0zpw9w51vt",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "VIOLATION-05",
+      "actorType": "inspection",
+      "actorId": "cmr5n9cqv013cpm0zdf6yzem1",
+      "details": {
+        "inspectionRunId": "cmr5n9cqv013cpm0zdf6yzem1",
+        "status": "failed",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "test:failed:violation-proof-2"
+        ]
+      },
+      "evidenceRefs": [
+        "test:failed:violation-proof-2"
+      ],
+      "logicalTime": 69,
+      "createdAt": "2026-07-04T00:48:51.665Z"
+    }
+  ],
+  "inspections": [
+    {
+      "id": "cmr5n9cec0138pm0z6r7n9bd9",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "executionPlanId": "cmr5n9c1y0134pm0zjdy4u38z",
+      "displayCallsign": "VIOLATION-05",
+      "status": "failed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "security",
+          "status": "failed",
+          "evidenceRefs": [
+            "security:failed:violation-proof-1"
+          ],
+          "adapter": {
+            "key": "security",
+            "label": "Security radar",
+            "evidencePrefix": "security:scan"
+          }
+        }
+      ],
+      "evidenceRefs": [
+        "security:failed:violation-proof-1"
+      ],
+      "requestedAt": "2026-07-04T00:48:51.205Z",
+      "completedAt": null
+    },
+    {
+      "id": "cmr5n9cqv013cpm0zdf6yzem1",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "executionPlanId": "cmr5n9c1y0134pm0zjdy4u38z",
+      "displayCallsign": "VIOLATION-05",
+      "status": "failed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "tests",
+          "status": "failed",
+          "evidenceRefs": [
+            "test:failed:violation-proof-2"
+          ],
+          "adapter": {
+            "key": "tests",
+            "label": "Test radar",
+            "evidencePrefix": "test:run"
+          }
+        }
+      ],
+      "evidenceRefs": [
+        "test:failed:violation-proof-2"
+      ],
+      "requestedAt": "2026-07-04T00:48:51.655Z",
+      "completedAt": null
+    }
+  ],
+  "pilotLicenseHealth": {
+    "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+    "key": "cmr5n9blb012ypm0zyvxhbl7l",
+    "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+    "workspaceSlug": "codesite-mature-full-proof-20260703-overlay13",
+    "agentSessionId": "cmr5n9blb012ypm0zyvxhbl7l",
+    "ownerUserId": "cmr5n8iyu00w2pm0zi27o1klg",
+    "displayCallsign": "VIOLATION-05",
+    "status": "suspended",
+    "level": "IFR",
+    "levelRank": 3,
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoDecisionDigest": "sha256:88bcf3a38c512166a5b10f336d052ce0c1d2881e28d6bbacda603d35b7a5d433",
+    "repoScope": "codesite-mature-full-proof-20260703-overlay13",
+    "authorizedAirspace": [
+      "synthi/prisma/**"
+    ],
+    "restrictedAirspace": [],
+    "requiredRadar": [
+      "security",
+      "tests"
+    ],
+    "earnedBy": [
+      "dojo:evidence:landing-health-checkride"
+    ],
+    "expiresAt": null,
+    "expiresOn": [
+      "source_drift"
+    ],
+    "sourceDrift": {
+      "monitored": true,
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "expired": false
+    },
+    "landingStats": {
+      "total": 2,
+      "passed": 0,
+      "failed": 2,
+      "evidenceRefs": [
+        "security:failed:violation-proof-1",
+        "test:failed:violation-proof-2"
+      ]
+    },
+    "violationStats": {
+      "total": 1,
+      "critical": 1,
+      "latestAt": "2026-07-04T00:48:52.271Z",
+      "evidenceRefs": [
+        "codesite:incident:critical-violation-proof"
+      ]
+    },
+    "reasonCodes": [
+      "pilot_license_critical_violation_window"
+    ],
+    "requiredAction": "review_pilot_license:cmr5n9blb012ypm0zyvxhbl7l",
+    "evidenceRefs": [
+      "dojo:evidence:landing-health-checkride",
+      "security:failed:violation-proof-1",
+      "test:failed:violation-proof-2",
+      "codesite:incident:critical-violation-proof"
+    ],
+    "lifecycle": {
+      "issuedAt": "2026-07-04T00:48:50.159Z",
+      "checkedAt": "2026-07-04T00:54:01.361Z",
+      "latestLandingAt": "2026-07-04T00:48:51.655Z",
+      "latestViolationAt": "2026-07-04T00:48:52.271Z",
+      "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+    }
+  },
+  "proofBundles": [],
+  "quarantines": [],
+  "filesystemBoundaryProofs": [],
+  "causalReplays": [
+    {
+      "incidentId": "cmr5n9d7z013gpm0zum7t1rtt",
+      "category": "security",
+      "severity": "critical",
+      "replayDigest": "sha256:070c797d2848ba0bf260614c43d7d8a080a6f6a56312c2f3604c5260ce885472",
+      "transactionId": "cmr5n8ql900y0pm0zf0xuarrd",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:070c797d2848ba0bf260614c43d7d8a080a6f6a56312c2f3604c5260ce885472",
+      "completeness": {
+        "score": 0.36,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "write.attempted",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "policy_delta.proposed"
+        ],
+        "missingEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.denied",
+          "inspection.result",
+          "near_miss.detected",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "observedEventTypes": [
+          "black_box.closed",
+          "transponder.update",
+          "snapshot.taken",
+          "policy_delta.proposed",
+          "shadow.run",
+          "arbiter.verdict",
+          "write.attempted",
+          "write.quarantined",
+          "assumption.invalidated",
+          "write.allowed",
+          "inspection.requested",
+          "flight_plan.filed",
+          "mayday.declared"
+        ],
+        "totalEvents": 26
+      },
+      "presentEventTypes": [
+        "write.attempted",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "policy_delta.proposed"
+      ],
+      "missingEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.denied",
+        "inspection.result",
+        "near_miss.detected",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "totalEvents": 26,
+      "exportPaths": [
+        "projects/cmr5n8kw400w5pm0zr1b3t9xu/incidents/incident-replay-cmr5n9d7z013gpm0zum7t1rtt.jsonl",
+        "projects/cmr5n8kw400w5pm0zr1b3t9xu/handover.md"
+      ]
+    }
+  ]
+}

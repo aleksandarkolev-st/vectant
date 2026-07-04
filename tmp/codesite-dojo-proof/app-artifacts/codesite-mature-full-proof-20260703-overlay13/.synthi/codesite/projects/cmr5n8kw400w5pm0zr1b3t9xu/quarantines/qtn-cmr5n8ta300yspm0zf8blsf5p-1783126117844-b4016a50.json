@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "synthi.codesite.codesitefs.quarantine.v1",
+  "quarantineId": "qtn-cmr5n8ta300yspm0zf8blsf5p-1783126117844-b4016a50",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay13",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "transactionId": "cmr5n8ta300yspm0zf8blsf5p",
+  "mutationLeaseId": "cmr5n8q0i00xspm0zc16y3e69",
+  "displayCallsign": "SCHEMA-01",
+  "status": "reviewable",
+  "paths": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "changes": [
+    {
+      "path": "synthi/prisma/schema.prisma",
+      "kind": "modified",
+      "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+      "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+      "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+      "currentDigest": null,
+      "expectedDigest": null,
+      "beforeSize": 135,
+      "afterSize": 249,
+      "lineProvenanceCount": 0
+    }
+  ],
+  "lifecycle": {
+    "capturedAt": "2026-07-04T00:48:39.199Z",
+    "reviewedAt": null,
+    "replayedAt": null,
+    "appliedAt": null
+  },
+  "rejected": [],
+  "applied": [],
+  "appliedPaths": [],
+  "remainingPaths": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "latestReplayAttempt": null,
+  "replayAttempts": [],
+  "successfulReplay": null,
+  "eventRefs": [
+    "cmr5n934u011apm0zjsl3dvdp"
+  ],
+  "evidenceRefs": [
+    "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+  ],
+  "symlinkSanitization": null,
+  "createdAt": "2026-07-04T00:48:39.199Z",
+  "updatedAt": "2026-07-04T00:48:39.199Z"
+}
