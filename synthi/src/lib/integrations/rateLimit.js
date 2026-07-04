@@ -43,6 +43,7 @@ export const RATE_LIMITS = {
   resolve: { limit: Number(process.env.SYNTHI_RL_RESOLVE) || 30, windowMs: 60_000 },
   audit: { limit: Number(process.env.SYNTHI_RL_AUDIT) || 120, windowMs: 60_000 },
   git: { limit: Number(process.env.SYNTHI_RL_GIT) || 60, windowMs: 60_000 },
+  telemetry: { limit: Number(process.env.SYNTHI_RL_TELEMETRY) || 120, windowMs: 60_000 },
 };
 
 /** Test-only: clear all buckets. */
