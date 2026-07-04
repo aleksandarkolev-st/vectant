@@ -3342,6 +3342,67 @@ describe('CodeSite control plane transaction validation', () => {
     });
   });
 
+  it('records outbound inbox delivery attempts for configured webhook, A2A, and provider callback targets', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      agentProvider: 'codex',
+      agentRuntime: 'cloud',
+      providerSessionRef: 'provider-session-42',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({
+        allowedDocumentKinds: ['rfi'],
+        deliveryTargets: [
+          { mode: 'webhook', endpoint: 'https://hooks.example.test/codesite?token=secret' },
+          { mode: 'a2a', endpoint: 'https://a2a.example.test/inbox', label: 'a2a-adapter' },
+          { mode: 'provider_callback', endpoint: 'https://provider.example.test/callback', provider: 'codex' },
+        ],
+      }),
+    }]);
+
+    try {
+      await createDocument('acme', 'project-1', {
+        kind: 'rfi',
+        title: 'Schema RFI',
+        fromSessionId: 'agent-1',
+        toSessionId: 'agent-2',
+        executionPlanId: 'plan-1',
+        body: {
+          question: 'Can this migration land?',
+          privatePrompt: 'raw local prompt',
+        },
+      }, { userId: 'user-1' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const postedPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(postedPayload.deliveryMode).toBe('webhook');
+    expect(postedPayload.payload.body.privatePrompt).toBe('[redacted]');
+    expect(postedPayload.payload.delivery.modes).toEqual(expect.arrayContaining([
+      'durable_inbox',
+      'sse_stream',
+      'mcp_poll',
+      'repo_local_projection',
+      'webhook',
+      'a2a',
+      'provider_callback',
+    ]));
+    const payloadUpdate = prisma.codeSiteAgentInboxItem.update.mock.calls.at(-1)[0];
+    const storedPayload = JSON.parse(payloadUpdate.data.redactedPayloadJson);
+    expect(storedPayload.delivery.adapterStatus).toBe('delivered');
+    expect(storedPayload.delivery.targets[0].endpoint).toBe('https://hooks.example.test/codesite');
+    expect(storedPayload.delivery.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mode: 'webhook', status: 'delivered', httpStatus: 202 }),
+      expect.objectContaining({ mode: 'a2a', status: 'delivered', httpStatus: 202 }),
+      expect.objectContaining({ mode: 'provider_callback', status: 'delivered', httpStatus: 202 }),
+    ]));
+  });
+
   it('rejects cross-agent documents without sender ownership or project references', async () => {
     await expect(createDocument('acme', 'project-1', {
       kind: 'rfi',

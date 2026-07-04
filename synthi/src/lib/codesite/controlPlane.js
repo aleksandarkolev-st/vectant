@@ -4457,7 +4457,20 @@ async function routeDocumentToInbox(projectId, document, event, body, targetSess
   const created = [];
   for (const session of sessions) {
     const recipientBody = redactDocumentBody(parseJson(document.bodyJson, {}), sessionDocumentPolicy(session));
-    created.push(await prisma.codeSiteAgentInboxItem.create({
+    const deliveryTargets = deliveryTargetsForSession(session, body);
+    const payload = {
+      documentId: document.id,
+      eventId: event.id,
+      kind: document.kind,
+      title: document.title,
+      body: recipientBody,
+      redaction: {
+        policyApplied: true,
+        recipientSessionId: session.id,
+      },
+      delivery: buildInboxDeliveryPlan(session, deliveryTargets),
+    };
+    const inboxItem = await prisma.codeSiteAgentInboxItem.create({
       data: {
         projectId,
         agentSessionId: session.id,
@@ -4466,21 +4479,193 @@ async function routeDocumentToInbox(projectId, document, event, body, targetSess
         documentId: document.id,
         kind: document.kind,
         requiresResponse: Boolean(body.requiresResponse || body.requires_response || document.blocking),
-        redactedPayloadJson: stringifyJson({
-          documentId: document.id,
-          eventId: event.id,
-          kind: document.kind,
-          title: document.title,
-          body: recipientBody,
-          redaction: {
-            policyApplied: true,
-            recipientSessionId: session.id,
-          },
-        }),
+        redactedPayloadJson: stringifyJson(payload),
       },
-    }));
+    });
+    created.push(await dispatchInboxDeliveryAdapters(inboxItem, payload, deliveryTargets));
   }
   return created;
+}
+
+function buildInboxDeliveryPlan(session, deliveryTargets = []) {
+  const outboundModes = deliveryTargets.map((target) => target.mode);
+  return {
+    modes: unique([
+      'durable_inbox',
+      'sse_stream',
+      'mcp_poll',
+      'repo_local_projection',
+      ...outboundModes,
+    ]),
+    targets: deliveryTargets.map(publicDeliveryTarget),
+    adapterStatus: deliveryTargets.length ? 'pending' : 'not_configured',
+    recipient: {
+      agentSessionId: session.id,
+      provider: session.agentProvider || null,
+      runtime: session.agentRuntime || null,
+      providerSessionRef: session.providerSessionRef || null,
+    },
+  };
+}
+
+function deliveryTargetsForSession(session = {}, body = {}) {
+  const policy = sessionDocumentPolicy(session);
+  const targetInputs = [
+    ...asArray(policy.deliveryTargets || policy.delivery_targets),
+    ...asArray(body.deliveryTargets || body.delivery_targets),
+  ];
+  return uniqueByDeliveryTarget(targetInputs
+    .map((target) => normalizeDeliveryTarget(target, session))
+    .filter(Boolean)
+    .filter((target) => deliveryTargetMatchesSession(target, session)));
+}
+
+function normalizeDeliveryTarget(target, session = {}) {
+  if (!target) return null;
+  const raw = typeof target === 'string' ? { endpoint: target, mode: 'webhook' } : target;
+  if (!raw || typeof raw !== 'object') return null;
+  const mode = normalizeDeliveryMode(raw.mode || raw.type || raw.kind || raw.deliveryMode || raw.delivery_mode);
+  if (!mode) return null;
+  const endpoint = raw.endpoint || raw.url || raw.webhookUrl || raw.webhook_url || raw.callbackUrl || raw.callback_url || null;
+  return {
+    mode,
+    endpoint: endpoint ? String(endpoint) : null,
+    provider: raw.provider || session.agentProvider || null,
+    recipientSessionId: raw.agentSessionId || raw.agent_session_id || raw.recipientSessionId || raw.recipient_session_id || null,
+    recipientUserId: raw.recipientUserId || raw.recipient_user_id || null,
+    label: raw.label || raw.name || null,
+  };
+}
+
+function normalizeDeliveryMode(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return ['webhook', 'provider_callback', 'a2a', 'task_comment'].includes(normalized) ? normalized : null;
+}
+
+function deliveryTargetMatchesSession(target, session = {}) {
+  if (target.recipientSessionId && target.recipientSessionId !== session.id) return false;
+  if (target.recipientUserId && target.recipientUserId !== session.ownerUserId) return false;
+  return true;
+}
+
+function uniqueByDeliveryTarget(targets = []) {
+  const seen = new Set();
+  return targets.filter((target) => {
+    const key = stableJson({
+      mode: target.mode,
+      endpoint: sanitizeDeliveryEndpoint(target.endpoint),
+      provider: target.provider || null,
+      recipientSessionId: target.recipientSessionId || null,
+      recipientUserId: target.recipientUserId || null,
+    });
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function publicDeliveryTarget(target = {}) {
+  return {
+    mode: target.mode,
+    endpoint: sanitizeDeliveryEndpoint(target.endpoint),
+    provider: target.provider || null,
+    label: target.label || null,
+  };
+}
+
+function sanitizeDeliveryEndpoint(endpoint) {
+  if (!endpoint) return null;
+  try {
+    const parsed = new URL(endpoint);
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch (_) {
+    return '[invalid_endpoint]';
+  }
+}
+
+async function dispatchInboxDeliveryAdapters(inboxItem, payload, deliveryTargets = []) {
+  const attempts = [];
+  for (const target of deliveryTargets) {
+    attempts.push(await dispatchInboxDeliveryTarget(inboxItem, payload, target));
+  }
+  if (!attempts.length) return inboxItem;
+  const nextPayload = {
+    ...payload,
+    delivery: {
+      ...payload.delivery,
+      adapterStatus: attempts.some((attempt) => attempt.status === 'delivered') ? 'delivered' : 'attempted',
+      attempts,
+    },
+  };
+  return prisma.codeSiteAgentInboxItem.update({
+    where: { id: inboxItem.id },
+    data: { redactedPayloadJson: stringifyJson(nextPayload) },
+  });
+}
+
+async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
+  const startedAt = new Date().toISOString();
+  const publicTarget = publicDeliveryTarget(target);
+  if (!target.endpoint) {
+    return { ...publicTarget, status: 'skipped', reason: 'endpoint_missing', startedAt, completedAt: new Date().toISOString() };
+  }
+  let parsed;
+  try {
+    parsed = new URL(target.endpoint);
+  } catch (_) {
+    return { ...publicTarget, status: 'skipped', reason: 'endpoint_invalid', startedAt, completedAt: new Date().toISOString() };
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return { ...publicTarget, status: 'skipped', reason: 'endpoint_protocol_unsupported', startedAt, completedAt: new Date().toISOString() };
+  }
+  if (typeof fetch !== 'function') {
+    return { ...publicTarget, status: 'skipped', reason: 'fetch_unavailable', startedAt, completedAt: new Date().toISOString() };
+  }
+
+  const timeoutMs = Number(process.env.SYNTHI_CODESITE_INBOX_DELIVERY_TIMEOUT_MS || 1500);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1500);
+  try {
+    const response = await fetch(target.endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Synthi-CodeSite/1.0',
+      },
+      body: JSON.stringify({
+        deliveryMode: target.mode,
+        inboxItemId: inboxItem.id,
+        projectId: inboxItem.projectId,
+        agentSessionId: inboxItem.agentSessionId,
+        recipientUserId: inboxItem.recipientUserId,
+        eventId: inboxItem.eventId,
+        documentId: inboxItem.documentId,
+        payload,
+      }),
+      signal: controller.signal,
+    });
+    return {
+      ...publicTarget,
+      status: response.ok ? 'delivered' : 'failed',
+      httpStatus: response.status,
+      startedAt,
+      completedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      ...publicTarget,
+      status: 'failed',
+      reason: error?.name === 'AbortError' ? 'timeout' : 'request_failed',
+      startedAt,
+      completedAt: new Date().toISOString(),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function evaluateRecipientDocumentPolicy(session, { kind, body = {}, fromSession = null } = {}) {
