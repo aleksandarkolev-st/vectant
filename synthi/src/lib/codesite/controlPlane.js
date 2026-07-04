@@ -5319,6 +5319,20 @@ function incidentBlackBoxReferencesTransaction(incident, transactionId) {
     || asArray(replay.causalEvents).some((event) => event.transactionId === transactionId || event.details?.transactionId === transactionId);
 }
 
+function incidentReferencesProofBundle(incident, bundle) {
+  if (!incident || !bundle) return false;
+  const replay = parseJson(incident.incidentReplayJson, incident.incidentReplay || {});
+  const evidenceRefs = parseJson(incident.evidenceRefsJson, incident.evidenceRefs || []);
+  return evidenceRefs.includes(`codesite:proof-bundle:${bundle.id}`)
+    || replay.proofBundle?.id === bundle.id
+    || replay.proofBundleId === bundle.id
+    || replay.proof_bundle_id === bundle.id
+    || replay.handover?.proofBundleId === bundle.id
+    || replay.handover?.proof_bundle_id === bundle.id
+    || (bundle.incidentReplayDigest && incident.replayDigest === bundle.incidentReplayDigest)
+    || (incident.category === 'black_box' && incidentBlackBoxReferencesTransaction(incident, bundle.transactionId));
+}
+
 async function findTransactionBlackBoxEvents(projectId, transaction, context = {}) {
   let rows = [];
   try {
@@ -7883,10 +7897,10 @@ export async function getProofBundle(workspaceSlug, bundleId, actor = null) {
   });
   if (!bundle) throw notFound('proof_bundle_not_found');
   await requireProjectAccess(bundle.project, actor, 'read');
-  const incidents = await prisma.codeSiteIncident.findMany({
+  const incidents = (await prisma.codeSiteIncident.findMany({
     where: { projectId: bundle.projectId },
     orderBy: { createdAt: 'asc' },
-  });
+  })).filter((incident) => incidentReferencesProofBundle(incident, bundle));
   const lineProvenance = await prisma.codeSiteLineProvenance.findMany({
     where: { proofBundleId: bundle.id },
     orderBy: { createdAt: 'asc' },
@@ -8411,19 +8425,20 @@ function projectProjection(project) {
           ? run.executionPlanId === mutationLease.executionPlanId
           : run.displayCallsign === mutationLease?.displayCallsign
       ));
+      const bundleIncidents = incidents.filter((incident) => incidentReferencesProofBundle(incident, bundle));
       const bundleLineProvenance = lineProvenance.filter((row) => row.proofBundleId === bundle.id);
       return proofBundleProjection(bundle, {
         transaction,
         mutationLease,
         landingRuns,
-        incidents,
+        incidents: bundleIncidents,
         lineProvenance: bundleLineProvenance,
         portableProofBundle: proofBundlePortable(bundle, {
           project,
           transaction,
           mutationLease,
           landingRuns,
-          incidents,
+          incidents: bundleIncidents,
           lineProvenance: bundleLineProvenance,
         }),
       });
@@ -8684,7 +8699,7 @@ async function loadProofBundlePortableContext(bundle, db = prisma) {
     db.codeSiteIncident.findMany({
       where: { projectId: bundle.projectId },
       orderBy: { createdAt: 'asc' },
-    }),
+    }).then((incidents) => incidents.filter((incident) => incidentReferencesProofBundle(incident, bundle))),
     db.codeSiteLineProvenance.findMany({
       where: { proofBundleId: bundle.id },
       orderBy: { createdAt: 'asc' },

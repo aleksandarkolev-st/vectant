@@ -3008,6 +3008,55 @@ describe('CodeSite control plane transaction validation', () => {
 
   it('keeps proof bundle commit trailers complete in project snapshots', async () => {
     const transaction = transactionFixture();
+    const proofBundle = {
+      id: 'proof-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: null,
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      dojoEvidenceRefsJson: JSON.stringify([]),
+      repoStateJson: JSON.stringify(repoStateFixture()),
+      incidentReplayDigest: 'sha256:incident',
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+    };
+    const relatedIncident = {
+      id: 'incident-proof-1',
+      projectId: 'project-1',
+      severity: 'medium',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['ATLAS-1']),
+      affectedZonesJson: JSON.stringify(['schema']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-1',
+        proofBundle: { id: 'proof-1' },
+      }),
+      replayDigest: 'sha256:incident',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-1', 'codesite:transaction:txn-1']),
+      createdAt: new Date('2026-06-29T23:03:30.000Z'),
+    };
+    const unrelatedIncident = {
+      id: 'incident-other',
+      projectId: 'project-1',
+      severity: 'critical',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['BETA-2']),
+      affectedZonesJson: JSON.stringify(['api']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-other',
+        proofBundle: { id: 'proof-other' },
+      }),
+      replayDigest: 'sha256:other',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-other', 'codesite:transaction:txn-other']),
+      createdAt: new Date('2026-06-29T23:03:45.000Z'),
+    };
     prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
       id: 'project-1',
       workspaceSlug: 'acme',
@@ -3025,7 +3074,7 @@ describe('CodeSite control plane transaction validation', () => {
       assumptions: [],
       policyDecisions: [],
       events: [],
-      incidents: [],
+      incidents: [unrelatedIncident, relatedIncident],
       inspectionRuns: [{
         id: 'inspection-1',
         projectId: 'project-1',
@@ -3038,21 +3087,7 @@ describe('CodeSite control plane transaction validation', () => {
         requestedAt: new Date('2026-06-29T23:02:00.000Z'),
         completedAt: new Date('2026-06-29T23:03:00.000Z'),
       }],
-      proofBundles: [{
-        id: 'proof-1',
-        projectId: 'project-1',
-        transactionId: 'txn-1',
-        commitSha: null,
-        readSetDigest: 'sha256:read',
-        writeSetDigest: 'sha256:write',
-        invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
-        evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
-        dojoEvidenceRefsJson: JSON.stringify([]),
-        repoStateJson: JSON.stringify(repoStateFixture()),
-        incidentReplayDigest: 'sha256:incident',
-        bundleDigest: 'sha256:bundle',
-        createdAt: new Date('2026-06-29T23:04:00.000Z'),
-      }],
+      proofBundles: [proofBundle],
       lineProvenance: [],
       documents: [],
       counterfactualRuns: [],
@@ -3069,6 +3104,29 @@ describe('CodeSite control plane transaction validation', () => {
       'CodeSite-Landing': 'completed',
       'CodeSite-Transaction': 'txn-1',
     });
+    const expectedPortable = buildProofBundle({
+      project: { id: 'project-1', workspaceSlug: 'acme' },
+      transaction: {
+        id: 'txn-1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        readSet: [],
+        writeSet: ['synthi/prisma/schema.prisma'],
+        invariants: ['clearance.diff.inside_route'],
+      },
+      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
+      proofBundle: {
+        ...proofBundle,
+        invariants: ['clearance.diff.inside_route'],
+        evidenceRefs: ['runtime:event:inspection-1'],
+        dojoEvidenceRefs: [],
+        repoState: repoStateFixture(),
+        incidentReplayDigest: 'sha256:incident',
+      },
+      incidents: [relatedIncident],
+      landingRuns: [{ status: 'completed' }],
+    });
+    expect(project.proofBundles[0].trailers['CodeSite-Proof-Digest']).toBe(expectedPortable.portableDigest);
   });
 
   it('routes tower-mediated documents with recursive redaction and inbox ACL metadata', async () => {
@@ -4239,6 +4297,42 @@ describe('CodeSite control plane transaction validation', () => {
         agentSession: transaction.agentSession,
       },
     };
+    const relatedIncident = {
+      id: 'incident-black-box-txn-1',
+      projectId: 'project-1',
+      severity: 'medium',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['ATLAS-1']),
+      affectedZonesJson: JSON.stringify(['schema']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-1',
+        proofBundle: { id: 'proof-created' },
+        handover: { proofBundleId: 'proof-created' },
+      }),
+      replayDigest: 'sha256:blackbox',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-created', 'codesite:transaction:txn-1']),
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+    };
+    const unrelatedIncident = {
+      id: 'incident-black-box-other',
+      projectId: 'project-1',
+      severity: 'critical',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['BETA-2']),
+      affectedZonesJson: JSON.stringify(['api']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-other',
+        proofBundle: { id: 'proof-other' },
+        handover: { proofBundleId: 'proof-other' },
+      }),
+      replayDigest: 'sha256:other-blackbox',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-other', 'codesite:transaction:txn-other']),
+      createdAt: new Date('2026-06-29T23:04:30.000Z'),
+    };
     const portable = buildProofBundle({
       project: { id: 'project-1', workspaceSlug: 'acme' },
       transaction: {
@@ -4258,11 +4352,13 @@ describe('CodeSite control plane transaction validation', () => {
         repoState: repoStateFixture(),
         incidentReplayDigest: 'sha256:blackbox',
       },
+      incidents: [relatedIncident],
     });
     bundle.proofSignatureJson = JSON.stringify(portable.proofSignature);
     bundle.signatureKeyId = portable.proofSignature.keyId;
     const trailers = proofCommitTrailers(portable);
     prisma.codeSiteProofBundle.findFirst.mockResolvedValue(bundle);
+    prisma.codeSiteIncident.findMany.mockResolvedValue([unrelatedIncident, relatedIncident]);
     prisma.codeSiteProofBundle.update.mockImplementation(async ({ data }) => ({
       ...bundle,
       ...data,
@@ -4283,6 +4379,10 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.evidenceRefs).toEqual(['runtime:event:inspection-1']);
     expect(result.trailers['CodeSite-Proof-Digest']).toBe(trailers['CodeSite-Proof-Digest']);
     expect(result.trailers['CodeSite-Proof-Signature']).toBe(trailers['CodeSite-Proof-Signature']);
+    expect(prisma.codeSiteIncident.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-1' },
+      orderBy: { createdAt: 'asc' },
+    });
     expect(prisma.codeSiteProofBundle.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'proof-created' },
       data: expect.objectContaining({

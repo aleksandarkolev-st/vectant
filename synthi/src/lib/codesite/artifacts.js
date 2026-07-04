@@ -547,7 +547,8 @@ export function buildArtifactProjection(project, controlState = null) {
     const landings = transaction
       ? asArray(project.inspectionRuns).filter((run) => run.executionPlanId === mutationLease?.executionPlanId)
       : [];
-    const portable = buildProofBundle({ project, transaction, mutationLease, proofBundle: proof, incidents: project.incidents, landingRuns: landings, lineProvenance });
+    const incidents = proofBundleScopedIncidents(project, proof);
+    const portable = buildProofBundle({ project, transaction, mutationLease, proofBundle: proof, incidents, landingRuns: landings, lineProvenance });
     files.push(jsonFile(`${projectDir}/proof-bundles/${proof.id}.proof.json`, portable));
     files.push({
       relativePath: `${projectDir}/proof-bundles/${proof.id}.trailers.txt`,
@@ -556,6 +557,25 @@ export function buildArtifactProjection(project, controlState = null) {
   }
 
   return files;
+}
+
+function proofBundleScopedIncidents(project, proof) {
+  return asArray(project.incidents).filter((incident) => artifactIncidentReferencesProofBundle(incident, proof));
+}
+
+function artifactIncidentReferencesProofBundle(incident, proof) {
+  if (!incident || !proof) return false;
+  const replay = incident.incidentReplay || incident.incident_replay || {};
+  const evidenceRefs = asArray(incident.evidenceRefs || incident.evidence_refs);
+  const proofBundleRef = `codesite:proof-bundle:${proof.id}`;
+  return evidenceRefs.includes(proofBundleRef)
+    || replay.proofBundle?.id === proof.id
+    || replay.proofBundleId === proof.id
+    || replay.proof_bundle_id === proof.id
+    || replay.handover?.proofBundleId === proof.id
+    || replay.handover?.proof_bundle_id === proof.id
+    || (proof.incidentReplayDigest && incident.replayDigest === proof.incidentReplayDigest)
+    || (incident.category === 'black_box' && replay.transactionId === proof.transactionId);
 }
 
 export function quarantineReviewRecords(project = {}) {
