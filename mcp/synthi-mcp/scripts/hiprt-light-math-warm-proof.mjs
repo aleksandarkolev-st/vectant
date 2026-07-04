@@ -606,6 +606,54 @@ function parseShellKeyValueOutput(output) {
   return fields;
 }
 
+function hiprtRocmConfigDetectionGaps(err) {
+  const message = String(err?.message ?? '');
+  const output = String(err?.output ?? '');
+  const combined = `${message}\n${output}`;
+  return compactStringList([
+    'hiprt_rocm_build_config_detection_failed',
+    /spawn\s+EPERM/i.test(combined) ? 'hiprt_worker_docker_spawn_failed' : null,
+    /GPU arch|amdgpu-target|rocminfo/i.test(combined) ? 'hiprt_rocm_gpu_arch_detection_failed' : null,
+    /ROCm prefix|hipconfig --path|ROCM_PATH/i.test(combined) ? 'hiprt_rocm_prefix_detection_failed' : null,
+  ]);
+}
+
+function hiprtPreflightProbeFromError({ stage, err }) {
+  const blockingGaps = hiprtRocmConfigDetectionGaps(err);
+  return {
+    schemaVersion: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    schema_version: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+    proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    stage,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+    native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    sourceRel: CFG.sourceRel,
+    source_rel: CFG.sourceRel,
+    sourceWorkerPath: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    source_worker_path: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    dockerError: firstText(err?.message, err?.code),
+    docker_error: firstText(err?.message, err?.code),
+    outputTail: err?.output ? String(err.output).slice(-4000) : '',
+    output_tail: err?.output ? String(err.output).slice(-4000) : '',
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates: blockingGaps.map((code) => ({ code })),
+    failed_gates: blockingGaps.map((code) => ({ code })),
+  };
+}
+
 async function probeHiprtPreflightPrerequisites() {
   const requiredFilePrints = CFG.requiredFiles
     .map((file, index) => {
@@ -4306,7 +4354,52 @@ async function main() {
   }
   const totalStartedMonotonicNs = monotonicNowNs();
   await fs.mkdir(CFG.outputDir, { recursive: true });
-  await ensureRocmBuildConfig();
+  try {
+    await ensureRocmBuildConfig();
+  } catch (err) {
+    const refusal = await writeHiprtPreflightRefusalArtifact({
+      preflightResult: {
+        accepted: false,
+        repoCommit: null,
+        buildExecutable: 'unknown',
+        buildConfig: 'unknown',
+        bootstrap: null,
+        prerequisiteProbe: hiprtPreflightProbeFromError({
+          stage: 'rocm_build_config_detection',
+          err,
+        }),
+      },
+      strictSummary: null,
+      totalStartedMonotonicNs,
+    });
+    console.log(JSON.stringify({
+      accepted: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofId: refusal.artifact.proofId,
+      proof_id: refusal.artifact.proofId,
+      proofPath: refusal.proofPath,
+      proof_path: refusal.proofPath,
+      mode: CFG.mode,
+      profileId: CFG.profileId,
+      profile_id: CFG.profileId,
+      proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+      proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+      blockingGaps: refusal.artifact.classification.blockingGaps,
+      blocking_gaps: refusal.artifact.classification.blockingGaps,
+      claimBoundary: {
+        gpuHmrSuccess: false,
+        acceptedForGpuHmr: false,
+        rejectedDiagnosticAllowed: CFG.allowRejected,
+      },
+    }, null, 2));
+    if (!CFG.allowRejected) {
+      process.exitCode = 1;
+    }
+    return;
+  }
   const strictProof = await findStrictProofJson();
   const strictSummary = summarizeStrictProof(strictProof);
   if (CFG.requireStrictProvenance && !strictSummary?.strictFullRuntimePassed) {
