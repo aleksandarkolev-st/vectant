@@ -29532,13 +29532,16 @@ function runtimePreflightCoverage({ rows, backend, id, requirement, missingGap }
 }
 
 function oidnOutputOracleSupportCoverage(rows) {
-  const supportRows = preflightOnlyRows(rows, (row) =>
+  const supportRows = rows.filter((row) =>
     row.backend === 'oidn_hip'
     && row.proofMode === 'runtime_preflight'
-    && row.proofChain === 'runtime_preflight_and_output_oracle_only'
     && compactObject(row.outputOracleFacet ?? row.output_oracle_facet).accepted === true
   );
-  const attemptedRows = preflightOnlyRows(rows, (row) =>
+  const preflightOnlySupportRows = supportRows.filter((row) =>
+    row.matrixOutcome === 'preflight_only'
+    && row.proofChain === 'runtime_preflight_and_output_oracle_only'
+  );
+  const attemptedRows = rows.filter((row) =>
     row.backend === 'oidn_hip'
     && row.proofMode === 'runtime_preflight'
     && compactObject(row.outputOracleFacet ?? row.output_oracle_facet).present === true
@@ -29547,7 +29550,7 @@ function oidnOutputOracleSupportCoverage(rows) {
     return coverageEntry({
       id: 'oidn_hip_output_oracle_support',
       requirement: 'OIDN HIP file-backed output-oracle byte evidence without GPU HMR acceptance',
-      status: 'preflight_only',
+      status: preflightOnlySupportRows.length > 0 ? 'preflight_only' : 'support_only',
       rows: supportRows,
       openGaps: compactStringList([
         ...supportRows.flatMap((row) => row.openGaps),

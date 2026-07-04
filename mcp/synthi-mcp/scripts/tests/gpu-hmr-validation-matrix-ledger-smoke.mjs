@@ -17815,6 +17815,72 @@ assert.ok(coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
 assert.ok(!coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
   row.targetId === 'synthetic-oidn-hip-output-oracle-forged-file-hash'
 ));
+const runtimeRefusedOidnOutputSupportQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.gpu_hmr.oidn_preflight.v1',
+    artifactPath: 'synthetic/runtime-refused-oidn-output-support.json',
+    updatedAt: '2026-06-09T00:00:00.072Z',
+    backend: 'oidn_hip',
+    targetId: 'runtime-refused-oidn-output-support',
+    profileId: 'runtime-refused-oidn-output-support',
+    proofMode: 'runtime_preflight',
+    evidenceKind: 'runtime_preflight_refusal',
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: true,
+    proofChain: 'structured_runtime_refusal',
+    proofIds: ['oidn-preflight-proof:sha256:runtime-refused-output-support'],
+    backendEvidence: {
+      accepted: true,
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+      failedGates: [],
+    },
+    outputOracleFacet: {
+      schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      schema_version: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      present: true,
+      accepted: true,
+      proofAuthority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+      proof_authority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+      failedGates: [],
+      failed_gates: [],
+    },
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: ['runtime_preflight_failed'],
+    },
+    reasons: ['oidn_hip_runtime_preflight_rejected'],
+    openGaps: ['matching_oidn_hip_runtime_required'],
+  })],
+});
+const runtimeRefusedOidnOutputSupportCoverage = new Map(
+  runtimeRefusedOidnOutputSupportQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output_oracle_support')?.status, 'support_only');
+assert.equal(
+  runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output_oracle_support')?.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output_oracle_support')?.gpuHmrSuccess,
+  false,
+);
+assert.ok(runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output_oracle_support')?.openGaps.includes(
+  'matching_oidn_hip_runtime_required',
+));
+assert.equal(runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output')?.status, 'refused');
+assert.ok(runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output')?.openGaps.includes(
+  'matching_oidn_hip_runtime_required',
+));
 assert.equal(coverageById.get('oidn_hip_output')?.status, 'missing');
 assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('oidn_hip_runtime_proof_required'));
 assert.equal(ledger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows, 0);
