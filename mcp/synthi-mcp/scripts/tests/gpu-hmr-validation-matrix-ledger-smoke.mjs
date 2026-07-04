@@ -25722,6 +25722,168 @@ assert.ok(!validOperationalTimeoutSourceRow.reasons.includes(
   'real_rocm_operational_evidence_not_accepted',
 ));
 
+const validEmergencyRetainedCheckpointDir = path.join(
+  logsRoot,
+  'real-rocm-emergency-retained-checkpoint-valid',
+);
+await fs.mkdir(validEmergencyRetainedCheckpointDir, { recursive: true });
+const validEmergencyRetainedCheckpointReport =
+  JSON.parse(JSON.stringify(completeAdapterBoundaryReport));
+validEmergencyRetainedCheckpointReport.slug =
+  'gpu-real-rocm-emergency-retained-checkpoint-valid-20260704';
+validEmergencyRetainedCheckpointReport.full_runtime_proven = false;
+validEmergencyRetainedCheckpointReport.fullRuntimeProven = false;
+validEmergencyRetainedCheckpointReport.gpu_hmr_success = false;
+validEmergencyRetainedCheckpointReport.gpuHmrSuccess = false;
+validEmergencyRetainedCheckpointReport.accepted_for_gpu_hmr = false;
+validEmergencyRetainedCheckpointReport.acceptedForGpuHmr = false;
+validEmergencyRetainedCheckpointReport.strict_proof_gates = {
+  accepted: false,
+  failures: ['emergency_retained_checkpoint_refusal_only'],
+};
+validEmergencyRetainedCheckpointReport.strictProofGates =
+  validEmergencyRetainedCheckpointReport.strict_proof_gates;
+validEmergencyRetainedCheckpointReport.runtime_evidence_collection = {
+  schemaVersion: 'synthi.real_rocm.runtime_evidence_collection.v1',
+  schema_version: 'synthi.real_rocm.runtime_evidence_collection.v1',
+  status: 'emergency_checkpoint_written',
+  reason: 'before_generic_upstream_configure_build_run_lifecycle',
+  proofAuthority: 'collection_state_only_not_gpu_hmr_success',
+  proof_authority: 'collection_state_only_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+};
+validEmergencyRetainedCheckpointReport.runtimeEvidenceCollection =
+  validEmergencyRetainedCheckpointReport.runtime_evidence_collection;
+const validEmergencyRetainedCheckpoint = {
+  schemaVersion: 'synthi.real_rocm.emergency_retained_result_checkpoint.v1',
+  schema_version: 'synthi.real_rocm.emergency_retained_result_checkpoint.v1',
+  label: 'before-upstream-lifecycle',
+  status: 'emergency_fail_closed_checkpoint_write',
+  reason: 'before_generic_upstream_configure_build_run_lifecycle',
+  proofAuthority: 'emergency_retained_checkpoint_not_gpu_hmr_success',
+  proof_authority: 'emergency_retained_checkpoint_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+};
+validEmergencyRetainedCheckpointReport.result_checkpoints = [
+  validEmergencyRetainedCheckpoint,
+];
+validEmergencyRetainedCheckpointReport.resultCheckpoints =
+  validEmergencyRetainedCheckpointReport.result_checkpoints;
+validEmergencyRetainedCheckpointReport.current_result_checkpoint =
+  validEmergencyRetainedCheckpoint;
+validEmergencyRetainedCheckpointReport.currentResultCheckpoint =
+  validEmergencyRetainedCheckpoint;
+await writeJson(
+  path.join(
+    validEmergencyRetainedCheckpointDir,
+    'real-rocm-emergency-retained-checkpoint-valid.json',
+  ),
+  validEmergencyRetainedCheckpointReport,
+);
+const validEmergencyRetainedCheckpointLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [validEmergencyRetainedCheckpointDir],
+  generatedAt: '2026-07-04T00:00:02.2648Z',
+  includeUnproven: true,
+});
+const validEmergencyRetainedCheckpointRow =
+  validEmergencyRetainedCheckpointLedger.rows.find((row) =>
+    row.proofMode === 'real_rocm_repo_validation'
+  );
+assert.equal(validEmergencyRetainedCheckpointRow?.acceptedForGpuHmr, false);
+assert.equal(validEmergencyRetainedCheckpointRow.gpuHmrSuccess, false);
+assert.equal(validEmergencyRetainedCheckpointRow.realRocmOperationalEvidence.present, true);
+assert.equal(validEmergencyRetainedCheckpointRow.realRocmOperationalEvidence.accepted, true);
+assert.equal(
+  validEmergencyRetainedCheckpointRow
+    .realRocmOperationalEvidence
+    .resultCheckpoints
+    .at(-1)
+    ?.accepted,
+  true,
+);
+assert.equal(
+  validEmergencyRetainedCheckpointRow
+    .realRocmOperationalEvidence
+    .resultCheckpoints
+    .at(-1)
+    ?.status,
+  'emergency_fail_closed_checkpoint_write',
+);
+assert.ok(!validEmergencyRetainedCheckpointRow.reasons.includes(
+  'real_rocm_operational_evidence_not_accepted',
+));
+
+const forgedEmergencyRetainedCheckpointDir = path.join(
+  logsRoot,
+  'real-rocm-emergency-retained-checkpoint-forge',
+);
+await fs.mkdir(forgedEmergencyRetainedCheckpointDir, { recursive: true });
+const forgedEmergencyRetainedCheckpointReport =
+  JSON.parse(JSON.stringify(validEmergencyRetainedCheckpointReport));
+forgedEmergencyRetainedCheckpointReport.slug =
+  'gpu-real-rocm-emergency-retained-checkpoint-forge-20260704';
+const forgedEmergencyRetainedCheckpoint = {
+  ...validEmergencyRetainedCheckpoint,
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+};
+forgedEmergencyRetainedCheckpointReport.result_checkpoints = [
+  forgedEmergencyRetainedCheckpoint,
+];
+forgedEmergencyRetainedCheckpointReport.resultCheckpoints =
+  forgedEmergencyRetainedCheckpointReport.result_checkpoints;
+forgedEmergencyRetainedCheckpointReport.current_result_checkpoint =
+  forgedEmergencyRetainedCheckpoint;
+forgedEmergencyRetainedCheckpointReport.currentResultCheckpoint =
+  forgedEmergencyRetainedCheckpoint;
+await writeJson(
+  path.join(
+    forgedEmergencyRetainedCheckpointDir,
+    'real-rocm-emergency-retained-checkpoint-forge.json',
+  ),
+  forgedEmergencyRetainedCheckpointReport,
+);
+const forgedEmergencyRetainedCheckpointLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedEmergencyRetainedCheckpointDir],
+  generatedAt: '2026-07-04T00:00:02.2649Z',
+  includeUnproven: true,
+});
+const forgedEmergencyRetainedCheckpointRow =
+  forgedEmergencyRetainedCheckpointLedger.rows.find((row) =>
+    row.proofMode === 'real_rocm_repo_validation'
+  );
+assert.equal(forgedEmergencyRetainedCheckpointRow?.matrixOutcome, 'unproven');
+assert.equal(forgedEmergencyRetainedCheckpointRow.acceptedForGpuHmr, false);
+assert.equal(forgedEmergencyRetainedCheckpointRow.realRocmOperationalEvidence.present, true);
+assert.equal(forgedEmergencyRetainedCheckpointRow.realRocmOperationalEvidence.accepted, false);
+assert.ok(forgedEmergencyRetainedCheckpointRow.reasons.includes(
+  'real_rocm_operational_evidence:real_rocm_result_checkpoint_claimed_gpu_hmr_acceptance',
+));
+assert.ok(forgedEmergencyRetainedCheckpointRow.openGaps.includes(
+  'real_rocm_operational_evidence:real_rocm_result_checkpoint_claimed_runtime_authority',
+));
+assert.ok(forgedEmergencyRetainedCheckpointRow.openGaps.includes(
+  'real_rocm_operational_evidence_not_accepted',
+));
+
 const forgedOperationalTimeoutSourceDir = path.join(
   logsRoot,
   'real-rocm-operational-timeout-source-forge',

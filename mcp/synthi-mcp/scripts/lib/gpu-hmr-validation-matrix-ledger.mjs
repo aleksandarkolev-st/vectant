@@ -268,6 +268,10 @@ const REAL_ROCM_RUNTIME_EVIDENCE_CHECKPOINT_SCHEMA_VERSION =
   'synthi.real_rocm.fail_closed_runtime_checkpoint.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_CHECKPOINT_AUTHORITY =
   'fail_closed_checkpoint_not_gpu_hmr_success';
+const REAL_ROCM_EMERGENCY_RETAINED_RESULT_CHECKPOINT_SCHEMA_VERSION =
+  'synthi.real_rocm.emergency_retained_result_checkpoint.v1';
+const REAL_ROCM_EMERGENCY_RETAINED_RESULT_CHECKPOINT_AUTHORITY =
+  'emergency_retained_checkpoint_not_gpu_hmr_success';
 const REAL_ROCM_WORKER_LIFECYCLE_TIMEOUT_CONTROL_SCHEMA_VERSION =
   'synthi.real_rocm.worker_lifecycle_timeout_control.v1';
 const REAL_ROCM_WORKER_LIFECYCLE_TIMEOUT_CONTROL_AUTHORITY =
@@ -13162,6 +13166,7 @@ function realRocmResultCheckpointFacet(input = {}, index = 0) {
   }
   const label = firstText(facet.label, facet.checkpointLabel, facet.checkpoint_label);
   const status = firstText(facet.status);
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
   const acceptedForGpuHmr = firstBool(
     facet.acceptedForGpuHmr,
@@ -13178,19 +13183,33 @@ function realRocmResultCheckpointFacet(input = {}, index = 0) {
   );
   const finalResult = status === 'final_result_write';
   const failClosed = status === 'fail_closed_checkpoint_write';
+  const emergencyFailClosed = status === 'emergency_fail_closed_checkpoint_write';
+  const nonFinalCheckpoint = failClosed || emergencyFailClosed;
   const failedGates = compactStringList([
     !status ? 'real_rocm_result_checkpoint_status_missing' : null,
-    !finalResult && !failClosed ? 'real_rocm_result_checkpoint_status_unknown' : null,
+    !finalResult && !nonFinalCheckpoint ? 'real_rocm_result_checkpoint_status_unknown' : null,
     failClosed && proofAuthority !== REAL_ROCM_RUNTIME_EVIDENCE_CHECKPOINT_AUTHORITY
       ? 'real_rocm_result_checkpoint_fail_closed_authority_unknown'
+      : null,
+    emergencyFailClosed && !schemaVersion
+      ? 'real_rocm_result_checkpoint_emergency_schema_missing'
+      : null,
+    emergencyFailClosed
+      && schemaVersion
+      && schemaVersion !== REAL_ROCM_EMERGENCY_RETAINED_RESULT_CHECKPOINT_SCHEMA_VERSION
+      ? 'real_rocm_result_checkpoint_emergency_schema_unknown'
+      : null,
+    emergencyFailClosed
+      && proofAuthority !== REAL_ROCM_EMERGENCY_RETAINED_RESULT_CHECKPOINT_AUTHORITY
+      ? 'real_rocm_result_checkpoint_emergency_authority_unknown'
       : null,
     finalResult && proofAuthority !== 'final_result_artifact'
       ? 'real_rocm_result_checkpoint_final_authority_unknown'
       : null,
-    failClosed && acceptedForGpuHmr === true
+    nonFinalCheckpoint && acceptedForGpuHmr === true
       ? 'real_rocm_result_checkpoint_claimed_gpu_hmr_acceptance'
       : null,
-    failClosed && gpuHmrSuccess === true
+    nonFinalCheckpoint && gpuHmrSuccess === true
       ? 'real_rocm_result_checkpoint_claimed_gpu_hmr_success'
       : null,
     !finalResult && acceptedForGpuHmr === true
@@ -13212,6 +13231,8 @@ function realRocmResultCheckpointFacet(input = {}, index = 0) {
     index,
     label: label ?? null,
     status: status ?? null,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
     proofAuthority,
     proof_authority: proofAuthority,
     acceptedForGpuHmr: acceptedForGpuHmr === true,
@@ -13301,6 +13322,7 @@ function realRocmOperationalEvidenceFacet(input = {}) {
     allowedStatuses: [
       'not_started',
       'checkpoint_written_before_collection',
+      'emergency_checkpoint_written',
       'collecting',
       'collected',
       'collection_failed',
