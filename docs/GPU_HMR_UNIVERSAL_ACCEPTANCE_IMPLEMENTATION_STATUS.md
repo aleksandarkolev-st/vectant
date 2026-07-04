@@ -1,8 +1,73 @@
 # GPU HMR Universal Acceptance Implementation Status
 
-Status date: 2026-07-03
+Status date: 2026-07-04
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
+
+## 2026-07-04 Arbitrary Cold Path And OIDN Runtime Discovery Checkpoint
+
+Latest continuation update on 2026-07-04:
+
+- `aa9185cdb fix(gpu-hmr): rank cold build metadata generically` makes random large-project cold intake prefer root/project-owned build metadata over vendored dependency trees. The ranking is path-structure and content-evidence based, not project-name based, and the self-check rejects the old vendored-first shortcut. A direct Blender cold-path run accepted source/build intake for commit `60a476b09ff45865b6cea339a0b8b5477ee29284` with 20,256 listed files, 11,291 source/build-relevant files, and 632 GPU signals, while still remaining refusal-only for GPU HMR because runtime artifact transport, epoch publication, dispatch trace, host identity, output oracle, runtime chain, and strict ledger closure were not observed.
+- `633a52116 fix(gpu-hmr): broaden oidn runtime discovery` adds generic configured-path, worker `PATH`, package-build, and system-library discovery for `oidnTest` and `libOpenImageDenoise_device_hip.so`. The probe records configured discovery inputs and timing identity, but it does not turn tool discovery, preflight, or output-file shape into GPU HMR authority.
+
+Latest verification for this continuation:
+
+```text
+node --check mcp/synthi-mcp/scripts/gpu-hmr-random-large-project-cold-path.mjs
+  passed
+
+npm run proof:random-large-project:cold:self-check
+  passed
+
+npm run proof:validation-matrix
+  passed after Blender direct cold-path intake
+  matrix: gpu-validation-matrix-ledger:sha256:e795889019151d5d42bbc2dbb803ef420cb47c3d15b5708a7f8c36ebc3b226c6
+  json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260704T044815Z.json
+  rows: 233
+  accepted full-runtime rows: 19
+  broad proof: gpu-hmr-broad-library-agnostic-proof:sha256:03e90dffe044c0ac23bf34efcbe9607b5b41e8f5909b361cd01f6fb0fcaed830
+  qualifying direct random-cold source identities: 5
+  qualifying direct sources: direct-llama-live-cold-20260703, direct-blender-live-cold-20260704, direct-filament-live-cold-20260704, direct-godot-live-cold-20260703, direct-wgpu-live-cold-20260703
+
+node --check mcp/synthi-mcp/scripts/gpu-hmr-oidn-preflight.mjs
+  passed
+
+npm run proof:oidn:preflight:self-check
+  passed
+
+npm run proof:oidn:runtime:self-check
+  passed
+
+npm run proof:oidn:preflight
+  passed as refusal-only with Docker/worker permission
+  proof: oidn-preflight-proof:sha256:13bae1f69378602a20a6914127a5988852a8865d6966cc5d0669b06b7fbab1c5
+  artifact: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-preflight-20260704045339-proof.json
+  result: oidn-hip-rejected
+  runtime preflight accepted: false
+  output proof accepted: false
+  blocking shape: oidnTest_not_found
+
+node mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
+  passed
+  proof: gpu-validation-matrix-ledger:sha256:43973311df1c866e977f07c3566b32c1797ed66291accfdbe04bef1affa14a90
+  rows: 78
+
+npm run proof:validation-matrix
+  passed after OIDN discovery broadening and live preflight refresh
+  matrix: gpu-validation-matrix-ledger:sha256:7c3c93cb65cb1080772f18beb093cf769e7fa85b0dda9434c864b9736fa1143f
+  json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260704T051941Z.json
+  rows: 234
+  accepted full-runtime rows: 19
+  broad readiness: accepted
+  random cold qualifying direct sources: 5
+  OIDN rows: 9
+  OIDN runtime preflight: refused
+  OIDN output oracle support: missing
+  OIDN output: missing with oidn_output_oracle_attempt_required
+```
+
+This checkpoint strengthens arbitrary-project cold-path evidence and OIDN runtime discovery without adding a whitelist. The current broad matrix proof is still a recomputed proof over accepted strict rows and adversarial refusals; it is not a production claim that every arbitrary GPU project will hot-reload. Large arbitrary projects and OIDN-HIP remain fail-closed until they produce same-process artifact transport, epoch publication, dispatch trace, host identity, visual or compute output-oracle bytes, firewall proof, runtime-chain closure, and accepted strict ledger proof. The next generic gap is an actual OIDN-HIP or large-project runtime/output oracle chain, not another project-specific branch.
 
 ## 2026-07-03 Generic Proof Status And Visual Evidence Checkpoint
 
