@@ -28,6 +28,8 @@ const h = vi.hoisted(() => ({
   listSubmissionsForWorkspace: vi.fn(),
   unpublishProgram: vi.fn(),
   canPublish: vi.fn(),
+  generateManifestFromContext: vi.fn(),
+  fetchWorkspaceContext: vi.fn(),
 }));
 
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
@@ -65,7 +67,9 @@ vi.mock('@/lib/programs/runtimeClient', () => ({
   launchInstalledProgram: h.launchInstalledProgram,
   scaffoldProgram: h.scaffoldProgram,
   fetchDetectedRepoProgram: h.fetchDetectedRepoProgram,
+  fetchWorkspaceContext: h.fetchWorkspaceContext,
 }));
+vi.mock('@/lib/programs/manifestGenerator', () => ({ generateManifestFromContext: h.generateManifestFromContext }));
 vi.mock('@/lib/programs/reviewOrchestrator', () => ({ submitForReview: h.submitForReview, processSubmission: h.processSubmission }));
 vi.mock('@/lib/programs/entitlements', () => ({ canPublish: h.canPublish, isPlatformAdmin: vi.fn() }));
 
@@ -76,6 +80,8 @@ import { POST as POST_LAUNCH } from '../[installId]/launch/route.js';
 import { POST as POST_PUBLISH } from '../publish/route.js';
 import { GET as GET_SUBMISSIONS } from '../submissions/route.js';
 import { POST as POST_UNPUBLISH } from '../unpublish/route.js';
+import { POST as POST_GEN } from '../generate-manifest/route.js';
+import { POST as POST_SAVE } from '../manifest/route.js';
 import { POST as POST_SCAFFOLD } from '../scaffold/route.js';
 import { GET as GET_DETECT, POST as POST_DETECT } from '../detect/route.js';
 
@@ -189,6 +195,68 @@ describe('POST /programs/unpublish', () => {
     const res = await POST_UNPUBLISH(req('http://x/api/workspace/team/programs/unpublish', { packageId: '@other/tool' }, 'POST'), ctx({ slug: 'team' }));
     expect(res.status).toBe(403);
     expect(h.unpublishProgram).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /programs/generate-manifest', () => {
+  it('generates + validates a manifest (owner/admin)', async () => {
+    h.fetchWorkspaceContext.mockResolvedValue({ 'package.json': '{}' });
+    h.generateManifestFromContext.mockResolvedValue({ packageId: 'web', version: '1.0.0', runtimeType: 'web', launch: 'npm run dev', ports: [3000], permissions: ['program.launch'] });
+    const res = await POST_GEN(req('http://x/api/workspace/team/programs/generate-manifest', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.valid).toBe(true);
+    expect(body.manifest.packageId).toBe('web');
+    expect(h.fetchWorkspaceContext).toHaveBeenCalledWith('team', 'gh1');
+  });
+
+  it('returns valid:false + errors for an invalid generated manifest', async () => {
+    h.fetchWorkspaceContext.mockResolvedValue({});
+    h.generateManifestFromContext.mockResolvedValue({ packageId: '../evil', version: '1.0.0', launch: 'x' });
+    const res = await POST_GEN(req('http://x/api/workspace/team/programs/generate-manifest', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.valid).toBe(false);
+    expect(body.errors.length).toBeGreaterThan(0);
+  });
+
+  it('502 when the engine returns nothing', async () => {
+    h.fetchWorkspaceContext.mockResolvedValue({});
+    h.generateManifestFromContext.mockResolvedValue(null);
+    const res = await POST_GEN(req('http://x/api/workspace/team/programs/generate-manifest', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(502);
+  });
+
+  it('rejects a plain member (403)', async () => {
+    h.canWrite.mockResolvedValue(false);
+    const res = await POST_GEN(req('http://x/api/workspace/team/programs/generate-manifest', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.generateManifestFromContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /programs/manifest (save)', () => {
+  const good = { packageId: 'web', version: '1.0.0', runtimeType: 'web', launch: 'npm run dev', ports: [3000], permissions: ['program.launch'] };
+  it('re-validates + writes vectant.programs.json (overwrite) for an owner/admin', async () => {
+    h.scaffoldProgram.mockResolvedValue({ written: ['vectant.programs.json'], skipped: [] });
+    const res = await POST_SAVE(req('http://x/api/workspace/team/programs/manifest', { manifest: good }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    const passed = h.scaffoldProgram.mock.calls[0][0];
+    expect(passed.overwrite).toBe(true);
+    expect(passed.files[0].path).toBe('vectant.programs.json');
+  });
+
+  it('422 (never writes) for an invalid manifest', async () => {
+    const res = await POST_SAVE(req('http://x/api/workspace/team/programs/manifest', { manifest: { packageId: '../evil', version: '1.0.0', launch: 'x' } }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(422);
+    expect(h.scaffoldProgram).not.toHaveBeenCalled();
+  });
+
+  it('rejects a plain member (403)', async () => {
+    h.canWrite.mockResolvedValue(false);
+    const res = await POST_SAVE(req('http://x/api/workspace/team/programs/manifest', { manifest: good }, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.scaffoldProgram).not.toHaveBeenCalled();
   });
 });
 
