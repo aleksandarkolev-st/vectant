@@ -6,7 +6,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/prisma', () => ({ default: h.prisma }));
 
 import {
-  parsePricingInput, platformTakeBps, isPaid, upsertPricing, getPricing, PricingError,
+  parsePricingInput, platformTakeBps, isPaid, upsertPricing, getPricing, toPublicPricing, PricingError,
 } from '../pricing';
 
 beforeEach(() => vi.clearAllMocks());
@@ -89,5 +89,19 @@ describe('getPricing', () => {
     h.prisma.programPricing.findUnique.mockResolvedValue({ id: 'p1' });
     await getPricing('prog1');
     expect(h.prisma.programPricing.findUnique).toHaveBeenCalledWith({ where: { programId: 'prog1' } });
+  });
+});
+
+describe('toPublicPricing', () => {
+  it('exposes only price fields — never payout ref or take-rate', () => {
+    const pub = toPublicPricing({ priceCents: 500, currency: 'eur', active: true, payoutAccountRef: 'acct_9', takeRateBps: 3000 });
+    expect(pub).toEqual({ priceCents: 500, currency: 'eur', isPaid: true });
+    expect('payoutAccountRef' in pub).toBe(false);
+    expect('takeRateBps' in pub).toBe(false);
+  });
+
+  it('is null for no pricing and marks a 0-price as not paid', () => {
+    expect(toPublicPricing(null)).toBeNull();
+    expect(toPublicPricing({ priceCents: 0, currency: 'eur', active: true }).isPaid).toBe(false);
   });
 });

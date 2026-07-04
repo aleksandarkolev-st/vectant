@@ -32,6 +32,9 @@ const h = vi.hoisted(() => ({
   fetchWorkspaceContext: vi.fn(),
   evaluatePaywall: vi.fn(),
   paywallDenial: vi.fn(),
+  listPricingForPrograms: vi.fn(),
+  listActiveEntitlementProgramIds: vi.fn(),
+  toPublicPricing: vi.fn(),
 }));
 
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
@@ -54,6 +57,8 @@ vi.mock('@/lib/programs/store', () => ({
   incrementInstallCount: h.incrementInstallCount,
   listSubmissionsForWorkspace: h.listSubmissionsForWorkspace,
   unpublishProgram: h.unpublishProgram,
+  listPricingForPrograms: h.listPricingForPrograms,
+  listActiveEntitlementProgramIds: h.listActiveEntitlementProgramIds,
   // Real-ish projection so the install route can return a public install.
   toPublicInstall: (row) =>
     row
@@ -75,6 +80,7 @@ vi.mock('@/lib/programs/manifestGenerator', () => ({ generateManifestFromContext
 vi.mock('@/lib/programs/reviewOrchestrator', () => ({ submitForReview: h.submitForReview, processSubmission: h.processSubmission }));
 vi.mock('@/lib/programs/entitlements', () => ({ canPublish: h.canPublish, isPlatformAdmin: vi.fn() }));
 vi.mock('@/lib/programs/paidGate', () => ({ evaluatePaywall: h.evaluatePaywall, paywallDenial: h.paywallDenial }));
+vi.mock('@/lib/programs/pricing', () => ({ toPublicPricing: h.toPublicPricing }));
 
 import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
 import { GET as GET_INSTALLED } from '../installed/route.js';
@@ -104,6 +110,10 @@ beforeEach(() => {
   h.paywallDenial.mockImplementation((d) => (d && !d.ok
     ? { status: d.reason === 'billing_unconfigured' ? 503 : 402, body: { error: d.reason, priceCents: d.priceCents ?? null, currency: d.currency ?? null } }
     : null));
+  // Catalog enrichment: no pricing / no entitlements by default.
+  h.listPricingForPrograms.mockResolvedValue([]);
+  h.listActiveEntitlementProgramIds.mockResolvedValue([]);
+  h.toPublicPricing.mockImplementation((p) => (p ? { priceCents: p.priceCents, currency: p.currency, isPaid: p.priceCents > 0 } : null));
 });
 
 describe('GET /programs/marketplace', () => {
@@ -125,6 +135,23 @@ describe('GET /programs/marketplace', () => {
     const res = await GET_MARKETPLACE(req('http://x/api/workspace/team/programs/marketplace'), ctx({ slug: 'team' }));
     expect(res.status).toBe(403);
     expect(h.listPublishedPrograms).not.toHaveBeenCalled();
+  });
+
+  it('enriches each program with a redacted price + entitlement (no payout ref / take-rate)', async () => {
+    h.listPublishedPrograms.mockResolvedValue([{ id: 'p1', packageId: '@team/paid', publisher: 'team', installCount: 0 }]);
+    h.listPricingForPrograms.mockResolvedValue([{ programId: 'p1', priceCents: 500, currency: 'eur', payoutAccountRef: 'acct_9', takeRateBps: 3000 }]);
+    h.listActiveEntitlementProgramIds.mockResolvedValue(['p1']);
+
+    const res = await GET_MARKETPLACE(req('http://x/api/workspace/team/programs/marketplace'), ctx({ slug: 'team' }));
+    const prog = (await res.json()).programs[0];
+
+    expect(prog.price).toEqual({ priceCents: 500, currency: 'eur', isPaid: true });
+    expect(prog.isPaid).toBe(true);
+    expect(prog.entitled).toBe(true);
+    expect(h.listActiveEntitlementProgramIds).toHaveBeenCalledWith({ subjectId: 'u1', programIds: ['p1'] });
+    const raw = JSON.stringify(prog);
+    expect(raw).not.toContain('acct_9');
+    expect(raw).not.toContain('takeRateBps');
   });
 });
 

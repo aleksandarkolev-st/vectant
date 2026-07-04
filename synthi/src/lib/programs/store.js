@@ -242,6 +242,22 @@ export async function getMarketplaceProgramByPackageId(packageId) {
   return prisma.marketplaceProgram.findUnique({ where: { packageId } });
 }
 
+/** Pricing rows for a set of programs (batched — avoids N+1 in the catalog). */
+export async function listPricingForPrograms(programIds) {
+  if (!Array.isArray(programIds) || programIds.length === 0) return [];
+  return prisma.programPricing.findMany({ where: { programId: { in: programIds } } });
+}
+
+/** The subset of `programIds` the subject holds an ACTIVE entitlement for. */
+export async function listActiveEntitlementProgramIds({ subjectType = 'user', subjectId, programIds }) {
+  if (!subjectId || !Array.isArray(programIds) || programIds.length === 0) return [];
+  const rows = await prisma.entitlement.findMany({
+    where: { subjectType, subjectId, status: 'active', programId: { in: programIds } },
+    select: { programId: true },
+  });
+  return rows.map((r) => r.programId);
+}
+
 /**
  * Record a payment webhook event exactly once (idempotency via the unique
  * eventId). Returns true if newly recorded, false if this event was already

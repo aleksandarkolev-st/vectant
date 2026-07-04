@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
     programVersion: { upsert: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), findMany: vi.fn() },
     programInstall: { create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
     programReviewEvent: { create: vi.fn() },
+    programPricing: { findMany: vi.fn() },
+    entitlement: { findMany: vi.fn() },
   },
 }));
 
@@ -43,6 +45,8 @@ import {
   updateInstallStatus,
   updateProgramSession,
   upsertLocalProgram,
+  listPricingForPrograms,
+  listActiveEntitlementProgramIds,
 } from '../store';
 
 beforeEach(() => {
@@ -643,5 +647,34 @@ describe('listProcessableSubmissions', () => {
       take: 50,
     }));
     expect(rows[0].id).toBe('ver1');
+  });
+});
+
+describe('listPricingForPrograms', () => {
+  it('batches pricing by program ids', async () => {
+    h.prisma.programPricing.findMany.mockResolvedValue([{ programId: 'p1', priceCents: 500 }]);
+    const rows = await listPricingForPrograms(['p1', 'p2']);
+    expect(rows).toHaveLength(1);
+    expect(h.prisma.programPricing.findMany).toHaveBeenCalledWith({ where: { programId: { in: ['p1', 'p2'] } } });
+  });
+  it('short-circuits on an empty id list', async () => {
+    expect(await listPricingForPrograms([])).toEqual([]);
+    expect(h.prisma.programPricing.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('listActiveEntitlementProgramIds', () => {
+  it('returns only active-entitled program ids for the subject', async () => {
+    h.prisma.entitlement.findMany.mockResolvedValue([{ programId: 'p1' }]);
+    const ids = await listActiveEntitlementProgramIds({ subjectId: 'u1', programIds: ['p1', 'p2'] });
+    expect(ids).toEqual(['p1']);
+    expect(h.prisma.entitlement.findMany).toHaveBeenCalledWith({
+      where: { subjectType: 'user', subjectId: 'u1', status: 'active', programId: { in: ['p1', 'p2'] } },
+      select: { programId: true },
+    });
+  });
+  it('short-circuits without a subject or ids', async () => {
+    expect(await listActiveEntitlementProgramIds({ subjectId: '', programIds: ['p1'] })).toEqual([]);
+    expect(await listActiveEntitlementProgramIds({ subjectId: 'u1', programIds: [] })).toEqual([]);
   });
 });

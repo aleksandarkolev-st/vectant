@@ -63,6 +63,16 @@ export function isPaid(pricing) {
   return !!(pricing && pricing.active && Number.isInteger(pricing.priceCents) && pricing.priceCents > 0);
 }
 
+/**
+ * Public projection of pricing for buyers/members. Exposes only the price;
+ * NEVER the payout account ref or the platform take-rate (allow-list, same
+ * posture as the redacted scan/AI reports).
+ */
+export function toPublicPricing(pricing) {
+  if (!pricing) return null;
+  return { priceCents: pricing.priceCents, currency: pricing.currency, isPaid: isPaid(pricing) };
+}
+
 /** Upsert a program's pricing (validated). Take-rate applied from env. */
 export async function upsertPricing(programId, input, { env = process.env } = {}) {
   const parsed = parsePricingInput(input);
