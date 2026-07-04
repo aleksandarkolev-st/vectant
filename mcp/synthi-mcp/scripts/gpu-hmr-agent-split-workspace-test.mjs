@@ -519,6 +519,16 @@ const DIRECT_SOURCE_AUTHORITIES = new Set([
   'workspace_source_files',
   'cli_or_env_direct_source',
 ]);
+const STRICT_DIRECT_SOURCE_AUTHORITIES = new Set([
+  'direct_source_url_commit',
+  'direct_local_git_repo_path',
+]);
+const DIRECT_SOURCE_INPUT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
+const DIRECT_SOURCE_INPUT_AUTHORITY =
+  'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_INPUT_IDENTITY_ROLE =
+  'source_identity_hash_bound_to_direct_input_not_whitelist';
 
 function normalizeDirectSourceAuthority(value) {
   const text = profileString(value, 'sourceAuthority').trim();
@@ -529,6 +539,14 @@ function normalizeDirectSourceAuthority(value) {
     );
   }
   return text;
+}
+
+function uniqueSortedStrings(values) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean),
+  )].sort();
 }
 
 function realPathForExistingPath(value) {
@@ -673,6 +691,53 @@ function normalizeDirectSourceOverride(rawManifest, {
   if (sourceAuthority === 'direct_local_git_repo_path' && !resolvedSourceRoot) {
     throw new Error('direct_local_git_repo_path source authority requires a source root');
   }
+  const sourceUrl = profileString(
+    raw.sourceUrl
+      ?? raw.source_url
+      ?? source.sourceUrl
+      ?? source.source_url,
+    'directSourceManifest.sourceUrl',
+  );
+  const declaredRepoPath = profileString(
+    raw.repoPath
+      ?? raw.repo_path
+      ?? source.repoPath
+      ?? source.repo_path,
+    'directSourceManifest.repoPath',
+  );
+  const repoPath = declaredRepoPath || (
+    sourceAuthority === 'direct_local_git_repo_path'
+      ? resolvedSourceRoot
+      : ''
+  );
+  const declaredImmutableCommit = profileString(
+    raw.immutableCommit
+      ?? raw.immutable_commit
+      ?? raw.commit
+      ?? source.immutableCommit
+      ?? source.immutable_commit
+      ?? source.commit,
+    'directSourceManifest.immutableCommit',
+  );
+  const sourceKind = profileString(
+    raw.sourceKind
+      ?? raw.source_kind
+      ?? source.sourceKind
+      ?? source.source_kind,
+    'directSourceManifest.sourceKind',
+  ) || (
+    sourceAuthority === 'direct_local_git_repo_path'
+      ? 'local_repo_path_commit'
+      : sourceAuthority === 'direct_source_url_commit'
+        ? 'source_url_commit'
+        : 'source_tree_files'
+  );
+  const directSourceInputChannels = uniqueSortedStrings([
+    ...(Array.isArray(raw.directSourceInputChannels) ? raw.directSourceInputChannels : []),
+    ...(Array.isArray(raw.direct_source_input_channels) ? raw.direct_source_input_channels : []),
+    ...(Array.isArray(source.directSourceInputChannels) ? source.directSourceInputChannels : []),
+    ...(Array.isArray(source.direct_source_input_channels) ? source.direct_source_input_channels : []),
+  ]);
   const entryPath = cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? fallbackEntryPath);
   const files = normalizeDirectSourceFiles(source, {
     manifestDir,
@@ -683,10 +748,25 @@ function normalizeDirectSourceOverride(rawManifest, {
     throw new Error(`direct source manifest entryPath ${entryPath} is missing from source files`);
   }
   const manifestHash = sourceFilesManifestHash(files);
+  const immutableCommit = declaredImmutableCommit || (
+    sourceAuthority === 'direct_local_git_repo_path'
+      ? `source-tree:${manifestHash}`
+      : ''
+  );
   const evidenceRef = `evidence:agent-direct-source-manifest:${manifestHash}`;
   return {
     sourceAuthority,
     source_authority: sourceAuthority,
+    sourceKind,
+    source_kind: sourceKind,
+    sourceUrl: sourceUrl || null,
+    source_url: sourceUrl || null,
+    repoPath: repoPath || null,
+    repo_path: repoPath || null,
+    immutableCommit: immutableCommit || null,
+    immutable_commit: immutableCommit || null,
+    directSourceInputChannels,
+    direct_source_input_channels: directSourceInputChannels,
     entryPath,
     entry_path: entryPath,
     files,
@@ -750,6 +830,16 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     direct_source_manifest_path: override.manifest_path,
     directSourceRoot: override.sourceRoot,
     direct_source_root: override.source_root,
+    sourceKind: override.sourceKind,
+    source_kind: override.source_kind,
+    sourceUrl: override.sourceUrl,
+    source_url: override.source_url,
+    repoPath: override.repoPath,
+    repo_path: override.repo_path,
+    immutableCommit: override.immutableCommit,
+    immutable_commit: override.immutable_commit,
+    directSourceInputChannels: override.directSourceInputChannels,
+    direct_source_input_channels: override.direct_source_input_channels,
     evidenceRef: override.evidenceRef,
     evidence_ref: override.evidence_ref,
   };
@@ -4232,6 +4322,157 @@ function sourceFirstWorkspaceSourceProvenanceEvidence({
   };
 }
 
+function directSourceContextFromProfile(profile = ACTIVE_AGENT_PROFILE) {
+  const sourceAuthority = profile?.sourceAuthority ?? profile?.source_authority ?? '';
+  if (!STRICT_DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority)) return null;
+  const source = profile?.source && typeof profile.source === 'object' ? profile.source : {};
+  const sourceKind =
+    source.sourceKind
+    ?? source.source_kind
+    ?? (sourceAuthority === 'direct_local_git_repo_path'
+      ? 'local_repo_path_commit'
+      : 'source_url_commit');
+  const sourceUrl = String(source.sourceUrl ?? source.source_url ?? '').trim();
+  const repoPath = String(
+    source.repoPath
+      ?? source.repo_path
+      ?? source.directSourceRoot
+      ?? source.direct_source_root
+      ?? source.sourceRoot
+      ?? source.source_root
+      ?? '',
+  ).trim();
+  const immutableCommit = String(
+    source.immutableCommit
+      ?? source.immutable_commit
+      ?? '',
+  ).trim();
+  const suppliedInputChannels = uniqueSortedStrings([
+    ...(Array.isArray(source.directSourceInputChannels) ? source.directSourceInputChannels : []),
+    ...(Array.isArray(source.direct_source_input_channels) ? source.direct_source_input_channels : []),
+  ]);
+  const inputChannels = suppliedInputChannels.length > 0
+    ? suppliedInputChannels
+    : uniqueSortedStrings([
+        CFG.directSourceManifestPath ? 'env:SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH' : null,
+        CFG.directSourceRoot ? 'env:SYNTHI_GPU_AGENT_SOURCE_ROOT' : null,
+        CFG.directSourceAuthority ? 'env:SYNTHI_GPU_AGENT_SOURCE_AUTHORITY' : null,
+      ]);
+  return {
+    sourceAuthority,
+    source_authority: sourceAuthority,
+    candidateSource: sourceAuthority,
+    candidate_source: sourceAuthority,
+    sourceKind,
+    source_kind: sourceKind,
+    sourceUrl: sourceUrl || null,
+    source_url: sourceUrl || null,
+    repoPath: repoPath || null,
+    repo_path: repoPath || null,
+    immutableCommit: immutableCommit || null,
+    immutable_commit: immutableCommit || null,
+    inputChannels,
+    input_channels: inputChannels,
+  };
+}
+
+function directSourceIdentityHash({
+  candidateSource,
+  sourceKind,
+  sourceUrl,
+  repoPath,
+  immutableCommit,
+  inputChannels,
+} = {}) {
+  const normalizedSourceUrl = String(sourceUrl ?? '').trim();
+  const normalizedRepoPath = String(repoPath ?? '').trim();
+  const seed = {
+    schemaVersion: DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
+    candidateSource: String(candidateSource ?? '').trim(),
+    sourceKind: String(sourceKind ?? '').trim(),
+    hasSourceUrl: Boolean(normalizedSourceUrl),
+    hasRepoPath: Boolean(normalizedRepoPath),
+    sourceUrlHash: normalizedSourceUrl ? `sha256:${sha256Hex(normalizedSourceUrl)}` : null,
+    repoPathHash: normalizedRepoPath ? `sha256:${sha256Hex(normalizedRepoPath)}` : null,
+    immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
+    inputChannels: uniqueSortedStrings(inputChannels),
+  };
+  return `sha256:${sha256Hex(stableJson(seed))}`;
+}
+
+function directSourceInputEvidenceForProfile(profile = ACTIVE_AGENT_PROFILE) {
+  const context = directSourceContextFromProfile(profile);
+  if (!context) return null;
+  const candidateSource = context.candidateSource;
+  const sourceKind = context.sourceKind;
+  const sourceUrl = context.sourceUrl;
+  const repoPath = context.repoPath;
+  const immutableCommit = context.immutableCommit;
+  const inputChannels = uniqueSortedStrings(context.inputChannels);
+  const sourceIdentityHash = directSourceIdentityHash({
+    candidateSource,
+    sourceKind,
+    sourceUrl,
+    repoPath,
+    immutableCommit,
+    inputChannels,
+  });
+  const cliOrEnvChannelObserved = inputChannels.some((channel) =>
+    /^cli_arg[_:]/.test(channel) || /^env[_:]/.test(channel)
+  );
+  const blockingGaps = [
+    candidateSource === 'direct_source_url_commit' || candidateSource === 'direct_local_git_repo_path'
+      ? null
+      : 'direct_source_input_candidate_source_not_direct',
+    sourceKind === (candidateSource === 'direct_local_git_repo_path' ? 'local_repo_path_commit' : 'source_url_commit')
+      ? null
+      : 'direct_source_input_source_kind_mismatch',
+    cliOrEnvChannelObserved ? null : 'direct_source_input_cli_or_env_channel_missing',
+    immutableCommit ? null : 'direct_source_input_commit_missing',
+    sourceUrl || repoPath ? null : 'direct_source_input_source_identity_missing',
+  ].filter(Boolean);
+  const accepted = blockingGaps.length === 0;
+  return {
+    schemaVersion: DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
+    schema_version: DIRECT_SOURCE_INPUT_SCHEMA_VERSION,
+    proofAuthority: DIRECT_SOURCE_INPUT_AUTHORITY,
+    proof_authority: DIRECT_SOURCE_INPUT_AUTHORITY,
+    accepted,
+    acceptedAsDirectInputEvidence: accepted,
+    accepted_as_direct_input_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    inputMode: 'cli_or_env_direct_source',
+    input_mode: 'cli_or_env_direct_source',
+    inputChannels,
+    input_channels: inputChannels,
+    candidateSource,
+    candidate_source: candidateSource,
+    sourceKind,
+    source_kind: sourceKind,
+    sourceIdentityRole: DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    source_identity_role: DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    evidenceHash: sourceIdentityHash,
+    evidence_hash: sourceIdentityHash,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function sourceFirstIngestionEvidence({
   source,
   entryPath,
@@ -4348,6 +4589,8 @@ function sourceFirstIngestionEvidence({
     initialManifestHash,
     initialFiles,
   });
+  const directSourceContext = directSourceContextFromProfile(ACTIVE_AGENT_PROFILE);
+  const directSourceInputEvidence = directSourceInputEvidenceForProfile(ACTIVE_AGENT_PROFILE);
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
   const generatedArtifactPathsInGeneratedNamespace =
@@ -4383,6 +4626,8 @@ function sourceFirstIngestionEvidence({
     ACTIVE_AGENT_PROFILE?.source?.evidence_ref,
     ACTIVE_AGENT_PROFILE?.source?.contentHash,
     ACTIVE_AGENT_PROFILE?.source?.content_hash,
+    directSourceInputEvidence?.evidenceHash,
+    directSourceInputEvidence?.evidence_hash,
     ...(Array.isArray(ACTIVE_AGENT_PROFILE?.source?.files)
       ? ACTIVE_AGENT_PROFILE.source.files.map((entry) => entry.evidenceRef ?? entry.evidence_ref)
       : []),
@@ -4429,6 +4674,16 @@ function sourceFirstIngestionEvidence({
     can_satisfy_runtime_proof: false,
     sourceAuthority,
     source_authority: sourceAuthority,
+    sourceKind: directSourceContext?.sourceKind ?? null,
+    source_kind: directSourceContext?.source_kind ?? null,
+    sourceUrl: directSourceContext?.sourceUrl ?? null,
+    source_url: directSourceContext?.source_url ?? null,
+    repoPath: directSourceContext?.repoPath ?? null,
+    repo_path: directSourceContext?.repo_path ?? null,
+    immutableCommit: directSourceContext?.immutableCommit ?? null,
+    immutable_commit: directSourceContext?.immutable_commit ?? null,
+    directSourceInputEvidence: directSourceInputEvidence ?? {},
+    direct_source_input_evidence: directSourceInputEvidence ?? {},
     workspaceSourceProvenance: workspaceSourceProvenance ?? {},
     workspace_source_provenance: workspaceSourceProvenance ?? {},
     entryPath: normalizedEntryPath,
@@ -4490,6 +4745,14 @@ function sourceFirstIngestionEvidence({
       gpu_arch: gpuArch,
       gpuArchSource,
       gpu_arch_source: gpuArchSource,
+      sourceUrl: directSourceContext?.sourceUrl ?? null,
+      source_url: directSourceContext?.source_url ?? null,
+      repoPath: directSourceContext?.repoPath ?? null,
+      repo_path: directSourceContext?.repo_path ?? null,
+      immutableCommit: directSourceContext?.immutableCommit ?? null,
+      immutable_commit: directSourceContext?.immutable_commit ?? null,
+      directSourceInputEvidence: directSourceInputEvidence ?? {},
+      direct_source_input_evidence: directSourceInputEvidence ?? {},
     },
     initial_compile_contract: {
       language: initialCompileArgs?.language ?? null,
@@ -4507,6 +4770,10 @@ function sourceFirstIngestionEvidence({
       gpu_mode: initialCompileArgs?.gpu_mode ?? null,
       gpu_arch: gpuArch,
       gpu_arch_source: gpuArchSource,
+      source_url: directSourceContext?.source_url ?? null,
+      repo_path: directSourceContext?.repo_path ?? null,
+      immutable_commit: directSourceContext?.immutable_commit ?? null,
+      direct_source_input_evidence: directSourceInputEvidence ?? {},
     },
     preexistingGeneratedArtifactsPresent: preexistingGeneratedArtifactPaths.length > 0,
     preexisting_generated_artifacts_present: preexistingGeneratedArtifactPaths.length > 0,
@@ -5269,6 +5536,38 @@ function selfCheckAgentVisualProfile() {
         manifestPath: path.join(process.cwd(), 'self-check-direct-bootstrap-source-manifest.json'),
       }),
     );
+    const directLocalSourceProfile = applyDirectSourceOverride(
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-direct-local-source-profile',
+        profileClass: 'self_check_visual_gpu_path',
+        source: {
+          entryPath: 'src/main.cpp',
+          fixture: 'ray-light',
+        },
+        compile: {
+          width: 320,
+          height: 240,
+        },
+      }),
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'direct_local_git_repo_path',
+        directSourceInputChannels: ['cli_arg:source-root', 'cli_arg:source-entry'],
+        entryPath: 'src/main.cpp',
+        files: [
+          {
+            path: 'include/params.hpp',
+            inline: multiFileHeaderSource,
+          },
+          {
+            path: 'src/main.cpp',
+            inline: multiFileEntrySource,
+          },
+        ],
+      }, {
+        manifestPath: path.join(process.cwd(), 'self-check-direct-local-source-manifest.json'),
+      }),
+    );
     ACTIVE_AGENT_PROFILE = ambiguousProfile;
     let ambiguousRejected = false;
     try {
@@ -5356,6 +5655,29 @@ function selfCheckAgentVisualProfile() {
         ...sourceFirstInitialCompileArgs,
         filename: directSourceProfile.source.entryPath,
         files: directSourceInitialFiles,
+      },
+      initialCompileResult: { waitSummary: { status: 'applied' } },
+      split: sourceFirstSplit,
+      sawGpuSplit: { matched: false },
+      splitEndpointEvidence: gpuSplitEndpointEvidenceFromSidecar(sourceFirstSplit),
+    });
+    ACTIVE_AGENT_PROFILE = directLocalSourceProfile;
+    const directLocalResolvedSource = sourceFromAgentVisualProfile(directLocalSourceProfile, 'rocm');
+    const directLocalInitialFiles = sourceFilesForInitialCompile(
+      directLocalSourceProfile.source.entryPath,
+      directLocalResolvedSource,
+    );
+    const acceptedDirectLocalSourceFirst = sourceFirstIngestionEvidence({
+      source: directLocalResolvedSource,
+      entryPath: directLocalSourceProfile.source.entryPath,
+      sourcePurityEvidence: assertNoSynthiAbi(directLocalResolvedSource, {
+        entryPath: directLocalSourceProfile.source.entryPath,
+        files: directLocalInitialFiles,
+      }),
+      initialCompileArgs: {
+        ...sourceFirstInitialCompileArgs,
+        filename: directLocalSourceProfile.source.entryPath,
+        files: directLocalInitialFiles,
       },
       initialCompileResult: { waitSummary: { status: 'applied' } },
       split: sourceFirstSplit,
@@ -5556,6 +5878,10 @@ function selfCheckAgentVisualProfile() {
       || directBootstrapProfile.source.fixture !== ''
       || directBootstrapProfile.profileId === 'flow'
       || !directBootstrapProfile.profileId.startsWith('direct-source-')
+      || directLocalSourceProfile.sourceAuthority !== 'direct_local_git_repo_path'
+      || directLocalSourceProfile.source.sourceKind !== 'local_repo_path_commit'
+      || !directLocalSourceProfile.source.repoPath
+      || !String(directLocalSourceProfile.source.immutableCommit ?? '').startsWith('source-tree:sha256:')
       || directSourceProfile.source.files.length !== 2
       || !directSourceProfile.source.manifestHash?.startsWith('sha256:')
       || !directSourceProfile.source.evidenceRef?.startsWith('evidence:agent-direct-source-manifest:sha256:')
@@ -5581,6 +5907,22 @@ function selfCheckAgentVisualProfile() {
       || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
         String(entry).startsWith('evidence:agent-direct-source-file:sha256:')
       )
+      || acceptedDirectLocalSourceFirst.accepted !== true
+      || acceptedDirectLocalSourceFirst.sourceAuthority !== 'direct_local_git_repo_path'
+      || acceptedDirectLocalSourceFirst.repoPath !== directLocalSourceProfile.source.repoPath
+      || acceptedDirectLocalSourceFirst.immutableCommit !== directLocalSourceProfile.source.immutableCommit
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.accepted !== true
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.candidateSource !== 'direct_local_git_repo_path'
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.sourceKind !== 'local_repo_path_commit'
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.sourceIdentityRole
+        !== DIRECT_SOURCE_INPUT_IDENTITY_ROLE
+      || !acceptedDirectLocalSourceFirst.directSourceInputEvidence?.sourceIdentityHash?.startsWith('sha256:')
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.targetNameIndependent !== true
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.projectNameWhitelist?.length !== 0
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.specificTargetIdsAllowed?.length !== 0
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.acceptedForGpuHmr !== false
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.gpuHmrSuccess !== false
+      || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.canSatisfyRuntimeProof !== false
       || !directProfileAuthorityRejected
       || !directSuccessClaimRejected
       || multiFileProfile.source.files.length !== 2

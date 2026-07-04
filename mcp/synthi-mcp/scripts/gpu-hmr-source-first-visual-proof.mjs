@@ -62,6 +62,14 @@ function contentHashForObject(value) {
   return `sha256:${sha256Hex(stableJson(value))}`;
 }
 
+function uniqueSortedStrings(values) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean),
+  )].sort();
+}
+
 function cleanRel(value) {
   const text = String(value ?? '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
   const normalized = path.posix.normalize(text);
@@ -255,6 +263,7 @@ function synthesizeSourceManifestFromRoot({
   sourceRoot,
   sourceEntry,
   sourceAuthority,
+  inputChannels = [],
 }) {
   if (!sourceRoot) throw new Error('source root is required');
   const root = realpathSync(path.resolve(sourceRoot));
@@ -272,6 +281,14 @@ function synthesizeSourceManifestFromRoot({
     byte_length: file.byteLength,
   }));
   const manifestHash = contentHashForObject(fileManifest);
+  const directSourceAuthority = sourceAuthority || 'direct_local_git_repo_path';
+  const sourceKind = directSourceAuthority === 'direct_local_git_repo_path'
+    ? 'local_repo_path_commit'
+    : directSourceAuthority === 'direct_source_url_commit'
+      ? 'source_url_commit'
+      : 'source_tree_files';
+  const immutableCommit = `source-tree:${manifestHash}`;
+  const directSourceInputChannels = uniqueSortedStrings(inputChannels);
   const manifest = {
     schemaVersion: 'synthi.gpu_hmr.agent_split_direct_source_manifest.v1',
     schema_version: 'synthi.gpu_hmr.agent_split_direct_source_manifest.v1',
@@ -283,10 +300,18 @@ function synthesizeSourceManifestFromRoot({
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
-    sourceAuthority: sourceAuthority || 'direct_local_git_repo_path',
-    source_authority: sourceAuthority || 'direct_local_git_repo_path',
+    sourceAuthority: directSourceAuthority,
+    source_authority: directSourceAuthority,
+    sourceKind,
+    source_kind: sourceKind,
     sourceRoot: root,
     source_root: root,
+    repoPath: root,
+    repo_path: root,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    directSourceInputChannels,
+    direct_source_input_channels: directSourceInputChannels,
     entryPath,
     entry_path: entryPath,
     manifestHash,
@@ -295,10 +320,18 @@ function synthesizeSourceManifestFromRoot({
     file_manifest: fileManifest,
     files,
     source: {
-      sourceAuthority: sourceAuthority || 'direct_local_git_repo_path',
-      source_authority: sourceAuthority || 'direct_local_git_repo_path',
+      sourceAuthority: directSourceAuthority,
+      source_authority: directSourceAuthority,
+      sourceKind,
+      source_kind: sourceKind,
       sourceRoot: root,
       source_root: root,
+      repoPath: root,
+      repo_path: root,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+      directSourceInputChannels,
+      direct_source_input_channels: directSourceInputChannels,
       entryPath,
       entry_path: entryPath,
       files,
@@ -324,6 +357,7 @@ function selfCheckSourceRootManifest() {
     sourceRoot: tmpRoot,
     sourceEntry: 'src/main.cpp',
     sourceAuthority: 'user_source_files',
+    inputChannels: ['cli_arg:source-root', 'cli_arg:source-entry', 'cli_arg:source-authority'],
   });
   if (!existsSync(generated.manifestPath)) {
     throw new Error('source-root manifest self-check failed: manifest not written');
@@ -402,10 +436,25 @@ if (!fixture && !profile && !sourceManifest && !sourceRoot && !selfCheck) {
 
 let generatedSourceManifest = null;
 if (!sourceManifest && sourceRoot) {
+  const directSourceInputChannels = [
+    sourceRootArg ? 'cli_arg:source-root' : null,
+    !sourceRootArg && (process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT)
+      ? 'env:SYNTHI_GPU_AGENT_SOURCE_ROOT'
+      : null,
+    sourceEntryArg ? 'cli_arg:source-entry' : null,
+    !sourceEntryArg && (process.env.SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH)
+      ? 'env:SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH'
+      : null,
+    sourceAuthorityArg ? 'cli_arg:source-authority' : null,
+    !sourceAuthorityArg && (process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY)
+      ? 'env:SYNTHI_GPU_AGENT_SOURCE_AUTHORITY'
+      : null,
+  ];
   generatedSourceManifest = synthesizeSourceManifestFromRoot({
     sourceRoot,
     sourceEntry,
     sourceAuthority,
+    inputChannels: directSourceInputChannels,
   });
   sourceManifest = generatedSourceManifest.manifestPath;
   console.log(`source-root direct source manifest: ${sourceManifest}`);
