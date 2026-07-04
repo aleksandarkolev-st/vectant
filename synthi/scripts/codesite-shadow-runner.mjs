@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -95,8 +96,8 @@ function mergeCounts(...items) {
 }
 
 async function readStdin() {
-  let input = '';
-  for await (const chunk of process.stdin) input += chunk.toString('utf8');
+  if (process.stdin.isTTY) return {};
+  const input = fsSync.readFileSync(0, 'utf8');
   return input ? JSON.parse(input) : {};
 }
 
@@ -497,6 +498,21 @@ async function executeUniverse(universe, input, plan) {
   return riskBudgetEvaluation(universe, input);
 }
 
+async function emitResult(input, payload) {
+  const text = `${JSON.stringify(payload, null, 2)}\n`;
+  const outputPath = input.outputPath || input.output_path || input.shadowRunnerOutputPath || input.shadow_runner_output_path || null;
+  if (outputPath) {
+    const outputRoot = path.resolve(process.env.SYNTHI_CODESITE_SHADOW_RUNNER_OUTPUT_ROOT || os.tmpdir());
+    const resolved = path.resolve(outputPath);
+    const relative = path.relative(outputRoot, resolved);
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+      await fs.mkdir(path.dirname(resolved), { recursive: true });
+      await fs.writeFile(resolved, text, 'utf8');
+    }
+  }
+  process.stdout.write(text);
+}
+
 async function main() {
   const input = await readStdin();
   const plan = normalizeExecutionPlan(input);
@@ -510,7 +526,7 @@ async function main() {
     ...universes.flatMap((universe) => universe.evidenceRefs),
   ];
 
-  process.stdout.write(`${JSON.stringify({
+  await emitResult(input, {
     schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
     runner: 'codesite-shadow-runner',
     status: 'completed',
@@ -518,10 +534,12 @@ async function main() {
     selected,
     universes,
     evidenceRefs,
-  }, null, 2)}\n`);
+  });
 }
 
-main().catch((error) => {
+try {
+  await main();
+} catch (error) {
   process.stdout.write(`${JSON.stringify({
     schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
     runner: 'codesite-shadow-runner',
@@ -529,4 +547,4 @@ main().catch((error) => {
     error: error?.message || String(error),
     evidenceRefs: [`codesite:shadow-runner-failed:${digest(error?.message || String(error))}`],
   }, null, 2)}\n`);
-});
+}

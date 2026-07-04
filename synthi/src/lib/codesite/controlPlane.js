@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+import fs from 'fs/promises';
+import os from 'os';
 import path from 'path';
 import prisma from '@/lib/prisma';
 import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from './artifacts';
@@ -52,6 +54,7 @@ const DEFAULT_TOWER_SIMULATION_STRATEGIES = [
   'single-fullstack-agent',
   'test-first',
 ];
+const MAX_JSON_COMMAND_OUTPUT_CHARS = 2 * 1024 * 1024;
 const RADAR_INSPECTION_ADAPTERS = [
   { key: 'clearance', label: 'Clearance radar', evidencePrefix: 'clearance:run', aliases: ['clearance', 'diff', 'scope'] },
   { key: 'type', label: 'Type radar', evidencePrefix: 'typecheck:run', aliases: ['type', 'typecheck', 'tsc', 'schema_compatibility'] },
@@ -6967,7 +6970,11 @@ function runCommand(executable, args, { cwd, timeoutMs }) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    let stdoutTail = '';
+    let stdoutTruncated = false;
     let stderr = '';
+    let stderrTail = '';
+    let stderrTruncated = false;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -6975,10 +6982,26 @@ function runCommand(executable, args, { cwd, timeoutMs }) {
     }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
-      stdout = tail(`${stdout}${chunk.toString('utf8')}`);
+      const text = chunk.toString('utf8');
+      stdoutTail = tail(`${stdoutTail}${text}`);
+      const next = `${stdout}${text}`;
+      if (!stdoutTruncated && next.length <= MAX_JSON_COMMAND_OUTPUT_CHARS) {
+        stdout = next;
+      } else if (!stdoutTruncated) {
+        stdout = next.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS);
+        stdoutTruncated = true;
+      }
     });
     child.stderr.on('data', (chunk) => {
-      stderr = tail(`${stderr}${chunk.toString('utf8')}`);
+      const text = chunk.toString('utf8');
+      stderrTail = tail(`${stderrTail}${text}`);
+      const next = `${stderr}${text}`;
+      if (!stderrTruncated && next.length <= MAX_JSON_COMMAND_OUTPUT_CHARS) {
+        stderr = next;
+      } else if (!stderrTruncated) {
+        stderr = next.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS);
+        stderrTruncated = true;
+      }
     });
     child.on('error', (error) => {
       clearTimeout(timer);
@@ -6986,8 +7009,12 @@ function runCommand(executable, args, { cwd, timeoutMs }) {
         exitCode: 127,
         signal: null,
         timedOut,
-        stdoutTail: stdout,
-        stderrTail: tail(`${stderr}${error?.message || String(error)}`),
+        stdout,
+        stdoutTail,
+        stdoutTruncated,
+        stderr,
+        stderrTail: tail(`${stderrTail}${error?.message || String(error)}`),
+        stderrTruncated,
       });
     });
     child.on('close', (exitCode, signal) => {
@@ -6996,8 +7023,12 @@ function runCommand(executable, args, { cwd, timeoutMs }) {
         exitCode: Number.isInteger(exitCode) ? exitCode : null,
         signal,
         timedOut,
-        stdoutTail: stdout,
-        stderrTail: stderr,
+        stdout,
+        stdoutTail,
+        stdoutTruncated,
+        stderr,
+        stderrTail,
+        stderrTruncated,
       });
     });
   });
@@ -7012,7 +7043,11 @@ function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
+    let stdoutTail = '';
+    let stdoutTruncated = false;
     let stderr = '';
+    let stderrTail = '';
+    let stderrTruncated = false;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -7020,10 +7055,26 @@ function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
     }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
-      stdout = tail(`${stdout}${chunk.toString('utf8')}`);
+      const text = chunk.toString('utf8');
+      stdoutTail = tail(`${stdoutTail}${text}`);
+      const next = `${stdout}${text}`;
+      if (!stdoutTruncated && next.length <= MAX_JSON_COMMAND_OUTPUT_CHARS) {
+        stdout = next;
+      } else if (!stdoutTruncated) {
+        stdout = next.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS);
+        stdoutTruncated = true;
+      }
     });
     child.stderr.on('data', (chunk) => {
-      stderr = tail(`${stderr}${chunk.toString('utf8')}`);
+      const text = chunk.toString('utf8');
+      stderrTail = tail(`${stderrTail}${text}`);
+      const next = `${stderr}${text}`;
+      if (!stderrTruncated && next.length <= MAX_JSON_COMMAND_OUTPUT_CHARS) {
+        stderr = next;
+      } else if (!stderrTruncated) {
+        stderr = next.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS);
+        stderrTruncated = true;
+      }
     });
     child.on('error', (error) => {
       clearTimeout(timer);
@@ -7031,8 +7082,12 @@ function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
         exitCode: 127,
         signal: null,
         timedOut,
-        stdoutTail: stdout,
-        stderrTail: tail(`${stderr}${error?.message || String(error)}`),
+        stdout,
+        stdoutTail,
+        stdoutTruncated,
+        stderr,
+        stderrTail: tail(`${stderrTail}${error?.message || String(error)}`),
+        stderrTruncated,
       });
     });
     child.on('close', (exitCode, signal) => {
@@ -7041,8 +7096,12 @@ function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
         exitCode: Number.isInteger(exitCode) ? exitCode : null,
         signal,
         timedOut,
-        stdoutTail: stdout,
-        stderrTail: stderr,
+        stdout,
+        stdoutTail,
+        stdoutTruncated,
+        stderr,
+        stderrTail,
+        stderrTruncated,
       });
     });
     child.stdin.end(`${JSON.stringify(input || {})}\n`);
@@ -7675,8 +7734,8 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
   if (!project) throw notFound('project_not_found');
   await requireProjectAccess(project, actor, 'write');
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
-  const executionPlans = project.executionPlans.map(executionPlanProjection);
-  const mutationLeases = project.mutationLeases.map(mutationLeaseProjection);
+  const executionPlans = asArray(project.executionPlans).map(executionPlanProjection);
+  const mutationLeases = asArray(project.mutationLeases).map(mutationLeaseProjection);
   const learnedPolicyDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
   const forecast = predictCollisions({
     executionPlans,
@@ -7704,6 +7763,8 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
   });
   const universes = strategySet.map((strategy) => scoreTowerStrategy(strategy, towerSignals));
   const selected = universes.slice().sort((a, b) => {
+    const policyPriority = Number(b.counterfactualPolicyPriority || 0) - Number(a.counterfactualPolicyPriority || 0);
+    if (policyPriority !== 0) return policyPriority;
     if (a.predictedCollisionRisk !== b.predictedCollisionRisk) return a.predictedCollisionRisk - b.predictedCollisionRisk;
     if (asArray(a.unresolvedRisks).length !== asArray(b.unresolvedRisks).length) {
       return asArray(a.unresolvedRisks).length - asArray(b.unresolvedRisks).length;
@@ -7980,47 +8041,111 @@ async function runConfiguredShadowRunner(input) {
   const command = configuredShadowRunnerCommand();
   if (!command) return null;
   const timeoutMs = normalizeShadowRunnerTimeout();
-  const result = await runJsonCommand(command.executable, command.args, {
-    cwd: command.cwd || process.cwd(),
-    timeoutMs,
-    input: {
+  const inputDigest = digest(input);
+  const commandDigest = digest({ executable: command.executable, args: command.args, cwd: command.cwd || null });
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-runner-'));
+  const outputPath = path.join(outputDir, 'result.json');
+  try {
+    const runnerInput = {
       schemaVersion: 'synthi.codesite.shadowRunnerInput.v1',
       ...input,
-    },
-  });
-  if (result.exitCode !== 0) {
-    return {
-      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
-      status: 'failed',
-      runner: command.executable,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      timedOut: result.timedOut,
-      stdoutTail: result.stdoutTail,
-      stderrTail: result.stderrTail,
-      evidenceRefs: [`codesite:shadow-runner-failed:${digest(result)}`],
+      outputPath,
     };
-  }
-  try {
-    return {
-      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
-      status: 'completed',
-      runner: command.executable,
-      ...JSON.parse(result.stdoutTail || '{}'),
-      stdoutDigest: digest(result.stdoutTail || ''),
-      stderrDigest: digest(result.stderrTail || ''),
-    };
-  } catch (error) {
-    return {
-      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
-      status: 'failed',
-      runner: command.executable,
-      exitCode: result.exitCode,
-      parseError: error?.message || String(error),
-      stdoutTail: result.stdoutTail,
-      stderrTail: result.stderrTail,
-      evidenceRefs: [`codesite:shadow-runner-invalid-json:${digest(result)}`],
-    };
+    const result = await runJsonCommand(command.executable, command.args, {
+      cwd: command.cwd || process.cwd(),
+      timeoutMs,
+      input: runnerInput,
+    });
+    const outputText = await fs.readFile(outputPath, 'utf8').catch(() => null);
+    if (result.exitCode !== 0) {
+      return {
+        schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+        status: 'failed',
+        runner: command.executable,
+        inputDigest,
+        commandDigest,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        stdoutTail: result.stdoutTail,
+        stderrTail: result.stderrTail,
+        outputPathWritten: Boolean(outputText),
+        evidenceRefs: [`codesite:shadow-runner-failed:${digest(result)}`],
+      };
+    }
+    if (!outputText && result.stdoutTruncated) {
+      return {
+        schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+        status: 'failed',
+        runner: command.executable,
+        inputDigest,
+        commandDigest,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        stdoutTail: result.stdoutTail,
+        stderrTail: result.stderrTail,
+        failureCode: 'shadow_runner_output_too_large',
+        evidenceRefs: [`codesite:shadow-runner-output-too-large:${digest(result)}`],
+      };
+    }
+    const resultText = outputText || result.stdout || result.stdoutTail || '{}';
+    try {
+      const parsed = JSON.parse(resultText);
+      const stdoutDigest = digest(result.stdout || '');
+      const stderrDigest = digest(result.stderr || '');
+      const outputArtifactDigest = outputText ? digest(outputText) : null;
+      const output = {
+        schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+        status: 'completed',
+        runner: command.executable,
+        ...parsed,
+        inputDigest,
+        commandDigest,
+        stdoutDigest,
+        stderrDigest,
+        outputArtifactDigest,
+      };
+      const resultDigest = digest({
+        schemaVersion: output.schemaVersion,
+        status: output.status,
+        runner: output.runner,
+        executionMode: output.executionMode || output.execution_mode || null,
+        selected: output.selected || null,
+        inputDigest,
+        commandDigest,
+        stdoutDigest,
+        stderrDigest,
+        outputArtifactDigest,
+        universeDigests: asArray(output.universes).map((universe) => digest(universe)),
+      });
+      output.resultDigest = resultDigest;
+      output.evidenceRefs = unique([
+        ...asArray(parsed.evidenceRefs || parsed.evidence_refs),
+        `codesite:shadow-runner-input:${inputDigest}`,
+        `codesite:shadow-runner-command:${commandDigest}`,
+        ...(outputArtifactDigest ? [`codesite:shadow-runner-output-artifact:${outputArtifactDigest}`] : []),
+        `codesite:shadow-runner-output:${stdoutDigest}`,
+        `codesite:shadow-runner-result:${resultDigest}`,
+      ]);
+      return output;
+    } catch (error) {
+      return {
+        schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
+        status: 'failed',
+        runner: command.executable,
+        inputDigest,
+        commandDigest,
+        exitCode: result.exitCode,
+        parseError: error?.message || String(error),
+        stdoutTail: result.stdoutTail,
+        stderrTail: result.stderrTail,
+        outputPathWritten: Boolean(outputText),
+        evidenceRefs: [`codesite:shadow-runner-invalid-json:${digest(result)}`],
+      };
+    }
+  } finally {
+    await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -8361,6 +8486,7 @@ function scoreTowerStrategy(strategy, signals) {
     avoidedRisks: riskResolution.avoidedRisks,
     unresolvedRisks: riskResolution.unresolvedRisks,
     requiredTowerActions: riskResolution.requiredTowerActions,
+    counterfactualPolicyPriority: learnedMemory.priority,
     reasonCodes: unique([
       ...profile.reasonCodes,
       ...riskResolution.reasonCodes,
@@ -8499,6 +8625,7 @@ function learnedPolicyMemoryForStrategy(strategy, signals) {
     riskDelta: 0,
     staleDelta: 0,
     costDelta: 0,
+    priority: 0,
     reasonCodes: [],
     policyDeltaRefs: [],
   };
@@ -8512,6 +8639,7 @@ function learnedPolicyMemoryForStrategy(strategy, signals) {
       memory.riskDelta -= riskReduction;
       memory.staleDelta -= Math.max(1, Math.round(confidence * 2));
       memory.costDelta -= Math.max(1, Math.round(confidence * 3));
+      memory.priority += confidence;
       memory.reasonCodes.push('learned_policy_delta_preferred_strategy');
       memory.policyDeltaRefs.push(delta.id);
     }
@@ -8519,6 +8647,7 @@ function learnedPolicyMemoryForStrategy(strategy, signals) {
       memory.riskDelta += riskReduction;
       memory.staleDelta += Math.max(1, Math.round(confidence * 2));
       memory.costDelta += Math.max(1, Math.round(confidence * 2));
+      memory.priority -= confidence;
       memory.reasonCodes.push('learned_policy_delta_avoided_strategy');
       memory.policyDeltaRefs.push(delta.id);
     }
@@ -8527,6 +8656,7 @@ function learnedPolicyMemoryForStrategy(strategy, signals) {
     riskDelta: roundTo(memory.riskDelta, 3),
     staleDelta: memory.staleDelta,
     costDelta: memory.costDelta,
+    priority: roundTo(memory.priority, 3),
     reasonCodes: unique([
       ...(memory.policyDeltaRefs.length ? ['counterfactual_policy_delta_applied'] : []),
       ...memory.reasonCodes,
