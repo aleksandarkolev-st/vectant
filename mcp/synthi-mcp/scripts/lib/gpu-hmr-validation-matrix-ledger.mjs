@@ -328,6 +328,7 @@ const FINAL_ACCEPTANCE_PRIOR_TARGET_PROGRESSION_PHASES = Object.freeze([
 ]);
 const MANAGED_REAL_ROCM_UPSTREAM_LIFECYCLE_REASONS = new Set([
   'cmake_configure_failed',
+  'upstream_configure_interrupted_before_status',
   'missing_build_dependency',
   'upstream_build_blocked_by_configure',
   'upstream_post_configure_failed',
@@ -8980,6 +8981,7 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
   const runExitCodeText =
     usableLifecycleStatusText(/\brun_exit_code=([^\s]+)/.exec(String(timings ?? ''))?.[1])
     ?? parseLifecycleStatusTextFromWrapperLogs(statusLogs, 'run');
+  const rawReasons = compactStringList(raw.reasons);
   const configureStatusKnown = configureExitCodeText !== null;
   const postConfigureStatusKnown = postConfigureExitCodeText !== null;
   const buildStatusKnown = buildExitCodeText !== null;
@@ -8995,19 +8997,35 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
   const runStageFailed = lifecycleExitCodeFailed(runExitCodeText);
   const configureLogSucceeded = /Configuring done|Build files have been written to/i.test(configureLogText);
   const configureStatusSucceeded = configureExitCodeText === '0';
+  const configureLogHasCmakeFailure =
+    /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText);
+  const configureStatusIncompleteAfterLifecycleFailure =
+    (rawReasons.includes('upstream_configure_status_incomplete_after_lifecycle_failure')
+      || Boolean(raw.configureStatusIncompleteAfterLifecycleFailure)
+      || Boolean(raw.configure_status_incomplete_after_lifecycle_failure))
+    && !configureStatusKnown
+    && /\bconfigure_exit_code=unknown\b/.test(String(timings ?? ''));
   const cmakeConfigureFailed =
-    configureStageFailed
+    lifecycleExitCodeFailed(configureExitCodeText)
     || (
       !configureStatusSucceeded
       && !configureLogSucceeded
-      && /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText)
+      && configureLogHasCmakeFailure
     );
-  const buildBlockedByConfigure = cmakeConfigureFailed && (buildStageFailed || buildStageSkipped);
+  const configureInterruptedBeforeStatus =
+    configureStatusIncompleteAfterLifecycleFailure
+    && !configureLogSucceeded
+    && !configureLogHasCmakeFailure
+    && (!configureLogText.trim() || configureStageFailed);
+  const configureBlockedBeforeBuild = cmakeConfigureFailed || configureInterruptedBeforeStatus;
+  const buildBlockedByConfigure = configureBlockedBeforeBuild && (buildStageFailed || buildStageSkipped);
   const buildBlockedByPostConfigure = !cmakeConfigureFailed
+    && !configureInterruptedBeforeStatus
     && postConfigureStageFailed
     && (buildStageFailed || buildStageSkipped);
-  const runBlockedByConfigure = cmakeConfigureFailed && runNotStarted;
+  const runBlockedByConfigure = configureBlockedBeforeBuild && runNotStarted;
   const runBlockedByPostConfigure = !cmakeConfigureFailed
+    && !configureInterruptedBeforeStatus
     && postConfigureStageFailed
     && runNotStarted;
   const buildFailed = !buildBlockedByConfigure
@@ -9022,7 +9040,6 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
     && !runBlockedByPostConfigure
     && !runBlockedByBuild
     && runStageFailed;
-  const rawReasons = compactStringList(raw.reasons);
   const missingDependencies = compactStringList([
     ...(Array.isArray(raw.missingDependencies) ? raw.missingDependencies : []),
     ...(Array.isArray(raw.missing_dependencies) ? raw.missing_dependencies : []),
@@ -9033,6 +9050,8 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
   const lifecycleCommandFailed = rawReasons.includes('upstream_lifecycle_command_failed')
     || Boolean(firstText(raw.lifecycleErrorMessage, raw.lifecycle_error_message));
   const reasons = compactStringList([
+    configureStatusIncompleteAfterLifecycleFailure ? 'upstream_configure_status_incomplete_after_lifecycle_failure' : null,
+    configureInterruptedBeforeStatus ? 'upstream_configure_interrupted_before_status' : null,
     cmakeConfigureFailed ? 'cmake_configure_failed' : null,
     missingDependencies.length > 0 ? 'missing_build_dependency' : null,
     buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
@@ -9053,6 +9072,7 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
     runLogText,
     reasons,
     configureExitCodeText,
+    configureInterruptedBeforeStatus,
     postConfigureExitCodeText,
     buildExitCodeText,
     runExitCodeText,
@@ -9074,6 +9094,10 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
     missing_dependencies: missingDependencies,
     cmakeConfigureFailed,
     cmake_configure_failed: cmakeConfigureFailed,
+    configureStatusIncompleteAfterLifecycleFailure,
+    configure_status_incomplete_after_lifecycle_failure: configureStatusIncompleteAfterLifecycleFailure,
+    configureInterruptedBeforeStatus,
+    configure_interrupted_before_status: configureInterruptedBeforeStatus,
     configureExitCodeText,
     configure_exit_code_text: configureExitCodeText,
     postConfigureFailed: postConfigureStageFailed,

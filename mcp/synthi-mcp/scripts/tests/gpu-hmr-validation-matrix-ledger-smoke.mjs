@@ -16626,6 +16626,79 @@ assert.ok(lifecycleRecomputeRocm.upstreamLifecycleFailure.reasons.includes(
   'upstream_run_not_started_after_build_failure',
 ));
 
+const lifecycleInterruptedConfigureDir = path.join(logsRoot, 'real-rocm-lifecycle-interrupted-configure');
+await writeJson(
+  path.join(lifecycleInterruptedConfigureDir, 'real-rocm-lifecycle-interrupted-configure.json'),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-lifecycle-interrupted-configure-20260704',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-lifecycle-interrupted-configure',
+      source: 'scripts/profiles/real-rocm-lifecycle-interrupted-configure.json',
+    },
+    upstream_lifecycle_failure: {
+      schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+      acceptedAsRefusalEvidence: true,
+      accepted_as_refusal_evidence: true,
+      reasons: [
+        'upstream_configure_status_incomplete_after_lifecycle_failure',
+        'cmake_configure_failed',
+        'upstream_lifecycle_command_failed',
+      ],
+      timings: [
+        'configure_ms=failed',
+        'build_ms=failed',
+        'run_ms=failed',
+        'configure_exit_code=unknown',
+        'post_configure_exit_code=unknown',
+        'build_exit_code=unknown',
+        'run_exit_code=not-run',
+        'metadata_snapshot_status=unknown',
+        'metadata_snapshot_file_count=0',
+      ].join('\n'),
+      configureLogTail: [
+        '-- The CXX compiler identification is Clang',
+        '-- Detecting CXX compile features - done',
+        '-- Found Threads: TRUE',
+        '-- Project configure still in progress when lifecycle timeout fired',
+      ].join('\n'),
+      configure_log_tail: [
+        '-- The CXX compiler identification is Clang',
+        '-- Detecting CXX compile features - done',
+        '-- Found Threads: TRUE',
+        '-- Project configure still in progress when lifecycle timeout fired',
+      ].join('\n'),
+      buildLogTail: '',
+      build_log_tail: '',
+      runLogTail: 'upstream run not reached lifecycle_run_id=self-check',
+      run_log_tail: 'upstream run not reached lifecycle_run_id=self-check',
+    },
+  },
+);
+const lifecycleInterruptedConfigureLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [lifecycleInterruptedConfigureDir],
+  generatedAt: '2026-07-04T00:00:03.075Z',
+});
+const lifecycleInterruptedConfigureRocm = lifecycleInterruptedConfigureLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(lifecycleInterruptedConfigureRocm?.acceptedForGpuHmr, false);
+assert.equal(lifecycleInterruptedConfigureRocm.gpuHmrSuccess, false);
+assert.equal(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.matrixRecomputedFromLogTails, true);
+assert.equal(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.cmakeConfigureFailed, false);
+assert.equal(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.configureInterruptedBeforeStatus, true);
+assert.equal(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.configureStatusIncompleteAfterLifecycleFailure, true);
+assert.equal(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.buildBlockedByConfigure, true);
+assert.equal(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.runBlockedByConfigure, true);
+assert.ok(!lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.reasons.includes('cmake_configure_failed'));
+assert.ok(lifecycleInterruptedConfigureRocm.upstreamLifecycleFailure.reasons.includes(
+  'upstream_configure_interrupted_before_status',
+));
+
 const lifecycleStatusSpoofDir = path.join(logsRoot, 'real-rocm-lifecycle-status-spoof');
 await writeJson(path.join(lifecycleStatusSpoofDir, 'real-rocm-lifecycle-status-spoof.json'), {
   ...largeRocmLatestReport,

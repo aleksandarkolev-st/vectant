@@ -8117,15 +8117,25 @@ function classifyUpstreamLifecycleFailure({
   const buildLogText = String(buildLog ?? '');
   const configureLogSucceeded =
     /Configuring done|Build files have been written to:/i.test(configureLogText);
+  const configureLogHasCmakeFailure =
+    /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText);
   const cmakeConfigureFailed =
-    configureStageFailed
-    || (!configureLogSucceeded && /Configuring incomplete|Could\s+NOT\s+find|CMake Error/i.test(configureLogText));
-  const buildBlockedByConfigure = cmakeConfigureFailed && (buildStageFailed || buildStageSkipped);
+    lifecycleExitCodeFailed(configureExitCodeText)
+    || (!configureLogSucceeded && configureLogHasCmakeFailure);
+  const configureInterruptedBeforeStatus =
+    configureStatusIncompleteAfterLifecycleFailure
+    && !configureLogSucceeded
+    && !configureLogHasCmakeFailure
+    && (!configureLogText.trim() || configureStageFailed);
+  const configureBlockedBeforeBuild = cmakeConfigureFailed || configureInterruptedBeforeStatus;
+  const buildBlockedByConfigure = configureBlockedBeforeBuild && (buildStageFailed || buildStageSkipped);
   const buildBlockedByPostConfigure = !cmakeConfigureFailed
+    && !configureInterruptedBeforeStatus
     && postConfigureStageFailed
     && (buildStageFailed || buildStageSkipped);
-  const runBlockedByConfigure = cmakeConfigureFailed && runNotStarted;
+  const runBlockedByConfigure = configureBlockedBeforeBuild && runNotStarted;
   const runBlockedByPostConfigure = !cmakeConfigureFailed
+    && !configureInterruptedBeforeStatus
     && postConfigureStageFailed
     && runNotStarted;
   const buildFailed = !buildBlockedByConfigure
@@ -8143,6 +8153,7 @@ function classifyUpstreamLifecycleFailure({
     && runExitCodeText !== 'not-run';
   const reasons = compactStringList([
     configureStatusIncompleteAfterLifecycleFailure ? 'upstream_configure_status_incomplete_after_lifecycle_failure' : null,
+    configureInterruptedBeforeStatus ? 'upstream_configure_interrupted_before_status' : null,
     cmakeConfigureFailed ? 'cmake_configure_failed' : null,
     missingDependencies.length > 0 ? 'missing_build_dependency' : null,
     buildBlockedByConfigure ? 'upstream_build_blocked_by_configure' : null,
@@ -8167,6 +8178,8 @@ function classifyUpstreamLifecycleFailure({
     cmake_configure_failed: cmakeConfigureFailed,
     configureStatusIncompleteAfterLifecycleFailure,
     configure_status_incomplete_after_lifecycle_failure: configureStatusIncompleteAfterLifecycleFailure,
+    configureInterruptedBeforeStatus,
+    configure_interrupted_before_status: configureInterruptedBeforeStatus,
     configureExitCodeText,
     configure_exit_code_text: configureExitCodeText,
     postConfigureFailed: postConfigureStageFailed,
@@ -24324,6 +24337,41 @@ int main()
     || !projectLogStatusSpoofClassification.reasons.includes('cmake_configure_failed')
   ) {
     throw new Error('upstream lifecycle wrapper-only status parser self-check failed');
+  }
+  const configureInterruptedClassification = classifyUpstreamLifecycleFailure({
+    timings: [
+      'configure_ms=failed',
+      'build_ms=failed',
+      'run_ms=failed',
+      'configure_exit_code=unknown',
+      'post_configure_exit_code=unknown',
+      'build_exit_code=unknown',
+      'run_exit_code=not-run',
+      'metadata_snapshot_status=unknown',
+      'metadata_snapshot_file_count=0',
+    ].join('\n'),
+    configureLog: [
+      '-- The CXX compiler identification is Clang',
+      '-- Detecting CXX compile features - done',
+      '-- Found Threads: TRUE',
+      '-- Project configure still in progress when lifecycle timeout fired',
+    ].join('\n'),
+    buildLog: '',
+    runLog: 'upstream run not reached lifecycle_run_id=self-check',
+    lifecycleError: new Error('worker-side lifecycle timeout interrupted configure before terminal status'),
+  });
+  if (
+    configureInterruptedClassification.cmakeConfigureFailed
+    || !configureInterruptedClassification.configureInterruptedBeforeStatus
+    || !configureInterruptedClassification.configureStatusIncompleteAfterLifecycleFailure
+    || !configureInterruptedClassification.buildBlockedByConfigure
+    || !configureInterruptedClassification.runBlockedByConfigure
+    || configureInterruptedClassification.reasons.includes('cmake_configure_failed')
+    || !configureInterruptedClassification.reasons.includes('upstream_configure_interrupted_before_status')
+    || !configureInterruptedClassification.reasons.includes('upstream_build_blocked_by_configure')
+    || !configureInterruptedClassification.reasons.includes('upstream_run_not_started_after_configure_failure')
+  ) {
+    throw new Error('upstream lifecycle interrupted-configure classifier self-check failed');
   }
   const missingDependencyProbeRoots = missingDependencyProbeIncludeRoots({
     targetIncludeDirs: ['include', '/abs-ignored', '../escape-ignored'],
