@@ -25531,6 +25531,7 @@ async function classifyJsonArtifact(json, filePath, context) {
   }
   if (
     schema.includes('oidn_preflight')
+    || schema.includes('hiprt_preflight')
     || schema.includes('opencl_preflight')
     || schema.includes('vulkan_preflight')
     || schema.includes('webgpu_preflight')

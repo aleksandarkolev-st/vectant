@@ -5451,6 +5451,73 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
   proofId: 'opencl-preflight-proof:sha256:synthetic',
 });
 
+const hiprtPreflightEvidenceRef = 'evidence:synthetic-hiprt-preflight:worker-prerequisites';
+await writeJson(path.join(artifactsRoot, 'hiprt-preflight', 'hiprt-proof.json'), {
+  schema: 'synthi.gpu_hmr.hiprt_preflight.v1',
+  schemaVersion: 'synthi.gpu_hmr.hiprt_preflight.v1',
+  slug: 'synthetic-hiprt-preflight',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'hiprt',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    backendFamily: {
+      value: 'hiprt',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'hiprt',
+      backendFamily: 'hiprt',
+      probe: 'hiprt_worker_preflight_probe',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    evidenceRefs: [hiprtPreflightEvidenceRef],
+  },
+  classification: {
+    backend: {
+      value: 'hiprt',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    backendFamily: 'hiprt',
+    runtimeCapabilityPreflight: {
+      backend: 'hiprt',
+      backendFamily: 'hiprt',
+      probe: 'hiprt_worker_preflight_probe',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    resultState: 'hiprt-runtime-preflight-rejected',
+    unsupportedReasons: [
+      'hiprt_runtime_preflight_failed',
+      'hiprt_worker_repo_missing',
+      'hiprt_native_launch_observer_missing',
+    ],
+  },
+  acceptance: {
+    acceptedForHiprtRuntimePreflight: false,
+    acceptedForHiprtVisualProof: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    reason: 'hiprt_runtime_preflight_failed',
+    noShimApplied: true,
+    noVendorIcdSynthesized: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  hiprtWorkerPreflightProbe: {
+    schemaVersion: 'synthi.gpu_hmr.hiprt_worker_preflight_probe.v1',
+    proofAuthority: 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success',
+    accepted: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    blockingGaps: ['hiprt_worker_repo_missing', 'hiprt_native_launch_observer_missing'],
+  },
+  proofAuthority: 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  proofId: 'hiprt-preflight-proof:sha256:synthetic',
+});
+
 const webGpuPreflightEvidenceRef = 'evidence:synthetic-webgpu-preflight:browser-runtime-capability';
 await writeJson(path.join(artifactsRoot, 'webgpu-preflight', 'webgpu-proof.json'), {
   schema: 'synthi.gpu_hmr.webgpu_preflight.v1',
@@ -15044,6 +15111,21 @@ assert.equal(opencl.backendEvidence.backend, 'opencl');
 assert.equal(opencl.backendEvidence.backendFamily, 'opencl');
 assert.deepEqual(opencl.backendEvidence.evidenceRefs, [openClPreflightEvidenceRef]);
 
+const hiprtPreflight = ledger.rows.find((row) =>
+  row.backend === 'hiprt'
+  && row.targetId === 'synthetic-hiprt-preflight'
+);
+assert.equal(hiprtPreflight?.matrixOutcome, 'refusal_proven');
+assert.equal(hiprtPreflight.acceptedForGpuHmr, false);
+assert.equal(hiprtPreflight.gpuHmrSuccess, false);
+assert.equal(hiprtPreflight.refusalProven, true);
+assert.equal(hiprtPreflight.backendEvidence.accepted, true);
+assert.equal(hiprtPreflight.backendEvidence.backend, 'hiprt');
+assert.equal(hiprtPreflight.backendEvidence.backendFamily, 'hiprt');
+assert.deepEqual(hiprtPreflight.backendEvidence.evidenceRefs, [hiprtPreflightEvidenceRef]);
+assert.ok(hiprtPreflight.reasons.includes('hiprt_worker_repo_missing'));
+assert.ok(!hiprtPreflight.reasons.includes('preflight_typed_backend_evidence_required'));
+
 const webgpuPreflight = ledger.rows.find((row) =>
   row.backend === 'webgpu'
   && row.targetId === 'synthetic-webgpu-preflight'
@@ -17334,7 +17416,7 @@ assert.equal(
 const retainedRealRocmRefusalCount = retainedRealRocmRows
   .filter((row) => row.matrixOutcome === 'refusal_proven').length;
 assert.equal(retainedRealRocmRefusalCount, 2);
-assert.equal(ledger.summary.refusalProvenRows, 4 + retainedRealRocmRefusalCount);
+assert.equal(ledger.summary.refusalProvenRows, 5 + retainedRealRocmRefusalCount);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));

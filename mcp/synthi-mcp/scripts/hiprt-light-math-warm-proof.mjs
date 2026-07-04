@@ -41,6 +41,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const ARTIFACT_ROOT = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
+const HIPRT_PREFLIGHT_SCHEMA_VERSION = 'synthi.gpu_hmr.hiprt_preflight.v1';
+const HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION = 'synthi.gpu_hmr.hiprt_worker_preflight_probe.v1';
+const HIPRT_PREFLIGHT_AUTHORITY = 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success';
 
 const DEFAULT_BEFORE =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator);';
@@ -594,33 +597,127 @@ function workerRuntimeRequiredFilePath(file) {
   return `${CFG.workerRepoPath}/${normalized}`;
 }
 
-async function preflight() {
-  const requiredFileChecks = CFG.requiredFiles
-    .map((file) => `test -f ${shQuote(workerRuntimeRequiredFilePath(file))}`)
+function parseShellKeyValueOutput(output) {
+  const fields = new Map();
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const match = /^([A-Za-z0-9_]+)=(.*)$/.exec(line.trimEnd());
+    if (match) fields.set(match[1], match[2]);
+  }
+  return fields;
+}
+
+async function probeHiprtPreflightPrerequisites() {
+  const requiredFilePrints = CFG.requiredFiles
+    .map((file, index) => {
+      const workerPath = workerRuntimeRequiredFilePath(file);
+      return `[ -f ${shQuote(workerPath)} ] && printf 'required_file_${index}_present=1\\n' || printf 'required_file_${index}_present=0\\n'`;
+    })
     .join('\n');
   const script = `
-set -e
-test -d ${shQuote(CFG.workerRepoPath)}
-test -d ${shQuote(`${CFG.workerRepoPath}/.git`)}
-test -f ${shQuote(CFG.nativeLaunchObserverPath)}
-${requiredFileChecks}
-repo_commit=$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD)
-if [ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ]; then
-  build_executable=present
-else
-  build_executable=missing
+set +e
+repo_dir_present=0
+repo_git_present=0
+native_observer_present=0
+repo_commit=''
+build_executable=missing
+build_config=missing
+[ -d ${shQuote(CFG.workerRepoPath)} ] && repo_dir_present=1
+[ -d ${shQuote(`${CFG.workerRepoPath}/.git`)} ] && repo_git_present=1
+[ -f ${shQuote(CFG.nativeLaunchObserverPath)} ] && native_observer_present=1
+if [ "$repo_git_present" = "1" ]; then
+  repo_commit="$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD 2>/dev/null || true)"
 fi
-if [ -f ${shQuote(`${CFG.workerRepoPath}/build/CMakeCache.txt`)} ]; then
-  build_config=present
-else
-  build_config=missing
-fi
-printf 'repo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_commit" "$build_executable" "$build_config"
+[ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ] && build_executable=present
+[ -f ${shQuote(`${CFG.workerRepoPath}/build/CMakeCache.txt`)} ] && build_config=present
+printf 'repo_dir_present=%s\\nrepo_git_present=%s\\nnative_observer_present=%s\\nrepo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_dir_present" "$repo_git_present" "$native_observer_present" "$repo_commit" "$build_executable" "$build_config"
+${requiredFilePrints}
+exit 0
 `;
-  const output = await dockerShell(script, { timeout: 30000 });
-  const repoCommit = /^repo_commit=(.+)$/m.exec(output)?.[1]?.trim();
-  const buildExecutable = /^build_executable=(.+)$/m.exec(output)?.[1]?.trim();
-  const buildConfig = /^build_config=(.+)$/m.exec(output)?.[1]?.trim();
+  let output = '';
+  let dockerError = null;
+  try {
+    output = await dockerShell(script, { timeout: 30000 });
+  } catch (err) {
+    dockerError = err;
+    output = err?.output ?? '';
+  }
+  const fields = parseShellKeyValueOutput(output);
+  const requiredFiles = CFG.requiredFiles.map((file, index) => {
+    const workerPath = workerRuntimeRequiredFilePath(file);
+    return {
+      file,
+      workerPath,
+      worker_path: workerPath,
+      present: fields.get(`required_file_${index}_present`) === '1',
+    };
+  });
+  const blockingGaps = compactStringList([
+    dockerError ? 'hiprt_worker_preflight_probe_failed' : null,
+    fields.get('repo_dir_present') === '1' ? null : 'hiprt_worker_repo_missing',
+    fields.get('repo_git_present') === '1' ? null : 'hiprt_worker_repo_git_missing',
+    fields.get('native_observer_present') === '1' ? null : 'hiprt_native_launch_observer_missing',
+    ...requiredFiles
+      .filter((entry) => entry.present !== true)
+      .map((entry) => `hiprt_required_runtime_file_missing:${entry.file}`),
+  ]);
+  return {
+    schemaVersion: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    schema_version: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+    proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+    accepted: blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+    native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    repoDirPresent: fields.get('repo_dir_present') === '1',
+    repo_dir_present: fields.get('repo_dir_present') === '1',
+    repoGitPresent: fields.get('repo_git_present') === '1',
+    repo_git_present: fields.get('repo_git_present') === '1',
+    nativeObserverPresent: fields.get('native_observer_present') === '1',
+    native_observer_present: fields.get('native_observer_present') === '1',
+    repoCommit: firstText(fields.get('repo_commit')) || null,
+    repo_commit: firstText(fields.get('repo_commit')) || null,
+    buildExecutable: firstText(fields.get('build_executable')) || 'missing',
+    build_executable: firstText(fields.get('build_executable')) || 'missing',
+    buildConfig: firstText(fields.get('build_config')) || 'missing',
+    build_config: firstText(fields.get('build_config')) || 'missing',
+    requiredFiles,
+    required_files: requiredFiles,
+    dockerError: dockerError ? firstText(dockerError.message, dockerError.code) : null,
+    docker_error: dockerError ? firstText(dockerError.message, dockerError.code) : null,
+    outputTail: output ? String(output).slice(-4000) : '',
+    output_tail: output ? String(output).slice(-4000) : '',
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates: blockingGaps.map((code) => ({ code })),
+    failed_gates: blockingGaps.map((code) => ({ code })),
+  };
+}
+
+async function preflight() {
+  const prerequisiteProbe = await probeHiprtPreflightPrerequisites();
+  if (prerequisiteProbe.accepted !== true) {
+    return {
+      accepted: false,
+      repoCommit: prerequisiteProbe.repoCommit,
+      buildExecutable: prerequisiteProbe.buildExecutable,
+      buildConfig: prerequisiteProbe.buildConfig,
+      bootstrap: null,
+      prerequisiteProbe,
+    };
+  }
+  const repoCommit = prerequisiteProbe.repoCommit;
+  const buildExecutable = prerequisiteProbe.buildExecutable;
+  const buildConfig = prerequisiteProbe.buildConfig;
   const bootstrap = {};
   if (buildConfig !== 'present' || buildExecutable !== 'present') {
     bootstrap.configure = await configureHiprtBuild('preflight-bootstrap');
@@ -633,11 +730,168 @@ printf 'repo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_commit
     { timeout: 30000 },
   );
   return {
+    accepted: true,
     repoCommit,
     buildExecutable,
     buildConfig,
     bootstrap: Object.keys(bootstrap).length ? bootstrap : null,
+    prerequisiteProbe,
   };
+}
+
+async function writeHiprtPreflightRefusalArtifact({
+  preflightResult,
+  strictSummary,
+  totalStartedMonotonicNs,
+}) {
+  const prerequisiteProbe = preflightResult.prerequisiteProbe ?? {};
+  const evidenceRef = `hiprt-worker-preflight-probe:${sha256Hex(stableJson({
+    schemaVersion: prerequisiteProbe.schemaVersion,
+    workerContainer: prerequisiteProbe.workerContainer,
+    workerRepoPath: prerequisiteProbe.workerRepoPath,
+    nativeLaunchObserverPath: prerequisiteProbe.nativeLaunchObserverPath,
+    requiredFiles: prerequisiteProbe.requiredFiles,
+    blockingGaps: prerequisiteProbe.blockingGaps,
+  }))}`;
+  const unsupportedReasons = compactStringList([
+    'hiprt_runtime_preflight_failed',
+    ...(Array.isArray(prerequisiteProbe.blockingGaps) ? prerequisiteProbe.blockingGaps : []),
+  ]);
+  const artifact = {
+    schema: HIPRT_PREFLIGHT_SCHEMA_VERSION,
+    schemaVersion: HIPRT_PREFLIGHT_SCHEMA_VERSION,
+    schema_version: HIPRT_PREFLIGHT_SCHEMA_VERSION,
+    slug: CFG.slug,
+    createdAt: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    mode: CFG.mode,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    backendEvidence: {
+      schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+      schema_version: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+      backend: {
+        value: 'hiprt',
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      backendFamily: {
+        value: 'hiprt',
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      backend_family: {
+        value: 'hiprt',
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      runtimeCapabilityPreflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        backend_family: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        workerRepoPath: CFG.workerRepoPath,
+        worker_repo_path: CFG.workerRepoPath,
+        nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+        native_launch_observer_path: CFG.nativeLaunchObserverPath,
+        accepted: false,
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      runtime_capability_preflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        backend_family: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        workerRepoPath: CFG.workerRepoPath,
+        worker_repo_path: CFG.workerRepoPath,
+        nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+        native_launch_observer_path: CFG.nativeLaunchObserverPath,
+        accepted: false,
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      evidenceRefs: [evidenceRef],
+      evidence_refs: [evidenceRef],
+    },
+    classification: {
+      projectKind: { value: 'gpu_project', evidenceRefs: [evidenceRef] },
+      project_kind: { value: 'gpu_project', evidence_refs: [evidenceRef] },
+      editKind: { value: 'gpu_artifact_edit', evidenceRefs: [evidenceRef] },
+      edit_kind: { value: 'gpu_artifact_edit', evidence_refs: [evidenceRef] },
+      route: { value: 'reject', evidenceRefs: [evidenceRef] },
+      backend: { value: 'hiprt', evidenceRefs: [evidenceRef] },
+      backendFamily: 'hiprt',
+      backend_family: 'hiprt',
+      runtimeCapabilityPreflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        evidenceRefs: [evidenceRef],
+      },
+      runtime_capability_preflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        evidenceRefs: [evidenceRef],
+      },
+      resultState: 'hiprt-runtime-preflight-rejected',
+      result_state: 'hiprt-runtime-preflight-rejected',
+      unsupportedReasons,
+      unsupported_reasons: unsupportedReasons,
+      blockingGaps: unsupportedReasons,
+      blocking_gaps: unsupportedReasons,
+    },
+    acceptance: {
+      acceptedForHiprtRuntimePreflight: false,
+      accepted_for_hiprt_runtime_preflight: false,
+      acceptedForHiprtVisualProof: false,
+      accepted_for_hiprt_visual_proof: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      reason: 'hiprt_runtime_preflight_failed',
+      noShimApplied: true,
+      no_shim_applied: true,
+      noSymlinkApplied: true,
+      no_symlink_applied: true,
+      noSynthesizedRuntime: true,
+      no_synthesized_runtime: true,
+      noVendorIcdSynthesized: true,
+      no_vendor_icd_synthesized: true,
+    },
+    preflight: prerequisiteProbe,
+    hiprtWorkerPreflightProbe: prerequisiteProbe,
+    hiprt_worker_preflight_probe: prerequisiteProbe,
+    strictHmrProvenance: strictSummary,
+    strict_hmr_provenance: strictSummary,
+    timings: {
+      ...monotonicTimingFields(totalStartedMonotonicNs),
+      mode: CFG.mode,
+    },
+    proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+    proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+  artifact.proofId = `hiprt-preflight-proof:sha256:${sha256Hex(stableJson({
+    schemaVersion: artifact.schemaVersion,
+    slug: artifact.slug,
+    mode: artifact.mode,
+    profileId: artifact.profileId,
+    backendEvidence: artifact.backendEvidence,
+    classification: artifact.classification,
+    acceptance: artifact.acceptance,
+    preflight: artifact.preflight,
+  }))}`;
+  artifact.proof_id = artifact.proofId;
+  const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-preflight-refusal.json`);
+  await fs.mkdir(CFG.outputDir, { recursive: true });
+  await fs.writeFile(proofPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return { artifact, proofPath };
 }
 
 async function readBaselineSourceFromGit() {
@@ -4049,6 +4303,40 @@ async function main() {
   }
 
   const preflightResult = await preflight();
+  if (preflightResult.accepted !== true) {
+    const refusal = await writeHiprtPreflightRefusalArtifact({
+      preflightResult,
+      strictSummary,
+      totalStartedMonotonicNs,
+    });
+    console.log(JSON.stringify({
+      accepted: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofId: refusal.artifact.proofId,
+      proof_id: refusal.artifact.proofId,
+      proofPath: refusal.proofPath,
+      proof_path: refusal.proofPath,
+      mode: CFG.mode,
+      profileId: CFG.profileId,
+      profile_id: CFG.profileId,
+      proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+      proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+      blockingGaps: refusal.artifact.classification.blockingGaps,
+      blocking_gaps: refusal.artifact.classification.blockingGaps,
+      claimBoundary: {
+        gpuHmrSuccess: false,
+        acceptedForGpuHmr: false,
+        rejectedDiagnosticAllowed: CFG.allowRejected,
+      },
+    }, null, 2));
+    if (!CFG.allowRejected) {
+      process.exitCode = 1;
+    }
+    return;
+  }
   const baselineSource = await readBaselineSourceFromGit();
   const beforeCount = countOccurrences(baselineSource, CFG.before);
   const afterCountInBaseline = countOccurrences(baselineSource, CFG.after);
