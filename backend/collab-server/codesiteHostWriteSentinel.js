@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const {
   buildEvent,
   buildQuarantineChangeEvidence,
+  collectCodeSiteProcessAncestry,
   diffSnapshots,
   normalizeRepoRelativePath,
   recordCodeSiteWriteAttempt,
@@ -130,6 +131,10 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
 class CodeSiteHostWriteSentinel {
   constructor(options = {}) {
     if (!options.repoRoot) {
@@ -239,6 +244,7 @@ class CodeSiteHostWriteSentinel {
         ? 'Direct host filesystem mutation quarantined and the real repo was restored to the transaction baseline.'
         : 'Direct host filesystem mutation quarantined, but baseline content was unavailable for full restoration.',
     );
+    const detectorProcessAncestry = event.details?.os_process_ancestry || collectCodeSiteProcessAncestry();
     event.details = {
       ...event.details,
       host_sentinel_id: this.sentinelId,
@@ -247,6 +253,18 @@ class CodeSiteHostWriteSentinel {
       restore_action: restore.action,
       restored: restore.restored,
       detection_reason: options.reason || 'host_direct_write_detected',
+      host_mutation_provenance: {
+        detection_mode: 'post_write_polling_snapshot',
+        detector: 'codesite-host-write-sentinel',
+        detector_process_ancestry: detectorProcessAncestry,
+        writer_process_attribution: {
+          available: false,
+          reason: 'completed_host_write_has_no_procfs_actor_binding_without_kernel_write_hook',
+          required_boundary: 'fanotify_ebpf_fuse_overlay_or_equivalent_prewrite_gate',
+        },
+        before_stat: evidence.beforeStat || null,
+        after_stat: evidence.afterStat || null,
+      },
     };
     const result = {
       path: change.path,
@@ -270,6 +288,7 @@ class CodeSiteHostWriteSentinel {
   }
 
   async persistManifest(extra = {}) {
+    const osProcessAncestry = collectCodeSiteProcessAncestry();
     const record = {
       schemaVersion: 1,
       kind: 'codesite_host_write_sentinel',
@@ -278,6 +297,11 @@ class CodeSiteHostWriteSentinel {
       transactionId: this.context.transactionId || null,
       mutationLeaseId: this.context.mutationLeaseId || null,
       agentSessionId: this.context.agentSessionId || null,
+      processAncestry: unique([
+        ...asArray(this.context.processAncestry),
+        ...asArray(osProcessAncestry.labels),
+      ]),
+      osProcessAncestry,
       repoRoot: this.repoRoot,
       baselineDir: this.baselineDir,
       manifestPath: this.manifestPath,
@@ -291,6 +315,8 @@ class CodeSiteHostWriteSentinel {
         restoreAction: recordItem.restoreAction,
         change: recordItem.change,
         evidenceRef: recordItem.quarantineEvidence?.evidenceRef || null,
+        osProcessAncestry: recordItem.event?.details?.os_process_ancestry || null,
+        hostMutationProvenance: recordItem.event?.details?.host_mutation_provenance || null,
         controlPlaneError: recordItem.controlPlaneError || null,
       })),
     };
@@ -299,6 +325,7 @@ class CodeSiteHostWriteSentinel {
   }
 
   status() {
+    const osProcessAncestry = collectCodeSiteProcessAncestry();
     return {
       started: this.started,
       sentinelId: this.sentinelId,
@@ -308,6 +335,11 @@ class CodeSiteHostWriteSentinel {
       manifestPath: this.manifestPath,
       baselineDir: this.baselineDir,
       quarantinedCount: this.records.length,
+      processAncestry: unique([
+        ...asArray(this.context.processAncestry),
+        ...asArray(osProcessAncestry.labels),
+      ]),
+      osProcessAncestry,
     };
   }
 }

@@ -18,6 +18,8 @@ const MAX_TEXT_DIFF_BYTES = 64 * 1024;
 const MAX_TEXT_DIFF_LINES = 160;
 const QUARANTINE_MANIFEST_SCHEMA_VERSION = 'synthi.codesitefs.quarantineManifest.v1';
 const DEFAULT_QUARANTINE_BASE_DIR = path.join(os.tmpdir(), 'synthi-codesitefs-quarantine');
+const PROCESS_ANCESTRY_SCHEMA_VERSION = 'synthi.codesite.processAncestry.v1';
+const MAX_PROCFS_ANCESTRY_DEPTH = 32;
 
 class CodeSiteFSDeniedError extends Error {
   constructor(event) {
@@ -1056,6 +1058,7 @@ async function recordCodeSiteWriteAttempt(context, result, options = {}) {
         ...asArray(context.processAncestry),
         ...asArray(result.event.details?.process_ancestry || result.event.details?.processAncestry),
       ]),
+      osProcessAncestry: result.event.details?.os_process_ancestry || null,
       lineProvenance: result.event.details?.lineProvenance || result.event.details?.line_provenance || [],
       codesiteFsEvent: result.event,
     }),
@@ -1113,6 +1116,7 @@ async function recordCodeSiteReadAttempt(context, result, options = {}) {
         ...asArray(context.processAncestry),
         ...asArray(result.event.details?.process_ancestry || result.event.details?.processAncestry),
       ]),
+      osProcessAncestry: result.event.details?.os_process_ancestry || null,
       codesiteFsEvent: result.event,
     }),
   });
@@ -1421,6 +1425,7 @@ async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
     symlinkSanitization,
     before: await snapshotTree(root),
   };
+  const osProcessAncestry = collectCodeSiteProcessAncestry();
   await writeCodeSiteQuarantineManifest(quarantine, {
     schemaVersion: QUARANTINE_MANIFEST_SCHEMA_VERSION,
     quarantineId,
@@ -1441,7 +1446,11 @@ async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {
     recorded: [],
     symlinkSanitization,
     evidenceRefs: asArray(context.evidenceRefs),
-    processAncestry: asArray(context.processAncestry),
+    processAncestry: unique([
+      ...asArray(context.processAncestry),
+      ...asArray(osProcessAncestry.labels),
+    ]),
+    osProcessAncestry,
   });
   return quarantine;
 }
@@ -1478,6 +1487,7 @@ async function createCodeSiteOverlayWorkspace(context, cwd, options = {}) {
     symlinkSanitization: { sanitized: [], preserved: [] },
     before: await snapshotTree(cwd),
   };
+  const osProcessAncestry = collectCodeSiteProcessAncestry();
   await writeCodeSiteQuarantineManifest(overlay, {
     schemaVersion: QUARANTINE_MANIFEST_SCHEMA_VERSION,
     quarantineId: overlayId,
@@ -1504,7 +1514,11 @@ async function createCodeSiteOverlayWorkspace(context, cwd, options = {}) {
     recorded: [],
     symlinkSanitization: overlay.symlinkSanitization,
     evidenceRefs: asArray(context.evidenceRefs),
-    processAncestry: asArray(context.processAncestry),
+    processAncestry: unique([
+      ...asArray(context.processAncestry),
+      ...asArray(osProcessAncestry.labels),
+    ]),
+    osProcessAncestry,
   });
   return overlay;
 }
@@ -1625,6 +1639,7 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
   const previousManifest = await readCodeSiteQuarantineManifestByPath(quarantine.manifestPath).catch(() => null);
   const manifestChanges = [...asArray(previousManifest?.changes), ...changesWithEvidence];
   const manifestRecorded = [...asArray(previousManifest?.recorded), ...recorded];
+  const osProcessAncestry = collectCodeSiteProcessAncestry();
   if (options.cleanup !== false) {
     await fsp.rm(quarantine.root, { recursive: true, force: true }).catch(() => {});
   }
@@ -1669,7 +1684,9 @@ async function finalizeCodeSiteQuarantineWorkspace(context, quarantine, options 
       processAncestry: unique([
         ...asArray(previousManifest?.processAncestry),
         ...asArray(context.processAncestry),
+        ...asArray(osProcessAncestry.labels),
       ]),
+      osProcessAncestry,
     });
   }
   return { changes: changesWithEvidence, recorded };
@@ -1711,17 +1728,7 @@ async function applyOverlayUpperSnapshot(root, current, snapshot) {
       const content = stat.size <= MAX_INLINE_SNAPSHOT_BYTES
         ? await fsp.readFile(fullPath)
         : null;
-      snapshot.set(rel, {
-        size: stat.size,
-        digest: content ? digestBuffer(content) : await digestFile(fullPath),
-        text: content && stat.size <= MAX_TEXT_DIFF_BYTES && isLikelyText(content)
-          ? content.toString('utf8')
-          : undefined,
-        base64: content && !isLikelyText(content)
-          ? content.toString('base64')
-          : undefined,
-        contentEncoding: content && !isLikelyText(content) ? 'base64' : undefined,
-      });
+      snapshot.set(rel, snapshotEntryFromStat(stat, content, await digestForSnapshotFile(fullPath, content)));
     } catch (_) {}
   }
 }
@@ -1819,21 +1826,38 @@ async function walkSnapshot(root, current, snapshot) {
       const content = stat.size <= MAX_INLINE_SNAPSHOT_BYTES
         ? await fsp.readFile(fullPath)
         : null;
-      snapshot.set(rel, {
-        size: stat.size,
-        digest: content ? digestBuffer(content) : await digestFile(fullPath),
-        text: content && stat.size <= MAX_TEXT_DIFF_BYTES && isLikelyText(content)
-          ? content.toString('utf8')
-          : undefined,
-        base64: content && !isLikelyText(content)
-          ? content.toString('base64')
-          : undefined,
-        contentEncoding: content && !isLikelyText(content) ? 'base64' : undefined,
-      });
+      snapshot.set(rel, snapshotEntryFromStat(stat, content, await digestForSnapshotFile(fullPath, content)));
     } catch (_) {
       // File changed while snapshotting; ignore and let the next scan catch it.
     }
   }
+}
+
+async function digestForSnapshotFile(filePath, content) {
+  return content ? digestBuffer(content) : digestFile(filePath);
+}
+
+function snapshotEntryFromStat(stat, content, digest) {
+  const likelyText = content ? isLikelyText(content) : false;
+  return {
+    size: stat.size,
+    digest,
+    mode: stat.mode,
+    uid: stat.uid,
+    gid: stat.gid,
+    ino: stat.ino,
+    dev: stat.dev,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    birthtimeMs: stat.birthtimeMs,
+    text: content && stat.size <= MAX_TEXT_DIFF_BYTES && likelyText
+      ? content.toString('utf8')
+      : undefined,
+    base64: content && !likelyText
+      ? content.toString('base64')
+      : undefined,
+    contentEncoding: content && !likelyText ? 'base64' : undefined,
+  };
 }
 
 function digestBuffer(buffer) {
@@ -1936,6 +1960,8 @@ function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
     afterDigest: change.afterDigest || afterEntry?.digest || null,
     beforeSize: change.beforeSize ?? beforeEntry?.size ?? null,
     afterSize: change.afterSize ?? afterEntry?.size ?? null,
+    beforeStat: snapshotStatEvidence(beforeEntry),
+    afterStat: snapshotStatEvidence(afterEntry),
   };
   if (typeof beforeEntry?.text === 'string') {
     evidence.beforeText = beforeEntry.text;
@@ -1958,6 +1984,20 @@ function buildQuarantineChangeEvidence(change, beforeEntry, afterEntry) {
   evidence.digest = digestJson(evidence);
   evidence.evidenceRef = `codesitefs:quarantine:${evidence.digest}`;
   return evidence;
+}
+
+function snapshotStatEvidence(entry) {
+  if (!entry) return null;
+  return {
+    mode: entry.mode ?? null,
+    uid: entry.uid ?? null,
+    gid: entry.gid ?? null,
+    ino: entry.ino ?? null,
+    dev: entry.dev ?? null,
+    mtimeMs: entry.mtimeMs ?? null,
+    ctimeMs: entry.ctimeMs ?? null,
+    birthtimeMs: entry.birthtimeMs ?? null,
+  };
 }
 
 function codeSiteQuarantineReplayPlan(changes = []) {
@@ -2172,6 +2212,218 @@ async function readJsonBody(response) {
   }
 }
 
+function collectCodeSiteProcessAncestry(options = {}) {
+  const platform = options.platform || process.platform;
+  const procRoot = options.procRoot || '/proc';
+  const requestedPid = Number(options.pid || process.pid);
+  const capturedAt = options.capturedAt || new Date().toISOString();
+  const base = {
+    schemaVersion: PROCESS_ANCESTRY_SCHEMA_VERSION,
+    source: 'linux_procfs',
+    sourcePath: procRoot,
+    platform,
+    wsl: isWslRuntime(),
+    available: false,
+    complete: false,
+    direction: 'process_to_root',
+    collectorPid: process.pid,
+    requestedPid: Number.isFinite(requestedPid) && requestedPid > 0 ? requestedPid : null,
+    capturedAt,
+    labels: [],
+    nodes: [],
+  };
+  if (platform !== 'linux') {
+    return {
+      ...base,
+      source: 'unsupported_platform',
+      unavailableReason: 'procfs_process_ancestry_requires_linux',
+    };
+  }
+  if (!base.requestedPid) {
+    return {
+      ...base,
+      unavailableReason: 'process_pid_unavailable',
+    };
+  }
+  if (!fs.existsSync(procRoot)) {
+    return {
+      ...base,
+      unavailableReason: 'procfs_unavailable',
+    };
+  }
+
+  const nodes = [];
+  const seen = new Set();
+  let currentPid = base.requestedPid;
+  let unavailableReason = null;
+  let complete = true;
+  const maxDepth = Math.max(1, Number(options.maxDepth || MAX_PROCFS_ANCESTRY_DEPTH));
+
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    if (!currentPid || seen.has(currentPid)) {
+      complete = false;
+      unavailableReason = seen.has(currentPid) ? 'procfs_process_cycle_detected' : 'procfs_parent_pid_unavailable';
+      break;
+    }
+    seen.add(currentPid);
+    const node = readProcfsProcessNode(procRoot, currentPid);
+    if (!node) {
+      complete = false;
+      unavailableReason = depth === 0 ? 'procfs_process_unavailable' : 'procfs_parent_process_unavailable';
+      break;
+    }
+    nodes.push(node);
+    if (!node.ppid || node.ppid <= 0 || node.ppid === currentPid) {
+      break;
+    }
+    currentPid = node.ppid;
+  }
+
+  if (nodes.length >= maxDepth && currentPid && !unavailableReason) {
+    complete = false;
+    unavailableReason = 'procfs_process_ancestry_depth_limit';
+  }
+
+  const labels = unique(nodes.map(processLabel).filter(Boolean));
+  const ancestry = {
+    ...base,
+    available: nodes.length > 0,
+    complete,
+    unavailableReason,
+    labels,
+    nodes,
+  };
+  ancestry.digest = digestStableJson({
+    schemaVersion: ancestry.schemaVersion,
+    source: ancestry.source,
+    platform: ancestry.platform,
+    direction: ancestry.direction,
+    requestedPid: ancestry.requestedPid,
+    labels: ancestry.labels,
+    nodes: ancestry.nodes.map((node) => ({
+      pid: node.pid,
+      ppid: node.ppid,
+      comm: node.comm,
+      argv0Basename: node.argv0Basename,
+      exeBasename: node.exeBasename,
+      uid: node.uid,
+      gid: node.gid,
+      startTimeClockTicks: node.startTimeClockTicks,
+      cmdlineDigest: node.cmdlineDigest,
+      exePathDigest: node.exePathDigest,
+    })),
+  });
+  return ancestry;
+}
+
+function readProcfsProcessNode(procRoot, pid) {
+  const pidDir = path.join(procRoot, String(pid));
+  const statText = readTextFileIfExists(path.join(pidDir, 'stat'));
+  const parsedStat = parseProcfsStat(statText);
+  if (!parsedStat) return null;
+  const status = parseProcfsStatus(readTextFileIfExists(path.join(pidDir, 'status')));
+  const cmdline = readBufferFileIfExists(path.join(pidDir, 'cmdline'));
+  const argv = parseProcfsCmdline(cmdline);
+  const exeTarget = readLinkIfExists(path.join(pidDir, 'exe'));
+  const node = {
+    pid: Number(pid),
+    ppid: parsedStat.ppid,
+    comm: cleanProcessLabel(parsedStat.comm),
+    state: parsedStat.state || null,
+    argv0Basename: argv[0] ? cleanProcessLabel(path.basename(argv[0])) : null,
+    argvCount: argv.length,
+    exeBasename: exeTarget ? cleanProcessLabel(path.basename(exeTarget)) : null,
+    uid: status.uid,
+    gid: status.gid,
+    startTimeClockTicks: parsedStat.startTimeClockTicks,
+    cmdlineDigest: cmdline?.length ? digestBuffer(cmdline) : null,
+    exePathDigest: exeTarget ? digestBuffer(Buffer.from(exeTarget)) : null,
+  };
+  node.label = processLabel(node);
+  return node;
+}
+
+function parseProcfsStat(statText) {
+  if (!statText) return null;
+  const match = String(statText).trim().match(/^(\d+)\s+\((.*)\)\s+(\S+)\s+(.+)$/);
+  if (!match) return null;
+  const fieldsAfterState = match[4].trim().split(/\s+/);
+  const ppid = Number(fieldsAfterState[0]);
+  const startTimeClockTicks = Number(fieldsAfterState[18]);
+  return {
+    pid: Number(match[1]),
+    comm: match[2],
+    state: match[3],
+    ppid: Number.isFinite(ppid) ? ppid : null,
+    startTimeClockTicks: Number.isFinite(startTimeClockTicks) ? startTimeClockTicks : null,
+  };
+}
+
+function parseProcfsStatus(statusText) {
+  const result = { uid: null, gid: null };
+  if (!statusText) return result;
+  for (const line of String(statusText).split(/\r?\n/)) {
+    const uid = line.match(/^Uid:\s+(\d+)/);
+    if (uid) result.uid = Number(uid[1]);
+    const gid = line.match(/^Gid:\s+(\d+)/);
+    if (gid) result.gid = Number(gid[1]);
+  }
+  return result;
+}
+
+function parseProcfsCmdline(buffer) {
+  if (!buffer || !buffer.length) return [];
+  return buffer
+    .toString('utf8')
+    .split('\0')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readTextFileIfExists(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return null;
+  }
+}
+
+function readBufferFileIfExists(filePath) {
+  try {
+    return fs.readFileSync(filePath);
+  } catch (_) {
+    return null;
+  }
+}
+
+function readLinkIfExists(filePath) {
+  try {
+    return fs.readlinkSync(filePath);
+  } catch (_) {
+    return null;
+  }
+}
+
+function processLabel(node = {}) {
+  return cleanProcessLabel(node.argv0Basename || node.exeBasename || node.comm || (node.pid ? `pid-${node.pid}` : 'process'));
+}
+
+function cleanProcessLabel(value) {
+  const label = String(value || '')
+    .replace(/\0/g, '')
+    .trim();
+  if (!label) return null;
+  return path.basename(label)
+    .replace(/[^a-zA-Z0-9._+-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120) || null;
+}
+
+function isWslRuntime() {
+  if (process.platform !== 'linux') return false;
+  return /microsoft|wsl/i.test(os.release() || '');
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -2257,9 +2509,14 @@ function deniedRead(context, attempt, relPath, reasonCodes) {
   };
 }
 
-function buildEvent(context = {}, attempt = {}, relPath, type, reasonCodes, reason = null) {
+function buildEvent(context = {}, attempt = {}, relPath, type, reasonCodes, reason = null, options = {}) {
   const attemptEvidenceRefs = asArray(attempt.evidenceRefs || attempt.evidence_refs);
-  const attemptProcessAncestry = asArray(attempt.processAncestry || attempt.process_ancestry);
+  const callerProcessAncestry = unique([
+    ...asArray(context.processAncestry),
+    ...asArray(attempt.processAncestry || attempt.process_ancestry),
+  ]);
+  const osProcessAncestry = options.osProcessAncestry || collectCodeSiteProcessAncestry(options.processAncestryOptions);
+  const osProcessLabels = osProcessAncestry?.available ? asArray(osProcessAncestry.labels) : [];
   const lineProvenance = asArray(attempt.lineProvenance || attempt.line_provenance || attempt.hunks || attempt.lineAnchors || attempt.line_anchors);
   return {
     type,
@@ -2276,7 +2533,12 @@ function buildEvent(context = {}, attempt = {}, relPath, type, reasonCodes, reas
     details: {
       reason: reason || reasonCodes.join(','),
       reason_codes: reasonCodes,
-      process_ancestry: unique([...asArray(context.processAncestry), ...attemptProcessAncestry]),
+      process_ancestry: unique([...callerProcessAncestry, ...osProcessLabels]),
+      process_ancestry_sources: {
+        caller_supplied: callerProcessAncestry,
+        os_procfs: osProcessAncestry?.available ? osProcessLabels : [],
+      },
+      os_process_ancestry: osProcessAncestry,
       operation: attempt.kind || 'write',
       ...(lineProvenance.length ? { lineProvenance } : {}),
     },
@@ -2453,6 +2715,7 @@ module.exports = {
   codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  collectCodeSiteProcessAncestry,
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteFS,

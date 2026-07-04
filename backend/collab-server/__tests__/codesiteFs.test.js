@@ -8,12 +8,14 @@ const { promisify } = require('node:util');
 const {
   CodeSiteFS,
   assertCodeSiteWriteAllowed,
+  buildEvent,
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
   codeSiteContextFromRequest,
   codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
+  collectCodeSiteProcessAncestry,
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteFS,
@@ -41,12 +43,136 @@ test.after(() => {
   }
 });
 
+async function writeProcProcess(procRoot, pid, { comm, ppid, cmdline, exe, uid = 1000, gid = 1000 }) {
+  const pidDir = path.join(procRoot, String(pid));
+  await fs.mkdir(pidDir, { recursive: true });
+  const fieldsAfterState = [
+    ppid,
+    1,
+    1,
+    0,
+    -1,
+    4194560,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    20,
+    0,
+    1,
+    0,
+    12345 + Number(pid),
+  ];
+  await fs.writeFile(path.join(pidDir, 'stat'), `${pid} (${comm}) S ${fieldsAfterState.join(' ')}\n`, 'utf8');
+  await fs.writeFile(path.join(pidDir, 'status'), `Name:\t${comm}\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t${gid}\t${gid}\t${gid}\t${gid}\n`, 'utf8');
+  await fs.writeFile(path.join(pidDir, 'cmdline'), `${cmdline.join('\0')}\0`);
+  await fs.symlink(exe, path.join(pidDir, 'exe'));
+}
+
 test('normalizes repo-relative paths and rejects traversal', () => {
   assert.strictEqual(normalizeRepoRelativePath('src\\app/page.jsx'), 'src/app/page.jsx');
   assert.strictEqual(normalizeRepoRelativePath('/src/app/page.jsx'), 'src/app/page.jsx');
   assert.throws(() => normalizeRepoRelativePath('../secret'), /path_escape/);
   assert.throws(() => normalizeRepoRelativePath('a/../../secret'), /path_escape/);
   assert.throws(() => normalizeRepoRelativePath(''), /path_required/);
+});
+
+test('collects sanitized OS process ancestry from procfs', async () => {
+  const procRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-procfs-'));
+  try {
+    await writeProcProcess(procRoot, 303, {
+      comm: 'node',
+      ppid: 202,
+      cmdline: ['/usr/bin/node', '/workspace/backend/collab-server/server.js', '--token=secret'],
+      exe: '/usr/bin/node',
+      uid: 1001,
+      gid: 1002,
+    });
+    await writeProcProcess(procRoot, 202, {
+      comm: 'bash',
+      ppid: 101,
+      cmdline: ['/bin/bash', '-lc', 'npm test'],
+      exe: '/bin/bash',
+    });
+    await writeProcProcess(procRoot, 101, {
+      comm: 'codex-cli',
+      ppid: 0,
+      cmdline: ['/home/dev/.local/bin/codex-cli'],
+      exe: '/home/dev/.local/bin/codex-cli',
+    });
+
+    const ancestry = collectCodeSiteProcessAncestry({
+      procRoot,
+      pid: 303,
+      platform: 'linux',
+      capturedAt: '2026-07-04T00:00:00.000Z',
+    });
+
+    assert.strictEqual(ancestry.schemaVersion, 'synthi.codesite.processAncestry.v1');
+    assert.strictEqual(ancestry.available, true);
+    assert.strictEqual(ancestry.complete, true);
+    assert.strictEqual(ancestry.source, 'linux_procfs');
+    assert.deepStrictEqual(ancestry.labels, ['node', 'bash', 'codex-cli']);
+    assert.deepStrictEqual(ancestry.nodes.map((node) => [node.pid, node.ppid, node.label]), [
+      [303, 202, 'node'],
+      [202, 101, 'bash'],
+      [101, 0, 'codex-cli'],
+    ]);
+    assert.strictEqual(ancestry.nodes[0].uid, 1001);
+    assert.strictEqual(ancestry.nodes[0].gid, 1002);
+    assert.strictEqual(ancestry.nodes[0].startTimeClockTicks, 12648);
+    assert.match(ancestry.nodes[0].cmdlineDigest, /^sha256:/);
+    assert.match(ancestry.nodes[0].exePathDigest, /^sha256:/);
+    assert.strictEqual(ancestry.nodes[0].cmdline, undefined);
+  } finally {
+    await fs.rm(procRoot, { recursive: true, force: true });
+  }
+});
+
+test('CodeSiteFS events bind caller ancestry to OS-derived process ancestry', async () => {
+  const procRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-event-procfs-'));
+  try {
+    await writeProcProcess(procRoot, 40, {
+      comm: 'node',
+      ppid: 30,
+      cmdline: ['/usr/bin/node', 'server.js'],
+      exe: '/usr/bin/node',
+    });
+    await writeProcProcess(procRoot, 30, {
+      comm: 'bash',
+      ppid: 0,
+      cmdline: ['/bin/bash'],
+      exe: '/bin/bash',
+    });
+    const osProcessAncestry = collectCodeSiteProcessAncestry({
+      procRoot,
+      pid: 40,
+      platform: 'linux',
+      capturedAt: '2026-07-04T00:00:00.000Z',
+    });
+
+    const event = buildEvent(
+      { transactionId: 'txn-proc', processAncestry: ['caller-context'] },
+      { kind: 'write-file', tool: 'file_write', processAncestry: ['attempt-hook'] },
+      'src/app.js',
+      'write_allowed',
+      ['inside_clearance_route'],
+      null,
+      { osProcessAncestry },
+    );
+
+    assert.deepStrictEqual(event.details.process_ancestry, ['caller-context', 'attempt-hook', 'node', 'bash']);
+    assert.deepStrictEqual(event.details.process_ancestry_sources.caller_supplied, ['caller-context', 'attempt-hook']);
+    assert.deepStrictEqual(event.details.process_ancestry_sources.os_procfs, ['node', 'bash']);
+    assert.strictEqual(event.details.os_process_ancestry.digest, osProcessAncestry.digest);
+    assert.strictEqual(event.details.os_process_ancestry.nodes[0].pid, 40);
+  } finally {
+    await fs.rm(procRoot, { recursive: true, force: true });
+  }
 });
 
 test('resolves CodeSiteFS paths through a symlink-safe repo containment boundary', async () => {
@@ -474,7 +600,8 @@ test('CodeSiteFS lifecycle records managed reads before returning file contents'
     assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-read');
     assert.strictEqual(calls[0].body.path, 'src/contract.ts');
     assert.strictEqual(calls[0].body.codesiteFsEvent.type, 'read_observed');
-    assert.deepStrictEqual(calls[0].body.processAncestry, ['codex:test-read']);
+    assert.deepStrictEqual(calls[0].body.processAncestry.slice(0, 1), ['codex:test-read']);
+    assert.strictEqual(calls[0].body.osProcessAncestry?.schemaVersion, 'synthi.codesite.processAncestry.v1');
   } finally {
     await fs.rm(repo, { recursive: true, force: true });
   }
@@ -769,21 +896,22 @@ test('enforcement records allowed transaction writes through the CodeSite contro
   assert.strictEqual(result.ok, true);
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-write');
-  assert.deepStrictEqual(JSON.parse(calls[0].options.body), {
-    path: 'synthi/src/App.jsx',
-    tool: 'file_write',
-    evidenceRefs: ['lease:proof', 'hunk:evidence'],
-    processAncestry: ['node', 'collab-server', 'mcp:synthi_codesite_apply_patch'],
-    lineProvenance: [{
-      filePath: 'synthi/src/App.jsx',
-      startLine: 12,
-      endLine: 18,
-      lineAnchor: 'synthi/src/App.jsx#L12-L18',
-      evidenceRefs: ['hunk:evidence'],
-      promptSummary: 'Update app shell copy',
-    }],
-    codesiteFsEvent: result.event,
-  });
+  const body = JSON.parse(calls[0].options.body);
+  assert.strictEqual(body.path, 'synthi/src/App.jsx');
+  assert.strictEqual(body.tool, 'file_write');
+  assert.deepStrictEqual(body.evidenceRefs, ['lease:proof', 'hunk:evidence']);
+  assert.deepStrictEqual(body.processAncestry.slice(0, 3), ['node', 'collab-server', 'mcp:synthi_codesite_apply_patch']);
+  assert.ok(body.processAncestry.length >= 3);
+  assert.strictEqual(body.osProcessAncestry?.schemaVersion, 'synthi.codesite.processAncestry.v1');
+  assert.deepStrictEqual(body.lineProvenance, [{
+    filePath: 'synthi/src/App.jsx',
+    startLine: 12,
+    endLine: 18,
+    lineAnchor: 'synthi/src/App.jsx#L12-L18',
+    evidenceRefs: ['hunk:evidence'],
+    promptSummary: 'Update app shell copy',
+  }]);
+  assert.deepStrictEqual(body.codesiteFsEvent, result.event);
 });
 
 test('managed agent writes fail closed without an active transaction', async () => {

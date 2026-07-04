@@ -703,7 +703,8 @@ test('direct gitService.readFile records managed filesystem reads through CodeSi
     assert.strictEqual(readBodies[0].path, 'src/contract.ts');
     assert.strictEqual(readBodies[0].tool, 'file_read');
     assert.strictEqual(readBodies[0].codesiteFsEvent.type, 'read_observed');
-    assert.deepStrictEqual(readBodies[0].processAncestry, ['codex:read-test', 'gitService:readFile']);
+    assert.deepStrictEqual(readBodies[0].processAncestry.slice(0, 2), ['codex:read-test', 'gitService:readFile']);
+    assert.strictEqual(readBodies[0].osProcessAncestry?.schemaVersion, 'synthi.codesite.processAncestry.v1');
   });
 });
 
@@ -1601,7 +1602,8 @@ test('direct gitService.writeFile records CodeSiteFS evidence before mutating', 
     assert.strictEqual(recordBodies[0].path, 'src/app.js');
     assert.strictEqual(recordBodies[0].codesiteFsEvent.type, 'write_allowed');
     assert.deepStrictEqual(recordBodies[0].evidenceRefs, ['context:proof', 'direct:write']);
-    assert.deepStrictEqual(recordBodies[0].processAncestry, ['unit-test', 'gitService.writeFile']);
+    assert.deepStrictEqual(recordBodies[0].processAncestry.slice(0, 2), ['unit-test', 'gitService.writeFile']);
+    assert.strictEqual(recordBodies[0].osProcessAncestry?.schemaVersion, 'synthi.codesite.processAncestry.v1');
     assert.strictEqual(recordBodies[0].lineProvenance[0].lineAnchor, 'src/app.js#L1-L1');
   });
 });

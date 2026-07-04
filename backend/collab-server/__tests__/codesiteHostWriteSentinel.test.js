@@ -65,11 +65,18 @@ test('quarantines and restores direct host writes without path-specific logic', 
     );
     assert.ok(calls.every((call) => call.body.codesiteFsEvent.details.reason_codes.includes('host_direct_write_quarantined')));
     assert.ok(calls.every((call) => call.body.codesiteFsEvent.details.restored === true));
+    assert.ok(calls.every((call) => call.body.osProcessAncestry?.schemaVersion === 'synthi.codesite.processAncestry.v1'));
+    assert.ok(calls.every((call) => call.body.codesiteFsEvent.details.os_process_ancestry?.schemaVersion === 'synthi.codesite.processAncestry.v1'));
+    assert.ok(calls.every((call) => call.body.processAncestry.includes('codesite-host-write-sentinel')));
+    assert.ok(calls.every((call) => call.body.codesiteFsEvent.details.host_mutation_provenance.writer_process_attribution.available === false));
+    assert.ok(calls.every((call) => call.body.codesiteFsEvent.details.host_mutation_provenance.after_stat));
 
     const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8'));
     assert.equal(manifest.kind, 'codesite_host_write_sentinel');
     assert.equal(manifest.status, 'quarantined');
     assert.equal(manifest.quarantined.length, 2);
+    assert.equal(manifest.osProcessAncestry.schemaVersion, 'synthi.codesite.processAncestry.v1');
+    assert.ok(manifest.quarantined.every((record) => record.hostMutationProvenance.writer_process_attribution.available === false));
   } finally {
     sentinel.stop();
     await fs.rm(repoRoot, { recursive: true, force: true });

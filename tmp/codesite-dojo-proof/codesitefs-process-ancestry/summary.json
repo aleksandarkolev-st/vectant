@@ -1,0 +1,31 @@
+{
+  "generatedAt": "2026-07-04T22:49:45.844Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "head": "bc3b76b8f944",
+  "patch": "CodeSiteFS process ancestry and host-write provenance",
+  "nodeTest": {
+    "tests": 3,
+    "pass": 3,
+    "fail": 0,
+    "skipped": 0,
+    "durationMs": 58244.315534,
+    "files": [
+      "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/backend/collab-server/__tests__/codesiteFs.test.js",
+      "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/backend/collab-server/__tests__/codesiteHostWriteSentinel.test.js",
+      "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js"
+    ]
+  },
+  "behavioralAssertions": [
+    "CodeSiteFS records sanitized Linux procfs ancestry without raw command-line leakage.",
+    "Managed read and write events include caller-supplied and OS-derived process ancestry sources.",
+    "Quarantine evidence now carries before and after file stat metadata.",
+    "Host-write sentinel manifests include detector ancestry and explicit writer-attribution limits.",
+    "Direct gitService reads and writes preserve their caller ancestry while adding OS process evidence."
+  ],
+  "evidenceFiles": [
+    "tmp/codesite-dojo-proof/codesitefs-process-ancestry/node-test.tap",
+    "tmp/codesite-dojo-proof/codesitefs-process-ancestry/summary.json",
+    "tmp/codesite-dojo-proof/codesitefs-process-ancestry/proof.html",
+    "tmp/codesite-dojo-proof/codesitefs-process-ancestry/proof.png"
+  ]
+}
