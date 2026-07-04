@@ -18,7 +18,7 @@ const FILTERS = [
 
 export default function StoreView({
   canManage, marketplace, query, onQueryChange, onBack,
-  onInstallManifest, onPublish, onGenerate, onInstallPublished,
+  onInstallManifest, onPublish, onGenerate, onInstallPublished, onBuy,
   requestedScopes, consentItem, busy, onApprove,
 }) {
   const [activeFilter, setActiveFilter] = useState('all');
@@ -93,6 +93,7 @@ export default function StoreView({
                 item={item}
                 canManage={canManage}
                 onInstall={(it) => onInstallPublished(it)}
+                onBuy={(it) => onBuy(it)}
                 onOpenDetail={(it) => setSelected(it)}
               />
             ))}

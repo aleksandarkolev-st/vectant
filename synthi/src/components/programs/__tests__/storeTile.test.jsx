@@ -27,4 +27,25 @@ describe('StoreTile', () => {
     expect(byTestId(container, 'verified-badge-@other/pgadmin')).toBeNull();
     expect(byTestId(container, 'marketplace-item-@other/pgadmin').textContent).toContain('community');
   });
+
+  it('shows a price badge + Buy (not Install) for a paid, unowned app', async () => {
+    const onBuy = vi.fn(); const onInstall = vi.fn();
+    const item = { packageId: '@team/paid', displayName: 'Paid', isPaid: true, entitled: false, installCount: 0, price: { priceCents: 500, currency: 'eur' } };
+    await act(async () => root.render(<StoreTile item={item} canManage onInstall={onInstall} onBuy={onBuy} onOpenDetail={() => {}} />));
+    expect(byTestId(container, 'price-badge-@team/paid')).not.toBeNull();
+    expect(byTestId(container, 'install-published-@team/paid')).toBeNull();
+    await act(async () => byTestId(container, 'buy-published-@team/paid').click());
+    expect(onBuy).toHaveBeenCalledWith(item);
+    expect(onInstall).not.toHaveBeenCalled();
+  });
+
+  it('shows Owned + Install (not Buy) for an entitled paid app', async () => {
+    const onBuy = vi.fn(); const onInstall = vi.fn();
+    const item = { packageId: '@team/paid', displayName: 'Paid', isPaid: true, entitled: true, installCount: 0, price: { priceCents: 500, currency: 'eur' } };
+    await act(async () => root.render(<StoreTile item={item} canManage onInstall={onInstall} onBuy={onBuy} onOpenDetail={() => {}} />));
+    expect(byTestId(container, 'price-badge-@team/paid').textContent).toContain('Owned');
+    expect(byTestId(container, 'buy-published-@team/paid')).toBeNull();
+    await act(async () => byTestId(container, 'install-published-@team/paid').click());
+    expect(onInstall).toHaveBeenCalledWith(item);
+  });
 });

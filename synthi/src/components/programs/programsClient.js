@@ -152,6 +152,28 @@ export async function installPublishedProgram(workspaceSlug, packageId, version,
   });
 }
 
+// ── Paid apps ──
+
+/**
+ * Start a purchase for a paid marketplace app. Returns one of:
+ *   { free: true } · { entitled: true } · { checkoutUrl, priceCents, currency }
+ * The caller opens `checkoutUrl` (the external payments page) when present.
+ */
+export async function checkoutProgram(workspaceSlug, packageId) {
+  return request(`${programsBase(workspaceSlug)}/checkout`, {
+    method: 'POST',
+    body: JSON.stringify({ packageId }),
+  });
+}
+
+/** Owner/admin: set/replace the price of an app this workspace published. */
+export async function setProgramPricing(workspaceSlug, { packageId, priceCents, currency, payoutAccountRef, active }) {
+  return request(`${programsBase(workspaceSlug)}/pricing`, {
+    method: 'POST',
+    body: JSON.stringify({ packageId, priceCents, currency, payoutAccountRef, active }),
+  });
+}
+
 export async function scaffoldProgram(workspaceSlug, packageId) {
   return request(`${programsBase(workspaceSlug)}/scaffold`, {
     method: 'POST',

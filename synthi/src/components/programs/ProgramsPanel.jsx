@@ -18,6 +18,7 @@ import {
   saveWorkspaceManifest,
   fetchMarketplace,
   installPublishedProgram,
+  checkoutProgram,
   scaffoldProgram,
   fetchDetectedProgram,
   launchDetectedProgram,
@@ -410,6 +411,26 @@ export default function ProgramsPanel() {
     }
   }, [load, workspaceSlug]);
 
+  // Buy a paid app: hand off to the external checkout (opens the payments page);
+  // if the caller already owns it (or it's free) proceed straight to install.
+  const handleBuy = useCallback(async (item) => {
+    if (!workspaceSlug || !item?.packageId) return;
+    setBusy(true);
+    try {
+      const res = await checkoutProgram(workspaceSlug, item.packageId);
+      if (res?.checkoutUrl) {
+        if (typeof window !== 'undefined') window.open(res.checkoutUrl, '_blank', 'noopener');
+        toast.success('Opening checkout — after payment, install the app.');
+      } else {
+        await handleInstallPublished(item);
+      }
+    } catch (error) {
+      toast.error(error?.body?.error === 'billing_unconfigured' ? 'Payments are not configured.' : (error?.message || 'Checkout failed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [workspaceSlug, handleInstallPublished]);
+
   const onApprove = useCallback((_item, scopes) => (
     consent?.published ? handleInstallPublished(consent.published, scopes) : handleInstallManifest(scopes)
   ), [consent, handleInstallManifest, handleInstallPublished]);
@@ -475,6 +496,7 @@ export default function ProgramsPanel() {
           onPublish={handlePublish}
           onGenerate={handleGenerate}
           onInstallPublished={(item) => handleInstallPublished(item)}
+          onBuy={(item) => handleBuy(item)}
           requestedScopes={consent?.requested || []}
           consentItem={consentItem}
           busy={busy}
