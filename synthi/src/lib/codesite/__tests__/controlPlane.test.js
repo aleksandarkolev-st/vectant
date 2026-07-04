@@ -1534,6 +1534,15 @@ describe('CodeSite control plane transaction validation', () => {
         implementationStatusJson: expect.stringContaining('executable'),
       }),
     }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'clearance_requested',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'agent_session',
+        actorId: 'agent-1',
+        detailsJson: expect.stringContaining('synthi/prisma/**'),
+      }),
+    }));
   });
 
   it('blocks restricted airspace clearances with metadata-only Dojo proof refs', async () => {

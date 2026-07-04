@@ -1032,6 +1032,18 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     requiredRadar: body.requiredRadar || body.required_radar || defaultRadarForRoute(executionPlan.route, zonePolicy),
     expiresAt: body.expiresAt || body.expires_at || null,
   };
+  await recordEvent(plan.projectId, {
+    eventType: 'clearance_requested',
+    displayCallsign: plan.displayCallsign,
+    actorType: 'agent_session',
+    actorId: plan.agentSessionId,
+    details: {
+      executionPlanId: plan.id,
+      requestedLease,
+      route: executionPlan.route,
+      blockedZones: executionPlan.blockedZones,
+    },
+  });
   const policy = evaluateLeaseRequest({ executionPlan, zonePolicy, requestedLease });
   const dojoProof = await verifyCodeSiteDojoProof(buildCodeSiteDojoProofInput(body), {
     workspaceSlug,
