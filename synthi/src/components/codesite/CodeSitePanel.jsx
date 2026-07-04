@@ -482,7 +482,7 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))' : 'var(--border-subtle)',
         background: active ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'var(--bg-elevated)',
@@ -1873,7 +1873,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 data-testid="codesite-project-select"
                 value={radarState.selectedProjectId || ''}
                 onChange={(event) => setSelectedProjectId(event.target.value || null)}
-                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid] sm:h-8"
+                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
               >
                 {radarState.projects.map((project, index) => (

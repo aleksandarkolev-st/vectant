@@ -3671,6 +3671,7 @@ async function main() {
         && browserProof.desktopChecks?.dojoRefsVisible
         && browserProof.desktopChecks?.noHorizontalOverflow
         && browserProof.desktopChecks?.rectsFitViewport
+        && browserProof.desktopChecks?.touchTargetsOk
         && browserProof.desktopChecks?.devOverlayHidden
         && browserProof.desktopChecks?.lineInspectorSettled
         && browserProof.mobileChecks?.panelVisible
