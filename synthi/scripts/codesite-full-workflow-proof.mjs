@@ -2645,6 +2645,7 @@ async function main() {
     displayCallsign: 'SCHEMA-01',
     allowedTools: ['file_write'],
     controlPlaneUrl: api.baseUrl,
+    controlPlaneTrusted: true,
     processAncestry: ['mcp:synthi_codesite_apply_patch', 'codex:tmp-proof-session'],
   };
   const codesiteFs = createCodeSiteFS(codesiteContext, {
