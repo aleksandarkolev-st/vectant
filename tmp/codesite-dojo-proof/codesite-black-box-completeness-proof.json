@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "synthi.codesite.blackBoxCompletenessProof.v1",
+  "generatedAt": "2026-07-04T14:00:05.412Z",
+  "ok": true,
+  "git": {
+    "head": "8a839ae92d4d19d82e773843f93ebefdd0595ca0",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M synthi/scripts/codesite-release-gate.mjs\n M synthi/src/lib/codesite/__tests__/controlPlane.test.js\n M synthi/src/lib/codesite/controlPlane.js"
+  },
+  "assertions": [
+    {
+      "name": "committed replay requires proof evidence",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "completeness score includes proof export evidence",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "missing proof bundle cannot score complete",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "successful committed workflow has no missing evidence",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "release gate requires black-box completeness proof",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "dockerControlPlaneSuite command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
+        "summary": {
+          "runner": "vitest",
+          "pass": 121,
+          "skipped": 0,
+          "tests": 121,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "dockerControlPlaneSuite",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "runner": "vitest",
+        "pass": 121,
+        "skipped": 0,
+        "tests": 121,
+        "fail": 0
+      },
+      "outputTail": [
+        "\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js \u001b[2m(\u001b[22m\u001b[2m30 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 46\u001b[2mms\u001b[22m\u001b[39m",
+        " \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/controlPlane.test.js \u001b[2m(\u001b[22m\u001b[2m91 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[33m 1592\u001b[2mms\u001b[22m\u001b[39m",
+        "     \u001b[33m\u001b[2m✓\u001b[22m\u001b[39m classifies landing inspection commands through first-class radar adapters \u001b[33m 458\u001b[2mms\u001b[22m\u001b[39m",
+        "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m2 passed\u001b[39m\u001b[22m\u001b[90m (2)\u001b[39m",
+        "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m121 passed\u001b[39m\u001b[22m\u001b[90m (121)\u001b[39m",
+        "\u001b[2m   Start at \u001b[22m 13:59:59",
+        "\u001b[2m   Duration \u001b[22m 6.04s\u001b[2m (transform 4.08s, setup 0ms, import 4.68s, tests 1.64s, environment 1.38s)\u001b[22m",
+        "npm notice",
+        "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
+        "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
+        "npm notice To update run: npm install -g npm@11.18.0",
+        "npm notice"
+      ]
+    }
+  ],
+  "completenessContract": {
+    "committedBlackBoxEvidence": [
+      "proof_bundle_id",
+      "proof_bundle_digest",
+      "proof_bundle_evidence_refs",
+      "handover_proof_bundle_id",
+      "handover_proof_bundle_digest",
+      "proof_bundle_export_path",
+      "proof_trailers_export_path"
+    ],
+    "scoreRule": "event coverage and proof evidence coverage are scored together",
+    "abortedTransactions": "aborted black-box closeouts remain lifecycle-complete without committed proof evidence"
+  }
+}

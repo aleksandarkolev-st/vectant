@@ -5554,11 +5554,21 @@ function incidentReplayCompleteness(causalEvents = [], context = {}) {
   const required = incidentReplayRequiredEventTypes(observed, context);
   const present = required.filter((type) => observed.has(type));
   const missing = required.filter((type) => !observed.has(type));
+  const requiredEvidence = incidentReplayRequiredEvidence(context);
+  const presentEvidence = requiredEvidence.filter((item) => item.present).map((item) => item.key);
+  const missingEvidence = requiredEvidence.filter((item) => !item.present).map((item) => item.key);
+  const totalRequired = required.length + requiredEvidence.length;
+  const totalPresent = present.length + presentEvidence.length;
   return {
-    score: required.length ? Number((present.length / required.length).toFixed(2)) : 1,
+    score: totalRequired ? Number((totalPresent / totalRequired).toFixed(2)) : 1,
+    eventScore: required.length ? Number((present.length / required.length).toFixed(2)) : 1,
+    evidenceScore: requiredEvidence.length ? Number((presentEvidence.length / requiredEvidence.length).toFixed(2)) : 1,
     requiredEventTypes: required,
     presentEventTypes: present,
     missingEventTypes: missing,
+    requiredEvidence: requiredEvidence.map((item) => item.key),
+    presentEvidence,
+    missingEvidence,
     observedEventTypes: observedTypes,
     totalEvents: causalEvents.length,
   };
@@ -5599,6 +5609,35 @@ function incidentReplayRequiredEventTypes(observed, context = {}) {
     required.push('transaction.aborted');
   }
   return unique(required);
+}
+
+function incidentReplayRequiredEvidence(context = {}) {
+  if (context.category !== 'black_box' || !committedBlackBoxHandover(context)) return [];
+  const proofBundle = context.proofBundle || {};
+  const handover = context.handover || {};
+  const proofBundleId = proofBundle.id || handover.proofBundleId || handover.proof_bundle_id || null;
+  const proofBundleDigest = proofBundle.bundleDigest || proofBundle.bundle_digest || handover.proofBundleDigest || handover.proof_bundle_digest || null;
+  const proofBundleEvidenceRefs = asArray(proofBundle.evidenceRefs || proofBundle.evidence_refs);
+  const exportPaths = asArray(handover.exportPaths || handover.export_paths);
+  return [
+    { key: 'proof_bundle_id', present: Boolean(proofBundleId) },
+    { key: 'proof_bundle_digest', present: Boolean(proofBundleDigest) },
+    { key: 'proof_bundle_evidence_refs', present: proofBundleEvidenceRefs.length > 0 },
+    { key: 'handover_proof_bundle_id', present: Boolean(handover.proofBundleId || handover.proof_bundle_id) },
+    { key: 'handover_proof_bundle_digest', present: Boolean(handover.proofBundleDigest || handover.proof_bundle_digest) },
+    { key: 'proof_bundle_export_path', present: exportPaths.some((item) => String(item || '').endsWith('.proof.json')) },
+    { key: 'proof_trailers_export_path', present: exportPaths.some((item) => String(item || '').endsWith('.trailers.txt')) },
+  ];
+}
+
+function committedBlackBoxHandover(context = {}) {
+  const status = String(
+    context.handover?.status
+      || context.transactionContext?.status
+      || context.transaction?.status
+      || '',
+  ).toLowerCase();
+  return ['committed', 'landed', 'closed'].includes(status);
 }
 
 function incidentReplayRouteContext(project, affectedZones = []) {

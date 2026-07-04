@@ -3778,6 +3778,7 @@ describe('CodeSite control plane transaction validation', () => {
     expect(replay.completeness).toMatchObject({
       score: 1,
       missingEventTypes: [],
+      missingEvidence: [],
     });
     expect(eventTypes).toEqual(expect.arrayContaining(['transaction_committed', 'black_box_closed']));
     expect(evidenceRefs).toEqual(expect.arrayContaining([
@@ -4114,6 +4115,48 @@ describe('CodeSite control plane transaction validation', () => {
       missingEventTypes: [],
     });
     expect(replay.completeness.requiredEventTypes).not.toContain('transaction.committed');
+  });
+
+  it('scores committed black-box handovers incomplete without proof bundle evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'black_box',
+      severity: 'low',
+      summary: 'Committed transaction handover without proof evidence.',
+      participants: ['ATLAS-1'],
+      affectedZones: ['synthi/prisma/**'],
+      transactionContext: {
+        id: 'txn-1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'committed',
+      },
+      handover: {
+        status: 'committed',
+        changedPaths: ['synthi/prisma/schema.prisma'],
+        exportPaths: ['projects/project-1/handover.md'],
+      },
+    });
+
+    expect(incident.category).toBe('black_box');
+    expect(incident.incidentReplay.completeness.score).toBeLessThan(1);
+    expect(incident.incidentReplay.completeness.requiredEvidence).toEqual(expect.arrayContaining([
+      'proof_bundle_id',
+      'proof_bundle_digest',
+      'proof_bundle_evidence_refs',
+      'handover_proof_bundle_id',
+      'handover_proof_bundle_digest',
+      'proof_bundle_export_path',
+      'proof_trailers_export_path',
+    ]));
+    expect(incident.incidentReplay.completeness.missingEvidence).toEqual(expect.arrayContaining([
+      'proof_bundle_id',
+      'proof_bundle_digest',
+      'proof_bundle_export_path',
+      'proof_trailers_export_path',
+    ]));
   });
 
   it('attaches a final git commit only when proof bundle trailers match', async () => {
