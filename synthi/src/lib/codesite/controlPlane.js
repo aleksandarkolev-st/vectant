@@ -72,6 +72,13 @@ const GOVERNANCE_APPROVED_ROUTE_REVISION_STATUSES = new Set(['approved', 'applie
 const GOVERNANCE_DOCUMENT_KINDS = new Set(['change_order', 'rfi', 'submittal', 'permit']);
 const COMMITTABLE_TRANSACTION_STATUSES = new Set(['open', 'validated']);
 const projectCommitLandingLocks = new Map();
+const SHADOW_RUNNER_EVIDENCE_REQUIRED_ENV_KEYS = [
+  'SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE',
+  'SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED',
+];
+const SHADOW_MERGE_MATURITY_ENV_KEYS = [
+  'SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY',
+];
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
@@ -7555,6 +7562,7 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
   ]);
   const policyDeltaCandidates = buildTowerPolicyDeltaCandidates(towerSignals, selected);
   const shadowExecutionPlan = normalizeShadowExecutionPlan(body);
+  const shadowEvidenceRequirement = shadowRunnerEvidenceRequirement(body);
   const shadowExecution = await runConfiguredShadowRunner({
     workspaceSlug,
     projectId,
@@ -7568,7 +7576,23 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
     shadowExecutionPlan,
   });
   const shadowExecutionCompleted = shadowExecution?.status === 'completed';
-  const shadowExecutionEvidenceRefs = asArray(shadowExecution?.evidenceRefs || shadowExecution?.evidence_refs);
+  const shadowExecutionEvidenceRefs = shadowRunnerEvidenceRefs(shadowExecution);
+  const shadowEvidencePolicy = evaluateShadowRunnerEvidencePolicy({
+    requirement: shadowEvidenceRequirement,
+    shadowExecution,
+    evidenceRefs: shadowExecutionEvidenceRefs,
+  });
+  if (!shadowEvidencePolicy.ok) {
+    await recordShadowRunnerEvidencePolicyFailure(project.id, {
+      shadowJobRef,
+      baseSnapshot,
+      strategySet,
+      selected,
+      forecast,
+      policy: shadowEvidencePolicy,
+    });
+    throw badRequest('shadow_runner_evidence_required', shadowEvidencePolicy);
+  }
   const mergedEvidenceRefs = unique([
     ...evidenceRefs,
     ...shadowExecutionEvidenceRefs,
@@ -7589,6 +7613,7 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
       sourceSignals: selected.sourceSignals,
       learnedPolicyDeltaRefs: selected.learnedPolicyDeltaRefs || [],
       shadowExecutionMode: shadowExecution ? 'external_runner' : 'control_plane_simulator',
+      shadowExecutionPolicy: shadowEvidencePolicy,
     },
     universes: mergedUniverses,
     shadowJobRef,
@@ -7624,6 +7649,161 @@ function normalizeShadowExecutionPlan(body = {}) {
     || null;
   if (!plan || typeof plan !== 'object') return null;
   return plan;
+}
+
+function shadowRunnerEvidenceRequirement(body = {}) {
+  const sources = [];
+  const optionEntries = [
+    ['requireExternalRunnerEvidence', body.requireExternalRunnerEvidence],
+    ['require_external_runner_evidence', body.require_external_runner_evidence],
+    ['requireShadowRunnerEvidence', body.requireShadowRunnerEvidence],
+    ['require_shadow_runner_evidence', body.require_shadow_runner_evidence],
+    ['requireRunnerEvidence', body.requireRunnerEvidence],
+    ['require_runner_evidence', body.require_runner_evidence],
+  ];
+  for (const [key, value] of optionEntries) {
+    if (configValueEnabled(value)) sources.push(`option:${key}`);
+  }
+  const proofMaturity = body.proofMaturity || body.proof_maturity || body.maturity || null;
+  if (configValueRequiresMatureProof(proofMaturity)) sources.push('option:proofMaturity');
+  for (const key of SHADOW_RUNNER_EVIDENCE_REQUIRED_ENV_KEYS) {
+    if (configValueEnabled(process.env[key])) sources.push(`env:${key}`);
+  }
+  for (const key of SHADOW_MERGE_MATURITY_ENV_KEYS) {
+    if (configValueRequiresMatureProof(process.env[key])) sources.push(`env:${key}`);
+  }
+  return {
+    required: sources.length > 0,
+    sources: unique(sources),
+  };
+}
+
+function configValueEnabled(value) {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+  return /^(1|true|on|yes|required|require|strict|mature)$/i.test(String(value).trim());
+}
+
+function configValueRequiresMatureProof(value) {
+  if (value == null || value === false) return false;
+  return /^(mature|strict|external_runner|external-runner|runner|required|require)$/i.test(String(value).trim());
+}
+
+function shadowRunnerEvidenceRefs(shadowExecution) {
+  if (!shadowExecution) return [];
+  return unique([
+    ...asArray(shadowExecution.evidenceRefs || shadowExecution.evidence_refs),
+    ...asArray(shadowExecution.universes).flatMap((universe) => asArray(universe?.evidenceRefs || universe?.evidence_refs)),
+  ].map(String).filter(Boolean));
+}
+
+function evaluateShadowRunnerEvidencePolicy({ requirement, shadowExecution, evidenceRefs = [] }) {
+  const required = Boolean(requirement?.required);
+  const status = shadowExecution?.status || null;
+  const runner = shadowExecution?.runner || shadowExecution?.runnerId || shadowExecution?.runner_id || null;
+  const executionMode = shadowExecution?.executionMode || shadowExecution?.execution_mode || null;
+  const base = {
+    ok: true,
+    required,
+    sources: asArray(requirement?.sources),
+    status: required ? 'satisfied' : 'not_required',
+    shadowExecutionStatus: status,
+    shadowExecutionMode: shadowExecution ? 'external_runner' : 'control_plane_simulator',
+    runner,
+    executionMode,
+    evidenceRefs,
+    reasonCodes: required
+      ? ['shadow_runner_evidence_required', 'shadow_runner_evidence_satisfied']
+      : ['shadow_runner_evidence_not_required'],
+  };
+  if (!required) return base;
+  if (!shadowExecution) {
+    return {
+      ...base,
+      ok: false,
+      status: 'blocked',
+      failureCode: 'shadow_runner_not_configured',
+      reasonCodes: [
+        'shadow_runner_evidence_required',
+        'shadow_runner_not_configured',
+        'control_plane_shadow_simulator_fallback_blocked',
+      ],
+    };
+  }
+  if (status !== 'completed') {
+    return {
+      ...base,
+      ok: false,
+      status: 'blocked',
+      failureCode: 'shadow_runner_execution_failed',
+      reasonCodes: [
+        'shadow_runner_evidence_required',
+        'shadow_runner_execution_failed',
+        'control_plane_shadow_simulator_fallback_blocked',
+      ],
+    };
+  }
+  if (!evidenceRefs.length) {
+    return {
+      ...base,
+      ok: false,
+      status: 'blocked',
+      failureCode: 'shadow_runner_evidence_missing',
+      reasonCodes: [
+        'shadow_runner_evidence_required',
+        'shadow_runner_evidence_missing',
+        'control_plane_shadow_simulator_fallback_blocked',
+      ],
+    };
+  }
+  return base;
+}
+
+async function recordShadowRunnerEvidencePolicyFailure(projectId, {
+  shadowJobRef,
+  baseSnapshot,
+  strategySet = [],
+  selected = null,
+  forecast = null,
+  policy,
+}) {
+  const details = {
+    type: 'shadow_runner_evidence_policy',
+    status: 'blocked',
+    decision: 'block',
+    shadowJobRef,
+    baseSnapshot,
+    selected: selected?.strategy || selected || null,
+    strategies: strategySet,
+    riskLevel: forecast?.riskLevel || null,
+    reasonCodes: asArray(policy?.reasonCodes),
+    requiredBy: asArray(policy?.sources),
+    shadowExecutionStatus: policy?.shadowExecutionStatus || null,
+    shadowExecutionMode: policy?.shadowExecutionMode || null,
+    runner: policy?.runner || null,
+    executionMode: policy?.executionMode || null,
+    failureCode: policy?.failureCode || 'shadow_runner_evidence_required',
+    fallback: {
+      attempted: 'control_plane_simulator',
+      allowed: false,
+    },
+    instruction: 'Configure an external shadow runner or disable the explicit runner-evidence requirement for simulator-only runs.',
+  };
+  const evidenceRefs = unique([
+    ...asArray(policy?.evidenceRefs),
+    `codesite:shadow-runner-policy:${digest(details)}`,
+  ]);
+  await recordEvent(projectId, {
+    eventType: 'ground_stop',
+    actorType: 'counterfactual',
+    actorId: shadowJobRef,
+    evidenceRefs,
+    details: {
+      ...details,
+      evidenceRefs,
+    },
+  });
 }
 
 async function runConfiguredShadowRunner(input) {

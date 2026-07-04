@@ -192,6 +192,34 @@ async function withEnvCleared(keys, callback) {
   }
 }
 
+async function withEnv(values, callback) {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(values)) {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return await callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+function codesiteScriptPath(scriptName) {
+  const repoRelative = path.join('synthi', 'scripts', scriptName);
+  const packageRelative = path.join('scripts', scriptName);
+  return path.resolve(process.cwd(), path.basename(process.cwd()) === 'synthi' ? packageRelative : repoRelative);
+}
+
 function transactionFixture() {
   return {
     id: 'txn-1',
@@ -5184,6 +5212,9 @@ describe('CodeSite control plane transaction validation', () => {
       'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND',
       'SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON',
       'SYNTHI_CODESITE_SHADOW_RUNNER_CWD',
+      'SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED',
+      'SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY',
     ], () => shadowMergeSimulate('acme', 'project-1', {
       strategies: ['schema-first', 'frontend/backend parallel', 'single fullstack agent', 'test-first'],
     }));
@@ -5270,9 +5301,142 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('blocks simulator fallback when explicit shadow runner evidence is required', async () => {
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Strict counterfactual',
+      request: 'Require runner evidence before accepting shadow merge proof',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+
+    await withEnvCleared([
+      'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_CWD',
+      'SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED',
+      'SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY',
+    ], async () => {
+      await expect(shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first'],
+        requireExternalRunnerEvidence: true,
+      })).rejects.toMatchObject({
+        status: 400,
+        code: 'shadow_runner_evidence_required',
+        detail: expect.objectContaining({
+          status: 'blocked',
+          failureCode: 'shadow_runner_not_configured',
+          reasonCodes: expect.arrayContaining([
+            'shadow_runner_evidence_required',
+            'shadow_runner_not_configured',
+            'control_plane_shadow_simulator_fallback_blocked',
+          ]),
+        }),
+      });
+    });
+
+    expect(prisma.codeSiteCounterfactualRun.create).not.toHaveBeenCalled();
+    const eventCall = prisma.codeSiteEvent.create.mock.calls.find((call) => call[0].data.eventType === 'ground_stop');
+    expect(eventCall).toBeTruthy();
+    const details = JSON.parse(eventCall[0].data.detailsJson);
+    expect(details).toMatchObject({
+      type: 'shadow_runner_evidence_policy',
+      status: 'blocked',
+      decision: 'block',
+      failureCode: 'shadow_runner_not_configured',
+      shadowExecutionMode: 'control_plane_simulator',
+      fallback: {
+        attempted: 'control_plane_simulator',
+        allowed: false,
+      },
+    });
+    expect(details.reasonCodes).toEqual(expect.arrayContaining([
+      'shadow_runner_evidence_required',
+      'shadow_runner_not_configured',
+      'control_plane_shadow_simulator_fallback_blocked',
+    ]));
+    expect(JSON.parse(eventCall[0].data.evidenceRefsJson).some((ref) =>
+      ref.startsWith('codesite:shadow-runner-policy:'))).toBe(true);
+  });
+
+  it('honors env-required shadow runner evidence and records failed runner evidence', async () => {
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Strict counterfactual',
+      request: 'Require runner evidence before accepting shadow merge proof',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+
+    await withEnv({
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON: JSON.stringify([
+        process.execPath,
+        '-e',
+        "process.stderr.write('shadow runner failed'); process.exit(2);",
+      ]),
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND: null,
+      SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON: null,
+      SYNTHI_CODESITE_SHADOW_RUNNER_CWD: null,
+      SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE: '1',
+      SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED: null,
+      SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY: null,
+    }, async () => {
+      await expect(shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first'],
+      })).rejects.toMatchObject({
+        status: 400,
+        code: 'shadow_runner_evidence_required',
+        detail: expect.objectContaining({
+          status: 'blocked',
+          failureCode: 'shadow_runner_execution_failed',
+          shadowExecutionStatus: 'failed',
+          reasonCodes: expect.arrayContaining([
+            'shadow_runner_evidence_required',
+            'shadow_runner_execution_failed',
+            'control_plane_shadow_simulator_fallback_blocked',
+          ]),
+        }),
+      });
+    });
+
+    expect(prisma.codeSiteCounterfactualRun.create).not.toHaveBeenCalled();
+    const eventCall = prisma.codeSiteEvent.create.mock.calls.find((call) => call[0].data.eventType === 'ground_stop');
+    expect(eventCall).toBeTruthy();
+    const details = JSON.parse(eventCall[0].data.detailsJson);
+    const eventEvidenceRefs = JSON.parse(eventCall[0].data.evidenceRefsJson);
+    expect(details).toMatchObject({
+      type: 'shadow_runner_evidence_policy',
+      failureCode: 'shadow_runner_execution_failed',
+      shadowExecutionStatus: 'failed',
+      shadowExecutionMode: 'external_runner',
+    });
+    expect(eventEvidenceRefs.some((ref) => ref.startsWith('codesite:shadow-runner-failed:'))).toBe(true);
+    expect(eventEvidenceRefs.some((ref) => ref.startsWith('codesite:shadow-runner-policy:'))).toBe(true);
+  });
+
   it('executes configured shadow runner and records execution-backed counterfactual evidence', async () => {
     const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
-    const runnerPath = path.resolve(process.cwd(), 'scripts/codesite-shadow-runner.mjs');
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
     process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = JSON.stringify([process.execPath, runnerPath]);
 
     try {
@@ -5358,6 +5522,7 @@ describe('CodeSite control plane transaction validation', () => {
 
       const result = await shadowMergeSimulate('acme', 'project-1', {
         strategies: ['schema-first', 'frontend-backend-parallel', 'single-fullstack-agent'],
+        requireExternalRunnerEvidence: true,
       });
 
       expect(result.reason.shadowExecutionMode).toBe('external_runner');
@@ -5394,7 +5559,7 @@ describe('CodeSite control plane transaction validation', () => {
     const previousAllowInline = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
     const previousAuthSecret = process.env.AUTH_SECRET;
     const previousDatabaseUrl = process.env.DATABASE_URL;
-    const runnerPath = path.resolve(process.cwd(), 'scripts/codesite-shadow-runner.mjs');
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-repo-'));
     const repoRoot = path.join(root, 'repo');
     process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = JSON.stringify([process.execPath, runnerPath]);
@@ -5565,7 +5730,7 @@ describe('CodeSite control plane transaction validation', () => {
     const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
     const previousAllowedRoot = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
     const previousAllowInline = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
-    const runnerPath = path.resolve(process.cwd(), 'scripts/codesite-shadow-runner.mjs');
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-bin-'));
     const repoRoot = path.join(root, 'repo');
     const fakeNode = path.join(root, 'node');
@@ -5645,7 +5810,7 @@ describe('CodeSite control plane transaction validation', () => {
     const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
     const previousAllowedRoot = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
     const previousAllowInline = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
-    const runnerPath = path.resolve(process.cwd(), 'scripts/codesite-shadow-runner.mjs');
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-disabled-'));
     const repoRoot = path.join(root, 'repo');
     const markerPath = path.join(repoRoot, 'command-ran.txt');
