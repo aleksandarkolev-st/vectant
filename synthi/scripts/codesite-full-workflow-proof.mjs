@@ -3663,6 +3663,18 @@ async function main() {
     repoRoot: proofRepo.hostRoot,
     commitSha: proofBundle.commitSha,
   });
+  const counterfactualRunRef = `codesite:counterfactual-run:${counterfactualResponse.counterfactualRun.id}`;
+  const counterfactualRunRecorded = counterfactualRuns.some((run) => (
+    run.id === counterfactualResponse.counterfactualRun.id
+    || run.counterfactualRunId === counterfactualResponse.counterfactualRun.id
+    || run.counterfactual_run_id === counterfactualResponse.counterfactualRun.id
+    || run.shadowJobRef === counterfactualResponse.counterfactualRun.shadowJobRef
+    || asArray(run.evidenceRefs).some((ref) => String(ref).includes(counterfactualResponse.counterfactualRun.id))
+  ));
+  const counterfactualPolicyDeltaRefsRun = policyDeltas.some((delta) => (
+    asArray(delta.replayRefs).some((ref) => String(ref).includes(counterfactualResponse.counterfactualRun.id))
+    || asArray(delta.evidenceRefs).some((ref) => String(ref).includes(counterfactualResponse.counterfactualRun.id))
+  ));
   const artifactPathHistoryPath = verifier.artifactRoot
     ? path.join(verifier.artifactRoot, 'artifact-path-history.jsonl')
     : null;
@@ -3941,6 +3953,13 @@ async function main() {
           riskScore: universe.riskScore,
         })),
       },
+      runs: counterfactualRuns,
+      recordedRun: {
+        id: counterfactualResponse.counterfactualRun.id,
+        ref: counterfactualRunRef,
+        projectProjectionRecorded: counterfactualRunRecorded,
+        policyDeltaReplayRecorded: counterfactualPolicyDeltaRefsRun,
+      },
       projectRunCount: counterfactualRuns.length,
       policyDeltaCount: policyDeltas.length,
       policyDeltas,
@@ -4166,8 +4185,7 @@ async function main() {
         && staleAssumption.invalidatedBy === 'SCHEMA-01'
         && apiAbortResponse.transaction?.status === 'aborted'
         && eventTypes.includes('assumption_invalidated'),
-      counterfactualPolicyDeltaRecorded: counterfactualRuns.some((run) => run.id === counterfactualResponse.counterfactualRun.id)
-        && policyDeltas.some((delta) => delta.replayRefs?.some((ref) => ref.includes(counterfactualResponse.counterfactualRun.id)))
+      counterfactualPolicyDeltaRecorded: counterfactualRunRecorded && counterfactualPolicyDeltaRefsRun
         && shadowSimulation.shadowExecution?.status === 'completed'
         && asArray(shadowSimulation.shadowExecution?.evidenceRefs).some((ref) => String(ref).startsWith('codesite:shadow-runner'))
         && asArray(shadowSimulation.universes).some((universe) => universe.execution?.command === 'codesite-shadow-runner:repo-command-execution')
@@ -4277,11 +4295,38 @@ async function main() {
   };
   const failed = Object.entries(proof.assertions).filter(([, value]) => value !== true);
   if (failed.length) {
-    fs.writeFileSync(runPaths.failureDiagnosticsPath, `${JSON.stringify({
+    const failureProof = {
       ...proof,
       status: 'failed',
       failedAssertions: failed.map(([key, value]) => ({ key, value })),
-    }, null, 2)}\n`);
+    };
+    fs.writeFileSync(runPaths.failureDiagnosticsPath, `${JSON.stringify(failureProof, null, 2)}\n`);
+    fs.writeFileSync(runPaths.jsonPath, `${JSON.stringify(failureProof, null, 2)}\n`);
+    fs.writeFileSync(runPaths.htmlPath, proofHtml(failureProof));
+    try {
+      await screenshotHtml(runPaths.htmlPath, runPaths.pngPath, runPaths.summaryPngPath);
+    } catch (error) {
+      failureProof.failurePublicationWarning = `failed to render failure proof screenshots: ${error?.message || String(error)}`;
+      fs.writeFileSync(runPaths.failureDiagnosticsPath, `${JSON.stringify(failureProof, null, 2)}\n`);
+      fs.writeFileSync(runPaths.jsonPath, `${JSON.stringify(failureProof, null, 2)}\n`);
+      fs.writeFileSync(runPaths.htmlPath, proofHtml(failureProof));
+    }
+    const failureCopies = [
+      [runPaths.jsonPath, path.join(dir, 'codesite-full-workflow-proof.json')],
+      [runPaths.failureDiagnosticsPath, path.join(dir, 'codesite-full-workflow-failure.json')],
+      [runPaths.htmlPath, path.join(dir, 'codesite-full-workflow-proof.html')],
+      [runPaths.pngPath, path.join(dir, 'codesite-full-workflow-proof.png')],
+      [runPaths.summaryPngPath, path.join(dir, 'codesite-full-workflow-proof-summary.png')],
+      [runPaths.browserShot, path.join(dir, 'codesite-full-workflow-ui.png')],
+      [runPaths.browserProofSectionShot, path.join(dir, 'codesite-full-workflow-ui-proof-section.png')],
+      [runPaths.browserCoordinationShot, path.join(dir, 'codesite-full-workflow-ui-coordination.png')],
+      [runPaths.browserLineInspectorShot, path.join(dir, 'codesite-full-workflow-ui-line-inspector.png')],
+      [runPaths.browserHandoverShot, path.join(dir, 'codesite-full-workflow-ui-causal-replay-handover.png')],
+      [runPaths.browserMobileShot, path.join(dir, 'codesite-full-workflow-ui-causal-replay-mobile.png')],
+    ];
+    for (const [sourcePath, targetPath] of failureCopies) {
+      if (fs.existsSync(sourcePath)) await copyValidatedArtifact(sourcePath, targetPath);
+    }
     throw new Error(`full workflow proof assertions failed: ${JSON.stringify(failed)}`);
   }
 
