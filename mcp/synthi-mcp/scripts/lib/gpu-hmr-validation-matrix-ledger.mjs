@@ -19847,6 +19847,133 @@ async function oidnOutputOracleEvidenceFacet(input = {}, context = {}) {
   };
 }
 
+async function oidnWorkerOutputOracleTransportFacet(input = {}, context = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const failedGates = [];
+  if (!present) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport_matrix_facet.v1',
+      present: false,
+      accepted: false,
+      failedGates: [{ code: 'oidn_worker_output_oracle_transport_missing' }],
+      failed_gates: [{ code: 'oidn_worker_output_oracle_transport_missing' }],
+    };
+  }
+  const schema = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  if (schema !== 'synthi.gpu_hmr.oidn_worker_output_oracle_transport.v1') {
+    failedGates.push('oidn_worker_output_oracle_transport_schema_mismatch');
+  }
+  const authority = firstText(facet.proofAuthority, facet.proof_authority);
+  if (authority !== 'worker_output_oracle_transport_only_not_gpu_hmr_success') {
+    failedGates.push('oidn_worker_output_oracle_transport_authority_mismatch');
+  }
+  if (
+    firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+    || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+    || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+  ) {
+    failedGates.push('oidn_worker_output_oracle_transport_claims_gpu_hmr_success');
+  }
+  const nestedFailed = compactStringList((facet.failedGates ?? facet.failed_gates ?? [])
+    .map((gate) => firstText(gate?.code, gate)));
+  failedGates.push(...nestedFailed);
+  const workerManifestSha256 = normalizeSha256(firstText(
+    facet.workerManifestSha256,
+    facet.worker_manifest_sha256,
+  ));
+  const localManifestSha256 = normalizeSha256(firstText(
+    facet.localManifestSha256,
+    facet.local_manifest_sha256,
+  ));
+  const workerManifestPath = firstText(facet.workerManifestPath, facet.worker_manifest_path);
+  const localManifestPath = firstText(facet.localManifestPath, facet.local_manifest_path);
+  if (facet.accepted === true) {
+    if (!/^sha256:[0-9a-f]{64}$/i.test(workerManifestSha256)) {
+      failedGates.push('oidn_worker_output_oracle_transport_worker_manifest_hash_missing');
+    }
+    if (!/^sha256:[0-9a-f]{64}$/i.test(localManifestSha256)) {
+      failedGates.push('oidn_worker_output_oracle_transport_local_manifest_hash_missing');
+    }
+    if (!workerManifestPath) {
+      failedGates.push('oidn_worker_output_oracle_transport_worker_manifest_path_missing');
+    }
+    if (!localManifestPath) {
+      failedGates.push('oidn_worker_output_oracle_transport_local_manifest_path_missing');
+    } else {
+      const localManifestResolvedPath = resolveEvidencePath(
+        localManifestPath,
+        path.resolve(context.repoRoot ?? process.cwd()),
+        path.resolve(context.baseDir ?? context.repoRoot ?? process.cwd()),
+      );
+      if (!localManifestResolvedPath) {
+        failedGates.push('oidn_worker_output_oracle_transport_local_manifest_path_outside_allowed_roots');
+      } else {
+        try {
+          const manifestBytes = await fs.readFile(localManifestResolvedPath);
+          const recomputedManifestSha256 = sha256BufferHash(manifestBytes);
+          if (localManifestSha256 && localManifestSha256 !== recomputedManifestSha256) {
+            failedGates.push('oidn_worker_output_oracle_transport_local_manifest_hash_mismatch');
+          }
+        } catch {
+          failedGates.push('oidn_worker_output_oracle_transport_local_manifest_unreadable');
+        }
+      }
+    }
+  }
+  const copiedFiles = Array.isArray(facet.copiedFiles)
+    ? facet.copiedFiles
+    : Array.isArray(facet.copied_files)
+      ? facet.copied_files
+      : [];
+  const recomputedFiles = [];
+  for (const file of copiedFiles.filter((entry) => entry?.accepted === true)) {
+    const role = firstText(file.role);
+    if (!role) {
+      failedGates.push('oidn_worker_output_oracle_transport_file_role_missing');
+      continue;
+    }
+    const fileEvidence = await oidnMatrixFileEvidence(role, file, context);
+    recomputedFiles.push(fileEvidence);
+    failedGates.push(...fileEvidence.failedGates);
+  }
+  if (facet.accepted === true) {
+    const roles = new Set(recomputedFiles.filter((file) => file.accepted).map((file) => file.role));
+    for (const role of ['noisy_input', 'denoised_output']) {
+      if (!roles.has(role)) failedGates.push(`${role}:oidn_worker_output_oracle_transport_file_missing`);
+    }
+    const expectedHash = normalizeSha256(firstText(
+      recomputedFiles.find((file) => file.role === 'expected_output')?.sha256,
+      facet.expectedOutputSha256,
+      facet.expected_output_sha256,
+    ));
+    if (!expectedHash) failedGates.push('expected_output:oidn_worker_output_oracle_transport_expected_missing');
+  }
+  const evidenceRefs = compactStringList(facet.evidenceRefs ?? facet.evidence_refs);
+  if (facet.accepted === true && evidenceRefs.length === 0) {
+    failedGates.push('oidn_worker_output_oracle_transport_evidence_refs_missing');
+  }
+  const uniqueFailedGates = compactStringList(failedGates);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport_matrix_facet.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport_matrix_facet.v1',
+    present: true,
+    accepted: uniqueFailedGates.length === 0 && facet.accepted === true,
+    proofAuthority: authority || null,
+    proof_authority: authority || null,
+    workerManifestSha256: workerManifestSha256 || null,
+    worker_manifest_sha256: workerManifestSha256 || null,
+    localManifestSha256: localManifestSha256 || null,
+    local_manifest_sha256: localManifestSha256 || null,
+    recomputedFiles,
+    recomputed_files: recomputedFiles,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: uniqueFailedGates.map((code) => ({ code })),
+    failed_gates: uniqueFailedGates.map((code) => ({ code })),
+  };
+}
+
 async function preflightRow(json, filePath, context) {
   const schema = firstText(json.schema, json.schemaVersion) ?? 'unknown';
   const backendEvidence = preflightBackendEvidenceFacet(json);
@@ -19861,6 +19988,15 @@ async function preflightRow(json, filePath, context) {
       repoRoot: context.repoRoot,
       baseDir: path.dirname(filePath),
     })
+    : null;
+  const oidnWorkerOutputOracleTransport = backend === 'oidn_hip'
+    ? await oidnWorkerOutputOracleTransportFacet(
+      json.workerOutputOracleTransport ?? json.worker_output_oracle_transport,
+      {
+        repoRoot: context.repoRoot,
+        baseDir: path.dirname(filePath),
+      },
+    )
     : null;
   const proofAccepted = backend === 'oidn_hip'
     ? serializedProofAccepted && oidnOutputOracleFacet?.accepted === true
@@ -19912,6 +20048,10 @@ async function preflightRow(json, filePath, context) {
     backend_evidence: backendEvidence,
     outputOracleFacet: oidnOutputOracleFacet ?? compactObject(json.outputOracle ?? json.output_oracle),
     output_oracle_facet: oidnOutputOracleFacet ?? compactObject(json.outputOracle ?? json.output_oracle),
+    workerOutputOracleTransportFacet: oidnWorkerOutputOracleTransport
+      ?? compactObject(json.workerOutputOracleTransport ?? json.worker_output_oracle_transport),
+    worker_output_oracle_transport_facet: oidnWorkerOutputOracleTransport
+      ?? compactObject(json.workerOutputOracleTransport ?? json.worker_output_oracle_transport),
     matrixOutcome,
     acceptanceClass: matrixOutcome,
     acceptedForGpuHmr: false,
@@ -19948,6 +20088,9 @@ async function preflightRow(json, filePath, context) {
       ...backendEvidence.failedGates.map((gate) => gate.code),
       ...(backend === 'oidn_hip' && serializedProofAccepted
         ? (oidnOutputOracleFacet?.failedGates ?? []).map((gate) => gate.code)
+        : []),
+      ...(backend === 'oidn_hip' && oidnWorkerOutputOracleTransport?.present === true
+        ? (oidnWorkerOutputOracleTransport.failedGates ?? []).map((gate) => gate.code)
         : []),
       ...unsupportedReasons,
       acceptance.reason,

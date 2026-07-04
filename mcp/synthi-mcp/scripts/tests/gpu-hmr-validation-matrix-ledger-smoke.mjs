@@ -5652,6 +5652,51 @@ const oidnOutputManifest = {
 const oidnOutputManifestPath = path.join(oidnOutputDir, 'oracle.json');
 await writeJson(oidnOutputManifestPath, oidnOutputManifest);
 const oidnOutputManifestHash = `sha256:${sha256BufferHex(Buffer.from(`${JSON.stringify(oidnOutputManifest, null, 2)}\n`))}`;
+const oidnWorkerOutputTransport = {
+  schemaVersion: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport.v1',
+  proofAuthority: 'worker_output_oracle_transport_only_not_gpu_hmr_success',
+  accepted: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  canSatisfyRuntimeProof: false,
+  workerManifestPath: '/worker/oidn/oracle.json',
+  workerManifestSha256: `sha256:${sha256BufferHex(Buffer.from('worker-oidn-oracle-manifest'))}`,
+  localManifestPath: oidnOutputManifestPath,
+  localManifestSha256: oidnOutputManifestHash,
+  copiedFiles: [
+    {
+      role: 'noisy_input',
+      localPath: oidnNoisyPath,
+      byteLength: oidnNoisyBytes.length,
+      sha256: oidnNoisyHash,
+      accepted: true,
+      failedGates: [],
+    },
+    {
+      role: 'denoised_output',
+      localPath: oidnDenoisedPath,
+      byteLength: oidnDenoisedBytes.length,
+      sha256: oidnDenoisedHash,
+      accepted: true,
+      failedGates: [],
+    },
+    {
+      role: 'expected_output',
+      localPath: oidnExpectedPath,
+      byteLength: oidnDenoisedBytes.length,
+      sha256: oidnDenoisedHash,
+      accepted: true,
+      failedGates: [],
+    },
+  ],
+  evidenceRefs: [
+    `oidn-worker-output-oracle-local-manifest:${oidnOutputManifestHash}`,
+    `oidn-worker-output-oracle-noisy:${oidnNoisyHash}`,
+    `oidn-worker-output-oracle-denoised:${oidnDenoisedHash}`,
+    `oidn-worker-output-oracle-expected:${oidnDenoisedHash}`,
+  ],
+  failedGates: [],
+};
 await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof.json'), {
   schema: 'synthi.gpu_hmr.oidn_preflight.v1',
   slug: 'synthetic-oidn-hip-output-oracle',
@@ -5728,6 +5773,7 @@ await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof.json'), {
     ],
     failedGates: [],
   },
+  workerOutputOracleTransport: oidnWorkerOutputTransport,
   classification: {
     oidnHipRuntimePreflightAccepted: true,
     oidnHipOutputProofAccepted: true,
@@ -5842,6 +5888,111 @@ await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof-forged-file-hash
     noSymlinkApplied: true,
   },
   proofId: 'oidn-preflight-proof:sha256:synthetic-output-oracle-forged-file-hash',
+});
+
+await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof-forged-worker-transport.json'), {
+  schema: 'synthi.gpu_hmr.oidn_preflight.v1',
+  slug: 'synthetic-oidn-hip-output-oracle-forged-worker-transport',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    backendFamily: {
+      value: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      probe: 'oidn_hip_device_preflight',
+      toolFound: true,
+      hipDeviceLibraryFound: true,
+      hipTestCount: 2,
+      cpuDiagnosticCount: 2,
+      noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    evidenceRefs: [oidnHipPreflightEvidenceRef],
+  },
+  outputOracle: {
+    schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle.v1',
+    proofAuthority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    backend: 'oidn_hip',
+    device: 'hip',
+    manifestPath: oidnOutputManifestPath,
+    manifestSha256: oidnOutputManifestHash,
+    expectedOutputSha256: oidnDenoisedHash,
+    files: [
+      {
+        role: 'noisy_input',
+        path: oidnNoisyPath,
+        byteLength: oidnNoisyBytes.length,
+        sha256: oidnNoisyHash,
+        accepted: true,
+        failedGates: [],
+      },
+      {
+        role: 'denoised_output',
+        path: oidnDenoisedPath,
+        byteLength: oidnDenoisedBytes.length,
+        sha256: oidnDenoisedHash,
+        accepted: true,
+        failedGates: [],
+      },
+      {
+        role: 'expected_output',
+        path: oidnExpectedPath,
+        byteLength: oidnDenoisedBytes.length,
+        sha256: oidnDenoisedHash,
+        accepted: true,
+        failedGates: [],
+      },
+    ],
+    outputDistinctFromInput: true,
+    expectedOutputMatched: true,
+    evidenceRefs: [
+      `oidn-output-oracle-manifest:${oidnOutputManifestHash}`,
+      `oidn-output-oracle-noisy:${oidnNoisyHash}`,
+      `oidn-output-oracle-denoised:${oidnDenoisedHash}`,
+      `oidn-output-oracle-expected:${oidnDenoisedHash}`,
+    ],
+    failedGates: [],
+  },
+  workerOutputOracleTransport: {
+    ...oidnWorkerOutputTransport,
+    gpuHmrSuccess: true,
+    canSatisfyRuntimeProof: true,
+  },
+  classification: {
+    oidnHipRuntimePreflightAccepted: true,
+    oidnHipOutputProofAccepted: true,
+    oidnHipOutputOracleProven: true,
+    resultState: 'oidn-hip-output-oracle-accepted-preflight-only',
+    unsupportedReasons: [],
+    outputProofGaps: [],
+    openGaps: ['oidn_full_runtime_hmr_ledger_not_proven'],
+  },
+  acceptance: {
+    acceptedForOidnHipRuntimePreflight: true,
+    acceptedForHipOutputProof: true,
+    acceptedForOidnHipOutputProof: true,
+    outputOracleProven: true,
+    gpuHmrSuccess: false,
+    reason: 'preflight_output_oracle_only_full_runtime_hmr_ledger_still_required',
+    openGaps: ['oidn_full_runtime_hmr_ledger_not_proven'],
+    noShimApplied: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'oidn-preflight-proof:sha256:synthetic-output-oracle-forged-worker-transport',
 });
 
 const legacySchemaOnlyPreflightDir = path.join(artifactsRoot, 'legacy-schema-only-preflight');
@@ -15273,9 +15424,32 @@ assert.equal(
   oidnHipOutputOracle.outputOracleFacet.proofAuthority,
   'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
 );
+assert.equal(oidnHipOutputOracle.workerOutputOracleTransportFacet.accepted, true);
+assert.equal(
+  oidnHipOutputOracle.workerOutputOracleTransportFacet.proofAuthority,
+  'worker_output_oracle_transport_only_not_gpu_hmr_success',
+);
+assert.equal(
+  oidnHipOutputOracle.workerOutputOracleTransportFacet.recomputedFiles.length,
+  3,
+);
 assert.ok(oidnHipOutputOracle.reasons.includes('preflight_output_oracle_does_not_prove_gpu_hmr'));
 assert.ok(oidnHipOutputOracle.openGaps.includes('oidn_full_runtime_hmr_ledger_not_proven'));
 assert.ok(oidnHipOutputOracle.openGaps.includes('strict_runtime_proof_ledger_required'));
+
+const forgedOidnWorkerTransport = ledger.rows.find((row) =>
+  row.backend === 'oidn_hip'
+  && row.targetId === 'synthetic-oidn-hip-output-oracle-forged-worker-transport'
+);
+assert.equal(forgedOidnWorkerTransport?.matrixOutcome, 'preflight_only');
+assert.equal(forgedOidnWorkerTransport.acceptedForGpuHmr, false);
+assert.equal(forgedOidnWorkerTransport.gpuHmrSuccess, false);
+assert.equal(forgedOidnWorkerTransport.outputOracleFacet.accepted, true);
+assert.equal(forgedOidnWorkerTransport.workerOutputOracleTransportFacet.accepted, false);
+assert.ok(forgedOidnWorkerTransport.reasons.includes(
+  'oidn_worker_output_oracle_transport_claims_gpu_hmr_success',
+));
+assert.ok(forgedOidnWorkerTransport.openGaps.includes('strict_runtime_proof_ledger_required'));
 
 const forgedOidnHipOutputOracle = ledger.rows.find((row) =>
   row.backend === 'oidn_hip'
