@@ -1338,9 +1338,57 @@ function summarizeBuildMetadataContent(pathName, text) {
 
 function selectBuildFilesForContent({ files, classification, maxFiles = BUILD_METADATA_CONTENT_MAX_FILES }) {
   const byPath = new Map(files.map((file) => [String(file.path), file]));
+  const dependencySegments = new Set([
+    '3rdparty',
+    'deps',
+    'dependencies',
+    'extern',
+    'external',
+    'externals',
+    'node_modules',
+    'submodule',
+    'submodules',
+    'third-party',
+    'third_party',
+    'vendor',
+    'vendors',
+  ]);
+  const rankBuildPath = (pathName) => {
+    const normalized = String(pathName ?? '').replace(/\\/g, '/').replace(/^\.\/+/, '');
+    const segments = normalized.toLowerCase().split('/').filter(Boolean);
+    const depth = Math.max(0, segments.length - 1);
+    const dependencyIndex = segments.findIndex((segment) => dependencySegments.has(segment));
+    const dependencyPenalty = dependencyIndex >= 0 ? 1000 + dependencyIndex : 0;
+    const basename = segments.at(-1) ?? '';
+    const rootBuildBonus = depth === 0 ? -200 : 0;
+    const buildFilePriority = basename === 'cmakelists.txt'
+      || basename === 'build.gn'
+      || basename === 'build.bazel'
+      || basename === 'cargo.toml'
+      || basename === 'pyproject.toml'
+      || basename === 'package.json'
+      || basename === 'makefile'
+      ? -20
+      : 0;
+    return {
+      score: dependencyPenalty + (depth * 10) + rootBuildBonus + buildFilePriority,
+      path: normalized,
+    };
+  };
   return (classification?.buildSignals ?? [])
-    .map((pathName) => byPath.get(String(pathName)))
-    .filter(Boolean)
+    .map((pathName, index) => ({
+      index,
+      pathName: String(pathName),
+      file: byPath.get(String(pathName)),
+      rank: rankBuildPath(pathName),
+    }))
+    .filter((entry) => entry.file)
+    .sort((left, right) =>
+      left.rank.score - right.rank.score
+      || left.rank.path.localeCompare(right.rank.path)
+      || left.index - right.index
+    )
+    .map((entry) => entry.file)
     .slice(0, maxFiles);
 }
 
@@ -4165,6 +4213,37 @@ async function selfCheck() {
     ) !== false
   ) {
     throw new Error('random large-project cold-path direct/sample-pool mode parsing failed');
+  }
+  const rankedBuildFiles = selectBuildFilesForContent({
+    files: [
+      { path: 'third_party/CMakeLists.txt', object: 'vendored-cmake', byteLength: 10 },
+      { path: 'third_party/dep/BUILD.gn', object: 'vendored-gn', byteLength: 10 },
+      { path: 'tools/BUILD.gn', object: 'tools-gn', byteLength: 10 },
+      { path: 'CMakeLists.txt', object: 'root-cmake', byteLength: 10 },
+      { path: 'src/render/BUILD.gn', object: 'render-gn', byteLength: 10 },
+      { path: 'external/lib/BUILD.bazel', object: 'external-bazel', byteLength: 10 },
+    ],
+    classification: {
+      buildSignals: [
+        'third_party/CMakeLists.txt',
+        'third_party/dep/BUILD.gn',
+        'tools/BUILD.gn',
+        'CMakeLists.txt',
+        'src/render/BUILD.gn',
+        'external/lib/BUILD.bazel',
+      ],
+    },
+    maxFiles: 3,
+  }).map((file) => file.path);
+  if (
+    rankedBuildFiles[0] !== 'CMakeLists.txt'
+    || !rankedBuildFiles.includes('tools/BUILD.gn')
+    || !rankedBuildFiles.includes('src/render/BUILD.gn')
+    || rankedBuildFiles.some((pathName) =>
+      String(pathName).includes('third_party/') || String(pathName).includes('external/')
+    )
+  ) {
+    throw new Error('random large-project cold-path build metadata content ranking self-check failed');
   }
   const implicitSamplePoolAudit = coldPathSelectionAudit({
     seed: 'implicit-sample-pool-self-check',
