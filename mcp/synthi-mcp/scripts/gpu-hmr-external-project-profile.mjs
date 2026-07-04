@@ -1157,17 +1157,120 @@ function deterministicVisualModeForMcp(profile, before, after, afterCompile) {
   });
 }
 
-function deterministicVisualModeForExternal(profile, before, after) {
+function withExternalVisualStateHashes(mode, visualState) {
+  if (!visualState) return mode;
+  return {
+    ...(isObject(mode) ? mode : {}),
+    seed_policy_hash: visualState.seedPolicyHash,
+    seedPolicyHash: visualState.seedPolicyHash,
+    camera_state_hash: visualState.cameraStateHash,
+    cameraStateHash: visualState.cameraStateHash,
+  };
+}
+
+function externalVisualStateHashMaterial(profile, report, visualArtifacts) {
+  const deterministicMode = isObject(report.deterministicVisualMode ?? report.deterministic_visual_mode)
+    ? report.deterministicVisualMode ?? report.deterministic_visual_mode
+    : isObject(profile.visualProof?.deterministicMode)
+      ? profile.visualProof.deterministicMode
+      : {};
+  const visualDiff = isObject(report.visualDiff ?? report.visual_diff)
+    ? report.visualDiff ?? report.visual_diff
+    : {};
+  const screenshots = Array.isArray(report.screenshots)
+    ? report.screenshots.map((row) => ({
+        label: row.label ?? null,
+        width: Number.isFinite(Number(row.width)) ? Number(row.width) : null,
+        height: Number.isFinite(Number(row.height)) ? Number(row.height) : null,
+        capture_backend: row.capture_backend ?? row.captureBackend ?? null,
+        frame_capture_after_epoch_dispatch:
+          row.frame_capture_after_epoch_dispatch ?? row.frameCaptureAfterEpochDispatch ?? null,
+        wait_frame_gate_status:
+          row.wait_frame_gate?.status ?? row.waitFrameGate?.status ?? null,
+      }))
+    : [];
+  const captureBackend = visualArtifacts.capture_backend
+    ?? visualArtifacts.captureBackend
+    ?? screenshots.find((row) => row.capture_backend)?.capture_backend
+    ?? null;
+  const screenshotCommand = profile.visualProof?.screenshot?.command ?? null;
+  const base = {
+    schemaVersion: 'synthi.gpu_hmr.external_visual_state_hash_material.v1',
+    profileId: profile.id ?? null,
+    proofMode: report.proofMode ?? profile.proofMode ?? null,
+    backend: profile.backend ?? null,
+    backendFamily: profile.backendFamily ?? null,
+    libraryFamily: profile.libraryFamily ?? null,
+    runtimeEnvironment: profile.runtimeEnvironment ?? null,
+    profileClass: profile.profileClass ?? null,
+    sourceFile: profile.source?.file ?? null,
+    captureBackend,
+    screenshotCommandHash: screenshotCommand ? sha256(screenshotCommand) : null,
+    visualDiffWidth: Number.isFinite(Number(visualDiff.width)) ? Number(visualDiff.width) : null,
+    visualDiffHeight: Number.isFinite(Number(visualDiff.height)) ? Number(visualDiff.height) : null,
+    deterministicMode,
+    screenshots,
+  };
+  const cameraMaterial = {
+    ...base,
+    materialKind: 'camera_state',
+  };
+  const seedMaterial = {
+    schemaVersion: 'synthi.gpu_hmr.external_visual_state_hash_material.v1',
+    materialKind: 'seed_policy',
+    profileId: profile.id ?? null,
+    proofMode: report.proofMode ?? profile.proofMode ?? null,
+    deterministicMode: {
+      fixed_seed: deterministicMode.fixed_seed ?? deterministicMode.fixedSeed ?? null,
+      seed_policy_fixed: deterministicMode.seed_policy_fixed ?? deterministicMode.seedPolicyFixed ?? null,
+      temporal_accumulation_disabled:
+        deterministicMode.temporal_accumulation_disabled
+        ?? deterministicMode.temporalAccumulationDisabled
+        ?? null,
+      temporal_accumulation_not_applicable:
+        deterministicMode.temporal_accumulation_not_applicable
+        ?? deterministicMode.temporalAccumulationNotApplicable
+        ?? null,
+      taa_disabled: deterministicMode.taa_disabled ?? deterministicMode.taaDisabled ?? null,
+      taa_not_applicable:
+        deterministicMode.taa_not_applicable ?? deterministicMode.taaNotApplicable ?? null,
+      denoiser_disabled:
+        deterministicMode.denoiser_disabled ?? deterministicMode.denoiserDisabled ?? null,
+      denoiser_not_applicable:
+        deterministicMode.denoiser_not_applicable
+        ?? deterministicMode.denoiserNotApplicable
+        ?? null,
+    },
+  };
+  return {
+    cameraStateHash: sha256(stableJson(cameraMaterial)),
+    seedPolicyHash: sha256(stableJson(seedMaterial)),
+    materialHash: sha256(stableJson({ cameraMaterial, seedMaterial })),
+  };
+}
+
+function visualArtifactsWithExternalVisualState(visualArtifacts, visualState) {
+  if (!visualState) return visualArtifacts;
+  return {
+    ...(isObject(visualArtifacts) ? visualArtifacts : {}),
+    camera_state_hash: visualState.cameraStateHash,
+    cameraStateHash: visualState.cameraStateHash,
+    external_visual_state_material_hash: visualState.materialHash,
+    externalVisualStateMaterialHash: visualState.materialHash,
+  };
+}
+
+function deterministicVisualModeForExternal(profile, before, after, visualState = null) {
   if (!isObject(profile.visualProof.deterministicMode)) return null;
   const base = profile.visualProof.deterministicMode;
   const sameResolution = Number(before?.width) > 0
     && Number(before?.height) > 0
     && Number(before?.width) === Number(after?.width)
     && Number(before?.height) === Number(after?.height);
-  return {
+  return withExternalVisualStateHashes({
     ...base,
     fixed_resolution: sameResolution === true ? true : base.fixed_resolution,
-  };
+  }, visualState);
 }
 
 function sha256(value) {
@@ -1300,6 +1403,19 @@ async function writeExternalVisualProofArtifact(profile, report) {
   const acceptedVisualEvidenceArtifacts = visualEvidenceArtifacts
     .filter((artifact) => visualEvidenceArtifactAccepted(artifact));
   const status = deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts);
+  const visualState = externalVisualStateHashMaterial(
+    profile,
+    report,
+    report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? {},
+  );
+  const visualOracleArtifacts = visualArtifactsWithExternalVisualState(
+    report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? null,
+    visualState,
+  );
+  const deterministicVisualMode = withExternalVisualStateHashes(
+    report.deterministicVisualMode ?? report.deterministic_visual_mode ?? null,
+    visualState,
+  );
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
     profileId: profile.id,
@@ -1321,10 +1437,16 @@ async function writeExternalVisualProofArtifact(profile, report) {
     profile_selection: report.profileSelection ?? report.profile_selection ?? null,
     sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
     source_delta_evidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
-    visualOracleArtifacts: report.visualOracleArtifacts ?? null,
-    visualDiff: report.visualDiff ?? null,
-    deterministicVisualMode: report.deterministicVisualMode ?? null,
+    visualOracleArtifacts,
+    visual_oracle_artifacts: visualOracleArtifacts,
+    visualDiff: report.visualDiff ?? report.visual_diff ?? null,
+    visual_diff: report.visualDiff ?? report.visual_diff ?? null,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    deterministic_visual_mode_evaluation: report.deterministicVisualModeEvaluation ?? null,
+    externalVisualStateMaterialHash: visualState.materialHash,
+    external_visual_state_material_hash: visualState.materialHash,
     mcp: report.mcp ? {
       visualProofGate: report.mcp.visualProofGate ?? null,
       before: report.mcp.before ? {
@@ -1919,16 +2041,12 @@ async function selfCheckVisualProofArtifact() {
   const expectedHashes = [beforeBytes, afterBytes, diffBytes]
     .map((bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
     .sort();
-  const selfCheckCameraStateHash = sha256('external-visual-proof-self-check-camera-state');
-  const selfCheckSeedPolicyHash = sha256('external-visual-proof-self-check-seed-policy');
   const selfCheckDeterministicVisualMode = {
     frozen_camera: true,
     fixed_resolution: true,
     frame_capture_after_epoch_dispatch: true,
     presentation_fence_or_frame_boundary: true,
     seed_policy_fixed: true,
-    seed_policy_hash: selfCheckSeedPolicyHash,
-    camera_state_hash: selfCheckCameraStateHash,
     temporal_accumulation_not_applicable: true,
     taa_not_applicable: true,
     denoiser_not_applicable: true,
@@ -1954,7 +2072,6 @@ async function selfCheckVisualProofArtifact() {
       before_image: beforePath,
       after_image: afterPath,
       diff_image: diffPath,
-      camera_state_hash: selfCheckCameraStateHash,
       frame_capture_after_epoch_dispatch: true,
       wait_contract: {
         module: 'device',
@@ -2005,6 +2122,14 @@ async function selfCheckVisualProofArtifact() {
   const waitContractPersisted =
     artifact.mcp?.after?.waitContract?.module === 'device'
     && artifact.visualOracleArtifacts?.wait_contract?.module === 'device';
+  const visualStateBindingPersisted =
+    typeof artifact.visualOracleArtifacts?.camera_state_hash === 'string'
+    && artifact.visualOracleArtifacts.camera_state_hash.startsWith('sha256:')
+    && artifact.visualOracleArtifacts.camera_state_hash === artifact.deterministicVisualMode?.camera_state_hash
+    && typeof artifact.deterministicVisualMode?.seed_policy_hash === 'string'
+    && artifact.deterministicVisualMode.seed_policy_hash.startsWith('sha256:')
+    && typeof artifact.externalVisualStateMaterialHash === 'string'
+    && artifact.externalVisualStateMaterialHash.startsWith('sha256:');
   const acceptedCount = (artifact.visualEvidenceArtifacts ?? [])
     .filter((row) => row.acceptedAsVisualEvidence === true).length;
   return {
@@ -2014,6 +2139,7 @@ async function selfCheckVisualProofArtifact() {
       && written.proofId.startsWith('external-visual-proof:')
       && hashMatch
       && waitContractPersisted
+      && visualStateBindingPersisted
       && acceptedCount >= 2
       && invalidArtifactRejected
       && invalidProofArtifactFailed,
@@ -2022,6 +2148,7 @@ async function selfCheckVisualProofArtifact() {
     expectedHashes,
     observedHashes,
     acceptedCount,
+    visualStateBindingPersisted,
     invalidArtifactRejected,
     invalidProofArtifactFailed,
   };
