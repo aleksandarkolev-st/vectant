@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   Activity,
@@ -805,8 +805,12 @@ function Pill({ children, tone = "idle", className = "", testId }) {
   return (
     <span
       data-testid={testId}
-      className={`inline-flex min-h-6 items-center rounded px-2 text-[11px] font-medium leading-4 ${className}`}
-      style={typeof tone === "string" ? statusTone(tone) : tone}
+      className={`inline-flex min-h-6 max-w-full items-center gap-1 rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
+      style={{
+        borderColor:
+          "color-mix(in srgb, var(--border-subtle) 74%, var(--text-primary) 12%)",
+        ...(typeof tone === "string" ? statusTone(tone) : tone),
+      }}
     >
       {children}
     </span>
@@ -823,28 +827,32 @@ function IconButton({
   type = "button",
 }) {
   const active = variant === "primary";
+  const reduceMotion = useReducedMotion();
   return (
-    <button
+    <motion.button
       type={type}
       data-testid={testId}
       title={title}
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-[background,border-color,transform,opacity] duration-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 motion-safe:hover:-translate-y-0.5"
+      whileHover={disabled || reduceMotion ? undefined : { y: -1 }}
+      whileTap={disabled || reduceMotion ? undefined : { scale: 0.985 }}
+      transition={{ duration: reduceMotion ? 0 : 0.18, ease: MOTION_EASE }}
+      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold transition-[background,border-color,opacity] duration-200 disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: active
-          ? "color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))"
-          : "var(--border-subtle)",
+          ? "color-mix(in srgb, var(--accent-primary) 62%, var(--border-subtle))"
+          : "color-mix(in srgb, var(--border-subtle) 86%, var(--text-primary) 8%)",
         background: active
-          ? "color-mix(in srgb, var(--accent-primary) 20%, var(--bg-elevated))"
+          ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
           : "var(--bg-elevated)",
         color: "var(--text-primary)",
         transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
       }}
     >
       {children}
-    </button>
+    </motion.button>
   );
 }
 
@@ -853,25 +861,38 @@ function Section({ title, icon: Icon, children, right, sectionKey }) {
     <section
       id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
       data-codesite-section={sectionKey || undefined}
-      className="border-t scroll-mt-48 md:scroll-mt-24"
-      style={{ borderColor: "var(--border-subtle)" }}
+      className="border-t scroll-mt-32 md:scroll-mt-24"
+      style={{
+        borderColor:
+          "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
+      }}
     >
-      <div className="flex min-h-10 items-center justify-between gap-3 px-3 py-2">
+      <div className="flex min-h-12 items-center justify-between gap-3 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon
-            className="h-3.5 w-3.5 shrink-0"
-            style={{ color: "var(--accent-primary)" }}
-          />
+          <span
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+            style={{
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)",
+              background:
+                "color-mix(in srgb, var(--accent-primary) 10%, var(--bg-elevated))",
+            }}
+          >
+            <Icon
+              className="h-3.5 w-3.5"
+              style={{ color: "var(--accent-primary)" }}
+            />
+          </span>
           <h3
-            className="truncate text-xs font-semibold"
-            style={{ color: "var(--text-secondary)" }}
+            className="truncate text-sm font-semibold"
+            style={{ color: "var(--text-primary)" }}
           >
             {title}
           </h3>
         </div>
         {right}
       </div>
-      <div className="px-3 pb-3">{children}</div>
+      <div className="px-4 pb-4">{children}</div>
     </section>
   );
 }
@@ -880,21 +901,22 @@ function Metric({ label, value, tone = null, testId }) {
   return (
     <div
       data-testid={testId}
-      className="min-h-[68px] rounded border px-3 py-2 transition-transform duration-200 motion-safe:hover:-translate-y-0.5"
+      className="min-h-[76px] rounded-md border px-3 py-3 transition-[border-color,background] duration-200"
       style={{
-        borderColor: "var(--border-subtle)",
+        borderColor:
+          "color-mix(in srgb, var(--border-subtle) 92%, var(--accent-primary) 8%)",
         background: "var(--bg-surface)",
       }}
     >
       <div
-        className="text-[11px] leading-tight"
+        className="text-[11px] font-medium leading-tight"
         style={{ color: "var(--text-muted)" }}
       >
         {label}
       </div>
       <div className="mt-1 flex items-start justify-between gap-2">
         <div
-          className="min-w-0 break-words font-mono text-[clamp(0.82rem,1.35vw,1.25rem)] leading-tight tabular-nums"
+          className="min-w-0 break-words font-mono text-lg font-semibold leading-tight tabular-nums"
           title={String(value)}
           style={{ color: "var(--text-primary)" }}
         >
@@ -924,18 +946,25 @@ function StatusRailItem({
   return (
     <div
       data-testid={testId}
-      className="grid min-h-14 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded border px-2.5 py-2"
+      className="grid min-h-16 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2.5 py-2"
       style={{
         borderColor:
-          "color-mix(in srgb, var(--border-subtle) 80%, var(--accent-primary) 20%)",
-        background:
-          "color-mix(in srgb, var(--bg-surface) 82%, var(--bg-editor) 18%)",
+          "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
+        background: "color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%)",
       }}
     >
-      <Icon
-        className="h-3.5 w-3.5 shrink-0"
-        style={{ color: "var(--accent-primary)" }}
-      />
+      <span
+        className="grid h-8 w-8 place-items-center rounded-md"
+        style={{
+          background:
+            "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
+        }}
+      >
+        <Icon
+          className="h-3.5 w-3.5 shrink-0"
+          style={{ color: "var(--accent-primary)" }}
+        />
+      </span>
       <div className="min-w-0">
         <div
           className="text-[10px] font-medium leading-tight"
@@ -944,7 +973,7 @@ function StatusRailItem({
           {label}
         </div>
         <div
-          className="break-words font-mono text-[clamp(0.75rem,1.1vw,0.875rem)] leading-tight tabular-nums"
+          className="break-words font-mono text-sm font-semibold leading-tight tabular-nums"
           title={String(value)}
           style={{ color: "var(--text-primary)" }}
         >
@@ -971,30 +1000,46 @@ function OperatorPane({
   children,
   className = "",
 }) {
+  const reduceMotion = useReducedMotion();
   return (
-    <section
+    <motion.section
       id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
       data-codesite-section={sectionKey || undefined}
       data-testid={testId}
-      className={`min-w-0 scroll-mt-48 overflow-hidden rounded border md:scroll-mt-24 ${className}`}
+      layout={!reduceMotion}
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: reduceMotion ? 0 : 0.22, ease: MOTION_EASE }}
+      className={`min-w-0 scroll-mt-32 overflow-hidden rounded-lg border p-1 md:scroll-mt-24 ${className}`}
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)",
-        background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 94%, var(--accent-primary) 6%), var(--bg-surface))",
+        background: "color-mix(in srgb, var(--bg-surface) 96%, var(--bg-editor) 4%)",
       }}
     >
       <div
-        className="flex min-h-11 items-center justify-between gap-3 border-b px-3 py-2"
-        style={{ borderColor: "var(--border-subtle)" }}
+        className="flex min-h-12 items-center justify-between gap-3 rounded-md border px-3 py-2"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 90%, var(--text-primary) 6%)",
+          background: "var(--bg-elevated)",
+        }}
       >
         <div className="flex min-w-0 items-center gap-2">
-          <Icon
-            className="h-3.5 w-3.5 shrink-0"
-            style={{ color: "var(--accent-primary)" }}
-          />
+          <span
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md"
+            style={{
+              background:
+                "color-mix(in srgb, var(--accent-primary) 8%, transparent)",
+            }}
+          >
+            <Icon
+              className="h-3.5 w-3.5"
+              style={{ color: "var(--accent-primary)" }}
+            />
+          </span>
           <h3
-            className="truncate text-xs font-semibold"
+            className="truncate text-sm font-semibold"
             style={{ color: "var(--text-primary)" }}
           >
             {title}
@@ -1002,8 +1047,8 @@ function OperatorPane({
         </div>
         {right}
       </div>
-      <div className="p-3">{children}</div>
-    </section>
+      <div className="p-2.5 sm:p-3">{children}</div>
+    </motion.section>
   );
 }
 
@@ -2035,22 +2080,32 @@ function EmptyLine({ children = "None" }) {
 
 function MobileSectionTabs({ sections, activeSection, onSelect }) {
   const reduceMotion = useReducedMotion();
+  const activeIndex = Math.max(
+    0,
+    sections.findIndex((section) => section.key === activeSection),
+  );
   return (
     <div
       data-testid="codesite-mobile-section-tabs"
-      className="sticky top-0 z-20 border-b px-3 py-2 md:hidden"
+      className="sticky top-0 z-20 border-b px-3 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.16)] md:hidden"
       style={{
-        borderColor: "var(--border-subtle)",
-        background: "var(--bg-sidebar)",
+        borderColor:
+          "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+        background:
+          "color-mix(in srgb, var(--bg-sidebar) 96%, var(--accent-primary) 4%)",
       }}
     >
       <div
-        className="flex min-w-0 gap-1 overflow-x-auto"
+        className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border p-1"
         role="tablist"
         aria-label="CodeSite sections"
+        style={{
+          borderColor: "var(--border-subtle)",
+          background: "color-mix(in srgb, var(--bg-editor) 76%, transparent)",
+        }}
       >
         {sections.map((section) => (
-          <button
+          <motion.button
             key={section.key}
             type="button"
             role="tab"
@@ -2058,7 +2113,8 @@ function MobileSectionTabs({ sections, activeSection, onSelect }) {
             aria-controls={`codesite-section-${section.key}`}
             data-testid="codesite-mobile-section-tab"
             onClick={() => onSelect(section.key)}
-            className="inline-flex h-11 shrink-0 items-center rounded border px-3 text-[11px] font-medium transition-transform active:scale-[0.98]"
+            whileTap={reduceMotion ? undefined : { scale: 0.985 }}
+            className="relative inline-flex h-11 shrink-0 items-center rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"
             style={{
               borderColor:
                 activeSection === section.key
@@ -2072,24 +2128,67 @@ function MobileSectionTabs({ sections, activeSection, onSelect }) {
               transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
             }}
           >
-            {section.label}
-          </button>
+            {activeSection === section.key && !reduceMotion ? (
+              <motion.span
+                layoutId="codesite-mobile-active-section"
+                className="absolute inset-0 rounded-md"
+                style={{
+                  border: "1px solid color-mix(in srgb, var(--accent-primary) 54%, transparent)",
+                }}
+                transition={{ duration: 0.2, ease: MOTION_EASE }}
+              />
+            ) : null}
+            <span className="relative">{section.label}</span>
+            <span
+              className="relative ml-2 h-1.5 w-1.5 rounded-full"
+              style={{
+                background:
+                  activeSection === section.key
+                    ? "var(--accent-primary)"
+                    : "var(--border-subtle)",
+              }}
+            />
+          </motion.button>
         ))}
       </div>
       <div
         data-testid="codesite-mobile-action-drawer"
-        className="mt-2 flex items-center justify-between gap-2 rounded border px-2 py-1.5 text-[11px]"
+        className="mt-2 grid gap-2 rounded-lg border p-2 text-[11px]"
         style={{
-          borderColor: "var(--border-subtle)",
-          background: "var(--bg-elevated)",
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+          background:
+            "color-mix(in srgb, var(--bg-elevated) 92%, var(--bg-editor) 8%)",
           color: "var(--text-muted)",
         }}
       >
-        <span>Section</span>
-        <span className="font-medium" style={{ color: "var(--text-primary)" }}>
-          {sections.find((section) => section.key === activeSection)?.label ||
-            "Radar"}
-        </span>
+        <div className="flex items-center justify-between gap-2">
+          <span>Section</span>
+          <span
+            className="font-semibold"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {sections.find((section) => section.key === activeSection)?.label ||
+              "Radar"}
+          </span>
+        </div>
+        <div
+          className="h-1 overflow-hidden rounded-full"
+          style={{ background: "var(--bg-editor)" }}
+        >
+          <motion.div
+            className="h-full w-full rounded-full"
+            style={{
+              background: "var(--accent-primary)",
+              transformOrigin: "left center",
+            }}
+            initial={false}
+            animate={{
+              scaleX: (activeIndex + 1) / Math.max(1, sections.length),
+            }}
+            transition={{ duration: reduceMotion ? 0 : 0.2, ease: MOTION_EASE }}
+          />
+        </div>
         <span className="sr-only">
           {reduceMotion
             ? "Reduced motion active"
@@ -2113,10 +2212,12 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
       }
     >
       <div
-        className="rounded border p-3"
+        className="rounded-lg border p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]"
         style={{
-          borderColor: "var(--border-subtle)",
-          background: "var(--bg-surface)",
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 90%, var(--accent-primary) 8%), var(--bg-surface))",
         }}
       >
         <div className="flex items-center justify-between gap-2">
@@ -2177,12 +2278,25 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
         </div>
       </div>
       <div
-        className="min-w-0 rounded border p-2"
+        className="min-w-0 overflow-hidden rounded-lg border"
         style={{
-          borderColor: "var(--border-subtle)",
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
           background: "var(--bg-surface)",
         }}
       >
+        <div
+          className="grid grid-cols-[52px_minmax(0,1fr)_auto] gap-2 border-b px-3 py-2 text-[10px] font-semibold"
+          style={{
+            borderColor: "var(--border-subtle)",
+            color: "var(--text-muted)",
+            background: "color-mix(in srgb, var(--bg-elevated) 72%, transparent)",
+          }}
+        >
+          <span>Time</span>
+          <span>Instruction</span>
+          <span>Actor</span>
+        </div>
         <AnimatePresence initial={false}>
           {rows.length ? (
             rows.map((event, index) => (
@@ -2200,8 +2314,14 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
                   duration: reduceMotion ? 0 : 0.22,
                   ease: MOTION_EASE,
                 }}
-                className="grid min-h-10 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2 border-t py-1.5 text-xs first:border-t-0"
-                style={{ borderColor: "var(--border-subtle)" }}
+                className="grid min-h-11 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2 border-t px-3 py-2 text-xs first:border-t-0"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background:
+                    index === 0
+                      ? "color-mix(in srgb, var(--accent-primary) 8%, transparent)"
+                      : "transparent",
+                }}
               >
                 <span
                   className="font-mono text-[10px]"
@@ -2226,7 +2346,9 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
               </motion.div>
             ))
           ) : (
-            <EmptyLine>No tower events received</EmptyLine>
+            <div className="p-3">
+              <EmptyLine>No tower events received</EmptyLine>
+            </div>
           )}
         </AnimatePresence>
       </div>
@@ -2299,8 +2421,10 @@ function GovernanceConsole({
         }}
         className="rounded border p-3"
         style={{
-          borderColor: "var(--border-subtle)",
-          background: "var(--bg-surface)",
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 74%, var(--accent-primary) 26%)",
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 90%, var(--accent-primary) 7%), var(--bg-surface))",
         }}
       >
         <div className="flex items-center justify-between gap-2">
@@ -2374,9 +2498,10 @@ function GovernanceConsole({
       <div className="grid min-w-0 gap-3">
         <div className={condensed ? "grid gap-2" : "grid gap-2 md:grid-cols-2"}>
           <div
-            className="rounded border p-2"
+            className="rounded-lg border p-2"
             style={{
-              borderColor: "var(--border-subtle)",
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
               background: "var(--bg-surface)",
             }}
           >
@@ -2391,10 +2516,12 @@ function GovernanceConsole({
                 <div
                   key={document.id}
                   data-testid="codesite-document-row"
-                  className="rounded border px-2 py-1.5 text-xs"
+                  className="rounded-md border px-2 py-2 text-xs"
                   style={{
-                    borderColor: "var(--border-subtle)",
-                    background: "var(--bg-editor)",
+                    borderColor:
+                      "color-mix(in srgb, var(--border-subtle) 86%, var(--text-primary) 8%)",
+                    background:
+                      "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 82%, var(--bg-surface) 18%))",
                   }}
                 >
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
@@ -2439,9 +2566,10 @@ function GovernanceConsole({
           </div>
 
           <div
-            className="rounded border p-2"
+            className="rounded-lg border p-2"
             style={{
-              borderColor: "var(--border-subtle)",
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
               background: "var(--bg-surface)",
             }}
           >
@@ -2494,10 +2622,12 @@ function GovernanceConsole({
                   <div
                     key={revision.id}
                     data-testid="codesite-route-revision-row"
-                    className="rounded border px-2 py-1.5 text-xs"
+                    className="rounded-md border px-2 py-2 text-xs"
                     style={{
-                      borderColor: "var(--border-subtle)",
-                      background: "var(--bg-editor)",
+                      borderColor:
+                        "color-mix(in srgb, var(--border-subtle) 86%, var(--text-primary) 8%)",
+                      background:
+                        "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 82%, var(--bg-surface) 18%))",
                     }}
                   >
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
@@ -2542,12 +2672,14 @@ function GovernanceConsole({
 
         <div
           data-testid="codesite-mayday-banner"
-          className="rounded border p-3"
+          className="rounded-lg border p-3"
           style={{
             borderColor: maydayIncidents.length
               ? "color-mix(in srgb, #ff5757 42%, var(--border-subtle))"
-              : "var(--border-subtle)",
-            background: "var(--bg-surface)",
+              : "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+            background: maydayIncidents.length
+              ? "linear-gradient(180deg, color-mix(in srgb, #ff5757 10%, var(--bg-surface)), var(--bg-surface))"
+              : "var(--bg-surface)",
           }}
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3003,11 +3135,12 @@ function AirspaceMap({
         data-testid="codesite-radar-graph"
         className={
           condensed
-            ? "overflow-hidden rounded border p-2"
-            : "overflow-hidden rounded border p-3"
+            ? "overflow-hidden rounded-lg border p-2"
+            : "overflow-hidden rounded-lg border p-3"
         }
         style={{
-          borderColor: "var(--border-subtle)",
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
           background: "var(--bg-surface)",
         }}
       >
@@ -3021,13 +3154,15 @@ function AirspaceMap({
           <div
             className={
               condensed
-                ? "relative min-h-[244px] overflow-hidden rounded border"
-                : "relative min-h-[280px] overflow-hidden rounded border"
+                ? "relative min-h-[244px] overflow-hidden rounded-lg border"
+                : "relative min-h-[280px] overflow-hidden rounded-lg border"
             }
             style={{
-              borderColor: "var(--border-subtle)",
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
               background:
-                "color-mix(in srgb, var(--bg-editor) 88%, transparent)",
+                "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 16%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 14%, transparent) 1px, transparent 1px), radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-primary) 9%, transparent), transparent 62%), color-mix(in srgb, var(--bg-editor) 90%, transparent)",
+              backgroundSize: "20px 20px, 20px 20px, auto, auto",
             }}
           >
             <svg
@@ -3064,7 +3199,15 @@ function AirspaceMap({
                 width="100"
                 height="100"
                 fill="url(#codesite-radar-sweep)"
-                opacity="0.82"
+                opacity="0.72"
+              />
+              <circle
+                cx="50"
+                cy="50"
+                r="47"
+                fill="none"
+                stroke="color-mix(in srgb, var(--accent-primary) 28%, transparent)"
+                strokeWidth="0.55"
               />
               {[14, 27, 40].map((radius) => (
                 <circle
@@ -3232,7 +3375,7 @@ function AirspaceMap({
               <circle cx="50" cy="50" r="1.4" fill="var(--accent-primary)" />
             </svg>
             <div
-              className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3 text-[10px]"
+              className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3 text-[10px] font-medium"
               style={{ color: "var(--text-muted)" }}
             >
               <span>Risk cone</span>
@@ -3240,8 +3383,14 @@ function AirspaceMap({
               <span>Holding pattern</span>
             </div>
             <div
-              className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 text-[10px]"
-              style={{ color: "var(--text-muted)" }}
+              className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px]"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+                background:
+                  "color-mix(in srgb, var(--bg-surface) 76%, transparent)",
+                color: "var(--text-muted)",
+              }}
             >
               <span>{visibleFlights.length} flights tracked</span>
               <span>{visibleRisks.length || "no"} active risk cones</span>
@@ -3264,14 +3413,14 @@ function AirspaceMap({
                   <div
                     key={zone.zoneKey || zone.id || index}
                     data-testid="codesite-airspace-lane"
-                    className="grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[0.8fr_1.35fr_0.9fr]"
+                    className="grid min-h-[46px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-[0.8fr_1.35fr_0.9fr]"
                     style={{
                       borderColor: hasRisk
                         ? "color-mix(in srgb, #ff5757 36%, var(--border-subtle))"
-                        : "var(--border-subtle)",
+                        : "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
                       background: hasRisk
                         ? "color-mix(in srgb, #ff5757 12%, var(--bg-editor))"
-                        : "var(--bg-editor)",
+                        : "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 82%, var(--bg-surface) 18%))",
                     }}
                   >
                     <div className="min-w-0">
@@ -3321,10 +3470,12 @@ function AirspaceMap({
               })}
             </div>
             <div
-              className="rounded border px-3 py-2 text-xs"
+              className="rounded-lg border px-3 py-2 text-xs"
               style={{
-                borderColor: "var(--border-subtle)",
-                background: "var(--bg-editor)",
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 84%, var(--bg-surface) 16%))",
               }}
             >
               <div className="mb-1 flex items-center justify-between gap-2">
@@ -3373,9 +3524,10 @@ function AirspaceMap({
         }
       >
         <div
-          className="rounded border px-3 py-2"
+          className="rounded-lg border px-3 py-2"
           style={{
-            borderColor: "var(--border-subtle)",
+            borderColor:
+              "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
             background: "var(--bg-surface)",
           }}
         >
@@ -3385,9 +3537,10 @@ function AirspaceMap({
           </div>
         </div>
         <div
-          className="rounded border px-3 py-2"
+          className="rounded-lg border px-3 py-2"
           style={{
-            borderColor: "var(--border-subtle)",
+            borderColor:
+              "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
             background: "var(--bg-surface)",
           }}
         >
@@ -3427,6 +3580,7 @@ function JsonPreview({ value, maxLines = 10 }) {
 
 export default function CodeSitePanel({ workspaceSlug }) {
   const reduceMotion = useReducedMotion();
+  const scrollContainerRef = useRef(null);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [radarState, setRadarState] = useState(() =>
     createEmptyCodeSiteRadarState(workspaceSlug),
@@ -3546,15 +3700,37 @@ export default function CodeSitePanel({ workspaceSlug }) {
     (sectionKey) => {
       setActiveSection(sectionKey);
       if (typeof document !== "undefined") {
-        document
-          .querySelector(`[data-codesite-section="${sectionKey}"]`)
-          ?.scrollIntoView({
-            behavior: reduceMotion ? "auto" : "smooth",
+        const target = document.querySelector(
+          `[data-codesite-section="${sectionKey}"]`,
+        );
+        const scrollContainer = scrollContainerRef.current;
+        if (!target || !scrollContainer) {
+          target?.scrollIntoView({
+            behavior: "auto",
             block: "start",
           });
+          return;
+        }
+        const stickyTabs = scrollContainer.querySelector(
+          '[data-testid="codesite-mobile-section-tabs"]',
+        );
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const stickyHeight = stickyTabs?.getBoundingClientRect().height || 0;
+        scrollContainer.scrollTo({
+          top: Math.max(
+            0,
+            scrollContainer.scrollTop +
+              targetRect.top -
+              containerRect.top -
+              stickyHeight -
+              12,
+          ),
+          behavior: "auto",
+        });
       }
     },
-    [reduceMotion],
+    [],
   );
 
   const handleCreateProject = useCallback(
@@ -4151,20 +4327,36 @@ export default function CodeSitePanel({ workspaceSlug }) {
       style={{
         "--text-muted":
           "color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary) 22%)",
-        background: "var(--bg-sidebar)",
+        "--codesite-panel-line":
+          "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 98%, var(--bg-editor) 2%), var(--bg-sidebar) 44%, color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%))",
         color: "var(--text-primary)",
       }}
     >
       <div
-        className="shrink-0 border-b px-3 py-2"
-        style={{ borderColor: "var(--border-subtle)" }}
+        className="shrink-0 border-b px-3 py-2 shadow-[0_10px_24px_rgba(0,0,0,0.12)]"
+        style={{
+          borderColor: "var(--codesite-panel-line)",
+          background: "color-mix(in srgb, var(--bg-sidebar) 96%, var(--bg-elevated) 4%)",
+        }}
       >
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <Radar
-              className="h-4 w-4 shrink-0"
-              style={{ color: "var(--accent-primary)" }}
-            />
+            <span
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "color-mix(in srgb, var(--accent-primary) 9%, var(--bg-elevated))",
+              }}
+            >
+              <Radar
+                className="h-4 w-4"
+                style={{ color: "var(--accent-primary)" }}
+              />
+            </span>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold">CodeSite</div>
               <div
@@ -4235,9 +4427,16 @@ export default function CodeSitePanel({ workspaceSlug }) {
         <LoadingSkeleton />
       ) : (
         <div
+          ref={scrollContainerRef}
+          data-testid="codesite-panel-scroll"
           className="min-h-0 flex-1 overflow-y-auto pb-16"
           tabIndex={0}
           aria-label="CodeSite evidence sections"
+          style={{
+            background:
+              "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 20%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 14%, transparent) 1px, transparent 1px)",
+            backgroundSize: "44px 44px",
+          }}
         >
           <MobileSectionTabs
             sections={mobileSections}
@@ -4314,7 +4513,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
             <>
               <motion.div
                 data-testid="codesite-operator-cockpit"
-                className="grid gap-3 p-3"
+                className="grid gap-3 p-3 sm:p-4"
                 initial={reduceMotion ? false : { opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{
@@ -4324,12 +4523,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
               >
                 <div
                   data-testid="codesite-mission-control-header"
-                  className="grid gap-3 rounded border p-3 xl:grid-cols-[minmax(0,1fr)_minmax(460px,0.82fr)] xl:items-center"
+                  className="grid gap-4 rounded-lg border p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] xl:grid-cols-[minmax(0,1fr)_minmax(460px,0.82fr)] xl:items-center"
                   style={{
                     borderColor:
-                      "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                      "color-mix(in srgb, var(--border-subtle) 58%, var(--accent-primary) 42%)",
                     background:
-                      "linear-gradient(135deg, color-mix(in srgb, var(--bg-surface) 90%, var(--accent-primary) 10%), var(--bg-editor))",
+                      "linear-gradient(135deg, color-mix(in srgb, var(--bg-surface) 88%, var(--accent-primary) 9%), color-mix(in srgb, var(--bg-editor) 92%, var(--text-primary) 4%))",
                   }}
                 >
                   <div className="min-w-0">
@@ -4353,13 +4552,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       ) : null}
                     </div>
                     <h2
-                      className="mt-2 break-words text-base font-semibold leading-tight"
+                      className="mt-3 max-w-[760px] break-words text-2xl font-semibold leading-tight sm:text-3xl"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {currentProject.title}
                     </h2>
                     <p
-                      className="mt-1 max-w-[72ch] text-xs leading-5"
+                      className="mt-2 max-w-[72ch] text-sm leading-6"
                       style={{ color: "var(--text-muted)" }}
                     >
                       {currentProject.request}
@@ -4406,7 +4605,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
                 <div
                   data-testid="codesite-responsive-proof-target"
-                  className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)] xl:items-start"
+                  className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.08fr)_minmax(430px,0.92fr)] xl:items-start"
                 >
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
@@ -4431,7 +4630,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
                     <div
                       data-testid="codesite-metric-rail"
-                      className="grid grid-cols-[repeat(auto-fit,minmax(118px,1fr))] gap-2"
+                      className="grid grid-cols-[repeat(auto-fit,minmax(126px,1fr))] gap-2"
                     >
                       <Metric
                         label="Flights"
