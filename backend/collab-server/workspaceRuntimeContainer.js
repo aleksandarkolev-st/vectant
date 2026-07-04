@@ -40,44 +40,6 @@ const HOST_ENV_DENYLIST = new Set([
   'HOSTNAME', 'TMPDIR', 'TERM', 'NODE_ENV', '_',
 ]);
 
-function createDockerExecTextDecoder({ tty = true } = {}) {
-  let pending = Buffer.alloc(0);
-  const decode = (chunk, emit) => {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ''), 'utf8');
-    if (tty) {
-      emit(buffer.toString('utf8'));
-      return;
-    }
-    pending = pending.length ? Buffer.concat([pending, buffer]) : buffer;
-    while (pending.length >= 8) {
-      if (!isDockerMultiplexHeader(pending)) {
-        emit(pending.toString('utf8'));
-        pending = Buffer.alloc(0);
-        return;
-      }
-      const frameLength = pending.readUInt32BE(4);
-      if (pending.length < 8 + frameLength) return;
-      const payload = pending.subarray(8, 8 + frameLength);
-      if (payload.length) emit(payload.toString('utf8'));
-      pending = pending.subarray(8 + frameLength);
-    }
-  };
-  const flush = (emit) => {
-    if (pending.length) emit(pending.toString('utf8'));
-    pending = Buffer.alloc(0);
-  };
-  return { decode, flush };
-}
-
-function isDockerMultiplexHeader(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 8) return false;
-  const streamType = buffer[0];
-  return (streamType === 1 || streamType === 2)
-    && buffer[1] === 0
-    && buffer[2] === 0
-    && buffer[3] === 0;
-}
-
 function safeName(value, max = 40) {
   return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, max);
 }
@@ -90,28 +52,7 @@ function codeSiteQuarantineRoot(options = {}) {
   return options.codeSiteQuarantineRoot || options.quarantineRoot || options.codesiteQuarantine?.root || '';
 }
 
-function codeSiteOverlayRoots(options = {}) {
-  const overlay = options.codesiteOverlay || options.codeSiteOverlay || {};
-  const upperRoot = options.codeSiteOverlayUpperRoot || options.overlayUpperRoot || overlay.upperRoot || '';
-  const workRoot = options.codeSiteOverlayWorkRoot || options.overlayWorkRoot || overlay.workRoot || '';
-  const inferredOverlayRoot = upperRoot && workRoot && path.posix.dirname(upperRoot) === path.posix.dirname(workRoot)
-    ? path.posix.dirname(upperRoot)
-    : '';
-  return {
-    baseRoot: options.codeSiteBaseRoot || options.baseRoot || overlay.baseRoot || '',
-    overlayRoot: options.codeSiteOverlayRoot || options.overlayRoot || overlay.root || inferredOverlayRoot,
-    upperRoot,
-    workRoot,
-  };
-}
-
-function hasCodeSiteOverlay(options = {}) {
-  const roots = codeSiteOverlayRoots(options);
-  return Boolean(roots.baseRoot && roots.upperRoot && roots.workRoot);
-}
-
 function runtimeWorkspaceMode(options = {}) {
-  if (hasCodeSiteOverlay(options)) return 'codesite-overlay';
   if (codeSiteQuarantineRoot(options)) return 'quarantine';
   if (options.codeSiteReadonly || options.readonlyWorkspace) return 'readonly';
   return 'readwrite';
@@ -119,14 +60,6 @@ function runtimeWorkspaceMode(options = {}) {
 
 function runtimeIdentityOptions(options = {}) {
   const mode = runtimeWorkspaceMode(options);
-  if (mode === 'codesite-overlay') {
-    const roots = codeSiteOverlayRoots(options);
-    const identity = options.codeSiteOverlayId ||
-      options.overlayId ||
-      options.codesiteContext?.transactionId ||
-      `${roots.baseRoot}:${roots.overlayRoot}:${roots.upperRoot}:${roots.workRoot}`;
-    return { mode, overlayId: shortDigest(identity) };
-  }
   if (mode !== 'quarantine') return { mode };
   const identity = options.codeSiteQuarantineId ||
     options.quarantineId ||
@@ -146,10 +79,7 @@ function volumeSubpathForPath(fullPath, volumeRoot = WORKSPACE_DATA_VOLUME_ROOT)
 
 /** Deterministic, docker-safe container name per workspace+user. */
 function runtimeContainerName(slug, userId, options = {}) {
-  const { mode, quarantineId, overlayId } = runtimeIdentityOptions(options);
-  if (mode === 'codesite-overlay') {
-    return `workspace-runtime-${safeName(`${slug}-${userId}`, 30)}-codesite-${overlayId}`;
-  }
+  const { mode, quarantineId } = runtimeIdentityOptions(options);
   if (mode === 'quarantine') {
     return `workspace-runtime-${safeName(`${slug}-${userId}`, 30)}-codesite-${quarantineId}`;
   }
@@ -189,31 +119,22 @@ function createRuntimeManager({
   /** key `${slug} ${userId}` -> { containerId, lastActive } */
   const sessions = new Map();
   const keyOf = (slug, userId, options = {}) => {
-    const { mode, quarantineId, overlayId } = runtimeIdentityOptions(options);
-    const identity = overlayId || quarantineId || '';
-    return `${slug} ${userId} ${mode}${identity ? `:${identity}` : ''}`;
+    const { mode, quarantineId } = runtimeIdentityOptions(options);
+    return `${slug} ${userId} ${mode}${quarantineId ? `:${quarantineId}` : ''}`;
   };
-  const sessionEntry = (containerId, slug, userId, options, now, name) => ({
+  const sessionEntry = (containerId, slug, userId, options, now) => ({
     containerId,
     slug,
     userId,
     runtimeIdentity: runtimeIdentityOptions(options),
-    runtimeOptions: { ...options },
-    host: name || runtimeContainerName(slug, userId, options),
     lastActive: now,
   });
 
   async function ensureRuntimeContainer(slug, userId, options = {}) {
     const quarantineRoot = codeSiteQuarantineRoot(options);
-    const overlayRoots = codeSiteOverlayRoots(options);
-    if (options.codesiteContext?.active && !hasCodeSiteOverlay(options)) {
-      const error = new Error('codesite_runtime_overlay_required');
-      error.code = 'CODESITE_RUNTIME_OVERLAY_REQUIRED';
-      throw error;
-    }
-    if (hasCodeSiteOverlay(options) && !options.codesiteContext?.transactionId) {
-      const error = new Error('codesite_runtime_overlay_transaction_required');
-      error.code = 'CODESITE_RUNTIME_OVERLAY_TRANSACTION_REQUIRED';
+    if (options.codesiteContext?.active && !quarantineRoot) {
+      const error = new Error('codesite_runtime_quarantine_required');
+      error.code = 'CODESITE_RUNTIME_QUARANTINE_REQUIRED';
       throw error;
     }
     const mode = runtimeWorkspaceMode(options);
@@ -248,19 +169,16 @@ function createRuntimeManager({
           error.code = 'CODESITE_RUNTIME_CONTAINER_MODE_MISMATCH';
           throw error;
         }
-        if (mode === 'quarantine' || mode === 'codesite-overlay') {
-          const identity = runtimeIdentityOptions(options);
-          const expected = mode === 'codesite-overlay' ? identity.overlayId : identity.quarantineId;
-          const actual = mode === 'codesite-overlay'
-            ? labels['vectant/codesite-overlay-id'] || ''
-            : labels['vectant/codesite-quarantine-id'] || '';
+        if (mode === 'quarantine') {
+          const expected = runtimeIdentityOptions(options).quarantineId;
+          const actual = labels['vectant/codesite-quarantine-id'] || '';
           if (actual && actual !== expected) {
-            const error = new Error('codesite_runtime_identity_mismatch');
-            error.code = 'CODESITE_RUNTIME_IDENTITY_MISMATCH';
+            const error = new Error('codesite_runtime_quarantine_mismatch');
+            error.code = 'CODESITE_RUNTIME_QUARANTINE_MISMATCH';
             throw error;
           }
         }
-        sessions.set(key, sessionEntry(info.Id, slug, userId, options, now, name));
+        sessions.set(key, sessionEntry(info.Id, slug, userId, options, now));
         return { name, host: name, containerId: info.Id, created: false };
       }
       try { await existing.remove({ force: true }); } catch (_) {}
@@ -287,13 +205,7 @@ function createRuntimeManager({
       error.code = 'CODESITE_RUNTIME_QUARANTINE_VOLUME_UNAVAILABLE';
       throw error;
     }
-    const workspaceMount = mode === 'codesite-overlay'
-      ? codeSiteOverlayWorkspaceMount({
-          dataVolume,
-          dataVolumeRoot,
-          overlayRoots,
-        })
-      : dataVolume
+    const workspaceMount = dataVolume
       ? {
           Mounts: [{
             Type: 'volume',
@@ -320,11 +232,7 @@ function createRuntimeManager({
       runtimeEnv.push('CODESITE_WORKSPACE_QUARANTINED=1', 'SYNTHI_CODESITE_WORKSPACE_QUARANTINED=1');
       runtimeEnv.push('CODESITE_QUARANTINE_ROOT=/workspace');
     }
-    if (mode === 'codesite-overlay') {
-      runtimeEnv.push('CODESITE_WORKSPACE_OVERLAY=1', 'SYNTHI_CODESITE_WORKSPACE_OVERLAY=1');
-      runtimeEnv.push('CODESITE_BASE_ROOT=/codesite/base', 'CODESITE_OVERLAY_ROOT=/codesite/overlay', 'CODESITE_OVERLAY_UPPER=/codesite/overlay/upper', 'CODESITE_OVERLAY_WORK=/codesite/overlay/work');
-    }
-    const { quarantineId, overlayId } = runtimeIdentityOptions(options);
+    const { quarantineId } = runtimeIdentityOptions(options);
     const createOpts = {
       name,
       Image: image,
@@ -336,11 +244,6 @@ function createRuntimeManager({
         ...(mode === 'quarantine' ? {
           'vectant/codesite-transaction-id': String(options.codesiteContext?.transactionId || ''),
           'vectant/codesite-quarantine-id': quarantineId,
-        } : {}),
-        ...(mode === 'codesite-overlay' ? {
-          'vectant/codesite-transaction-id': String(options.codesiteContext?.transactionId || ''),
-          'vectant/codesite-overlay-id': overlayId,
-          'vectant/codesite-base-readonly': 'true',
         } : {}),
         'vectant/lastActive': String(now),
       },
@@ -357,18 +260,8 @@ function createRuntimeManager({
     };
 
     const container = await docker.createContainer(createOpts);
-    try {
-      await container.start();
-      if (mode === 'codesite-overlay') {
-        await setupCodeSiteOverlayMount(container);
-      }
-    } catch (error) {
-      try { await container.remove({ force: true }); } catch (_) {}
-      const wrapped = error?.code ? error : new Error(error?.message || 'codesite_runtime_overlay_unavailable');
-      if (mode === 'codesite-overlay' && !wrapped.code) wrapped.code = 'CODESITE_RUNTIME_OVERLAY_UNAVAILABLE';
-      throw wrapped;
-    }
-    sessions.set(key, sessionEntry(container.id, slug, userId, options, now, name));
+    await container.start();
+    sessions.set(key, sessionEntry(container.id, slug, userId, options, now));
     // Use the structured-logger convention (event, data). console (the test
     // default) also accepts this. NB: collab-server's logger has no `.log`.
     logger.info('runtime_container_started', { name, slug, userId, mode });
@@ -424,19 +317,6 @@ function createRuntimeManager({
     await removeRuntimeContainer(id);
   }
 
-  function listRuntimeSessions() {
-    return [...sessions.values()].map((entry) => ({
-      slug: entry.slug,
-      userId: entry.userId,
-      mode: entry.runtimeIdentity?.mode || 'readwrite',
-      host: entry.host || runtimeContainerName(entry.slug, entry.userId, entry.runtimeOptions),
-      containerId: entry.containerId,
-      runtimeOptions: { ...(entry.runtimeOptions || {}) },
-      runtimeIdentity: { ...(entry.runtimeIdentity || {}) },
-      lastActive: entry.lastActive,
-    }));
-  }
-
   async function removeRuntimeContainer(id) {
     try {
       const c = docker.getContainer(id);
@@ -483,16 +363,8 @@ function createRuntimeManager({
 
     const dataCbs = new Set();
     const exitCbs = new Set();
-    const decoder = createDockerExecTextDecoder({ tty });
-    stream.on('data', (chunk) => {
-      decoder.decode(chunk, (text) => {
-        for (const cb of dataCbs) cb(text);
-      });
-    });
+    stream.on('data', (chunk) => { for (const cb of dataCbs) cb(chunk.toString('utf8')); });
     stream.on('end', async () => {
-      decoder.flush((text) => {
-        for (const cb of dataCbs) cb(text);
-      });
       let exitCode = null;
       try { exitCode = (await exec.inspect()).ExitCode; } catch (_) {}
       for (const cb of exitCbs) cb({ exitCode });
@@ -574,8 +446,8 @@ function createRuntimeManager({
    * /proc/net/tcp). Used by the container port monitor. Best-effort: resolves
    * '' on stream error so a transient daemon hiccup doesn't reject the poll.
    */
-  async function runOnce(slug, userId, argv, runtimeOptions = {}) {
-    const s = sessions.get(keyOf(slug, userId, runtimeOptions));
+  async function runOnce(slug, userId, argv) {
+    const s = sessions.get(keyOf(slug, userId));
     if (!s) throw new Error('runtime container not started');
     s.lastActive = Date.now();
     const exec = await docker.getContainer(s.containerId).exec({
@@ -598,109 +470,7 @@ function createRuntimeManager({
     });
   }
 
-  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, runOnce, listRuntimeSessions, _sessions: sessions };
-}
-
-function codeSiteOverlayWorkspaceMount({ dataVolume, dataVolumeRoot, overlayRoots }) {
-  const overlayRoot = overlayRoots.overlayRoot ||
-    (overlayRoots.upperRoot && overlayRoots.workRoot && path.posix.dirname(overlayRoots.upperRoot) === path.posix.dirname(overlayRoots.workRoot)
-      ? path.posix.dirname(overlayRoots.upperRoot)
-      : '');
-  if (!overlayRoot) {
-    const error = new Error('codesite_runtime_overlay_root_unavailable');
-    error.code = 'CODESITE_RUNTIME_OVERLAY_ROOT_UNAVAILABLE';
-    throw error;
-  }
-  if (dataVolume) {
-    const baseSubpath = volumeSubpathForPath(overlayRoots.baseRoot, dataVolumeRoot);
-    const overlaySubpath = volumeSubpathForPath(overlayRoot, dataVolumeRoot);
-    if (!baseSubpath || !overlaySubpath) {
-      const error = new Error('codesite_runtime_overlay_volume_unavailable');
-      error.code = 'CODESITE_RUNTIME_OVERLAY_VOLUME_UNAVAILABLE';
-      throw error;
-    }
-    return {
-      Mounts: [
-        {
-          Type: 'volume',
-          Source: dataVolume,
-          Target: '/codesite/base',
-          ReadOnly: true,
-          VolumeOptions: { Subpath: baseSubpath },
-        },
-        {
-          Type: 'volume',
-          Source: dataVolume,
-          Target: '/codesite/overlay',
-          VolumeOptions: { Subpath: overlaySubpath },
-        },
-      ],
-    };
-  }
-  return {
-    Binds: [
-      `${overlayRoots.baseRoot}:/codesite/base:ro`,
-      `${overlayRoot}:/codesite/overlay`,
-    ],
-  };
-}
-
-async function setupCodeSiteOverlayMount(container) {
-  const script = [
-    'set -eu',
-    'mkdir -p /workspace /codesite/base /codesite/overlay/upper /codesite/overlay/work',
-    'chown -R rootless:rootless /codesite/overlay/upper /codesite/overlay/work 2>/dev/null || true',
-    'if touch /codesite/base/.codesite-write-probe 2>/dev/null; then rm -f /codesite/base/.codesite-write-probe; exit 73; fi',
-    'if ! mountpoint -q /workspace 2>/dev/null; then',
-    '  mount -t overlay overlay -o lowerdir=/codesite/base,upperdir=/codesite/overlay/upper,workdir=/codesite/overlay/work /workspace || fuse-overlayfs -o lowerdir=/codesite/base -o upperdir=/codesite/overlay/upper -o workdir=/codesite/overlay/work /workspace',
-    'fi',
-    'test -r /codesite/base',
-    'test -w /workspace',
-    'touch /workspace/.codesite-overlay-write-probe && rm -f /workspace/.codesite-overlay-write-probe',
-    'if command -v su >/dev/null 2>&1; then',
-    '  probe_dir="$(find /workspace -mindepth 1 -maxdepth 4 -type d 2>/dev/null | head -n 1 || true)"',
-    '  if [ -n "$probe_dir" ]; then',
-    '    env PROBE_DIR="$probe_dir" su rootless -c \'touch "$PROBE_DIR/.codesite-overlay-rootless-probe" && rm -f "$PROBE_DIR/.codesite-overlay-rootless-probe"\'',
-    '  else',
-    '    su rootless -c \'touch /workspace/.codesite-overlay-rootless-probe && rm -f /workspace/.codesite-overlay-rootless-probe\'',
-    '  fi',
-    'fi',
-    '(grep -E " /workspace .* - (overlay|fuse-overlayfs|fuse\\.fuse-overlayfs) " /proc/self/mountinfo >/dev/null) || (findmnt -n -T /workspace 2>/dev/null | grep -E "overlay|fuse-overlayfs" >/dev/null) || (mount | grep " on /workspace " | grep -E "overlay|fuse-overlayfs" >/dev/null)',
-  ].join('\n');
-  const exec = await container.exec({
-    Cmd: ['/bin/sh', '-lc', script],
-    User: 'root',
-    AttachStdout: true,
-    AttachStderr: true,
-  });
-  const stream = await exec.start({});
-  await waitForExecStream(stream, 30_000);
-  const info = typeof exec.inspect === 'function' ? await exec.inspect() : { ExitCode: 0 };
-  if (info?.ExitCode !== 0) {
-    const error = new Error('codesite_runtime_overlay_unavailable');
-    error.code = 'CODESITE_RUNTIME_OVERLAY_UNAVAILABLE';
-    error.exitCode = info?.ExitCode;
-    throw error;
-  }
-}
-
-async function waitForExecStream(stream, timeoutMs = 30_000) {
-  if (!stream || typeof stream.on !== 'function') return;
-  await new Promise((resolve) => {
-    let done = false;
-    let timer = null;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      if (timer) clearTimeout(timer);
-      resolve();
-    };
-    stream.on('data', () => {});
-    stream.on('end', finish);
-    stream.on('error', finish);
-    timer = setTimeout(finish, timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
-  });
+  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, runOnce, _sessions: sessions };
 }
 
 module.exports = {

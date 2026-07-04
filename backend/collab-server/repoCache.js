@@ -27,7 +27,6 @@ const fsp = require('fs/promises');
 const path = require('path');
 const config = require('./config');
 const gcsSync = require('./gcsSync');
-const { CodeSiteFSDeniedError, evaluateCodeSiteWrite } = require('./codesiteFs');
 
 // ── Internal entry shape ─────────────────────────────────────────────────────
 // {
@@ -49,35 +48,6 @@ const _materializeLocks = new Map();
  */
 function _cacheKey(slug, userId) {
   return userId ? `${slug}:${userId}` : slug;
-}
-
-function codeSiteContextFromOptions(options = {}) {
-  const context = options.codesiteContext || options.codeSiteContext || options.codeSite || options.codesite || null;
-  return context && typeof context === 'object' ? context : null;
-}
-
-function codeSiteRepoCacheAttempt(slug, userId, repoPath) {
-  return {
-    path: '**',
-    kind: 'repo-cache-materialize',
-    tool: 'git_provisioning',
-    evidenceRefs: ['collab:repo-cache-materialize'],
-    processAncestry: ['collab-server:repoCache.acquire'],
-    details: {
-      slug,
-      userId: userId || null,
-      repoPath,
-    },
-  };
-}
-
-function assertCodeSiteMaterializationAllowed(slug, userId, repoPath, options = {}) {
-  const context = codeSiteContextFromOptions(options);
-  if (!context?.active) return;
-  const decision = evaluateCodeSiteWrite(context, codeSiteRepoCacheAttempt(slug, userId, repoPath));
-  if (!decision.ok) {
-    throw new CodeSiteFSDeniedError(decision.event);
-  }
 }
 
 /**
@@ -242,7 +212,7 @@ const cache = new LRUCache({
  * @param {string} [userId]
  * @returns {Promise<string>} absolute path to the working tree
  */
-async function acquire(slug, userId, options = {}) {
+async function acquire(slug, userId) {
   const key = _cacheKey(slug, userId);
   let entry = cache.get(key);
 
@@ -254,9 +224,6 @@ async function acquire(slug, userId, options = {}) {
   }
 
   if (entry) {
-    if (entry.materializing) {
-      assertCodeSiteMaterializationAllowed(slug, userId, entry.repoPath, options);
-    }
     // Already in cache — wait until it's materialised, bump ref
     await entry.ready;
     entry.refs++;
@@ -267,18 +234,19 @@ async function acquire(slug, userId, options = {}) {
   const repoPath = userId
     ? path.join(config.REPO_CACHE_DIR, slug, userId)
     : path.join(config.REPO_CACHE_DIR, slug);
-  assertCodeSiteMaterializationAllowed(slug, userId, repoPath, options);
 
   // Serialise concurrent materialise calls for the same key
   if (_materializeLocks.has(key)) {
     await _materializeLocks.get(key);
     // After the lock resolves, the entry should be in the cache
-    return acquire(slug, userId, options);
+    return acquire(slug, userId);
   }
 
   let resolveLock;
   const lockPromise = new Promise((r) => { resolveLock = r; });
   _materializeLocks.set(key, lockPromise);
+
+  const readyPromise = materialize(slug, repoPath, userId);
 
   entry = {
     slug,
@@ -286,12 +254,8 @@ async function acquire(slug, userId, options = {}) {
     repoPath,
     refs: 1,
     pinCount: 0,
-    materializing: true,
-    ready: null,
+    ready: readyPromise,
   };
-  const readyPromise = materialize(slug, repoPath, userId)
-    .finally(() => { entry.materializing = false; });
-  entry.ready = readyPromise;
 
   cache.set(key, entry);
 

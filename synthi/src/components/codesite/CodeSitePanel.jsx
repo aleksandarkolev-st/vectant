@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -23,13 +23,11 @@ import {
   Upload,
 } from 'lucide-react';
 import {
-  applyCodeSiteQuarantine,
   createCodeSiteProject,
   createEmptyCodeSiteRadarState,
   exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState,
-  replayCodeSiteQuarantine,
   simulateCodeSiteShadowMerge,
 } from './codesiteClient';
 
@@ -149,283 +147,6 @@ function hasEntries(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
 }
 
-function quarantinePath(change = {}) {
-  return compact(change.path || change.quarantineEvidence?.path, '');
-}
-
-function quarantineDigest(change = {}, key) {
-  const evidence = change.quarantineEvidence || {};
-  return compact(change[key] || evidence[key] || evidence[key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`)], '');
-}
-
-function quarantineEvidenceRef(change = {}) {
-  const evidence = change.quarantineEvidence || {};
-  return compact(change.evidenceRef || evidence.evidenceRef || asArray(change.evidenceRefs || evidence.evidenceRefs)[0], '');
-}
-
-function selectedPathKey(paths) {
-  return asArray(paths).map(String).sort().join('\n');
-}
-
-function quarantineAppliedPaths(record = {}, reviewState = {}) {
-  return uniqueValues([
-    ...asArray(record.appliedPaths),
-    ...asArray(record.applied).map((item) => item.path),
-    ...asArray(reviewState.apply?.applied).map((item) => item.path),
-  ]);
-}
-
-function quarantineRemainingPaths(record = {}, reviewState = {}) {
-  const paths = uniqueValues([
-    ...asArray(record.paths),
-    ...asArray(record.changes).map(quarantinePath),
-  ]);
-  const applied = new Set(quarantineAppliedPaths(record, reviewState));
-  return paths.filter((item) => !applied.has(item));
-}
-
-function quarantineDisplayStatus(record = {}, reviewState = {}) {
-  const appliedPaths = quarantineAppliedPaths(record, reviewState);
-  if (appliedPaths.length > 0) {
-    return quarantineRemainingPaths(record, reviewState).length > 0 ? 'partially_applied' : 'applied';
-  }
-  if (reviewState.replay?.ok === true) return 'replayed';
-  return record.status || 'reviewable';
-}
-
-function quarantineEventId(event = {}) {
-  const details = event.details || {};
-  const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
-  const fsDetails = codesiteFsEvent.details || {};
-  const evidence = details.quarantineEvidence || details.quarantine_evidence || fsDetails.quarantineEvidence || fsDetails.quarantine_evidence || {};
-  return String(
-    details.quarantineId
-    || details.quarantine_id
-    || fsDetails.quarantineId
-    || fsDetails.quarantine_id
-    || evidence.quarantineId
-    || evidence.quarantine_id
-    || event.actorId
-    || evidence.evidenceRef
-    || event.id
-    || 'unknown-quarantine'
-  );
-}
-
-function quarantineRecordsFromEvents(events) {
-  const records = new globalThis.Map();
-  for (const event of asArray(events)) {
-    if (!['write_quarantined', 'quarantine_reviewed', 'quarantine_replayed', 'quarantine_applied'].includes(event?.eventType)) continue;
-    const details = event.details || {};
-    const codesiteFsEvent = details.codesiteFsEvent || details.codesite_fs_event || {};
-    const fsDetails = codesiteFsEvent.details || {};
-    const evidence = details.quarantineEvidence || details.quarantine_evidence || fsDetails.quarantineEvidence || fsDetails.quarantine_evidence || {};
-    const id = quarantineEventId(event);
-    const record = records.get(id) || {
-      quarantineId: id,
-      status: 'reviewable',
-      transactionId: details.transactionId || details.transaction_id || codesiteFsEvent.transaction_id || null,
-      mutationLeaseId: event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id || null,
-      displayCallsign: event.displayCallsign || null,
-      paths: [],
-      changes: [],
-      rejected: [],
-      latestReplayAttempt: null,
-      replayAttempts: [],
-      successfulReplay: null,
-      evidenceRefs: [],
-      eventRefs: [],
-      lifecycle: { capturedAt: null, reviewedAt: null, replayedAt: null, appliedAt: null },
-      symlinkSanitization: fsDetails.symlinkSanitization || fsDetails.symlink_sanitization || details.symlinkSanitization || details.symlink_sanitization || null,
-      updatedAt: event.createdAt || null,
-    };
-    record.eventRefs = uniqueValues([...record.eventRefs, event.id]);
-    record.evidenceRefs = uniqueValues([
-      ...record.evidenceRefs,
-      ...asArray(event.evidenceRefs),
-      ...asArray(details.evidenceRefs || details.evidence_refs),
-      evidence.evidenceRef,
-      ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
-    ]);
-    record.paths = uniqueValues([
-      ...record.paths,
-      details.path,
-      codesiteFsEvent.path,
-      evidence.path,
-      ...asArray(details.paths || details.changedPaths || details.changed_paths),
-    ]);
-    if (event.eventType === 'write_quarantined') {
-      record.lifecycle.capturedAt = record.lifecycle.capturedAt || event.createdAt || null;
-      const change = {
-        path: evidence.path || details.path || codesiteFsEvent.path,
-        kind: evidence.kind || details.changeKind || details.change_kind || 'modified',
-        beforeDigest: evidence.beforeDigest || evidence.before_digest,
-        afterDigest: evidence.afterDigest || evidence.after_digest,
-        evidenceRef: evidence.evidenceRef,
-        quarantineEvidence: evidence,
-      };
-      if (change.path && !record.changes.some((item) => quarantinePath(item) === change.path && quarantineEvidenceRef(item) === quarantineEvidenceRef(change))) {
-        record.changes.push(change);
-      }
-    }
-    if (event.eventType === 'quarantine_reviewed') {
-      record.status = record.status === 'applied' ? record.status : 'reviewed';
-      record.lifecycle.reviewedAt = record.lifecycle.reviewedAt || event.createdAt || null;
-    }
-    if (event.eventType === 'quarantine_replayed') {
-      const attempt = quarantineReplayAttemptFromEvent(event, details);
-      record.latestReplayAttempt = attempt;
-      record.replayAttempts = appendUniqueObjects(record.replayAttempts, [attempt]);
-      record.rejected = [...record.rejected, ...asArray(details.rejected)];
-      if (isSuccessfulQuarantineReplay(attempt)) {
-        record.status = record.status === 'applied' ? record.status : 'replayed';
-        if (isReplayAttemptBeforeApply(attempt, record.lifecycle)) {
-          record.lifecycle.replayedAt = attempt.attemptedAt || record.lifecycle.replayedAt || null;
-          record.successfulReplay = attempt;
-        } else if (!record.successfulReplay) {
-          record.successfulReplay = attempt;
-        }
-      } else if (record.status !== 'applied' && record.status !== 'replayed') {
-        record.status = 'blocked';
-      }
-    }
-    if (event.eventType === 'quarantine_applied') {
-      record.status = 'applied';
-      record.lifecycle.appliedAt = event.createdAt || record.lifecycle.appliedAt;
-      record.applied = asArray(details.applied);
-    }
-    records.set(id, record);
-  }
-  return [...records.values()];
-}
-
-function normalizeQuarantineRecord(record = {}) {
-  const changes = asArray(record.changes);
-  const paths = uniqueValues([
-    ...asArray(record.paths),
-    ...changes.map(quarantinePath),
-  ]);
-  return {
-    ...record,
-    quarantineId: compact(record.quarantineId || record.id, 'unknown-quarantine'),
-    status: compact(record.status, changes.length ? 'reviewable' : 'pending'),
-    paths,
-    changes,
-    rejected: asArray(record.rejected),
-    applied: asArray(record.applied),
-    latestReplayAttempt: record.latestReplayAttempt || null,
-    replayAttempts: asArray(record.replayAttempts),
-    successfulReplay: record.successfulReplay || record.replay || null,
-    appliedPaths: uniqueValues([
-      ...asArray(record.appliedPaths),
-      ...asArray(record.applied).map((item) => item.path),
-    ]),
-    remainingPaths: asArray(record.remainingPaths),
-    evidenceRefs: uniqueValues(record.evidenceRefs),
-    eventRefs: uniqueValues(record.eventRefs),
-    lifecycle: record.lifecycle || {
-      capturedAt: record.createdAt || null,
-      reviewedAt: null,
-      replayedAt: null,
-      appliedAt: null,
-    },
-    symlinkSanitization: record.symlinkSanitization || record.symlink_sanitization || null,
-  };
-}
-
-function mergeQuarantineRecords(...groups) {
-  const merged = new globalThis.Map();
-  for (const raw of groups.flatMap((group) => asArray(group))) {
-    const record = normalizeQuarantineRecord(raw);
-    const previous = merged.get(record.quarantineId);
-    if (!previous) {
-      merged.set(record.quarantineId, record);
-      continue;
-    }
-    merged.set(record.quarantineId, {
-      ...previous,
-      ...record,
-      changes: [...previous.changes, ...record.changes].filter((change, index, allChanges) => {
-        const key = `${quarantinePath(change)}:${quarantineEvidenceRef(change)}`;
-        return index === allChanges.findIndex((candidate) => `${quarantinePath(candidate)}:${quarantineEvidenceRef(candidate)}` === key);
-      }),
-      paths: uniqueValues([...previous.paths, ...record.paths]),
-      rejected: [...asArray(previous.rejected), ...asArray(record.rejected)],
-      applied: [...asArray(previous.applied), ...asArray(record.applied)].filter((item, index, allItems) => {
-        const key = `${item?.path || ''}:${item?.evidenceRef || ''}`;
-        return index === allItems.findIndex((candidate) => `${candidate?.path || ''}:${candidate?.evidenceRef || ''}` === key);
-      }),
-      appliedPaths: uniqueValues([...asArray(previous.appliedPaths), ...asArray(record.appliedPaths)]),
-      remainingPaths: record.remainingPaths?.length ? record.remainingPaths : previous.remainingPaths,
-      latestReplayAttempt: record.latestReplayAttempt || previous.latestReplayAttempt || null,
-      replayAttempts: appendUniqueObjects(previous.replayAttempts, record.replayAttempts),
-      successfulReplay: previous.successfulReplay || record.successfulReplay || null,
-      evidenceRefs: uniqueValues([...previous.evidenceRefs, ...record.evidenceRefs]),
-      eventRefs: uniqueValues([...previous.eventRefs, ...record.eventRefs]),
-      lifecycle: mergeLifecycle(previous.lifecycle, record.lifecycle),
-      symlinkSanitization: record.symlinkSanitization || previous.symlinkSanitization,
-    });
-  }
-  return [...merged.values()].sort((left, right) => String(right.updatedAt || right.finalizedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.finalizedAt || left.createdAt || '')));
-}
-
-function quarantineReplayAttemptFromEvent(event, details = {}) {
-  return {
-    attemptedAt: event.createdAt || null,
-    selectedChangeCount: details.selectedChangeCount ?? null,
-    replayableChangeCount: details.replayableChangeCount ?? null,
-    rejectedChangeCount: details.rejectedChangeCount ?? null,
-    paths: asArray(details.paths || details.selectedPaths || details.selected_paths),
-    replayablePaths: asArray(details.replay || details.replayable || details.prepared).map((item) => item.path).filter(Boolean),
-    rejectedPaths: asArray(details.rejected).map((item) => item.path).filter(Boolean),
-  };
-}
-
-function isSuccessfulQuarantineReplay(attempt = {}) {
-  return Number(attempt.replayableChangeCount || 0) > 0 && Number(attempt.rejectedChangeCount || 0) === 0;
-}
-
-function isReplayAttemptBeforeApply(attempt = {}, lifecycle = {}) {
-  if (!lifecycle.appliedAt) return true;
-  const attemptedAt = Date.parse(attempt.attemptedAt || '');
-  const appliedAt = Date.parse(lifecycle.appliedAt);
-  if (Number.isNaN(attemptedAt) || Number.isNaN(appliedAt)) return false;
-  return attemptedAt <= appliedAt;
-}
-
-function appendUniqueObjects(current, values) {
-  const next = [...asArray(current)];
-  const seen = new Set(next.map((item) => JSON.stringify(item)));
-  for (const value of asArray(values)) {
-    const key = JSON.stringify(value);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    next.push(value);
-  }
-  return next;
-}
-
-function mergeLifecycle(previous = {}, next = {}) {
-  return {
-    capturedAt: previous.capturedAt || next.capturedAt || null,
-    reviewedAt: previous.reviewedAt || next.reviewedAt || null,
-    replayedAt: previous.replayedAt || next.replayedAt || null,
-    appliedAt: previous.appliedAt || next.appliedAt || null,
-  };
-}
-
-function quarantineReviewMessage(reviewState = {}) {
-  if (reviewState.status === 'replaying') return 'Replaying selected paths against the current workspace.';
-  if (reviewState.status === 'applying') return 'Applying replayed paths through the active transaction.';
-  const rejected = asArray(reviewState.replay?.rejected || reviewState.apply?.rejected);
-  if (rejected.length) {
-    const paths = uniqueValues(rejected.map((item) => item.path)).join(', ') || 'selected paths';
-    const reasons = uniqueValues(rejected.flatMap((item) => item.reasonCodes || item.reason_codes || item.error)).join(', ') || 'replay rejected';
-    return `Replay blocked for ${paths}: ${reasons}. Refresh the workspace, inspect the changed base, then replay again before applying.`;
-  }
-  return reviewState.error || '';
-}
-
 function formatTime(value) {
   const time = Date.parse(value || '');
   if (!Number.isFinite(time)) return '';
@@ -440,7 +161,7 @@ function statusTone(status) {
   if (['holding', 'blocked', 'denied', 'mayday', 'failed', 'critical'].includes(normalized)) {
     return { background: 'color-mix(in srgb, #ff5757 18%, transparent)', color: 'var(--text-primary)' };
   }
-  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium', 'partially_applied'].includes(normalized)) {
+  if (['pending', 'filed', 'preflight', 'open', 'running', 'warning', 'medium'].includes(normalized)) {
     return { background: 'color-mix(in srgb, #fbbf24 18%, transparent)', color: 'var(--text-primary)' };
   }
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
@@ -460,10 +181,9 @@ function riskTone(level) {
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
 }
 
-function Pill({ children, tone = 'idle', className = '', testId }) {
+function Pill({ children, tone = 'idle', className = '' }) {
   return (
     <span
-      data-testid={testId}
       className={`inline-flex h-6 items-center rounded px-2 text-[11px] font-medium ${className}`}
       style={typeof tone === 'string' ? statusTone(tone) : tone}
     >
@@ -482,7 +202,7 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex h-9 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))' : 'var(--border-subtle)',
         background: active ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'var(--bg-elevated)',
@@ -553,448 +273,9 @@ function MetricsGroup({ title, rows }) {
     <div className="min-w-0">
       <div className="mb-1 text-[11px] font-semibold uppercase" style={{ color: 'var(--text-muted)' }}>{title}</div>
       <div className="min-w-0">
-        {asArray(rows).map((metric, index) => (
-          <MetricRow key={metric.key || metric.label || `${title}-metric-${index}`} metric={metric} />
+        {asArray(rows).map((metric) => (
+          <MetricRow key={metric.key} metric={metric} />
         ))}
-      </div>
-    </div>
-  );
-}
-
-function RunwayOccupancyBoard({ runways }) {
-  const rows = asArray(runways);
-  if (!rows.length) return <EmptyLine>No occupied runways</EmptyLine>;
-  return (
-    <div data-testid="codesite-runway-occupancy" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
-      {rows.map((runway, index) => {
-        const diffPaths = asArray(runway.diffPaths?.length ? runway.diffPaths : runway.route);
-        const pendingInspections = asArray(runway.pendingInspections);
-        const eligibleFlights = asArray(runway.eligibleFlights);
-        return (
-          <div
-            key={`${runway.mutationLeaseId || runway.runway || 'runway'}-${index}`}
-            data-testid="codesite-runway-row"
-            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(136px,0.9fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)]"
-            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
-          >
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate font-medium" title={runway.runway || 'unassigned runway'}>{compact(runway.runway, 'unassigned runway')}</span>
-                <Pill tone={runway.runwayClass === 'A' ? 'holding' : 'active'}>Class {compact(runway.runwayClass, 'C')}</Pill>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <Pill tone="active">{compact(runway.occupiedBy, 'occupied')}</Pill>
-                {runway.mutationLeaseId ? <Pill>{compact(runway.mutationLeaseId, 'lease')}</Pill> : null}
-              </div>
-            </div>
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Diff on runway</div>
-              <PathList paths={diffPaths} empty="no diff yet" maxVisible={3} />
-            </div>
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Pending inspections</div>
-              <PathList paths={pendingInspections} empty="none pending" maxVisible={3} />
-            </div>
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Can land</div>
-              <PathList paths={eligibleFlights} empty="runway locked" maxVisible={3} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function PilotLicenseHealthPanel({ records }) {
-  const rows = asArray(records);
-  if (!rows.length) return <EmptyLine>No pilot licenses on file</EmptyLine>;
-  return (
-    <div data-testid="codesite-pilot-license-health" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
-      {rows.map((record, index) => {
-        const sourceDrift = record.sourceDrift || {};
-        const landingStats = record.landingStats || {};
-        const violationStats = record.violationStats || {};
-        return (
-          <div
-            key={record.key || record.agentSessionId || record.displayCallsign || index}
-            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(124px,0.8fr)_minmax(0,1.15fr)_minmax(0,1fr)_minmax(96px,0.75fr)]"
-            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
-          >
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate font-medium" title={record.displayCallsign || record.agentSessionId || 'agent'}>{compact(record.displayCallsign || record.agentSessionId, 'agent')}</span>
-                <Pill tone={record.status}>{compact(record.status, 'unknown')}</Pill>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <Pill>{compact(record.level, 'Student')}</Pill>
-                {sourceDrift.expired ? <Pill tone="blocked">source drift</Pill> : null}
-                {record.requiredAction ? <Pill tone="holding">action</Pill> : null}
-              </div>
-            </div>
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Authorized airspace</div>
-              <PathList paths={record.authorizedAirspace || []} empty="none filed" maxVisible={3} />
-              <TagList items={[record.dojoLicenseRef, record.dojoProofRef, record.dojoDecisionDigest]} empty="" maxVisible={3} />
-            </div>
-            <div className="min-w-0">
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  ['Landings', `${landingStats.passed || 0}/${landingStats.total || 0}`, (landingStats.failed || 0) ? 'holding' : 'active'],
-                  ['Violations', violationStats.total || 0, (violationStats.critical || 0) ? 'blocked' : ((violationStats.total || 0) ? 'holding' : 'idle')],
-                  ['Radar', asArray(record.requiredRadar).length, asArray(record.requiredRadar).length ? 'active' : 'idle'],
-                ].map(([label, value, tone]) => (
-                  <div key={label} className="min-w-0 border-t pt-1" style={{ borderColor: 'var(--border-subtle)' }}>
-                    <div className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
-                    <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-                      <span className="truncate font-mono text-xs tabular-nums" title={String(value)}>{value}</span>
-                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={riskTone(tone)} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Health reasons</div>
-              <TagList items={record.reasonCodes || []} empty="clear" maxVisible={3} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function FilesystemBoundaryProofPanel({ records }) {
-  const rows = asArray(records);
-  if (!rows.length) return <EmptyLine>No filesystem boundary proofs recorded</EmptyLine>;
-
-  return (
-    <div data-testid="codesite-filesystem-boundary-proof" className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
-      {rows.map((record, index) => {
-        const processChain = asArray(record.process?.ancestry);
-        const evidenceRefs = uniqueValues([
-          ...asArray(record.evidenceRefs),
-          ...asArray(record.evidence?.refs),
-        ]);
-        const inspectedLeaseIds = uniqueValues(asArray(record.inspectedLeases).map((lease) => lease.mutationLeaseId));
-        const leaseLabel = record.mutationLeaseId
-          || record.requestedMutationLeaseId
-          || record.lease?.id
-          || inspectedLeaseIds[0]
-          || record.leaseState
-          || 'no_active_clearance';
-        const leaseTone = record.mutationLeaseId ? 'active' : 'holding';
-        return (
-          <div
-            key={record.proofId || `${record.eventId || 'event'}-${index}`}
-            data-testid="codesite-filesystem-boundary-proof-row"
-            className="grid gap-3 border-t px-3 py-2 text-xs first:border-t-0 lg:grid-cols-[minmax(126px,0.78fr)_minmax(0,1.18fr)_minmax(0,1.05fr)_minmax(0,1fr)]"
-            style={{ borderColor: 'var(--border-subtle)', background: index % 2 ? 'var(--bg-surface)' : 'var(--bg-editor)' }}
-          >
-            <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                <Pill tone={record.proofComplete ? record.disposition : 'holding'}>{record.proofComplete ? 'complete' : 'incomplete'}</Pill>
-                <Pill tone={record.disposition}>{compact(record.disposition, 'write_denied')}</Pill>
-              </div>
-              <div className="mt-1 truncate font-medium" title={record.displayCallsign || record.boundary?.source || 'CodeSiteFS'}>
-                {compact(record.displayCallsign || record.boundary?.source, 'CodeSiteFS')}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <Pill>{compact(record.boundary?.tool || record.boundary?.operation, 'write')}</Pill>
-                {record.quarantine?.quarantineId ? <Pill tone="holding">quarantine</Pill> : null}
-              </div>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Path and lease</div>
-              <ProofValueList values={[record.path].filter(Boolean)} empty="missing path" maxVisible={1} />
-              <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-                <Pill tone={leaseTone}>{compact(record.leaseState, 'no_active_clearance')}</Pill>
-                <code className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)', color: 'var(--text-secondary)' }} title={leaseLabel}>
-                  {leaseLabel}
-                </code>
-                {inspectedLeaseIds.length ? <Pill tone="idle">{inspectedLeaseIds.length} inspected</Pill> : null}
-              </div>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Reason and process</div>
-              <TagList items={record.reasonCodes || []} empty="missing reason" maxVisible={3} />
-              <div className="mt-1 truncate font-mono text-[10px]" style={{ color: processChain.length ? 'var(--text-secondary)' : 'var(--text-muted)' }} title={record.process?.display || processChain.join(' <- ')}>
-                {processChain.length ? processChain.join(' <- ') : 'missing process ancestry'}
-              </div>
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Evidence</div>
-              <ProofValueList values={evidenceRefs} empty="missing evidence" maxVisible={3} />
-              <div className="mt-1 flex flex-wrap gap-1">
-                {asArray(record.missingProofFields).map((field) => <Pill key={field} tone="holding">missing {field}</Pill>)}
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ProofValueList({ values, empty = 'none', maxVisible = 3 }) {
-  const list = asArray(values);
-  const visible = list.slice(0, maxVisible);
-  if (!visible.length) {
-    return <span style={{ color: 'var(--text-muted)' }}>{empty}</span>;
-  }
-  return (
-    <div className="flex min-w-0 max-w-full flex-wrap gap-1">
-      {visible.map((value, index) => (
-        <code
-          key={`${value}-${index}`}
-          className="block min-w-0 max-w-full whitespace-normal break-all rounded border px-1.5 py-0.5 text-[10px] leading-4"
-          style={{
-            borderColor: 'var(--border-subtle)',
-            background: 'var(--bg-surface)',
-            color: 'var(--text-secondary)',
-            overflow: 'visible',
-            textOverflow: 'clip',
-            whiteSpace: 'normal',
-            wordBreak: 'break-all',
-          }}
-          title={value}
-        >
-          {value}
-        </code>
-      ))}
-      {list.length > visible.length ? (
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>+{list.length - visible.length}</span>
-      ) : null}
-    </div>
-  );
-}
-
-function QuarantineReviewPanel({
-  records,
-  fetchError,
-  selectedId,
-  selectedPaths,
-  reviewState,
-  onSelect,
-  onTogglePath,
-  onReplay,
-  onApply,
-  disabled,
-}) {
-  const rows = asArray(records);
-  const selected = rows.find((record) => record.quarantineId === selectedId) || rows[0] || null;
-  const changes = asArray(selected?.changes);
-  const replayOk = reviewState.replay?.ok === true && reviewState.replayPathKey === selectedPathKey(selectedPaths);
-  const selectedSet = new Set(selectedPaths);
-  const reviewMessage = quarantineReviewMessage(reviewState);
-  const selectedStatus = selected ? quarantineDisplayStatus(selected, reviewState) : 'reviewable';
-  const selectedRemainingPaths = selected ? quarantineRemainingPaths(selected, reviewState) : [];
-  const selectedLifecycle = selected ? {
-    ...(selected.lifecycle || {}),
-    reviewedAt: reviewState.replay?.timelineEvents?.reviewed?.createdAt || selected.lifecycle?.reviewedAt,
-    replayedAt: reviewState.replay?.ok === true
-      ? reviewState.replay?.timelineEvents?.replayed?.createdAt || selected.lifecycle?.replayedAt
-      : selected.lifecycle?.replayedAt,
-    appliedAt: reviewState.apply?.timelineEvent?.createdAt || reviewState.apply?.timelineEvents?.applied?.createdAt || selected.lifecycle?.appliedAt,
-  } : {};
-
-  if (!rows.length) {
-    return fetchError ? (
-      <div data-testid="codesite-quarantine-fetch-error" className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
-        Quarantine manifests unavailable: {compact(fetchError.message, 'fetch failed')}
-      </div>
-    ) : <EmptyLine>No CodeSiteFS quarantines waiting for review</EmptyLine>;
-  }
-
-  return (
-    <div data-testid="codesite-quarantine-review" className="grid min-w-0 gap-3 xl:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]">
-      <div className="min-w-0 overflow-hidden rounded border" style={{ borderColor: 'var(--border-subtle)' }}>
-        {rows.map((record) => {
-          const active = selected?.quarantineId === record.quarantineId;
-          const displayStatus = active ? quarantineDisplayStatus(record, reviewState) : quarantineDisplayStatus(record);
-          return (
-            <button
-              key={record.quarantineId}
-              type="button"
-              data-testid="codesite-quarantine-row"
-              aria-pressed={active}
-              onClick={() => onSelect(record)}
-              className="block w-full border-t px-3 py-2 text-left text-xs first:border-t-0"
-              style={{
-                borderColor: 'var(--border-subtle)',
-                background: active ? 'color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))' : 'var(--bg-surface)',
-                color: 'var(--text-primary)',
-              }}
-            >
-              <div className="flex min-w-0 items-center justify-between gap-2">
-                <code className="min-w-0 truncate text-[10px]" title={record.quarantineId}>{record.quarantineId}</code>
-                <Pill tone={displayStatus}>{displayStatus}</Pill>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <Pill>{compact(record.displayCallsign, 'codesitefs')}</Pill>
-                <Pill>{asArray(record.changes).length || asArray(record.paths).length} paths</Pill>
-              </div>
-              <div className="mt-1"><PathList paths={record.paths} empty="no paths" maxVisible={2} /></div>
-            </button>
-          );
-        })}
-      </div>
-
-      <div
-        data-testid="codesite-quarantine-detail"
-        className="min-w-0 overflow-hidden rounded border p-3 text-xs"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
-      >
-        {!selected ? (
-          <EmptyLine>Select a quarantine</EmptyLine>
-        ) : (
-          <div className="space-y-3">
-            <div data-testid="codesite-quarantine-summary" className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-              <div className="min-w-0">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <code className="min-w-0 truncate text-[11px]" title={selected.quarantineId}>{selected.quarantineId}</code>
-                  <Pill tone={selectedStatus}>{selectedStatus}</Pill>
-                  <Pill>{selectedPaths.length} selected</Pill>
-                  {selectedRemainingPaths.length ? <Pill tone="holding">{selectedRemainingPaths.length} pending</Pill> : null}
-                </div>
-                <div className="mt-1 grid gap-1 text-[11px] sm:grid-cols-2">
-                  <div className="min-w-0">
-                    <span style={{ color: 'var(--text-muted)' }}>Transaction </span>
-                    <code className="truncate" title={selected.transactionId}>{compact(selected.transactionId, 'none')}</code>
-                  </div>
-                  <div className="min-w-0">
-                    <span style={{ color: 'var(--text-muted)' }}>Clearance </span>
-                    <code className="truncate" title={selected.mutationLeaseId}>{compact(selected.mutationLeaseId, 'none')}</code>
-                  </div>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-1 sm:justify-end">
-                <IconButton
-                  title="Replay selected quarantine paths"
-                  onClick={() => onReplay(selected)}
-                  disabled={disabled || !selected.transactionId || selectedPaths.length === 0}
-                  testId="codesite-quarantine-replay-button"
-                >
-                  <FileSearch className="h-3.5 w-3.5" />
-                  Replay
-                </IconButton>
-                <IconButton
-                  title="Apply replayed quarantine paths"
-                  onClick={() => onApply(selected)}
-                  disabled={disabled || !replayOk || selectedPaths.length === 0}
-                  variant={replayOk ? 'primary' : 'neutral'}
-                  testId="codesite-quarantine-apply-button"
-                >
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Apply
-                </IconButton>
-              </div>
-            </div>
-
-            {reviewMessage ? (
-              <div role="alert" aria-live="polite" className="rounded border px-2 py-1 text-[11px]" style={{ borderColor: 'color-mix(in srgb, #ff5757 40%, var(--border-subtle))' }}>
-                {reviewMessage}
-              </div>
-            ) : null}
-
-            <div className="space-y-1">
-              {(changes.length ? changes : selected.paths.map((path) => ({ path }))).map((change) => {
-                const path = quarantinePath(change);
-                const checked = selectedSet.has(path);
-                return (
-                  <label
-                    key={`${selected.quarantineId}-${path}-${quarantineEvidenceRef(change)}`}
-                    data-testid="codesite-quarantine-change-row"
-                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded border px-2 py-1.5"
-                    style={{
-                      borderColor: checked ? 'color-mix(in srgb, var(--accent-primary) 44%, var(--border-subtle))' : 'var(--border-subtle)',
-                      background: checked ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-editor))' : 'var(--bg-editor)',
-                    }}
-                  >
-                    <input
-                      data-testid="codesite-quarantine-path-toggle"
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => onTogglePath(path)}
-                      className="mt-1 h-4 w-4"
-                    />
-                    <div className="min-w-0">
-                      <div className="flex min-w-0 flex-wrap items-center gap-1">
-                        <code className="min-w-0 truncate text-[10px]" title={path}>{path}</code>
-                        <Pill>{compact(change.kind || change.change_kind, 'modified')}</Pill>
-                      </div>
-                      <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                        <PathList paths={[quarantineDigest(change, 'beforeDigest'), quarantineDigest(change, 'expectedDigest')].filter(Boolean)} empty="no base digest" maxVisible={2} />
-                        <PathList paths={[quarantineDigest(change, 'afterDigest'), quarantineEvidenceRef(change)].filter(Boolean)} empty="no after digest" maxVisible={2} />
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-
-            {asArray(selected.symlinkSanitization?.sanitized).length ? (
-              <div data-testid="codesite-quarantine-symlink-guard" className="rounded border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, #fbbf24 36%, var(--border-subtle))', background: 'var(--bg-editor)' }}>
-                <div className="mb-1 text-[11px] font-medium">Symlink Escape Guard</div>
-                {selected.symlinkSanitization.sanitized.map((item) => (
-                  <div key={`${item.path}-${item.resolvedTarget}`} className="grid gap-1 border-t py-1 first:border-t-0 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]" style={{ borderColor: 'var(--border-subtle)' }}>
-                    <code className="truncate text-[10px]" title={item.path}>{item.path}</code>
-                    <code className="truncate text-[10px]" title={item.resolvedTarget || item.target}>{item.resolvedTarget || item.target}</code>
-                    <Pill tone="holding">{compact(item.reason, 'replaced')}</Pill>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            {reviewState.replay ? (
-              <div data-testid="codesite-quarantine-replay-result" className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="font-medium">Replay result</span>
-                  <Pill tone={reviewState.replay.ok ? 'active' : 'failed'}>{reviewState.replay.ok ? 'replayable' : 'blocked'}</Pill>
-                </div>
-                <PathList paths={asArray(reviewState.replay.replay).map((item) => item.path)} empty="no replayed paths" maxVisible={8} />
-                {asArray(reviewState.replay.rejected).length ? (
-                  <div className="mt-2 space-y-1">
-                    {reviewState.replay.rejected.map((item, index) => (
-                      <div key={`${item.path || 'reject'}-${index}`} data-testid="codesite-quarantine-rejected-row" className="grid gap-2 rounded border px-2 py-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))' }}>
-                        <code className="truncate text-[10px]" title={item.path}>{compact(item.path, 'path')}</code>
-                        <PathList paths={item.reasonCodes || item.reason_codes || [item.error].filter(Boolean)} empty="rejected" maxVisible={4} />
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {reviewState.apply ? (
-              <div data-testid="codesite-quarantine-apply-result" className="rounded border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, #4ade80 36%, var(--border-subtle))', background: 'var(--bg-editor)' }}>
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="font-medium">Apply result</span>
-                  <Pill tone={reviewState.apply.ok ? 'active' : 'failed'}>{reviewState.apply.ok ? 'applied' : 'blocked'}</Pill>
-                </div>
-                <PathList paths={asArray(reviewState.apply.applied).map((item) => item.path)} empty="no applied paths" maxVisible={8} />
-              </div>
-            ) : null}
-
-            <div data-testid="codesite-quarantine-timeline" className="grid gap-1 text-[11px] sm:grid-cols-4">
-              {[
-                ['Captured', selectedLifecycle.capturedAt],
-                ['Reviewed', selectedLifecycle.reviewedAt],
-                ['Replayed', selectedLifecycle.replayedAt],
-                ['Applied', selectedLifecycle.appliedAt],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded border px-2 py-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-                  <div style={{ color: 'var(--text-muted)' }}>{label}</div>
-                  <div className="truncate font-mono text-[10px]" title={value || ''}>{formatTime(value) || 'pending'}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1009,9 +290,9 @@ function PathList({ paths, empty = 'none', maxVisible = 4 }) {
 
   return (
     <div className="flex min-w-0 max-w-full flex-wrap items-start gap-1 self-start overflow-hidden">
-      {visible.map((path, index) => (
+      {visible.map((path) => (
         <code
-          key={`${path}-${index}`}
+          key={path}
           className="inline-block min-w-0 truncate rounded border px-1.5 py-0.5 text-[10px] leading-4"
           style={{
             maxWidth: 'min(100%, 18rem)',
@@ -1038,9 +319,9 @@ function TagList({ items, empty = null, maxVisible = 5 }) {
 
   return (
     <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-      {visible.map((item, index) => (
+      {visible.map((item) => (
         <code
-          key={`${item}-${index}`}
+          key={item}
           className="max-w-full truncate rounded border px-1.5 py-0.5 text-[10px]"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)', color: 'var(--text-secondary)' }}
           title={item}
@@ -1243,54 +524,6 @@ function replayTailFromNewestFirst(events) {
   return events.slice(0, 7).reverse();
 }
 
-function causalReplayHandovers(incidents, proofBundles) {
-  return asArray(incidents)
-    .filter((incident) => incident?.replayDigest || incident?.incidentReplay)
-    .map((incident) => {
-      const replay = incident.incidentReplay || {};
-      const transactionId = replay.transaction?.id
-        || replay.transactionId
-        || asArray(replay.causalEvents).map((event) => event.transactionId || event.details?.transactionId).find(Boolean)
-        || null;
-      const proofBundle = asArray(proofBundles).find((bundle) => (
-        bundle.incidentReplayDigest === incident.replayDigest
-        || bundle.id === replay.proofBundle?.id
-        || (transactionId && bundle.transactionId === transactionId)
-      )) || null;
-      const codeSiteBlackBox = proofBundle?.trailers?.['CodeSite-Black-Box']
-        || proofBundle?.incidentReplayDigest
-        || incident.replayDigest
-        || replay.proofBundle?.incidentReplayDigest
-        || null;
-      const exportPaths = uniqueValues([
-        ...asArray(replay.handover?.exportPaths),
-        `incidents/incident-replay-${incident.id}.jsonl`,
-        'handover.md',
-        proofBundle?.id && `proof-bundles/${proofBundle.id}.proof.json`,
-        proofBundle?.id && `proof-bundles/${proofBundle.id}.trailers.txt`,
-      ]);
-      return {
-        incident,
-        replay,
-        transactionId,
-        proofBundle,
-        codeSiteBlackBox,
-        exportPaths,
-        causalEvents: asArray(replay.causalEvents),
-        completeness: replay.completeness || null,
-      };
-    })
-    .sort((left, right) => Date.parse(right.incident.createdAt || 0) - Date.parse(left.incident.createdAt || 0));
-}
-
-function replayCompletenessTone(completeness) {
-  const score = Number(completeness?.score);
-  if (!Number.isFinite(score)) return 'pending';
-  if (score >= 0.75) return 'active';
-  if (score >= 0.45) return 'warning';
-  return 'blocked';
-}
-
 function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
@@ -1434,8 +667,8 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                       <PathList paths={zonePaths(zone)} empty="route pending" />
                     </div>
                     <div className="col-start-2 row-start-1 flex min-w-0 justify-end gap-1 sm:col-auto sm:row-auto">
-                      {relatedFlights.length ? relatedFlights.map((flight, flightIndex) => (
-                        <Pill key={flight.id || flight.displayCallsign || `related-flight-${flightIndex}`} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
+                      {relatedFlights.length ? relatedFlights.map((flight) => (
+                        <Pill key={flight.id || flight.displayCallsign} tone={flight.status} className={hasRisk ? 'motion-safe:animate-pulse' : ''}>
                           {compact(flight.displayCallsign, 'agent')}
                         </Pill>
                       )) : <Pill>clear</Pill>}
@@ -1449,8 +682,8 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
                 <span className="font-medium">Landing queue</span>
                 <Pill tone={landingRuns.some((run) => String(run.status).includes('failed')) ? 'failed' : 'active'}>{landingRuns.length}</Pill>
               </div>
-              {landingRuns.length ? landingRuns.map((run, runIndex) => (
-                <div key={run.id || `landing-run-${runIndex}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5">
+              {landingRuns.length ? landingRuns.map((run) => (
+                <div key={run.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5">
                   <span className="min-w-0 truncate">{compact(run.displayCallsign, 'inspection')}</span>
                   <span className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(run.status, 'pending')}</span>
                 </div>
@@ -1500,15 +733,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [exportResult, setExportResult] = useState(null);
   const [lineInspector, setLineInspector] = useState({ status: 'idle', row: null, rows: [], error: null });
   const [simulationRun, setSimulationRun] = useState({ status: 'idle', result: null, error: null });
-  const [quarantineReview, setQuarantineReview] = useState({
-    selectedId: null,
-    selectedPaths: [],
-    status: 'idle',
-    replay: null,
-    replayPathKey: '',
-    apply: null,
-    error: null,
-  });
 
   const loadRadar = useCallback(async ({ silent = false, projectId = selectedProjectId } = {}) => {
     if (!workspaceSlug) {
@@ -1615,29 +839,17 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const metricSections = metrics?.sections || {};
   const metricSummary = metrics?.summary || {};
   const hasProjects = radarState.projects.length > 0;
-  const collisionForecast = radarState.collisionForecast || controlState?.collisionForecast || {};
-  const risks = asArray(collisionForecast.risks);
-  const runwayOccupancy = asArray(collisionForecast.runwayOccupancy || controlState?.collisionForecast?.runwayOccupancy);
+  const risks = radarState.collisionForecast.risks;
   const activeFlights = asArray(controlState?.activeFlights);
   const activeLeases = asArray(controlState?.activeMutationLeases);
   const activeTransactions = asArray(controlState?.activeTransactions);
-  const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth);
-  const filesystemBoundaryProofs = asArray(controlState?.filesystemBoundaryProofs);
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
   const incidents = asArray(currentProject?.incidents);
-  const replayHandovers = useMemo(() => causalReplayHandovers(incidents, proofBundles), [incidents, proofBundles]);
   const inboxItems = asArray(currentProject?.inboxItems);
   const counterfactualRuns = asArray(currentProject?.counterfactualRuns);
   const artifacts = asArray(radarState.artifactPreview?.files);
   const events = asArray(radarState.events).slice(-12).reverse();
-  const allEvents = asArray(radarState.events);
-  const quarantineRecords = useMemo(() => mergeQuarantineRecords(
-    radarState.quarantines,
-    controlState?.pendingQuarantines,
-    quarantineRecordsFromEvents(allEvents),
-  ), [allEvents, controlState?.pendingQuarantines, radarState.quarantines]);
-  const selectedQuarantine = quarantineRecords.find((record) => record.quarantineId === quarantineReview.selectedId) || quarantineRecords[0] || null;
   const zones = asArray(currentProject?.zonePolicy?.zones);
   const noFlyZones = asArray(currentProject?.zonePolicy?.noFlyZones || currentProject?.zonePolicy?.noFly)
     .map((zone) => (typeof zone === 'string' ? zone : zone?.pattern || zone?.path || zone?.id))
@@ -1686,35 +898,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
   useEffect(() => {
     setLineInspector({ status: 'idle', row: null, rows: [], error: null });
     setSimulationRun({ status: 'idle', result: null, error: null });
-    setQuarantineReview({
-      selectedId: null,
-      selectedPaths: [],
-      status: 'idle',
-      replay: null,
-      replayPathKey: '',
-      apply: null,
-      error: null,
-    });
   }, [currentProject?.id]);
-
-  useEffect(() => {
-    if (!selectedQuarantine) return;
-    if (quarantineReview.selectedId === selectedQuarantine.quarantineId) return;
-    setQuarantineReview((current) => ({
-      ...current,
-      selectedId: selectedQuarantine.quarantineId,
-      selectedPaths: [],
-      replay: null,
-      replayPathKey: '',
-      apply: null,
-      error: null,
-    }));
-  }, [quarantineReview.selectedId, selectedQuarantine]);
 
   const handleInspectLine = useCallback(async (row) => {
     if (!row?.filePath) return;
     const range = lineRange(row);
-    setLineInspector({ status: 'loading', row, rows: [], error: null });
+    setLineInspector({ status: 'loading', row, rows: [row], error: null });
     try {
       const rows = await fetchCodeSiteLineProvenance(workspaceSlug, {
         projectId: currentProject?.id,
@@ -1733,109 +922,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
       });
     }
   }, [currentProject?.id, workspaceSlug]);
-
-  const handleSelectQuarantine = useCallback((record) => {
-    setQuarantineReview({
-      selectedId: record?.quarantineId || null,
-      selectedPaths: [],
-      status: 'idle',
-      replay: null,
-      replayPathKey: '',
-      apply: null,
-      error: null,
-    });
-  }, []);
-
-  const handleToggleQuarantinePath = useCallback((path) => {
-    if (!path) return;
-    setQuarantineReview((current) => {
-      const currentPaths = new Set(current.selectedPaths);
-      if (currentPaths.has(path)) currentPaths.delete(path);
-      else currentPaths.add(path);
-      return {
-        ...current,
-        selectedPaths: [...currentPaths],
-        replay: null,
-        replayPathKey: '',
-        apply: null,
-        error: null,
-      };
-    });
-  }, []);
-
-  const handleReplayQuarantine = useCallback(async (record) => {
-    if (!workspaceSlug || !record?.quarantineId || acting) return;
-    const paths = quarantineReview.selectedPaths;
-    if (!paths.length) {
-      setQuarantineReview((current) => ({ ...current, error: 'Select at least one quarantined path before replay.' }));
-      return;
-    }
-    setActing(true);
-    setQuarantineReview((current) => ({ ...current, status: 'replaying', error: null, replay: null, replayPathKey: selectedPathKey(paths), apply: null }));
-    try {
-      const result = await replayCodeSiteQuarantine(workspaceSlug, record.quarantineId, {
-        transactionId: record.transactionId,
-        mutationLeaseId: record.mutationLeaseId,
-        paths,
-      });
-      setQuarantineReview((current) => ({
-        ...current,
-        status: 'replayed',
-        replay: result,
-        replayPathKey: selectedPathKey(paths),
-        error: null,
-      }));
-      void loadRadar({ silent: true, projectId: radarState.selectedProjectId }).catch((nextError) => {
-        setError({ status: nextError.status, message: nextError.message || 'codesite_quarantine_refresh_failed' });
-      });
-    } catch (nextError) {
-      setQuarantineReview((current) => ({
-        ...current,
-        status: 'error',
-        replay: nextError.body || null,
-        replayPathKey: selectedPathKey(paths),
-        error: nextError.message || 'codesite_quarantine_replay_failed',
-      }));
-    } finally {
-      setActing(false);
-    }
-  }, [acting, loadRadar, quarantineReview.selectedPaths, radarState.selectedProjectId, workspaceSlug]);
-
-  const handleApplyQuarantine = useCallback(async (record) => {
-    if (!workspaceSlug || !record?.quarantineId || acting) return;
-    const paths = quarantineReview.selectedPaths;
-    if (!paths.length || quarantineReview.replay?.ok !== true || quarantineReview.replayPathKey !== selectedPathKey(paths)) {
-      setQuarantineReview((current) => ({ ...current, error: 'Replay the selected quarantined paths before apply.' }));
-      return;
-    }
-    setActing(true);
-    setQuarantineReview((current) => ({ ...current, status: 'applying', error: null, apply: null }));
-    try {
-      const result = await applyCodeSiteQuarantine(workspaceSlug, record.quarantineId, {
-        transactionId: record.transactionId,
-        mutationLeaseId: record.mutationLeaseId,
-        paths,
-      });
-      setQuarantineReview((current) => ({
-        ...current,
-        status: 'applied',
-        apply: result,
-        error: null,
-      }));
-      void loadRadar({ silent: true, projectId: radarState.selectedProjectId }).catch((nextError) => {
-        setError({ status: nextError.status, message: nextError.message || 'codesite_quarantine_refresh_failed' });
-      });
-    } catch (nextError) {
-      setQuarantineReview((current) => ({
-        ...current,
-        status: 'error',
-        apply: nextError.body || null,
-        error: nextError.message || 'codesite_quarantine_apply_failed',
-      }));
-    } finally {
-      setActing(false);
-    }
-  }, [acting, loadRadar, quarantineReview.replay, quarantineReview.replayPathKey, quarantineReview.selectedPaths, radarState.selectedProjectId, workspaceSlug]);
 
   const latestStatus = useMemo(() => {
     if (error?.status === 401) return 'auth';
@@ -1873,11 +959,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 data-testid="codesite-project-select"
                 value={radarState.selectedProjectId || ''}
                 onChange={(event) => setSelectedProjectId(event.target.value || null)}
-                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
+                className="h-8 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
               >
-                {radarState.projects.map((project, index) => (
-                  <option key={project.id || project.slug || `project-${index}`} value={project.id}>{project.title}</option>
+                {radarState.projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.title}</option>
                 ))}
               </select>
             </div>
@@ -1953,7 +1039,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <Metric label="Leases" value={radarState.counts.activeMutationLeases} />
                   <Metric label="Transactions" value={radarState.counts.activeTransactions} />
                   <Metric label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} />
-                  <Metric label="Risk" value={compact(collisionForecast.riskLevel, 'unknown')} tone={collisionForecast.riskLevel} />
+                  <Metric label="Risk" value={compact(radarState.collisionForecast.riskLevel, 'unknown')} tone={radarState.collisionForecast.riskLevel} />
                 </div>
               </div>
 
@@ -1993,42 +1079,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 />
               </Section>
 
-              <Section title="Runway Occupancy" icon={Route} right={<Pill tone={runwayOccupancy.length ? 'holding' : 'active'}>{runwayOccupancy.length}</Pill>}>
-                <RunwayOccupancyBoard runways={runwayOccupancy} />
-              </Section>
-
-              <Section
-                title="Pilot License Health"
-                icon={ShieldCheck}
-                right={<Pill tone={pilotLicenseHealth.some((record) => record.status !== 'active') ? 'holding' : 'active'}>{pilotLicenseHealth.length}</Pill>}
-              >
-                <PilotLicenseHealthPanel records={pilotLicenseHealth} />
-              </Section>
-
-              <Section
-                title="Filesystem Boundary Proofs"
-                icon={FileSearch}
-                right={<Pill tone={filesystemBoundaryProofs.some((record) => !record.proofComplete) ? 'holding' : (filesystemBoundaryProofs.length ? 'active' : 'idle')}>{filesystemBoundaryProofs.length}</Pill>}
-              >
-                <FilesystemBoundaryProofPanel records={filesystemBoundaryProofs} />
-              </Section>
-
-              <Section title="Quarantine Review" icon={FileSearch} right={<Pill tone={quarantineRecords.length ? 'holding' : 'active'}>{quarantineRecords.length}</Pill>}>
-                <QuarantineReviewPanel
-                  records={quarantineRecords}
-                  fetchError={radarState.quarantineError}
-                  selectedId={selectedQuarantine?.quarantineId || quarantineReview.selectedId}
-                  selectedPaths={quarantineReview.selectedPaths}
-                  reviewState={quarantineReview}
-                  onSelect={handleSelectQuarantine}
-                  onTogglePath={handleToggleQuarantinePath}
-                  onReplay={handleReplayQuarantine}
-                  onApply={handleApplyQuarantine}
-                  disabled={acting}
-                />
-              </Section>
-
-              <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(collisionForecast.riskLevel)}>{compact(collisionForecast.riskLevel, 'unknown')}</Pill>}>
+              <Section title="Collision Forecast" icon={AlertTriangle} right={<Pill tone={riskTone(radarState.collisionForecast.riskLevel)}>{compact(radarState.collisionForecast.riskLevel, 'unknown')}</Pill>}>
                 {risks.length === 0 ? (
                   <EmptyLine>No forecasted collisions</EmptyLine>
                 ) : (
@@ -2060,7 +1111,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 <div data-testid="codesite-tower-simulator" className="space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0 text-xs" style={{ color: 'var(--text-muted)' }}>
-                      Compare route strategies against repo policy, inspection evidence, incidents, and active clearances.
+                      Compare route strategies against repo policy, tests, incidents, and active clearances.
                     </div>
                     <IconButton
                       title="Run Tower simulation"
@@ -2088,11 +1139,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <Metric label="Confidence" value={formatPercent(selectedUniverse?.confidence)} />
                       </div>
                       <div className="space-y-1">
-                        {towerUniverses.map((universe, index) => {
+                        {towerUniverses.map((universe) => {
                           const selected = universe.strategy === towerSimulation?.selected;
                           return (
                             <div
-                              key={universe.strategy || universe.id || `tower-universe-${index}`}
+                              key={universe.strategy}
                               data-testid="codesite-tower-universe"
                               className="rounded border px-3 py-2 text-xs"
                               style={{
@@ -2168,8 +1219,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No active flights</EmptyLine>
                 ) : (
                   <div>
-                    {activeFlights.map((plan, index) => (
-                      <Row key={plan.id || plan.displayCallsign || `flight-${index}`} testId={`codesite-flight-${plan.id || index}`}>
+                    {activeFlights.map((plan) => (
+                      <Row key={plan.id} testId={`codesite-flight-${plan.id}`}>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{compact(plan.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(plan.domain, 'implementation')}</div>
@@ -2190,8 +1241,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No active clearances</EmptyLine>
                 ) : (
                   <div>
-                    {activeLeases.map((lease, index) => (
-                      <Row key={lease.id || lease.displayCallsign || `lease-${index}`}>
+                    {activeLeases.map((lease) => (
+                      <Row key={lease.id}>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{compact(lease.displayCallsign, 'agent')}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(lease.expiresAt) || 'open'}</div>
@@ -2208,14 +1259,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             ]}
                             empty=""
                           />
-                          <TagList
-                            items={[
-                              lease.pilotLicenseHealth?.status ? `pilot:${lease.pilotLicenseHealth.status}` : null,
-                              lease.pilotLicenseHealth?.level ? `level:${lease.pilotLicenseHealth.level}` : null,
-                              lease.pilotLicenseRequirement?.minimumLevel ? `min:${lease.pilotLicenseRequirement.minimumLevel}` : null,
-                            ]}
-                            empty=""
-                          />
                         </div>
                         <div className="justify-self-end"><Pill tone={lease.status}>{lease.status}</Pill></div>
                       </Row>
@@ -2229,8 +1272,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No open transactions</EmptyLine>
                 ) : (
                   <div>
-                    {activeTransactions.map((transaction, index) => (
-                      <Row key={transaction.id || `transaction-${index}`}>
+                    {activeTransactions.map((transaction) => (
+                      <Row key={transaction.id}>
                         <div className="min-w-0">
                           <div className="truncate font-mono text-[11px]">{transaction.id}</div>
                           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(transaction.openedAt)}</div>
@@ -2241,8 +1284,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="justify-self-end"><Pill tone={transaction.status}>{transaction.status}</Pill></div>
                       </Row>
                     ))}
-                    {proofBundles.slice(-3).reverse().map((bundle, index) => (
-                      <div key={bundle.id || `proof-bundle-${index}`} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
+                    {proofBundles.slice(-3).reverse().map((bundle) => (
+                      <div key={bundle.id} className="border-t py-2 first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
                         <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2 text-xs">
                           <div className="min-w-0">
                             <div className="truncate font-mono text-[11px]">{bundle.id}</div>
@@ -2284,8 +1327,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No inspections or incidents</EmptyLine>
                 ) : (
                   <div className="space-y-2">
-                    {inspectionRuns.slice(-3).reverse().map((run, index) => (
-                      <div key={run.id || `inspection-run-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {inspectionRuns.slice(-3).reverse().map((run) => (
+                      <div key={run.id} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate">{compact(run.displayCallsign, 'inspection')}</span>
                           <Pill tone={run.status}>{run.status}</Pill>
@@ -2301,8 +1344,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         <div className="mt-1"><PathList paths={run.evidenceRefs || []} empty="no evidence refs" /></div>
                       </div>
                     ))}
-                    {incidents.slice(-3).reverse().map((incident, index) => (
-                      <div key={incident.id || `incident-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
+                    {incidents.slice(-3).reverse().map((incident) => (
+                      <div key={incident.id} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, #ff5757 36%, var(--border-subtle))', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate">{compact(incident.category, 'incident')}</span>
                           <Pill tone={incident.severity}>{incident.severity}</Pill>
@@ -2321,84 +1364,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
-              <Section title="Causal Replay Handover" icon={ScrollText} right={<Pill tone={replayHandovers.length ? replayCompletenessTone(replayHandovers[0].completeness) : 'pending'}>{replayHandovers.length}</Pill>}>
-                <div data-testid="codesite-causal-replay-handover" className="min-w-0">
-                  {replayHandovers.length === 0 ? (
-                    <EmptyLine>No black-box handover closed yet</EmptyLine>
-                  ) : (
-                    <div className="space-y-2">
-                      {replayHandovers.slice(0, 2).map((handover, index) => {
-                        const score = Number(handover.completeness?.score);
-                        const eventTypes = handover.causalEvents.map((event) => event.type).filter(Boolean);
-                        const latestEvents = handover.causalEvents.slice(-6);
-                        return (
-                          <div key={handover.incident.id || handover.transactionId || `handover-${index}`} className="rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
-                            <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                              <div className="min-w-0">
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <span className="min-w-0 truncate font-medium">{compact(handover.transactionId, handover.incident.category)}</span>
-                                  <Pill tone={handover.incident.severity}>{handover.incident.severity}</Pill>
-                                  <Pill tone={replayCompletenessTone(handover.completeness)}>
-                                    {Number.isFinite(score) ? formatPercent(score) : 'pending'}
-                                  </Pill>
-                                </div>
-                                <div className="mt-1 grid min-w-0 gap-1 sm:grid-cols-3">
-                                  <div className="min-w-0">
-                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Replay digest</div>
-                                    <div className="break-all font-mono text-[10px]" title={handover.incident.replayDigest || 'missing'}>
-                                      {compact(handover.incident.replayDigest, 'missing')}
-                                    </div>
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Proof bundle</div>
-                                    <div className="break-all font-mono text-[10px]" title={handover.proofBundle?.id || 'none'}>
-                                      {compact(handover.proofBundle?.id, 'none')}
-                                    </div>
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>CodeSite-Black-Box</div>
-                                    <div className="break-all font-mono text-[10px]" title={handover.codeSiteBlackBox || 'missing'}>
-                                      {compact(handover.codeSiteBlackBox, 'missing')}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="min-w-0 md:w-44">
-                                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Export refs</div>
-                                <PathList paths={handover.exportPaths} empty="no export refs" maxVisible={4} />
-                              </div>
-                            </div>
-                            <div className="mt-2 grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-                              <div className="min-w-0 space-y-1">
-                                <div className="text-[10px] uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>Coverage</div>
-                                <PathList paths={handover.completeness?.presentEventTypes || eventTypes} empty="no present event types" maxVisible={6} />
-                                <PathList paths={handover.completeness?.missingEventTypes || []} empty="no missing event types" maxVisible={6} />
-                              </div>
-                              <div className="min-w-0">
-                                <div className="mb-1 text-[10px] uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>Causal timeline</div>
-                                {latestEvents.length === 0 ? (
-                                  <EmptyLine>No replay events indexed</EmptyLine>
-                                ) : (
-                                  <div className="space-y-1">
-                                    {latestEvents.map((event, index) => (
-                                      <div key={`${handover.incident.id}-${event.eventId || index}`} className="grid min-h-7 grid-cols-[40px_minmax(0,1fr)_minmax(72px,auto)] items-center gap-2 rounded border px-2 py-1" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-                                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{event.logicalTime || index + 1}</span>
-                                        <span className="min-w-0 truncate">{compact(event.type, 'event')}</span>
-                                        <span className="min-w-0 truncate text-right font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{compact(event.path || event.displayCallsign, '')}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </Section>
-
               <Section title="Artifact Projection" icon={FileJson} right={<Pill>{artifacts.length}</Pill>}>
                 {exportResult ? (
                   <div className="mb-2 rounded border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
@@ -2409,8 +1374,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No artifact preview</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {artifacts.slice(0, 10).map((file, index) => (
-                      <div key={file.path || `artifact-${index}`} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {artifacts.slice(0, 10).map((file) => (
+                      <div key={file.path} className="flex items-center justify-between gap-3 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <code className="min-w-0 truncate text-[10px]" title={file.path}>{file.path}</code>
                         <span className="shrink-0 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{file.bytes}b</span>
                       </div>
@@ -2433,8 +1398,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No events recorded</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {events.map((event, index) => (
-                      <div key={event.id || event.eventId || `${event.eventType || 'event'}-${index}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {events.map((event) => (
+                      <div key={event.id} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2">
                           <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatTime(event.createdAt)}</span>
                           <span className="min-w-0 truncate">{event.eventType}</span>
@@ -2464,8 +1429,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No blocking actions</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {controlState.requiredActions.map((action, index) => (
-                      <div key={`${action}-${index}`} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {controlState.requiredActions.map((action) => (
+                      <div key={action} className="rounded border px-2 py-1.5 font-mono text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         {action}
                       </div>
                     ))}
@@ -2478,8 +1443,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <EmptyLine>No routed inbox items</EmptyLine>
                 ) : (
                   <div className="space-y-1">
-                    {inboxItems.slice(-5).reverse().map((item, index) => (
-                      <div key={item.id || item.eventId || `${item.kind || 'inbox'}-${index}`} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+                    {inboxItems.slice(-5).reverse().map((item) => (
+                      <div key={item.id || item.eventId} className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             <div className="truncate font-medium">{compact(item.kind, 'inbox')}</div>
@@ -2518,11 +1483,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 ) : (
                   <div className="grid min-w-0 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)]">
                     <div className="min-w-0 space-y-1">
-                      {lineProvenance.slice(-8).reverse().map((row, index) => {
+                      {lineProvenance.slice(-8).reverse().map((row) => {
                         const selected = lineProvenanceKey(row) === lineProvenanceKey(selectedLineRow);
                         return (
                           <button
-                            key={lineProvenanceKey(row) || `${row.filePath || 'line'}-${index}`}
+                            key={lineProvenanceKey(row)}
                             type="button"
                             data-testid="codesite-line-provenance-row"
                             aria-pressed={selected}
@@ -2534,11 +1499,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
                               color: 'var(--text-primary)',
                             }}
                           >
-                            <div className="flex flex-wrap items-start justify-between gap-1.5">
-                              <code className="min-w-0 flex-1 basis-[11rem] truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
-                              <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <code className="min-w-0 truncate text-[10px]" title={row.filePath}>{row.filePath}</code>
+                              <div className="flex shrink-0 items-center gap-1">
                                 <Pill>{lineRangeLabel(row)}</Pill>
-                                <Pill className="max-w-[8rem] truncate">{compact(row.displayCallsign, 'agent')}</Pill>
+                                <Pill>{compact(row.displayCallsign, 'agent')}</Pill>
                               </div>
                             </div>
                             <div className="mt-1 grid gap-1 sm:grid-cols-2">
@@ -2565,8 +1530,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
                                 {selectedLineRow.filePath}
                               </code>
                             </div>
-                            <Pill testId="codesite-line-inspector-status" tone={lineInspector.status === 'error' ? 'failed' : lineInspector.status === 'loading' ? 'running' : 'active'}>
-                              {lineInspector.status === 'loading' && lineInspector.rows.length === 0 ? 'loading' : `${lineInspector.rows.length || 1} rows`}
+                            <Pill tone={lineInspector.status === 'error' ? 'failed' : 'active'}>
+                              {lineInspector.status === 'loading' ? 'loading' : `${lineInspector.rows.length || 1} rows`}
                             </Pill>
                           </div>
                           <div className="grid gap-1 text-[11px]">

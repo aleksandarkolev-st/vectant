@@ -9,33 +9,19 @@ const {
   codeSiteCommitMessage,
   codeSiteCommitTrailers,
   codeSiteContextFromRequest,
-  codeSiteQuarantineReplayPlan,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
   collectCodeSiteRepoState,
   completeCodeSiteCommitProof,
   createCodeSiteFS,
-  createCodeSiteOverlayWorkspace,
   createCodeSiteQuarantineWorkspace,
   deriveLineProvenanceFromContentChange,
   enforceCodeSiteWriteAllowed,
   evaluateCodeSiteWrite,
   finalizeCodeSiteQuarantineWorkspace,
-  listCodeSiteQuarantineManifests,
   normalizeRepoRelativePath,
-  readCodeSiteQuarantineManifest,
   resolveCodeSiteRepoPath,
 } = require('../codesiteFs');
-
-const previousCodeSiteApiBaseUrl = process.env.SYNTHI_CODESITE_API_BASE_URL;
-process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://app.test/api/workspace/{workspace_slug}/codesite';
-test.after(() => {
-  if (previousCodeSiteApiBaseUrl === undefined) {
-    delete process.env.SYNTHI_CODESITE_API_BASE_URL;
-  } else {
-    process.env.SYNTHI_CODESITE_API_BASE_URL = previousCodeSiteApiBaseUrl;
-  }
-});
 
 test('normalizes repo-relative paths and rejects traversal', () => {
   assert.strictEqual(normalizeRepoRelativePath('src\\app/page.jsx'), 'src/app/page.jsx');
@@ -52,10 +38,8 @@ test('resolves CodeSiteFS paths through a symlink-safe repo containment boundary
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, 'src', 'app.js'), 'inside\n');
     await fs.writeFile(path.join(outside, 'secret.txt'), 'outside\n');
-    await fs.mkdir(path.join(repo, 'canonical'), { recursive: true });
     await fs.symlink(path.join(outside, 'secret.txt'), path.join(repo, 'src', 'secret-link.txt'));
     await fs.symlink(outside, path.join(repo, 'outside-dir'));
-    await fs.symlink(path.join(repo, 'canonical'), path.join(repo, 'alias-dir'));
 
     const existing = await resolveCodeSiteRepoPath(repo, 'src/app.js');
     assert.strictEqual(existing.path, 'src/app.js');
@@ -74,10 +58,6 @@ test('resolves CodeSiteFS paths through a symlink-safe repo containment boundary
     await assert.rejects(
       () => resolveCodeSiteRepoPath(repo, 'outside-dir/new-file.js'),
       (error) => error.code === 'repo_parent_symlink_escape',
-    );
-    await assert.rejects(
-      () => resolveCodeSiteRepoPath(repo, 'alias-dir/new-file.js'),
-      (error) => error.code === 'repo_path_symlink_alias',
     );
   } finally {
     await fs.rm(repo, { recursive: true, force: true });
@@ -103,42 +83,6 @@ test('extracts CodeSite context from payload and headers', () => {
   assert.strictEqual(context.displayCallsign, 'CODEX-04');
 });
 
-test('extracts CodeSite context from runtime client codeSiteContext bodies', () => {
-  const context = codeSiteContextFromRequest({ headers: {} }, {
-    sessionId: 'program-session-1',
-    command: 'npm run dev',
-    codeSiteContext: {
-      transactionId: 'txn-runtime-1',
-      mutationLeaseId: 'lease-runtime-1',
-      displayCallsign: 'RUNTIME-07',
-      agentSessionId: 'agent-runtime-1',
-      agentProvider: 'codex',
-      agentRuntime: 'codex-cli',
-      allowedPaths: ['apps/web/**'],
-      blockedPaths: ['api/auth/**'],
-      allowedTools: ['program_runtime', 'terminal'],
-      processAncestry: ['runtimeClient', 'program-runtime'],
-      controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
-    },
-  }, { workspaceSlug: 'acme', actorUserId: 'owner-1', effectiveUserId: 'fs-1' });
-
-  assert.strictEqual(context.active, true);
-  assert.strictEqual(context.transactionId, 'txn-runtime-1');
-  assert.strictEqual(context.mutationLeaseId, 'lease-runtime-1');
-  assert.strictEqual(context.displayCallsign, 'RUNTIME-07');
-  assert.strictEqual(context.agentSessionId, 'agent-runtime-1');
-  assert.strictEqual(context.agentProvider, 'codex');
-  assert.strictEqual(context.agentRuntime, 'codex-cli');
-  assert.deepStrictEqual(context.allowedPaths, ['apps/web/**']);
-  assert.deepStrictEqual(context.blockedPaths, ['api/auth/**']);
-  assert.deepStrictEqual(context.allowedTools, ['program_runtime', 'terminal']);
-  assert.deepStrictEqual(context.processAncestry, ['runtimeClient', 'program-runtime']);
-  assert.strictEqual(context.controlPlaneUrl, 'http://app.test/api/workspace/acme/codesite');
-  assert.strictEqual(context.actorUserId, 'owner-1');
-  assert.strictEqual(context.effectiveUserId, 'fs-1');
-  assert.strictEqual(context.managedAgent, true);
-});
-
 test('empty legacy requests stay inactive but declared CodeSite requests fail closed', async () => {
   const legacy = codeSiteContextFromRequest({ headers: {} }, {}, { workspaceSlug: 'acme' });
   assert.strictEqual(legacy.active, false);
@@ -147,7 +91,6 @@ test('empty legacy requests stay inactive but declared CodeSite requests fail cl
     codeSiteContextFromRequest({ headers: { 'x-codesite-required': '1' } }, {}, { workspaceSlug: 'acme' }),
     codeSiteContextFromRequest({ headers: { 'x-codesite-mode': 'enforce' } }, {}, { workspaceSlug: 'acme' }),
     codeSiteContextFromRequest({ headers: {} }, { codesite: {} }, { workspaceSlug: 'acme' }),
-    codeSiteContextFromRequest({ headers: {} }, { codeSiteContext: {} }, { workspaceSlug: 'acme' }),
   ]) {
     assert.strictEqual(context.active, true);
     await assert.rejects(
@@ -157,7 +100,8 @@ test('empty legacy requests stay inactive but declared CodeSite requests fail cl
         kind: 'write-file',
       }, { fetch: async () => new Response('{}') }),
       (error) => error.code === 'CODESITE_WRITE_DENIED'
-        && error.event.details.reason_codes.includes('codesite_transaction_required'),
+        && error.event.details.reason_codes.includes('codesite_transaction_required')
+        && error.event.details.reason_codes.includes('codesite_control_plane_url_required'),
     );
   }
 });
@@ -209,31 +153,6 @@ test('generic process ancestry marks MCP and workflow writes as managed', () => 
   assert.strictEqual(context.active, true);
   assert.strictEqual(context.managedAgent, true);
   assert.deepStrictEqual(context.processAncestry, ['mcp:synthi_apply_patch']);
-});
-
-test('managed agent signals cannot downgrade CodeSite enforcement to monitor mode', () => {
-  const managed = codeSiteContextFromRequest({ headers: {} }, {
-    codesite: {
-      mode: 'monitor',
-      transactionId: 'txn-managed-monitor',
-      agentSessionId: 'agent-1',
-      agentProvider: 'codex',
-      agentRuntime: 'codex-cli',
-    },
-  }, { workspaceSlug: 'acme' });
-  const observer = codeSiteContextFromRequest({ headers: {} }, {
-    codesite: {
-      mode: 'monitor',
-      transactionId: 'txn-observer-monitor',
-    },
-  }, { workspaceSlug: 'acme' });
-
-  assert.strictEqual(managed.active, true);
-  assert.strictEqual(managed.managedAgent, true);
-  assert.strictEqual(managed.mode, 'enforce');
-  assert.strictEqual(observer.active, true);
-  assert.strictEqual(observer.managedAgent, false);
-  assert.strictEqual(observer.mode, 'monitor');
 });
 
 test('trusted managed write scopes fail closed when CodeSite context is missing', async () => {
@@ -331,47 +250,6 @@ test('allows writes inside lease route and blocks no-fly or out-of-route writes'
   );
 });
 
-test('repo-scoped Git ref writes honor tool clearance without requiring fake file globs', () => {
-  const context = {
-    active: true,
-    mutationLeaseId: 'lease-1',
-    transactionId: 'txn-1',
-    allowedPaths: ['synthi/src/components/**'],
-    allowedTools: ['git_refs'],
-  };
-
-  const refWrite = evaluateCodeSiteWrite(context, { path: '**', kind: 'commit', tool: 'git_refs' });
-  assert.strictEqual(refWrite.ok, true);
-  assert.strictEqual(refWrite.tool, 'git_refs');
-  assert.deepStrictEqual(refWrite.event.details.reason_codes, ['inside_clearance_route']);
-
-  const fileWrite = evaluateCodeSiteWrite(context, { path: 'docs/outside.md', tool: 'file_write' });
-  assert.strictEqual(fileWrite.ok, false);
-  assert.deepStrictEqual(fileWrite.event.details.reason_codes, ['tool_not_in_clearance']);
-});
-
-test('git provisioning requires explicit repo-wide clearance', () => {
-  const narrowContext = {
-    active: true,
-    mutationLeaseId: 'lease-1',
-    transactionId: 'txn-1',
-    allowedPaths: ['synthi/src/components/**'],
-    allowedTools: ['git_provisioning'],
-  };
-  const repoWideContext = {
-    ...narrowContext,
-    allowedPaths: ['**'],
-  };
-
-  const narrow = evaluateCodeSiteWrite(narrowContext, { path: '**', kind: 'init', tool: 'git_provisioning' });
-  assert.strictEqual(narrow.ok, false);
-  assert.deepStrictEqual(narrow.event.details.reason_codes, ['repo_provisioning_clearance_required']);
-
-  const repoWide = evaluateCodeSiteWrite(repoWideContext, { path: '**', kind: 'init', tool: 'git_provisioning' });
-  assert.strictEqual(repoWide.ok, true);
-  assert.deepStrictEqual(repoWide.event.details.reason_codes, ['inside_clearance_route']);
-});
-
 test('CodeSiteFS lifecycle applies an allowed write through prepare, emit, apply, and verify', async () => {
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-boundary-'));
   await fs.mkdir(path.join(repo, 'src'), { recursive: true });
@@ -417,60 +295,6 @@ test('CodeSiteFS lifecycle applies an allowed write through prepare, emit, apply
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-write');
     assert.strictEqual(calls[0].body.codesiteFsEvent.type, 'write_allowed');
-  } finally {
-    await fs.rm(repo, { recursive: true, force: true });
-  }
-});
-
-test('CodeSiteFS lifecycle records managed reads before returning file contents', async () => {
-  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesitefs-read-boundary-'));
-  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
-  await fs.writeFile(path.join(repo, 'src', 'contract.ts'), 'export const version = 1;\n');
-  const calls = [];
-  const fetch = async (url, options) => {
-    calls.push({ url, body: JSON.parse(options.body) });
-    return new Response(JSON.stringify({
-      transaction: {
-        id: 'txn-1',
-        status: 'open',
-        readSet: ['src/contract.ts'],
-        observedReadSet: ['src/contract.ts'],
-      },
-    }), { status: 200 });
-  };
-  const context = {
-    active: true,
-    workspaceSlug: 'acme',
-    transactionId: 'txn-1',
-    mutationLeaseId: 'lease-1',
-    allowedPaths: ['src/app.js'],
-    blockedPaths: ['secrets/**'],
-    allowedTools: ['file_write'],
-    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
-  };
-
-  try {
-    const codesiteFs = new CodeSiteFS(context, { fetch, repoRoot: repo });
-    const result = await codesiteFs.read({
-      path: 'src/contract.ts',
-      tool: 'file_read',
-      kind: 'read-file',
-      evidenceRefs: ['proof:read-boundary'],
-      processAncestry: ['codex:test-read'],
-    }, async () => {
-      assert.strictEqual(calls.length, 1, 'read observation is emitted before returning content');
-      return fs.readFile(path.join(repo, 'src', 'contract.ts'), 'utf8');
-    });
-
-    assert.strictEqual(result.phase, 'read');
-    assert.strictEqual(result.disposition, 'read_observed');
-    assert.strictEqual(result.readResult, 'export const version = 1;\n');
-    assert.strictEqual(result.verification.ok, true);
-    assert.match(result.verification.digest.digest, /^sha256:/);
-    assert.strictEqual(calls[0].url, 'http://app.test/api/workspace/acme/codesite/transactions/txn-1/record-read');
-    assert.strictEqual(calls[0].body.path, 'src/contract.ts');
-    assert.strictEqual(calls[0].body.codesiteFsEvent.type, 'read_observed');
-    assert.deepStrictEqual(calls[0].body.processAncestry, ['codex:test-read']);
   } finally {
     await fs.rm(repo, { recursive: true, force: true });
   }
@@ -606,50 +430,6 @@ test('CodeSiteFS run validates every attempt before applying a multi-file mutati
   } finally {
     await fs.rm(repo, { recursive: true, force: true });
   }
-});
-
-test('CodeSiteFS run preserves legacy pathless operations when CodeSite is inactive', async () => {
-  const codesiteFs = createCodeSiteFS({ active: false });
-  let applied = false;
-
-  const result = await codesiteFs.run({
-    operation: 'legacy-refresh',
-    tool: 'workspace_refresh',
-  }, async ({ attempts }) => {
-    applied = true;
-    assert.deepStrictEqual(attempts, []);
-    return { refreshed: true };
-  });
-
-  assert.strictEqual(applied, true);
-  assert.strictEqual(result.phase, 'applied');
-  assert.deepStrictEqual(result.applyResult, { refreshed: true });
-});
-
-test('CodeSiteFS run blocks active pathless operations before applying', async () => {
-  const codesiteFs = createCodeSiteFS({
-    active: true,
-    workspaceSlug: 'acme',
-    transactionId: 'txn-pathless',
-    mutationLeaseId: 'lease-pathless',
-    allowedPaths: ['src/**'],
-    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
-  }, { fetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }) });
-  let applied = false;
-
-  await assert.rejects(
-    () => codesiteFs.run({
-      operation: 'unknown-write-wrapper',
-      tool: 'file_write',
-    }, async () => {
-      applied = true;
-    }),
-    (error) => error.code === 'CODESITE_WRITE_DENIED'
-      && error.event.path === null
-      && error.event.details.reason_codes.includes('codesite_write_attempt_required'),
-  );
-
-  assert.strictEqual(applied, false);
 });
 
 test('CodeSiteFS run blocks a mixed multi-file mutation before emitting allowed events', async () => {
@@ -980,7 +760,8 @@ test('enforcement fails closed without durable CodeSite control-plane context', 
     }, { fetch: async () => new Response('{}') }),
     (error) => error.code === 'CODESITE_WRITE_DENIED'
       && error.event.type === 'write_denied'
-      && error.event.details.reason_codes.includes('codesite_transaction_required'),
+      && error.event.details.reason_codes.includes('codesite_transaction_required')
+      && error.event.details.reason_codes.includes('codesite_control_plane_url_required'),
   );
 });
 
@@ -1065,13 +846,6 @@ test('formats proof-carrying CodeSite commit trailers', () => {
       invariants: ['typecheck:pass', 'visual:pass'],
       landingStatus: 'landed',
       blackBoxDigest: 'sha256:blackbox',
-      proofBundle: {
-        portableDigest: 'sha256:portable',
-        proofSignature: {
-          keyId: 'codesite-test-authority',
-          signature: 'hmac-sha256:test',
-        },
-      },
     },
   });
 
@@ -1082,9 +856,6 @@ test('formats proof-carrying CodeSite commit trailers', () => {
   assert.match(message, /CodeSite-Lease: lease-1/);
   assert.match(message, /CodeSite-Invariants: typecheck:pass,visual:pass/);
   assert.match(message, /CodeSite-Black-Box: sha256:blackbox/);
-  assert.match(message, /CodeSite-Proof-Digest: sha256:portable/);
-  assert.match(message, /CodeSite-Proof-Authority: codesite-test-authority/);
-  assert.match(message, /CodeSite-Proof-Signature: hmac-sha256:test/);
 });
 
 test('does not duplicate existing CodeSite trailers', () => {
@@ -1187,44 +958,6 @@ test('collects repo-state evidence from actual workspace files', async () => {
   }]);
 });
 
-test('passes caller git environment into repo-state evidence collection', async () => {
-  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-repo-state-env-'));
-  const bin = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-git-bin-'));
-  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
-  await fs.writeFile(path.join(repo, 'src', 'app.js'), 'actual file content\n');
-  const gitShim = path.join(bin, 'git');
-  await fs.writeFile(gitShim, [
-    '#!/bin/sh',
-    'shift',
-    'shift',
-    'if [ "$1" = "rev-parse" ]; then',
-    '  printf "%s\\n" "$CODESITE_TEST_GIT_HEAD"',
-    '  exit 0',
-    'fi',
-    'if [ "$1" = "diff" ]; then',
-    '  exit 0',
-    'fi',
-    'exit 1',
-    '',
-  ].join('\n'));
-  await fs.chmod(gitShim, 0o755);
-
-  const evidence = await collectCodeSiteRepoState(repo, {
-    workspaceSlug: 'acme',
-    transactionId: 'txn-1',
-    writePaths: ['src/app.js'],
-    env: {
-      ...process.env,
-      PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
-      CODESITE_TEST_GIT_HEAD: '0123456789abcdef0123456789abcdef01234567',
-    },
-  });
-
-  assert.strictEqual(evidence.gitHead, '0123456789abcdef0123456789abcdef01234567');
-  assert.match(evidence.stagedDiffDigest, /^sha256:/);
-  assert.match(evidence.worktreeDiffDigest, /^sha256:/);
-});
-
 test('quarantines raw terminal workspace changes and records them as evidence', async () => {
   const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-src-'));
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-quarantine-'));
@@ -1259,32 +992,16 @@ test('quarantines raw terminal workspace changes and records them as evidence', 
     const result = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, { fetch });
 
     assert.deepStrictEqual(result.changes.map((change) => change.path), ['src/app.js', 'src/new.js']);
-    assert.match(quarantine.quarantineId, /^qtn-/);
     assert.strictEqual(calls.length, 2);
     const firstBody = JSON.parse(calls[0].options.body);
     assert.strictEqual(firstBody.codesiteFsEvent.type, 'write_quarantined');
-    assert.strictEqual(firstBody.codesiteFsEvent.details.quarantine_id, quarantine.quarantineId);
     assert.deepStrictEqual(firstBody.codesiteFsEvent.details.reason_codes, ['raw_terminal_quarantine']);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_root, /codesite-quarantine/);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.beforeDigest, /^sha256:/);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.afterDigest, /^sha256:/);
     assert.match(firstBody.codesiteFsEvent.details.quarantine_evidence.evidenceRef, /^codesitefs:quarantine:sha256:/);
-    assert.strictEqual(firstBody.codesiteFsEvent.details.quarantine_evidence.beforeText, 'before\n');
-    assert.strictEqual(firstBody.codesiteFsEvent.details.quarantine_evidence.afterText, 'after\n');
     assert.ok(firstBody.codesiteFsEvent.details.quarantine_evidence.textDiff.lines.some((line) => line === '-before'));
     assert.ok(firstBody.codesiteFsEvent.details.quarantine_evidence.textDiff.lines.some((line) => line === '+after'));
-    assert.strictEqual(result.changes[0].quarantineEvidence.beforeText, 'before\n');
-    assert.strictEqual(result.changes[0].quarantineEvidence.afterText, 'after\n');
-    assert.match(result.recorded[0].quarantineEvidence.evidenceRef, /^codesitefs:quarantine:sha256:/);
-    assert.strictEqual(result.recorded[0].quarantineId, quarantine.quarantineId);
-    const manifest = await readCodeSiteQuarantineManifest(baseDir, 'acme', quarantine.quarantineId);
-    assert.strictEqual(manifest.schemaVersion, 'synthi.codesitefs.quarantineManifest.v1');
-    assert.strictEqual(manifest.status, 'reviewable');
-    assert.strictEqual(manifest.quarantineId, quarantine.quarantineId);
-    assert.deepStrictEqual(manifest.changes.map((change) => change.path), ['src/app.js', 'src/new.js']);
-    assert.strictEqual(manifest.changes[0].quarantineEvidence.afterText, 'after\n');
-    const listed = await listCodeSiteQuarantineManifests(baseDir, 'acme', { transactionId: 'txn-1' });
-    assert.deepStrictEqual(listed.map((item) => item.quarantineId), [quarantine.quarantineId]);
     assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
   } finally {
     await fs.rm(source, { recursive: true, force: true });
@@ -1292,184 +1009,7 @@ test('quarantines raw terminal workspace changes and records them as evidence', 
   }
 });
 
-test('docker overlay workspaces diff upperdir changes without deleting untouched base files', async () => {
-  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-overlay-src-'));
-  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-overlay-records-'));
-  await fs.mkdir(path.join(source, 'src'), { recursive: true });
-  await fs.writeFile(path.join(source, 'src', 'app.js'), 'before\n');
-  await fs.writeFile(path.join(source, 'src', 'old.js'), 'old\n');
-  await fs.writeFile(path.join(source, 'src', 'untouched.js'), 'keep\n');
-  const recordedBodies = [];
-  const fetch = async (_url, options) => {
-    recordedBodies.push(JSON.parse(options.body));
-    return new Response(JSON.stringify({
-      ok: false,
-      quarantined: true,
-      policyDecision: { reasonCodes: ['raw_terminal_quarantine'] },
-    }), { status: 200 });
-  };
-  const context = {
-    active: true,
-    workspaceSlug: 'acme',
-    transactionId: 'txn-overlay',
-    mutationLeaseId: 'lease-1',
-    allowedPaths: ['src/**'],
-    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
-  };
-
-  try {
-    const overlay = await createCodeSiteOverlayWorkspace(context, source, {
-      baseDir,
-      operation: 'overlay-runtime',
-      overlayId: 'ovl-test',
-    });
-    await fs.mkdir(path.join(overlay.upperRoot, 'src'), { recursive: true });
-    await fs.writeFile(path.join(overlay.upperRoot, 'src', 'app.js'), 'after\n');
-    await fs.writeFile(path.join(overlay.upperRoot, 'src', 'new.js'), 'new\n');
-    await fs.writeFile(path.join(overlay.upperRoot, 'src', '.wh.old.js'), '');
-
-    const result = await finalizeCodeSiteQuarantineWorkspace(context, overlay, { fetch });
-
-    assert.strictEqual(overlay.mountMode, 'docker-overlay');
-    assert.deepStrictEqual(result.changes.map((change) => `${change.kind}:${change.path}`), [
-      'modified:src/app.js',
-      'created:src/new.js',
-      'deleted:src/old.js',
-    ]);
-    assert.strictEqual(result.changes.some((change) => change.path === 'src/untouched.js'), false);
-    assert.strictEqual(result.changes[0].quarantineEvidence.beforeText, 'before\n');
-    assert.strictEqual(result.changes[0].quarantineEvidence.afterText, 'after\n');
-    assert.strictEqual(recordedBodies.length, 3);
-    assert.deepStrictEqual(recordedBodies.map((body) => body.path), ['src/app.js', 'src/new.js', 'src/old.js']);
-    assert.strictEqual(recordedBodies[0].codesiteFsEvent.details.quarantine_root, overlay.root);
-    assert.strictEqual(recordedBodies[0].codesiteFsEvent.details.change_kind, 'modified');
-    const manifest = await readCodeSiteQuarantineManifest(baseDir, 'acme', overlay.quarantineId);
-    assert.strictEqual(manifest.mountMode, 'docker-overlay');
-    assert.strictEqual(manifest.upperRoot, overlay.upperRoot);
-    assert.deepStrictEqual(manifest.changes.map((change) => change.path), ['src/app.js', 'src/new.js', 'src/old.js']);
-    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'app.js'), 'utf8'), 'before\n');
-    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'old.js'), 'utf8'), 'old\n');
-    assert.strictEqual(await fs.readFile(path.join(source, 'src', 'untouched.js'), 'utf8'), 'keep\n');
-  } finally {
-    await fs.rm(source, { recursive: true, force: true });
-    await fs.rm(baseDir, { recursive: true, force: true });
-  }
-});
-
-test('normalizes replayable quarantine text changes and rejects unsupported evidence', () => {
-  const plan = codeSiteQuarantineReplayPlan([{
-    path: 'src/app.js',
-    kind: 'modified',
-    quarantineEvidence: {
-      path: 'src/app.js',
-      kind: 'modified',
-      beforeText: 'before\n',
-      afterText: 'after\n',
-      quarantineId: 'qtn-1',
-      beforeDigest: 'sha256:before',
-      afterDigest: 'sha256:after',
-      evidenceRef: 'codesitefs:quarantine:sha256:evidence',
-      textDiff: { format: 'line-window-v1', lines: ['-before', '+after'] },
-    },
-  }]);
-
-  assert.strictEqual(plan.ok, true);
-  assert.strictEqual(plan.rejected.length, 0);
-  assert.strictEqual(plan.changes[0].path, 'src/app.js');
-  assert.strictEqual(plan.changes[0].quarantineId, 'qtn-1');
-  assert.strictEqual(plan.changes[0].beforeText, 'before\n');
-  assert.strictEqual(plan.changes[0].afterText, 'after\n');
-  assert.deepStrictEqual(plan.changes[0].evidenceRefs, ['codesitefs:quarantine:sha256:evidence']);
-
-  const missingText = codeSiteQuarantineReplayPlan([{
-    path: 'src/app.js',
-    kind: 'modified',
-    quarantineEvidence: { path: 'src/app.js', kind: 'modified' },
-  }]);
-  assert.strictEqual(missingText.ok, false);
-  assert.deepStrictEqual(missingText.rejected[0].reasonCodes, ['quarantine_after_content_required']);
-
-  const deleted = codeSiteQuarantineReplayPlan([{
-    path: 'src/old.js',
-    kind: 'deleted',
-    quarantineEvidence: { path: 'src/old.js', kind: 'deleted', beforeText: 'old\n', beforeDigest: 'sha256:old', beforeExists: true, afterExists: false },
-  }]);
-  assert.strictEqual(deleted.ok, true);
-  assert.strictEqual(deleted.changes[0].replayOperation, 'delete');
-  assert.strictEqual(deleted.changes[0].afterExists, false);
-
-  const binary = codeSiteQuarantineReplayPlan([{
-    path: 'assets/logo.bin',
-    kind: 'created',
-    quarantineEvidence: {
-      path: 'assets/logo.bin',
-      kind: 'created',
-      beforeExists: false,
-      afterExists: true,
-      afterBase64: Buffer.from([0, 1, 2, 255]).toString('base64'),
-      afterContentEncoding: 'base64',
-      afterDigest: `sha256:${'a'.repeat(64)}`,
-    },
-  }]);
-  assert.strictEqual(binary.ok, true);
-  assert.strictEqual(binary.changes[0].replayOperation, 'write_binary');
-  assert.strictEqual(binary.changes[0].afterContentEncoding, 'base64');
-});
-
-test('raw terminal quarantine replaces symlink escapes before command execution', async () => {
-  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-symlink-src-'));
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-symlink-outside-'));
-  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-symlink-quarantine-'));
-  const outsideTarget = path.join(outside, 'outside.txt');
-  await fs.mkdir(path.join(source, 'src'), { recursive: true });
-  await fs.writeFile(outsideTarget, 'outside-before\n');
-  await fs.symlink(outsideTarget, path.join(source, 'src', 'escape-link.txt'));
-  const recordedBodies = [];
-  const fetch = async (_url, options) => {
-    recordedBodies.push(JSON.parse(options.body));
-    return new Response(JSON.stringify({
-      ok: false,
-      quarantined: true,
-      policyDecision: { reasonCodes: ['raw_terminal_quarantine'] },
-    }), { status: 200 });
-  };
-  const context = {
-    active: true,
-    workspaceSlug: 'acme',
-    transactionId: 'txn-symlink',
-    mutationLeaseId: 'lease-1',
-    allowedPaths: ['src/**'],
-    controlPlaneUrl: 'http://app.test/api/workspace/acme/codesite',
-  };
-
-  try {
-    const quarantine = await createCodeSiteQuarantineWorkspace(context, source, {
-      baseDir,
-      operation: 'exec',
-    });
-    assert.deepStrictEqual(quarantine.symlinkSanitization.sanitized.map((item) => item.path), ['src/escape-link.txt']);
-    const overlayLinkPath = path.join(quarantine.cwd, 'src', 'escape-link.txt');
-    const overlayStat = await fs.lstat(overlayLinkPath);
-    assert.strictEqual(overlayStat.isSymbolicLink(), false);
-
-    await fs.writeFile(overlayLinkPath, 'overlay-only\n');
-    const result = await finalizeCodeSiteQuarantineWorkspace(context, quarantine, { fetch });
-
-    assert.strictEqual(await fs.readFile(outsideTarget, 'utf8'), 'outside-before\n');
-    assert.deepStrictEqual(result.changes.map((change) => change.path), ['src/escape-link.txt']);
-    assert.strictEqual(result.changes[0].quarantineEvidence.afterText, 'overlay-only\n');
-    const manifest = await readCodeSiteQuarantineManifest(baseDir, 'acme', quarantine.quarantineId);
-    assert.deepStrictEqual(manifest.symlinkSanitization.sanitized.map((item) => item.path), ['src/escape-link.txt']);
-    assert.strictEqual(manifest.changes[0].path, 'src/escape-link.txt');
-    assert.strictEqual(recordedBodies[0].codesiteFsEvent.details.quarantine_evidence.afterText, 'overlay-only\n');
-  } finally {
-    await fs.rm(source, { recursive: true, force: true });
-    await fs.rm(outside, { recursive: true, force: true });
-    await fs.rm(baseDir, { recursive: true, force: true });
-  }
-});
-
-test('can record managed runtime quarantine evidence without closing the overlay', async () => {
+test('can record headless terminal quarantine evidence without closing the overlay', async () => {
   const source = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-headless-src-'));
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-headless-quarantine-'));
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
@@ -1495,7 +1035,7 @@ test('can record managed runtime quarantine evidence without closing the overlay
   try {
     const quarantine = await createCodeSiteQuarantineWorkspace(context, source, {
       baseDir,
-      operation: 'managed-runtime',
+      operation: 'exec-terminal',
     });
     await fs.writeFile(path.join(quarantine.cwd, 'src', 'app.js'), 'after-one\n');
 

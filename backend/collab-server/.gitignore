@@ -7,7 +7,6 @@ data/*
 
 # Runtime workspace repos (generated data)
 repos/
-.synthi-codesite-activity/
 
 # Logs
 logs/

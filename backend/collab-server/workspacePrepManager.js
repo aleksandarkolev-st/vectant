@@ -4,7 +4,6 @@ const config = require('./config');
 const gitService = require('./gitService');
 const logger = require('./logger').child({ component: 'workspace-prep-manager' });
 const repoCache = require('./repoCache');
-const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 const { planWorkspacePrep } = require('./workspacePrepPlanner');
 const { executeWorkspacePrepTask, getWorkspacePrepMode } = require('./workspacePrepExecutor');
 
@@ -104,54 +103,6 @@ function publicStatus(state) {
   };
 }
 
-function codeSiteContextFromOptions(options = {}) {
-  const context = options.codesiteContext || options.codeSiteContext || options.codeSite || options.codesite || null;
-  return context && typeof context === 'object' ? context : null;
-}
-
-function workspacePrepIsolationError(slug, userId, reason, context = null) {
-  const error = new Error('Workspace prep is blocked for active CodeSite transactions because package-manager prep mutates the real workspace. Run prep before opening the transaction or implement an overlay-backed prep executor.');
-  error.code = 'CODESITE_WORKSPACE_PREP_REQUIRES_ISOLATION';
-  error.status = 409;
-  error.details = {
-    reason,
-    workspaceSlug: slug || context?.workspaceSlug || null,
-    filesystemUserId: userId || context?.effectiveUserId || null,
-    transactionId: context?.transactionId || null,
-    activeTransactions: slug ? codeSiteActivityRegistry.activeTransactionsForWorkspace(slug) : [],
-  };
-  return error;
-}
-
-async function refreshWorkspacePrepAuthority(slug, context = null) {
-  try {
-    await codeSiteActivityRegistry.refreshWorkspaceFromControlPlane(slug, {
-      controlPlaneUrl: context?.controlPlaneUrl,
-      controlPlaneTrusted: context?.controlPlaneTrusted,
-      authToken: context?.authToken,
-      cookie: context?.cookie,
-      requireAuthority: true,
-    });
-  } catch (error) {
-    const blocked = workspacePrepIsolationError(slug, context?.effectiveUserId || null, 'active_authority_unavailable', context);
-    blocked.status = 503;
-    blocked.details.authorityError = error.code || error.message;
-    throw blocked;
-  }
-}
-
-async function assertWorkspacePrepAllowed(slug, userId, options = {}) {
-  const context = codeSiteContextFromOptions(options);
-  if (context?.active) {
-    await refreshWorkspacePrepAuthority(slug, context);
-    throw workspacePrepIsolationError(slug, userId, 'active_request_context', context);
-  }
-  if (slug) await refreshWorkspacePrepAuthority(slug, context);
-  if (slug && codeSiteActivityRegistry.isWorkspaceActive(slug)) {
-    throw workspacePrepIsolationError(slug, userId, options.reason || 'active_workspace_transaction', context);
-  }
-}
-
 async function writeJsonAtomic(filePath, data) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp-${process.pid}`;
@@ -201,7 +152,6 @@ async function loadState(state) {
 }
 
 async function planScope(slug, userId) {
-  await assertWorkspacePrepAllowed(slug, userId, { reason: 'workspace_prep_plan' });
   await repoCache.acquire(slug, userId);
   try {
     const repoPath = gitService.getEffectiveRepoPath(slug, userId);
@@ -256,46 +206,10 @@ function markTaskResult(taskStatus, result) {
   taskStatus.stderrTail = result.stderrTail || '';
 }
 
-function markQueuedPlanBlocked(state, plan, error) {
-  state.state = 'blocked';
-  state.error = error.message;
-  state.tasks = plan.tasks.map((task) => ({
-    id: task.id,
-    ecosystem: task.ecosystem,
-    rootPath: task.rootPath || '',
-    manifestPaths: [...task.manifestPaths],
-    commandSummary: task.commandSummary,
-    status: 'blocked',
-    message: error.message,
-    missingTool: null,
-    startedAt: null,
-    completedAt: Date.now(),
-    durationMs: null,
-    exitCode: null,
-    signal: null,
-    stdoutTail: '',
-    stderrTail: '',
-  }));
-}
-
 async function runQueuedPlan(state) {
   const plan = state.queuedPlan;
   if (!plan) return;
   state.queuedPlan = null;
-  try {
-    await assertWorkspacePrepAllowed(state.slug, state.userId, { reason: 'workspace_prep_queue_start' });
-  } catch (error) {
-    state.lastAttemptAt = Date.now();
-    markQueuedPlanBlocked(state, plan, error);
-    await persistState(state);
-    logger.warn('workspace_prep_blocked_by_codesite_transaction', {
-      slug: state.slug,
-      userId: state.userId,
-      reason: error.details?.reason,
-      activeTransactions: error.details?.activeTransactions?.length || 0,
-    });
-    return;
-  }
   state.state = 'running';
   state.runningFingerprint = plan.fingerprint;
   state.lastAttemptAt = Date.now();
@@ -330,22 +244,6 @@ async function runQueuedPlan(state) {
     for (let index = 0; index < plan.tasks.length; index += 1) {
       const task = plan.tasks[index];
       const taskStatus = state.tasks[index];
-      try {
-        await assertWorkspacePrepAllowed(state.slug, state.userId, { reason: 'workspace_prep_task' });
-      } catch (error) {
-        taskStatus.status = 'blocked';
-        taskStatus.message = error.message;
-        taskStatus.completedAt = Date.now();
-        for (let pendingIndex = index + 1; pendingIndex < state.tasks.length; pendingIndex += 1) {
-          state.tasks[pendingIndex].status = 'blocked';
-          state.tasks[pendingIndex].message = error.message;
-          state.tasks[pendingIndex].completedAt = Date.now();
-        }
-        state.state = 'blocked';
-        state.error = error.message;
-        await persistState(state);
-        break;
-      }
       taskStatus.status = 'running';
       taskStatus.startedAt = Date.now();
       await persistState(state);
@@ -409,9 +307,7 @@ async function getWorkspacePrepStatus(slug, userId) {
   return publicStatus(state);
 }
 
-async function ensureWorkspacePrepared(slug, userId, options = {}) {
-  await assertWorkspacePrepAllowed(slug, userId, options);
-  const { force = false, trigger = 'workspace_load' } = options;
+async function ensureWorkspacePrepared(slug, userId, { force = false, trigger = 'workspace_load' } = {}) {
   const state = getState(slug, userId);
   await loadState(state);
 

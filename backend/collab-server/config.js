@@ -125,12 +125,6 @@ const WORKSPACE_PREP_STATE_DIR = path.resolve(
     process.env.WORKSPACE_PREP_STATE_DIR || path.join(path.dirname(REPO_CACHE_DIR), '.synthi-workspace-prep')
 );
 
-const CODESITE_ACTIVITY_STATE_DIR = path.resolve(
-    process.env.SYNTHI_CODESITE_ACTIVITY_STATE_DIR
-    || process.env.CODESITE_ACTIVITY_STATE_DIR
-    || path.join(path.dirname(REPO_CACHE_DIR), '.synthi-codesite-activity')
-);
-
 const WORKSPACE_PREP_MAX_PARALLEL = Number(process.env.WORKSPACE_PREP_MAX_PARALLEL) || 1;
 const WORKSPACE_PREP_JOB_TIMEOUT_MS = Number(process.env.WORKSPACE_PREP_JOB_TIMEOUT_MS) || 30 * 60 * 1000;
 const WORKSPACE_PREP_LOCAL_VOLUME = process.env.WORKSPACE_PREP_LOCAL_VOLUME || 'synthi-ide_collab-data';
@@ -163,7 +157,6 @@ module.exports = {
     REPO_CACHE_MAX,
     REPO_CACHE_TTL_MS,
     REPO_CACHE_DELETE_ON_EVICT,
-    CODESITE_ACTIVITY_STATE_DIR,
     WORKSPACE_PREP_STATE_DIR,
     WORKSPACE_PREP_MAX_PARALLEL,
     WORKSPACE_PREP_JOB_TIMEOUT_MS,

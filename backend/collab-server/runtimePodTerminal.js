@@ -71,18 +71,11 @@ function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
   return { target: 'unavailable' };
 }
 
-function codeSiteProgramRuntimeTarget({ codeSiteContext, runtimeType, sysboxEnabled, hasHybrid } = {}) {
-  if (codeSiteContext?.active && runtimeType === 'container' && hasHybrid) {
-    return { target: 'hybrid' };
-  }
-  return programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid });
-}
-
 function codeSiteProgramRuntimeLaunchMode({ codeSiteContext, runtimeType, sysboxEnabled, hasHybrid } = {}) {
   if (!codeSiteContext?.active) return 'normal';
-  const { target } = codeSiteProgramRuntimeTarget({ codeSiteContext, runtimeType, sysboxEnabled, hasHybrid });
-  if (target === 'hybrid') return 'overlay-runtime';
-  if (target === 'headless') return 'block-host';
+  const { target } = programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid });
+  if (target === 'headless') return 'quarantine';
+  if (target === 'hybrid') return 'quarantine-runtime';
   return 'block-runtime';
 }
 
@@ -419,7 +412,6 @@ module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
   programRuntimeTarget,
-  codeSiteProgramRuntimeTarget,
   codeSiteProgramRuntimeLaunchMode,
   pickRuntimeScopeForSlug,
   buildRuntimeShellScript,
