@@ -42,6 +42,7 @@ from analyzer import supported_languages
 
 from llm.providers import get_provider
 from program_review import assess_program_risk
+from program_manifest_gen import generate_manifest
 from llm.prompts import SPLIT_GUI_PROMPT, UNIVERSAL_SPLIT_PROMPT
 from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
@@ -4641,6 +4642,18 @@ async def programs_risk_review(req: ProgramRiskRequest):
         "source_image_ref": req.source_image_ref,
         "description": req.description,
     })
+
+
+class ProgramManifestGenRequest(BaseModel):
+    files: dict
+    workspace_name: Optional[str] = None
+
+
+@app.post("/programs/generate-manifest")
+async def programs_generate_manifest(req: ProgramManifestGenRequest):
+    """Draft a vectant.programs.json from the workspace's key files. Fail-closed
+    inside generate_manifest; the Next.js caller re-validates before offering/saving."""
+    return await generate_manifest({"files": req.files, "workspace_name": req.workspace_name})
 
 
 @app.get("/health")
