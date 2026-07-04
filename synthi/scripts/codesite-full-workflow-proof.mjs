@@ -1004,6 +1004,9 @@ async function loadAgentExecutionEvidence({ dir, slug, agentFlightSpecs }) {
     const absolutePath = path.join(evidenceDir, file);
     const raw = await fs.promises.readFile(absolutePath, 'utf8');
     const parsed = JSON.parse(raw);
+    if (parsed.schemaVersion !== 'synthi.codesite.codexAgentExecutionEvidence.v1') {
+      continue;
+    }
     const commands = asArray(parsed.commands || parsed.commandEvidence);
     const workflowActions = asArray(parsed.workflowActions || parsed.actions);
     const transcriptBinding = await verifiedCodexTranscriptBinding(parsed).catch((error) => ({
