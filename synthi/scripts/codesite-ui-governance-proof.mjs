@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { chromium } from 'playwright';
@@ -233,6 +233,11 @@ async function findOpenPort() {
       server.close(() => resolve(address.port));
     });
   });
+}
+
+function gitText(args) {
+  const result = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
+  return result.status === 0 ? String(result.stdout || '').trim() : null;
 }
 
 async function waitForReady(url, timeoutMs = 180000) {
@@ -507,13 +512,21 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
   await installCodeSiteRoutes(page, data);
   await installMockEventSource(page);
   await page.goto(`${baseUrl}/workspace/${SLUG}/codesite`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await page.waitForSelector('[data-testid="codesite-operator-cockpit"]', { timeout: 120000 });
   await page.waitForSelector('[data-testid="codesite-governance-console"]', { timeout: 120000 });
   await page.waitForSelector('[data-testid="codesite-tower-feed"]', { timeout: 120000 });
   await page.waitForSelector('[data-testid="codesite-radar-sweep"]', { timeout: 120000 });
   await page.waitForTimeout(600);
   const selectors = [
     'codesite-panel',
+    'codesite-operator-cockpit',
+    'codesite-mission-control-header',
     'codesite-responsive-proof-target',
+    'codesite-operator-airspace-pane',
+    'codesite-operator-tower-pane',
+    'codesite-operator-governance-pane',
+    'codesite-metric-rail',
+    'codesite-status-required',
     'codesite-radar-sweep',
     'codesite-tower-feed',
     'codesite-event-stream-status',
@@ -529,6 +542,68 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
       const element = document.querySelector(`[data-testid="${testId}"]`);
       return [testId, Boolean(element)];
     }));
+    const selectorCounts = Object.fromEntries(required.map((testId) => [
+      testId,
+      document.querySelectorAll(`[data-testid="${testId}"]`).length,
+    ]));
+    const rectFor = (testId) => {
+      const element = document.querySelector(`[data-testid="${testId}"]`);
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top),
+        left: Math.round(rect.left),
+        bottom: Math.round(rect.bottom),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    };
+    const cockpit = document.querySelector('[data-testid="codesite-operator-cockpit"]');
+    const cockpitText = cockpit?.textContent || '';
+    const cockpitRect = rectFor('codesite-operator-cockpit');
+    const airspaceRect = rectFor('codesite-operator-airspace-pane');
+    const towerRect = rectFor('codesite-operator-tower-pane');
+    const governanceRect = rectFor('codesite-operator-governance-pane');
+    const operatorRects = { cockpit: cockpitRect, airspace: airspaceRect, tower: towerRect, governance: governanceRect };
+    const operatorPaneGeometry = [airspaceRect, towerRect, governanceRect].every((rect) => rect && rect.width >= 280 && rect.height >= 120);
+    const desktopWidth = window.innerWidth >= 1024;
+    const operatorLoopInFirstViewport = desktopWidth
+      ? [cockpitRect, airspaceRect, towerRect, governanceRect].every((rect) => rect && rect.top < window.innerHeight && rect.bottom > 0)
+      : [cockpitRect, airspaceRect].every((rect) => rect && rect.top < window.innerHeight && rect.bottom > 0);
+    const singleCriticalSurfaces = [
+      'codesite-responsive-proof-target',
+      'codesite-radar-graph',
+      'codesite-tower-feed',
+      'codesite-governance-console',
+    ].every((testId) => document.querySelectorAll(`[data-testid="${testId}"]`).length === 1);
+    const workflowStateChips = Array.from(document.querySelectorAll('[data-testid="codesite-document-row"], [data-testid="codesite-route-revision-row"]'))
+      .map((row) => {
+        const rowRect = row.getBoundingClientRect();
+        const chip = row.querySelector(':scope > div:first-child > span:last-child');
+        const chipRect = chip?.getBoundingClientRect();
+        const style = chip ? window.getComputedStyle(chip) : null;
+        return {
+          text: chip?.textContent?.trim() || null,
+          row: {
+            left: Math.round(rowRect.left),
+            right: Math.round(rowRect.right),
+            width: Math.round(rowRect.width),
+          },
+          chip: chipRect ? {
+            left: Math.round(chipRect.left),
+            right: Math.round(chipRect.right),
+            width: Math.round(chipRect.width),
+            scrollWidth: chip.scrollWidth,
+            clientWidth: chip.clientWidth,
+            whiteSpace: style?.whiteSpace || null,
+          } : null,
+          contained: Boolean(chipRect) && chipRect.left >= rowRect.left - 1 && chipRect.right <= rowRect.right + 1,
+          unclippedText: Boolean(chip) && chip.scrollWidth <= chip.clientWidth + 1,
+        };
+      });
+    const workflowStateChipsReadable = workflowStateChips.length > 0
+      && workflowStateChips.every((item) => item.contained && item.unclippedText);
     const mobileTabs = Array.from(document.querySelectorAll('[data-testid="codesite-mobile-section-tab"]')).map((element) => {
       const rect = element.getBoundingClientRect();
       return {
@@ -543,7 +618,20 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     const visibleMobileTabs = mobileTabs.filter((tab) => tab.visible);
     return {
       selectorStatus,
+      selectorCounts,
+      desktopWidth,
       missingSelectors: Object.entries(selectorStatus).filter(([, ok]) => !ok).map(([key]) => key),
+      operatorRects,
+      operatorPaneGeometry,
+      operatorLoopInFirstViewport,
+      singleCriticalSurfaces,
+      workflowStateChips,
+      workflowStateChipsReadable,
+      cockpitContainsLoop: cockpitText.includes('Airspace Map')
+        && cockpitText.includes('Tower Feed')
+        && cockpitText.includes('Governance Console')
+        && cockpitText.includes('Required')
+        && cockpitText.includes('Reroutes'),
       towerInstructionVisible: document.body.textContent.includes('Streaming tower instruction received by governance console.'),
       routeDeviationVisible: document.body.textContent.includes('route_deviation'),
       maydayResumeEventVisible: document.body.textContent.includes('mayday_resumed'),
@@ -560,6 +648,12 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
   checks.consoleErrors = consoleErrors;
   checks.ok = checks.missingSelectors.length === 0
     && checks.noHorizontalOverflow
+    && checks.operatorPaneGeometry
+    && checks.operatorLoopInFirstViewport
+    && checks.singleCriticalSurfaces
+    && checks.workflowStateChipsReadable
+    && checks.cockpitContainsLoop
+    && checks.mobileTouchTargetsOk
     && checks.towerInstructionVisible
     && checks.routeDeviationVisible
     && checks.maydayResumeEventVisible
@@ -583,9 +677,21 @@ async function main() {
     const desktopContext = await browser.newContext({ viewport: { width: 1440, height: 1050 }, deviceScaleFactor: 1 });
     const desktop = await captureProofPage(desktopContext, baseUrl, data);
     const desktopPng = path.join(OUT_DIR, 'codesite-ui-governance-desktop.png');
+    const cockpitPng = path.join(OUT_DIR, 'codesite-ui-governance-cockpit.png');
     const towerPng = path.join(OUT_DIR, 'codesite-ui-governance-tower-feed.png');
     const governancePng = path.join(OUT_DIR, 'codesite-ui-governance-console.png');
     await desktop.page.screenshot({ path: desktopPng, fullPage: false });
+    const cockpitBox = await desktop.page.locator('[data-testid="codesite-operator-cockpit"]').boundingBox();
+    if (!cockpitBox) throw new Error('codesite_operator_cockpit_missing_for_screenshot');
+    await desktop.page.screenshot({
+      path: cockpitPng,
+      clip: {
+        x: Math.max(0, Math.floor(cockpitBox.x)),
+        y: Math.max(0, Math.floor(cockpitBox.y)),
+        width: Math.floor(cockpitBox.width),
+        height: Math.min(980, Math.floor(cockpitBox.height)),
+      },
+    });
     await desktop.page.locator('[data-testid="codesite-tower-feed"]').scrollIntoViewIfNeeded();
     await desktop.page.locator('[data-testid="codesite-tower-feed"]').screenshot({ path: towerPng });
     await desktop.page.locator('[data-testid="codesite-governance-console"]').scrollIntoViewIfNeeded();
@@ -607,13 +713,29 @@ async function main() {
     await reducedContext.close();
     await browser.close();
 
-    const screenshotPaths = { desktop: desktopPng, tower: towerPng, governance: governancePng, mobile: mobilePng, reducedMotion: reducedPng };
+    const screenshotPaths = { desktop: desktopPng, cockpit: cockpitPng, tower: towerPng, governance: governancePng, mobile: mobilePng, reducedMotion: reducedPng };
     const screenshots = Object.fromEntries(await Promise.all(Object.entries(screenshotPaths).map(async ([key, filePath]) => [key, await describePng(filePath)])));
     const proof = {
+      schemaVersion: 'synthi.codesite.uiGovernanceProof.v2',
       ok: desktop.checks.ok && mobile.checks.ok && reduced.checks.ok && Object.values(screenshots).every((item) => item.png.nonblank === true),
       runId: RUN_ID,
       runStartedAt,
       baseUrl,
+      git: {
+        head: gitText(['rev-parse', 'HEAD']) || process.env.CODESITE_UI_PROOF_GIT_HEAD || null,
+        branch: gitText(['rev-parse', '--abbrev-ref', 'HEAD']) || process.env.CODESITE_UI_PROOF_GIT_BRANCH || null,
+        statusShort: gitText(['status', '--short']) || process.env.CODESITE_UI_PROOF_GIT_STATUS || null,
+      },
+      commands: [{
+        name: 'dockerPlaywrightUiProof',
+        command: process.env.CODESITE_UI_PROOF_COMMAND || [process.execPath, ...process.argv.slice(1)].join(' '),
+        runner: 'playwright',
+        exitCode: 0,
+      }],
+      runtime: {
+        node: process.version,
+        platform: process.platform,
+      },
       checks: {
         desktop: desktop.checks,
         mobile: mobile.checks,

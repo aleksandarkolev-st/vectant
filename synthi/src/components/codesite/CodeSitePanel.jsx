@@ -547,11 +547,17 @@ function riskTone(level) {
   return { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' };
 }
 
+function indicatorTone(value) {
+  const normalized = String(value || '').toLowerCase();
+  if (['critical', 'high', 'medium', 'warning', 'low', 'clear', 'none'].includes(normalized)) return riskTone(value);
+  return statusTone(value);
+}
+
 function Pill({ children, tone = 'idle', className = '', testId }) {
   return (
     <span
       data-testid={testId}
-      className={`inline-flex h-6 items-center rounded px-2 text-[11px] font-medium ${className}`}
+      className={`inline-flex min-h-6 items-center rounded px-2 text-[11px] font-medium leading-4 ${className}`}
       style={typeof tone === 'string' ? statusTone(tone) : tone}
     >
       {children}
@@ -569,11 +575,12 @@ function IconButton({ title, onClick, disabled, children, variant = 'neutral', t
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded border px-3 text-xs transition-[background,border-color,transform,opacity] duration-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 motion-safe:hover:-translate-y-0.5"
       style={{
         borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 48%, var(--border-subtle))' : 'var(--border-subtle)',
-        background: active ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'var(--bg-elevated)',
+        background: active ? 'color-mix(in srgb, var(--accent-primary) 20%, var(--bg-elevated))' : 'var(--bg-elevated)',
         color: 'var(--text-primary)',
+        transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
       }}
     >
       {children}
@@ -607,7 +614,7 @@ function Metric({ label, value, tone = null, testId }) {
   return (
     <div
       data-testid={testId}
-      className="min-h-[68px] rounded border px-3 py-2"
+      className="min-h-[68px] rounded border px-3 py-2 transition-transform duration-200 motion-safe:hover:-translate-y-0.5"
       style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
     >
       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
@@ -618,6 +625,50 @@ function Metric({ label, value, tone = null, testId }) {
         {tone ? <span className="h-2 w-2 rounded-full" style={riskTone(tone)} /> : null}
       </div>
     </div>
+  );
+}
+
+function StatusRailItem({ label, value, tone = 'idle', icon: Icon = Activity, testId }) {
+  return (
+    <div
+      data-testid={testId}
+      className="grid min-h-14 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded border px-2.5 py-2"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 80%, var(--accent-primary) 20%)',
+        background: 'color-mix(in srgb, var(--bg-surface) 82%, var(--bg-editor) 18%)',
+      }}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent-primary)' }} />
+      <div className="min-w-0">
+        <div className="truncate text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</div>
+        <div className="truncate font-mono text-sm tabular-nums" title={String(value)} style={{ color: 'var(--text-primary)' }}>{value}</div>
+      </div>
+      <span className="h-2 w-2 rounded-full" style={indicatorTone(tone)} />
+    </div>
+  );
+}
+
+function OperatorPane({ title, icon: Icon, right, sectionKey, testId, children, className = '' }) {
+  return (
+    <section
+      id={sectionKey ? `codesite-section-${sectionKey}` : undefined}
+      data-codesite-section={sectionKey || undefined}
+      data-testid={testId}
+      className={`min-w-0 overflow-hidden rounded border ${className}`}
+      style={{
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 94%, var(--accent-primary) 6%), var(--bg-surface))',
+      }}
+    >
+      <div className="flex min-h-11 items-center justify-between gap-3 border-b px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent-primary)' }} />
+          <h3 className="truncate text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</h3>
+        </div>
+        {right}
+      </div>
+      <div className="p-3">{children}</div>
+    </section>
   );
 }
 
@@ -1206,11 +1257,11 @@ function MobileSectionTabs({ sections, activeSection, onSelect }) {
   );
 }
 
-function TowerStreamPanel({ events, streamStatus }) {
+function TowerStreamPanel({ events, streamStatus, condensed = false }) {
   const reduceMotion = useReducedMotion();
-  const rows = asArray(events).slice(0, 8);
+  const rows = asArray(events).slice(0, condensed ? 5 : 8);
   return (
-    <div data-testid="codesite-tower-feed" className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+    <div data-testid="codesite-tower-feed" className={condensed ? 'grid min-w-0 gap-2' : 'grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]'}>
       <div className="rounded border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
@@ -1273,6 +1324,7 @@ function GovernanceConsole({
   actionState,
   disabled,
   inspectionRuns,
+  condensed = false,
 }) {
   const reduceMotion = useReducedMotion();
   const permits = asArray(project?.permits);
@@ -1287,7 +1339,7 @@ function GovernanceConsole({
   const permitAllowedPaths = draftRoute ? [draftRoute] : [];
 
   return (
-    <div data-testid="codesite-governance-console" className="grid min-w-0 gap-3 xl:grid-cols-[minmax(260px,0.82fr)_minmax(0,1.18fr)]">
+    <div data-testid="codesite-governance-console" className={condensed ? 'grid min-w-0 gap-3' : 'grid min-w-0 gap-3 xl:grid-cols-[minmax(260px,0.82fr)_minmax(0,1.18fr)]'}>
       <motion.form
         layout={!reduceMotion}
         onSubmit={(event) => {
@@ -1345,7 +1397,7 @@ function GovernanceConsole({
       </motion.form>
 
       <div className="grid min-w-0 gap-3">
-        <div className="grid gap-2 md:grid-cols-2">
+        <div className={condensed ? 'grid gap-2' : 'grid gap-2 md:grid-cols-2'}>
           <div className="rounded border p-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="text-xs font-semibold">Documents</div>
@@ -1353,9 +1405,9 @@ function GovernanceConsole({
             </div>
             {documents.length ? documents.slice(0, 5).map((document) => (
               <div key={document.id} data-testid="codesite-document-row" className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-                <div className="flex items-center justify-between gap-2">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                   <span className="min-w-0 truncate font-medium">{documentLabel(document)}</span>
-                  <Pill tone={document.status}>{compact(document.status, 'open')}</Pill>
+                  <Pill tone={document.status} className="max-w-[8.5rem] justify-center break-words text-center whitespace-normal sm:max-w-none">{compact(document.status, 'open')}</Pill>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-1" data-testid="codesite-document-review-actions">
                   <IconButton title="Approve document" disabled={disabled || !documentNeedsReview(document)} onClick={() => onReviewDocument(document, 'approved')} testId="codesite-document-approve-button">
@@ -1403,9 +1455,9 @@ function GovernanceConsole({
             </form>
             {routeRevisions.length ? routeRevisions.slice(0, 5).map((revision) => (
               <div key={revision.id} data-testid="codesite-route-revision-row" className="rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }}>
-                <div className="flex items-center justify-between gap-2">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                   <code className="min-w-0 truncate text-[10px]">{asArray(revision.proposedRoute).join(', ') || 'route pending'}</code>
-                  <Pill tone={revision.status}>{compact(revision.status, 'proposed')}</Pill>
+                  <Pill tone={revision.status} className="max-w-[8.5rem] justify-center break-words text-center whitespace-normal sm:max-w-none">{compact(revision.status, 'proposed')}</Pill>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1">
                   <IconButton title="Approve route revision" disabled={disabled || !routeRevisionCanReview(revision)} onClick={() => onReviewRouteRevision(revision, 'approved')} testId="codesite-route-review-button">
@@ -1678,7 +1730,7 @@ function replayCompletenessTone(completeness) {
   return 'blocked';
 }
 
-function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [] }) {
+function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspections = [], condensed = false }) {
   const reduceMotion = useReducedMotion();
   const lanes = zones.length ? zones : [
     { label: 'Allowed route', class: 'C', paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4) },
@@ -1694,12 +1746,12 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
     <div className="space-y-2">
       <div
         data-testid="codesite-radar-graph"
-        className="overflow-hidden rounded border p-3"
+        className={condensed ? 'overflow-hidden rounded border p-2' : 'overflow-hidden rounded border p-3'}
         style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
       >
-        <div className="grid gap-3 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]">
+        <div className={condensed ? 'grid gap-2 lg:grid-cols-[minmax(300px,0.96fr)_minmax(0,1.04fr)]' : 'grid gap-3 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]'}>
           <div
-            className="relative min-h-[280px] overflow-hidden rounded border"
+            className={condensed ? 'relative min-h-[244px] overflow-hidden rounded border' : 'relative min-h-[280px] overflow-hidden rounded border'}
             style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-editor) 88%, transparent)' }}
           >
             <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" role="img" aria-label="CodeSite radar graph with flights, risks, and replay trace">
@@ -1866,7 +1918,7 @@ function AirspaceMap({ zones, noFlyZones, flights, risks, events = [], inspectio
           </div>
         </div>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs">
+      <div className={condensed ? 'grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2 text-xs' : 'grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs'}>
         <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
           <div style={{ color: 'var(--text-muted)' }}>No-fly zones</div>
           <div className="mt-1"><PathList paths={noFlyZones} empty="none" /></div>
@@ -2469,24 +2521,113 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
           {currentProject ? (
             <>
-              <div className="p-3">
-                <div className="mb-3 min-w-0">
-                  <div className="truncate text-sm font-semibold">{currentProject.title}</div>
-                  <div className="mt-1 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                    {currentProject.request}
+              <motion.div
+                data-testid="codesite-operator-cockpit"
+                className="grid gap-3 p-3"
+                initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: reduceMotion ? 0 : 0.24, ease: MOTION_EASE }}
+              >
+                <div
+                  data-testid="codesite-mission-control-header"
+                  className="grid gap-3 rounded border p-3 xl:grid-cols-[minmax(0,1fr)_minmax(460px,0.82fr)] xl:items-center"
+                  style={{
+                    borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)',
+                    background: 'linear-gradient(135deg, color-mix(in srgb, var(--bg-surface) 90%, var(--accent-primary) 10%), var(--bg-editor))',
+                  }}
+                >
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <Pill tone={latestStatus}>{latestStatus}</Pill>
+                      <Pill tone={streamStatus === 'live' ? 'active' : streamStatus === 'reconnecting' ? 'warning' : 'idle'}>{streamStatus}</Pill>
+                      {collisionForecast.riskLevel ? <Pill tone={collisionForecast.riskLevel}>{collisionForecast.riskLevel}</Pill> : null}
+                    </div>
+                    <h2 className="mt-2 truncate text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {currentProject.title}
+                    </h2>
+                    <p className="mt-1 max-w-[72ch] text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+                      {currentProject.request}
+                    </p>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    <StatusRailItem label="Flights" value={radarState.counts.activeFlights} tone={activeFlights.length ? 'active' : 'idle'} icon={Activity} testId="codesite-status-flights" />
+                    <StatusRailItem label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} icon={Inbox} testId="codesite-status-required" />
+                    <StatusRailItem label="Permits" value={permits.length} tone={permits.length ? 'active' : 'holding'} icon={ShieldCheck} testId="codesite-status-permits" />
+                    <StatusRailItem label="Reroutes" value={routeRevisions.length} tone={routeRevisions.filter(routeRevisionCanReview).length ? 'warning' : 'active'} icon={Route} testId="codesite-status-reroutes" />
                   </div>
                 </div>
-                <div data-testid="codesite-responsive-proof-target" className="grid grid-cols-[repeat(auto-fit,minmax(112px,1fr))] gap-2">
-                  <Metric label="Flights" value={radarState.counts.activeFlights} testId="codesite-metric-flights" />
-                  <Metric label="Leases" value={radarState.counts.activeMutationLeases} />
-                  <Metric label="Transactions" value={radarState.counts.activeTransactions} />
-                  <Metric label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} />
-                  <Metric label="Risk" value={compact(collisionForecast.riskLevel, 'unknown')} tone={collisionForecast.riskLevel} />
-                  <Metric label="Permits" value={permits.length} tone={permits.length ? 'active' : 'idle'} testId="codesite-metric-permits" />
-                  <Metric label="Documents" value={documents.length} tone={documents.filter(documentNeedsReview).length ? 'holding' : 'active'} />
-                  <Metric label="Reroutes" value={routeRevisions.length} tone={routeRevisions.filter(routeRevisionCanReview).length ? 'holding' : 'idle'} />
+
+                <div data-testid="codesite-responsive-proof-target" className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)] xl:items-start">
+                  <div className="grid min-w-0 content-start gap-3">
+                    <OperatorPane title="Airspace Map" icon={Map} sectionKey="radar" testId="codesite-operator-airspace-pane" right={<Pill>{zones.length || activeFlights.length}</Pill>}>
+                      <AirspaceMap
+                        zones={zones}
+                        noFlyZones={noFlyZones}
+                        flights={activeFlights}
+                        risks={risks}
+                        events={events}
+                        inspections={inspectionRuns}
+                        condensed
+                      />
+                    </OperatorPane>
+
+                    <div data-testid="codesite-metric-rail" className="grid grid-cols-[repeat(auto-fit,minmax(118px,1fr))] gap-2">
+                      <Metric label="Flights" value={radarState.counts.activeFlights} testId="codesite-metric-flights" />
+                      <Metric label="Leases" value={radarState.counts.activeMutationLeases} />
+                      <Metric label="Transactions" value={radarState.counts.activeTransactions} />
+                      <Metric label="Required" value={radarState.counts.requiredActions} tone={radarState.counts.requiredActions ? 'high' : 'low'} />
+                      <Metric label="Risk" value={compact(collisionForecast.riskLevel, 'unknown')} tone={collisionForecast.riskLevel} />
+                      <Metric label="Permits" value={permits.length} tone={permits.length ? 'active' : 'idle'} testId="codesite-metric-permits" />
+                      <Metric label="Documents" value={documents.length} tone={documents.filter(documentNeedsReview).length ? 'holding' : 'active'} />
+                      <Metric label="Reroutes" value={routeRevisions.length} tone={routeRevisions.filter(routeRevisionCanReview).length ? 'holding' : 'idle'} />
+                    </div>
+                  </div>
+
+                  <div className="grid min-w-0 content-start gap-3">
+                    <OperatorPane
+                      title="Tower Feed"
+                      icon={Radar}
+                      sectionKey="tower"
+                      testId="codesite-operator-tower-pane"
+                      right={<Pill tone={streamStatus === 'live' ? 'active' : streamStatus === 'reconnecting' ? 'warning' : 'idle'}>{streamStatus}</Pill>}
+                    >
+                      <TowerStreamPanel events={events} streamStatus={streamStatus} condensed />
+                    </OperatorPane>
+
+                    <OperatorPane
+                      title="Governance Console"
+                      icon={ClipboardCheck}
+                      sectionKey="governance"
+                      testId="codesite-operator-governance-pane"
+                      right={<Pill tone={(documents.filter(documentNeedsReview).length || routeRevisions.filter(routeRevisionCanReview).length || openMaydays.length) ? 'holding' : 'active'}>
+                        {permits.length}/{documents.length}/{routeRevisions.length}
+                      </Pill>}
+                    >
+                      <GovernanceConsole
+                        project={currentProject}
+                        activeFlights={activeFlights}
+                        activeLeases={activeLeases}
+                        incidents={incidents}
+                        inspectionRuns={inspectionRuns}
+                        permitDraft={permitDraft}
+                        routeDraft={routeDraft}
+                        onPermitDraft={setPermitDraft}
+                        onRouteDraft={setRouteDraft}
+                        onIssuePermit={handleIssuePermit}
+                        onReviewDocument={handleReviewDocument}
+                        onProposeRouteRevision={handleProposeRouteRevision}
+                        onReviewRouteRevision={handleReviewRouteRevision}
+                        onApplyRouteRevision={handleApplyRouteRevision}
+                        onResumeMayday={handleResumeMayday}
+                        actionState={governanceAction}
+                        disabled={acting}
+                        condensed
+                      />
+                    </OperatorPane>
+                  </div>
                 </div>
-              </div>
+
+              </motion.div>
 
               <Section title="Success Metrics" icon={BarChart3} sectionKey="evidence" right={<Pill tone={metrics?.status || 'pending'}>{metrics ? 'measured' : 'no data'}</Pill>}>
                 {metrics ? (
@@ -2511,55 +2652,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 ) : (
                   <EmptyLine>No success metrics exported yet</EmptyLine>
                 )}
-              </Section>
-
-              <Section title="Airspace Map" icon={Map} sectionKey="radar" right={<Pill>{zones.length || activeFlights.length}</Pill>}>
-                <AirspaceMap
-                  zones={zones}
-                  noFlyZones={noFlyZones}
-                  flights={activeFlights}
-                  risks={risks}
-                  events={events}
-                  inspections={inspectionRuns}
-                />
-              </Section>
-
-              <Section
-                title="Tower Feed"
-                icon={Radar}
-                sectionKey="tower"
-                right={<Pill tone={streamStatus === 'live' ? 'active' : streamStatus === 'reconnecting' ? 'warning' : 'idle'}>{streamStatus}</Pill>}
-              >
-                <TowerStreamPanel events={events} streamStatus={streamStatus} />
-              </Section>
-
-              <Section
-                title="Governance Console"
-                icon={ClipboardCheck}
-                sectionKey="governance"
-                right={<Pill tone={(documents.filter(documentNeedsReview).length || routeRevisions.filter(routeRevisionCanReview).length || openMaydays.length) ? 'holding' : 'active'}>
-                  {permits.length}/{documents.length}/{routeRevisions.length}
-                </Pill>}
-              >
-                <GovernanceConsole
-                  project={currentProject}
-                  activeFlights={activeFlights}
-                  activeLeases={activeLeases}
-                  incidents={incidents}
-                  inspectionRuns={inspectionRuns}
-                  permitDraft={permitDraft}
-                  routeDraft={routeDraft}
-                  onPermitDraft={setPermitDraft}
-                  onRouteDraft={setRouteDraft}
-                  onIssuePermit={handleIssuePermit}
-                  onReviewDocument={handleReviewDocument}
-                  onProposeRouteRevision={handleProposeRouteRevision}
-                  onReviewRouteRevision={handleReviewRouteRevision}
-                  onApplyRouteRevision={handleApplyRouteRevision}
-                  onResumeMayday={handleResumeMayday}
-                  actionState={governanceAction}
-                  disabled={acting}
-                />
               </Section>
 
               <Section title="Runway Occupancy" icon={Route} right={<Pill tone={runwayOccupancy.length ? 'holding' : 'active'}>{runwayOccupancy.length}</Pill>}>
