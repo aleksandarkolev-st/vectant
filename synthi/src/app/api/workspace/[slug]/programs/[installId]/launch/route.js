@@ -10,6 +10,7 @@ import {
 } from '@/lib/programs/store';
 import { launchInstalledProgram } from '@/lib/programs/runtimeClient';
 import { mergeProgramSession } from '@/lib/programs/routeHelpers';
+import { evaluatePaywall, paywallDenial } from '@/lib/programs/paidGate';
 
 export const runtime = 'nodejs';
 
@@ -28,6 +29,11 @@ export async function POST(_req, { params }) {
   if (!install || install.workspaceSlug !== slug) {
     return NextResponse.json({ error: 'install_not_found' }, { status: 404 });
   }
+
+  // Re-check the paywall at launch so a refund/revoke blocks the next run even
+  // for an already-installed paid app. Free apps pass through.
+  const denial = paywallDenial(await evaluatePaywall({ programId: install.programId, subjectId: actor.userId }));
+  if (denial) return NextResponse.json(denial.body, { status: denial.status });
 
   const version = await getProgramVersion(install.programId, install.version);
   if (!version || !version.manifestJson) {

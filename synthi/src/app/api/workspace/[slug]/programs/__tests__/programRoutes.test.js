@@ -30,6 +30,8 @@ const h = vi.hoisted(() => ({
   canPublish: vi.fn(),
   generateManifestFromContext: vi.fn(),
   fetchWorkspaceContext: vi.fn(),
+  evaluatePaywall: vi.fn(),
+  paywallDenial: vi.fn(),
 }));
 
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
@@ -72,6 +74,7 @@ vi.mock('@/lib/programs/runtimeClient', () => ({
 vi.mock('@/lib/programs/manifestGenerator', () => ({ generateManifestFromContext: h.generateManifestFromContext }));
 vi.mock('@/lib/programs/reviewOrchestrator', () => ({ submitForReview: h.submitForReview, processSubmission: h.processSubmission }));
 vi.mock('@/lib/programs/entitlements', () => ({ canPublish: h.canPublish, isPlatformAdmin: vi.fn() }));
+vi.mock('@/lib/programs/paidGate', () => ({ evaluatePaywall: h.evaluatePaywall, paywallDenial: h.paywallDenial }));
 
 import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
 import { GET as GET_INSTALLED } from '../installed/route.js';
@@ -96,6 +99,11 @@ beforeEach(() => {
   h.canPublish.mockReturnValue(true);
   h.listPermissionGrants.mockResolvedValue([]);
   h.appendProgramRuntimeEvent.mockResolvedValue({ id: 'evt-1' });
+  // Paywall allows by default; specific tests override to a denial.
+  h.evaluatePaywall.mockResolvedValue({ ok: true });
+  h.paywallDenial.mockImplementation((d) => (d && !d.ok
+    ? { status: d.reason === 'billing_unconfigured' ? 503 : 402, body: { error: d.reason, priceCents: d.priceCents ?? null, currency: d.currency ?? null } }
+    : null));
 });
 
 describe('GET /programs/marketplace', () => {
@@ -323,6 +331,31 @@ describe('POST /programs/install', () => {
     expect(h.discoverManifest).toHaveBeenCalledWith('team', 'gh1');
   });
 
+  it('blocks a paid published install without entitlement (402, no install created)', async () => {
+    h.getPublishedProgramVersion.mockResolvedValue({ program: { id: 'progPaid', packageId: '@team/paid' }, config: { ...manifest.config } });
+    h.evaluatePaywall.mockResolvedValue({ ok: false, reason: 'payment_required', priceCents: 500, currency: 'eur' });
+    const res = await POST_INSTALL(
+      req('http://x/api/workspace/team/programs/install', { packageId: '@team/paid', version: '1.0.0' }, 'POST'),
+      ctx({ slug: 'team' }),
+    );
+    expect(res.status).toBe(402);
+    expect(await res.json()).toMatchObject({ error: 'payment_required', priceCents: 500 });
+    expect(h.evaluatePaywall).toHaveBeenCalledWith({ programId: 'progPaid', subjectId: 'u1' });
+    expect(h.createInstall).not.toHaveBeenCalled();
+  });
+
+  it('allows a paid published install when entitled', async () => {
+    h.getPublishedProgramVersion.mockResolvedValue({ program: { id: 'progPaid', packageId: '@team/paid' }, config: { ...manifest.config } });
+    h.listPermissionGrants.mockResolvedValue([{ id: 'g0', scopes: ['program.launch', 'network.outbound'] }]);
+    h.createInstall.mockResolvedValue({ id: 'inst9', version: '1.0.0', status: 'installed' });
+    const res = await POST_INSTALL(
+      req('http://x/api/workspace/team/programs/install', { packageId: '@team/paid', version: '1.0.0' }, 'POST'),
+      ctx({ slug: 'team' }),
+    );
+    expect(res.status).toBe(200);
+    expect(h.createInstall).toHaveBeenCalled();
+  });
+
   it('reuses an existing grant that already covers the manifest scopes', async () => {
     h.discoverManifest.mockResolvedValue(manifest);
     h.listPermissionGrants.mockResolvedValue([{ id: 'g0', scopes: ['program.launch', 'network.outbound'] }]);
@@ -448,6 +481,15 @@ describe('POST /programs/[installId]/launch', () => {
     h.getInstall.mockResolvedValue(null);
     const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', {}, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
     expect(res.status).toBe(404);
+  });
+
+  it('blocks launch when the paywall denies (refund/revoke) — 402, no session', async () => {
+    h.getInstall.mockResolvedValue({ id: 'inst1', programId: 'progPaid', workspaceSlug: 'team', version: '1.0.0' });
+    h.evaluatePaywall.mockResolvedValue({ ok: false, reason: 'payment_required', priceCents: 500, currency: 'eur' });
+    const res = await POST_LAUNCH(req('http://x/api/workspace/team/programs/inst1/launch', {}, 'POST'), ctx({ slug: 'team', installId: 'inst1' }));
+    expect(res.status).toBe(402);
+    expect(h.evaluatePaywall).toHaveBeenCalledWith({ programId: 'progPaid', subjectId: 'u1' });
+    expect(h.createProgramSession).not.toHaveBeenCalled();
   });
 });
 
