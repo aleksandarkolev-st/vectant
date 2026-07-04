@@ -73,7 +73,7 @@ use hmr::incremental_cache::{compile_with_cache, link_objects, IncrementalCache}
 // use gstreamer_app as gst_app;
 
 use tempfile::tempdir;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -219,6 +219,23 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
                 ..Default::default()
             }]
         }
+    }
+}
+
+fn is_legacy_vscode_ws_tunnel_label(label: &str) -> bool {
+    label == "vscode-ws-tunnel" || label.starts_with("vscode-ws-tunnel?")
+}
+
+#[cfg(test)]
+mod vscode_tunnel_policy_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_vscode_ws_tunnel_policy_matches_only_exact_legacy_label() {
+        assert!(is_legacy_vscode_ws_tunnel_label("vscode-ws-tunnel"));
+        assert!(is_legacy_vscode_ws_tunnel_label("vscode-ws-tunnel?port=18000"));
+        assert!(!is_legacy_vscode_ws_tunnel_label("vscode-ws-tunnel-extra?port=22"));
+        assert!(!is_legacy_vscode_ws_tunnel_label("vscode-server?slug=workspace"));
     }
 }
 
@@ -4544,101 +4561,23 @@ async fn wire_peer_channels(
                 });
             }
             // ── VS Code Server WebSocket Tunnel ──────────────────────
-            // Bridges a DataChannel to the VS Code Server's TCP port so
-            // the browser can establish a WebSocket connection to the real
-            // Extension Host through the WebRTC transport.
-            //
-            // Label format: "vscode-ws-tunnel?port=18000"
-            // Data flows bidirectionally: DC ↔ TCP (127.0.0.1:<port>)
-            else if label.starts_with("vscode-ws-tunnel") {
-                let port: u16 = label
-                    .split_once("?port=")
-                    .and_then(|(_, p)| p.parse().ok())
-                    .unwrap_or(18000);
-
-                let dc_clone = dc.clone();
-
-                // Buffer incoming DC messages
-                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
-                let incoming_tx_clone = incoming_tx.clone();
-                dc.on_message(Box::new(move |msg| {
-                    let tx = incoming_tx_clone.clone();
-                    async move { let _ = tx.send(msg); }.boxed()
-                }));
-
-                // Wait for DC to open, then connect TCP
-                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
-                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
-                dc.on_open(Box::new(move || {
-                    debug_log!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
-                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
-                    }
-                    async {}.boxed()
-                }));
-
-                tokio::spawn(async move {
-                    // Wait for DC open
-                    if dc_open_rx.await.is_err() {
-                        debug_log!("[vscode-ws-tunnel] DC open signal dropped");
-                        return;
-                    }
-
-                    // Connect to the VS Code Server's TCP port
-                    let addr = format!("127.0.0.1:{}", port);
-                    let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("[vscode-ws-tunnel] Failed to connect to {}: {}", addr, e);
-                            let err = serde_json::json!({
-                                "id": 0, "type": "event", "method": "error",
-                                "args": [format!("TCP connect failed: {}", e)],
-                                "generation": 0
-                            });
-                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
-                            return;
-                        }
-                    };
-                    debug_log!("[vscode-ws-tunnel] TCP connected to {}", addr);
-
-                    let (tcp_read, mut tcp_write) = tcp_stream.into_split();
-
-                    // DC → TCP: forward DataChannel binary data to TCP socket
-                    let dc_to_tcp = tokio::spawn(async move {
-                        while let Some(msg) = incoming_rx.recv().await {
-                            if tcp_write.write_all(&msg.data).await.is_err() { break; }
-                        }
-                        debug_log!("[vscode-ws-tunnel] DC→TCP forwarder exited");
-                    });
-
-                    // TCP → DC: forward TCP data back to DataChannel
-                    let dc_for_tcp = dc_clone.clone();
-                    let tcp_to_dc = tokio::spawn(async move {
-                        let mut reader = tokio::io::BufReader::new(tcp_read);
-                        let mut buf = vec![0u8; 64 * 1024];
-                        loop {
-                            match reader.read(&mut buf).await {
-                                Ok(0) => break, // EOF
-                                Ok(n) => {
-                                    let data = Bytes::copy_from_slice(&buf[..n]);
-                                    if dc_for_tcp.send(&data).await.is_err() { break; }
-                                }
-                                Err(e) => {
-                                    eprintln!("[vscode-ws-tunnel] TCP read error: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        debug_log!("[vscode-ws-tunnel] TCP→DC forwarder exited");
-                    });
-
-                    // Wait for either direction to finish
-                    tokio::select! {
-                        _ = dc_to_tcp => {}
-                        _ = tcp_to_dc => {}
-                    }
-                    debug_log!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
+            // Disabled legacy raw DataChannel tunnel. The active product path
+            // uses the vscode-server manager RPC tunnel instead.
+            else if is_legacy_vscode_ws_tunnel_label(&label) {
+                eprintln!(
+                    "[vscode-ws-tunnel] Rejected disabled legacy tunnel DataChannel: {}",
+                    label
+                );
+                let err = serde_json::json!({
+                    "id": 0,
+                    "type": "event",
+                    "method": "error",
+                    "args": ["legacy vscode-ws-tunnel is disabled; use vscode-server manager RPC tunnel"],
+                    "generation": 0
                 });
+                let _ = dc
+                    .send_text(serde_json::to_string(&err).unwrap_or_default())
+                    .await;
             }
         }
         .boxed()
