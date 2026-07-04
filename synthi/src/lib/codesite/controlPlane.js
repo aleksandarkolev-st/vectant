@@ -1,8 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import prisma from '@/lib/prisma';
-import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from './artifacts';
-import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
+import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from './artifacts';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
 import { buildProofBundle as buildPortableProofBundle, proofCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
@@ -11,12 +10,6 @@ import {
   summarizeCodeSiteDojoProof,
   verifyCodeSiteDojoProof,
 } from './dojoProof';
-import {
-  applyPilotLicenseHealthGate,
-  buildPilotLicenseHealthForClearance,
-  buildPilotLicenseHealthRecords,
-  pilotLicenseHealthSummary,
-} from './pilotLicense';
 import {
   classifyPath,
   compileZonePolicy,
@@ -70,7 +63,6 @@ const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
   'clearance.issued',
-  'read.observed',
   'write.attempted',
   'write.denied',
   'snapshot.taken',
@@ -82,47 +74,8 @@ const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.committed',
   'transaction.aborted',
 ];
-const TRANSACTION_BLACK_BOX_EVENT_TYPES = new Set([
-  'flight_plan_filed',
-  'clearance_requested',
-  'clearance_issued',
-  'transaction_opened',
-  'transaction_validated',
-  'transaction_committed',
-  'transaction_aborted',
-  'assumption_recorded',
-  'assumption_invalidated',
-  'read_observed',
-  'write_attempted',
-  'write_allowed',
-  'write_denied',
-  'write_quarantined',
-  'quarantine_reviewed',
-  'quarantine_replayed',
-  'quarantine_applied',
-  'snapshot_taken',
-  'transponder_update',
-  'route_deviation',
-  'holding_pattern',
-  'tower_instruction',
-  'rfi',
-  'change_order',
-  'mayday',
-  'ground_stop',
-  'landing_requested',
-  'radar_result',
-  'inspection_result',
-  'shadow_run',
-  'arbiter_verdict',
-  'near_miss',
-  'policy_delta_proposed',
-  'policy_delta_promoted',
-  'policy_delta_rejected',
-  'black_box_closed',
-]);
 
 const PROJECT_INCLUDE = {
-  members: true,
   agentSessions: true,
   executionPlans: true,
   mutationLeases: true,
@@ -140,247 +93,11 @@ const PROJECT_INCLUDE = {
   inboxItems: true,
 };
 
-const PROJECT_READ_ROLES = new Set(['owner', 'admin', 'operator', 'agent', 'observer', 'viewer', 'read']);
-const PROJECT_WRITE_ROLES = new Set(['owner', 'admin', 'operator', 'agent', 'write']);
-const PROJECT_MEMBER_MANAGE_ROLES = new Set(['owner', 'admin', 'tower']);
-const PROJECT_MAYDAY_RESUME_ROLES = new Set(['owner', 'admin', 'tower']);
-
-function actorUserId(actor = null) {
-  return actor?.userId || actor?.workspaceUserId || null;
-}
-
-function projectMembershipDelegate() {
-  return prisma.codeSiteProjectMember || null;
-}
-
-function projectRoleAllows(role, mode = 'read') {
-  const normalized = String(role || '').toLowerCase();
-  if (mode === 'members:manage') return PROJECT_MEMBER_MANAGE_ROLES.has(normalized);
-  if (mode === 'mayday:resume') return PROJECT_MAYDAY_RESUME_ROLES.has(normalized);
-  if (mode === 'write') return PROJECT_WRITE_ROLES.has(normalized);
-  return PROJECT_READ_ROLES.has(normalized) || PROJECT_WRITE_ROLES.has(normalized);
-}
-
-function projectPermissionAllows(member, mode = 'read') {
-  if (!member || member.revokedAt || member.participationStatus === 'disabled') return false;
-  const permissions = parseJson(member.permissionsJson, null);
-  if (!Array.isArray(permissions) || permissions.length === 0) {
-    return projectRoleAllows(member.role, mode);
-  }
-  const set = new Set(permissions.map((permission) => String(permission || '').toLowerCase()));
-  if (set.has('*') || set.has('project:*')) return true;
-  if (mode === 'members:manage') return set.has('project:members:manage');
-  if (mode === 'mayday:resume') return set.has('mayday:resume') || set.has('mayday:override_resume');
-  if (mode === 'write') return set.has('project:write');
-  return set.has('project:read') || set.has('project:write');
-}
-
-function rolePermissions(role) {
-  const normalized = String(role || '').toLowerCase();
-  if (['owner', 'admin', 'tower'].includes(normalized)) {
-    return [
-      'project:read',
-      'project:write',
-      'project:members:manage',
-      'agent:any',
-      'document:file',
-      'inspection:manage',
-      'mayday:declare',
-      'mayday:resume',
-      'mayday:override_resume',
-    ];
-  }
-  if (['operator', 'agent', 'contributor'].includes(normalized)) {
-    return ['project:read', 'project:write', 'agent:own', 'document:file', 'mayday:declare'];
-  }
-  if (normalized === 'inspector') {
-    return ['project:read', 'document:file', 'inspection:manage', 'mayday:declare'];
-  }
-  return ['project:read'];
-}
-
-function projectMembershipProjection(member) {
-  return {
-    id: member.id,
-    projectId: member.projectId,
-    workspaceSlug: member.workspaceSlug,
-    userId: member.userId,
-    role: member.role,
-    permissions: parseJson(member.permissionsJson, []),
-    redactionPolicy: parseJson(member.redactionPolicyJson, null),
-    participationStatus: member.participationStatus || 'enabled',
-    source: member.source,
-    createdByUserId: member.createdByUserId || null,
-    revokedAt: member.revokedAt || null,
-    createdAt: member.createdAt,
-    updatedAt: member.updatedAt,
-  };
-}
-
-export async function upsertProjectMember(workspaceSlugOrInput, projectIdArg, bodyArg = {}, actorArg = null) {
-  if (typeof workspaceSlugOrInput === 'object' && workspaceSlugOrInput) {
-    return upsertProjectMemberRecord(workspaceSlugOrInput);
-  }
-  const workspaceSlug = workspaceSlugOrInput;
-  const project = await requireProject(workspaceSlug, projectIdArg, actorArg, 'members:manage');
-  const userId = bodyArg.userId || bodyArg.user_id || bodyArg.ownerUserId || bodyArg.owner_user_id;
-  if (!userId) throw badRequest('codesite_project_member_user_required');
-  const member = await upsertProjectMemberRecord({
-    projectId: project.id,
-    workspaceSlug,
-    userId,
-    role: bodyArg.role || 'agent',
-    permissions: bodyArg.permissions,
-    redactionPolicy: bodyArg.redactionPolicy || bodyArg.redaction_policy,
-    participationStatus: bodyArg.participationStatus || bodyArg.participation_status || 'enabled',
-    source: 'project_member_api',
-    createdByUserId: actorUserId(actorArg),
-  });
-  await recordEvent(project.id, {
-    eventType: 'tower_instruction',
-    actorType: 'human',
-    actorId: actorUserId(actorArg),
-    details: {
-      type: 'project_member_upserted',
-      userId,
-      role: member?.role || bodyArg.role || 'agent',
-      participationStatus: member?.participationStatus || bodyArg.participationStatus || 'enabled',
-    },
-  });
-  return projectMembershipProjection(member);
-}
-
-async function upsertProjectMemberRecord({ projectId, workspaceSlug, userId, role = 'agent', permissions = null, redactionPolicy = null, participationStatus = 'enabled', source = 'agent_session_owner', createdByUserId = null }) {
-  const delegate = projectMembershipDelegate();
-  if (!delegate || !projectId || !workspaceSlug || !userId) return null;
-  const existing = await delegate.findUnique({
-    where: { projectId_userId: { projectId, userId } },
-  }).catch(() => null);
-  const nextRole = projectPermissionAllows(existing, 'write') ? existing.role : role;
-  const nextPermissions = permissions || existing?.permissionsJson && parseJson(existing.permissionsJson, null) || rolePermissions(nextRole);
-  return delegate.upsert({
-    where: { projectId_userId: { projectId, userId } },
-    update: {
-      workspaceSlug,
-      role: nextRole,
-      source: existing?.source || source,
-      permissionsJson: stringifyJson(nextPermissions),
-      redactionPolicyJson: redactionPolicy == null ? existing?.redactionPolicyJson || null : stringifyJson(redactionPolicy),
-      participationStatus: participationStatus || existing?.participationStatus || 'enabled',
-      revokedAt: null,
-    },
-    create: {
-      projectId,
-      workspaceSlug,
-      userId,
-      role,
-      permissionsJson: stringifyJson(permissions || rolePermissions(role)),
-      redactionPolicyJson: redactionPolicy == null ? null : stringifyJson(redactionPolicy),
-      participationStatus: participationStatus || 'enabled',
-      source,
-      createdByUserId,
-    },
-  }).catch(() => null);
-}
-
-async function upsertMissionProjectMembers({ projectId, workspaceSlug, missions = [], createdByUserId = null }) {
-  const ownerIds = unique(asArray(missions).flatMap((mission) => [
-    mission?.ownerUserId,
-    mission?.owner_user_id,
-    mission?.userId,
-    mission?.user_id,
-  ]).filter(Boolean));
-  await Promise.all(ownerIds.map((userId) => upsertProjectMember({
-    projectId,
-    workspaceSlug,
-    userId,
-    role: 'agent',
-    source: 'mission_owner',
-    createdByUserId,
-  })));
-}
-
-export async function listProjectMembers(workspaceSlug, projectId, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
-  const delegate = projectMembershipDelegate();
-  const members = delegate
-    ? await delegate.findMany({ where: { projectId: project.id }, orderBy: [{ revokedAt: 'asc' }, { createdAt: 'asc' }] }).catch(() => [])
-    : [];
-  return members.map(projectMembershipProjection);
-}
-
-export async function revokeProjectMember(workspaceSlug, projectId, userId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'members:manage');
-  const delegate = projectMembershipDelegate();
-  if (!delegate) throw badRequest('codesite_project_membership_unavailable');
-  const member = await delegate.findUnique({ where: { projectId_userId: { projectId: project.id, userId } } });
-  if (!member) throw notFound('codesite_project_member_not_found');
-  if (member.userId === project.createdByUserId && member.role === 'owner') {
-    throw badRequest('codesite_project_owner_revoke_forbidden');
-  }
-  const updated = await delegate.update({
-    where: { projectId_userId: { projectId: project.id, userId } },
-    data: {
-      revokedAt: new Date(),
-      participationStatus: 'disabled',
-      source: body.reason ? `revoked:${String(body.reason).slice(0, 80)}` : 'revoked',
-    },
-  });
-  await recordEvent(project.id, {
-    eventType: 'tower_instruction',
-    actorType: 'human',
-    actorId: actorUserId(actor),
-    details: {
-      type: 'project_member_revoked',
-      userId,
-      reason: body.reason || null,
-    },
-  });
-  return projectMembershipProjection(updated);
-}
-
-function projectHasLegacyActorAccess(project, actor = null, mode = 'read') {
-  const userId = actorUserId(actor);
-  if (!userId) return false;
-  if (project.createdByUserId && project.createdByUserId === userId) return true;
-  if (mode === 'read') {
-    return asArray(project.agentSessions).some((session) => session.ownerUserId === userId);
-  }
-  return false;
-}
-
-async function actorCanAccessProject(project, actor = null, mode = 'read') {
-  if (!actor || actor.bypass) return true;
-  const userId = actorUserId(actor);
-  if (!userId) return false;
-  if (projectHasLegacyActorAccess(project, actor, mode)) return true;
-  const embedded = asArray(project.members).find((member) => member.userId === userId);
-  if (projectPermissionAllows(embedded, mode)) return true;
-  const delegate = projectMembershipDelegate();
-  if (!delegate || !project?.id) return false;
-  const member = await delegate.findFirst({
-    where: {
-      projectId: project.id,
-      userId,
-    },
-  }).catch(() => null);
-  return projectPermissionAllows(member, mode);
-}
-
-async function requireProjectAccess(project, actor = null, mode = 'read') {
-  if (await actorCanAccessProject(project, actor, mode)) return project;
-  throw forbidden(mode === 'write' ? 'codesite_project_write_forbidden' : 'codesite_project_not_found', {
-    projectId: project?.id || null,
-    actorUserId: actorUserId(actor),
-  });
-}
-
-export async function listProjects(workspaceSlug, actor = null) {
+export async function listProjects(workspaceSlug) {
   const projects = await prisma.codeSiteProject.findMany({
     where: { workspaceSlug },
     orderBy: { updatedAt: 'desc' },
     include: {
-      members: true,
       agentSessions: true,
       executionPlans: true,
       mutationLeases: true,
@@ -388,13 +105,7 @@ export async function listProjects(workspaceSlug, actor = null) {
       inspectionRuns: true,
     },
   });
-  const visible = [];
-  for (const project of projects) {
-    if (await actorCanAccessProject(project, actor, 'read')) {
-      visible.push(project);
-    }
-  }
-  return visible.map(projectSummary);
+  return projects.map(projectSummary);
 }
 
 export async function createProject(workspaceSlug, actor, body = {}) {
@@ -413,20 +124,6 @@ export async function createProject(workspaceSlug, actor, body = {}) {
       controlPlanJson: stringifyJson(controlPlan),
       createdByUserId: actor?.userId || null,
     },
-  });
-  await upsertProjectMember({
-    projectId: project.id,
-    workspaceSlug,
-    userId: actor?.userId,
-    role: 'owner',
-    source: 'project_creator',
-    createdByUserId: actor?.userId || null,
-  });
-  await upsertMissionProjectMembers({
-    projectId: project.id,
-    workspaceSlug,
-    missions: asArray(controlPlan.missions),
-    createdByUserId: actor?.userId || null,
   });
 
   await upsertMutationZones(workspaceSlug, zonePolicy);
@@ -540,14 +237,6 @@ async function bootstrapAutomaticWorkflow({ project, actor, zonePolicy, controlP
       },
     });
     agentSessions.push(session);
-    await upsertProjectMember({
-      projectId: project.id,
-      workspaceSlug: project.workspaceSlug,
-      userId: session.ownerUserId,
-      role: 'agent',
-      source: 'automatic_agent_session',
-      createdByUserId: actor?.userId || null,
-    });
     await recordEvent(project.id, {
       eventType: 'transponder_update',
       displayCallsign: session.displayCallsign,
@@ -663,11 +352,6 @@ function normalizeAutomaticMission(mission, index) {
     agentProvider: mission.agentProvider || mission.provider || 'codex',
     agentRuntime: mission.agentRuntime || mission.runtime || 'tower-auto-plan',
     ownerUserId: mission.ownerUserId || mission.owner_user_id || null,
-    dojoPilotLicenseRef: firstCodeSiteRef(mission.dojoPilotLicenseRef, mission.dojo_pilot_license_ref, mission.dojoLicenseRef, mission.dojo_license_ref),
-    dojoProofRef: firstCodeSiteRef(mission.dojoProofRef, mission.dojo_proof_ref),
-    dojoEvidenceRefs: asArray(mission.dojoEvidenceRefs || mission.dojo_evidence_refs || mission.evidenceRefs || mission.evidence_refs),
-    dojoDecisionDigest: firstCodeSiteRef(mission.dojoDecisionDigest, mission.dojo_decision_digest),
-    pilotLicenseSnapshot: mission.pilotLicenseSnapshot || mission.pilot_license_snapshot || null,
   };
 }
 
@@ -756,18 +440,17 @@ async function upsertMutationZones(workspaceSlug, zonePolicy) {
   }
 }
 
-export async function getProject(workspaceSlug, projectId, actor = null) {
+export async function getProject(workspaceSlug, projectId) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!project) return null;
-  await requireProjectAccess(project, actor, 'read');
   return projectProjection(project);
 }
 
-export async function updateZonePolicy(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+export async function updateZonePolicy(workspaceSlug, projectId, body = {}) {
+  const project = await requireProject(workspaceSlug, projectId);
   const previous = parseJson(project.zonePolicyJson, {});
   const next = compileProjectZonePolicy({
     ...previous,
@@ -785,7 +468,7 @@ export async function updateZonePolicy(workspaceSlug, projectId, body = {}, acto
       zoneDigest: digest(next),
     },
   });
-  return getProject(workspaceSlug, project.id, actor);
+  return getProject(workspaceSlug, project.id);
 }
 
 function compileProjectZonePolicy(input = {}, body = {}) {
@@ -862,8 +545,8 @@ function attachRepoPolicyCompilerMetadata(policy, { repoSignals, repoRoot, previ
   };
 }
 
-export async function updateControlPlan(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+export async function updateControlPlan(workspaceSlug, projectId, body = {}) {
+  const project = await requireProject(workspaceSlug, projectId);
   const previous = parseJson(project.controlPlanJson, {});
   const next = {
     ...previous,
@@ -881,15 +564,14 @@ export async function updateControlPlan(workspaceSlug, projectId, body = {}, act
       controlPlan: next,
     },
   });
-  return getProject(workspaceSlug, project.id, actor);
+  return getProject(workspaceSlug, project.id);
 }
 
 export async function createAgentSession(workspaceSlug, projectId, actor, body = {}) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const project = await requireProject(workspaceSlug, projectId);
   const callsign = String(body.displayCallsign || body.callsign || nextCallsign(body.agentProvider || 'AGENT')).toUpperCase();
   const requestedOwnerUserId = body.ownerUserId || body.owner_user_id || null;
   const ownerUserId = requestedOwnerUserId || actor?.userId || 'unknown';
-  const permissions = body.permissions || body.toolList || body.tool_list || body.tools || [];
   requireActorOwnsUserId(ownerUserId, actor, 'agent_session_owner_forbidden');
   const session = await prisma.codeSiteAgentSession.create({
     data: {
@@ -900,7 +582,7 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
       providerSessionRef: body.providerSessionRef || body.provider_session_ref || null,
       displayCallsign: callsign,
       status: body.status || 'registered',
-      permissionsJson: stringifyJson(permissions),
+      permissionsJson: stringifyJson(body.permissions || []),
       redactionPolicyJson: stringifyJson(body.redactionPolicy || body.redaction_policy || defaultRedactionPolicy()),
       dojoPilotLicenseRef: firstCodeSiteRef(body.dojoPilotLicenseRef, body.dojo_pilot_license_ref, body.dojoLicenseRef, body.dojo_license_ref),
       dojoProofRef: firstCodeSiteRef(body.dojoProofRef, body.dojo_proof_ref),
@@ -908,14 +590,6 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
       dojoDecisionDigest: firstCodeSiteRef(body.dojoDecisionDigest, body.dojo_decision_digest),
       pilotLicenseSnapshotJson: stringifyJson(body.pilotLicenseSnapshot || body.pilot_license_snapshot || null),
     },
-  });
-  await upsertProjectMember({
-    projectId: project.id,
-    workspaceSlug,
-    userId: ownerUserId,
-    role: 'agent',
-    source: 'agent_session_owner',
-    createdByUserId: actor?.userId || null,
   });
   await recordEvent(project.id, {
     eventType: 'transponder_update',
@@ -926,7 +600,6 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
       status: session.status,
       provider: session.agentProvider,
       runtime: session.agentRuntime,
-      permissions,
       instruction: `${callsign} registered with tower.`,
     },
   });
@@ -960,7 +633,7 @@ function defaultRedactionPolicy() {
 }
 
 export async function createExecutionPlan(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const project = await requireProject(workspaceSlug, projectId);
   const agentSession = await requireAgentSession(project.id, body.agentSessionId || body.agent_session_id);
   requireAgentSessionOwnerAccess(agentSession, actor, 'execution_plan_agent_forbidden');
   const route = pathsForRoute(body.route || body.allowedPaths || []);
@@ -1046,19 +719,8 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     zonePolicy,
     collisionAvoidance,
   });
-  const pilotLicenseHealth = await pilotLicenseHealthForLeaseRequest({
-    workspaceSlug,
-    plan,
-    executionPlan,
-    requestedLease,
-    zonePolicy,
-    dojoProof,
-  });
   const clearancePolicy = applyCounterfactualPolicyGate(
-    applyPilotLicenseHealthGate(
-      applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
-      pilotLicenseHealth,
-    ),
+    applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
     counterfactualPolicy,
   );
   const finalRequestedLease = {
@@ -1081,8 +743,6 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
         towerInstruction: clearancePolicy.towerInstruction,
         inspectedZones: clearancePolicy.inspectedZones,
         dojoProofVerification: dojoProofSummary.verification,
-        pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
-        pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
         counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
       }),
@@ -1100,19 +760,12 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     displayCallsign: lease.displayCallsign,
     decision: clearancePolicy.decision,
     reasonCodes: clearancePolicy.reasonCodes,
-    input: {
-      executionPlan,
-      requestedLease: finalRequestedLease,
-      dojoProof: dojoProofSummary,
-      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
-    },
+    input: { executionPlan, requestedLease: finalRequestedLease, dojoProof: dojoProofSummary },
     decisionJson: {
       status: clearancePolicy.status,
       towerInstruction: clearancePolicy.towerInstruction,
       inspectedZones: clearancePolicy.inspectedZones,
       dojoProof: dojoProofSummary,
-      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
-      pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
@@ -1129,8 +782,6 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       status: clearancePolicy.status,
       reasonCodes: clearancePolicy.reasonCodes,
       towerInstruction: clearancePolicy.towerInstruction,
-      pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
-      pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
     },
@@ -1152,44 +803,6 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     });
   }
   return mutationLeaseProjection(lease, { policyDecision: policyDecisionProjection(decision) });
-}
-
-async function pilotLicenseHealthForLeaseRequest({
-  workspaceSlug,
-  plan,
-  executionPlan,
-  requestedLease,
-  zonePolicy,
-  dojoProof,
-}) {
-  const project = await prisma.codeSiteProject.findUnique({
-    where: { id: plan.projectId },
-    include: PROJECT_INCLUDE,
-  });
-  const healthProject = project || {
-    ...plan.project,
-    id: plan.projectId,
-    workspaceSlug,
-    zonePolicyJson: plan.project?.zonePolicyJson || stringifyJson(zonePolicy),
-    agentSessions: [plan.agentSession].filter(Boolean),
-    executionPlans: [plan].filter(Boolean),
-    mutationLeases: [],
-    policyDecisions: [],
-    events: [],
-    inspectionRuns: [],
-    incidents: [],
-  };
-  return buildPilotLicenseHealthForClearance({
-    ...healthProject,
-    workspaceSlug: healthProject.workspaceSlug || workspaceSlug,
-    zonePolicy,
-    zonePolicyJson: healthProject.zonePolicyJson || stringifyJson(zonePolicy),
-  }, {
-    agentSession: plan.agentSession,
-    executionPlan,
-    requestedLease,
-    dojoProof,
-  });
 }
 
 async function collisionAvoidanceForLeaseRequest({ projectId, executionPlan, requestedLease, zonePolicy }) {
@@ -1418,9 +1031,8 @@ function defaultRadarForRoute(route, zonePolicy) {
   return [...new Set(radar)];
 }
 
-export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body = {}, actor = null) {
+export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body = {}) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
-  requireLeaseActorAccess(lease, actor);
   const updated = await prisma.codeSiteMutationLease.update({
     where: { id: lease.id },
     data: {
@@ -1448,9 +1060,8 @@ export async function revokeMutationLease(workspaceSlug, mutationLeaseId, body =
   return mutationLeaseProjection(updated);
 }
 
-export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body = {}, actor = null) {
+export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body = {}) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
-  await requireProjectAccess(lease.project || await requireProject(workspaceSlug, lease.projectId), actor, 'write');
   const decision = await createPolicyDecision(lease.projectId, {
     mutationLeaseId: lease.id,
     displayCallsign: lease.displayCallsign,
@@ -1516,29 +1127,6 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
       isolation: transaction.isolation,
     },
   });
-  if (baseSnapshotEvidence?.snapshotDigest) {
-    await recordEvent(lease.projectId, {
-      mutationLeaseId: lease.id,
-      eventType: 'snapshot_taken',
-      displayCallsign: lease.displayCallsign,
-      actorType: 'transaction',
-      actorId: transaction.id,
-      evidenceRefs: [
-        baseSnapshotEvidence.evidenceDigest && `codesite:read-snapshot:${baseSnapshotEvidence.evidenceDigest}`,
-      ].filter(Boolean),
-      details: {
-        transactionId: transaction.id,
-        baseSnapshot: transaction.baseSnapshot,
-        snapshotDigest: baseSnapshotEvidence.snapshotDigest,
-        evidenceDigest: baseSnapshotEvidence.evidenceDigest || null,
-        status: baseSnapshotEvidence.status || 'recorded',
-        readSet: normalizePathList(baseSnapshotEvidence.readSet || readSet),
-        fileCount: asArray(baseSnapshotEvidence.fileDigests).length,
-        missingPaths: asArray(baseSnapshotEvidence.missingPaths),
-        reason: 'serializable_transaction_open',
-      },
-    });
-  }
   return transactionProjection(transaction);
 }
 
@@ -1556,16 +1144,6 @@ export async function recordTransactionRead(workspaceSlug, transactionId, body =
   const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
-  const codesiteFsEvent = body.codesiteFsEvent || body.codesite_fs_event || null;
-  const readEvidenceRefs = unique([
-    ...asArray(body.evidenceRefs || body.evidence_refs),
-    ...asArray(codesiteFsEvent?.evidence_refs || codesiteFsEvent?.evidenceRefs),
-  ]);
-  const processAncestry = unique([
-    ...asArray(body.processAncestry || body.process_ancestry),
-    ...asArray(codesiteFsEvent?.details?.process_ancestry || codesiteFsEvent?.details?.processAncestry),
-  ]);
-  const isCodeSiteFsRead = codesiteFsEvent?.type === 'read_observed';
   const observed = appendUnique(parseJson(transaction.observedReadSetJson, []), path);
   const declared = appendUnique(parseJson(transaction.readSetJson, []), path);
   const updated = await prisma.codeSiteMutationTransaction.update({
@@ -1577,19 +1155,11 @@ export async function recordTransactionRead(workspaceSlug, transactionId, body =
   });
   await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
-    eventType: isCodeSiteFsRead ? 'read_observed' : 'transponder_update',
+    eventType: 'transponder_update',
     displayCallsign: transaction.mutationLease.displayCallsign,
-    actorType: isCodeSiteFsRead ? 'codesitefs' : 'transaction',
+    actorType: 'transaction',
     actorId: transaction.id,
-    evidenceRefs: readEvidenceRefs,
-    details: {
-      type: 'read_recorded',
-      transactionId: transaction.id,
-      path,
-      tool: body.tool || codesiteFsEvent?.tool || 'file_read',
-      codesiteFsEvent,
-      processAncestry,
-    },
+    details: { type: 'read_recorded', transactionId: transaction.id, path },
   });
   return transactionProjection(updated);
 }
@@ -1789,43 +1359,6 @@ export async function recordTransactionWrite(workspaceSlug, transactionId, body 
   return { ok: true, transaction: transactionProjection(updated), invalidatedAssumptions: invalidated };
 }
 
-const QUARANTINE_TRANSACTION_EVENT_TYPES = new Set([
-  'quarantine_reviewed',
-  'quarantine_replayed',
-  'quarantine_applied',
-]);
-
-export async function recordTransactionQuarantineEvent(workspaceSlug, transactionId, body = {}, actor = null) {
-  const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
-  const eventType = String(body.eventType || body.event_type || '').trim();
-  if (!QUARANTINE_TRANSACTION_EVENT_TYPES.has(eventType)) {
-    throw badRequest('invalid_quarantine_event_type', {
-      eventType: eventType || null,
-      allowedEventTypes: [...QUARANTINE_TRANSACTION_EVENT_TYPES],
-    });
-  }
-  const quarantineId = body.quarantineId || body.quarantine_id || null;
-  const paths = asArray(body.paths || body.changedPaths || body.changed_paths)
-    .map((item) => normalizePath(item))
-    .filter(Boolean);
-  const event = await recordEvent(transaction.projectId, {
-    mutationLeaseId: transaction.mutationLeaseId,
-    eventType,
-    displayCallsign: transaction.mutationLease.displayCallsign,
-    actorType: 'codesitefs',
-    actorId: quarantineId || transaction.id,
-    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
-    details: {
-      ...(body.details && typeof body.details === 'object' ? body.details : {}),
-      transactionId: transaction.id,
-      quarantineId,
-      paths,
-      rejected: asArray(body.rejected),
-    },
-  });
-  return eventProjection(event);
-}
-
 export async function dryRunTransactionWrites(workspaceSlug, transactionId, body = {}, actor = null) {
   const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const project = await prisma.codeSiteProject.findUnique({ where: { id: transaction.projectId } });
@@ -1866,7 +1399,7 @@ export async function dryRunTransactionWrites(workspaceSlug, transactionId, body
 }
 
 export async function preflightCodeSiteFsWrite(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const project = await requireProject(workspaceSlug, projectId);
   const path = normalizePath(body.path || body.filePath || body.file_path);
   if (!path) throw badRequest('invalid_path');
   const tool = body.tool || body.operation || body.source || 'file_write';
@@ -2593,13 +2126,11 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
     return { decision, transaction: transactionProjection(updated) };
   }
 
-  const landingStatus = inspectionDecision.inspectionRuns.at(-1)?.status || 'committed';
-  let bundle = await createProofBundleForTransaction(transaction, {
+  const bundle = await createProofBundleForTransaction(transaction, {
     ...body,
     inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     inspectionRunRefs: inspectionDecision.inspectionRuns.map((run) => run.id),
     repoState: repoStateDecision.repoState,
-    landingStatus,
   });
   const updated = await prisma.codeSiteMutationTransaction.update({
     where: { id: transaction.id },
@@ -2610,7 +2141,7 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
     },
   });
   await seedLineProvenance(transaction, bundle);
-  const commitEvent = await recordEvent(transaction.projectId, {
+  await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'transaction_committed',
     displayCallsign: transaction.mutationLease.displayCallsign,
@@ -2626,22 +2157,6 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
       inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
   });
-  const closeout = await closeTransactionBlackBox(workspaceSlug, {
-    ...transaction,
-    status: updated.status,
-    proofBundleDigest: bundle.bundleDigest,
-    closedAt: updated.closedAt,
-  }, {
-    body,
-    bundle,
-    terminalEvent: commitEvent,
-    validationDecision: validation.decision,
-    inspectionDecision,
-    repoStateDecision,
-    lineProvenanceDecision,
-    landingStatus,
-  });
-  if (closeout?.proofBundle) bundle = closeout.proofBundle;
   return {
     transaction: transactionProjection(updated),
     proofBundle: proofBundleProjection(bundle, {
@@ -2662,24 +2177,13 @@ export async function abortTransaction(workspaceSlug, transactionId, body = {}, 
       closedAt: new Date(),
     },
   });
-  const abortEvent = await recordEvent(transaction.projectId, {
+  await recordEvent(transaction.projectId, {
     mutationLeaseId: transaction.mutationLeaseId,
     eventType: 'transaction_aborted',
     displayCallsign: transaction.mutationLease.displayCallsign,
     actorType: 'transaction',
     actorId: transaction.id,
     details: { transactionId: transaction.id, reason: body.reason || 'aborted_by_tower' },
-  });
-  await closeTransactionBlackBox(workspaceSlug, {
-    ...transaction,
-    status: updated.status,
-    commitDecisionJson: updated.commitDecisionJson,
-    closedAt: updated.closedAt,
-  }, {
-    body,
-    terminalEvent: abortEvent,
-    terminalStatus: 'aborted',
-    landingStatus: 'aborted',
   });
   return transactionProjection(updated);
 }
@@ -2706,7 +2210,7 @@ async function createProofBundleForTransaction(transaction, body = {}) {
     evidenceRefs,
     repoState,
   });
-  const created = await prisma.codeSiteProofBundle.create({
+  return prisma.codeSiteProofBundle.create({
     data: {
       projectId: transaction.projectId,
       transactionId: transaction.id,
@@ -2718,69 +2222,7 @@ async function createProofBundleForTransaction(transaction, body = {}) {
       dojoEvidenceRefsJson: stringifyJson(body.dojoEvidenceRefs || body.dojo_evidence_refs || []),
       repoStateJson: stringifyJson(repoState),
       incidentReplayDigest: body.incidentReplayDigest || body.incident_replay_digest || null,
-      landingStatus: normalizeProofLandingStatus(body.landingStatus || body.landing_status),
       bundleDigest,
-    },
-  });
-  return signProofBundleRecord(created, {
-    project: transaction.project,
-    transaction,
-    mutationLease: transaction.mutationLease,
-  });
-}
-
-function normalizeProofLandingStatus(value) {
-  const status = String(value || '').trim();
-  return status || null;
-}
-
-async function signProofBundleRecord(bundle, context = {}) {
-  const transaction = context.transaction || bundle.transaction || null;
-  const mutationLease = context.mutationLease || transaction?.mutationLease || bundle.transaction?.mutationLease || null;
-  const project = context.project || bundle.project || transaction?.project || null;
-  const portable = buildPortableProofBundle({
-    project: project ? projectProjection(project) : { id: bundle.projectId },
-    transaction: transaction
-      ? transactionProjection(transaction)
-      : {
-        id: bundle.transactionId,
-        projectId: bundle.projectId,
-        mutationLeaseId: null,
-      },
-    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
-    proofBundle: {
-      id: bundle.id,
-      projectId: bundle.projectId,
-      transactionId: bundle.transactionId,
-      commitSha: bundle.commitSha,
-      readSetDigest: bundle.readSetDigest,
-      writeSetDigest: bundle.writeSetDigest,
-      invariants: parseJson(bundle.invariantsJson, []),
-      evidenceRefs: parseJson(bundle.evidenceRefsJson, []),
-      dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
-      repoState: parseJson(bundle.repoStateJson, null),
-      incidentReplayDigest: bundle.incidentReplayDigest,
-      landingStatus: bundle.landingStatus || context.landingStatus || null,
-      bundleDigest: bundle.bundleDigest,
-      proofSignature: parseJson(bundle.proofSignatureJson, null),
-      createdAt: bundle.createdAt,
-    },
-  });
-  return prisma.codeSiteProofBundle.update({
-    where: { id: bundle.id },
-    data: {
-      proofSignatureJson: stringifyJson(portable.proofSignature),
-      signatureKeyId: portable.proofSignature?.keyId || null,
-    },
-    include: {
-      project: true,
-      transaction: {
-        include: {
-          agentSession: true,
-          mutationLease: true,
-          project: true,
-        },
-      },
     },
   });
 }
@@ -3212,7 +2654,7 @@ async function lineProvenanceRowsFromWriteEvents(transaction, bundle) {
 }
 
 export async function createDocument(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const project = await requireProject(workspaceSlug, projectId);
   const kind = String(body.kind || body.type || 'rfi');
   const routing = await validateDocumentRouting(workspaceSlug, project.id, body, actor);
   const document = await prisma.codeSiteDocument.create({
@@ -3620,8 +3062,8 @@ function requireAgentInboxAccess(session, actor) {
   }
 }
 
-export async function createIncident(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+export async function createIncident(workspaceSlug, projectId, body = {}) {
+  const project = await requireProject(workspaceSlug, projectId);
   const category = String(body.category || body.kind || 'near_miss').toLowerCase();
   const participants = unique([
     ...oneOrMany(body.participants),
@@ -3719,207 +3161,6 @@ export async function createIncident(workspaceSlug, projectId, body = {}, actor 
   };
 }
 
-export async function resumeMaydayIncident(workspaceSlug, incidentId, body = {}, actor = null) {
-  const incident = await prisma.codeSiteIncident.findFirst({
-    where: { id: incidentId, project: { workspaceSlug } },
-    include: { project: { include: PROJECT_INCLUDE } },
-  });
-  if (!incident) throw notFound('incident_not_found');
-  if (incident.category !== 'mayday') throw badRequest('incident_not_mayday');
-  await requireProjectAccess(incident.project, actor, 'mayday:resume');
-  const approval = body.approved === true || body.approval === true || body.humanApproval === true || body.human_approval === true;
-  const rationale = String(body.rationale || body.reason || body.summary || '').trim();
-  if (!approval) throw badRequest('mayday_resume_human_approval_required');
-  if (!rationale) throw badRequest('mayday_resume_rationale_required');
-
-  const stopWork = await findStopWorkDocumentForIncident(incident.projectId, incident.id);
-  if (!stopWork) throw badRequest('mayday_stop_work_document_required');
-  const stopWorkBody = parseJson(stopWork.bodyJson, {});
-  const suspendedLeaseIds = unique([
-    ...asArray(stopWorkBody.suspendedLeaseIds),
-    ...asArray(parseJson(incident.incidentReplayJson, {})?.maydayWorkflow?.suspendedLeases).map((lease) => lease.id),
-  ].filter(Boolean));
-  if (!suspendedLeaseIds.length) throw badRequest('mayday_resume_no_suspended_leases');
-  const inspectionRunIds = unique([
-    ...asArray(body.inspectionRunIds || body.inspection_run_ids),
-    stopWorkBody.inspectorRunId,
-    parseJson(incident.incidentReplayJson, {})?.maydayWorkflow?.inspectorRunId,
-  ].filter(Boolean));
-  const inspectionDecision = await validateMaydayResumeInspections(incident.projectId, inspectionRunIds, body);
-  if (!inspectionDecision.ok) {
-    throw badRequest('mayday_resume_inspection_required', inspectionDecision);
-  }
-
-  const leases = await prisma.codeSiteMutationLease.findMany({
-    where: { id: { in: suspendedLeaseIds }, projectId: incident.projectId },
-  });
-  const foundLeaseIds = new Set(leases.map((lease) => lease.id));
-  const missingLeaseIds = suspendedLeaseIds.filter((id) => !foundLeaseIds.has(id));
-  const blockedLeases = leases
-    .filter((lease) => lease.status !== 'suspended' || lease.revokedAt || (lease.expiresAt && new Date(lease.expiresAt).getTime() <= Date.now()))
-    .map((lease) => ({
-      id: lease.id,
-      status: lease.status,
-      revokedAt: lease.revokedAt || null,
-      expiresAt: lease.expiresAt || null,
-    }));
-  if (missingLeaseIds.length || blockedLeases.length) {
-    throw badRequest('mayday_resume_lease_blocked', { missingLeaseIds, blockedLeases });
-  }
-
-  const resumedLeases = [];
-  const policyDecisions = [];
-  const events = [];
-  for (const lease of leases) {
-    const updated = await prisma.codeSiteMutationLease.update({
-      where: { id: lease.id },
-      data: { status: 'active' },
-    });
-    resumedLeases.push(mutationLeaseProjection(updated));
-    const decision = await createPolicyDecision(incident.projectId, {
-      mutationLeaseId: lease.id,
-      displayCallsign: lease.displayCallsign,
-      decision: 'allow',
-      reasonCodes: ['human_resume_approved', 'inspection_passed', 'mayday_ground_stop_resolved'],
-      input: {
-        incidentId: incident.id,
-        approval,
-        rationale,
-        inspectionRunIds,
-      },
-      decisionJson: {
-        incidentId: incident.id,
-        previousStatus: lease.status,
-        status: 'active',
-        resumedByUserId: actorUserId(actor),
-        rationale,
-      },
-    });
-    policyDecisions.push(policyDecisionProjection(decision));
-  }
-
-  const approvedAt = new Date();
-  const resolvedBody = {
-    ...stopWorkBody,
-    resumeGate: {
-      ...(stopWorkBody.resumeGate || {}),
-      requiresHumanApproval: true,
-      status: 'approved',
-      approvedByUserId: actorUserId(actor),
-      approvedAt: approvedAt.toISOString(),
-      rationale,
-      inspectionRunIds,
-      resumedLeaseIds: resumedLeases.map((lease) => lease.id),
-    },
-  };
-  const resolvedDocument = await prisma.codeSiteDocument.update({
-    where: { id: stopWork.id },
-    data: {
-      status: 'resolved',
-      blocking: false,
-      resolvedAt: approvedAt,
-      bodyJson: stringifyJson(resolvedBody),
-    },
-  });
-  const resumeEvent = await recordEvent(incident.projectId, {
-    eventType: 'mayday_resumed',
-    actorType: 'human',
-    actorId: actorUserId(actor),
-    evidenceRefs: unique([
-      ...asArray(body.evidenceRefs || body.evidence_refs),
-      ...inspectionDecision.evidenceRefs,
-      `codesite:incident:${incident.id}`,
-      `codesite:document:${resolvedDocument.id}`,
-    ]),
-    details: {
-      incidentId: incident.id,
-      documentId: resolvedDocument.id,
-      resumedLeaseIds: resumedLeases.map((lease) => lease.id),
-      inspectionRunIds,
-      rationale,
-      reasonCodes: ['human_resume_approved', 'inspection_passed', 'mayday_ground_stop_resolved'],
-    },
-  });
-  events.push(resumeEvent);
-
-  const priorReplay = parseJson(incident.incidentReplayJson, {});
-  const updatedIncident = await finalizeIncidentReplay(incident.project, incident, {
-    ...body,
-    timelineEventRefs: unique([
-      ...asArray(priorReplay.eventRefs),
-      resumeEvent.id,
-    ]),
-  }, {
-    participants: parseJson(incident.participantsJson, []),
-    affectedZones: parseJson(incident.affectedZonesJson, []),
-    evidenceRefs: unique([
-      ...parseJson(incident.evidenceRefsJson, []),
-      ...asArray(body.evidenceRefs || body.evidence_refs),
-      ...inspectionDecision.evidenceRefs,
-    ]),
-    timelineEventRefs: unique([
-      ...asArray(priorReplay.eventRefs),
-      resumeEvent.id,
-    ]),
-    extraEvents: events,
-    maydayWorkflow: {
-      ...(priorReplay.maydayWorkflow || {}),
-      humanResumeRequired: false,
-      resumeGate: resolvedBody.resumeGate,
-      resumedLeases: resumedLeases.map((lease) => ({ id: lease.id, displayCallsign: lease.displayCallsign, status: lease.status })),
-      policyDecisionIds: policyDecisions.map((decision) => decision.id),
-    },
-  });
-
-  return {
-    ok: true,
-    incident: updatedIncident,
-    resumedLeases,
-    stopWorkDocument: documentProjection(resolvedDocument),
-    policyDecisions,
-    event: eventProjection(resumeEvent),
-  };
-}
-
-async function findStopWorkDocumentForIncident(projectId, incidentId) {
-  const documents = await prisma.codeSiteDocument.findMany({
-    where: { projectId, kind: 'stop_work', status: { in: ['open', 'blocked', 'pending'] } },
-    orderBy: { createdAt: 'desc' },
-  });
-  return documents.find((document) => parseJson(document.bodyJson, {})?.incidentId === incidentId) || null;
-}
-
-async function validateMaydayResumeInspections(projectId, inspectionRunIds = [], body = {}) {
-  if (!inspectionRunIds.length) {
-    return { ok: false, reasonCodes: ['mayday_resume_inspection_run_required'], inspectionRunIds: [] };
-  }
-  const runs = await prisma.codeSiteInspectionRun.findMany({
-    where: { projectId, id: { in: inspectionRunIds } },
-  });
-  const evidenceRefs = unique(runs.flatMap((run) => parseJson(run.evidenceRefsJson, [])));
-  const missingRunIds = inspectionRunIds.filter((id) => !runs.some((run) => run.id === id));
-  const incompleteRuns = runs.filter((run) => !['completed', 'passed', 'green'].includes(String(run.status || '').toLowerCase()));
-  const badSignals = runs.flatMap((run) => parseJson(run.inspectionSignalsJson, [])
-    .filter((signal) => ['failed', 'blocked', 'red'].includes(String(signal.status || '').toLowerCase()))
-    .map((signal) => ({ inspectionRunId: run.id, key: signal.key || null, status: signal.status })));
-  const override = body.override === true || body.overrideResume === true || body.override_resume === true;
-  const reasonCodes = [
-    ...(missingRunIds.length ? ['mayday_resume_inspection_missing'] : []),
-    ...(incompleteRuns.length ? ['mayday_resume_inspection_incomplete'] : []),
-    ...(!evidenceRefs.length ? ['mayday_resume_inspection_evidence_required'] : []),
-    ...(badSignals.length && !override ? ['mayday_resume_failed_signal_override_required'] : []),
-  ];
-  return {
-    ok: reasonCodes.length === 0,
-    reasonCodes,
-    inspectionRunIds,
-    missingRunIds,
-    incompleteRunIds: incompleteRuns.map((run) => run.id),
-    badSignals,
-    evidenceRefs,
-  };
-}
-
 async function recordIncidentPolicyDeltaEvent(projectId, incident, policyDelta, evidenceRefs = []) {
   return recordEvent(projectId, {
     eventType: 'policy_delta_proposed',
@@ -3969,330 +3210,6 @@ async function finalizeIncidentReplay(project, incident, body = {}, context = {}
   });
   await syncArtifactsForProject(project.id, { reason: 'incident_replay_finalized' });
   return incidentProjection(updated);
-}
-
-async function closeTransactionBlackBox(workspaceSlug, transaction, context = {}) {
-  const project = await requireProject(workspaceSlug, transaction.projectId);
-  const body = transactionBlackBoxReplayBody(transaction, context);
-  const participants = body.participants;
-  const affectedZones = body.affectedZones;
-  const existing = await findExistingTransactionBlackBoxIncident(project.id, transaction.id);
-  const initialEvents = await findTransactionBlackBoxEvents(project.id, transaction, {
-    participants,
-    affectedZones,
-    extraEvents: [context.terminalEvent].filter(Boolean),
-    proofBundle: context.bundle,
-  });
-  const baseIncident = transactionBlackBoxIncidentEnvelope(existing, body, project);
-  const priorReplay = parseJson(existing?.incidentReplayJson, existing?.incidentReplay || {});
-  const initialReplay = buildIncidentReplayPacket({
-    project,
-    incident: baseIncident,
-    body,
-    events: initialEvents,
-  });
-  let incident = existing
-    ? await prisma.codeSiteIncident.update({
-      where: { id: existing.id },
-      data: {
-        severity: body.severity,
-        participantsJson: stringifyJson(participants),
-        affectedZonesJson: stringifyJson(affectedZones),
-        incidentReplayJson: stringifyJson(initialReplay),
-        replayDigest: digest(initialReplay),
-        timelineEventRefsJson: stringifyJson(initialReplay.eventRefs),
-        policyDeltaJson: stringifyJson(null),
-        evidenceRefsJson: stringifyJson(body.evidenceRefs),
-      },
-    })
-    : await prisma.codeSiteIncident.create({
-      data: {
-        projectId: project.id,
-        severity: body.severity,
-        category: 'black_box',
-        participantsJson: stringifyJson(participants),
-        affectedZonesJson: stringifyJson(affectedZones),
-        incidentReplayJson: stringifyJson(initialReplay),
-        replayDigest: digest(initialReplay),
-        timelineEventRefsJson: stringifyJson(initialReplay.eventRefs),
-        policyDeltaJson: stringifyJson(null),
-        evidenceRefsJson: stringifyJson(body.evidenceRefs),
-      },
-    });
-
-  const closeAlreadyRecorded = asArray(priorReplay.causalEvents).some((event) => (
-    event.type === 'black_box.closed'
-    && event.details?.transactionId === transaction.id
-    && (!context.bundle?.id || event.details?.proofBundleId === context.bundle.id)
-  ));
-  const closeEvent = closeAlreadyRecorded ? null : await recordEvent(project.id, {
-    mutationLeaseId: transaction.mutationLeaseId,
-    eventType: 'black_box_closed',
-    displayCallsign: transaction.mutationLease?.displayCallsign || null,
-    actorType: 'transaction',
-    actorId: transaction.id,
-    evidenceRefs: body.evidenceRefs,
-    details: {
-      transactionId: transaction.id,
-      incidentId: incident.id,
-      proofBundleId: context.bundle?.id || null,
-      proofBundleDigest: context.bundle?.bundleDigest || null,
-      landingStatus: context.landingStatus || context.terminalStatus || transaction.status,
-      status: context.terminalStatus || transaction.status,
-      readSet: body.transactionContext.readSet,
-      writeSet: body.transactionContext.writeSet,
-      exportedPaths: body.handover.exportPaths,
-      reason: 'transaction_black_box_closeout',
-    },
-  });
-
-  const finalEvents = await findTransactionBlackBoxEvents(project.id, transaction, {
-    participants,
-    affectedZones,
-    extraEvents: [context.terminalEvent, closeEvent].filter(Boolean),
-    proofBundle: context.bundle,
-  });
-  const finalReplay = buildIncidentReplayPacket({
-    project,
-    incident: {
-      ...baseIncident,
-      id: incident.id,
-      createdAt: incident.createdAt,
-    },
-    body,
-    events: finalEvents,
-  });
-  const replayDigest = digest(finalReplay);
-  incident = await prisma.codeSiteIncident.update({
-    where: { id: incident.id },
-    data: {
-      incidentReplayJson: stringifyJson(finalReplay),
-      replayDigest,
-      timelineEventRefsJson: stringifyJson(finalReplay.eventRefs),
-    },
-  });
-
-  let proofBundle = context.bundle || null;
-  if (context.bundle?.id) {
-    proofBundle = await prisma.codeSiteProofBundle.update({
-      where: { id: context.bundle.id },
-      data: {
-        incidentReplayDigest: replayDigest,
-        landingStatus: context.bundle.landingStatus || context.landingStatus || context.terminalStatus || transaction.status || null,
-      },
-    });
-    proofBundle = await signProofBundleRecord(proofBundle, {
-      project,
-      transaction,
-      mutationLease: transaction.mutationLease,
-      landingStatus: context.landingStatus || context.terminalStatus || transaction.status || null,
-    });
-  }
-  await syncArtifactsForProject(project.id, {
-    reason: 'transaction_black_box_closed',
-    eventId: closeEvent?.id || context.terminalEvent?.id || null,
-  });
-  return {
-    incident: incidentProjection(incident),
-    replay: finalReplay,
-    replayDigest,
-    proofBundle,
-    event: closeEvent,
-  };
-}
-
-function transactionBlackBoxReplayBody(transaction, context = {}) {
-  const readSet = parseJson(transaction.readSetJson, []);
-  const observedReadSet = parseJson(transaction.observedReadSetJson, []);
-  const writeSet = parseJson(transaction.writeSetJson, []);
-  const observedWriteSet = parseJson(transaction.observedWriteSetJson, []);
-  const semanticDependencyRefs = parseJson(transaction.semanticDependencyRefsJson, []);
-  const assumptionRefs = parseJson(transaction.assumptionRefsJson, []);
-  const changedPaths = unique([...writeSet, ...observedWriteSet]);
-  const affectedZones = unique(pathsForRoute([
-    ...readSet,
-    ...observedReadSet,
-    ...changedPaths,
-    ...dependencyPathRefs(semanticDependencyRefs),
-  ]));
-  const displayCallsign = transaction.mutationLease?.displayCallsign || null;
-  const repoState = context.repoStateDecision?.repoState || null;
-  const inspectionRuns = asArray(context.inspectionDecision?.inspectionRuns).map((run) => (
-    run?.changedPathsJson ? inspectionProjection(run) : run
-  ));
-  const proofBundle = proofBundleBlackBoxContext(context.bundle);
-  const evidenceRefs = unique([
-    ...asArray(context.body?.evidenceRefs || context.body?.evidence_refs),
-    ...proofBundle.evidenceRefs,
-    ...asArray(context.inspectionDecision?.evidenceRefs),
-    ...(repoState?.evidenceDigest ? [`codesite:repo-state:${repoState.evidenceDigest}`] : []),
-    ...(context.bundle?.id ? [`codesite:proof-bundle:${context.bundle.id}`] : []),
-    `codesite:transaction:${transaction.id}`,
-    `codesite:lease:${transaction.mutationLeaseId}`,
-  ]);
-  const transactionStatus = context.terminalStatus || transaction.status || 'closed';
-  const exportPaths = transactionBlackBoxExportPaths(transaction.projectId, transaction.id, displayCallsign, context.bundle?.id);
-  return {
-    category: 'black_box',
-    severity: transactionStatus === 'aborted' ? 'warning' : 'low',
-    summary: `Transaction ${transaction.id} black-box handover ${transactionStatus}.`,
-    participants: unique([displayCallsign].filter(Boolean)),
-    affectedZones,
-    evidenceRefs,
-    transactionContext: {
-      id: transaction.id,
-      projectId: transaction.projectId,
-      mutationLeaseId: transaction.mutationLeaseId,
-      agentSessionId: transaction.agentSessionId,
-      displayCallsign,
-      baseSnapshot: transaction.baseSnapshot,
-      baseSnapshotEvidence: parseJson(transaction.baseSnapshotEvidenceJson, null),
-      isolation: transaction.isolation,
-      status: transactionStatus,
-      readSet,
-      observedReadSet,
-      writeSet,
-      observedWriteSet,
-      semanticDependencyRefs,
-      assumptionRefs,
-      validationDecision: context.validationDecision || parseJson(transaction.commitDecisionJson, null),
-      repoState,
-      lineProvenance: context.lineProvenanceDecision || null,
-      openedAt: transaction.openedAt,
-      closedAt: transaction.closedAt,
-    },
-    proofBundle,
-    handover: {
-      status: transactionStatus,
-      landingStatus: context.landingStatus || transactionStatus,
-      changedPaths,
-      inspectionRuns,
-      inspectionRunIds: inspectionRuns.map((run) => run.id).filter(Boolean),
-      repoStateDigest: repoState?.evidenceDigest || null,
-      proofBundleId: context.bundle?.id || null,
-      proofBundleDigest: context.bundle?.bundleDigest || null,
-      exportPaths,
-    },
-  };
-}
-
-function transactionBlackBoxIncidentEnvelope(existing, body, project) {
-  return {
-    id: existing?.id || null,
-    severity: body.severity,
-    category: 'black_box',
-    participants: body.participants,
-    affectedZones: body.affectedZones,
-    evidenceRefs: body.evidenceRefs,
-    policyDelta: null,
-    createdAt: existing?.createdAt || new Date().toISOString(),
-    projectId: project.id,
-  };
-}
-
-function proofBundleBlackBoxContext(bundle) {
-  if (!bundle) {
-    return {
-      id: null,
-      transactionId: null,
-      commitSha: null,
-      readSetDigest: null,
-      writeSetDigest: null,
-      bundleDigest: null,
-      incidentReplayDigest: null,
-      evidenceRefs: [],
-      repoState: null,
-    };
-  }
-  return {
-    id: bundle.id,
-    transactionId: bundle.transactionId,
-    commitSha: bundle.commitSha || null,
-    readSetDigest: bundle.readSetDigest,
-    writeSetDigest: bundle.writeSetDigest,
-    bundleDigest: bundle.bundleDigest,
-    incidentReplayDigest: bundle.incidentReplayDigest || null,
-    evidenceRefs: parseJson(bundle.evidenceRefsJson, bundle.evidenceRefs || []),
-    repoState: parseJson(bundle.repoStateJson, bundle.repoState || null),
-  };
-}
-
-function transactionBlackBoxExportPaths(projectId, transactionId, displayCallsign, proofBundleId) {
-  const projectDir = `projects/${projectId}`;
-  return [
-    `${projectDir}/handover.md`,
-    `${projectDir}/events.jsonl`,
-    `${projectDir}/incidents/incident-replay-<incident-id>.jsonl`,
-    `${projectDir}/flights/${safeArtifactSegment(displayCallsign || 'unknown')}/black-box.json`,
-    `${projectDir}/flights/${safeArtifactSegment(displayCallsign || 'unknown')}/transaction-${transactionId}.json`,
-    ...(proofBundleId ? [`${projectDir}/proof-bundles/${proofBundleId}.proof.json`] : []),
-    ...(proofBundleId ? [`${projectDir}/proof-bundles/${proofBundleId}.trailers.txt`] : []),
-  ];
-}
-
-function safeArtifactSegment(value) {
-  return String(value || 'unknown')
-    .replace(/[^a-z0-9_.-]+/gi, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 120) || 'unknown';
-}
-
-async function findExistingTransactionBlackBoxIncident(projectId, transactionId) {
-  const incidents = await prisma.codeSiteIncident.findMany({
-    where: { projectId, category: 'black_box' },
-    orderBy: { createdAt: 'asc' },
-  });
-  return asArray(incidents).find((incident) => incidentBlackBoxReferencesTransaction(incident, transactionId)) || null;
-}
-
-function incidentBlackBoxReferencesTransaction(incident, transactionId) {
-  const replay = parseJson(incident.incidentReplayJson, incident.incidentReplay || {});
-  const evidenceRefs = parseJson(incident.evidenceRefsJson, incident.evidenceRefs || []);
-  return replay.transaction?.id === transactionId
-    || replay.transactionId === transactionId
-    || evidenceRefs.includes(`codesite:transaction:${transactionId}`)
-    || asArray(replay.causalEvents).some((event) => event.transactionId === transactionId || event.details?.transactionId === transactionId);
-}
-
-async function findTransactionBlackBoxEvents(projectId, transaction, context = {}) {
-  let rows = [];
-  try {
-    rows = asArray(await prisma.codeSiteEvent.findMany({
-      where: { projectId },
-      orderBy: EVENT_ORDER_BY,
-    }));
-  } catch (_) {
-    rows = [];
-  }
-  const events = rows.map(eventProjection);
-  const selected = events.filter((event) => transactionBlackBoxEventSelected(event, transaction, context));
-  const byId = new Map(selected.map((event) => [event.id, event]));
-  for (const event of asArray(context.extraEvents).map(safeReplayEventProjection).filter(Boolean)) {
-    if (event.id && !byId.has(event.id)) byId.set(event.id, event);
-  }
-  return [...byId.values()].sort(compareReplayEvents);
-}
-
-function transactionBlackBoxEventSelected(event, transaction, context = {}) {
-  if (!event) return false;
-  const details = event.details || {};
-  const explicitRefs = new Set([
-    ...asArray(context.timelineEventRefs),
-    ...asArray(context.eventRefs),
-    ...asArray(context.extraEvents).map((item) => item?.id).filter(Boolean),
-  ]);
-  if (explicitRefs.has(event.id) || explicitRefs.has(event.eventType) || explicitRefs.has(replayEventType(event.eventType))) {
-    return true;
-  }
-  if (!TRANSACTION_BLACK_BOX_EVENT_TYPES.has(event.eventType)) return false;
-  const eventTransactionId = details.transactionId || details.transaction_id || (event.actorType === 'transaction' ? event.actorId : null);
-  if (eventTransactionId === transaction.id) return true;
-  const eventLeaseId = event.mutationLeaseId || details.mutationLeaseId || details.mutation_lease_id;
-  if (eventLeaseId && eventLeaseId === transaction.mutationLeaseId) return true;
-  if (context.proofBundle?.id && details.proofBundleId === context.proofBundle.id) return true;
-  const displayCallsign = transaction.mutationLease?.displayCallsign;
-  if (displayCallsign && event.displayCallsign === displayCallsign) return true;
-  return eventTouchesAffectedZones(event, context.affectedZones);
 }
 
 async function findIncidentReplayEvents(projectId, context = {}) {
@@ -4384,15 +3301,7 @@ function buildIncidentReplayPacket({ project, incident, body = {}, events = [], 
     ...asArray(incident.evidenceRefs),
     ...causalEvents.flatMap((event) => asArray(event.evidenceRefs)),
   ]);
-  const transactionContext = body.transactionContext || body.transaction_context || null;
-  const proofBundle = body.proofBundle || body.proof_bundle || null;
-  const handover = body.handover || null;
-  const completeness = incidentReplayCompleteness(causalEvents, {
-    category: incident.category,
-    transactionContext,
-    proofBundle,
-    handover,
-  });
+  const completeness = incidentReplayCompleteness(causalEvents);
   return {
     schemaVersion: 'synthi.codesite.incidentReplay.v1',
     incidentId: incident.id,
@@ -4409,9 +3318,6 @@ function buildIncidentReplayPacket({ project, incident, body = {}, events = [], 
     affectedZones: asArray(incident.affectedZones),
     policyDelta: incident.policyDelta || null,
     completeness,
-    ...(transactionContext ? { transaction: transactionContext, transactionId: transactionContext.id || null } : {}),
-    ...(proofBundle ? { proofBundle } : {}),
-    ...(handover ? { handover } : {}),
     ...(maydayWorkflow ? { maydayWorkflow } : {}),
     ...(body.incidentReplay || body.incident_replay ? { operatorSuppliedReplay: body.incidentReplay || body.incident_replay } : {}),
   };
@@ -4455,7 +3361,6 @@ function replayEventType(eventType) {
     assumption_invalidated: 'assumption.invalidated',
     clearance_issued: 'clearance.issued',
     holding_pattern: 'clearance.holding',
-    read_observed: 'read.observed',
     write_attempted: 'write.attempted',
     write_denied: 'write.denied',
     write_quarantined: 'write.quarantined',
@@ -4472,7 +3377,6 @@ function replayEventType(eventType) {
     transaction_validated: 'transaction.validated',
     ground_stop: 'ground_stop.issued',
     mayday: 'mayday.declared',
-    mayday_resumed: 'mayday.resumed',
     rfi: 'document.rfi',
     change_order: 'document.change_order',
     tower_instruction: 'tower.instruction',
@@ -4483,57 +3387,18 @@ function replayEventType(eventType) {
   }[eventType] || String(eventType || 'unknown').replace(/_/g, '.');
 }
 
-function incidentReplayCompleteness(causalEvents = [], context = {}) {
+function incidentReplayCompleteness(causalEvents = []) {
   const observedTypes = unique(causalEvents.map((event) => event.type).filter(Boolean));
   const observed = new Set(observedTypes);
-  const required = incidentReplayRequiredEventTypes(observed, context);
-  const present = required.filter((type) => observed.has(type));
-  const missing = required.filter((type) => !observed.has(type));
+  const present = BLACK_BOX_MINIMUM_EVENT_TYPES.filter((type) => observed.has(type));
+  const missing = BLACK_BOX_MINIMUM_EVENT_TYPES.filter((type) => !observed.has(type));
   return {
-    score: required.length ? Number((present.length / required.length).toFixed(2)) : 1,
-    requiredEventTypes: required,
+    score: BLACK_BOX_MINIMUM_EVENT_TYPES.length ? Number((present.length / BLACK_BOX_MINIMUM_EVENT_TYPES.length).toFixed(2)) : 1,
     presentEventTypes: present,
     missingEventTypes: missing,
     observedEventTypes: observedTypes,
     totalEvents: causalEvents.length,
   };
-}
-
-function incidentReplayRequiredEventTypes(observed, context = {}) {
-  const transactionContext = context.transactionContext || context.transaction || null;
-  if (context.category !== 'black_box' || !transactionContext) return BLACK_BOX_MINIMUM_EVENT_TYPES;
-  const hasProofBundle = Boolean(context.proofBundle?.id || context.proofBundle?.bundleDigest || context.handover?.proofBundleId);
-  if (hasProofBundle) return BLACK_BOX_MINIMUM_EVENT_TYPES;
-
-  const required = [
-    'transaction.opened',
-    'clearance.issued',
-    'black_box.closed',
-  ];
-  const optionalWhenObserved = [
-    'assumption.recorded',
-    'write.attempted',
-    'write.denied',
-    'write.quarantined',
-    'write.allowed',
-    'snapshot.taken',
-    'shadow.run',
-    'arbiter.verdict',
-    'inspection.result',
-    'near_miss.detected',
-    'policy_delta.proposed',
-  ];
-  for (const type of optionalWhenObserved) {
-    if (observed.has(type)) required.push(type);
-  }
-
-  const status = String(transactionContext.status || '').toLowerCase();
-  if (status === 'committed' || observed.has('transaction.committed')) {
-    required.push('transaction.committed');
-  } else if (status === 'aborted' || observed.has('transaction.aborted')) {
-    required.push('transaction.aborted');
-  }
-  return unique(required);
 }
 
 function incidentReplayRouteContext(project, affectedZones = []) {
@@ -4872,8 +3737,8 @@ function emergencySnapshot(project, incident, details = {}) {
   };
 }
 
-export async function createInspectionRun(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+export async function createInspectionRun(workspaceSlug, projectId, body = {}) {
+  const project = await requireProject(workspaceSlug, projectId);
   const shouldExecute = inspectionExecutionRequested(body);
   const run = await prisma.codeSiteInspectionRun.create({
     data: {
@@ -4906,14 +3771,13 @@ export async function createInspectionRun(workspaceSlug, projectId, body = {}, a
   return inspectionProjection(executed);
 }
 
-export async function completeInspectionRun(workspaceSlug, inspectionRunId, body = {}, actor = null) {
+export async function completeInspectionRun(workspaceSlug, inspectionRunId, body = {}) {
   const run = await prisma.codeSiteInspectionRun.findFirst({
     where: { id: inspectionRunId, project: { workspaceSlug } },
   });
   if (!run) throw notFound('inspection_run_not_found');
-  await requireProject(workspaceSlug, run.projectId, actor, 'write');
   if (inspectionExecutionRequested(body)) {
-    const project = await requireProject(workspaceSlug, run.projectId, actor, 'write');
+    const project = await requireProject(workspaceSlug, run.projectId);
     const running = await prisma.codeSiteInspectionRun.update({
       where: { id: run.id },
       data: { status: 'running' },
@@ -5166,52 +4030,6 @@ function runCommand(executable, args, { cwd, timeoutMs }) {
   });
 }
 
-function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
-  return new Promise((resolve) => {
-    const child = spawn(executable, args, {
-      cwd,
-      env: process.env,
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-    }, timeoutMs);
-
-    child.stdout.on('data', (chunk) => {
-      stdout = tail(`${stdout}${chunk.toString('utf8')}`);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr = tail(`${stderr}${chunk.toString('utf8')}`);
-    });
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: 127,
-        signal: null,
-        timedOut,
-        stdoutTail: stdout,
-        stderrTail: tail(`${stderr}${error?.message || String(error)}`),
-      });
-    });
-    child.on('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: Number.isInteger(exitCode) ? exitCode : null,
-        signal,
-        timedOut,
-        stdoutTail: stdout,
-        stderrTail: stderr,
-      });
-    });
-    child.stdin.end(`${JSON.stringify(input || {})}\n`);
-  });
-}
-
 function tail(value, limit = 8000) {
   const text = String(value || '');
   return text.length > limit ? text.slice(-limit) : text;
@@ -5251,10 +4069,9 @@ async function recordInspectionExecutionEvents(projectId, run, signals) {
   });
 }
 
-export async function createCounterfactualRun(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
-  const arbiterVerdict = body.arbiterVerdict || body.arbiter_verdict || null;
-  const affectedZones = counterfactualAffectedZones(body, arbiterVerdict);
+export async function createCounterfactualRun(workspaceSlug, projectId, body = {}) {
+  const project = await requireProject(workspaceSlug, projectId);
+  const arbiterVerdict = body.arbiterVerdict || body.arbiter_verdict || body.outcome || null;
   const run = await prisma.codeSiteCounterfactualRun.create({
     data: {
       projectId: project.id,
@@ -5275,12 +4092,7 @@ export async function createCounterfactualRun(workspaceSlug, projectId, body = {
     eventType: 'shadow_run',
     actorType: 'counterfactual',
     actorId: run.id,
-    details: {
-      counterfactualRunId: run.id,
-      shadowJobRef: run.shadowJobRef,
-      validityStrength: run.validityStrength,
-      affectedZones,
-    },
+    details: { counterfactualRunId: run.id, shadowJobRef: run.shadowJobRef, validityStrength: run.validityStrength },
   });
   if (arbiterVerdict) {
     await recordEvent(project.id, {
@@ -5294,15 +4106,14 @@ export async function createCounterfactualRun(workspaceSlug, projectId, body = {
         arbiterVerdict,
         selected: arbiterVerdict.selected || arbiterVerdict.winner || arbiterVerdict.verdict || null,
         validityStrength: run.validityStrength,
-        affectedZones,
       },
     });
   }
   return counterfactualProjection(run);
 }
 
-export async function createPolicyDelta(workspaceSlug, projectId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+export async function createPolicyDelta(workspaceSlug, projectId, body = {}) {
+  const project = await requireProject(workspaceSlug, projectId);
   const requestedPromotionState = String(body.promotionState || body.promotion_state || 'proposed').toLowerCase();
   if (requestedPromotionState !== 'proposed') {
     throw badRequest('policy_delta_create_must_start_proposed', {
@@ -5311,15 +4122,13 @@ export async function createPolicyDelta(workspaceSlug, projectId, body = {}, act
     });
   }
   const ruleCandidate = normalizePolicyDeltaRuleCandidate(body.ruleCandidate || body.rule_candidate || body);
-  const triggerConditions = asArray(body.triggerConditions || body.trigger_conditions || []);
-  const affectedZones = policyDeltaAffectedZones(ruleCandidate, triggerConditions, body);
   const delta = await prisma.codeSitePolicyDelta.create({
     data: {
       projectId: project.id,
       learnedFromIncidentsJson: stringifyJson(body.learnedFromIncidents || body.learned_from_incidents || []),
       affectedZoneKey: body.affectedZoneKey || body.affected_zone_key || null,
       ruleCandidateJson: stringifyJson(ruleCandidate),
-      triggerConditionsJson: stringifyJson(triggerConditions),
+      triggerConditionsJson: stringifyJson(body.triggerConditions || body.trigger_conditions || []),
       expectedRiskReduction: typeof body.expectedRiskReduction === 'number' ? body.expectedRiskReduction : body.expected_risk_reduction,
       confidence: typeof body.confidence === 'number' ? body.confidence : 0.5,
       promotionState: 'proposed',
@@ -5331,20 +4140,13 @@ export async function createPolicyDelta(workspaceSlug, projectId, body = {}, act
     eventType: 'policy_delta_proposed',
     actorType: 'policy_delta',
     actorId: delta.id,
-    details: {
-      policyDeltaId: delta.id,
-      affectedZoneKey: delta.affectedZoneKey,
-      confidence: delta.confidence,
-      affectedZones,
-      triggerConditions,
-      ruleCandidate,
-    },
+    details: { policyDeltaId: delta.id, affectedZoneKey: delta.affectedZoneKey, confidence: delta.confidence },
   });
   return policyDeltaProjection(delta);
 }
 
 export async function promotePolicyDelta(workspaceSlug, projectId, policyDeltaId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const project = await requireProject(workspaceSlug, projectId);
   const delta = await prisma.codeSitePolicyDelta.findFirst({
     where: { id: policyDeltaId, projectId: project.id },
   });
@@ -5398,7 +4200,7 @@ export async function promotePolicyDelta(workspaceSlug, projectId, policyDeltaId
 }
 
 export async function rejectPolicyDelta(workspaceSlug, projectId, policyDeltaId, body = {}, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const project = await requireProject(workspaceSlug, projectId);
   const delta = await prisma.codeSitePolicyDelta.findFirst({
     where: { id: policyDeltaId, projectId: project.id },
   });
@@ -5497,7 +4299,6 @@ async function persistCounterfactualPolicyDeltaCandidates(projectId, run, arbite
     const triggerConditions = asArray(candidate.triggerConditions || candidate.trigger_conditions || candidate.affectedRoutes || candidate.affected_routes)
       .map((item) => (typeof item === 'string' ? { path: item } : item))
       .filter(Boolean);
-    const affectedZones = policyDeltaAffectedZones(ruleCandidate, triggerConditions, candidate);
     const delta = await prisma.codeSitePolicyDelta.create({
       data: {
         projectId,
@@ -5528,45 +4329,11 @@ async function persistCounterfactualPolicyDeltaCandidates(projectId, run, arbite
         shadowJobRef: run.shadowJobRef,
         promotionState: 'proposed',
         confidence: delta.confidence,
-        affectedZones,
-        triggerConditions,
         ruleCandidate,
       },
     });
   }
   return created.map(policyDeltaProjection);
-}
-
-function counterfactualAffectedZones(body = {}, arbiterVerdict = null) {
-  const universes = asArray(body.universes || body.choices || body.choiceScene || body.choice_scene);
-  const candidates = asArray(arbiterVerdict?.policyDeltaCandidates || arbiterVerdict?.policy_delta_candidates);
-  return unique(pathsForRoute([
-    ...asArray(body.affectedZones || body.affected_zones || body.affectedRoutes || body.affected_routes),
-    ...universes.flatMap((universe) => [
-      ...asArray(universe?.route || universe?.routes || universe?.affectedRoutes || universe?.affected_routes),
-      ...asArray(universe?.changedPaths || universe?.changed_paths || universe?.writeSet || universe?.write_set),
-    ]),
-    ...candidates.flatMap(policyDeltaCandidateRoutes),
-  ]));
-}
-
-function policyDeltaAffectedZones(ruleCandidate = {}, triggerConditions = [], source = {}) {
-  return unique(pathsForRoute([
-    ...policyDeltaCandidateRoutes(ruleCandidate),
-    ...policyDeltaCandidateRoutes(source),
-    ...asArray(triggerConditions),
-  ]));
-}
-
-function policyDeltaCandidateRoutes(candidate = {}) {
-  return [
-    ...asArray(candidate.affectedRoutes || candidate.affected_routes),
-    ...asArray(candidate.routes || candidate.route),
-    ...asArray(candidate.changedPaths || candidate.changed_paths),
-    ...asArray(candidate.allowedPaths || candidate.allowed_paths),
-    ...asArray(candidate.writeSet || candidate.write_set),
-    ...asArray(candidate.triggerConditions || candidate.trigger_conditions),
-  ];
 }
 
 function uniquePolicyDeltaCandidates(candidates) {
@@ -5598,24 +4365,22 @@ function normalizePolicyDeltaRuleCandidate(candidate = {}) {
   };
 }
 
-export async function getControlState(workspaceSlug, projectId, actor = null) {
+export async function getControlState(workspaceSlug, projectId) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!project) throw notFound('project_not_found');
-  await requireProjectAccess(project, actor, 'write');
   const projection = projectProjection(project);
   return buildControlState(workspaceSlug, projection);
 }
 
-export async function getCodeSiteMetrics(workspaceSlug, projectId, actor = null) {
+export async function getCodeSiteMetrics(workspaceSlug, projectId) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!project) throw notFound('project_not_found');
-  await requireProjectAccess(project, actor, 'write');
   const projection = projectProjection(project);
   const controlState = buildControlState(workspaceSlug, projection);
   return buildCodeSiteMetrics({ project: projection, controlState, workspaceSlug });
@@ -5623,26 +4388,6 @@ export async function getCodeSiteMetrics(workspaceSlug, projectId, actor = null)
 
 function buildControlState(workspaceSlug, projection) {
   const activeLeases = projection.mutationLeases.filter((lease) => lease.status === 'active');
-  const pilotLicenseHealth = buildPilotLicenseHealthRecords(projection);
-  const pilotLicenseSummary = pilotLicenseHealthSummary(pilotLicenseHealth);
-  const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(projection);
-  const pendingQuarantines = quarantineReviewRecords(projection)
-    .filter((record) => record.status !== 'applied')
-    .map((record) => ({
-      quarantineId: record.quarantineId,
-      status: record.status,
-      transactionId: record.transactionId,
-      mutationLeaseId: record.mutationLeaseId,
-      displayCallsign: record.displayCallsign,
-      paths: record.paths,
-      changeCount: record.changes.length,
-      appliedPaths: record.appliedPaths,
-      remainingPaths: record.remainingPaths,
-      latestReplayAttempt: record.latestReplayAttempt,
-      successfulReplay: record.successfulReplay,
-      evidenceRefs: record.evidenceRefs,
-      lifecycle: record.lifecycle,
-    }));
   const requiredActions = [
     ...projection.assumptions
       .filter((assumption) => assumption.status === 'invalidated')
@@ -5650,12 +4395,6 @@ function buildControlState(workspaceSlug, projection) {
     ...projection.inboxItems
       .filter((item) => item.status === 'pending' && item.requiresResponse)
       .map((item) => `ack_event:${item.eventId || item.id}`),
-    ...pendingQuarantines.map((record) => `review_quarantine:${record.quarantineId}`),
-    ...openMaydayResumeActions(projection),
-    ...filesystemBoundaryProofs
-      .filter((record) => !record.proofComplete)
-      .map((record) => `complete_filesystem_boundary_proof:${record.proofId}`),
-    ...pilotLicenseHealth.map((record) => record.requiredAction).filter(Boolean),
   ];
   return {
     projectId: projection.id,
@@ -5667,42 +4406,20 @@ function buildControlState(workspaceSlug, projection) {
     activeTransactions: projection.mutationTxns.filter((txn) => ['open', 'validated', 'blocked'].includes(txn.status)),
     allowedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.allowedPaths || []))),
     blockedPaths: unique(activeLeases.flatMap((lease) => pathsForRoute(lease.lease.blockedPaths || []))),
-    pendingQuarantines,
-    pilotLicenseHealth,
-    pilotLicenseSummary,
-    filesystemBoundaryProofs,
     requiredActions,
     eventsSince: eventCursor(projection.events.at(-1)),
     inboxUrl: `/api/workspace/${encodeURIComponent(workspaceSlug)}/codesite/agent-sessions/:agentSessionId/inbox`,
     collisionForecast: predictCollisions({
       executionPlans: projection.executionPlans,
       leases: projection.mutationLeases,
-      transactions: projection.mutationTxns,
-      inspectionRuns: projection.inspectionRuns,
       zonePolicy: projection.zonePolicy,
     }),
     updatedAt: new Date().toISOString(),
   };
 }
 
-function openMaydayResumeActions(projection) {
-  const hasOpenStopWork = asArray(projection.documents).some((document) => (
-    document.kind === 'stop_work'
-    && ['open', 'blocked', 'pending'].includes(String(document.status || '').toLowerCase())
-  ));
-  if (!hasOpenStopWork) return [];
-  const incidentIds = asArray(projection.incidents)
-    .filter((incident) => (
-      incident.category === 'mayday'
-      && incident.incidentReplay?.maydayWorkflow?.humanResumeRequired !== false
-      && incident.incidentReplay?.maydayWorkflow?.resumeGate?.status !== 'approved'
-    ))
-    .map((incident) => incident.id);
-  return unique(incidentIds).map((incidentId) => `resume_mayday:${incidentId}`);
-}
-
-export async function getEvents(workspaceSlug, projectId, since, actor = null) {
-  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+export async function getEvents(workspaceSlug, projectId, since) {
+  const project = await requireProject(workspaceSlug, projectId);
   const where = await eventWhereSince(project.id, since);
   const events = await prisma.codeSiteEvent.findMany({
     where,
@@ -5743,8 +4460,8 @@ function parseEventCursor(value) {
   return { logicalTime: null, id: raw };
 }
 
-export async function getAgentManifest(workspaceSlug, projectId, actor = null) {
-  await requireProject(workspaceSlug, projectId, actor, 'read');
+export async function getAgentManifest(workspaceSlug, projectId) {
+  await requireProject(workspaceSlug, projectId);
   return {
     version: 1,
     projectId,
@@ -5752,8 +4469,6 @@ export async function getAgentManifest(workspaceSlug, projectId, actor = null) {
     events: `projects/${projectId}/events.jsonl`,
     schemas: 'schemas/',
     inboxRoot: `projects/${projectId}/inbox/`,
-    quarantineRoot: `projects/${projectId}/quarantines/`,
-    quarantineIndex: `projects/${projectId}/quarantines/index.jsonl`,
     proofBundleRoot: `projects/${projectId}/proof-bundles/`,
     mcpTools: CODESITE_MCP_TOOLS,
   };
@@ -5763,13 +4478,12 @@ export async function getSchemas() {
   return codesiteSchemas();
 }
 
-export async function previewArtifacts(workspaceSlug, projectId, options = {}, actor = null) {
+export async function previewArtifacts(workspaceSlug, projectId, options = {}) {
   const projectRow = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!projectRow) throw notFound('project_not_found');
-  await requireProjectAccess(projectRow, actor, 'read');
   const project = artifactProjectProjection(projectRow);
   const controlState = buildControlState(workspaceSlug, project);
   const files = buildArtifactProjection(project, controlState);
@@ -5785,13 +4499,12 @@ export async function previewArtifacts(workspaceSlug, projectId, options = {}, a
   };
 }
 
-export async function exportArtifacts(workspaceSlug, projectId, actor = null) {
+export async function exportArtifacts(workspaceSlug, projectId) {
   const projectRow = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: PROJECT_INCLUDE,
   });
   if (!projectRow) throw notFound('project_not_found');
-  await requireProjectAccess(projectRow, actor, 'read');
   const project = artifactProjectProjection(projectRow);
   const controlState = buildControlState(workspaceSlug, project);
   const files = buildArtifactProjection(project, controlState).map((file) => file.relativePath);
@@ -5809,13 +4522,12 @@ export async function exportArtifacts(workspaceSlug, projectId, actor = null) {
   return syncArtifactsForProject(projectId, { reason: 'artifact_export_closed', eventId: event.id, force: true });
 }
 
-export async function collisionPredict(workspaceSlug, projectId, actor = null) {
+export async function collisionPredict(workspaceSlug, projectId) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
-    include: { members: true, agentSessions: true, executionPlans: true, mutationLeases: true },
+    include: { executionPlans: true, mutationLeases: true },
   });
   if (!project) throw notFound('project_not_found');
-  await requireProjectAccess(project, actor, 'read');
   return predictCollisions({
     executionPlans: project.executionPlans.map(executionPlanProjection),
     leases: project.mutationLeases.map(mutationLeaseProjection),
@@ -5823,12 +4535,10 @@ export async function collisionPredict(workspaceSlug, projectId, actor = null) {
   });
 }
 
-export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, actor = null) {
+export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}) {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: {
-      members: true,
-      agentSessions: true,
       executionPlans: true,
       mutationLeases: true,
       incidents: true,
@@ -5836,7 +4546,6 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
     },
   });
   if (!project) throw notFound('project_not_found');
-  await requireProjectAccess(project, actor, 'write');
   const zonePolicy = parseJson(project.zonePolicyJson, compileZonePolicy());
   const executionPlans = project.executionPlans.map(executionPlanProjection);
   const mutationLeases = project.mutationLeases.map(mutationLeaseProjection);
@@ -5894,29 +4603,6 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
     ...towerSignals.learnedPolicyDeltas.map((delta) => `codesite:policy-delta:${delta.id}`).filter(Boolean),
   ]);
   const policyDeltaCandidates = buildTowerPolicyDeltaCandidates(towerSignals, selected);
-  const shadowExecutionPlan = normalizeShadowExecutionPlan(body);
-  const shadowExecution = await runConfiguredShadowRunner({
-    workspaceSlug,
-    projectId,
-    shadowJobRef,
-    baseSnapshot,
-    strategySet,
-    universes,
-    selected,
-    forecast,
-    towerSignals,
-    shadowExecutionPlan,
-  });
-  const shadowExecutionCompleted = shadowExecution?.status === 'completed';
-  const shadowExecutionEvidenceRefs = asArray(shadowExecution?.evidenceRefs || shadowExecution?.evidence_refs);
-  const mergedEvidenceRefs = unique([
-    ...evidenceRefs,
-    ...shadowExecutionEvidenceRefs,
-    ...(shadowExecution ? [`codesite:shadow-runner:${digest(shadowExecution)}`] : []),
-  ]);
-  const mergedUniverses = Array.isArray(shadowExecution?.universes) && shadowExecution.universes.length
-    ? mergeExecutedShadowUniverses(universes, shadowExecution.universes)
-    : universes;
   const result = {
     selected: selected.strategy,
     appliedPolicyDeltas: selected.learnedPolicyDeltaRefs || [],
@@ -5928,138 +4614,23 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
       riskLevel: forecast.riskLevel,
       sourceSignals: selected.sourceSignals,
       learnedPolicyDeltaRefs: selected.learnedPolicyDeltaRefs || [],
-      shadowExecutionMode: shadowExecution ? 'external_runner' : 'control_plane_simulator',
     },
-    universes: mergedUniverses,
+    universes,
     shadowJobRef,
     baseSnapshot,
-    evidenceRefs: mergedEvidenceRefs,
+    evidenceRefs,
     policyDeltaCandidates,
-    shadowExecution: shadowExecution ? {
-      status: shadowExecution.status || 'completed',
-      runner: shadowExecution.runner || shadowExecution.runnerId || shadowExecution.runner_id || 'configured-shadow-runner',
-      executionMode: shadowExecution.executionMode || shadowExecution.execution_mode || null,
-      evidenceRefs: shadowExecutionEvidenceRefs,
-      universeCount: asArray(shadowExecution.universes).length,
-      digest: digest(shadowExecution),
-    } : null,
     repoSignals: towerSignals.summary,
   };
   await createCounterfactualRun(workspaceSlug, projectId, {
     shadowJobRef,
     baseSnapshot,
-    universes: mergedUniverses,
+    universes,
     arbiterVerdict: result,
-    validityStrength: shadowExecutionCompleted ? 'executed' : towerSignals.summary.signalStrength,
-    evidenceRefs: mergedEvidenceRefs,
-  }, actor);
+    validityStrength: towerSignals.summary.signalStrength,
+    evidenceRefs,
+  });
   return result;
-}
-
-function normalizeShadowExecutionPlan(body = {}) {
-  const plan = body.shadowExecutionPlan
-    || body.shadow_execution_plan
-    || body.shadowExecution
-    || body.shadow_execution
-    || null;
-  if (!plan || typeof plan !== 'object') return null;
-  return plan;
-}
-
-async function runConfiguredShadowRunner(input) {
-  const command = configuredShadowRunnerCommand();
-  if (!command) return null;
-  const timeoutMs = normalizeShadowRunnerTimeout();
-  const result = await runJsonCommand(command.executable, command.args, {
-    cwd: command.cwd || process.cwd(),
-    timeoutMs,
-    input: {
-      schemaVersion: 'synthi.codesite.shadowRunnerInput.v1',
-      ...input,
-    },
-  });
-  if (result.exitCode !== 0) {
-    return {
-      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
-      status: 'failed',
-      runner: command.executable,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      timedOut: result.timedOut,
-      stdoutTail: result.stdoutTail,
-      stderrTail: result.stderrTail,
-      evidenceRefs: [`codesite:shadow-runner-failed:${digest(result)}`],
-    };
-  }
-  try {
-    return {
-      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
-      status: 'completed',
-      runner: command.executable,
-      ...JSON.parse(result.stdoutTail || '{}'),
-      stdoutDigest: digest(result.stdoutTail || ''),
-      stderrDigest: digest(result.stderrTail || ''),
-    };
-  } catch (error) {
-    return {
-      schemaVersion: 'synthi.codesite.shadowRunnerResult.v1',
-      status: 'failed',
-      runner: command.executable,
-      exitCode: result.exitCode,
-      parseError: error?.message || String(error),
-      stdoutTail: result.stdoutTail,
-      stderrTail: result.stderrTail,
-      evidenceRefs: [`codesite:shadow-runner-invalid-json:${digest(result)}`],
-    };
-  }
-}
-
-function configuredShadowRunnerCommand() {
-  const json = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
-  if (json) {
-    try {
-      const parsed = JSON.parse(json);
-      const list = Array.isArray(parsed) ? parsed : asArray(parsed.command || parsed.argv);
-      const [executable, ...args] = list.map(String).filter(Boolean);
-      if (executable) return { executable, args, cwd: parsed.cwd || parsed.workingDirectory || parsed.working_directory || null };
-    } catch (_) {
-      return null;
-    }
-  }
-  const executable = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND;
-  if (!executable) return null;
-  const args = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON
-    ? parseJson(process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON, [])
-    : [];
-  return { executable, args: asArray(args).map(String), cwd: process.env.SYNTHI_CODESITE_SHADOW_RUNNER_CWD || null };
-}
-
-function normalizeShadowRunnerTimeout() {
-  const requested = Number(process.env.SYNTHI_CODESITE_SHADOW_RUNNER_TIMEOUT_MS || 120000);
-  return Number.isFinite(requested) && requested > 0 ? Math.min(requested, 600000) : 120000;
-}
-
-function mergeExecutedShadowUniverses(simulatedUniverses, executedUniverses) {
-  const executedByStrategy = new Map(asArray(executedUniverses)
-    .map((universe) => [normalizeTowerStrategyName(universe.strategy || universe.universe), universe])
-    .filter(([strategy]) => strategy));
-  return asArray(simulatedUniverses).map((universe) => {
-    const executed = executedByStrategy.get(normalizeTowerStrategyName(universe.strategy));
-    if (!executed) return universe;
-    return {
-      ...universe,
-      execution: {
-        status: executed.status || executed.result || 'completed',
-        evidenceRefs: asArray(executed.evidenceRefs || executed.evidence_refs),
-        command: executed.command || null,
-        executionMode: executed.executionMode || executed.execution_mode || null,
-        exitCode: Number.isFinite(Number(executed.exitCode)) ? Number(executed.exitCode) : null,
-        outputDigest: executed.outputDigest || executed.output_digest || null,
-      },
-      reasonCodes: unique([...asArray(universe.reasonCodes), ...asArray(executed.reasonCodes || executed.reason_codes)]),
-      evidenceRefs: unique([...asArray(universe.evidenceRefs), ...asArray(executed.evidenceRefs || executed.evidence_refs)]),
-    };
-  });
 }
 
 function buildTowerSimulationSignals({ project, executionPlans, mutationLeases, forecast, zonePolicy, learnedPolicyDeltas = [] }) {
@@ -6706,8 +5277,7 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-export async function getLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}, actor = null) {
-  if (projectId) await requireProject(workspaceSlug, projectId, actor, 'read');
+export async function getLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}) {
   const requestedLine = normalizeLineNumber(lineNumber);
   const baseWhere = {
     project: { workspaceSlug },
@@ -6765,7 +5335,7 @@ export async function getLineProvenance(workspaceSlug, { projectId, filePath, li
   return rows.map(lineProvenanceProjection);
 }
 
-export async function getProofBundle(workspaceSlug, bundleId, actor = null) {
+export async function getProofBundle(workspaceSlug, bundleId) {
   const bundle = await prisma.codeSiteProofBundle.findFirst({
     where: { id: bundleId, project: { workspaceSlug } },
     include: {
@@ -6778,7 +5348,6 @@ export async function getProofBundle(workspaceSlug, bundleId, actor = null) {
     },
   });
   if (!bundle) throw notFound('proof_bundle_not_found');
-  await requireProjectAccess(bundle.project, actor, 'read');
   const incidents = await prisma.codeSiteIncident.findMany({
     where: { projectId: bundle.projectId },
     orderBy: { createdAt: 'asc' },
@@ -6813,106 +5382,12 @@ export async function getProofBundle(workspaceSlug, bundleId, actor = null) {
   };
 }
 
-export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}, actor = null) {
-  const bundle = await prisma.codeSiteProofBundle.findFirst({
-    where: { id: bundleId, project: { workspaceSlug } },
-    include: {
-      project: true,
-      transaction: {
-        include: {
-          agentSession: true,
-          mutationLease: true,
-        },
-      },
-    },
-  });
-  if (!bundle) throw notFound('proof_bundle_not_found');
-  requireTransactionActorAccess(bundle.transaction, actor);
-
-  const commitSha = normalizeGitCommitSha(body.commitSha || body.commit_sha || body.sha);
-  if (!commitSha) throw badRequest('git_commit_sha_required');
-  const suppliedTrailers = normalizeCommitTrailers(body.trailers || body.commitTrailers || body.commit_trailers);
-  const expectedTrailers = proofBundleProjection(bundle, {
-    transaction: bundle.transaction,
-    mutationLease: bundle.transaction?.mutationLease,
-  }).trailers;
-  const mismatchedTrailers = Object.entries(expectedTrailers)
-    .filter(([, value]) => value != null && value !== '')
-    .filter(([key, value]) => suppliedTrailers[key] !== String(value))
-    .map(([key, value]) => ({ key, expected: String(value), actual: suppliedTrailers[key] || null }));
-  if (mismatchedTrailers.length > 0) {
-    throw badRequest('proof_bundle_commit_trailers_mismatch', { mismatchedTrailers });
-  }
-
-  const trailerDigest = digest(suppliedTrailers);
-  const commitEvidenceRefs = unique([
-    `git:commit:${commitSha}`,
-    `git:trailers:${trailerDigest}`,
-    ...asArray(body.evidenceRefs || body.evidence_refs),
-  ]);
-  const updated = await prisma.codeSiteProofBundle.update({
-    where: { id: bundle.id },
-    data: {
-      commitSha,
-    },
-    include: {
-      project: true,
-      transaction: {
-        include: {
-          agentSession: true,
-          mutationLease: true,
-        },
-      },
-    },
-  });
-  await recordEvent(bundle.projectId, {
-    mutationLeaseId: bundle.transaction?.mutationLeaseId || null,
-    eventType: 'inspection_result',
-    displayCallsign: bundle.transaction?.mutationLease?.displayCallsign || null,
-    actorType: 'proof_bundle',
-    actorId: bundle.id,
-    evidenceRefs: commitEvidenceRefs,
-    details: {
-      type: 'proof_bundle_commit_attached',
-      proofBundleId: bundle.id,
-      transactionId: bundle.transactionId,
-      commitSha,
-      trailerDigest,
-      evidenceRefs: commitEvidenceRefs,
-      reasonCodes: ['proof_bundle_commit_trailers_verified'],
-    },
-  });
-  return proofBundleProjection(updated, {
-    transaction: updated.transaction,
-    mutationLease: updated.transaction?.mutationLease,
-  });
-}
-
-function normalizeGitCommitSha(value) {
-  const sha = String(value || '').trim();
-  return /^[0-9a-f]{7,64}$/i.test(sha) ? sha : null;
-}
-
-function normalizeCommitTrailers(input) {
-  if (typeof input === 'string') {
-    return Object.fromEntries(input.split(/\r?\n/)
-      .map((line) => line.match(/^([A-Za-z0-9-]+):\s*(.*)$/))
-      .filter(Boolean)
-      .map((match) => [match[1], match[2]]));
-  }
-  if (!input || typeof input !== 'object') return {};
-  return Object.fromEntries(Object.entries(input)
-    .filter(([key, value]) => key && value != null && value !== '')
-    .map(([key, value]) => [key, String(value)]));
-}
-
-export async function getIncidentReplay(workspaceSlug, incidentId, actor = null) {
+export async function getIncidentReplay(workspaceSlug, incidentId) {
   const incident = await prisma.codeSiteIncident.findFirst({
     where: { id: incidentId, project: { workspaceSlug } },
     include: { project: { include: { events: { orderBy: EVENT_ORDER_BY } } } },
   });
   if (!incident) throw notFound('incident_not_found');
-  await requireProjectAccess(incident.project, actor, 'read');
   const projectedIncident = incidentProjection(incident);
   const timeline = incidentReplayTimeline(projectedIncident, incident.project.events.map(eventProjection));
   const replay = projectedIncident.incidentReplay;
@@ -7068,16 +5543,10 @@ async function createPolicyDecision(projectId, input) {
   });
 }
 
-async function requireProject(workspaceSlug, projectId, actor = null, mode = 'read') {
-  const project = await prisma.codeSiteProject.findFirst({
-    where: { id: projectId, workspaceSlug },
-    include: {
-      members: true,
-      agentSessions: true,
-    },
-  });
+async function requireProject(workspaceSlug, projectId) {
+  const project = await prisma.codeSiteProject.findFirst({ where: { id: projectId, workspaceSlug } });
   if (!project) throw notFound('project_not_found');
-  return requireProjectAccess(project, actor, mode);
+  return project;
 }
 
 async function requireAgentSession(projectId, agentSessionId) {
@@ -7099,7 +5568,7 @@ async function requireLease(workspaceSlug, mutationLeaseId) {
 async function requireTransaction(workspaceSlug, transactionId, actor = null) {
   const transaction = await prisma.codeSiteMutationTransaction.findFirst({
     where: { id: transactionId, project: { workspaceSlug } },
-    include: { project: true, mutationLease: true, agentSession: true },
+    include: { mutationLease: true, agentSession: true },
   });
   if (!transaction) throw notFound('transaction_not_found');
   requireTransactionActorAccess(transaction, actor);
@@ -7207,7 +5676,6 @@ function projectSummary(project) {
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     counts: {
-      members: project.members?.filter((member) => !member.revokedAt)?.length || 0,
       agentSessions: project.agentSessions?.length || 0,
       executionPlans: project.executionPlans?.length || 0,
       mutationLeases: project.mutationLeases?.length || 0,
@@ -7225,7 +5693,6 @@ function projectProjection(project) {
     ...projectSummary(project),
     zonePolicy: parseJson(project.zonePolicyJson, {}),
     controlPlan: parseJson(project.controlPlanJson, {}),
-    members: asArray(project.members).map(projectMembershipProjection),
     agentSessions: asArray(project.agentSessions).map(sessionProjection),
     executionPlans: asArray(project.executionPlans).map(executionPlanProjection),
     mutationLeases: mutationLeases.map(mutationLeaseProjection),
@@ -7302,7 +5769,6 @@ function executionPlanProjection(plan) {
 }
 
 function mutationLeaseProjection(lease, extra = {}) {
-  const leaseBody = parseJson(lease.leaseJson, {});
   return {
     id: lease.id,
     projectId: lease.projectId,
@@ -7310,9 +5776,7 @@ function mutationLeaseProjection(lease, extra = {}) {
     agentSessionId: lease.agentSessionId,
     displayCallsign: lease.displayCallsign,
     status: lease.status,
-    lease: leaseBody,
-    pilotLicenseHealth: leaseBody.pilotLicenseHealth || null,
-    pilotLicenseRequirement: leaseBody.pilotLicenseRequirement || null,
+    lease: parseJson(lease.leaseJson, {}),
     dojoProofRef: lease.dojoProofRef,
     dojoLicenseRef: lease.dojoLicenseRef,
     dojoEvidenceRefs: parseJson(lease.dojoEvidenceRefsJson, []),
@@ -7411,10 +5875,7 @@ function proofBundleProjection(bundle, context = {}) {
     dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
     repoState: parseJson(bundle.repoStateJson, null),
     incidentReplayDigest: bundle.incidentReplayDigest,
-    landingStatus: bundle.landingStatus || context.landingStatus || null,
     bundleDigest: bundle.bundleDigest,
-    proofSignature: parseJson(bundle.proofSignatureJson, null),
-    signatureKeyId: bundle.signatureKeyId || null,
     createdAt: bundle.createdAt,
   };
   const portable = buildPortableProofBundle({

@@ -21,7 +21,7 @@ test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slu
   assert.equal(shouldUseContainerTerminal({ enableContainerRuntime: true, workspaceRuntime: rt, workspaceSlug: '' }), false);
 });
 
-test('CodeSite terminal launch mode blocks host shells and permits container quarantine', () => {
+test('CodeSite terminal launch mode quarantines local shells and runtime containers while blocking unenforced runtime pods', () => {
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: null,
     workspaceSlug: 'repo',
@@ -30,7 +30,7 @@ test('CodeSite terminal launch mode blocks host shells and permits container qua
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: { active: true },
     workspaceSlug: 'repo',
-  }), 'block-host');
+  }), 'quarantine');
 
   assert.equal(codeSiteTerminalLaunchMode({
     codeSiteContext: { active: true },
@@ -75,7 +75,7 @@ test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
 });
 
-test('CodeSite program runtime mode blocks headless host launches and permits hybrid quarantine', () => {
+test('CodeSite program runtime mode permits headless quarantine, hybrid quarantine, and blocks unenforced runtimes', () => {
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: null,
     runtimeType: 'container',
@@ -87,7 +87,7 @@ test('CodeSite program runtime mode blocks headless host launches and permits hy
     runtimeType: 'web',
     sysboxEnabled: true,
     hasHybrid: true,
-  }), 'block-host');
+  }), 'quarantine');
   assert.equal(codeSiteProgramRuntimeLaunchMode({
     codeSiteContext: { active: true },
     runtimeType: 'container',

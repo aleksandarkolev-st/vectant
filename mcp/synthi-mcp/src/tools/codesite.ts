@@ -29,9 +29,6 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_request_landing",
   "synthi_codesite_generate_black_box",
   "synthi_codesite_get_line_provenance",
-  "synthi_codesite_review_quarantine",
-  "synthi_codesite_replay_quarantine",
-  "synthi_codesite_apply_quarantine",
 ] as const;
 
 type CodeSiteToolName = (typeof CODESITE_TOOL_NAMES)[number];
@@ -56,7 +53,6 @@ const CONTROL_ARG_KEYS = new Set([
   "cookie",
   "event_id",
   "execution_plan_id",
-  "filesystem_user_id",
   "file_path",
   "incident_id",
   "line_anchor",
@@ -64,9 +60,6 @@ const CONTROL_ARG_KEYS = new Set([
   "mutation_lease_id",
   "path",
   "project_id",
-  "quarantine_id",
-  "runtime_scope",
-  "selected_paths",
   "since",
   "transaction_id",
   "workspace_slug",
@@ -98,10 +91,6 @@ const COMMON_PROPERTIES = {
   cookie: {
     type: "string",
     description: "Optional Cookie header. Defaults to SYNTHI_CODESITE_COOKIE.",
-  },
-  collab_base_url: {
-    type: "string",
-    description: "Optional collab-server origin for CodeSiteFS replay/apply. Defaults to SYNTHI_COLLAB_BASE_URL, COLLAB_SERVER_URL, or http://127.0.0.1:1234.",
   },
   body: {
     type: "object",
@@ -237,32 +226,6 @@ export const CODESITE_TOOLS = [
     line_anchor: { type: "string" },
     line_number: { type: "number" },
   }, ["file_path"]),
-  codeSiteTool("synthi_codesite_review_quarantine", "List CodeSiteFS quarantine manifests, or fetch one manifest for human/agent review.", {
-    quarantine_id: { type: "string" },
-    transaction_id: { type: "string" },
-    user_id: { type: "string" },
-    filesystem_user_id: { type: "string" },
-    runtime_scope: { type: "string" },
-  }, []),
-  codeSiteTool("synthi_codesite_replay_quarantine", "Dry-run selected CodeSiteFS quarantine paths against the current repo and record reviewed/replayed timeline events.", {
-    quarantine_id: { type: "string" },
-    transaction_id: { type: "string" },
-    selected_paths: { type: "array", items: { type: "string" } },
-    paths: { type: "array", items: { type: "string" } },
-    user_id: { type: "string" },
-    filesystem_user_id: { type: "string" },
-    runtime_scope: { type: "string" },
-  }, ["quarantine_id", "transaction_id", "selected_paths"]),
-  codeSiteTool("synthi_codesite_apply_quarantine", "Apply selected CodeSiteFS quarantine paths through the active CodeSite transaction boundary.", {
-    quarantine_id: { type: "string" },
-    transaction_id: { type: "string" },
-    selected_paths: { type: "array", items: { type: "string" } },
-    paths: { type: "array", items: { type: "string" } },
-    mutation_lease_id: { type: "string" },
-    user_id: { type: "string" },
-    filesystem_user_id: { type: "string" },
-    runtime_scope: { type: "string" },
-  }, ["quarantine_id", "transaction_id", "selected_paths"]),
 ] as const;
 
 export async function dispatchCodeSiteTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
@@ -501,32 +464,6 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
           ...(Number.isFinite(Number(args["line_number"])) ? { lineNumber: String(Number(args["line_number"])) } : {}),
         },
       };
-    case "synthi_codesite_review_quarantine": {
-      const quarantineId = optionalString(args["quarantine_id"]) ?? optionalString(args["quarantineId"]);
-      return {
-        method: "GET",
-        path: quarantineId ? `/quarantines/${encodeURIComponent(quarantineId)}` : "/quarantines",
-        query: {
-          ...(optionalString(args["transaction_id"]) ? { transactionId: optionalString(args["transaction_id"]) as string } : {}),
-          ...(optionalString(args["status"]) ? { status: optionalString(args["status"]) as string } : {}),
-          ...(optionalString(args["user_id"]) ? { userId: optionalString(args["user_id"]) as string } : {}),
-          ...(optionalString(args["filesystem_user_id"]) ? { filesystemUserId: optionalString(args["filesystem_user_id"]) as string } : {}),
-          ...(optionalString(args["runtime_scope"]) ? { runtimeScope: optionalString(args["runtime_scope"]) as string } : {}),
-        },
-      };
-    }
-    case "synthi_codesite_replay_quarantine":
-      return {
-        method: "POST",
-        path: `/quarantines/${encodeURIComponent(requiredString(args, "quarantine_id"))}/replay`,
-        body: bodyFromArgs(args, quarantineActionOverlay(args)),
-      };
-    case "synthi_codesite_apply_quarantine":
-      return {
-        method: "POST",
-        path: `/quarantines/${encodeURIComponent(requiredString(args, "quarantine_id"))}/apply`,
-        body: bodyFromArgs(args, quarantineActionOverlay(args)),
-      };
   }
 }
 
@@ -580,7 +517,12 @@ async function callCollabWriteFilesBatch(args: JsonObject, files: JsonObject[]):
   const workspaceSlug = requiredWorkspaceSlug(args);
   const transactionId = requiredString(args, "transaction_id");
   const apiBase = resolveApiBase(args);
-  const collabBase = resolveCollabBase(args);
+  const collabBase = trimTrailingSlash(
+    optionalString(args["collab_base_url"]) ??
+      envString("SYNTHI_COLLAB_BASE_URL") ??
+      envString("COLLAB_SERVER_URL") ??
+      "http://127.0.0.1:1234"
+  );
   const url = new URL(`${collabBase}/git/${encodeURIComponent(workspaceSlug)}/write-files-batch`);
   const token = optionalString(args["auth_token"]) ?? envString("SYNTHI_CODESITE_TOKEN");
   const cookie = optionalString(args["cookie"]) ?? envString("SYNTHI_CODESITE_COOKIE");
@@ -697,16 +639,6 @@ function resolveApiBase(args: JsonObject): string {
   return `${origin}/api/workspace/${workspaceSlug}/codesite`;
 }
 
-function resolveCollabBase(args: JsonObject): string {
-  return trimTrailingSlash(
-    optionalString(args["collab_base_url"]) ??
-      envString("SYNTHI_COLLAB_BASE_URL") ??
-      envString("COLLAB_SERVER_URL") ??
-      envString("SYNTHI_COLLAB_SERVER_URL") ??
-      "http://127.0.0.1:1234"
-  );
-}
-
 function requiredWorkspaceSlug(args: JsonObject): string {
   const value = optionalString(args["workspace_slug"]) ?? envString("SYNTHI_CODESITE_WORKSPACE") ?? envString("SYNTHI_WORKSPACE_SLUG");
   if (!value) throw new Error("missing_workspace_slug");
@@ -732,26 +664,6 @@ function bodyFromArgs(args: JsonObject, overlay: JsonObject = {}): JsonObject {
 function pathOverlay(args: JsonObject): JsonObject {
   const path = optionalString(args["path"]) ?? optionalString(args["file_path"]);
   return path ? { path } : {};
-}
-
-function quarantineActionOverlay(args: JsonObject): JsonObject {
-  const transactionId = requiredString(args, "transaction_id");
-  const mutationLeaseId = optionalString(args["mutation_lease_id"]) ?? optionalString(args["mutationLeaseId"]);
-  const paths = selectedPathList(args);
-  if (paths.length === 0) {
-    throw new Error("missing_selected_paths");
-  }
-  const userId = optionalString(args["user_id"]) ?? optionalString(args["userId"]);
-  const filesystemUserId = optionalString(args["filesystem_user_id"]) ?? optionalString(args["filesystemUserId"]);
-  const runtimeScope = optionalString(args["runtime_scope"]) ?? optionalString(args["runtimeScope"]);
-  return {
-    transactionId,
-    paths,
-    ...(mutationLeaseId ? { mutationLeaseId } : {}),
-    ...(userId ? { userId } : {}),
-    ...(filesystemUserId ? { filesystemUserId } : {}),
-    ...(runtimeScope ? { runtimeScope } : {}),
-  };
 }
 
 function parseJsonObject(text: string): JsonObject {
@@ -791,10 +703,6 @@ function stringListArg(value: unknown): string[] {
   return value
     .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter(Boolean);
-}
-
-function selectedPathList(args: JsonObject): string[] {
-  return stringListArg(args["selected_paths"] ?? args["selectedPaths"] ?? args["paths"]);
 }
 
 function requiredString(args: JsonObject, field: string): string {
