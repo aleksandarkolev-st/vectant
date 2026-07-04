@@ -11,7 +11,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -2985,6 +2985,11 @@ const CFG = {
   checkpointBeforeRuntimeEvidence: booleanFromEnv(
     process.env,
     'SYNTHI_REAL_ROCM_CHECKPOINT_BEFORE_RUNTIME_EVIDENCE',
+    true,
+  ),
+  emergencyRetainedCheckpoints: booleanFromEnv(
+    process.env,
+    'SYNTHI_REAL_ROCM_EMERGENCY_RETAINED_CHECKPOINTS',
     true,
   ),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
@@ -19285,6 +19290,27 @@ async function selfCheckRuntimeDispatchEvidence() {
   const savedCheckpointEvidence = report.evidence;
   const savedRuntimeEvidenceCheckpoint = report.runtime_evidence_checkpoint;
   const savedRuntimeEvidenceCheckpointCamel = report.runtimeEvidenceCheckpoint;
+  const savedRuntimeEvidenceCollection = report.runtime_evidence_collection;
+  const savedRuntimeEvidenceCollectionCamel = report.runtimeEvidenceCollection;
+  const savedResultCheckpoints = report.result_checkpoints;
+  const savedResultCheckpointsCamel = report.resultCheckpoints;
+  const savedCurrentResultCheckpoint = report.current_result_checkpoint;
+  const savedCurrentResultCheckpointCamel = report.currentResultCheckpoint;
+  const savedEmergencyRetainedCheckpoint = report.emergency_retained_checkpoint;
+  const savedEmergencyRetainedCheckpointCamel = report.emergencyRetainedCheckpoint;
+  const savedResultArtifacts = report.result_artifacts;
+  const savedResultWritePhase = report.result_write_phase;
+  const savedResultWritePhaseCamel = report.resultWritePhase;
+  const savedGpuHmrSuccess = report.gpuHmrSuccess;
+  const savedGpuHmrSuccessSnake = report.gpu_hmr_success;
+  const savedAcceptedForGpuHmr = report.acceptedForGpuHmr;
+  const savedAcceptedForGpuHmrSnake = report.accepted_for_gpu_hmr;
+  const savedFullRuntimeProven = report.fullRuntimeProven;
+  const savedFullRuntimeProvenSnake = report.full_runtime_proven;
+  const savedFinishedAt = report.finished_at;
+  const savedFinishedMonotonicNs = report.finished_monotonic_ns;
+  const savedDurationMonotonicNs = report.duration_monotonic_ns;
+  const savedDurationMs = report.duration_ms;
   try {
     const atomicPath = path.join(checkpointSelfCheckDir, 'atomic-result.txt');
     await writeTextAtomic(atomicPath, 'first\n');
@@ -19306,6 +19332,29 @@ async function selfCheckRuntimeDispatchEvidence() {
       || report.runtime_evidence_checkpoint?.proof_authority !== 'fail_closed_checkpoint_not_gpu_hmr_success'
     ) {
       throw new Error('fail-closed checkpoint proof material self-check failed');
+    }
+    const emergencyPaths = {
+      retainedResultsJson: path.join(checkpointSelfCheckDir, 'emergency-result.json'),
+      retainedResultsTxt: path.join(checkpointSelfCheckDir, 'emergency-result.txt'),
+      latestResultsJson: path.join(checkpointSelfCheckDir, 'latest-result.json'),
+      latestResultsTxt: path.join(checkpointSelfCheckDir, 'latest-result.txt'),
+    };
+    const checkpoint = writeEmergencyRetainedCheckpointSync({
+      label: 'self-check-emergency',
+      reason: 'self_check_emergency_retained_checkpoint',
+      writeLatest: false,
+      resultPaths: emergencyPaths,
+    });
+    const emergencyJson = JSON.parse(await readFile(emergencyPaths.retainedResultsJson, 'utf8'));
+    if (
+      checkpoint?.proof_authority !== 'emergency_retained_checkpoint_not_gpu_hmr_success'
+      || emergencyJson.accepted_for_gpu_hmr !== false
+      || emergencyJson.gpu_hmr_success !== false
+      || emergencyJson.current_result_checkpoint?.can_satisfy_runtime_proof !== false
+      || emergencyJson.current_result_checkpoint?.proof_authority !== 'emergency_retained_checkpoint_not_gpu_hmr_success'
+      || existsSync(emergencyPaths.latestResultsJson)
+    ) {
+      throw new Error('emergency retained checkpoint self-check failed');
     }
     const lifecycleTimeout = workerLifecycleTimeoutCommand('printf ok\\n', 12_345);
     if (
@@ -19337,6 +19386,27 @@ async function selfCheckRuntimeDispatchEvidence() {
     report.evidence = savedCheckpointEvidence;
     report.runtime_evidence_checkpoint = savedRuntimeEvidenceCheckpoint;
     report.runtimeEvidenceCheckpoint = savedRuntimeEvidenceCheckpointCamel;
+    report.runtime_evidence_collection = savedRuntimeEvidenceCollection;
+    report.runtimeEvidenceCollection = savedRuntimeEvidenceCollectionCamel;
+    report.result_checkpoints = savedResultCheckpoints;
+    report.resultCheckpoints = savedResultCheckpointsCamel;
+    report.current_result_checkpoint = savedCurrentResultCheckpoint;
+    report.currentResultCheckpoint = savedCurrentResultCheckpointCamel;
+    report.emergency_retained_checkpoint = savedEmergencyRetainedCheckpoint;
+    report.emergencyRetainedCheckpoint = savedEmergencyRetainedCheckpointCamel;
+    report.result_artifacts = savedResultArtifacts;
+    report.result_write_phase = savedResultWritePhase;
+    report.resultWritePhase = savedResultWritePhaseCamel;
+    report.gpuHmrSuccess = savedGpuHmrSuccess;
+    report.gpu_hmr_success = savedGpuHmrSuccessSnake;
+    report.acceptedForGpuHmr = savedAcceptedForGpuHmr;
+    report.accepted_for_gpu_hmr = savedAcceptedForGpuHmrSnake;
+    report.fullRuntimeProven = savedFullRuntimeProven;
+    report.full_runtime_proven = savedFullRuntimeProvenSnake;
+    report.finished_at = savedFinishedAt;
+    report.finished_monotonic_ns = savedFinishedMonotonicNs;
+    report.duration_monotonic_ns = savedDurationMonotonicNs;
+    report.duration_ms = savedDurationMs;
     await rm(checkpointSelfCheckDir, { recursive: true, force: true });
   }
   const visualRows = [
@@ -26716,6 +26786,165 @@ function ensureFailClosedRuntimeProofMaterial({
   return report.full_runtime_proof;
 }
 
+function retainedResultPaths() {
+  const retainedBaseName = cleanIdentifier(report.slug ?? CFG.slug ?? 'real-rocm-result');
+  return {
+    retainedResultsJson: path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.json`),
+    retainedResultsTxt: path.join(RETAINED_RESULTS_DIR, `${retainedBaseName}.txt`),
+    latestResultsJson: RESULTS_JSON,
+    latestResultsTxt: RESULTS_TXT,
+  };
+}
+
+function writeTextAtomicSync(filePath, text) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  writeFileSync(tempPath, text);
+  renameSync(tempPath, filePath);
+}
+
+function emergencyCheckpointText({ checkpoint, paths }) {
+  const checks = Array.isArray(report.checks) ? report.checks : [];
+  const phases = Array.isArray(report.phases) ? report.phases : [];
+  return [
+    `slug: ${report.slug}`,
+    `retained_results_json: ${paths.retainedResultsJson}`,
+    `retained_results_txt: ${paths.retainedResultsTxt}`,
+    `latest_results_json: ${paths.latestResultsJson}`,
+    `latest_results_txt: ${paths.latestResultsTxt}`,
+    `checkpoint_label: ${checkpoint.label}`,
+    `checkpoint_status: ${checkpoint.status}`,
+    `checkpoint_reason: ${checkpoint.reason}`,
+    `gpu_hmr_success: false`,
+    `accepted_for_gpu_hmr: false`,
+    `full_runtime_proven: false`,
+    `runtime_evidence_collection: ${JSON.stringify(report.runtime_evidence_collection ?? null)}`,
+    `runtime_evidence_checkpoint: ${JSON.stringify(report.runtime_evidence_checkpoint ?? null)}`,
+    `current_result_checkpoint: ${JSON.stringify(checkpoint)}`,
+    '',
+    ...checks.map((check) => `${check.status?.toUpperCase?.() ?? 'UNKNOWN'} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
+    '',
+    ...phases.map((phase) => `PHASE ${phase.name ?? 'unknown'} ${JSON.stringify(phase)}`),
+    '',
+  ].join('\n');
+}
+
+function writeEmergencyRetainedCheckpointSync({
+  label,
+  reason,
+  signal = null,
+  writeLatest = true,
+  resultPaths = null,
+} = {}) {
+  if (!CFG.emergencyRetainedCheckpoints && !resultPaths) return null;
+  const checkpointLabel = String(label ?? 'emergency-retained-checkpoint');
+  const checkpointReason = String(reason ?? 'emergency_retained_checkpoint');
+  const paths = resultPaths ?? retainedResultPaths();
+  const now = new Date().toISOString();
+  ensureFailClosedRuntimeProofMaterial({
+    reason: checkpointReason,
+    checkpointLabel,
+  });
+  updateRuntimeEvidenceCollectionStatus({
+    status: 'emergency_checkpoint_written',
+    reason: checkpointReason,
+    checkpointLabel,
+  });
+  const timingFields = monotonicTimingFields(RUN_STARTED_MONOTONIC_NS);
+  report.result_write_phase = checkpointLabel;
+  report.resultWritePhase = checkpointLabel;
+  report.finished_at = now;
+  report.finished_monotonic_ns = timingFields.finished_monotonic_ns;
+  report.duration_monotonic_ns = timingFields.duration_monotonic_ns;
+  report.duration_ms = timingFields.duration_ms;
+  report.gpuHmrSuccess = false;
+  report.gpu_hmr_success = false;
+  report.acceptedForGpuHmr = false;
+  report.accepted_for_gpu_hmr = false;
+  report.fullRuntimeProven = false;
+  report.full_runtime_proven = false;
+  const checkpoint = {
+    schemaVersion: 'synthi.real_rocm.emergency_retained_result_checkpoint.v1',
+    schema_version: 'synthi.real_rocm.emergency_retained_result_checkpoint.v1',
+    label: checkpointLabel,
+    status: 'emergency_fail_closed_checkpoint_write',
+    reason: checkpointReason,
+    signal,
+    writtenAt: now,
+    written_at: now,
+    proofAuthority: 'emergency_retained_checkpoint_not_gpu_hmr_success',
+    proof_authority: 'emergency_retained_checkpoint_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  report.result_checkpoints = [
+    ...(Array.isArray(report.result_checkpoints) ? report.result_checkpoints : []),
+    checkpoint,
+  ];
+  report.resultCheckpoints = report.result_checkpoints;
+  report.current_result_checkpoint = checkpoint;
+  report.currentResultCheckpoint = checkpoint;
+  report.emergency_retained_checkpoint = checkpoint;
+  report.emergencyRetainedCheckpoint = checkpoint;
+  report.result_artifacts = {
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_result_artifacts.v1',
+    retainedJson: paths.retainedResultsJson,
+    retained_json: paths.retainedResultsJson,
+    retainedTxt: paths.retainedResultsTxt,
+    retained_txt: paths.retainedResultsTxt,
+    latestJson: paths.latestResultsJson,
+    latest_json: paths.latestResultsJson,
+    latestTxt: paths.latestResultsTxt,
+    latest_txt: paths.latestResultsTxt,
+    latestAliasOnly: false,
+    latest_alias_only: false,
+    checkpointLabel,
+    checkpoint_label: checkpointLabel,
+    checkpointStatus: checkpoint.status,
+    checkpoint_status: checkpoint.status,
+  };
+  mkdirSync(RETAINED_RESULTS_DIR, { recursive: true });
+  writeTextAtomicSync(paths.retainedResultsJson, JSON.stringify(report, null, 2) + '\n');
+  writeTextAtomicSync(paths.retainedResultsTxt, emergencyCheckpointText({ checkpoint, paths }) + '\n');
+  if (writeLatest) {
+    writeTextAtomicSync(paths.latestResultsJson, JSON.stringify(report, null, 2) + '\n');
+    writeTextAtomicSync(paths.latestResultsTxt, emergencyCheckpointText({ checkpoint, paths }) + '\n');
+  }
+  return checkpoint;
+}
+
+let terminationCheckpointInstalled = false;
+function installTerminationCheckpointHandlers() {
+  if (terminationCheckpointInstalled || process.argv.includes('--self-check')) return;
+  terminationCheckpointInstalled = true;
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      try {
+        writeEmergencyRetainedCheckpointSync({
+          label: `signal-${signal.toLowerCase()}`,
+          reason: 'runner_terminated_before_final_result_write',
+          signal,
+        });
+      } catch (err) {
+        try {
+          console.error(err?.stack || err?.message || err);
+        } catch {
+          // ignore
+        }
+      } finally {
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      }
+    });
+  }
+}
+
 async function writeResults({ checkpointLabel = 'final' } = {}) {
   report.result_write_phase = checkpointLabel;
   report.resultWritePhase = checkpointLabel;
@@ -27414,6 +27643,11 @@ async function writeResults({ checkpointLabel = 'final' } = {}) {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  installTerminationCheckpointHandlers();
+  writeEmergencyRetainedCheckpointSync({
+    label: 'startup',
+    reason: 'runner_started_before_long_real_rocm_phases',
+  });
   report.docker.daemon_preflight = await dockerDaemonPreflight();
   report.docker.daemonPreflight = report.docker.daemon_preflight;
   record(
@@ -27425,7 +27659,15 @@ async function run() {
     throw new Error('Docker daemon unavailable or timed out before real ROCm validation could resolve worker containers');
   }
   await resolveDockerContainers();
+  writeEmergencyRetainedCheckpointSync({
+    label: 'before-external-header-prerequisites',
+    reason: 'before_generic_external_header_prerequisite_materialization',
+  });
   await prepareExternalHeaderPrerequisites();
+  writeEmergencyRetainedCheckpointSync({
+    label: 'before-rocm-build-config',
+    reason: 'before_generic_rocm_build_config_detection',
+  });
   await ensureRocmBuildConfig();
   report.adversarial_preflight = await runGpuHmrAdversarialPreflight({
     cwd: __dirname,
@@ -27445,10 +27687,22 @@ async function run() {
   if (strictProofGateFailures([adversarialPreflightGate]).length > 0) {
     throw new Error(`adversarial preflight strict gate failed: ${adversarialPreflightGate.detail}`);
   }
+  writeEmergencyRetainedCheckpointSync({
+    label: 'before-source-tree-resolution',
+    reason: 'before_generic_source_tree_resolution_and_transport',
+  });
   await ensureRepo();
   const extraDeltas = parseExtraDeltas();
   applyConfiguredSourceDeltaPlan(extraDeltas);
+  writeEmergencyRetainedCheckpointSync({
+    label: 'before-upstream-lifecycle',
+    reason: 'before_generic_upstream_configure_build_run_lifecycle',
+  });
   const buildMetadata = await prepareUpstreamBuild();
+  writeEmergencyRetainedCheckpointSync({
+    label: 'after-upstream-lifecycle',
+    reason: 'after_generic_upstream_lifecycle_before_source_collection',
+  });
   const files = await collectRepoFiles(buildMetadata);
   runtimeEvidenceContext.buildMetadata = buildMetadata;
   runtimeEvidenceContext.files = files;
