@@ -164,8 +164,7 @@ async function main(argv) {
   const matureProofSummary = validateMatureProofSuite({ root, proofRoot, failures });
   checks.push({ name: 'maturePlanProofSuite', ...matureProofSummary });
 
-  const trustedKeysPath = path.join(proofRoot, `trusted-proof-authorities-${slug}.json`);
-  if (!fs.existsSync(trustedKeysPath)) failures.push(`trusted proof authorities missing: ${relative(root, trustedKeysPath)}`);
+  const trustedKeysPath = resolveTrustedKeysPath(root, proofRoot, slug, failures);
   const proofBundleSummary = verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures });
   checks.push({ name: 'proofBundles', ...proofBundleSummary });
 
@@ -908,6 +907,18 @@ function verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures }
   return { found: bundles.length, verified, ok: bundles.length > 0 && verified === bundles.length };
 }
 
+function resolveTrustedKeysPath(root, proofRoot, slug, failures) {
+  const candidates = [
+    process.env.CODESITE_RELEASE_GATE_TRUSTED_KEYS_PATH,
+    path.join(proofRoot, `trusted-proof-authorities-${slug}.json`),
+    path.join(proofRoot, 'trusted-proof-keys.json'),
+  ].filter(Boolean);
+  const trustedKeysPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (trustedKeysPath) return trustedKeysPath;
+  failures.push(`trusted proof authorities missing: ${candidates.map((candidate) => relative(root, candidate)).join(', ')}`);
+  return candidates[0] || path.join(proofRoot, `trusted-proof-authorities-${slug}.json`);
+}
+
 function validateCodexEvidence({ root, proofRoot, slug, failures }) {
   const evidenceRoot = path.join(proofRoot, 'codex-agent-evidence', slug || '');
   const records = listFiles(evidenceRoot).filter((file) => file.endsWith('.json') && !file.endsWith('schema.json'));
@@ -915,23 +926,83 @@ function validateCodexEvidence({ root, proofRoot, slug, failures }) {
   for (const recordPath of records) {
     const record = readJson(recordPath, failures);
     const transcript = record?.transcript || {};
-    const requiredPaths = [
-      transcript.eventsRawPath,
-      transcript.stderrPath,
-      transcript.finalMessagePath,
-    ].filter(Boolean);
-    for (const relativePath of requiredPaths) {
-      if (!fs.existsSync(path.resolve(root, relativePath))) {
+    let recordValid = true;
+    const transcriptArtifacts = [
+      ['eventsRawPath', 'eventsRawSha256'],
+      ['stderrPath', 'stderrSha256'],
+      ['finalMessagePath', 'finalMessageSha256'],
+    ];
+    for (const [pathKey, shaKey] of transcriptArtifacts) {
+      const relativePath = transcript[pathKey];
+      if (!relativePath) {
+        failures.push(`${relative(root, recordPath)} missing transcript.${pathKey}`);
+        recordValid = false;
+        continue;
+      }
+      const absolutePath = path.resolve(root, relativePath);
+      if (!fs.existsSync(absolutePath)) {
         failures.push(`${relative(root, recordPath)} references missing transcript artifact ${relativePath}`);
+        recordValid = false;
+        continue;
+      }
+      const expectedSha = transcript[shaKey];
+      const actualSha = fileSha256(absolutePath);
+      if (expectedSha !== actualSha) {
+        failures.push(`${relative(root, recordPath)} transcript.${shaKey} mismatch for ${relativePath}`);
+        recordValid = false;
       }
     }
-    if (!record?.codexExecThreadId) failures.push(`${relative(root, recordPath)} missing codexExecThreadId`);
-    if (Number(transcript.eventCount || 0) <= 0) failures.push(`${relative(root, recordPath)} transcript.eventCount must be positive`);
-    if (!record?.providerSessionRef) failures.push(`${relative(root, recordPath)} missing providerSessionRef`);
-    valid += 1;
+    if (!record?.codexExecThreadId) {
+      failures.push(`${relative(root, recordPath)} missing codexExecThreadId`);
+      recordValid = false;
+    }
+    if (transcript.threadId && record?.codexExecThreadId && transcript.threadId !== record.codexExecThreadId) {
+      failures.push(`${relative(root, recordPath)} transcript.threadId does not match codexExecThreadId`);
+      recordValid = false;
+    }
+    if (Number(transcript.eventCount || 0) <= 0) {
+      failures.push(`${relative(root, recordPath)} transcript.eventCount must be positive`);
+      recordValid = false;
+    }
+    if (Number(transcript.toolEventCount || 0) <= 0) {
+      failures.push(`${relative(root, recordPath)} transcript.toolEventCount must be positive`);
+      recordValid = false;
+    }
+    if (!record?.providerSessionRef) {
+      failures.push(`${relative(root, recordPath)} missing providerSessionRef`);
+      recordValid = false;
+    } else if (!/^codex[-_:]/i.test(String(record.providerSessionRef))) {
+      failures.push(`${relative(root, recordPath)} providerSessionRef must identify a Codex session`);
+      recordValid = false;
+    }
+    const commands = Array.isArray(record?.commands) ? record.commands : [];
+    if (commands.length === 0) {
+      failures.push(`${relative(root, recordPath)} commands must not be empty`);
+      recordValid = false;
+    }
+    commands.forEach((command, index) => {
+      const commandLabel = `${relative(root, recordPath)} commands.${index}`;
+      if (command?.source !== 'codex_jsonl_command_execution') {
+        failures.push(`${commandLabel}.source must be codex_jsonl_command_execution`);
+        recordValid = false;
+      }
+      if (!command?.transcriptEventId) {
+        failures.push(`${commandLabel}.transcriptEventId is required`);
+        recordValid = false;
+      }
+      if (Number(command?.exitCode) !== 0 || command?.status !== 'completed') {
+        failures.push(`${commandLabel} failed transcript command: status=${command?.status || 'missing'} exitCode=${command?.exitCode ?? 'missing'}`);
+        recordValid = false;
+      }
+      if (!command?.evidenceDigest || !command?.outputDigest) {
+        failures.push(`${commandLabel} missing command digests`);
+        recordValid = false;
+      }
+    });
+    if (recordValid) valid += 1;
   }
   if (records.length < 3) failures.push(`${relative(root, evidenceRoot)} must contain at least three Codex role evidence records`);
-  return { records: records.length, valid, ok: records.length >= 3 };
+  return { records: records.length, valid, ok: records.length >= 3 && valid === records.length };
 }
 
 function listFiles(root) {
