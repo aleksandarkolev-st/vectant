@@ -1,0 +1,60 @@
+{
+  "id": "cmr5n8o3x00x8pm0zpba700d2",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "ownerUserId": "cmr5n8ilo00vzpm0z7zz9qogd",
+  "agentProvider": "codex",
+  "agentRuntime": "tmp-codex-cli",
+  "providerSessionRef": "codex-API-02-20260703-overlay13",
+  "displayCallsign": "API-02",
+  "status": "registered",
+  "permissions": [
+    "synthi_codesite_get_radar",
+    "synthi_codesite_get_inbox",
+    "synthi_codesite_ack_event",
+    "synthi_codesite_file_change_order"
+  ],
+  "redactionPolicy": {
+    "acceptsTowerMessages": true,
+    "redactSecrets": true,
+    "redactPrivatePrompts": true,
+    "allowAttachments": false,
+    "visibleZones": [
+      "**"
+    ],
+    "allowedDocumentKinds": [
+      "rfi",
+      "change_order",
+      "inspection_request",
+      "inspection_result",
+      "mayday",
+      "handoff",
+      "stop_work",
+      "punch",
+      "tower_instruction"
+    ]
+  },
+  "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+  "dojoProofRef": "pcap-full-workflow-schema",
+  "dojoEvidenceRefs": [
+    "dojo:evidence:full-workflow-checkride"
+  ],
+  "dojoDecisionDigest": "sha256:2647166c026719e7753503511d5f08d9baf3ad25fe83b101ccd10bf14def5659",
+  "pilotLicenseSnapshot": {
+    "licenseLevel": "VFR",
+    "licenseStatus": "active",
+    "repoScope": "codesite-mature-full-proof-20260703-overlay13",
+    "authorizedAirspace": [
+      "synthi/prisma/**",
+      "synthi/src/app/api/auth/**"
+    ],
+    "requiredRadar": [
+      "typecheck",
+      "tests"
+    ],
+    "earnedBy": [
+      "dojo:full-workflow-checkride"
+    ]
+  },
+  "createdAt": "2026-07-04T00:48:19.725Z",
+  "endedAt": null
+}

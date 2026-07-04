@@ -1,0 +1,30 @@
+{
+  "displayCallsign": "CURRENT-04",
+  "inspections": [
+    {
+      "id": "cmr5n99l9012cpm0zxm297b5s",
+      "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+      "executionPlanId": "cmr5n98u50128pm0z5sefw9rj",
+      "displayCallsign": "CURRENT-04",
+      "status": "passed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "landing_health",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:landing:current-source-proof"
+          ]
+        }
+      ],
+      "evidenceRefs": [
+        "codesite:landing:current-source-proof"
+      ],
+      "requestedAt": "2026-07-04T00:48:47.566Z",
+      "completedAt": null
+    }
+  ],
+  "status": "passed"
+}

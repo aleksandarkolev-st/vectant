@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+  "key": "cmr5lhte50016pm0zv10xqicb",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+  "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+  "ownerUserId": "cmr5lhcg90004pm0znnhyx625",
+  "displayCallsign": "SCHEMA-01",
+  "status": "suspended",
+  "level": "IFR",
+  "levelRank": 3,
+  "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+  "dojoLicenseRef": "schema.level_2@2026-06-25",
+  "dojoProofRef": "pcap-full-workflow-schema",
+  "dojoDecisionDigest": "sha256:1266e9e94cf45cbc3ce4681127750a9dac985ea1b9c2b44eba4f1f712bf7f1e2",
+  "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+  "authorizedAirspace": [
+    "packages/schemas/**",
+    "openapi/**",
+    "packages/*/src/index.ts",
+    "synthi/prisma/**",
+    "backend/collab-server/permissionMiddleware.js"
+  ],
+  "restrictedAirspace": [
+    "secrets/**"
+  ],
+  "requiredRadar": [
+    "typecheck",
+    "tests"
+  ],
+  "earnedBy": [
+    "dojo:full-workflow-checkride",
+    "dojo:evidence:full-workflow-checkride"
+  ],
+  "expiresAt": null,
+  "expiresOn": [
+    "source_drift"
+  ],
+  "sourceDrift": {
+    "monitored": true,
+    "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+    "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+    "expired": false
+  },
+  "landingStats": {
+    "total": 2,
+    "passed": 1,
+    "failed": 0,
+    "evidenceRefs": [
+      "runtime:event:inspection-full-workflow",
+      "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+      "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+      "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+      "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+      "codesite:landing:passed-health-proof"
+    ]
+  },
+  "violationStats": {
+    "total": 3,
+    "critical": 2,
+    "latestAt": "2026-07-03T23:59:51.252Z",
+    "evidenceRefs": [
+      "codesite:policy-decision:cmr5lhw2j0022pm0zzx39zy41",
+      "mcp:audit:codesitefs-denied-full-workflow"
+    ]
+  },
+  "reasonCodes": [
+    "pilot_license_critical_violation_window"
+  ],
+  "requiredAction": "review_pilot_license:cmr5lhte50016pm0zv10xqicb",
+  "evidenceRefs": [
+    "dojo:evidence:full-workflow-checkride",
+    "dojo:full-workflow-checkride",
+    "full-workflow-checkride",
+    "runtime:event:inspection-full-workflow",
+    "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+    "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+    "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+    "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+    "codesite:landing:passed-health-proof",
+    "codesite:policy-decision:cmr5lhw2j0022pm0zzx39zy41",
+    "codesite:transaction:cmr5lhwil0028pm0zt2p1l5iz",
+    "codesite:lease:cmr5lhw270020pm0zv2swrhf0",
+    "codesite:read-snapshot:sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+    "codesite:transaction:cmr5lhy9y002kpm0zn6k7wy4l",
+    "mcp:audit:read-full-workflow",
+    "mcp:audit:codesitefs-denied-full-workflow",
+    "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+    "mcp:audit:write-full-workflow",
+    "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+    "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0",
+    "mcp:audit:commit-full-workflow",
+    "git:commit:508c209b6d7184a1765809c1d1f6de8b6f75c9d1",
+    "codesite:runtime-attestation:sha256:15daad00ea7264ac84e299a3e334b2630f6b2dbf81c88c1a2b1101b10ab88555",
+    "codesite:runtime-attestation:sha256:cd594c44e0b2684807b2661d68eb073c3fb81f9c8f5f68202ac19f1e15928af9",
+    "codesite:inspection:cmr5lihai0066pm0ztoa66xwm",
+    "codesite:inspection:cmr5liged005ypm0zxs56b0z7",
+    "codesite:repo-state:sha256:2d17f6bc39b03f4637563861493360eb1e1573aaefbf75868b59344e073b10bb",
+    "codesite:transaction:cmr5li1840030pm0ziuph9b1r",
+    "codesite:proof-bundle:cmr5lmibx007upm0zz2xsky0g",
+    "git:commit:65ea43f346834c29aa55106ef97aa7df89390372",
+    "git:trailers:sha256:1d03de9cd38b707aca7f116289e32861726c062a2ee9daca99c04fcb89e16056",
+    "codesite:policy-decision:cmr5libwv005apm0zfo9u9v6m",
+    "codesite:policy-decision:cmr5lictu005gpm0zjo9uo8ot"
+  ],
+  "lifecycle": {
+    "issuedAt": "2026-07-03T23:59:27.246Z",
+    "checkedAt": "2026-07-04T00:03:08.682Z",
+    "latestLandingAt": "2026-07-03T23:59:58.218Z",
+    "latestViolationAt": "2026-07-03T23:59:51.252Z",
+    "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+  }
+}

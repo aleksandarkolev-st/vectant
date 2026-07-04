@@ -1,0 +1,127 @@
+{
+  "schemaVersion": "synthi.codesite.proofBundle.v1",
+  "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+  "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+  "transactionId": "cmr43fscb00jnpm0zryii10cd",
+  "mutationLeaseId": "cmr43fp1800inpm0zegvwgvkc",
+  "displayCallsign": "SCHEMA-01",
+  "landingStatus": "completed",
+  "readSetDigest": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
+  "writeSetDigest": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
+  "invariants": [
+    "clearance.diff.inside_route"
+  ],
+  "evidenceRefs": [
+    "mcp:audit:commit-full-workflow",
+    "git:commit:730ee6c9e0a4184bb0a1e0bdfbda9342e3093a2e",
+    "codesite:runtime-attestation:sha256:3117e1fb361d65761042d563d1be53452d0e64b3ce98aa41be48d6846bd3909b",
+    "codesite:runtime-attestation:sha256:4d502e97b14071f675798898bd09aeb0ac08dd988c756eab3ca4a3190689fb79",
+    "codesite:landing:passed-health-proof",
+    "codesite:inspection:cmr43gk2n00mtpm0zt25mwn29",
+    "runtime:event:inspection-full-workflow",
+    "typecheck:run:sha256:d39a1ed5df3808a792d135005d6f98027a7a1c8a13bb8be31a15c569163d84a9",
+    "artifact:sha256:d39a1ed5df3808a792d135005d6f98027a7a1c8a13bb8be31a15c569163d84a9",
+    "test:run:sha256:b9fc0a64177e996455467d60e1e5b224ad2f996cacda7255df6dde94b79cd7cf",
+    "artifact:sha256:b9fc0a64177e996455467d60e1e5b224ad2f996cacda7255df6dde94b79cd7cf",
+    "codesite:inspection:cmr43gi8f00mlpm0zljrp0hbp",
+    "codesite:repo-state:sha256:f9da90a334010bd8a6c25a80b099b031b5d6de85067ed61649f84f0a71a51cf7",
+    "codesite:transaction:cmr43fscb00jnpm0zryii10cd",
+    "codesite:lease:cmr43fp1800inpm0zegvwgvkc"
+  ],
+  "dojoEvidenceRefs": [],
+  "repoState": {
+    "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+    "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+    "transactionId": "cmr43fscb00jnpm0zryii10cd",
+    "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+    "gitHead": "730ee6c9e0a4184bb0a1e0bdfbda9342e3093a2e",
+    "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktreeDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "writeFileDigests": [
+      {
+        "path": "synthi/prisma/schema.prisma",
+        "digest": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160",
+        "size": 238,
+        "exists": true
+      }
+    ],
+    "generatedAt": "2026-07-02T22:46:42.679Z",
+    "source": "collab-server",
+    "evidenceDigest": "sha256:f9da90a334010bd8a6c25a80b099b031b5d6de85067ed61649f84f0a71a51cf7"
+  },
+  "incidentReplayDigest": "sha256:d69078bf05be077e4e622bb0e8c735571c401961be1c00f7a23d622cff6cf19b",
+  "bundleDigest": "sha256:1b500a0d90218f513446cbd71298c94eb9e5973e9928365525b7daf59def239d",
+  "incidents": [
+    {
+      "id": "cmr43fqa300j3pm0zmb37zxne",
+      "severity": "warning",
+      "category": "black_box",
+      "replayDigest": "sha256:ed2c53b8cf30f20e85a1666d9c26b2a5e7062b5b0412b4ce1a93ab5bfc2e033a"
+    },
+    {
+      "id": "cmr43frzg00jjpm0zmtgysov7",
+      "severity": "warning",
+      "category": "black_box",
+      "replayDigest": "sha256:746b37e8adaeea031ae2c5717a3f72ce4ed192ef54acfbed2f5c16526769f917"
+    },
+    {
+      "id": "cmr43gr4e00obpm0zplop3gw8",
+      "severity": "critical",
+      "category": "security",
+      "replayDigest": "sha256:e16e413f1579aa7cc9a9e364de542dc12b3a7e223ca480a40d10f3545b92a9d6"
+    },
+    {
+      "id": "cmr43gcm000mhpm0zu96gm58a",
+      "severity": "low",
+      "category": "black_box",
+      "replayDigest": "sha256:d69078bf05be077e4e622bb0e8c735571c401961be1c00f7a23d622cff6cf19b"
+    }
+  ],
+  "lineProvenance": [
+    {
+      "filePath": "synthi/prisma/schema.prisma",
+      "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+      "startLine": 10,
+      "endLine": 15,
+      "displayCallsign": "SCHEMA-01",
+      "reasonRef": "change_order:cmr43fz3700llpm0zrtvl88yy",
+      "evidenceRefs": [
+        "proof:cmr43kf2i00ohpm0z12l0nud8",
+        "transaction:cmr43fscb00jnpm0zryii10cd",
+        "event:cmr43g3as00mbpm0zdtpqyk5q",
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr43fz3700llpm0zrtvl88yy",
+        "codesite:counterfactual-run:cmr43fv8o00krpm0zql1jczdo",
+        "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+        "codesite:document:cmr43fxqm00ldpm0ziu4fahyh",
+        "codesite:inbox:cmr43fxqv00lhpm0zo4vqi62h",
+        "codesite:inbox:cmr43fz3h00lppm0zennr6n1a",
+        "codesite:assumption:cmr43fsmz00jtpm0z9pzt5r7g",
+        "codesite:assumption:cmr43ftxr00k9pm0zck0t0sge"
+      ],
+      "dojoSourceRefs": [
+        "dojo:proof:pcap-full-workflow-schema",
+        "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+        "full-workflow-checkride"
+      ],
+      "proofBundleId": "cmr43kf2i00ohpm0z12l0nud8",
+      "processAncestry": [
+        "mcp:synthi_codesite_apply_patch",
+        "codex:tmp-proof-session"
+      ],
+      "promptSummary": "Land schema-first full workflow proof"
+    }
+  ],
+  "createdAt": "2026-07-02T22:49:49.386Z",
+  "portableDigest": "sha256:7397942a51ca88e7d5b9fbe413bd881f87a0036ce9e27f5d0d161892a51f4400",
+  "proofSignature": {
+    "schemaVersion": "synthi.codesite.proofSignature.v1",
+    "algorithm": "ed25519",
+    "keyId": "codesite-proof-ed25519-20260702",
+    "authority": "CodeSite Mature Proof Authority",
+    "signedAt": "2026-07-02T22:49:52.033Z",
+    "payloadDigest": "sha256:7397942a51ca88e7d5b9fbe413bd881f87a0036ce9e27f5d0d161892a51f4400",
+    "signature": "ed25519:codesite-proof-ed25519-20260702:KbN690ec8v3UvpOzNPE9meWcwIgIfZEubE0XL4FCmzAdIEb_qD7B1nhbx-aFOXChBzcfbpIjRpBz0s04xX7hAA",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAyCmSzFdxRGaQvSvXXg1jm4PzivnJ9BByBdMBzP5GMnQ=\n-----END PUBLIC KEY-----"
+  }
+}

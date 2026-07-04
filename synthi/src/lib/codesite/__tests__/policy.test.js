@@ -54,6 +54,26 @@ describe('CodeSite airspace policy', () => {
     });
   });
 
+  it('blocks broad lease requests that overlap no-fly airspace', () => {
+    const policy = compileZonePolicy({ noFlyZones: ['secrets/**'] });
+    const decision = evaluateLeaseRequest({
+      zonePolicy: policy,
+      executionPlan: {
+        route: ['**'],
+        blockedZones: [],
+      },
+      requestedLease: {
+        allowedPaths: ['**'],
+      },
+    });
+
+    expect(decision).toMatchObject({
+      decision: 'block',
+      status: 'blocked',
+      reasonCodes: ['entered_no_fly_zone'],
+    });
+  });
+
   it('requires inspection for restricted but allowed airspace', () => {
     const policy = compileZonePolicy();
     const decision = evaluateLeaseRequest({
@@ -94,6 +114,22 @@ describe('CodeSite airspace policy', () => {
     expect(evaluatePathMutation({ lease, path: 'synthi/src/app/page.jsx', tool: 'file_write', zonePolicy: policy })).toMatchObject({
       ok: false,
       reasonCodes: ['outside_clearance_route'],
+    });
+  });
+
+  it('fails closed on policy no-fly zones even when an active lease has a broad route', () => {
+    const policy = compileZonePolicy({ noFlyZones: ['secrets/**'] });
+    const lease = {
+      status: 'active',
+      leaseJson: JSON.stringify({
+        allowedPaths: ['**'],
+        allowedTools: ['file_write'],
+      }),
+    };
+
+    expect(evaluatePathMutation({ lease, path: 'secrets/prod.env', tool: 'file_write', zonePolicy: policy })).toMatchObject({
+      ok: false,
+      reasonCodes: ['entered_no_fly_zone'],
     });
   });
 
@@ -252,7 +288,20 @@ describe('CodeSite airspace policy', () => {
           allowedPaths: ['synthi/prisma/migrations/20260630_add_user/**'],
         }),
       }],
+      transactions: [{
+        id: 'txn-db-1',
+        mutationLeaseId: 'lease-db-1',
+        status: 'open',
+        writeSet: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+      }],
+      inspectionRuns: [{
+        id: 'inspection-db-1',
+        displayCallsign: 'QA-DB-01',
+        status: 'requested',
+        changedPaths: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+      }],
       executionPlans: [
+        { displayCallsign: 'DB-OVERLAP-99', route: ['synthi/prisma/migrations/20260630_add_user/steps.sql'] },
         { displayCallsign: 'TEST-02', route: ['tests/db/**'] },
         { displayCallsign: 'CLIENT-03', route: ['synthi/src/generated/prisma/**'] },
       ],
@@ -263,9 +312,12 @@ describe('CodeSite airspace policy', () => {
         runway: 'synthi/prisma/migrations/20260630_add_user/**',
         occupiedBy: 'DB-01',
         runwayClass: 'A',
-        pendingInspections: expect.arrayContaining(['migration_runway_lock', 'landing_inspection']),
+        diffPaths: ['synthi/prisma/migrations/20260630_add_user/steps.sql'],
+        pendingInspections: expect.arrayContaining(['migration_runway_lock', 'landing_inspection', 'inspection:QA-DB-01']),
+        eligibleFlights: expect.arrayContaining(['TEST-02', 'CLIENT-03']),
       }),
     ]);
+    expect(forecast.runwayOccupancy[0].eligibleFlights).not.toContain('DB-OVERLAP-99');
     expect(forecast.wakeTurbulence).toEqual(expect.arrayContaining([
       expect.objectContaining({
         risk: 'wake_turbulence',
@@ -327,5 +379,37 @@ describe('CodeSite airspace policy', () => {
         }),
       }),
     ]));
+  });
+
+  it('fails closed when an active lease carries a source-drift expired pilot license', () => {
+    const policy = {
+      zones: [{ zoneKey: 'schema', class: 'B', paths: ['packages/contracts/**'] }],
+      compiler: { sourceDigest: 'sha256:source-v2' },
+    };
+
+    const result = evaluatePathMutation({
+      zonePolicy: policy,
+      path: 'packages/contracts/src/index.ts',
+      lease: {
+        id: 'lease-1',
+        status: 'active',
+        leaseJson: JSON.stringify({
+          allowedPaths: ['packages/contracts/**'],
+          pilotLicenseHealth: {
+            status: 'active',
+            level: 'IFR',
+            sourceDrift: {
+              monitored: true,
+              sourceDigest: 'sha256:source-v1',
+            },
+          },
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reasonCodes: ['pilot_license_source_drift_expired'],
+    });
   });
 });

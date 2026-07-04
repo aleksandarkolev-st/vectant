@@ -1,0 +1,305 @@
+{
+  "id": "cmr43fp1800inpm0zegvwgvkc",
+  "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+  "executionPlanId": "cmr43flhq00hzpm0zo83guaf0",
+  "agentSessionId": "cmr43fkim00htpm0zscp5ulab",
+  "displayCallsign": "SCHEMA-01",
+  "status": "active",
+  "lease": {
+    "allowedPaths": [
+      "synthi/prisma/**"
+    ],
+    "blockedPaths": [
+      "secrets/**"
+    ],
+    "allowedTools": [
+      "file_write"
+    ],
+    "invariants": [
+      "clearance.diff.inside_route",
+      "no.secret.exposure",
+      "restricted_airspace.inspector_required"
+    ],
+    "requiredRadar": [
+      "typecheck",
+      "tests"
+    ],
+    "expiresAt": null,
+    "issuedBy": "codesite_policy_engine",
+    "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+    "inspectedZones": [
+      {
+        "zoneKey": "class_b",
+        "label": "Shared contract airspace",
+        "class": "B",
+        "paths": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation"
+        ],
+        "risk": "high",
+        "source": "compiled_default",
+        "path": "synthi/prisma/**"
+      }
+    ],
+    "dojoProofVerification": {
+      "ok": true,
+      "status": "verified",
+      "checkedAt": "2026-07-02T22:46:08.980Z",
+      "source": "dojo_public_proof_verifier",
+      "capsuleId": "pcap-full-workflow-schema",
+      "keyId": "dojo-full-workflow-key",
+      "proofKeyStatus": "active",
+      "proofKeyIssuer": "dojo-full-workflow-issuer",
+      "proofKeySigningProvider": "ed25519-local",
+      "proofKeyCustody": "local",
+      "signatureVerified": true,
+      "blockedBy": [],
+      "expected": {
+        "required_evidence_claims": [
+          "codesite.restricted_mutation"
+        ],
+        "ledger_checkpoint_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "requested_action": "codesite.mutation.clearance"
+      },
+      "digest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2"
+    },
+    "pilotLicenseHealth": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr43fkim00htpm0zscp5ulab",
+      "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+      "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+      "agentSessionId": "cmr43fkim00htpm0zscp5ulab",
+      "ownerUserId": "cmr43fbmh00grpm0z02hxkegj",
+      "displayCallsign": "SCHEMA-01",
+      "status": "active",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:db52c3455e0ed53c81357ec615c5bc846463d71e343d9cb052c86f350a4dc6ba",
+      "repoScope": "codesite-mature-full-proof-20260702bc",
+      "authorizedAirspace": [
+        "packages/schemas/**",
+        "openapi/**",
+        "packages/*/src/index.ts",
+        "synthi/prisma/**",
+        "backend/collab-server/permissionMiddleware.js"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride",
+        "dojo:evidence:full-workflow-checkride",
+        "full-workflow-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 0,
+        "critical": 0,
+        "latestAt": null,
+        "evidenceRefs": []
+      },
+      "reasonCodes": [
+        "pilot_license_health_active",
+        "pilot_license_source_current",
+        "pilot_license_from_verified_dojo_proof"
+      ],
+      "requiredAction": null,
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride",
+        "dojo:full-workflow-checkride",
+        "pcap-full-workflow-schema",
+        "schema.level_2@2026-06-25",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+        "full-workflow-checkride"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-02T22:46:03.166Z",
+        "checkedAt": "2026-07-02T22:46:09.017Z",
+        "latestLandingAt": null,
+        "latestViolationAt": null,
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+        "clearanceProofCheckedAt": "2026-07-02T22:46:08.980Z"
+      }
+    },
+    "pilotLicenseRequirement": {
+      "required": true,
+      "classes": [
+        "B"
+      ],
+      "minimumLevel": "IFR",
+      "minimumLevelRank": 3
+    },
+    "collisionAvoidance": {
+      "forecast": {
+        "riskLevel": "high",
+        "risks": [
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "API-02",
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put SCHEMA-01 in holding",
+                "Put API-02 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          }
+        ],
+        "runwayOccupancy": [],
+        "wakeTurbulence": []
+      },
+      "risk": null,
+      "schemaFirstLeader": true,
+      "reasonCodes": [
+        "schema_first_leader_clearance"
+      ],
+      "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+    },
+    "counterfactualPolicy": null
+  },
+  "pilotLicenseHealth": {
+    "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+    "key": "cmr43fkim00htpm0zscp5ulab",
+    "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+    "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+    "agentSessionId": "cmr43fkim00htpm0zscp5ulab",
+    "ownerUserId": "cmr43fbmh00grpm0z02hxkegj",
+    "displayCallsign": "SCHEMA-01",
+    "status": "active",
+    "level": "IFR",
+    "levelRank": 3,
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoDecisionDigest": "sha256:db52c3455e0ed53c81357ec615c5bc846463d71e343d9cb052c86f350a4dc6ba",
+    "repoScope": "codesite-mature-full-proof-20260702bc",
+    "authorizedAirspace": [
+      "packages/schemas/**",
+      "openapi/**",
+      "packages/*/src/index.ts",
+      "synthi/prisma/**",
+      "backend/collab-server/permissionMiddleware.js"
+    ],
+    "restrictedAirspace": [],
+    "requiredRadar": [
+      "typecheck",
+      "tests"
+    ],
+    "earnedBy": [
+      "dojo:full-workflow-checkride",
+      "dojo:evidence:full-workflow-checkride",
+      "full-workflow-checkride"
+    ],
+    "expiresAt": null,
+    "expiresOn": [
+      "source_drift"
+    ],
+    "sourceDrift": {
+      "monitored": true,
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "expired": false
+    },
+    "landingStats": {
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "evidenceRefs": []
+    },
+    "violationStats": {
+      "total": 0,
+      "critical": 0,
+      "latestAt": null,
+      "evidenceRefs": []
+    },
+    "reasonCodes": [
+      "pilot_license_health_active",
+      "pilot_license_source_current",
+      "pilot_license_from_verified_dojo_proof"
+    ],
+    "requiredAction": null,
+    "evidenceRefs": [
+      "dojo:evidence:full-workflow-checkride",
+      "dojo:full-workflow-checkride",
+      "pcap-full-workflow-schema",
+      "schema.level_2@2026-06-25",
+      "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+      "full-workflow-checkride"
+    ],
+    "lifecycle": {
+      "issuedAt": "2026-07-02T22:46:03.166Z",
+      "checkedAt": "2026-07-02T22:46:09.017Z",
+      "latestLandingAt": null,
+      "latestViolationAt": null,
+      "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+      "clearanceProofCheckedAt": "2026-07-02T22:46:08.980Z"
+    }
+  },
+  "pilotLicenseRequirement": {
+    "required": true,
+    "classes": [
+      "B"
+    ],
+    "minimumLevel": "IFR",
+    "minimumLevelRank": 3
+  },
+  "dojoProofRef": "pcap-full-workflow-schema",
+  "dojoLicenseRef": "schema.level_2@2026-06-25",
+  "dojoEvidenceRefs": [
+    "full-workflow-checkride"
+  ],
+  "dojoLedgerCheckpointHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "dojoDecisionDigest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+  "implementationStatus": {
+    "executable": true,
+    "productionRuntime": true,
+    "verificationRuntime": "codesite-ed25519-proof-verifier",
+    "runtimeBoundary": "docker-full-workflow-proof"
+  },
+  "issuedAt": "2026-07-02T22:46:09.020Z",
+  "expiresAt": null,
+  "revokedAt": null
+}

@@ -27,51 +27,76 @@ pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSiteFS Runtime Boundary Proof</h1>
-<p>Real Docker container attempted raw workspace writes. CodeSiteFS mounted a writable quarantine overlay, preserved the real repo, and recorded write_quarantined evidence for every changed path.</p>
+<p>Product runtime manager created real Docker runtime containers whose /workspace mounts were CodeSite quarantine overlays. Raw writes changed only quarantine copies, preserved the source repo, and finalized as write_quarantined evidence.</p>
 </section>
 <section class="grid">
-<div class="card"><div class="label">Docker image</div><div class="value">node:22-bookworm</div></div>
-<div class="card"><div class="label">Container</div><div class="value">codesitefs-boundary-1782884854557</div></div>
-<div class="card"><div class="label">Transaction</div><div class="value">txn-1782884854528</div></div>
-<div class="card"><div class="label">Quarantine root</div><div class="value">/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e</div></div>
+<div class="card"><div class="label">Runtime image</div><div class="value">vectant-runtime:local</div></div>
+<div class="card"><div class="label">Runtime network</div><div class="value">synthi-ide_default</div></div>
+<div class="card"><div class="label">Transaction</div><div class="value">txn-1783117570297</div></div>
+<div class="card"><div class="label">Source repo</div><div class="value">/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo</div></div>
 </section>
 <section class="card">
-<h2>Repo Preservation</h2>
-<table><thead><tr><th>Path</th><th>Real repo after raw Docker write</th><th>Quarantine change</th></tr></thead><tbody>
+<h2>Manager-created runtime containers</h2>
+<table><thead><tr><th>Overlay</th><th>Container</th><th>Read-only base</th><th>Writable overlay</th><th>Mode label</th><th>Writable</th></tr></thead><tbody>
+<tr><td>overlay-a</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e</td><td>codesite-overlay</td><td>yes</td></tr><tr><td>overlay-b</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo</td><td>/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b</td><td>codesite-overlay</td><td>yes</td></tr>
+</tbody></table>
+</section>
+<section class="card">
+<h2>Repo preservation</h2>
+<table><thead><tr><th>Path</th><th>Source repo after runtime writes</th><th>Quarantine change</th></tr></thead><tbody>
 <tr><td>src/app.js</td><td>real repo app before</td><td>modified</td></tr><tr><td>api/auth/signup.ts</td><td>real repo auth before</td><td>modified</td></tr><tr><td>runtime.out</td><td>missing from real repo</td><td>created</td></tr>
 </tbody></table>
 </section>
 <section class="card">
-<h2>Recorded Boundary Events</h2>
-<table><thead><tr><th>Path</th><th>Event</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:0f152e74939dedc447f505f2c2dbebe066fedfa2da4be2adad186f04d7129deb</td></tr><tr><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:bb825ec19f1394ce0c0f1e22aefcd7edf9982a93d32c9e7f5a88c7b0497df1bb</td></tr><tr><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:09389546c1f6a472d5ace04bff9b4af78ff5c0cd7f75b714c4bed01e70476515</td></tr>
+<h2>Recorded boundary events</h2>
+<table><thead><tr><th>Overlay</th><th>Path</th><th>Event</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
+<tr><td>overlay-a</td><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb</td></tr><tr><td>overlay-a</td><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225</td></tr><tr><td>overlay-a</td><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62</td></tr><tr><td>overlay-b</td><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a</td></tr><tr><td>overlay-b</td><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8</td></tr><tr><td>overlay-b</td><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4</td></tr>
 </tbody></table>
 </section>
 <section class="card">
-<h2>Product Runtime Contract</h2>
-<table><thead><tr><th>Check</th><th>Value</th></tr></thead><tbody>
-<tr><td>Container terminal launch mode</td><td>quarantine-runtime</td></tr>
-<tr><td>Sysbox terminal launch mode</td><td>block-runtime</td></tr>
-<tr><td>Overlay A runtime container</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-64cde05e87</td></tr>
-<tr><td>Overlay B runtime container</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-ed9c873e6d</td></tr>
+<h2>Runtime-pod gate</h2>
+<table><thead><tr><th>Surface</th><th>Launch mode</th></tr></thead><tbody>
+<tr><td>Terminal runtime pod without overlay</td><td>block-runtime</td></tr>
+<tr><td>Program runtime pod without overlay</td><td>block-runtime</td></tr>
+<tr><td>Terminal runtime pod with overlay</td><td>overlay-runtime</td></tr>
+<tr><td>Program runtime pod with overlay</td><td>overlay-runtime</td></tr>
+<tr><td>Hybrid container runtime</td><td>overlay-runtime</td></tr>
 </tbody></table>
 </section>
 <section class="card"><h2>Assertions</h2><pre>{
-  &quot;containerTerminalRoutesToQuarantineRuntime&quot;: true,
-  &quot;sysboxTerminalStillBlocksWithoutMountStrategy&quot;: true,
+  &quot;managerCreatedTwoRuntimeContainers&quot;: true,
   &quot;sameTransactionOverlaysUseDistinctRuntimeContainers&quot;: true,
+  &quot;runtimeMountsReadOnlyBaseAndWritableOverlay&quot;: true,
+  &quot;runtimeContainersDeclareOverlayMode&quot;: true,
+  &quot;runtimeWorkspaceWritable&quot;: true,
   &quot;realRepoAllowedFileUnchanged&quot;: true,
   &quot;realRepoBlockedFileUnchanged&quot;: true,
+  &quot;runtimeOutNeverCreatedInRealRepo&quot;: true,
   &quot;runtimeContainerChangedOnlyQuarantine&quot;: true,
   &quot;blockedPathRecordedAsQuarantined&quot;: true,
   &quot;processTreeProvenanceRecorded&quot;: true,
-  &quot;durableEvidenceRefsCreated&quot;: true
+  &quot;durableEvidenceRefsCreated&quot;: true,
+  &quot;runtimePodWithoutManagedMountFailsClosed&quot;: true,
+  &quot;runtimePodWithHybridFallsBackToQuarantineRuntime&quot;: true,
+  &quot;hybridContainerRuntimeRoutesToQuarantine&quot;: true
 }</pre></section>
-<section class="card"><h2>Docker Command</h2><pre>docker run --rm --name codesitefs-boundary-1782884854557 -v /tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e:/workspace -w /workspace node:22-bookworm sh -lc set -eu
-mkdir -p src api/auth
-printf 'overlay app from raw docker\n' &gt; src/app.js
-printf 'raw auth bypass attempt\n' &gt; api/auth/signup.ts
-printf 'runtime wrote only to quarantine\n' &gt; runtime.out</pre></section>
+<section class="card"><h2>Runtime output</h2><pre>overlay-a
+pwd=/workspace
+whoami=rootless
+workspaceWritable=yes
+readbackApp=overlay app from manager overlay-a
+readbackAuth=raw auth bypass attempt overlay-a
+readbackRuntime=runtime wrote only to quarantine overlay-a
+
+
+overlay-b
+pwd=/workspace
+whoami=rootless
+workspaceWritable=yes
+readbackApp=overlay app from manager overlay-b
+readbackAuth=raw auth bypass attempt overlay-b
+readbackRuntime=runtime wrote only to quarantine overlay-b
+</pre></section>
 </main>
 </body>
 </html>

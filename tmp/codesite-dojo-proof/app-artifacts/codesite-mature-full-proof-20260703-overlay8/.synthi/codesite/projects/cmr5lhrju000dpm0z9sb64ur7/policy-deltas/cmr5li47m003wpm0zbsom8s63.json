@@ -1,0 +1,42 @@
+{
+  "id": "cmr5li47m003wpm0zbsom8s63",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "learnedFromIncidents": [
+    "cmr5lhxg0002gpm0zp2wj3fei",
+    "cmr5li0ns002wpm0zmfhjhvkd"
+  ],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "incident_weighted_preflight_hold",
+    "affectedIncidents": [
+      "cmr5lhxg0002gpm0zp2wj3fei",
+      "cmr5li0ns002wpm0zmfhjhvkd"
+    ],
+    "expectedRiskReduction": 0.16,
+    "confidence": 0.68
+  },
+  "triggerConditions": [],
+  "expectedRiskReduction": 0.16,
+  "confidence": 0.68,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr5li471003qpm0zvxzqirzs",
+    "shadow:job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+    "codesite:shadow_merge_simulator",
+    "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+    "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+    "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+    "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+    "codesite:shadow-runner:sha256:4b4fe567c851987b8739d5173c6d50c60676a72012edb3dc76539f43ae32d152",
+    "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+    "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+    "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42",
+    "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e",
+    "codesite:shadow-runner:sha256:79836f7b373e838b651ead8ee3f3245d755c9750ea6ab1966e382fb20127edfa"
+  ],
+  "createdAt": "2026-07-03T23:59:41.267Z",
+  "promotedAt": null
+}

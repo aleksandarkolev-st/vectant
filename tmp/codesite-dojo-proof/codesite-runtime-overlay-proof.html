@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CodeSite Runtime Overlay Proof</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f5f7f6; color: #17211d; }
+    main { width: min(1180px, calc(100vw - 64px)); margin: 0 auto; padding: 42px 0 56px; }
+    header { display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: end; border-bottom: 1px solid #cfd8d3; padding-bottom: 24px; }
+    h1 { margin: 0; font-size: 42px; line-height: 1.02; font-weight: 760; letter-spacing: 0; }
+    .subtitle { margin: 14px 0 0; max-width: 760px; color: #4c5c55; font-size: 16px; line-height: 1.55; }
+    .stamp { border: 1px solid #1f7a4a; color: #0f5f35; background: #e6f7ed; padding: 12px 16px; font-weight: 760; min-width: 118px; text-align: center; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }
+    .card { border: 1px solid #ccd6d1; background: #ffffff; padding: 16px; min-height: 86px; }
+    .label { color: #5f6d67; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .value { margin-top: 12px; font-size: 28px; line-height: 1; font-weight: 760; }
+    section { margin-top: 24px; border: 1px solid #ccd6d1; background: #fff; padding: 20px; }
+    h2 { margin: 0 0 14px; font-size: 19px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border-top: 1px solid #e2e8e5; padding: 10px 8px; text-align: left; vertical-align: top; }
+    th { color: #53615b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .ok { color: #0f6b3f; font-weight: 720; }
+    .fail { color: #a32d20; font-weight: 720; }
+    pre { overflow: auto; white-space: pre-wrap; background: #101815; color: #e9f4ef; padding: 14px; font-size: 12px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>CodeSite Docker Overlay Runtime Proof</h1>
+        <p class="subtitle">Verified 2026-07-03T22:39:23.252Z. Active CodeSite runtime sessions require explicit overlay roots, mount a read-only base plus writable overlay, run rootless writes through /workspace, preserve the base repo, and address overlay sessions by explicit runtime identity.</p>
+      </div>
+      <div class="stamp">PASS</div>
+    </header>
+    <div class="grid"><div class="card"><div class="label">Host Tests</div><div class="value">4/4</div></div><div class="card"><div class="label">Docker Node Tests</div><div class="value">2/2</div></div><div class="card"><div class="label">Live Runtime</div><div class="value">PASS</div></div><div class="card"><div class="label">Assertions</div><div class="value">8/8</div></div></div>
+    <section>
+      <h2>Assertions</h2>
+      <table><thead><tr><th>Status</th><th>Assertion</th></tr></thead><tbody>
+        <tr><td class="ok">PASS</td><td>All host focused tests passed without skipped cases</td></tr><tr><td class="ok">PASS</td><td>Dockerized Node runtime tests passed without skipped cases</td></tr><tr><td class="ok">PASS</td><td>Live Docker overlay smoke passed</td></tr><tr><td class="ok">PASS</td><td>Overlay mount is visible at /workspace</td></tr><tr><td class="ok">PASS</td><td>Rootless user wrote through /workspace</td></tr><tr><td class="ok">PASS</td><td>Read-only base repo stayed unchanged</td></tr><tr><td class="ok">PASS</td><td>Merged view changed after overlay write</td></tr><tr><td class="ok">PASS</td><td>Overlay upperdir captured rootless changes</td></tr>
+      </tbody></table>
+    </section>
+    <section>
+      <h2>Focused Tests</h2>
+      <table><thead><tr><th>Surface</th><th>Status</th><th>Pass</th><th>Fail</th><th>Skipped</th><th>Command</th></tr></thead><tbody>
+        <tr><td>host:workspaceRuntimeContainer.test.js</td><td class="ok">PASS</td><td>29</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/workspaceRuntimeContainer.test.js</td></tr><tr><td>host:containerPortMonitor.test.js</td><td class="ok">PASS</td><td>6</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/containerPortMonitor.test.js</td></tr><tr><td>host:codesiteFs.test.js</td><td class="ok">PASS</td><td>45</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/codesiteFs.test.js</td></tr><tr><td>host:terminalRouting.test.js</td><td class="ok">PASS</td><td>13</td><td>0</td><td>0</td><td>node --test backend/collab-server/__tests__/terminalRouting.test.js</td></tr><tr><td>docker-node:workspaceRuntimeContainer.test.js</td><td class="ok">PASS</td><td>29</td><td>0</td><td>0</td><td>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/workspaceRuntimeContainer.test.js</td></tr><tr><td>docker-node:containerPortMonitor.test.js</td><td class="ok">PASS</td><td>6</td><td>0</td><td>0</td><td>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/containerPortMonitor.test.js</td></tr>
+      </tbody></table>
+    </section>
+    <section>
+      <h2>Live Docker Runtime Boundary</h2>
+      <table><tbody>
+        <tr><th>Image</th><td>vectant-runtime:local</td></tr>
+        <tr><th>Mount</th><td>overlay /workspace overlay rw,relatime,lowerdir=/codesite/base,upperdir=/codesite/overlay/upper,workdir=/codesite/overlay/work,uuid=on 0 0</td></tr>
+        <tr><th>Rootless Write</th><td class="ok">Observed</td></tr>
+        <tr><th>Base Preservation</th><td class="ok">Preserved</td></tr>
+      </tbody></table>
+      <pre># docker-volume-create-base\ncodesite_overlay_base_6bb70254d8fa
+\n\n# docker-volume-create-overlay\ncodesite_overlay_work_6bb70254d8fa
+\n\n# docker-seed-base\n\n\n# docker-start-runtime\nbfe45c7975af06e506b0d446ec0c4a70ec6939995d1e8f86b965f4df99c19830
+\n\n# docker-overlay-setup-as-root\noverlay /workspace overlay rw,relatime,lowerdir=/codesite/base,upperdir=/codesite/overlay/upper,workdir=/codesite/overlay/work,uuid=on 0 0
+\n\n# docker-rootless-workspace-write\ntotal 16
+drwxr-xr-x    1 rootless rootless      4096 Jul  3 22:39 .
+drwxr-xr-x    1 rootless rootless      4096 Jul  3 22:39 ..
+-rw-r--r--    1 rootless rootless         7 Jul  3 22:39 app.txt
+-rw-r--r--    1 rootless rootless         4 Jul  3 22:39 old.txt
+\n\n# docker-overlay-inspect\noverlay /workspace overlay rw,relatime,lowerdir=/codesite/base,upperdir=/codesite/overlay/upper,workdir=/codesite/overlay/work,uuid=on 0 0
+MERGED_APP=after
+BASE_APP=before
+/codesite/overlay/upper:
+total 16
+drwxr-xr-x    3 rootless rootless      4096 Jul  3 22:39 .
+drwxr-xr-x    4 root     root          4096 Jul  3 22:39 ..
+drwxr-xr-x    2 rootless rootless      4096 Jul  3 22:39 src
+
+/codesite/overlay/upper/src:
+total 20
+drwxr-xr-x    2 rootless rootless      4096 Jul  3 22:39 .
+drwxr-xr-x    3 rootless rootless      4096 Jul  3 22:39 ..
+-rw-r--r--    1 rootless rootless         6 Jul  3 22:39 app.txt
+-rw-r--r--    1 rootless rootless         4 Jul  3 22:39 new.txt
+c---------    2 root     root        0,   0 Jul  3 22:39 old.txt
+-rw-r--r--    1 rootless rootless         0 Jul  3 22:39 rootless-proof.txt
+</pre>
+    </section>
+  </main>
+</body>
+</html>

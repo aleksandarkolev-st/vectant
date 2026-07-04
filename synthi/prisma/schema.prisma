@@ -297,6 +297,7 @@ model CodeSiteProject {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  members            CodeSiteProjectMember[]
   agentSessions      CodeSiteAgentSession[]
   executionPlans     CodeSiteExecutionPlan[]
   mutationLeases     CodeSiteMutationLease[]
@@ -315,6 +316,30 @@ model CodeSiteProject {
 
   @@index([workspaceSlug])
   @@index([status])
+}
+
+model CodeSiteProjectMember {
+  id              String   @id @default(cuid())
+  projectId       String
+  workspaceSlug   String
+  userId          String
+  role            String
+  permissionsJson String
+  redactionPolicyJson String?
+  participationStatus String @default("enabled")
+  source          String
+  createdByUserId String?
+  revokedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([workspaceSlug, userId])
+  @@index([projectId])
+  @@index([role])
+  @@index([projectId, revokedAt])
 }
 
 model CodeSiteMutationZone {
@@ -512,7 +537,10 @@ model CodeSiteProofBundle {
   dojoEvidenceRefsJson  String?
   repoStateJson         String?
   incidentReplayDigest  String?
+  landingStatus         String?
   bundleDigest          String
+  proofSignatureJson    String?
+  signatureKeyId        String?
   createdAt             DateTime @default(now())
 
   project     CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -522,6 +550,7 @@ model CodeSiteProofBundle {
   @@index([transactionId])
   @@index([commitSha])
   @@index([bundleDigest])
+  @@index([signatureKeyId])
 }
 
 model CodeSiteLineProvenance {

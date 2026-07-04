@@ -1,0 +1,292 @@
+{
+  "schemaVersion": "synthi.codesite.repoCacheBoundaryProof.v1",
+  "generatedAt": "2026-07-03T19:06:47.081Z",
+  "ok": true,
+  "git": {
+    "head": "70632b69b2ef6ef6d098cd94811163086a6449c8",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M backend/collab-server/gitService.js\n M backend/collab-server/repoCache.js\n M backend/collab-server/server.js\n?? backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js"
+  },
+  "assertions": [
+    {
+      "name": "repo cache has active CodeSite materialization guard",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "repo cache materialization is classified as git_provisioning",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "GitService.withLock passes options into repoCache.acquire",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "initRepo accepts provisioning options without breaking token user id compatibility",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "cloneRepo accepts provisioning options without breaking token user id compatibility",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "ensureUserRepo accepts provisioning options",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "server threads CodeSite provisioning options into implicit and explicit provisioning",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "regression test proves denial before repo directory creation",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "syntaxRepoCache command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/repoCache.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxGitService command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/gitService.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxServer command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/server.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "repoCacheBoundary command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js",
+        "summary": {
+          "tests": 1,
+          "suites": 0,
+          "pass": 1,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "runtimePrep command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js",
+        "summary": {
+          "tests": 4,
+          "suites": 0,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerRepoCache command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/repoCache.js && node --check backend/collab-server/gitService.js && node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js",
+        "summary": {
+          "tests": 1,
+          "suites": 0,
+          "pass": 1,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "syntaxRepoCache",
+      "command": "node --check backend/collab-server/repoCache.js",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxGitService",
+      "command": "node --check backend/collab-server/gitService.js",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxServer",
+      "command": "node --check backend/collab-server/server.js",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0
+      },
+      "outputTail": []
+    },
+    {
+      "name": "repoCacheBoundary",
+      "command": "node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "suites": 0,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "TAP version 13",
+        "# Subtest: active CodeSite repo cache materialization requires explicit repo-wide provisioning clearance",
+        "ok 1 - active CodeSite repo cache materialization requires explicit repo-wide provisioning clearance",
+        "  ---",
+        "  duration_ms: 44.915346",
+        "  ...",
+        "1..1",
+        "# tests 1",
+        "# suites 0",
+        "# pass 1",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 7657.812399"
+      ]
+    },
+    {
+      "name": "runtimePrep",
+      "command": "node --test backend/collab-server/__tests__/runtimeFilesystem.test.js backend/collab-server/__tests__/workspacePrepManager.test.js",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 4,
+        "suites": 0,
+        "pass": 4,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "  duration_ms: 0.608548",
+        "  ...",
+        "# [GitService] WARNING: token store is PLAINTEXT on disk. Set SYNTHI_TOKEN_ENCRYPTION_KEY (32 bytes, base64) or SYNTHI_TOKEN_ENCRYPTION_PASSPHRASE to encrypt at rest.",
+        "# [Spawner] Using process backend",
+        "# Subtest: active CodeSite workspace prep fails before real repo materialization",
+        "ok 4 - active CodeSite workspace prep fails before real repo materialization",
+        "  ---",
+        "  duration_ms: 1.709885",
+        "  ...",
+        "1..4",
+        "# tests 4",
+        "# suites 0",
+        "# pass 4",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 35085.95878"
+      ]
+    },
+    {
+      "name": "dockerRepoCache",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/repoCache.js && node --check backend/collab-server/gitService.js && node --test backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "suites": 0,
+        "pass": 1,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "outputTail": [
+        "TAP version 13",
+        "# Subtest: active CodeSite repo cache materialization requires explicit repo-wide provisioning clearance",
+        "ok 1 - active CodeSite repo cache materialization requires explicit repo-wide provisioning clearance",
+        "  ---",
+        "  duration_ms: 39.149193",
+        "  ...",
+        "1..1",
+        "# tests 1",
+        "# suites 0",
+        "# pass 1",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 5782.755596"
+      ]
+    }
+  ],
+  "boundarySnapshot": {
+    "deniedWithoutRepoWideClearance": "active CodeSite + git_provisioning + allowedPaths src/** => CODESITE_WRITE_DENIED before mkdir",
+    "allowedWithRepoWideClearance": "active CodeSite + git_provisioning + allowedPaths ** => repoCache.acquire may materialize",
+    "threadedEntrypoints": [
+      "workspace prepare auto-init",
+      "file-content auto-init",
+      "git auto-init",
+      "git ensure-user-repo",
+      "git init",
+      "git clone"
+    ],
+    "dockerReplay": "node:20-bookworm reruns syntax and repoCache boundary tests against mounted checkout"
+  }
+}

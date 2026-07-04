@@ -1,0 +1,348 @@
+{
+  "schemaVersion": "synthi.codesite.gitServiceWorktreeProof.v1",
+  "generatedAt": "2026-07-01T21:06:40.494Z",
+  "source": "scripts/codesite-gitservice-worktree-proof.mjs",
+  "scenarios": [
+    {
+      "name": "Path-scoped discard",
+      "notes": [
+        "A direct tracked-file discard recorded git_worktree before checkout restored the file."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_worktree",
+          "evidenceRefs": [
+            "proof:worktree-context",
+            "proof:discard"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Patch hunk discard",
+      "notes": [
+        "A direct reverse patch used the same CodeSiteFS path-scoped git_worktree attempt as the route layer."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_worktree",
+          "evidenceRefs": [
+            "proof:worktree-context",
+            "proof:discard-lines"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Patch target authenticity",
+      "notes": [
+        "A forged discardLines request claimed src/app.js, but the patch targeted api/auth/signup.ts, so CodeSiteFS denied the actual patch target before apply."
+      ],
+      "mutations": [
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "tool": "git_worktree",
+          "operation": "discard-lines",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "File checkout disambiguation",
+      "notes": [
+        "A branch named src/app.js existed, but discardChange stayed on main and restored the file path using git checkout -- path."
+      ],
+      "mutations": [
+        {
+          "path": "src/app.js",
+          "disposition": "write_allowed",
+          "tool": "git_worktree",
+          "evidenceRefs": [
+            "proof:worktree-context",
+            "proof:discard-branch-name"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Repo-wide discardAll gate",
+      "notes": [
+        "A repo-wide discard is blocked by a path-scoped write set and allowed only with ** clearance."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "**",
+          "disposition": "write_allowed",
+          "tool": "git_worktree"
+        }
+      ]
+    },
+    {
+      "name": "Conflict operation preflight",
+      "notes": [
+        "Conflict checkout/add methods reject outside-route paths before any git checkout or git add can run."
+      ],
+      "mutations": [
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "operation": "resolve-ours",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "operation": "resolve-theirs",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "api/auth/signup.ts",
+          "disposition": "write_denied",
+          "operation": "mark-resolved",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Branch checkout broad gate",
+      "notes": [
+        "Direct branch checkout rejects path-scoped leases and switches branches only after a repo-wide git_worktree clearance."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "operation": "checkout",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "**",
+          "disposition": "write_allowed",
+          "tool": "git_worktree",
+          "operation": "checkout"
+        }
+      ]
+    },
+    {
+      "name": "Stash pop broad gate",
+      "notes": [
+        "Direct stash pop keeps the stash intact under path-scoped clearance and applies it only with repo-wide worktree clearance."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "operation": "stash-pop",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        },
+        {
+          "path": "**",
+          "disposition": "write_allowed",
+          "tool": "git_worktree",
+          "operation": "stash-pop"
+        }
+      ]
+    },
+    {
+      "name": "Merge branch broad gate",
+      "notes": [
+        "Direct mergeBranch performs a CodeSiteFS preflight before fetch or merge can mutate the worktree."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "tool": "git_worktree",
+          "operation": "merge-branch",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Pull broad gate",
+      "notes": [
+        "Direct pull performs a CodeSiteFS preflight before any remote merge can change the worktree."
+      ],
+      "mutations": [
+        {
+          "path": "**",
+          "disposition": "write_denied",
+          "tool": "git_worktree",
+          "operation": "pull",
+          "reasonCodes": [
+            "outside_clearance_route"
+          ]
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "name": "discardChange reverts only after CodeSiteFS allows git_worktree",
+      "ok": true,
+      "detail": {
+        "digest": "sha256:9160d4be34c8695bd172a76c7c7966587ea5a4d991ad22c87b2b91af54aa9ebb",
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "discardLines reverse-applies patch only after boundary event",
+      "ok": true,
+      "detail": {
+        "digest": "sha256:b6285c57e8797db5d4c51c80d6f11938afda9b11c6a003549709189e9b4b92a2",
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "discardLines gates the patch header target, not the claimed filePath",
+      "ok": true,
+      "detail": {
+        "operation": "discard-lines",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "discardChange uses file checkout even when a branch shares the path name",
+      "ok": true,
+      "detail": {
+        "event": "write_allowed",
+        "operation": "discard"
+      }
+    },
+    {
+      "name": "discardAll is denied without broad repo clearance and makes no changes",
+      "ok": true,
+      "detail": {
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "discardAll with ** clearance reverts repo-wide changes",
+      "ok": true,
+      "detail": {
+        "event": "write_allowed"
+      }
+    },
+    {
+      "name": "resolve-ours fails closed outside write set",
+      "ok": true,
+      "detail": {
+        "path": "api/auth/signup.ts",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "resolve-theirs fails closed outside write set",
+      "ok": true,
+      "detail": {
+        "path": "api/auth/signup.ts",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "mark-resolved fails closed outside write set",
+      "ok": true,
+      "detail": {
+        "path": "api/auth/signup.ts",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "checkout is blocked before branch switch without ** clearance",
+      "ok": true,
+      "detail": {
+        "operation": "checkout",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "checkout with ** clearance records and switches worktree",
+      "ok": true,
+      "detail": {
+        "event": "write_allowed",
+        "operation": "checkout"
+      }
+    },
+    {
+      "name": "stashPop is blocked before applying stash without ** clearance",
+      "ok": true,
+      "detail": {
+        "operation": "stash-pop",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "stashPop with ** clearance records and applies stash",
+      "ok": true,
+      "detail": {
+        "event": "write_allowed",
+        "operation": "stash-pop"
+      }
+    },
+    {
+      "name": "mergeBranch is denied before fetch or merge without ** clearance",
+      "ok": true,
+      "detail": {
+        "operation": "merge-branch",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    },
+    {
+      "name": "pull is denied before remote worktree mutation without ** clearance",
+      "ok": true,
+      "detail": {
+        "operation": "pull",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "status": "pass",
+    "scenarioCount": 10,
+    "assertionCount": 15
+  }
+}

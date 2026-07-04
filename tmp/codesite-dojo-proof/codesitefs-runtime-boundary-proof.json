@@ -1,9 +1,11 @@
 {
-  "generatedAt": "2026-07-01T05:47:35.305Z",
+  "generatedAt": "2026-07-03T22:26:35.304Z",
+  "sourceRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+  "runRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d",
   "context": {
     "active": true,
     "workspaceSlug": "codesitefs-runtime-boundary",
-    "transactionId": "txn-1782884854528",
+    "transactionId": "txn-1783117570297",
     "mutationLeaseId": "lease-runtime-boundary",
     "displayCallsign": "RUNTIME-RAW-01",
     "actorUserId": "agent-user",
@@ -12,117 +14,918 @@
       "src/**"
     ],
     "blockedPaths": [
-      "api/auth/**"
+      "api/auth/**",
+      "runtime-boundary/**"
     ],
     "processAncestry": [
-      "docker-container",
-      "sh",
+      "workspace-runtime-container",
+      "execInRuntime",
       "raw-write"
     ],
     "evidenceRefs": [
       "proof:codesitefs-runtime-boundary"
     ],
-    "controlPlaneUrl": "http://app.test/api/workspace/codesitefs-runtime-boundary/codesite"
+    "controlPlaneUrl": "http://app.test/api/workspace/codesitefs-runtime-boundary/codesite",
+    "controlPlaneTrusted": true,
+    "fetch": "[proof-local-fetch]"
   },
-  "docker": {
-    "image": "node:22-bookworm",
-    "containerName": "codesitefs-boundary-1782884854557",
-    "command": [
-      "docker",
-      "run",
-      "--rm",
-      "--name",
-      "codesitefs-boundary-1782884854557",
-      "-v",
-      "/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e:/workspace",
-      "-w",
-      "/workspace",
-      "node:22-bookworm",
-      "sh",
-      "-lc",
-      "set -eu\nmkdir -p src api/auth\nprintf 'overlay app from raw docker\\n' > src/app.js\nprintf 'raw auth bypass attempt\\n' > api/auth/signup.ts\nprintf 'runtime wrote only to quarantine\\n' > runtime.out"
-    ]
+  "runtime": {
+    "image": "vectant-runtime:local",
+    "network": "synthi-ide_default",
+    "dockerDriver": "dockerode"
   },
-  "quarantine": {
-    "root": "/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e",
-    "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/repo",
-    "digest": "sha256:40f67229e3e06d37e11a1103fd66a9db78c545c4db343a64768323ab46d3b20c"
-  },
-  "changes": [
+  "overlays": [
     {
-      "path": "api/auth/signup.ts",
-      "kind": "modified",
-      "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
-      "afterDigest": "sha256:ba37c87b90de5bffe1c0b44053e62e2db9dd90e39e96566bed2b1156d196e171",
-      "beforeSize": 22,
-      "afterSize": 24,
-      "evidenceDigest": "sha256:7e1e0c1a3dd75b14d49277e6c1ad4e55075e2109f7bf08928c518f65a854664d"
+      "label": "overlay-a",
+      "quarantine": {
+        "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "overlayId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "root": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "baseRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "upperRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e/upper",
+        "workRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e/work",
+        "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "manifestPath": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/_records/ovl-txn-1783117570297-1783117586723-d1850a4e.json",
+        "digest": "sha256:cf0eb425062a63bbdfd9a329502c9681621cb9638ffc3c6853fab25e9556f776"
+      },
+      "runtime": {
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9",
+        "host": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9",
+        "containerId": "f781bb832f7bdf82f46708bf3deed7c1f12358714753cadbc9111c88eb248c92",
+        "created": true
+      },
+      "inspect": {
+        "id": "f781bb832f7bdf82f46708bf3deed7c1f12358714753cadbc9111c88eb248c92",
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-40608c17b9",
+        "image": "vectant-runtime:local",
+        "labels": {
+          "desktop.docker.io/wsl-distro": "Ubuntu",
+          "vectant/codesite-base-readonly": "true",
+          "vectant/codesite-overlay-id": "40608c17b9",
+          "vectant/codesite-transaction-id": "txn-1783117570297",
+          "vectant/codesite-workspace-mode": "codesite-overlay",
+          "vectant/lastActive": "1783117586773",
+          "vectant/runtime": "workspace-runtime-local",
+          "vectant/slug": "codesitefs-runtime-boundary",
+          "vectant/userId": "workspace-user"
+        },
+        "env": [
+          "CODESITE_WORKSPACE_OVERLAY=1",
+          "SYNTHI_CODESITE_WORKSPACE_OVERLAY=1",
+          "CODESITE_BASE_ROOT=/codesite/base",
+          "CODESITE_OVERLAY_ROOT=/codesite/overlay",
+          "CODESITE_OVERLAY_UPPER=/codesite/overlay/upper",
+          "CODESITE_OVERLAY_WORK=/codesite/overlay/work",
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "DOCKER_VERSION=29.5.3",
+          "DOCKER_BUILDX_VERSION=0.34.1",
+          "DOCKER_COMPOSE_VERSION=5.1.4",
+          "DOCKER_TLS_CERTDIR=/certs",
+          "DIND_COMMIT=8d9e3502aba39127e4d12196dae16d306f76993d",
+          "HOME=/home/rootless",
+          "DOCKER_HOST=unix:///run/user/1000/docker.sock"
+        ],
+        "hostConfig": {
+          "binds": [
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo:/codesite/base:ro",
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e:/codesite/overlay"
+          ],
+          "networkMode": "synthi-ide_default",
+          "privileged": true
+        },
+        "mounts": [
+          {
+            "Type": "volume",
+            "Name": "9004796ba0405850df56cb4eaa88771d932378c884e3752ae0adeb5da2d93fdb",
+            "Source": "/var/lib/docker/volumes/9004796ba0405850df56cb4eaa88771d932378c884e3752ae0adeb5da2d93fdb/_data",
+            "Destination": "/var/lib/docker",
+            "Driver": "local",
+            "Mode": "",
+            "RW": true,
+            "Propagation": ""
+          },
+          {
+            "Type": "bind",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+            "Destination": "/codesite/base",
+            "Mode": "ro",
+            "RW": false,
+            "Propagation": "rprivate"
+          },
+          {
+            "Type": "bind",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "Destination": "/codesite/overlay",
+            "Mode": "",
+            "RW": true,
+            "Propagation": "rprivate"
+          },
+          {
+            "Type": "volume",
+            "Name": "85749afb2bae74bcb27a751222e4317cea3fdb41ea6dd4539bea346366cb749f",
+            "Source": "/var/lib/docker/volumes/85749afb2bae74bcb27a751222e4317cea3fdb41ea6dd4539bea346366cb749f/_data",
+            "Destination": "/home/rootless/.local/share/docker",
+            "Driver": "local",
+            "Mode": "",
+            "RW": true,
+            "Propagation": ""
+          }
+        ],
+        "workspaceMount": null,
+        "codeSiteBaseMount": {
+          "Type": "bind",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+          "Destination": "/codesite/base",
+          "Mode": "ro",
+          "RW": false,
+          "Propagation": "rprivate"
+        },
+        "codeSiteOverlayMount": {
+          "Type": "bind",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+          "Destination": "/codesite/overlay",
+          "Mode": "",
+          "RW": true,
+          "Propagation": "rprivate"
+        }
+      },
+      "mount": {
+        "workspaceSource": "",
+        "baseSource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "baseReadOnly": true,
+        "overlaySource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+        "overlayWritable": true
+      },
+      "command": {
+        "output": "pwd=/workspace\nwhoami=rootless\nworkspaceWritable=yes\nreadbackApp=overlay app from manager overlay-a\nreadbackAuth=raw auth bypass attempt overlay-a\nreadbackRuntime=runtime wrote only to quarantine overlay-a\n",
+        "exitCode": 0,
+        "workspaceWritable": "yes"
+      },
+      "finalized": {
+        "changes": [
+          {
+            "path": "api/auth/signup.ts",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+            "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
+            "beforeSize": 22,
+            "afterSize": 34,
+            "evidenceDigest": "sha256:4c14fd3835d09c7d0915c82534a61eb3544d4d95e3c136cd81a19f59375cfe26",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "quarantineEvidence": {
+              "path": "api/auth/signup.ts",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+              "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
+              "beforeSize": 22,
+              "afterSize": 34,
+              "beforeText": "real repo auth before\n",
+              "afterText": "raw auth bypass attempt overlay-a\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo auth before",
+                  "+raw auth bypass attempt overlay-a",
+                  " "
+                ]
+              },
+              "digest": "sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "evidenceRef": "codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
+            }
+          },
+          {
+            "path": "runtime.out",
+            "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
+            "beforeDigest": null,
+            "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
+            "beforeSize": null,
+            "afterSize": 43,
+            "evidenceDigest": "sha256:ca279462a70ecf2ad23951a538d229fe0cf0f8a18be07d0977e05cbbd3b957ee",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "quarantineEvidence": {
+              "path": "runtime.out",
+              "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
+              "beforeDigest": null,
+              "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
+              "beforeSize": null,
+              "afterSize": 43,
+              "afterText": "runtime wrote only to quarantine overlay-a\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 1,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "+runtime wrote only to quarantine overlay-a",
+                  " "
+                ]
+              },
+              "digest": "sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "evidenceRef": "codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
+            }
+          },
+          {
+            "path": "src/app.js",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+            "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
+            "beforeSize": 21,
+            "afterSize": 35,
+            "evidenceDigest": "sha256:ce2cf4b68f6332f2601b0d37dcd2f70418c760ab083fbe026b48e4ad0179af94",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "quarantineEvidence": {
+              "path": "src/app.js",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+              "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
+              "beforeSize": 21,
+              "afterSize": 35,
+              "beforeText": "real repo app before\n",
+              "afterText": "overlay app from manager overlay-a\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo app before",
+                  "+overlay app from manager overlay-a",
+                  " "
+                ]
+              },
+              "digest": "sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "evidenceRef": "codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
+            }
+          }
+        ],
+        "recorded": [
+          {
+            "path": "api/auth/signup.ts",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+            "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
+            "beforeSize": 22,
+            "afterSize": 34,
+            "evidenceDigest": "sha256:4c14fd3835d09c7d0915c82534a61eb3544d4d95e3c136cd81a19f59375cfe26",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "quarantineEvidence": {
+              "path": "api/auth/signup.ts",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+              "afterDigest": "sha256:7a0834a4c7ae6b1b317ea3ab4f53f06ce19520e1bddb38b534427edacd98479e",
+              "beforeSize": 22,
+              "afterSize": 34,
+              "beforeText": "real repo auth before\n",
+              "afterText": "raw auth bypass attempt overlay-a\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo auth before",
+                  "+raw auth bypass attempt overlay-a",
+                  " "
+                ]
+              },
+              "digest": "sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "evidenceRef": "codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
+            },
+            "ok": true,
+            "response": {
+              "ok": false,
+              "quarantined": true,
+              "policyDecision": {
+                "reasonCodes": [
+                  "raw_terminal_quarantine"
+                ]
+              }
+            }
+          },
+          {
+            "path": "runtime.out",
+            "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
+            "beforeDigest": null,
+            "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
+            "beforeSize": null,
+            "afterSize": 43,
+            "evidenceDigest": "sha256:ca279462a70ecf2ad23951a538d229fe0cf0f8a18be07d0977e05cbbd3b957ee",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "quarantineEvidence": {
+              "path": "runtime.out",
+              "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
+              "beforeDigest": null,
+              "afterDigest": "sha256:82cdf69f928da0cba407faa19cb2866b76e3e9977c683a19afd4696388dfdb92",
+              "beforeSize": null,
+              "afterSize": 43,
+              "afterText": "runtime wrote only to quarantine overlay-a\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 1,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "+runtime wrote only to quarantine overlay-a",
+                  " "
+                ]
+              },
+              "digest": "sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "evidenceRef": "codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
+            },
+            "ok": true,
+            "response": {
+              "ok": false,
+              "quarantined": true,
+              "policyDecision": {
+                "reasonCodes": [
+                  "raw_terminal_quarantine"
+                ]
+              }
+            }
+          },
+          {
+            "path": "src/app.js",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+            "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
+            "beforeSize": 21,
+            "afterSize": 35,
+            "evidenceDigest": "sha256:ce2cf4b68f6332f2601b0d37dcd2f70418c760ab083fbe026b48e4ad0179af94",
+            "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e",
+            "quarantineEvidence": {
+              "path": "src/app.js",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+              "afterDigest": "sha256:4fbc44eb881d60d5436f7842a59f0f6d09738a398ce9190df1cebede568f39d9",
+              "beforeSize": 21,
+              "afterSize": 35,
+              "beforeText": "real repo app before\n",
+              "afterText": "overlay app from manager overlay-a\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo app before",
+                  "+overlay app from manager overlay-a",
+                  " "
+                ]
+              },
+              "digest": "sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "evidenceRef": "codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+              "quarantineId": "ovl-txn-1783117570297-1783117586723-d1850a4e"
+            },
+            "ok": true,
+            "response": {
+              "ok": false,
+              "quarantined": true,
+              "policyDecision": {
+                "reasonCodes": [
+                  "raw_terminal_quarantine"
+                ]
+              }
+            }
+          }
+        ]
+      }
     },
     {
-      "path": "runtime.out",
-      "kind": "created",
-      "beforeDigest": null,
-      "afterDigest": "sha256:6402800ad8e4fdcec294525b547c845ee1b87c5b035054451fa3df71df49a3c7",
-      "beforeSize": null,
-      "afterSize": 33,
-      "evidenceDigest": "sha256:4ff47d6d38d994e3a2b4de389bfca613e972c03b974221626050536693dece25"
-    },
-    {
-      "path": "src/app.js",
-      "kind": "modified",
-      "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
-      "afterDigest": "sha256:0a086f616f1505014793ebc97b527484ce60fdfc21b94a6f450840d855049f23",
-      "beforeSize": 21,
-      "afterSize": 28,
-      "evidenceDigest": "sha256:6e2efbd52676d792129cdbe1f07018c88e99cdbd66177ccc66c40abe2b19b689"
+      "label": "overlay-b",
+      "quarantine": {
+        "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+        "overlayId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+        "root": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+        "baseRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "upperRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b/upper",
+        "workRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b/work",
+        "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "manifestPath": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/_records/ovl-txn-1783117570297-1783117587466-ade3496b.json",
+        "digest": "sha256:e5c0e18d409d4be1c275e6e3ebd6ef849d0bf43938495900aa4cc14c49fa7b09"
+      },
+      "runtime": {
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece",
+        "host": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece",
+        "containerId": "b74a95f68eb0771d54a69d21698d0f18e2bec94e2dcca1711e73e65dde15312f",
+        "created": true
+      },
+      "inspect": {
+        "id": "b74a95f68eb0771d54a69d21698d0f18e2bec94e2dcca1711e73e65dde15312f",
+        "name": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-c826d72ece",
+        "image": "vectant-runtime:local",
+        "labels": {
+          "desktop.docker.io/wsl-distro": "Ubuntu",
+          "vectant/codesite-base-readonly": "true",
+          "vectant/codesite-overlay-id": "c826d72ece",
+          "vectant/codesite-transaction-id": "txn-1783117570297",
+          "vectant/codesite-workspace-mode": "codesite-overlay",
+          "vectant/lastActive": "1783117587470",
+          "vectant/runtime": "workspace-runtime-local",
+          "vectant/slug": "codesitefs-runtime-boundary",
+          "vectant/userId": "workspace-user"
+        },
+        "env": [
+          "CODESITE_WORKSPACE_OVERLAY=1",
+          "SYNTHI_CODESITE_WORKSPACE_OVERLAY=1",
+          "CODESITE_BASE_ROOT=/codesite/base",
+          "CODESITE_OVERLAY_ROOT=/codesite/overlay",
+          "CODESITE_OVERLAY_UPPER=/codesite/overlay/upper",
+          "CODESITE_OVERLAY_WORK=/codesite/overlay/work",
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "DOCKER_VERSION=29.5.3",
+          "DOCKER_BUILDX_VERSION=0.34.1",
+          "DOCKER_COMPOSE_VERSION=5.1.4",
+          "DOCKER_TLS_CERTDIR=/certs",
+          "DIND_COMMIT=8d9e3502aba39127e4d12196dae16d306f76993d",
+          "HOME=/home/rootless",
+          "DOCKER_HOST=unix:///run/user/1000/docker.sock"
+        ],
+        "hostConfig": {
+          "binds": [
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo:/codesite/base:ro",
+            "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b:/codesite/overlay"
+          ],
+          "networkMode": "synthi-ide_default",
+          "privileged": true
+        },
+        "mounts": [
+          {
+            "Type": "bind",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+            "Destination": "/codesite/overlay",
+            "Mode": "",
+            "RW": true,
+            "Propagation": "rprivate"
+          },
+          {
+            "Type": "volume",
+            "Name": "836e33c2288159b5f4e7caf85990202fe86a46cc33dd8a5a96c6ca91ccdfe2c3",
+            "Source": "/var/lib/docker/volumes/836e33c2288159b5f4e7caf85990202fe86a46cc33dd8a5a96c6ca91ccdfe2c3/_data",
+            "Destination": "/home/rootless/.local/share/docker",
+            "Driver": "local",
+            "Mode": "",
+            "RW": true,
+            "Propagation": ""
+          },
+          {
+            "Type": "volume",
+            "Name": "c884fbb9670de9cc2134ce716b9073c3b8b6a3f71d0e7538db075a583e0ee413",
+            "Source": "/var/lib/docker/volumes/c884fbb9670de9cc2134ce716b9073c3b8b6a3f71d0e7538db075a583e0ee413/_data",
+            "Destination": "/var/lib/docker",
+            "Driver": "local",
+            "Mode": "",
+            "RW": true,
+            "Propagation": ""
+          },
+          {
+            "Type": "bind",
+            "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+            "Destination": "/codesite/base",
+            "Mode": "ro",
+            "RW": false,
+            "Propagation": "rprivate"
+          }
+        ],
+        "workspaceMount": null,
+        "codeSiteBaseMount": {
+          "Type": "bind",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+          "Destination": "/codesite/base",
+          "Mode": "ro",
+          "RW": false,
+          "Propagation": "rprivate"
+        },
+        "codeSiteOverlayMount": {
+          "Type": "bind",
+          "Source": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+          "Destination": "/codesite/overlay",
+          "Mode": "",
+          "RW": true,
+          "Propagation": "rprivate"
+        }
+      },
+      "mount": {
+        "workspaceSource": "",
+        "baseSource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+        "baseReadOnly": true,
+        "overlaySource": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+        "overlayWritable": true
+      },
+      "command": {
+        "output": "pwd=/workspace\nwhoami=rootless\nworkspaceWritable=yes\nreadbackApp=overlay app from manager overlay-b\nreadbackAuth=raw auth bypass attempt overlay-b\nreadbackRuntime=runtime wrote only to quarantine overlay-b\n",
+        "exitCode": 0,
+        "workspaceWritable": "yes"
+      },
+      "finalized": {
+        "changes": [
+          {
+            "path": "api/auth/signup.ts",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+            "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
+            "beforeSize": 22,
+            "afterSize": 34,
+            "evidenceDigest": "sha256:d9df2f43dd0baf622233265d4c12fea76a35b908d7503bc75b8b3dc0c12bd30a",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+            "quarantineEvidence": {
+              "path": "api/auth/signup.ts",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+              "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
+              "beforeSize": 22,
+              "afterSize": 34,
+              "beforeText": "real repo auth before\n",
+              "afterText": "raw auth bypass attempt overlay-b\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo auth before",
+                  "+raw auth bypass attempt overlay-b",
+                  " "
+                ]
+              },
+              "digest": "sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "evidenceRef": "codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
+            }
+          },
+          {
+            "path": "runtime.out",
+            "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
+            "beforeDigest": null,
+            "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
+            "beforeSize": null,
+            "afterSize": 43,
+            "evidenceDigest": "sha256:ef40a4022251b9e9acc6ede4cd731e41f07d7c268fac7c90237a4b0e7067b28d",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+            "quarantineEvidence": {
+              "path": "runtime.out",
+              "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
+              "beforeDigest": null,
+              "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
+              "beforeSize": null,
+              "afterSize": 43,
+              "afterText": "runtime wrote only to quarantine overlay-b\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 1,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "+runtime wrote only to quarantine overlay-b",
+                  " "
+                ]
+              },
+              "digest": "sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "evidenceRef": "codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
+            }
+          },
+          {
+            "path": "src/app.js",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+            "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
+            "beforeSize": 21,
+            "afterSize": 35,
+            "evidenceDigest": "sha256:5cdaf09d82ab28106e24c59fb3a86b396c05746bea4f5ecb3ffffa5dc0601399",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+            "quarantineEvidence": {
+              "path": "src/app.js",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+              "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
+              "beforeSize": 21,
+              "afterSize": 35,
+              "beforeText": "real repo app before\n",
+              "afterText": "overlay app from manager overlay-b\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo app before",
+                  "+overlay app from manager overlay-b",
+                  " "
+                ]
+              },
+              "digest": "sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "evidenceRef": "codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
+            }
+          }
+        ],
+        "recorded": [
+          {
+            "path": "api/auth/signup.ts",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+            "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
+            "beforeSize": 22,
+            "afterSize": 34,
+            "evidenceDigest": "sha256:d9df2f43dd0baf622233265d4c12fea76a35b908d7503bc75b8b3dc0c12bd30a",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+            "quarantineEvidence": {
+              "path": "api/auth/signup.ts",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9bfc8743d330d6d0295e5034a9cd3672a8bd3f21d3db34fd215a07a21def9729",
+              "afterDigest": "sha256:0f0a4401241f109b82e3948eab79a78b4a264c540a70370d7c27bebe59f0a11d",
+              "beforeSize": 22,
+              "afterSize": 34,
+              "beforeText": "real repo auth before\n",
+              "afterText": "raw auth bypass attempt overlay-b\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo auth before",
+                  "+raw auth bypass attempt overlay-b",
+                  " "
+                ]
+              },
+              "digest": "sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "evidenceRef": "codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
+            },
+            "ok": true,
+            "response": {
+              "ok": false,
+              "quarantined": true,
+              "policyDecision": {
+                "reasonCodes": [
+                  "raw_terminal_quarantine"
+                ]
+              }
+            }
+          },
+          {
+            "path": "runtime.out",
+            "kind": "created",
+            "beforeExists": false,
+            "afterExists": true,
+            "beforeDigest": null,
+            "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
+            "beforeSize": null,
+            "afterSize": 43,
+            "evidenceDigest": "sha256:ef40a4022251b9e9acc6ede4cd731e41f07d7c268fac7c90237a4b0e7067b28d",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+            "quarantineEvidence": {
+              "path": "runtime.out",
+              "kind": "created",
+              "beforeExists": false,
+              "afterExists": true,
+              "beforeDigest": null,
+              "afterDigest": "sha256:1a161927d85303004219552f56d36dd1e7d9ed67816ab0bbc6609509687b9a68",
+              "beforeSize": null,
+              "afterSize": 43,
+              "afterText": "runtime wrote only to quarantine overlay-b\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 1,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "+runtime wrote only to quarantine overlay-b",
+                  " "
+                ]
+              },
+              "digest": "sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "evidenceRef": "codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
+            },
+            "ok": true,
+            "response": {
+              "ok": false,
+              "quarantined": true,
+              "policyDecision": {
+                "reasonCodes": [
+                  "raw_terminal_quarantine"
+                ]
+              }
+            }
+          },
+          {
+            "path": "src/app.js",
+            "kind": "modified",
+            "beforeExists": true,
+            "afterExists": true,
+            "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+            "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
+            "beforeSize": 21,
+            "afterSize": 35,
+            "evidenceDigest": "sha256:5cdaf09d82ab28106e24c59fb3a86b396c05746bea4f5ecb3ffffa5dc0601399",
+            "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b",
+            "quarantineEvidence": {
+              "path": "src/app.js",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:9a81a1bb5eee2adda4fe3368d6af558c6079f251a297f9a5f4e57a3a5bdbe9a9",
+              "afterDigest": "sha256:63009d7a39d1a29ac59a6aa057495aeae220e402dcef39efc5f44527f6ed1d30",
+              "beforeSize": 21,
+              "afterSize": 35,
+              "beforeText": "real repo app before\n",
+              "afterText": "overlay app from manager overlay-b\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 1,
+                "beforeLineCount": 2,
+                "afterLineCount": 2,
+                "truncated": false,
+                "lines": [
+                  "-real repo app before",
+                  "+overlay app from manager overlay-b",
+                  " "
+                ]
+              },
+              "digest": "sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "evidenceRef": "codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+              "quarantineId": "ovl-txn-1783117570297-1783117587466-ade3496b"
+            },
+            "ok": true,
+            "response": {
+              "ok": false,
+              "quarantined": true,
+              "policyDecision": {
+                "reasonCodes": [
+                  "raw_terminal_quarantine"
+                ]
+              }
+            }
+          }
+        ]
+      }
     }
   ],
   "recordedEvents": [
     {
+      "overlay": "overlay-a",
       "path": "api/auth/signup.ts",
       "type": "write_quarantined",
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:0f152e74939dedc447f505f2c2dbebe066fedfa2da4be2adad186f04d7129deb",
+      "evidenceRef": "codesitefs:quarantine:sha256:001a55bd5830ca491e3e0205eeb4ed62c83b8a50e3cef4e6cd405371ddb37ffb",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
-        "docker-container",
-        "sh",
+        "workspace-runtime-container",
+        "execInRuntime",
         "raw-write"
       ]
     },
     {
+      "overlay": "overlay-a",
       "path": "runtime.out",
       "type": "write_quarantined",
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:bb825ec19f1394ce0c0f1e22aefcd7edf9982a93d32c9e7f5a88c7b0497df1bb",
+      "evidenceRef": "codesitefs:quarantine:sha256:56b2ca25175ffc99734b274d0b45eee947cd515afbceb89a89c49c9e000af225",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
-        "docker-container",
-        "sh",
+        "workspace-runtime-container",
+        "execInRuntime",
         "raw-write"
       ]
     },
     {
+      "overlay": "overlay-a",
       "path": "src/app.js",
       "type": "write_quarantined",
       "reasonCodes": [
         "raw_terminal_quarantine"
       ],
-      "evidenceRef": "codesitefs:quarantine:sha256:09389546c1f6a472d5ace04bff9b4af78ff5c0cd7f75b714c4bed01e70476515",
+      "evidenceRef": "codesitefs:quarantine:sha256:83d5c1a577ab44f2dbc245308a508fe6acde75fa347dd027bb42fdc38cb9ba62",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117586723-d1850a4e",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
       "processAncestry": [
-        "docker-container",
-        "sh",
+        "workspace-runtime-container",
+        "execInRuntime",
+        "raw-write"
+      ]
+    },
+    {
+      "overlay": "overlay-b",
+      "path": "api/auth/signup.ts",
+      "type": "write_quarantined",
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "evidenceRef": "codesitefs:quarantine:sha256:5397482618764af2f66de4a9e3f3258ecbe19100c3b172dad557ab57681d7b8a",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+      "processAncestry": [
+        "workspace-runtime-container",
+        "execInRuntime",
+        "raw-write"
+      ]
+    },
+    {
+      "overlay": "overlay-b",
+      "path": "runtime.out",
+      "type": "write_quarantined",
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "evidenceRef": "codesitefs:quarantine:sha256:2fd58e67fcf4b0347bfc3b8f3f8c9699e9c646a3dbb297696cf263b5fdcb14a8",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+      "processAncestry": [
+        "workspace-runtime-container",
+        "execInRuntime",
+        "raw-write"
+      ]
+    },
+    {
+      "overlay": "overlay-b",
+      "path": "src/app.js",
+      "type": "write_quarantined",
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "evidenceRef": "codesitefs:quarantine:sha256:5f1458a9d7027c3e7b0e47104ad30a783c6cbc939c6465c48e53c2914ddb21e4",
+      "quarantineRoot": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/quarantine/codesitefs-runtime-boundary/txn-1783117570297/ovl-txn-1783117570297-1783117587466-ade3496b",
+      "originalCwd": "/tmp/codesitefs-runtime-boundary-proof/1783117570275-3faf917d/repo",
+      "processAncestry": [
+        "workspace-runtime-container",
+        "execInRuntime",
         "raw-write"
       ]
     }
   ],
   "productPath": {
-    "containerLaunchMode": "quarantine-runtime",
-    "sysboxLaunchMode": "block-runtime",
-    "overlayAContainer": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-64cde05e87",
-    "overlayBContainer": "workspace-runtime-codesitefs-runtime-boundary-wo-codesite-ed9c873e6d"
+    "hybridProgramLaunchMode": "overlay-runtime",
+    "sysboxProgramNoHybridLaunchMode": "block-runtime",
+    "sysboxProgramWithHybridLaunchMode": "overlay-runtime",
+    "sysboxTerminalNoHybridLaunchMode": "block-runtime",
+    "sysboxTerminalWithHybridLaunchMode": "overlay-runtime"
   },
   "repoChecks": [
     {
@@ -142,14 +945,20 @@
     }
   ],
   "assertions": {
-    "containerTerminalRoutesToQuarantineRuntime": true,
-    "sysboxTerminalStillBlocksWithoutMountStrategy": true,
+    "managerCreatedTwoRuntimeContainers": true,
     "sameTransactionOverlaysUseDistinctRuntimeContainers": true,
+    "runtimeMountsReadOnlyBaseAndWritableOverlay": true,
+    "runtimeContainersDeclareOverlayMode": true,
+    "runtimeWorkspaceWritable": true,
     "realRepoAllowedFileUnchanged": true,
     "realRepoBlockedFileUnchanged": true,
+    "runtimeOutNeverCreatedInRealRepo": true,
     "runtimeContainerChangedOnlyQuarantine": true,
     "blockedPathRecordedAsQuarantined": true,
     "processTreeProvenanceRecorded": true,
-    "durableEvidenceRefsCreated": true
+    "durableEvidenceRefsCreated": true,
+    "runtimePodWithoutManagedMountFailsClosed": true,
+    "runtimePodWithHybridFallsBackToQuarantineRuntime": true,
+    "hybridContainerRuntimeRoutesToQuarantine": true
   }
 }

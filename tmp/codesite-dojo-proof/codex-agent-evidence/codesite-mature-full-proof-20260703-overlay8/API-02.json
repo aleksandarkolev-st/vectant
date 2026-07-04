@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "synthi.codesite.codexAgentExecutionEvidence.v1",
+  "callsign": "API-02",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+  "providerSessionRef": "codex-API-02-20260703-overlay",
+  "providerSessionRefSource": "codesite_registered_session",
+  "role": "backend",
+  "agentSessionId": "cmr5lhu5s001gpm0zzwecixke",
+  "executionPlanId": "cmr5lhui8001mpm0zxglzfp5z",
+  "codexExecThreadId": "019f2a6d-d0f5-7a21-bade-0a2d991cb1e9",
+  "commands": [
+    {
+      "command": "/bin/bash -lc pwd",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_0",
+      "outputDigest": "sha256:d0fd0e6bb48e0d58fd4f47a807da30c9007478d5c985885472718d7f4e6a0780",
+      "evidenceDigest": "sha256:a2bf519e085f1bc59a898a7bdff4b03678fe42a02d83f9693651b2a5cf3951f1"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,220p' docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_1",
+      "outputDigest": "sha256:ece6e774ef7d597e7a266c2647c50863c2390b73029143255d6ba969ecba3988",
+      "evidenceDigest": "sha256:5a882985d14565ac9dd943208302e761622120745c34666e787a7654f42a7829"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,260p' synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_2",
+      "outputDigest": "sha256:36b590cbec2eba0b5c625fda63e145717dea5593d7811d22e7c03d638efb4516",
+      "evidenceDigest": "sha256:85d4350d54c7e0022b04cc3729a72569cbcd9a89df6eb1f1449f15c91935ebc7"
+    },
+    {
+      "command": "/bin/bash -lc 'rg -n \"multi-user|agent inbox|tower-mediated|assumption invalidation|assumption|invalidation|inbox|tower\" docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_3",
+      "outputDigest": "sha256:961bab5b44d31d4a7ffff98af6f97a3f91feead222b22e13d67b0f129098cffe",
+      "evidenceDigest": "sha256:52c5a632a5d67eba6bdfaf31cfab2561027bd8d36b7b4b48a7ec1fe6981ec975"
+    },
+    {
+      "command": "/bin/bash -lc 'rg -n \"dependent-flight|hold|RFI|change-order|stale-assumption|providerSessionRef|SCHEMA-01|API-02|TEST-03|assumption|abort|rfi|changeOrder|change-order\" synthi/scripts/codesite-full-workflow-proof.mjs'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_4",
+      "outputDigest": "sha256:9ecbad9df798f2101ba81051f72e4162961a537658c6e9c1a453052dc33afb4b",
+      "evidenceDigest": "sha256:651c0324db6eb86c365046ffc1bf25de4541a4da5cabc0446c8ecd753051fc38"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1950,2165p' docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_5",
+      "outputDigest": "sha256:8bca80d8e69d8c927219f105c02566142e4cc155930597a0609d20746cbb945c",
+      "evidenceDigest": "sha256:16e455f8325d6f3043431bd3e32d20eeac2dbc4138e2794e7c9a7b9b433806e6"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2280,2340p' synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_6",
+      "outputDigest": "sha256:c716db256bbcf77b1d9dcd761b1f3c3470084027a2cdfb5f9a9fa99155f7748a",
+      "evidenceDigest": "sha256:5282bbab308b5d59379e5367b7ca6399fa156170b681a55ecfa8a6379ca2417e"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '2460,2840p' synthi/scripts/codesite-full-workflow-proof.mjs\"",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_7",
+      "outputDigest": "sha256:c3debfeb5e88a2e881762a6070ed81300ca0130e31dd6a84953aa98de196e116",
+      "evidenceDigest": "sha256:3253a0c1ae26ca9958d2cfe007dd3aa83fac3baeee5a78d1a4d5f0ddd4a427c7"
+    }
+  ],
+  "reportedCommands": [
+    "pwd",
+    "sed -n '1,220p' docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "sed -n '1,260p' synthi/scripts/codesite-full-workflow-proof.mjs",
+    "rg -n \"multi-user|agent inbox|tower-mediated|assumption invalidation|assumption|invalidation|inbox|tower\" docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "rg -n \"dependent-flight|hold|RFI|change-order|stale-assumption|providerSessionRef|SCHEMA-01|API-02|TEST-03|assumption|abort|rfi|changeOrder|change-order\" synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '1950,2165p' docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md",
+    "sed -n '2280,2340p' synthi/scripts/codesite-full-workflow-proof.mjs",
+    "sed -n '2460,2840p' synthi/scripts/codesite-full-workflow-proof.mjs"
+  ],
+  "workflowActions": [
+    {
+      "kind": "role_execution",
+      "callsign": "API-02",
+      "summary": "Plan contains multi-user agent sessions, per-agent inbox delivery, tower-mediated structured documents, and assumption invalidation. Proof script defines SCHEMA-01, API-02, and TEST-03 from codexRuntime.providerSessionRefs[0..2], with API-02 status holding and its providerSessionRef sourced from index 1, distinct from SCHEMA-01 index 0 and TEST-03 index 2. API-02 dependent-flight evidence includes stale assumption recording, RFI inbox routing and ack, change_order response, tower instruction to remain holding, and abort reason schema_contract_refreshed_assumption_invalidated.",
+      "risk": "low"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md"
+    },
+    {
+      "kind": "inspected_path",
+      "path": "synthi/scripts/codesite-full-workflow-proof.mjs"
+    }
+  ],
+  "finalMessageDigest": "sha256:8416eb83b24f6462103ae31c1d2a52d193ab961271a398e8a49dfdce1d3bea67",
+  "transcriptDigest": "sha256:069cee2cb0dd7aab7f3f4881c1fbb16a19e0dbf8d2b9184ab252a7b1d8889f5f",
+  "stdoutDigest": "sha256:069cee2cb0dd7aab7f3f4881c1fbb16a19e0dbf8d2b9184ab252a7b1d8889f5f",
+  "stderrDigest": "sha256:a2183d6384d017c12ffb091b0570c55dee63a2a7c3ba37f017f114cd79bbe27e",
+  "transcript": {
+    "eventsRawPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay8/API-02.events.raw.jsonl",
+    "stderrPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay8/API-02.stderr.log",
+    "finalMessagePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay8/API-02.final.txt",
+    "eventCount": 20,
+    "toolEventCount": 16,
+    "threadId": "019f2a6d-d0f5-7a21-bade-0a2d991cb1e9",
+    "usage": {
+      "input_tokens": 90653,
+      "cached_input_tokens": 72704,
+      "output_tokens": 1249,
+      "reasoning_output_tokens": 106
+    },
+    "stdoutDigest": "sha256:069cee2cb0dd7aab7f3f4881c1fbb16a19e0dbf8d2b9184ab252a7b1d8889f5f",
+    "stderrDigest": "sha256:a2183d6384d017c12ffb091b0570c55dee63a2a7c3ba37f017f114cd79bbe27e",
+    "finalMessageDigest": "sha256:8416eb83b24f6462103ae31c1d2a52d193ab961271a398e8a49dfdce1d3bea67",
+    "eventsRawSha256": "sha256:d87e6d7c853ab210cad14770444c85a29a5af49c03ee6a851d484c989e5c4f35",
+    "stderrSha256": "sha256:512d21ab8aa896fa7f1fcc1863d1ddea6aa874c770e4d62a22622a5f18600b7e",
+    "finalMessageSha256": "sha256:21e0a32eca93f9b402ab4fa853cf586aa567a63b38d7a54813be0ef6230ca6a4",
+    "redactionCounts": {}
+  },
+  "redactionReport": {
+    "finalPublicationSecretScanRequired": true,
+    "rawCredentialMaterialStored": "redacted_before_publication",
+    "authHomeStoredInRepo": "validated_at_publication",
+    "promptIncludedSecrets": "redacted_before_publication",
+    "counts": {},
+    "outerIsolation": "docker_playwright_sidecar_networked_with_proof_app"
+  },
+  "generatedAt": "2026-07-04T00:01:40.997Z",
+  "startedAt": "2026-07-04T00:01:06.584Z",
+  "completedAt": "2026-07-04T00:01:40.997Z"
+}
