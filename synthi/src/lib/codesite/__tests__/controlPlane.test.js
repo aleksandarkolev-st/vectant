@@ -2327,6 +2327,7 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
       'repo_snapshot_required_for_serializable',
       'repo_snapshot_read_set_coverage_required',
+      'repo_snapshot_repo_wide_evidence_required',
     ]));
     expect(result.decision.repoSnapshot.missingReadSet).toEqual(['synthi/prisma/schema.prisma']);
     expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -2354,6 +2355,7 @@ describe('CodeSite control plane transaction validation', () => {
 
     expect(result.decision.ok).toBe(false);
     expect(result.decision.reasonCodes).toContain('repo_snapshot_read_set_coverage_required');
+    expect(result.decision.reasonCodes).toContain('repo_snapshot_repo_wide_evidence_required');
     expect(result.decision.repoSnapshot.reasonCodes).toContain('repo_snapshot_read_set_coverage_required');
     expect(result.decision.repoSnapshot.missingReadSet).toEqual([
       'openapi/auth.yaml',
@@ -2728,6 +2730,39 @@ describe('CodeSite control plane transaction validation', () => {
     });
   });
 
+  it('opens serializable transactions with repo-wide snapshot evidence and semantic dependency coverage', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-repo-wide-open-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.mkdir(path.join(root, 'openapi'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    await fs.writeFile(path.join(root, 'openapi', 'auth.yaml'), 'openapi: 3.1.0\n', 'utf8');
+    prisma.codeSiteMutationTransaction.create.mockImplementationOnce(async ({ data }) => ({
+      id: 'txn-repo-wide',
+      openedAt: new Date('2026-06-29T23:04:00.000Z'),
+      closedAt: null,
+      proofBundleDigest: null,
+      ...data,
+    }));
+
+    const transaction = await openTransaction('acme', 'lease-1', {
+      readSet: ['packages/schemas/auth.ts'],
+      semanticDependencyRefs: [{ path: 'openapi/auth.yaml' }],
+      writeSet: ['synthi/prisma/schema.prisma'],
+      repoRoot: root,
+    });
+
+    expect(transaction.id).toBe('txn-repo-wide');
+    expect(transaction.baseSnapshotEvidence).toMatchObject({
+      scope: 'repo_wide',
+      status: 'recorded',
+      repoManifestDigest: expect.stringMatching(/^sha256:/),
+    });
+    expect(transaction.baseSnapshotEvidence.readSet).toEqual(expect.arrayContaining([
+      'packages/schemas/auth.ts',
+      'openapi/auth.yaml',
+    ]));
+  });
+
   it('blocks serializable validation when the recorded repo read snapshot drifts', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-'));
     await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
@@ -2765,6 +2800,38 @@ describe('CodeSite control plane transaction validation', () => {
       where: { id: 'txn-1' },
       data: expect.objectContaining({ status: 'blocked' }),
     }));
+  });
+
+  it('blocks serializable validation on repo-wide raw drift without CodeSite events', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-repo-wide-drift-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+    });
+
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['packages/schemas/auth.ts']),
+      observedReadSetJson: JSON.stringify([]),
+      semanticDependencyRefsJson: JSON.stringify([]),
+      writeSetJson: JSON.stringify([]),
+      observedWriteSetJson: JSON.stringify([]),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    await fs.writeFile(path.join(root, 'README.md'), 'raw filesystem drift outside read set\n', 'utf8');
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+    expect(result.decision.staleReads).toEqual([]);
   });
 
   it('executes landing inspection commands and records durable radar evidence', async () => {
@@ -3429,6 +3496,8 @@ describe('CodeSite control plane transaction validation', () => {
         readSet: [],
         writeSet: ['synthi/prisma/schema.prisma'],
         invariants: ['clearance.diff.inside_route'],
+        baseSnapshot: transaction.baseSnapshot,
+        baseSnapshotEvidence: null,
       },
       mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
       proofBundle: {
@@ -3443,6 +3512,7 @@ describe('CodeSite control plane transaction validation', () => {
       landingRuns: [{ status: 'completed' }],
     });
     expect(project.proofBundles[0].trailers['CodeSite-Proof-Digest']).toBe(expectedPortable.portableDigest);
+    expect(project.proofBundles[0].trailers['CodeSite-Base-Snapshot']).toBe(transaction.baseSnapshot);
   });
 
   it('routes tower-mediated documents with recursive redaction and inbox ACL metadata', async () => {
@@ -4719,6 +4789,8 @@ describe('CodeSite control plane transaction validation', () => {
         readSet: [],
         writeSet: ['synthi/prisma/schema.prisma'],
         invariants: ['clearance.diff.inside_route'],
+        baseSnapshot: transaction.baseSnapshot,
+        baseSnapshotEvidence: null,
       },
       mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
       proofBundle: {

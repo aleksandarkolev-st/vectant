@@ -727,7 +727,20 @@ describe('CodeSite proof utilities', () => {
   it('builds verifiable proof bundles and commit trailers', () => {
     const bundle = buildProofBundle({
       project: { id: 'project-1', workspaceSlug: 'acme' },
-      transaction: { id: 'txn-1', projectId: 'project-1', mutationLeaseId: 'lease-1', readSet: ['a.ts'], writeSet: ['b.ts'], invariants: ['typecheck:pass'] },
+      transaction: {
+        id: 'txn-1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        readSet: ['a.ts'],
+        writeSet: ['b.ts'],
+        invariants: ['typecheck:pass'],
+        baseSnapshot: 'sha256:base-snapshot',
+        baseSnapshotEvidence: {
+          snapshotDigest: 'sha256:base-snapshot',
+          evidenceDigest: 'sha256:base-snapshot-evidence',
+          scope: 'repo_wide',
+        },
+      },
       mutationLease: { id: 'lease-1', displayCallsign: 'CODEX-04' },
 	      proofBundle: { id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['typecheck:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, bundleDigest: 'sha256:bundle' },
       landingRuns: [{ id: 'inspect-1', status: 'passed' }],
@@ -736,6 +749,7 @@ describe('CodeSite proof utilities', () => {
 	    expect(verifyProofBundle(bundle)).toMatchObject({ ok: true });
 	    expect(bundle.proofSignature).toMatchObject({ algorithm: 'hmac-sha256' });
 	    expect(bundle.repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
+    expect(bundle.baseSnapshotEvidence).toMatchObject({ evidenceDigest: 'sha256:base-snapshot-evidence' });
     expect(bundle.landingStatus).toBe('passed');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Project: project-1');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Flight: CODEX-04');
@@ -743,6 +757,8 @@ describe('CodeSite proof utilities', () => {
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Landing: passed');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Transaction: txn-1');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Lease: lease-1');
+    expect(formatCommitTrailers(bundle)).toContain('CodeSite-Base-Snapshot: sha256:base-snapshot');
+    expect(formatCommitTrailers(bundle)).toContain('CodeSite-Base-Snapshot-Evidence: sha256:base-snapshot-evidence');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Proof-Signature: hmac-sha256:');
   });
 });

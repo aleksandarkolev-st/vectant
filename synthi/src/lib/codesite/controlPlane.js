@@ -2202,8 +2202,21 @@ async function createMutationTransactionForLease(workspaceSlug, lease, body = {}
   }
   const leaseJson = parseJson(lease.leaseJson, {});
   const readSet = normalizePathList(body.readSet || body.read_set || []);
+  const semanticDependencyRefs = body.semanticDependencyRefs || body.semantic_dependency_refs || [];
   const isolation = normalizeTransactionIsolation(body.isolation);
-  const baseSnapshotEvidence = await buildTransactionSnapshotEvidence(readSet, body);
+  const snapshotReadSet = serializableSnapshotReadSet(
+    { isolation },
+    readSet,
+    [],
+    dependencyPathRefs(semanticDependencyRefs),
+  );
+  const baseSnapshotEvidence = await buildTransactionSnapshotEvidence(
+    usesSerializableIsolation({ isolation }) ? unique([...readSet, ...snapshotReadSet]) : readSet,
+    {
+      ...body,
+      scope: usesSerializableIsolation({ isolation }) ? 'repo_wide' : body.scope,
+    },
+  );
   const transaction = await prisma.codeSiteMutationTransaction.create({
     data: {
       projectId: lease.projectId,
@@ -2217,7 +2230,7 @@ async function createMutationTransactionForLease(workspaceSlug, lease, body = {}
       writeSetJson: stringifyJson(normalizePathList(body.writeSet || body.write_set || [])),
       observedReadSetJson: stringifyJson([]),
       observedWriteSetJson: stringifyJson([]),
-      semanticDependencyRefsJson: stringifyJson(body.semanticDependencyRefs || body.semantic_dependency_refs || []),
+      semanticDependencyRefsJson: stringifyJson(semanticDependencyRefs),
       invariantsJson: stringifyJson(body.invariants || leaseJson.invariants || []),
       assumptionRefsJson: stringifyJson(body.assumptionRefs || body.assumption_refs || []),
     },
@@ -3239,6 +3252,7 @@ async function buildTransactionSnapshotEvidence(readSet, body = {}) {
   }
   return buildReadSnapshotEvidence(readSet, {
     repoRoot: body.repoRoot || body.repo_root,
+    scope: body.scope || body.snapshotScope || body.snapshot_scope,
     source: 'codesite_control_plane',
   });
 }
@@ -3288,7 +3302,16 @@ function enforceSerializableSnapshotCoverage(transaction, validation, requiredRe
     !snapshotReadSet.some((snapshotPath) => snapshotCoversReadPath(snapshotPath, readPath))
   ));
   const requiresSnapshot = !expected || expected.status === 'empty' || validation.reasonCodes.includes('repo_snapshot_not_recorded');
-  if (!requiresSnapshot && missingReadSet.length === 0) return validation;
+  const repoWideRequired = expected?.scope !== 'repo_wide';
+  const repoWideDrifted = validation.reasonCodes.includes('repo_snapshot_repo_manifest_drift_detected');
+  const repoWideTruncated = Boolean(expected?.repoManifestTruncated || expected?.truncated);
+  const skippedRequiredPaths = required.filter((readPath) => (
+    asArray(expected?.skippedPaths).some((skipped) => skipped.path && snapshotCoversReadPath(skipped.path, readPath))
+    || asArray(expected?.repoManifestSkippedPaths).some((skipped) => skipped.path && snapshotCoversReadPath(skipped.path, readPath))
+  ));
+  if (!requiresSnapshot && missingReadSet.length === 0 && !repoWideRequired && !repoWideDrifted && !repoWideTruncated && skippedRequiredPaths.length === 0) {
+    return validation;
+  }
 
   return {
     ...validation,
@@ -3297,10 +3320,15 @@ function enforceSerializableSnapshotCoverage(transaction, validation, requiredRe
       ...validation.reasonCodes,
       ...(requiresSnapshot ? ['repo_snapshot_required_for_serializable'] : []),
       ...(missingReadSet.length ? ['repo_snapshot_read_set_coverage_required'] : []),
+      ...(repoWideRequired ? ['repo_snapshot_repo_wide_evidence_required'] : []),
+      ...(repoWideDrifted ? ['repo_snapshot_repo_manifest_drift_detected'] : []),
+      ...(repoWideTruncated ? ['repo_snapshot_truncated_for_serializable'] : []),
+      ...(skippedRequiredPaths.length ? ['repo_snapshot_skipped_required_paths'] : []),
     ]),
     requiredReadSet: required,
     snapshotReadSet,
     missingReadSet,
+    skippedRequiredPaths,
   };
 }
 
@@ -9512,6 +9540,8 @@ function proofBundleCoreProjection(bundle, context = {}) {
     evidenceRefs: parseJson(bundle.evidenceRefsJson, []),
     dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
     repoState: parseJson(bundle.repoStateJson, null),
+    baseSnapshot: transaction?.baseSnapshot || null,
+    baseSnapshotEvidence: transaction ? parseJson(transaction.baseSnapshotEvidenceJson, null) : null,
     incidentReplayDigest: bundle.incidentReplayDigest,
     landingStatus: bundle.landingStatus || context.landingStatus || null,
     bundleDigest: bundle.bundleDigest,

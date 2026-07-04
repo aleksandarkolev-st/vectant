@@ -29,6 +29,8 @@ export function buildProofBundle({
     evidenceRefs: proofBundle?.evidenceRefs || [],
     dojoEvidenceRefs: proofBundle?.dojoEvidenceRefs || [],
     repoState: proofBundle?.repoState || null,
+    baseSnapshot: transaction?.baseSnapshot || proofBundle?.baseSnapshot || null,
+    baseSnapshotEvidence: transaction?.baseSnapshotEvidence || proofBundle?.baseSnapshotEvidence || null,
     incidentReplayDigest: proofBundle?.incidentReplayDigest || null,
     bundleDigest: proofBundle?.bundleDigest || null,
     incidents: incidents.map((incident) => ({
@@ -97,6 +99,8 @@ export function proofCommitTrailers(proofBundle) {
     'CodeSite-Lease': bundle.mutationLeaseId,
     'CodeSite-Read-Set': bundle.readSetDigest,
     'CodeSite-Write-Set': bundle.writeSetDigest,
+    'CodeSite-Base-Snapshot': bundle.baseSnapshotEvidence?.snapshotDigest || bundle.baseSnapshot || null,
+    'CodeSite-Base-Snapshot-Evidence': bundle.baseSnapshotEvidence?.evidenceDigest || null,
     'CodeSite-Invariants': (bundle.invariants || []).join(','),
     'CodeSite-Black-Box': bundle.incidentReplayDigest || bundle.bundleDigest || bundle.portableDigest,
     'CodeSite-Proof-Digest': bundle.portableDigest,
