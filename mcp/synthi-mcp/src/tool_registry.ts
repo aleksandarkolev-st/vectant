@@ -159,9 +159,6 @@ export const ADVERTISED_TOOLS = [
   "synthi_codesite_request_landing",
   "synthi_codesite_generate_black_box",
   "synthi_codesite_get_line_provenance",
-  "synthi_codesite_review_quarantine",
-  "synthi_codesite_replay_quarantine",
-  "synthi_codesite_apply_quarantine",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",

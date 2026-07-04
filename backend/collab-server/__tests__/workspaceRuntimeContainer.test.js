@@ -132,28 +132,6 @@ test('CodeSite runtime containers mount /workspace to a writable quarantine root
   assert.ok(opts.Env.includes('CODESITE_WORKSPACE_QUARANTINED=1'));
 });
 
-test('CodeSite quarantine root participates in runtime identity when transaction id repeats', async () => {
-  const docker = fakeDocker();
-  const mgr = createRuntimeManager({ docker });
-  await mgr.ensureRuntimeContainer('repo', 'u1', {
-    codesiteContext: { active: true, transactionId: 'txn-1' },
-    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/first',
-    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/first',
-  });
-  await mgr.ensureRuntimeContainer('repo', 'u1', {
-    codesiteContext: { active: true, transactionId: 'txn-1' },
-    codeSiteQuarantineRoot: '/tmp/codesite-q/repo/txn-1/second',
-    codeSiteQuarantineId: '/tmp/codesite-q/repo/txn-1/second',
-  });
-
-  assert.equal(docker.created.length, 2);
-  assert.notEqual(docker.created[0].name, docker.created[1].name);
-  assert.notEqual(
-    docker.created[0].Labels['vectant/codesite-quarantine-id'],
-    docker.created[1].Labels['vectant/codesite-quarantine-id'],
-  );
-});
-
 test('CodeSite runtime volume mounts use the quarantine subpath in dataVolume mode', async () => {
   const docker = fakeDocker();
   const mgr = createRuntimeManager({ docker, dataVolume: 'synthi-ide_collab-data', reposSubpath: 'repos', dataVolumeRoot: '/data' });

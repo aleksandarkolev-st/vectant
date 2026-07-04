@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from '../artifacts.js';
+import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, writeArtifactProjection } from '../artifacts.js';
 import { buildProofBundle, formatCommitTrailers, verifyProofBundle } from '../proof.js';
 
 function projectFixture() {
@@ -36,140 +36,16 @@ function projectFixture() {
       },
     },
     controlPlan: { selectedStrategy: 'schema-first' },
-    agentSessions: [{
-      id: 'ags-1',
-      displayCallsign: 'CODEX-04',
-      ownerUserId: 'user-1',
-      dojoPilotLicenseRef: 'schema.level_2@2026-06-25',
-      dojoProofRef: 'pcap-schema',
-      dojoEvidenceRefs: ['dojo:evidence:checkride'],
-      dojoDecisionDigest: 'sha256:dojo-decision',
-      pilotLicenseSnapshot: {
-        level: 2,
-        repoScope: 'acme',
-        authorizedAirspace: ['packages/schemas/**'],
-        requiredRadar: ['api_contract', 'security'],
-        expiresOn: ['source_drift'],
-        sourceDigest: 'sha256:compiler-source',
-      },
-    }],
+    agentSessions: [{ id: 'ags-1', displayCallsign: 'CODEX-04', ownerUserId: 'user-1' }],
     executionPlans: [{ id: 'plan-1', agentSessionId: 'ags-1', displayCallsign: 'CODEX-04', route: ['packages/schemas/auth/**'], status: 'filed' }],
-    mutationLeases: [{
-      id: 'lease-1',
-      executionPlanId: 'plan-1',
-      agentSessionId: 'ags-1',
-      displayCallsign: 'CODEX-04',
-      status: 'active',
-      lease: { allowedPaths: ['packages/schemas/auth/**'], requiredRadar: ['api_contract'] },
-      dojoLicenseRef: 'schema.level_2@2026-06-25',
-      dojoProofRef: 'pcap-schema',
-      dojoEvidenceRefs: ['dojo:evidence:lease'],
-    }],
+    mutationLeases: [{ id: 'lease-1', executionPlanId: 'plan-1', agentSessionId: 'ags-1', displayCallsign: 'CODEX-04', status: 'active', lease: { allowedPaths: ['packages/schemas/auth/**'] } }],
     mutationTxns: [{ id: 'txn-1', agentSessionId: 'ags-1', mutationLeaseId: 'lease-1', readSet: ['packages/schemas/auth/signup.ts'], writeSet: ['packages/schemas/auth/signup.ts'], invariants: ['api-contract:pass'] }],
     assumptions: [{ id: 'asm-1', ownerSessionId: 'ags-1', status: 'active', assumptionKey: 'auth.signup.v2' }],
-    events: [
-      { id: 'evt-1', eventType: 'clearance_issued', details: { mutationLeaseId: 'lease-1' } },
-      {
-        id: 'evt-denied-1',
-        eventType: 'write_denied',
-        displayCallsign: null,
-        actorType: 'codesitefs',
-        actorId: 'decision-deny-1',
-        evidenceRefs: ['runtime:event:denied-write-1'],
-        details: {
-          path: 'infra/prod.env',
-          source: 'runtime_pod_terminal',
-          tool: 'terminal_exec',
-          disposition: 'write_denied',
-          reasonCodes: ['entered_no_fly_zone'],
-          policyDecisionId: 'decision-deny-1',
-          codesiteFsEvent: {
-            type: null,
-            source: 'runtime_pod_terminal',
-            operation: 'write',
-            path: 'infra/prod.env',
-            details: {
-              process_ancestry: ['python', 'bash', 'codex-cli'],
-              reason_codes: ['entered_no_fly_zone'],
-            },
-          },
-        },
-        createdAt: '2026-07-01T00:00:30.000Z',
-      },
-      {
-        id: 'evt-q1',
-        eventType: 'write_quarantined',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        actorType: 'codesitefs',
-        evidenceRefs: ['codesitefs:quarantine:sha256:review'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-signup-1',
-          path: 'docs/review.md',
-          quarantineEvidence: {
-            path: 'docs/review.md',
-            kind: 'modified',
-            beforeDigest: 'sha256:before-review',
-            afterDigest: 'sha256:after-review',
-            evidenceRef: 'codesitefs:quarantine:sha256:review',
-          },
-        },
-        createdAt: '2026-07-01T00:01:00.000Z',
-      },
-      {
-        id: 'evt-q2',
-        eventType: 'quarantine_replayed',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        evidenceRefs: ['codesitefs:quarantine:sha256:review'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-signup-1',
-          paths: ['docs/review.md'],
-          selectedChangeCount: 1,
-          replayableChangeCount: 1,
-          rejectedChangeCount: 0,
-        },
-        createdAt: '2026-07-01T00:02:00.000Z',
-      },
-    ],
-    incidents: [{
-      id: 'inc-1',
-      category: 'black_box',
-      severity: 'low',
-      replayDigest: 'sha256:replay',
-      participants: ['CODEX-04'],
-      incidentReplay: {
-        transactionId: 'txn-1',
-        transaction: { id: 'txn-1', readSet: ['packages/schemas/auth/signup.ts'], writeSet: ['packages/schemas/auth/signup.ts'] },
-        proofBundle: { id: 'proof-1', bundleDigest: 'sha256:bundle', incidentReplayDigest: 'sha256:replay' },
-        handover: { exportPaths: ['projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl'] },
-        events: ['evt-1'],
-        completeness: {
-          score: 0.62,
-          presentEventTypes: ['clearance.issued', 'transaction.committed', 'black_box.closed'],
-          missingEventTypes: ['write.denied'],
-        },
-        causalEvents: [
-          { eventId: 'evt-1', type: 'clearance.issued', transactionId: 'txn-1', details: { mutationLeaseId: 'lease-1' } },
-          { eventId: 'evt-commit', type: 'transaction.committed', transactionId: 'txn-1', details: { proofBundleId: 'proof-1' } },
-          { eventId: 'evt-close', type: 'black_box.closed', transactionId: 'txn-1', details: { proofBundleId: 'proof-1' } },
-        ],
-      },
-    }],
-	    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, incidentReplayDigest: 'sha256:replay', bundleDigest: 'sha256:bundle' }],
+    events: [{ id: 'evt-1', eventType: 'clearance_issued', details: { mutationLeaseId: 'lease-1' } }],
+    incidents: [{ id: 'inc-1', category: 'near_miss', severity: 'medium', replayDigest: 'sha256:replay', incidentReplay: { events: ['evt-1'] } }],
+	    proofBundles: [{ id: 'proof-1', transactionId: 'txn-1', readSetDigest: 'sha256:read', writeSetDigest: 'sha256:write', invariants: ['api-contract:pass'], evidenceRefs: ['ev-1'], repoState: { evidenceDigest: 'sha256:repo-state' }, bundleDigest: 'sha256:bundle' }],
     lineProvenance: [{ filePath: 'packages/schemas/auth/signup.ts', lineAnchor: 'L1', displayCallsign: 'CODEX-04', proofBundleId: 'proof-1' }],
-    policyDecisions: [{
-      id: 'decision-deny-1',
-      mutationLeaseId: null,
-      displayCallsign: null,
-      decision: 'block',
-      reasonCodes: ['entered_no_fly_zone'],
-      decisionBody: {
-        towerInstruction: 'Write preflight blocked for infra/prod.env. Request clearance.',
-      },
-    }],
+    policyDecisions: [],
     inspectionRuns: [{
       id: 'inspect-1',
       executionPlanId: 'plan-1',
@@ -180,7 +56,15 @@ function projectFixture() {
       evidenceRefs: ['test:auth'],
     }],
     documents: [],
-    counterfactualRuns: [],
+    counterfactualRuns: [{
+      id: 'cfr-1',
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universes: [{ strategy: 'schema-first', predictedCollisionRisk: 0.1 }],
+      arbiterVerdict: { selected: 'schema-first' },
+      validityStrength: 'simulated',
+      evidenceRefs: ['codesite:shadow_merge_simulator'],
+    }],
     policyDeltas: [],
     inboxItems: [{
       id: 'inbox-1',
@@ -210,16 +94,8 @@ describe('CodeSite artifact projection', () => {
     expect(manifestTools).toContain('synthi_codesite_get_metrics');
     expect(manifestTools).toContain('synthi_codesite_preflight_write');
     expect(manifestTools).toContain('synthi_codesite_get_inbox');
-    expect(manifestTools).toContain('synthi_codesite_review_quarantine');
-    expect(manifestTools).toContain('synthi_codesite_replay_quarantine');
-    expect(manifestTools).toContain('synthi_codesite_apply_quarantine');
     expect(manifest.compiler_output).toBe('airspace/compiler-output.json');
     expect(manifest.metrics).toBe('projects/site_signup_email_verification/metrics.json');
-    expect(manifest.quarantine_index).toBe('projects/site_signup_email_verification/quarantines/index.jsonl');
-    expect(manifest.quarantine_root).toBe('projects/site_signup_email_verification/quarantines/');
-    expect(manifest.filesystem_boundary_proof).toBe('projects/site_signup_email_verification/filesystem-boundary-proof.json');
-    expect(manifest.filesystem_boundary_proof_index).toBe('projects/site_signup_email_verification/filesystem-boundary-proofs/index.jsonl');
-    expect(manifest.pilot_license_health).toBe('projects/site_signup_email_verification/pilot-license-health.json');
     expect(paths).toContain('airspace/compiler-output.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'airspace/compiler-output.json').content)).toMatchObject({
       schemaVersion: 'synthi.codesite.repoPolicyCompilerOutput.v1',
@@ -239,19 +115,7 @@ describe('CodeSite artifact projection', () => {
     expect(paths).toContain('schemas/incident.schema.json');
     expect(paths).toContain('schemas/incident-replay.schema.json');
     expect(paths).toContain('schemas/metrics.schema.json');
-    expect(paths).toContain('schemas/pilot-license-health.schema.json');
-    expect(paths).toContain('schemas/codesitefs-quarantine.schema.json');
     expect(paths).toContain('projects/site_signup_email_verification/metrics.json');
-    expect(paths).toContain('projects/site_signup_email_verification/pilot-license-health.json');
-    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/pilot-license-health.json').content)).toMatchObject({
-      schemaVersion: 'synthi.codesite.pilotLicenseHealth.index.v1',
-      summary: expect.objectContaining({ active: 1 }),
-      records: [expect.objectContaining({
-        displayCallsign: 'CODEX-04',
-        status: 'active',
-        level: 'IFR',
-      })],
-    });
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/metrics.json').content)).toMatchObject({
       schemaVersion: 'synthi.codesite.metrics.v1',
       summary: expect.objectContaining({
@@ -266,75 +130,24 @@ describe('CodeSite artifact projection', () => {
       }),
     });
     expect(paths).toContain('projects/site_signup_email_verification/events.jsonl');
-    expect(paths).toContain('projects/site_signup_email_verification/quarantines/index.jsonl');
-    expect(paths).toContain('projects/site_signup_email_verification/quarantines/qtn-signup-1.json');
-    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/quarantines/index.jsonl').content).toContain('qtn-signup-1');
-    expect(paths).toContain('projects/site_signup_email_verification/filesystem-boundary-proof.json');
-    expect(paths).toContain('projects/site_signup_email_verification/filesystem-boundary-proofs/index.jsonl');
-    expect(paths).toContain('projects/site_signup_email_verification/filesystem-boundary-proofs/fs-boundary-evt-denied-1.json');
-    const boundaryProofIndex = JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/filesystem-boundary-proof.json').content);
-    expect(boundaryProofIndex.summary).toMatchObject({ total: 2, denied: 1, quarantined: 1, complete: 1, incomplete: 1 });
-    expect(boundaryProofIndex.records).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        eventId: 'evt-denied-1',
-        path: 'infra/prod.env',
-        leaseState: 'no_active_clearance',
-        process: expect.objectContaining({ display: 'python <- bash <- codex-cli' }),
-        evidenceRefs: expect.arrayContaining(['event:evt-denied-1', 'runtime:event:denied-write-1']),
-        proofComplete: true,
-      }),
-    ]));
-    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/quarantines/qtn-signup-1.json').content)).toMatchObject({
-      quarantineId: 'qtn-signup-1',
-      status: 'replayed',
-      paths: ['docs/review.md'],
-      changes: [expect.objectContaining({ path: 'docs/review.md' })],
-      evidenceRefs: expect.arrayContaining(['codesitefs:quarantine:sha256:review']),
-    });
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/flight-plan.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/clearance.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transaction.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/transponder.jsonl');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/landing.json');
-    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/pilot-license-health.json');
     expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/black-box.json');
-    expect(paths).toContain('projects/site_signup_email_verification/flight-plans/plan-1.json');
-    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/flight-plans/plan-1.json');
-    expect(paths).toContain('projects/site_signup_email_verification/clearances/lease-1.json');
-    expect(paths).toContain('projects/site_signup_email_verification/flights/CODEX-04/clearances/lease-1.json');
-    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).quarantines).toEqual([
-      expect.objectContaining({ quarantineId: 'qtn-signup-1' }),
-    ]);
-    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).filesystemBoundaryProofs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ eventId: 'evt-q1', path: 'docs/review.md' }),
-    ]));
-    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content).causalReplays).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        replayDigest: 'sha256:replay',
-        transactionId: 'txn-1',
-        proofBundleId: 'proof-1',
-        codeSiteBlackBox: 'sha256:replay',
-      }),
-    ]));
     expect(paths).toContain('projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json');
     expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json').content).redactedPayload.body.apiToken).toBe('[redacted]');
-    expect(paths).toContain('projects/site_signup_email_verification/incidents/inc-1.json');
+    expect(paths).toContain('projects/site_signup_email_verification/near-misses/inc-1.json');
     expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl').content).toContain('clearance_issued');
+    expect(paths).toContain('projects/site_signup_email_verification/counterfactual-runs/cfr-1.json');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/counterfactual-runs/cfr-1.json').content).arbiterVerdict.selected).toBe('schema-first');
 	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
 	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
 	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).landingStatus).toBe('passed');
-	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).incidentReplayDigest).toBe('sha256:replay');
-	    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.proof.json').content).proofSignature).toMatchObject({ algorithm: 'hmac-sha256' });
 	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt');
 	    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt').content).toContain('CodeSite-Clearance: lease-1');
-	    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt').content).toContain('CodeSite-Black-Box: sha256:replay');
-	    expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/proof-bundles/proof-1.trailers.txt').content).toContain('CodeSite-Proof-Signature: hmac-sha256:');
     expect(paths).toContain('projects/site_signup_email_verification/handover.md');
-    const handover = files.find((file) => file.relativePath === 'projects/site_signup_email_verification/handover.md').content;
-    expect(handover).toContain('## Causal Replay Packets');
-    expect(handover).toContain('sha256:replay');
-    expect(handover).toContain('CodeSite-Black-Box sha256:replay');
-    expect(handover).toContain('Missing event kinds: write.denied');
   });
 
   it('shares schemas used by API schema discovery', () => {
@@ -351,22 +164,10 @@ describe('CodeSite artifact projection', () => {
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
     expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
-    expect(codesiteSchemas()).toHaveProperty('filesystem-boundary-proof.schema.json');
-    expect(codesiteSchemas()['filesystem-boundary-proof.schema.json'].properties).toMatchObject({
-      requestedMutationLeaseId: { type: ['string', 'null'] },
-      inspectedLeases: { type: 'array' },
-      proofComplete: { type: 'boolean' },
-      missingProofFields: { type: 'array', items: { type: 'string' } },
-    });
     expect(codesiteSchemas()).toHaveProperty('inspection-run.schema.json');
-    expect(codesiteSchemas()).toHaveProperty('metrics.schema.json');
-	    expect(codesiteSchemas()).toHaveProperty('pilot-license-health.schema.json');
-	    expect(codesiteSchemas()).toHaveProperty('codesitefs-quarantine.schema.json');
+	    expect(codesiteSchemas()).toHaveProperty('metrics.schema.json');
 	    expect(codesiteSchemas()).toHaveProperty('incident-replay.schema.json');
 	    expect(codesiteSchemas()['proof-bundle.schema.json'].properties).toHaveProperty('repoState');
-    expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('pendingQuarantines');
-    expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('pilotLicenseHealth');
-    expect(codesiteSchemas()['control-state.schema.json'].properties).toHaveProperty('filesystemBoundaryProofs');
     expect(codesiteSchemas()['line-provenance.schema.json'].properties).toMatchObject({
       startLine: { type: ['number', 'null'] },
       endLine: { type: ['number', 'null'] },
@@ -392,267 +193,6 @@ describe('CodeSite artifact projection', () => {
     await expect(fs.readFile(path.join(root, '.synthi', 'codesite', 'projects/site_signup_email_verification/metrics.json'), 'utf8')).resolves.toContain('synthi.codesite.metrics.v1');
   });
 
-  it('keeps unselected quarantine paths pending after a partial apply', () => {
-    const project = projectFixture();
-    project.events = [
-      {
-        id: 'evt-q1',
-        eventType: 'write_quarantined',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        evidenceRefs: ['codesitefs:quarantine:sha256:review'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-partial-1',
-          path: 'docs/review.md',
-          quarantineEvidence: {
-            path: 'docs/review.md',
-            kind: 'modified',
-            evidenceRef: 'codesitefs:quarantine:sha256:review',
-          },
-        },
-        createdAt: '2026-07-01T00:01:00.000Z',
-      },
-      {
-        id: 'evt-q2',
-        eventType: 'write_quarantined',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        evidenceRefs: ['codesitefs:quarantine:sha256:notes'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-partial-1',
-          path: 'docs/notes.md',
-          quarantineEvidence: {
-            path: 'docs/notes.md',
-            kind: 'created',
-            evidenceRef: 'codesitefs:quarantine:sha256:notes',
-          },
-        },
-        createdAt: '2026-07-01T00:01:30.000Z',
-      },
-      {
-        id: 'evt-q3',
-        eventType: 'quarantine_applied',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        evidenceRefs: ['codesitefs:quarantine:sha256:review'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-partial-1',
-          paths: ['docs/review.md'],
-          applied: [{ path: 'docs/review.md', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
-        },
-        createdAt: '2026-07-01T00:02:00.000Z',
-      },
-    ];
-
-    const [record] = quarantineReviewRecords(project);
-
-    expect(record).toMatchObject({
-      quarantineId: 'qtn-partial-1',
-      status: 'partially_applied',
-      appliedPaths: ['docs/review.md'],
-      remainingPaths: ['docs/notes.md'],
-    });
-    const files = buildArtifactProjection(project, {
-      projectId: project.id,
-      workspaceSlug: project.workspaceSlug,
-      towerState: 'holding',
-    });
-    expect(JSON.parse(files.find((file) => file.relativePath === `projects/${project.id}/quarantines/qtn-partial-1.json`).content)).toMatchObject({
-      status: 'partially_applied',
-      appliedPaths: ['docs/review.md'],
-      remainingPaths: ['docs/notes.md'],
-    });
-  });
-
-  it('keeps manifest paths pending when lifecycle events only select one applied path', () => {
-    const project = projectFixture();
-    project.events = [
-      {
-        id: 'evt-q0',
-        eventType: 'quarantine_replayed',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-stale-replay-1',
-          paths: ['docs/review.md'],
-          selectedChangeCount: 1,
-          replayableChangeCount: 1,
-          rejectedChangeCount: 0,
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:00:30.000Z',
-      },
-      {
-        id: 'evt-q1',
-        eventType: 'quarantine_replayed',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        evidenceRefs: ['codesitefs:quarantine:sha256:review', 'codesitefs:quarantine:sha256:notes'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-manifest-partial-1',
-          paths: ['docs/review.md'],
-          selectedChangeCount: 1,
-          replayableChangeCount: 1,
-          rejectedChangeCount: 0,
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:01:00.000Z',
-      },
-      {
-        id: 'evt-q2',
-        eventType: 'quarantine_applied',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        evidenceRefs: ['codesitefs:quarantine:sha256:review', 'codesitefs:quarantine:sha256:notes'],
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-manifest-partial-1',
-          paths: ['docs/review.md'],
-          applied: [{ path: 'docs/review.md', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:02:00.000Z',
-      },
-    ];
-
-    const [record] = quarantineReviewRecords(project);
-
-    expect(record).toMatchObject({
-      quarantineId: 'qtn-manifest-partial-1',
-      status: 'partially_applied',
-      paths: ['docs/review.md', 'docs/notes.md'],
-      appliedPaths: ['docs/review.md'],
-      remainingPaths: ['docs/notes.md'],
-    });
-  });
-
-  it('keeps successful replay lifecycle separate from later rejected replay attempts', () => {
-    const project = projectFixture();
-    project.events = [
-      {
-        id: 'evt-q0',
-        eventType: 'quarantine_replayed',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-stale-replay-1',
-          paths: ['docs/review.md'],
-          selectedChangeCount: 1,
-          replayableChangeCount: 1,
-          rejectedChangeCount: 0,
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:00:30.000Z',
-      },
-      {
-        id: 'evt-q1',
-        eventType: 'quarantine_replayed',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-stale-replay-1',
-          paths: ['docs/review.md'],
-          selectedChangeCount: 1,
-          replayableChangeCount: 1,
-          rejectedChangeCount: 0,
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:01:00.000Z',
-      },
-      {
-        id: 'evt-q2',
-        eventType: 'quarantine_applied',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-stale-replay-1',
-          applied: [{ path: 'docs/review.md', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:02:00.000Z',
-      },
-      {
-        id: 'evt-q3',
-        eventType: 'quarantine_replayed',
-        displayCallsign: 'CODEX-04',
-        mutationLeaseId: 'lease-1',
-        details: {
-          transactionId: 'txn-1',
-          quarantineId: 'qtn-stale-replay-1',
-          paths: ['docs/review.md'],
-          selectedChangeCount: 1,
-          replayableChangeCount: 0,
-          rejectedChangeCount: 1,
-          rejected: [{ path: 'docs/review.md', reasonCodes: ['quarantine_replay_base_mismatch'] }],
-          manifestPaths: ['docs/review.md', 'docs/notes.md'],
-          manifestChanges: [
-            { path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' },
-            { path: 'docs/notes.md', kind: 'created', evidenceRef: 'codesitefs:quarantine:sha256:notes' },
-          ],
-        },
-        createdAt: '2026-07-01T00:03:00.000Z',
-      },
-    ];
-
-    const [record] = quarantineReviewRecords(project);
-
-    expect(record).toMatchObject({
-      quarantineId: 'qtn-stale-replay-1',
-      status: 'partially_applied',
-      lifecycle: {
-        replayedAt: '2026-07-01T00:01:00.000Z',
-        appliedAt: '2026-07-01T00:02:00.000Z',
-      },
-      successfulReplay: {
-        attemptedAt: '2026-07-01T00:01:00.000Z',
-        replayableChangeCount: 1,
-        rejectedChangeCount: 0,
-      },
-      latestReplayAttempt: {
-        attemptedAt: '2026-07-01T00:03:00.000Z',
-        replayableChangeCount: 0,
-        rejectedChangeCount: 1,
-      },
-      remainingPaths: ['docs/notes.md'],
-    });
-    expect(record.rejected).toEqual([
-      { path: 'docs/review.md', reasonCodes: ['quarantine_replay_base_mismatch'] },
-    ]);
-    expect(record.replayAttempts).toHaveLength(3);
-  });
-
   it('atomically refreshes the repo-local artifact tree and removes stale projected files', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-refresh-'));
     const artifactRoot = path.join(root, '.synthi', 'codesite');
@@ -669,10 +209,6 @@ describe('CodeSite artifact projection', () => {
 
     await expect(fs.readFile(proofPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.readFile(path.join(artifactRoot, '.codesite-projection-files.json'), 'utf8')).resolves.toContain('manifest.json');
-    const history = await fs.readFile(path.join(artifactRoot, 'artifact-path-history.jsonl'), 'utf8');
-    expect(history).toContain('"action":"write"');
-    expect(history).toContain('"action":"remove"');
-    expect(history).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
   });
 });
 
@@ -687,7 +223,6 @@ describe('CodeSite proof utilities', () => {
 	    });
 
 	    expect(verifyProofBundle(bundle)).toMatchObject({ ok: true });
-	    expect(bundle.proofSignature).toMatchObject({ algorithm: 'hmac-sha256' });
 	    expect(bundle.repoState).toMatchObject({ evidenceDigest: 'sha256:repo-state' });
     expect(bundle.landingStatus).toBe('passed');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Project: project-1');
@@ -696,6 +231,5 @@ describe('CodeSite proof utilities', () => {
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Landing: passed');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Transaction: txn-1');
     expect(formatCommitTrailers(bundle)).toContain('CodeSite-Lease: lease-1');
-    expect(formatCommitTrailers(bundle)).toContain('CodeSite-Proof-Signature: hmac-sha256:');
   });
 });

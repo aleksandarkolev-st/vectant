@@ -88,30 +88,26 @@ export async function POST(request) {
             throw dbErr;
         }
 
-        if (BUCKET_NAME) {
-            const rootFolderPath = `workspaces/${finalSlug}/`;
-
-            try {
-                const bucket = storage.bucket(BUCKET_NAME);
-                await bucket.file(rootFolderPath).save('', {
-                    contentType: 'application/x-directory',
-                    resumable: false,
+        const rootFolderPath = `workspaces/${finalSlug}/`;
+        const bucket = storage.bucket(BUCKET_NAME);
+        
+        try {
+            await bucket.file(rootFolderPath).save('', {
+                contentType: 'application/x-directory',
+                resumable: false,
+                metadata: {
+                    cacheControl: 'no-cache',
                     metadata: {
-                        cacheControl: 'no-cache',
-                        metadata: {
-                            isFolder: 'true',
-                            name: newWorkspace.name,
-                            createdBy: 'synthi-ide',
-                            isMarker: 'true'
-                        }
+                        isFolder: 'true',
+                        name: newWorkspace.name,
+                        createdBy: 'synthi-ide',
+                        isMarker: 'true'
                     }
-                });
-            } catch (err) {
-                // Log the error but do not remove workspace; return 201 since DB now has workspace
-                console.warn('Failed to create GCS marker folder for workspace', finalSlug, err?.message || err);
-            }
-        } else {
-            console.warn('Skipping GCS marker folder for workspace because GCS_BUCKET_NAME is not configured', finalSlug);
+                }
+            });
+        } catch (err) {
+            // Log the error but do not remove workspace; return 201 since DB now has workspace
+            console.warn('Failed to create GCS marker folder for workspace', finalSlug, err?.message || err);
         }
 
         return NextResponse.json(newWorkspace, { status: 201 });

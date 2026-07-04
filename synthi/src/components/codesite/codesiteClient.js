@@ -24,10 +24,6 @@ async function request(path, init = {}) {
   return body;
 }
 
-function uniqueValues(values) {
-  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean).map((value) => String(value)))];
-}
-
 function codeSiteBase(workspaceSlug) {
   return `${BASE}/${encodeURIComponent(workspaceSlug)}/codesite`;
 }
@@ -44,8 +40,6 @@ export function createEmptyCodeSiteRadarState(workspaceSlug = '') {
     controlState: null,
     metrics: null,
     events: [],
-    quarantines: [],
-    quarantineError: null,
     artifactPreview: null,
     selectedProjectId: null,
     counts: {
@@ -58,13 +52,10 @@ export function createEmptyCodeSiteRadarState(workspaceSlug = '') {
       proofBundles: 0,
       incidents: 0,
       inspectionRuns: 0,
-      quarantines: 0,
     },
     collisionForecast: {
       riskLevel: 'unknown',
       risks: [],
-      runwayOccupancy: [],
-      wakeTurbulence: [],
     },
   };
 }
@@ -76,14 +67,11 @@ export function normalizeCodeSiteRadarState({
   controlState = null,
   metrics = null,
   events = [],
-  quarantines = [],
-  quarantineError = null,
   artifactPreview = null,
   selectedProjectId = null,
 } = {}) {
   const normalizedProjects = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const normalizedEvents = Array.isArray(events) ? events.filter(Boolean) : [];
-  const normalizedQuarantines = Array.isArray(quarantines) ? quarantines.filter(Boolean) : [];
   const normalizedControl = controlState || null;
   const normalizedProject = project || null;
   const forecast = normalizedControl?.collisionForecast || { riskLevel: 'unknown', risks: [] };
@@ -95,8 +83,6 @@ export function normalizeCodeSiteRadarState({
     controlState: normalizedControl,
     metrics,
     events: normalizedEvents,
-    quarantines: normalizedQuarantines,
-    quarantineError,
     artifactPreview,
     selectedProjectId: selectedProjectId || normalizedProject?.id || normalizedControl?.projectId || normalizedProjects[0]?.id || null,
     counts: {
@@ -109,13 +95,10 @@ export function normalizeCodeSiteRadarState({
       proofBundles: normalizedProject?.proofBundles?.length || 0,
       incidents: normalizedProject?.incidents?.length || 0,
       inspectionRuns: normalizedProject?.inspectionRuns?.length || 0,
-      quarantines: normalizedQuarantines.length,
     },
     collisionForecast: {
       ...forecast,
       risks: Array.isArray(forecast?.risks) ? forecast.risks : [],
-      runwayOccupancy: Array.isArray(forecast?.runwayOccupancy) ? forecast.runwayOccupancy : [],
-      wakeTurbulence: Array.isArray(forecast?.wakeTurbulence) ? forecast.wakeTurbulence : [],
     },
   };
 }
@@ -152,41 +135,6 @@ export async function fetchCodeSiteMetrics(workspaceSlug, projectId) {
 export async function fetchCodeSiteArtifactPreview(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return null;
   return request(`${projectBase(workspaceSlug, projectId)}/artifacts/preview?include=content`);
-}
-
-export async function fetchCodeSiteQuarantines(workspaceSlug, filters = {}) {
-  if (!workspaceSlug) return [];
-  const search = new URLSearchParams();
-  if (filters.transactionId) search.set('transactionId', filters.transactionId);
-  if (filters.status) search.set('status', filters.status);
-  if (filters.userId) search.set('userId', filters.userId);
-  if (filters.filesystemUserId) search.set('filesystemUserId', filters.filesystemUserId);
-  if (filters.runtimeScope) search.set('runtimeScope', filters.runtimeScope);
-  const suffix = search.toString() ? `?${search.toString()}` : '';
-  const body = await request(`${codeSiteBase(workspaceSlug)}/quarantines${suffix}`);
-  return body.quarantines || [];
-}
-
-export async function fetchCodeSiteQuarantine(workspaceSlug, quarantineId) {
-  if (!workspaceSlug || !quarantineId) return null;
-  const body = await request(`${codeSiteBase(workspaceSlug)}/quarantines/${encodeURIComponent(quarantineId)}`);
-  return body.quarantine || null;
-}
-
-export async function replayCodeSiteQuarantine(workspaceSlug, quarantineId, payload = {}) {
-  if (!workspaceSlug || !quarantineId) return null;
-  return request(`${codeSiteBase(workspaceSlug)}/quarantines/${encodeURIComponent(quarantineId)}/replay`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function applyCodeSiteQuarantine(workspaceSlug, quarantineId, payload = {}) {
-  if (!workspaceSlug || !quarantineId) return null;
-  return request(`${codeSiteBase(workspaceSlug)}/quarantines/${encodeURIComponent(quarantineId)}/apply`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
 }
 
 export async function fetchCodeSiteLineProvenance(workspaceSlug, { projectId, filePath, lineAnchor, lineNumber } = {}) {
@@ -242,30 +190,6 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     fetchCodeSiteMetrics(workspaceSlug, projectId).catch(() => null),
     fetchCodeSiteArtifactPreview(workspaceSlug, projectId).catch(() => null),
   ]);
-  const transactionIds = uniqueValues([
-    ...(Array.isArray(controlState?.activeTransactions) ? controlState.activeTransactions.map((transaction) => transaction.id) : []),
-    ...(Array.isArray(project?.mutationTxns) ? project.mutationTxns.map((transaction) => transaction.id) : []),
-    ...(Array.isArray(events) ? events.map((event) => event.details?.transactionId || event.details?.transaction_id) : []),
-  ]);
-  let quarantines = [];
-  let quarantineError = null;
-  if (transactionIds.length) {
-    try {
-      const groups = await Promise.all(transactionIds.map((transactionId) => fetchCodeSiteQuarantines(workspaceSlug, { transactionId })));
-      const seen = new Set();
-      quarantines = groups.flat().filter((record) => {
-        const key = record?.quarantineId || record?.id;
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    } catch (error) {
-      quarantineError = {
-        message: error?.message || 'codesite_quarantine_fetch_failed',
-        status: error?.status || null,
-      };
-    }
-  }
 
   return normalizeCodeSiteRadarState({
     workspaceSlug,
@@ -274,8 +198,6 @@ export async function fetchCodeSiteRadarState(workspaceSlug, selectedProjectId =
     controlState,
     metrics,
     events,
-    quarantines,
-    quarantineError,
     artifactPreview,
     selectedProjectId: projectId,
   });

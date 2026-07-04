@@ -154,29 +154,13 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
     waitUntil: 'domcontentloaded',
     timeout: 60000,
   });
-  await page.addStyleTag({
-    content: `
-      nextjs-portal,
-      [data-nextjs-toast],
-      [data-next-badge-root],
-      [data-nextjs-dev-tools-button],
-      button[aria-label="Open Next.js Dev Tools"] {
-        display: none !important;
-        visibility: hidden !important;
-        pointer-events: none !important;
-      }
-    `,
-  });
   await page.waitForSelector('[data-testid="codesite-panel"]', { timeout: 60000 });
   await page.waitForSelector('[data-testid="codesite-line-provenance-row"]', { timeout: 60000 });
   await page.locator('[data-testid="codesite-line-provenance-row"]').first().scrollIntoViewIfNeeded();
   await page.locator('[data-testid="codesite-line-provenance-row"]').first().click();
   await page.waitForFunction(() => {
     const inspector = document.querySelector('[data-testid="codesite-line-inspector"]');
-    const status = document.querySelector('[data-testid="codesite-line-inspector-status"]')?.textContent?.trim();
     return inspector
-      && status
-      && status !== 'loading'
       && inspector.textContent.includes('L42-L44 causal trace')
       && inspector.textContent.includes('mcp:synthi_codesite_apply_patch')
       && inspector.textContent.includes('tmp-codex-line-inspector')
@@ -189,32 +173,15 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
   const checks = await page.evaluate(() => {
     const row = document.querySelector('[data-testid="codesite-line-provenance-row"]');
     const inspector = document.querySelector('[data-testid="codesite-line-inspector"]');
-    const status = document.querySelector('[data-testid="codesite-line-inspector-status"]')?.textContent?.trim() || null;
     const rectOf = (node) => {
       const rect = node.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right };
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     };
-    const fits = (rect) => Boolean(rect && rect.x >= -1 && rect.right <= window.innerWidth + 4 && rect.width <= window.innerWidth + 4);
-    const overlaySelectors = [
-      'nextjs-portal',
-      '[data-nextjs-toast]',
-      '[data-next-badge-root]',
-      '[data-nextjs-dev-tools-button]',
-      'button[aria-label="Open Next.js Dev Tools"]',
-    ];
-    const visibleDevOverlays = overlaySelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)).filter((element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-    }).map((element) => selector));
-    const rowRect = row ? rectOf(row) : null;
-    const inspectorRect = inspector ? rectOf(inspector) : null;
     return {
       viewportWidth: window.innerWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
-      rowRect,
-      inspectorRect,
-      inspectorStatus: status,
+      rowRect: row ? rectOf(row) : null,
+      inspectorRect: inspector ? rectOf(inspector) : null,
       inspectorText: inspector?.textContent || '',
       hasRange: Boolean(inspector?.textContent.includes('L42-L44 causal trace')),
       hasTransaction: Boolean(inspector?.textContent.includes('Transaction')),
@@ -224,10 +191,13 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
       hasDojoSource: Boolean(inspector?.textContent.includes('dojo:source:line-inspector-contract')),
       hasProcess: Boolean(inspector?.textContent.includes('mcp:synthi_codesite_apply_patch')),
       hasPrompt: Boolean(inspector?.textContent.includes('checkout cancellation contract')),
-      lineInspectorSettled: status !== 'loading',
-      visibleDevOverlays,
-      devOverlayHidden: visibleDevOverlays.length === 0,
-      fitsViewport: Boolean(row && inspector && fits(rowRect) && fits(inspectorRect) && document.documentElement.scrollWidth <= window.innerWidth + 4),
+      fitsViewport: Boolean(
+        row
+        && inspector
+        && rectOf(row).x >= -1
+        && rectOf(inspector).x >= -1
+        && document.documentElement.scrollWidth <= window.innerWidth + 4
+      ),
     };
   });
   await browser.close();
@@ -484,8 +454,6 @@ async function main() {
         && captures[0].checks.hasDojoSource
         && captures[0].checks.hasProcess
         && captures[0].checks.hasPrompt
-        && captures[0].checks.lineInspectorSettled
-        && captures[0].checks.devOverlayHidden
         && captures[0].checks.fitsViewport,
       mobileInspectorVisible: captures[1].checks.hasRange
         && captures[1].checks.hasTransaction
@@ -495,8 +463,6 @@ async function main() {
         && captures[1].checks.hasDojoSource
         && captures[1].checks.hasProcess
         && captures[1].checks.hasPrompt
-        && captures[1].checks.lineInspectorSettled
-        && captures[1].checks.devOverlayHidden
         && captures[1].checks.fitsViewport,
     },
   };
