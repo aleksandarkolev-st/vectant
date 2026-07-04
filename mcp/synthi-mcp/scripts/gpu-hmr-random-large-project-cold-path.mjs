@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-profile.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MCP_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -3502,13 +3503,21 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
   const profilePath = candidate.runtimeProofProfilePath;
   if (!profilePath) return null;
   const profileRead = await readJsonArtifact(profilePath);
+  const runtimeProofProfileSchemaVersion =
+    profileRead.value?.schemaVersion
+    ?? profileRead.value?.schema_version
+    ?? profileRead.value?.schema
+    ?? null;
+  const runtimeProofProfileSchemaAccepted =
+    profileRead.present === true
+    && runtimeProofProfileSchemaVersion === GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION;
   const resultPath = path.join(
     LOG_DIR,
     'runtime-profile-results',
     `${safeSlug(candidate.id)}-${makeStamp()}-adapter-result.json`,
   );
   let runnerResult = null;
-  if (profileRead.present) {
+  if (runtimeProofProfileSchemaAccepted) {
     runnerResult = await runProcess(
       process.execPath,
       [
@@ -3549,7 +3558,12 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
   }
   const blockingGaps = [
     profileRead.present ? null : 'runtime_profile_path_unreadable',
-    runnerResult ? null : 'runtime_profile_proof_runner_not_attempted',
+    profileRead.present && !runtimeProofProfileSchemaAccepted
+      ? 'runtime_profile_schema_unsupported_for_bridge'
+      : null,
+    runtimeProofProfileSchemaAccepted && !runnerResult
+      ? 'runtime_profile_proof_runner_not_attempted'
+      : null,
     runnerResult?.timedOut ? 'runtime_profile_proof_runner_timeout' : null,
     runnerResult && runnerResult.exitCode !== 0 ? 'runtime_profile_proof_runner_failed' : null,
     adapterResultRead.present ? null : 'runtime_profile_adapter_result_missing',
@@ -3557,7 +3571,7 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     strictRuntimeProofAccepted ? null : 'runtime_profile_adapter_strict_runtime_proof_not_accepted',
   ].filter(Boolean);
   const acceptedAsBridge =
-    profileRead.present === true
+    runtimeProofProfileSchemaAccepted === true
     && Boolean(runnerResult)
     && runnerResult.timedOut !== true
     && adapterResultRead.present === true
@@ -3568,6 +3582,8 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     sourceUrl: candidate.sourceUrl,
     immutableCommit: candidate.immutableCommit,
     runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+    runtimeProofProfileSchemaVersion,
+    runtimeProofProfileSchemaAccepted,
     runtimeProofProfileSha256: profileRead.textSha256,
     runtimeProfileAdapterResultSha256: adapterResultRead.textSha256,
     strictRuntimeProofAccepted,
@@ -3601,6 +3617,10 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     immutable_commit: candidate.immutableCommit,
     runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
     runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+    runtimeProofProfileSchemaVersion,
+    runtime_proof_profile_schema_version: runtimeProofProfileSchemaVersion,
+    runtimeProofProfileSchemaAccepted,
+    runtime_proof_profile_schema_accepted: runtimeProofProfileSchemaAccepted,
     runtimeProofProfileSha256: profileRead.textSha256,
     runtime_proof_profile_sha256: profileRead.textSha256,
     runtimeProofProfileByteLength: profileRead.byteLength,
@@ -4523,12 +4543,45 @@ async function selfCheck() {
     || runtimeBridgeFacet?.acceptedForGpuHmr !== false
     || runtimeBridgeFacet?.gpuHmrSuccess !== false
     || runtimeBridgeFacet?.canSatisfyRuntimeProof !== false
+    || runtimeBridgeFacet?.runtimeProofProfileSchemaAccepted !== true
     || runtimeBridgeFacet?.acceptedAsRuntimeProfileProofBridge !== true
     || runtimeBridgeFacet?.strictRuntimeProofAccepted !== false
     || !runtimeBridgeFacet?.blockingGaps?.includes('runtime_profile_adapter_strict_runtime_proof_not_accepted')
     || !runtimeBridgeFacet?.adapterResultBlockingGaps?.includes('runtime_profile_adapter_proof_path_missing')
   ) {
     throw new Error('random large-project cold-path runtime profile bridge self-check failed');
+  }
+  const unsupportedRuntimeBridgeProfile = path.join(
+    'mcp/synthi-mcp/.gpu-hmr-test-logs/random-large-project-cold-path/self-check-real-rocm-profile.json',
+  );
+  const unsupportedRuntimeBridgeProfilePath = path.resolve(REPO_ROOT, unsupportedRuntimeBridgeProfile);
+  await writeFile(unsupportedRuntimeBridgeProfilePath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu.hmr.real_rocm_profile.v1',
+    id: 'random-cold-runtime-bridge-unsupported-schema',
+    target: { targetName: 'generic-target' },
+  }, null, 2)}\n`);
+  const unsupportedRuntimeBridgeCandidate = cleanCandidate({
+    id: 'direct-runtime-bridge-unsupported-schema',
+    backendFamily: 'unknown_gpu_project',
+    runtimeProofProfilePath: unsupportedRuntimeBridgeProfile,
+    sourceUrl: 'https://example.invalid/direct-runtime-bridge-unsupported.git',
+    immutableCommit: '8989898989898989898989898989898989898989',
+  });
+  const unsupportedRuntimeBridgeFacet = await runRuntimeProfileProofBridge(
+    unsupportedRuntimeBridgeCandidate,
+    { runnerTimeoutMs: 60000 },
+  );
+  if (
+    unsupportedRuntimeBridgeFacet?.acceptedAsRuntimeProfileProofBridge !== false
+    || unsupportedRuntimeBridgeFacet?.runtimeProofProfileSchemaAccepted !== false
+    || unsupportedRuntimeBridgeFacet?.runtimeProofProfileSchemaVersion !== 'synthi.gpu.hmr.real_rocm_profile.v1'
+    || unsupportedRuntimeBridgeFacet?.runnerAttempted !== false
+    || unsupportedRuntimeBridgeFacet?.acceptedForGpuHmr !== false
+    || unsupportedRuntimeBridgeFacet?.gpuHmrSuccess !== false
+    || !unsupportedRuntimeBridgeFacet?.blockingGaps?.includes('runtime_profile_schema_unsupported_for_bridge')
+    || unsupportedRuntimeBridgeFacet?.blockingGaps?.includes('runtime_profile_proof_runner_failed')
+  ) {
+    throw new Error('random large-project cold-path unsupported runtime profile bridge self-check failed');
   }
   const spoofedDirectPool = await loadCandidates({
     candidatesJson: JSON.stringify([
