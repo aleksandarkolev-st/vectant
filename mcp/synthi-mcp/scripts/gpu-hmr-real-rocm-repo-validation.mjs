@@ -25250,8 +25250,13 @@ int main()
       visualArtifact?.contentHash !== expectedVisualHash
       || visualEvidence?.contentHash !== expectedVisualHash
       || visualEvidence?.acceptedAsVisualEvidence !== true
-      || written.artifact.proofFacets?.visual?.acceptedArtifactCount !== 1
+      || visualArtifact?.acceptedAsImageEvidence !== true
+      || visualArtifact?.acceptedAsRuntimeVisualProof !== false
+      || written.artifact.proofFacets?.visual?.artifactCount !== 1
+      || written.artifact.proofFacets?.visual?.acceptedArtifactCount !== 0
       || written.artifact.proofFacets?.visual?.artifacts?.[0]?.contentHash !== expectedVisualHash
+      || written.artifact.proofFacets?.visual?.artifacts?.[0]?.acceptedAsImageEvidence !== true
+      || written.artifact.proofFacets?.visual?.artifacts?.[0]?.acceptedAsRuntimeVisualProof !== false
     ) {
       throw new Error('visual proof artifact self-check did not hash visual file bytes');
     }
@@ -25309,7 +25314,9 @@ int main()
     if (
       ledgerVisualArtifact?.contentHash !== expectedVisualHash
       || !ledgerArtifact.entries?.[0]?.visualEvidenceContentHashes?.includes(expectedVisualHash)
-      || ledgerArtifact.entries?.[0]?.visualEvidenceAcceptedCount !== 1
+      || ledgerVisualArtifact?.acceptedAsImageEvidence !== true
+      || ledgerVisualArtifact?.acceptedAsRuntimeVisualProof !== false
+      || ledgerArtifact.entries?.[0]?.visualEvidenceAcceptedCount !== 0
     ) {
       throw new Error('target progression ledger self-check did not hash visual file bytes');
     }
