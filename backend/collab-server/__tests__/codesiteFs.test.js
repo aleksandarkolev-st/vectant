@@ -1170,6 +1170,11 @@ test('collects repo-state evidence from actual workspace files', async () => {
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-repo-state-'));
   await fs.mkdir(path.join(repo, 'src'), { recursive: true });
   await fs.writeFile(path.join(repo, 'src', 'app.js'), 'actual file content\n');
+  await execFileAsync('git', ['-C', repo, 'init']);
+  await execFileAsync('git', ['-C', repo, 'config', 'user.email', 'codesite@example.test']);
+  await execFileAsync('git', ['-C', repo, 'config', 'user.name', 'CodeSite Test']);
+  await execFileAsync('git', ['-C', repo, 'add', 'src/app.js']);
+  await execFileAsync('git', ['-C', repo, 'commit', '-m', 'initial']);
 
   const evidence = await collectCodeSiteRepoState(repo, {
     workspaceSlug: 'acme',
@@ -1181,14 +1186,22 @@ test('collects repo-state evidence from actual workspace files', async () => {
   assert.strictEqual(evidence.schemaVersion, 'synthi.codesite.repoStateEvidence.v1');
   assert.strictEqual(evidence.workspaceSlug, 'acme');
   assert.strictEqual(evidence.transactionId, 'txn-1');
+  assert.strictEqual(evidence.repoIdentity.workspaceSlug, 'acme');
+  assert.strictEqual(evidence.repoIdentity.transactionId, 'txn-1');
+  assert.strictEqual(evidence.repoIdentity.gitTopLevelMatchesRepoRoot, true);
+  assert.match(evidence.repoIdentity.repoRootDigest, /^sha256:/);
+  assert.match(evidence.repoIdentity.gitTopLevelDigest, /^sha256:/);
+  assert.match(evidence.repoIdentity.gitCommonDirDigest, /^sha256:/);
+  assert.match(evidence.repoIdentity.identityDigest, /^sha256:/);
   assert.match(evidence.worktreeDiffDigest, /^sha256:/);
   assert.match(evidence.evidenceDigest, /^sha256:/);
-  assert.deepStrictEqual(evidence.writeFileDigests, [{
+  assert.deepStrictEqual(evidence.writeFileDigests.map(({ changedLineRanges: _ranges, ...file }) => file), [{
     path: 'src/app.js',
     digest: 'sha256:ffc765b812e82586d3f41c451b45cb4f600d70ab1490f869133f094aaecda448',
     size: 20,
     exists: true,
   }]);
+  assert.deepStrictEqual(evidence.writeFileDigests[0].changedLineRanges, evidence.changedLineRanges);
 });
 
 test('collects repo-state changed line ranges from actual git hunks', async () => {
@@ -1237,6 +1250,14 @@ test('passes caller git environment into repo-state evidence collection', async 
     'shift',
     'shift',
     'if [ "$1" = "rev-parse" ]; then',
+    '  if [ "$2" = "--show-toplevel" ]; then',
+    '    printf "%s\\n" "$CODESITE_TEST_GIT_TOPLEVEL"',
+    '    exit 0',
+    '  fi',
+    '  if [ "$2" = "--git-common-dir" ]; then',
+    '    printf "%s\\n" ".git"',
+    '    exit 0',
+    '  fi',
     '  printf "%s\\n" "$CODESITE_TEST_GIT_HEAD"',
     '  exit 0',
     'fi',
@@ -1256,10 +1277,12 @@ test('passes caller git environment into repo-state evidence collection', async 
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
       CODESITE_TEST_GIT_HEAD: '0123456789abcdef0123456789abcdef01234567',
+      CODESITE_TEST_GIT_TOPLEVEL: repo,
     },
   });
 
   assert.strictEqual(evidence.gitHead, '0123456789abcdef0123456789abcdef01234567');
+  assert.strictEqual(evidence.repoIdentity.gitTopLevelMatchesRepoRoot, true);
   assert.match(evidence.stagedDiffDigest, /^sha256:/);
   assert.match(evidence.worktreeDiffDigest, /^sha256:/);
 });

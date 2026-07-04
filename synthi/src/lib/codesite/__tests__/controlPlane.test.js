@@ -172,6 +172,7 @@ import {
   validateTransaction,
 } from '../controlPlane.js';
 import { CODESITE_MCP_TOOLS } from '../artifacts.js';
+import { digest } from '../policy.js';
 import { buildProofBundle, proofCommitTrailers } from '../proof.js';
 import { buildReadSnapshotEvidence } from '../repoSnapshot.js';
 
@@ -239,12 +240,26 @@ function repoStateFixture(ranges = [{
   startLine: 12,
   endLine: 15,
   source: 'head_commit_diff',
-}]) {
-  return {
+}], overrides = {}) {
+  const workspaceSlug = overrides.workspaceSlug || 'acme';
+  const transactionId = overrides.transactionId || 'txn-1';
+  const repoIdentity = {
+    schemaVersion: 'synthi.codesite.repoIdentity.v1',
+    workspaceSlug,
+    transactionId,
+    repoRootDigest: 'sha256:repo-root',
+    gitTopLevelDigest: 'sha256:repo-root',
+    gitCommonDirDigest: 'sha256:git-common-dir',
+    gitTopLevelMatchesRepoRoot: true,
+    source: 'collab-server',
+  };
+  repoIdentity.identityDigest = digest(repoIdentity);
+  const repoState = {
     schemaVersion: 'synthi.codesite.repoStateEvidence.v1',
-    workspaceSlug: 'acme',
-    transactionId: 'txn-1',
-    baseSnapshot: 'base',
+    workspaceSlug,
+    transactionId,
+    baseSnapshot: overrides.baseSnapshot || 'base',
+    repoIdentity,
     gitHead: 'abc123',
     stagedDiffDigest: 'sha256:staged',
     worktreeDiffDigest: 'sha256:worktree',
@@ -259,7 +274,26 @@ function repoStateFixture(ranges = [{
     }],
     generatedAt: '2026-06-29T23:02:30.000Z',
     source: 'collab-server',
-    evidenceDigest: 'sha256:repo-state',
+  };
+  repoState.evidenceDigest = digest(repoState);
+  return repoState;
+}
+
+function passedLandingInspection(overrides = {}) {
+  return {
+    id: overrides.id || 'inspection-1',
+    projectId: overrides.projectId || 'project-1',
+    executionPlanId: overrides.executionPlanId || 'plan-1',
+    displayCallsign: overrides.displayCallsign || 'ATLAS-1',
+    status: overrides.status || 'completed',
+    changedPathsJson: JSON.stringify(overrides.changedPaths || ['synthi/prisma/**']),
+    inspectionSignalsJson: JSON.stringify(overrides.signals || [
+      { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+      { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+    ]),
+    evidenceRefsJson: JSON.stringify(overrides.evidenceRefs || ['runtime:event:inspection-1']),
+    requestedAt: overrides.requestedAt || new Date('2026-06-29T23:02:00.000Z'),
+    completedAt: overrides.completedAt || new Date('2026-06-29T23:03:00.000Z'),
   };
 }
 
@@ -3751,12 +3785,16 @@ describe('CodeSite control plane transaction validation', () => {
       'runtime:event:typecheck-1',
       'runtime:event:tests-1',
       'codesite:inspection:inspection-1',
-      'codesite:repo-state:sha256:repo-state',
+      expect.stringMatching(/^codesite:repo-state:sha256:/),
       'codesite:transaction:txn-1',
       'codesite:lease:lease-1',
     ]));
     expect(JSON.parse(proofCreate.data.repoStateJson)).toMatchObject({
-      evidenceDigest: 'sha256:repo-state',
+      evidenceDigest: expect.stringMatching(/^sha256:/),
+      repoIdentity: expect.objectContaining({
+        identityDigest: expect.stringMatching(/^sha256:/),
+        gitTopLevelMatchesRepoRoot: true,
+      }),
       writeFileDigests: [expect.objectContaining({ path: 'synthi/prisma/schema.prisma' })],
     });
     expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -3931,8 +3969,20 @@ describe('CodeSite control plane transaction validation', () => {
     });
 
     const [first, second] = await Promise.all([
-      commitTransaction('acme', 'txn-race-a', { commitSha: 'abc123', repoState: repoStateFixture() }),
-      commitTransaction('acme', 'txn-race-b', { commitSha: 'def456', repoState: repoStateFixture() }),
+      commitTransaction('acme', 'txn-race-a', {
+        commitSha: 'abc123',
+        repoState: repoStateFixture(undefined, {
+          transactionId: 'txn-race-a',
+          baseSnapshot: snapshot.snapshotDigest,
+        }),
+      }),
+      commitTransaction('acme', 'txn-race-b', {
+        commitSha: 'def456',
+        repoState: repoStateFixture(undefined, {
+          transactionId: 'txn-race-b',
+          baseSnapshot: snapshot.snapshotDigest,
+        }),
+      }),
     ]);
     const results = [first, second];
     const committed = results.filter((result) => result.transaction?.status === 'committed');
@@ -4212,7 +4262,6 @@ describe('CodeSite control plane transaction validation', () => {
     }]);
 
     const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
-
     expect(result.decision.ok).toBe(false);
     expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
       'line_provenance_required',
@@ -4420,6 +4469,56 @@ describe('CodeSite control plane transaction validation', () => {
     expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
   });
 
+  it('blocks proof-carrying commits when repo-state evidence lacks managed workspace identity', async () => {
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([passedLandingInspection()]);
+    const repoState = repoStateFixture();
+    repoState.repoIdentity = null;
+    delete repoState.evidenceDigest;
+    repoState.evidenceDigest = digest(repoState);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_state_identity_required',
+    ]));
+    expect(result.decision.reasonCodes).not.toContain('repo_state_digest_mismatch');
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks replayed repo-state evidence from a different workspace or transaction', async () => {
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([passedLandingInspection()]);
+    const repoState = repoStateFixture(undefined, {
+      workspaceSlug: 'other-workspace',
+      transactionId: 'txn-other',
+    });
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_state_workspace_mismatch',
+      'repo_state_transaction_mismatch',
+      'repo_state_identity_workspace_mismatch',
+      'repo_state_identity_transaction_mismatch',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks tampered repo-state evidence whose digest no longer matches normalized content', async () => {
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([passedLandingInspection()]);
+    const repoState = repoStateFixture();
+    repoState.writeFileDigests[0].digest = 'sha256:forged-file';
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_state_digest_mismatch',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
   it('rejects synthetic landing pass strings without executable inspection evidence', async () => {
     prisma.codeSiteEvent.findMany.mockResolvedValue([]);
     prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
@@ -4522,7 +4621,13 @@ describe('CodeSite control plane transaction validation', () => {
       landingStatus: 'landed-with-punch',
       readSetDigest: 'sha256:read',
       writeSetDigest: 'sha256:write',
-      repoState: expect.objectContaining({ evidenceDigest: 'sha256:repo-state' }),
+      repoState: expect.objectContaining({
+        evidenceDigest: expect.stringMatching(/^sha256:/),
+        repoIdentity: expect.objectContaining({
+          identityDigest: expect.stringMatching(/^sha256:/),
+          gitTopLevelMatchesRepoRoot: true,
+        }),
+      }),
       lineProvenance: [expect.objectContaining({
         filePath: 'synthi/prisma/schema.prisma',
         startLine: 1,

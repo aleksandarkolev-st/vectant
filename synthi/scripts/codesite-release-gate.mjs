@@ -45,6 +45,7 @@ const REQUIRED_MATURE_PROOFS = [
   { name: 'quarantineReview', plan: '2A.3, 26.9', file: 'codesite-quarantine-review-proof.json', png: 'codesite-quarantine-review-proof.png' },
   { name: 'proofCarryingCommit', plan: '2A.4, 25.7B, 26.4', file: 'codesite-proof-carrying-commit-proof.json', png: 'codesite-proof-carrying-commit-proof.png' },
   { name: 'actualGitCommitProof', plan: '2A.4, 25.7B, 26.4', file: 'codesite-actual-git-commit-proof.json', png: 'codesite-actual-git-commit-proof.png' },
+  { name: 'repoStateIdentity', plan: '2A.2, 2A.4, 25.7A, 26.4', file: 'codesite-repo-state-identity-proof.json', png: 'codesite-repo-state-identity-proof.png' },
   {
     name: 'lineInspector',
     plan: '2A.6, 25.7B, 26.10',

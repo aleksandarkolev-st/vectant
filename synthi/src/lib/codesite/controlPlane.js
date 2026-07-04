@@ -2392,6 +2392,7 @@ function normalizeLineProvenanceInput(value, defaultPath) {
       lineAnchor: item.lineAnchor || item.line_anchor || (startLine ? `${filePath}#L${startLine}` : `${filePath}#codesite:hunk`),
       startLine,
       endLine,
+      source: item.source || item.diffSource || item.diff_source || null,
       reasonRef: item.reasonRef || item.reason_ref || null,
       evidenceRefs: asArray(item.evidenceRefs || item.evidence_refs),
       processAncestry: asArray(item.processAncestry || item.process_ancestry),
@@ -2951,7 +2952,7 @@ async function landTransactionWithClient(db, workspaceSlug, transactionId, body 
     return { ...blocked, committed: false, projectId: transaction.projectId, artifactSync: { reason: 'landing_inspection_blocked', eventId: null } };
   }
 
-  const repoStateDecision = verifyRepoStateEvidence(transaction, body);
+  const repoStateDecision = verifyRepoStateEvidence(transaction, body, workspaceSlug);
   if (!repoStateDecision.ok) {
     const decision = {
       ok: false,
@@ -3249,7 +3250,7 @@ async function signProofBundleRecord(bundle, context = {}, db = prisma) {
   });
 }
 
-function verifyRepoStateEvidence(transaction, body = {}) {
+function verifyRepoStateEvidence(transaction, body = {}, workspaceSlug = null) {
   const changedPaths = unique([
     ...parseJson(transaction.writeSetJson, []),
     ...parseJson(transaction.observedWriteSetJson, []),
@@ -3267,9 +3268,27 @@ function verifyRepoStateEvidence(transaction, body = {}) {
     !coveredPaths.has(changedPath)
     && !fileDigests.some((item) => matchPathPattern(changedPath, item?.pathPattern || item?.pattern))
   ));
+  const identity = repoState.repoIdentity || null;
+  const expectedWorkspaceSlug = workspaceSlug || transaction.project?.workspaceSlug || transaction.workspaceSlug || null;
+  const workspaceMismatch = Boolean(expectedWorkspaceSlug && repoState.workspaceSlug !== expectedWorkspaceSlug);
+  const transactionMismatch = repoState.transactionId !== transaction.id;
+  const baseSnapshotMismatch = Boolean(transaction.baseSnapshot && repoState.baseSnapshot !== transaction.baseSnapshot);
+  const identityWorkspaceMismatch = Boolean(identity && expectedWorkspaceSlug && identity.workspaceSlug !== expectedWorkspaceSlug);
+  const identityTransactionMismatch = Boolean(identity && identity.transactionId !== transaction.id);
   const reasonCodes = [
     ...(!repoState.evidenceDigest ? ['repo_state_digest_required'] : []),
+    ...(repoState.evidenceDigest && repoState.evidenceDigestVerified === false ? ['repo_state_digest_mismatch'] : []),
     ...(!repoState.worktreeDiffDigest && !repoState.stagedDiffDigest ? ['repo_state_diff_digest_required'] : []),
+    ...(workspaceMismatch ? ['repo_state_workspace_mismatch'] : []),
+    ...(transactionMismatch ? ['repo_state_transaction_mismatch'] : []),
+    ...(baseSnapshotMismatch ? ['repo_state_base_snapshot_mismatch'] : []),
+    ...(!identity ? ['repo_state_identity_required'] : []),
+    ...(identity && !identity.identityDigest ? ['repo_state_identity_digest_required'] : []),
+    ...(identity?.identityDigest && identity.identityDigestVerified === false ? ['repo_state_identity_digest_mismatch'] : []),
+    ...(identity && (!identity.repoRootDigest || !identity.gitTopLevelDigest || !identity.gitCommonDirDigest) ? ['repo_state_managed_root_digest_required'] : []),
+    ...(identity && identity.gitTopLevelMatchesRepoRoot !== true ? ['repo_state_managed_root_mismatch'] : []),
+    ...(identityWorkspaceMismatch ? ['repo_state_identity_workspace_mismatch'] : []),
+    ...(identityTransactionMismatch ? ['repo_state_identity_transaction_mismatch'] : []),
     ...(missingPaths.length ? ['repo_state_write_path_coverage_required'] : []),
   ];
   return {
@@ -3288,6 +3307,7 @@ function normalizeRepoStateEvidence(input) {
     workspaceSlug: input.workspaceSlug || input.workspace_slug || null,
     transactionId: input.transactionId || input.transaction_id || null,
     baseSnapshot: input.baseSnapshot || input.base_snapshot || null,
+    repoIdentity: normalizeRepoIdentityEvidence(input.repoIdentity || input.repo_identity || input.managedRoot || input.managed_root),
     gitHead: input.gitHead || input.git_head || null,
     stagedDiffDigest: input.stagedDiffDigest || input.staged_diff_digest || null,
     worktreeDiffDigest: input.worktreeDiffDigest || input.worktree_diff_digest || null,
@@ -3305,8 +3325,94 @@ function normalizeRepoStateEvidence(input) {
     generatedAt: input.generatedAt || input.generated_at || null,
     source: input.source || 'collab-server',
   };
-  normalized.evidenceDigest = evidenceDigest || digest(normalized);
+  const computedEvidenceDigest = digest(repoStateDigestPayload(normalized));
+  normalized.evidenceDigest = evidenceDigest || computedEvidenceDigest;
+  normalized.computedEvidenceDigest = computedEvidenceDigest;
+  normalized.evidenceDigestVerified = normalized.evidenceDigest === computedEvidenceDigest;
   return normalized;
+}
+
+function normalizeRepoIdentityEvidence(input) {
+  if (!input || typeof input !== 'object') return null;
+  const identityDigest = input.identityDigest || input.identity_digest || input.digest || null;
+  const normalized = {
+    schemaVersion: input.schemaVersion || input.schema_version || 'synthi.codesite.repoIdentity.v1',
+    workspaceSlug: input.workspaceSlug || input.workspace_slug || null,
+    transactionId: input.transactionId || input.transaction_id || null,
+    repoRootDigest: input.repoRootDigest || input.repo_root_digest || input.rootDigest || input.root_digest || null,
+    gitTopLevelDigest: input.gitTopLevelDigest || input.git_top_level_digest || input.gitToplevelDigest || input.git_toplevel_digest || null,
+    gitCommonDirDigest: input.gitCommonDirDigest || input.git_common_dir_digest || input.gitDirDigest || input.git_dir_digest || null,
+    gitTopLevelMatchesRepoRoot: normalizeOptionalBoolean(input.gitTopLevelMatchesRepoRoot ?? input.git_top_level_matches_repo_root ?? input.gitToplevelMatchesRepoRoot ?? input.git_toplevel_matches_repo_root),
+    source: input.source || 'collab-server',
+  };
+  const computedIdentityDigest = digest(repoIdentityDigestPayload(normalized));
+  normalized.identityDigest = identityDigest || computedIdentityDigest;
+  normalized.computedIdentityDigest = computedIdentityDigest;
+  normalized.identityDigestVerified = normalized.identityDigest === computedIdentityDigest;
+  return normalized;
+}
+
+function normalizeOptionalBoolean(value) {
+  if (value === true || value === false) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+  }
+  return null;
+}
+
+function repoStateDigestPayload(repoState) {
+  const {
+    evidenceDigest: _evidenceDigest,
+    computedEvidenceDigest: _computedEvidenceDigest,
+    evidenceDigestVerified: _evidenceDigestVerified,
+    ...payload
+  } = repoState || {};
+  if (payload.repoIdentity) {
+    payload.repoIdentity = repoIdentityDigestCarrier(payload.repoIdentity);
+  }
+  payload.changedLineRanges = asArray(payload.changedLineRanges).map(repoStateLineRangeDigestCarrier);
+  payload.writeFileDigests = asArray(payload.writeFileDigests).map((file) => ({
+    ...file,
+    changedLineRanges: asArray(file.changedLineRanges).map(repoStateLineRangeDigestCarrier),
+  }));
+  return payload;
+}
+
+function repoIdentityDigestCarrier(identity) {
+  const {
+    computedIdentityDigest: _computedIdentityDigest,
+    identityDigestVerified: _identityDigestVerified,
+    ...payload
+  } = identity || {};
+  return payload;
+}
+
+function repoStateLineRangeDigestCarrier(range) {
+  const payload = {
+    filePath: range?.filePath || null,
+    lineAnchor: range?.lineAnchor || null,
+    startLine: range?.startLine ?? null,
+    endLine: range?.endLine ?? null,
+  };
+  if (range?.source) payload.source = range.source;
+  if (range?.reasonRef) payload.reasonRef = range.reasonRef;
+  if (asArray(range?.evidenceRefs).length) payload.evidenceRefs = asArray(range.evidenceRefs);
+  if (asArray(range?.processAncestry).length) payload.processAncestry = asArray(range.processAncestry);
+  if (asArray(range?.dojoSourceRefs).length) payload.dojoSourceRefs = asArray(range.dojoSourceRefs);
+  if (range?.promptSummary) payload.promptSummary = range.promptSummary;
+  return payload;
+}
+
+function repoIdentityDigestPayload(identity) {
+  const {
+    identityDigest: _identityDigest,
+    computedIdentityDigest: _computedIdentityDigest,
+    identityDigestVerified: _identityDigestVerified,
+    ...payload
+  } = identity || {};
+  return payload;
 }
 
 function normalizeRepoStateFiles(files) {

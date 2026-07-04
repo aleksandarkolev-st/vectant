@@ -1227,7 +1227,8 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
   const root = path.resolve(repoRoot);
   const writePaths = [...new Set(asArray(input.writePaths).map(cleanPattern).filter(Boolean))];
   const exactPaths = writePaths.filter((item) => !item.includes('*'));
-  const [gitHead, stagedDiff, worktreeDiff, headDiff, writeFileDigests] = await Promise.all([
+  const [repoIdentity, gitHead, stagedDiff, worktreeDiff, headDiff, writeFileDigests] = await Promise.all([
+    collectCodeSiteRepoIdentity(root, input),
     gitOutput(root, ['rev-parse', 'HEAD'], input.env),
     gitOutput(root, ['diff', '--cached', '--binary', '--unified=0', '--', ...exactPaths], input.env),
     gitOutput(root, ['diff', '--binary', '--unified=0', '--', ...exactPaths], input.env),
@@ -1251,6 +1252,7 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
     workspaceSlug: input.workspaceSlug || null,
     transactionId: input.transactionId || null,
     baseSnapshot: input.baseSnapshot || null,
+    repoIdentity,
     gitHead: gitHead || null,
     stagedDiffDigest: digestBuffer(Buffer.from(stagedDiff || '')),
     worktreeDiffDigest: digestBuffer(Buffer.from(worktreeDiff || '')),
@@ -1260,8 +1262,45 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
     generatedAt: new Date().toISOString(),
     source: 'collab-server',
   };
-  evidence.evidenceDigest = digestJson(evidence);
+  evidence.evidenceDigest = digestStableJson(evidence);
   return evidence;
+}
+
+async function collectCodeSiteRepoIdentity(repoRoot, input = {}) {
+  const repoRealPath = await fsp.realpath(repoRoot).catch(() => path.resolve(repoRoot));
+  const [gitTopLevelRaw, gitCommonDirRaw] = await Promise.all([
+    gitOutput(repoRoot, ['rev-parse', '--show-toplevel'], input.env),
+    gitOutput(repoRoot, ['rev-parse', '--git-common-dir'], input.env),
+  ]);
+  const gitTopLevelRealPath = gitTopLevelRaw
+    ? await realpathOrResolved(repoRoot, gitTopLevelRaw)
+    : null;
+  const gitCommonDirRealPath = gitCommonDirRaw
+    ? await realpathOrResolved(repoRoot, gitCommonDirRaw)
+    : null;
+  const identity = {
+    schemaVersion: 'synthi.codesite.repoIdentity.v1',
+    workspaceSlug: input.workspaceSlug || null,
+    transactionId: input.transactionId || null,
+    repoRootDigest: digestBuffer(Buffer.from(repoRealPath)),
+    gitTopLevelDigest: gitTopLevelRealPath ? digestBuffer(Buffer.from(gitTopLevelRealPath)) : null,
+    gitCommonDirDigest: gitCommonDirRealPath ? digestBuffer(Buffer.from(gitCommonDirRealPath)) : null,
+    gitTopLevelMatchesRepoRoot: Boolean(gitTopLevelRealPath && samePath(repoRealPath, gitTopLevelRealPath)),
+    source: 'collab-server',
+  };
+  identity.identityDigest = digestStableJson(identity);
+  return identity;
+}
+
+async function realpathOrResolved(root, candidate) {
+  const resolved = path.isAbsolute(candidate)
+    ? candidate
+    : path.resolve(root, candidate);
+  return fsp.realpath(resolved).catch(() => resolved);
+}
+
+function samePath(left, right) {
+  return path.resolve(left) === path.resolve(right);
 }
 
 async function gitOutput(repoRoot, args, env) {
@@ -1803,6 +1842,24 @@ function digestBuffer(buffer) {
 
 function digestJson(value) {
   return digestBuffer(Buffer.from(JSON.stringify(value)));
+}
+
+function digestStableJson(value) {
+  return digestBuffer(Buffer.from(stableJson(value)));
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortJson(value[key])]),
+  );
 }
 
 async function digestFile(filePath) {
