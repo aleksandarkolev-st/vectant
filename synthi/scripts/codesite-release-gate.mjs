@@ -975,6 +975,71 @@ function validateCodexEvidence({ root, proofRoot, slug, failures }) {
       failures.push(`${relative(root, recordPath)} providerSessionRef must identify a Codex session`);
       recordValid = false;
     }
+    const actorProjection = record?.actorProjection || {};
+    const actorProjectionArtifacts = [
+      ['controlStatePath', 'controlStateSha256'],
+      ['actionScriptPath', 'actionScriptSha256'],
+      ['receiptPath', 'receiptSha256'],
+    ];
+    if (actorProjection.surface !== 'repo_local_codesite_projection') {
+      failures.push(`${relative(root, recordPath)} actorProjection.surface must be repo_local_codesite_projection`);
+      recordValid = false;
+    }
+    for (const [pathKey, shaKey] of actorProjectionArtifacts) {
+      const relativePath = actorProjection[pathKey];
+      if (!relativePath) {
+        failures.push(`${relative(root, recordPath)} missing actorProjection.${pathKey}`);
+        recordValid = false;
+        continue;
+      }
+      const absolutePath = path.resolve(root, relativePath);
+      if (!fs.existsSync(absolutePath)) {
+        failures.push(`${relative(root, recordPath)} references missing actor projection artifact ${relativePath}`);
+        recordValid = false;
+        continue;
+      }
+      const expectedSha = actorProjection[shaKey];
+      const actualSha = fileSha256(absolutePath);
+      if (expectedSha !== actualSha) {
+        failures.push(`${relative(root, recordPath)} actorProjection.${shaKey} mismatch for ${relativePath}`);
+        recordValid = false;
+      }
+    }
+    const workflowActions = Array.isArray(record?.workflowActions) ? record.workflowActions : [];
+    const requiredWorkflowActions = roleWorkflowActionRequirements(record?.role);
+    const missingWorkflowActions = requiredWorkflowActions.filter((kind) => !workflowActions.some((action) => action?.kind === kind));
+    if (workflowActions.length === 0) {
+      failures.push(`${relative(root, recordPath)} workflowActions must not be empty`);
+      recordValid = false;
+    }
+    if (missingWorkflowActions.length) {
+      failures.push(`${relative(root, recordPath)} missing workflow action receipts: ${missingWorkflowActions.join(', ')}`);
+      recordValid = false;
+    }
+    const commandTexts = Array.isArray(record?.commands) ? record.commands.map((command) => normalizeCommandText(command?.command)) : [];
+    workflowActions.forEach((action, index) => {
+      const label = `${relative(root, recordPath)} workflowActions.${index}`;
+      if (action?.source !== 'codesite_repo_local_projection_actor') {
+        failures.push(`${label}.source must be codesite_repo_local_projection_actor`);
+        recordValid = false;
+      }
+      if (!action?.receiptDigest || !action?.action || !action?.kind) {
+        failures.push(`${label} missing receiptDigest/action/kind`);
+        recordValid = false;
+      }
+      if (action?.projectionControlStateSha256 !== actorProjection.controlStateSha256) {
+        failures.push(`${label}.projectionControlStateSha256 does not match actorProjection.controlStateSha256`);
+        recordValid = false;
+      }
+      if (action?.actionScriptSha256 !== actorProjection.actionScriptSha256) {
+        failures.push(`${label}.actionScriptSha256 does not match actorProjection.actionScriptSha256`);
+        recordValid = false;
+      }
+      if (!workflowActionBackedByTranscript(action, commandTexts)) {
+        failures.push(`${label} is not backed by a Codex transcript command`);
+        recordValid = false;
+      }
+    });
     const commands = Array.isArray(record?.commands) ? record.commands : [];
     if (commands.length === 0) {
       failures.push(`${relative(root, recordPath)} commands must not be empty`);
@@ -1003,6 +1068,57 @@ function validateCodexEvidence({ root, proofRoot, slug, failures }) {
   }
   if (records.length < 3) failures.push(`${relative(root, evidenceRoot)} must contain at least three Codex role evidence records`);
   return { records: records.length, valid, ok: records.length >= 3 && valid === records.length };
+}
+
+function roleWorkflowActionRequirements(role) {
+  if (role === 'schema') {
+    return [
+      'control_state_read',
+      'execution_plan_filed',
+      'mutation_lease_requested',
+      'mutation_transaction_opened',
+      'assumption_recorded',
+      'controlled_write_proposed',
+      'inspection_requested',
+      'commit_requested',
+    ];
+  }
+  if (role === 'backend') {
+    return [
+      'control_state_read',
+      'execution_plan_filed',
+      'inbox_read',
+      'inbox_event_acknowledged',
+      'change_order_filed',
+      'stale_transaction_aborted',
+    ];
+  }
+  if (role === 'inspection') {
+    return [
+      'control_state_read',
+      'execution_plan_filed',
+      'landing_requested',
+      'metrics_read',
+    ];
+  }
+  return [];
+}
+
+function normalizeCommandText(value) {
+  return String(value || '')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function workflowActionBackedByTranscript(action, transcriptCommands = []) {
+  const commandAction = String(action?.action || '').trim();
+  if (!commandAction) return false;
+  return transcriptCommands.some((command) => (
+    String(command || '').includes('codesite-agent-action.mjs')
+    && String(command || '').includes(` ${commandAction}`)
+  ));
 }
 
 function listFiles(root) {

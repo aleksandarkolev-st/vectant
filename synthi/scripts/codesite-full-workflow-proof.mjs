@@ -365,6 +365,50 @@ function roleCommandRequirements(role) {
   return [];
 }
 
+function roleWorkflowActionRequirements(role) {
+  if (role === 'schema') {
+    return [
+      'control_state_read',
+      'execution_plan_filed',
+      'mutation_lease_requested',
+      'mutation_transaction_opened',
+      'assumption_recorded',
+      'controlled_write_proposed',
+      'inspection_requested',
+      'commit_requested',
+    ];
+  }
+  if (role === 'backend') {
+    return [
+      'control_state_read',
+      'execution_plan_filed',
+      'inbox_read',
+      'inbox_event_acknowledged',
+      'change_order_filed',
+      'stale_transaction_aborted',
+    ];
+  }
+  if (role === 'inspection') {
+    return [
+      'control_state_read',
+      'execution_plan_filed',
+      'landing_requested',
+      'metrics_read',
+    ];
+  }
+  return [];
+}
+
+function workflowActionBackedByTranscript(action, transcriptCommands = []) {
+  const commandAction = String(action?.action || '').trim();
+  if (!commandAction) return false;
+  return transcriptCommands.some((command) => {
+    const normalized = normalizeCommandText(command);
+    return normalized.includes('codesite-agent-action.mjs')
+      && normalized.includes(` ${commandAction}`);
+  });
+}
+
 function inspectionSignalRanNpmScript(signal, scriptName, evidencePrefix) {
   const command = signal?.command || {};
   const args = asArray(command.args);
@@ -966,6 +1010,10 @@ async function loadAgentExecutionEvidence({ dir, slug, agentFlightSpecs }) {
       ok: false,
       errors: [`transcript_binding_error:${error?.message || String(error)}`],
     }));
+    const actorProjectionBinding = await verifiedActorProjectionBinding(parsed, workflowActions).catch((error) => ({
+      ok: false,
+      errors: [`actor_projection_binding_error:${error?.message || String(error)}`],
+    }));
     const evidenceDigest = digest({
       schemaVersion: parsed.schemaVersion,
       callsign: parsed.callsign,
@@ -994,12 +1042,20 @@ async function loadAgentExecutionEvidence({ dir, slug, agentFlightSpecs }) {
           finalMessageSha256: transcriptBinding.finalMessageSha256,
         }
         : transcriptBinding.errors,
+      actorProjectionBinding: actorProjectionBinding.ok
+        ? {
+          controlStateSha256: actorProjectionBinding.controlStateSha256,
+          actionScriptSha256: actorProjectionBinding.actionScriptSha256,
+          receiptSha256: actorProjectionBinding.receiptSha256,
+        }
+        : actorProjectionBinding.errors,
     });
     records.push({
       ...parsed,
       commands,
       workflowActions,
       transcriptBinding,
+      actorProjectionBinding,
       path: path.relative(repoRoot(), absolutePath).split(path.sep).join('/'),
       evidenceDigest,
       validForProof: false,
@@ -1043,6 +1099,19 @@ async function loadAgentExecutionEvidence({ dir, slug, agentFlightSpecs }) {
       }
     }
     if (!record.workflowActions.length) errors.push('workflow_actions_missing');
+    const requiredWorkflowActions = roleWorkflowActionRequirements(spec?.domain || record.role);
+    const missingWorkflowActions = requiredWorkflowActions.filter((kind) => !record.workflowActions.some((action) => action?.kind === kind));
+    if (missingWorkflowActions.length) errors.push(`required_workflow_actions_missing:${missingWorkflowActions.join(',')}`);
+    const unbackedWorkflowActions = record.workflowActions.filter((action) => !workflowActionBackedByTranscript(action, transcriptCommands));
+    if (unbackedWorkflowActions.length) {
+      errors.push(`workflow_actions_not_transcript_backed:${unbackedWorkflowActions.map((action) => action?.kind || action?.action || 'unknown').join(',')}`);
+    }
+    if (!record.workflowActions.every((action) => action?.source === 'codesite_repo_local_projection_actor')) {
+      errors.push('workflow_actions_not_actor_projection_receipts');
+    }
+    if (!record.actorProjectionBinding?.ok) {
+      errors.push(...asArray(record.actorProjectionBinding?.errors).map((error) => `actor_projection_binding_${error}`));
+    }
     if (!(record.transcriptDigest || record.finalMessageDigest || record.transcript?.digest)) errors.push('transcript_digest_missing');
     if (!(record.stdoutDigest || record.transcript?.stdoutDigest)) errors.push('stdout_digest_missing');
     if (!(record.stderrDigest || record.transcript?.stderrDigest)) errors.push('stderr_digest_missing');
@@ -1115,6 +1184,47 @@ async function verifiedCodexTranscriptBinding(record = {}) {
   };
 }
 
+async function verifiedActorProjectionBinding(record = {}, workflowActions = []) {
+  const actorProjection = record.actorProjection || {};
+  const errors = [];
+  const controlStateAbsolute = resolveRepoRelativeProofFile(actorProjection.controlStatePath, 'actorProjection.controlStatePath', errors);
+  const actionScriptAbsolute = resolveRepoRelativeProofFile(actorProjection.actionScriptPath, 'actorProjection.actionScriptPath', errors);
+  const receiptAbsolute = resolveRepoRelativeProofFile(actorProjection.receiptPath, 'actorProjection.receiptPath', errors);
+  const controlState = controlStateAbsolute ? await fs.promises.readFile(controlStateAbsolute, 'utf8').catch(() => null) : null;
+  const actionScript = actionScriptAbsolute ? await fs.promises.readFile(actionScriptAbsolute, 'utf8').catch(() => null) : null;
+  const receiptText = receiptAbsolute ? await fs.promises.readFile(receiptAbsolute, 'utf8').catch(() => null) : null;
+  if (controlState == null) errors.push('control_state_unreadable');
+  if (actionScript == null) errors.push('action_script_unreadable');
+  if (receiptText == null) errors.push('receipt_unreadable');
+
+  const controlStateSha256 = controlStateAbsolute && controlState != null ? await fileSha256(controlStateAbsolute) : null;
+  const actionScriptSha256 = actionScriptAbsolute && actionScript != null ? await fileSha256(actionScriptAbsolute) : null;
+  const receiptSha256 = receiptAbsolute && receiptText != null ? await fileSha256(receiptAbsolute) : null;
+  compareDigest(errors, 'actorProjection.controlStateSha256', actorProjection.controlStateSha256, controlStateSha256);
+  compareDigest(errors, 'actorProjection.actionScriptSha256', actorProjection.actionScriptSha256, actionScriptSha256);
+  compareDigest(errors, 'actorProjection.receiptSha256', actorProjection.receiptSha256, receiptSha256);
+
+  const receiptActions = receiptText == null ? [] : parseJsonl(receiptText);
+  if (receiptText != null && receiptActions.length === 0) errors.push('receipt_actions_missing');
+  if (receiptActions.length !== workflowActions.length) errors.push('receipt_action_count_mismatch');
+  const receiptDigests = new Set(receiptActions.map((action) => action.receiptDigest).filter(Boolean));
+  const missingReceiptDigests = workflowActions
+    .map((action) => action.receiptDigest)
+    .filter((receiptDigest) => !receiptDigest || !receiptDigests.has(receiptDigest));
+  if (missingReceiptDigests.length) errors.push('workflow_action_receipt_digest_mismatch');
+  if (!receiptActions.every((action) => action.callsign === record.callsign && action.workspaceSlug === record.workspaceSlug)) {
+    errors.push('receipt_action_scope_mismatch');
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    controlStateSha256,
+    actionScriptSha256,
+    receiptSha256,
+  };
+}
+
 function resolveRepoRelativeProofFile(relativePath, label, errors) {
   if (!relativePath) {
     errors.push(`${label}_missing`);
@@ -1128,6 +1238,14 @@ function resolveRepoRelativeProofFile(relativePath, label, errors) {
     return null;
   }
   return absolute;
+}
+
+function parseJsonl(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 function compareDigest(errors, label, observed, expected, options = {}) {
@@ -1146,20 +1264,34 @@ function codexAgentOutputSchema() {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     type: 'object',
     additionalProperties: false,
-    required: ['callsign', 'providerSessionRef', 'role', 'inspectedPaths', 'commandsRun', 'workflowFinding', 'risk'],
+    required: ['callsign', 'providerSessionRef', 'role', 'inspectedPaths', 'commandsRun', 'workflowActions', 'workflowFinding', 'risk'],
     properties: {
       callsign: { type: 'string' },
       providerSessionRef: { type: 'string' },
       role: { type: 'string' },
       inspectedPaths: { type: 'array', minItems: 1, items: { type: 'string' } },
       commandsRun: { type: 'array', minItems: 1, items: { type: 'string' } },
+      workflowActions: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          additionalProperties: true,
+          required: ['kind', 'action'],
+          properties: {
+            kind: { type: 'string' },
+            action: { type: 'string' },
+            reference: { type: 'string' },
+          },
+        },
+      },
       workflowFinding: { type: 'string' },
       risk: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
     },
   };
 }
 
-function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo }) {
+function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, actorCommands, actorProjection }) {
   const hostRepoRoot = repoRoot();
   const repoPath = (absolutePath) => path.relative(hostRepoRoot, absolutePath).split(path.sep).join('/');
   const planPath = 'docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md';
@@ -1169,48 +1301,58 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo }) {
   const proofRepoSchemaPath = `${proofRepoPath}/synthi/prisma/schema.prisma`;
   const proofRepoTypecheckPath = `${proofRepoPath}/scripts/typecheck-schema.mjs`;
   const proofRepoContractTestPath = `${proofRepoPath}/scripts/test-schema-contract.mjs`;
+  const projectionPath = repoPath(actorProjection.controlStatePath);
+  const actionScriptPath = repoPath(actorProjection.actionScriptPath);
+  const actionContract = actorProjection.actionContracts[spec.callsign] || [];
   const expectedRefsText = [
     'Expected CodeSite providerSessionRefs for this proof:',
     ...agentFlightSpecsForPrompt(spec).map((entry) => `- ${entry.callsign}: ${entry.providerSessionRef}`),
   ].join('\n');
   const roleChecks = {
     schema: [
-      `Inspect ${planPath} for mutation transactions, CodeSiteFS, and proof-carrying commits.`,
-      `Inspect ${proofScriptPath} for SCHEMA-01 registration and schema-first transaction evidence.`,
-      `Inspect ${proofRepoSchemaPath} and ${proofRepoPackagePath} for the proof repo schema workflow.`,
-      `Run cd ${proofRepoPath} && npm run typecheck and report that command in commandsRun.`,
+      `Read the CodeSite projection at ${projectionPath}; it contains your registered agent session, execution plan, clearance, transaction, assumption, and write proposal contract.`,
+      `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, mutation lease, transaction open, assumption, controlled-write proposal, inspection request, and commit request.`,
+      `Run cd ${proofRepoPath} && npm run typecheck after the action receipts and report that command in commandsRun.`,
+      `You may inspect ${proofRepoSchemaPath}, ${proofRepoPackagePath}, ${planPath}, or ${proofScriptPath} only as supporting context.`,
     ],
     backend: [
-      `Inspect ${planPath} for multi-user sessions, agent inbox, tower-mediated messages, and assumption invalidation.`,
-      `Inspect ${proofScriptPath} for API-02 dependent-flight hold, RFI, change-order, and stale-assumption abort evidence.`,
-      'Confirm API-02 has a distinct providerSessionRef from SCHEMA-01 and TEST-03 in the proof script inputs.',
-      'Run at least two shell commands that inspect those files, for example grep/sed/pwd commands, and report only commands you actually executed.',
+      `Read the CodeSite projection at ${projectionPath}; it contains your held dependent API flight, RFI inbox item, change-order response, stale assumption, and aborted API transaction.`,
+      `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, inbox read, inbox acknowledgement, change-order filing, and stale transaction abort.`,
+      'Confirm API-02 has a distinct providerSessionRef from SCHEMA-01 and TEST-03 in the projection and prompt.',
+      `You may inspect ${planPath}, ${proofScriptPath}, and ${projectionPath} only as supporting context.`,
     ],
     inspection: [
-      `Inspect ${planPath} for landings, inspections, black-box replay, filesystem boundary proof, and causal line inspector requirements.`,
-      `Inspect ${proofRepoPackagePath}, ${proofRepoTypecheckPath}, and ${proofRepoContractTestPath} for npm-backed landing radar checks.`,
-      `Run cd ${proofRepoPath} && npm test and report that command in commandsRun.`,
-      `Inspect ${proofScriptPath} for inspection command execution, proof-bundle, black-box replay, and screenshot evidence.`,
+      `Read the CodeSite projection at ${projectionPath}; it contains the landing radar inspection, metrics summary, proof bundle inputs, black-box replay refs, and causal line-inspector evidence.`,
+      `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, landing request, and metrics read.`,
+      `Run cd ${proofRepoPath} && npm test after the action receipts and report that command in commandsRun.`,
+      `You may inspect ${proofRepoPackagePath}, ${proofRepoTypecheckPath}, ${proofRepoContractTestPath}, ${planPath}, or ${proofScriptPath} only as supporting context.`,
     ],
   };
   return [
-    `You are CodeSite ${spec.callsign}, a real read-only Codex proof session for workspace ${slug}.`,
+    `You are CodeSite ${spec.callsign}, a real Codex actor session for workspace ${slug}.`,
     `Provider session ref: ${spec.providerSessionRef}.`,
     `Registered CodeSite agent session id: ${registration?.agentSession?.id || 'unknown'}.`,
     `Execution plan id: ${registration?.executionPlan?.id || 'unknown'}.`,
     `Project id: ${projectId}.`,
     expectedRefsText,
     '',
-    'Use shell read commands to inspect the files. You must execute shell commands; do not answer from memory or from this prompt alone.',
+    'You must execute shell commands; do not answer from memory or from this prompt alone.',
     `Use exact repo-relative paths from this prompt. The working directory is ${hostRepoRoot}.`,
     'Do not substitute /workspace paths; this Codex proof session runs on the host with the repo as its working directory.',
     'Do not run broad find commands over the repo root, node_modules, .git, or tmp trees.',
     'Prefer bounded commands such as pwd, sed -n, rg -n on an exact file, ls on an exact directory, and npm scripts in the proof repo.',
     'Only run commands that should exit 0; the workflow proof rejects failed command_execution transcript entries.',
     'The commandsRun array must list only successful commands that appear in the Codex command_execution transcript.',
-    'Do not edit files, stage, commit, or write repo artifacts.',
+    `You may write only through ${actionScriptPath}; it appends CodeSite actor receipts under the generated proof repo outbox.`,
+    'Do not edit application source, stage, commit, or write anywhere outside that generated proof repo outbox.',
     'Perform these role-specific checks:',
     ...(roleChecks[spec.domain] || roleChecks.inspection).map((check) => `- ${check}`),
+    '',
+    'Run these exact actor commands in order, then any listed npm command:',
+    ...actorCommands.map((command) => `- ${command}`),
+    '',
+    'Your workflowActions array must summarize the action receipts created by the commands above. Use these required action contracts:',
+    ...actionContract.map((entry) => `- ${entry.kind} via ${entry.action}`),
     '',
     'Return only JSON matching the provided schema. The callsign and providerSessionRef fields must exactly match the values above.',
   ].join('\n');
@@ -1245,6 +1387,330 @@ function proofProjectRedactionPolicy() {
       'punch',
       'tower_instruction',
     ],
+  };
+}
+
+function codexActorActionScriptSource() {
+  return `#!/usr/bin/env node
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function parseArgs(argv) {
+  const options = {};
+  const positionals = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg.startsWith('--')) {
+      options[arg.slice(2)] = argv[++index];
+    } else {
+      positionals.push(arg);
+    }
+  }
+  return {
+    projectId: options.project,
+    callsign: options.callsign,
+    action: options.action || positionals[0],
+  };
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+}
+
+function digest(value) {
+  return 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(sortJson(value))).digest('hex');
+}
+
+function fileSha256(filePath) {
+  return 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function fail(message) {
+  console.error(message);
+  process.exit(2);
+}
+
+const { projectId, callsign, action } = parseArgs(process.argv.slice(2));
+if (!projectId) fail('--project is required');
+if (!callsign) fail('--callsign is required');
+if (!action) fail('action is required');
+
+const scriptPath = fileURLToPath(import.meta.url);
+const proofRepoRoot = path.resolve(path.dirname(scriptPath), '..');
+const projectRoot = path.join(proofRepoRoot, '.synthi', 'codesite', 'projects', projectId);
+const controlStatePath = path.join(projectRoot, 'control-state.json');
+if (!fs.existsSync(controlStatePath)) fail('control-state.json is missing');
+const state = JSON.parse(fs.readFileSync(controlStatePath, 'utf8'));
+const agent = state.agents.find((entry) => entry.callsign === callsign);
+if (!agent) fail('unknown callsign ' + callsign);
+const contract = (state.actionContracts[callsign] || []).find((entry) => entry.action === action);
+if (!contract) fail('action ' + action + ' is not allowed for ' + callsign);
+
+const outboxDir = path.join(projectRoot, 'outbox', callsign);
+fs.mkdirSync(outboxDir, { recursive: true });
+const projectionControlStateSha256 = fileSha256(controlStatePath);
+const actionScriptSha256 = fileSha256(scriptPath);
+const receipt = {
+  schemaVersion: 'synthi.codesite.agentActionReceipt.v1',
+  source: 'codesite_repo_local_projection_actor',
+  workspaceSlug: state.workspaceSlug,
+  projectId,
+  callsign,
+  role: agent.role,
+  providerSessionRef: agent.providerSessionRef,
+  agentSessionId: agent.agentSessionId,
+  executionPlanId: agent.executionPlanId,
+  action: contract.action,
+  kind: contract.kind,
+  tool: contract.tool,
+  surface: 'repo-local-json-projection',
+  references: contract.references || {},
+  expectedAssertions: contract.expectedAssertions || [],
+  projectionControlStateSha256,
+  actionScriptSha256,
+  emittedAt: new Date().toISOString(),
+  outputArtifacts: [],
+};
+
+if (contract.kind === 'controlled_write_proposed') {
+  const proposalDir = path.join(outboxDir, 'patch-proposals');
+  fs.mkdirSync(proposalDir, { recursive: true });
+  const proposal = {
+    schemaVersion: 'synthi.codesite.controlledPatchProposal.v1',
+    source: 'codesite_repo_local_projection_actor',
+    workspaceSlug: state.workspaceSlug,
+    projectId,
+    callsign,
+    transactionId: state.mutation.transactionId,
+    mutationLeaseId: state.mutation.mutationLeaseId,
+    path: state.patch.path,
+    contentSha256: state.patch.afterSha256,
+    reasonRef: state.patch.reasonRef,
+    evidenceRefs: state.patch.evidenceRefs,
+    generatedAt: new Date().toISOString(),
+  };
+  proposal.proposalDigest = digest(proposal);
+  const proposalPath = path.join(proposalDir, proposal.proposalDigest.replace(/^sha256:/, '') + '.json');
+  fs.writeFileSync(proposalPath, JSON.stringify(proposal, null, 2) + '\\n', 'utf8');
+  receipt.outputArtifacts.push({
+    kind: 'controlled_patch_proposal',
+    path: path.relative(proofRepoRoot, proposalPath).split(path.sep).join('/'),
+    sha256: fileSha256(proposalPath),
+    proposalDigest: proposal.proposalDigest,
+  });
+}
+
+receipt.receiptDigest = digest({
+  schemaVersion: receipt.schemaVersion,
+  source: receipt.source,
+  workspaceSlug: receipt.workspaceSlug,
+  projectId: receipt.projectId,
+  callsign: receipt.callsign,
+  role: receipt.role,
+  providerSessionRef: receipt.providerSessionRef,
+  agentSessionId: receipt.agentSessionId,
+  executionPlanId: receipt.executionPlanId,
+  action: receipt.action,
+  kind: receipt.kind,
+  tool: receipt.tool,
+  references: receipt.references,
+  outputArtifacts: receipt.outputArtifacts,
+  projectionControlStateSha256,
+  actionScriptSha256,
+});
+
+const receiptPath = path.join(outboxDir, 'actions.jsonl');
+fs.appendFileSync(receiptPath, JSON.stringify(receipt) + '\\n', 'utf8');
+console.log(JSON.stringify({
+  ok: true,
+  callsign,
+  action,
+  kind: receipt.kind,
+  receiptDigest: receipt.receiptDigest,
+  references: receipt.references,
+}));
+`;
+}
+
+function sha256Text(text) {
+  return `sha256:${crypto.createHash('sha256').update(String(text)).digest('hex')}`;
+}
+
+function buildCodexActorActionContracts({ agentRegistrations, workflowContext }) {
+  const ids = {
+    projectId: workflowContext.project.id,
+    mutationLeaseId: workflowContext.lease.id,
+    transactionId: workflowContext.transaction.id,
+    schemaAssumptionId: workflowContext.schemaAssumption.id,
+    staleAssumptionId: workflowContext.staleAssumption.id,
+    apiTransactionId: workflowContext.apiTransaction.id,
+    apiAbortTransactionId: workflowContext.apiAbort.id,
+    rfiDocumentId: workflowContext.rfiDocument.id,
+    rfiInboxEventId: workflowContext.rfiInboxItem.eventId,
+    rfiAckInboxItemId: workflowContext.rfiAck.id,
+    changeOrderDocumentId: workflowContext.changeOrderDocument.id,
+    inspectionRunId: workflowContext.inspectionRun.id,
+  };
+  const byCallsign = new Map(agentRegistrations.map((entry) => [entry.spec.callsign, entry]));
+  const baseRefs = (callsign) => ({
+    projectId: ids.projectId,
+    agentSessionId: byCallsign.get(callsign)?.agentSession?.id || null,
+    executionPlanId: byCallsign.get(callsign)?.executionPlan?.id || null,
+  });
+  return {
+    'SCHEMA-01': [
+      { action: 'read-control-state', kind: 'control_state_read', tool: 'synthi_codesite_get_radar', references: baseRefs('SCHEMA-01') },
+      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_execution_plan', references: baseRefs('SCHEMA-01') },
+      { action: 'request-mutation-lease', kind: 'mutation_lease_requested', tool: 'synthi_codesite_request_clearance', references: { ...baseRefs('SCHEMA-01'), mutationLeaseId: ids.mutationLeaseId } },
+      { action: 'open-mutation-transaction', kind: 'mutation_transaction_opened', tool: 'synthi_codesite_open_transaction', references: { ...baseRefs('SCHEMA-01'), transactionId: ids.transactionId, mutationLeaseId: ids.mutationLeaseId } },
+      { action: 'record-assumption', kind: 'assumption_recorded', tool: 'synthi_codesite_record_assumption', references: { ...baseRefs('SCHEMA-01'), assumptionId: ids.schemaAssumptionId, path: workflowContext.readPath } },
+      { action: 'propose-controlled-write', kind: 'controlled_write_proposed', tool: 'synthi_codesite_apply_patch', references: { ...baseRefs('SCHEMA-01'), transactionId: ids.transactionId, path: workflowContext.changedPath, contentSha256: workflowContext.patch.afterSha256 } },
+      { action: 'request-inspection', kind: 'inspection_requested', tool: 'synthi_codesite_request_landing', references: { ...baseRefs('SCHEMA-01'), inspectionRunId: ids.inspectionRunId } },
+      { action: 'request-commit', kind: 'commit_requested', tool: 'synthi_codesite_request_commit', references: { ...baseRefs('SCHEMA-01'), transactionId: ids.transactionId } },
+    ],
+    'API-02': [
+      { action: 'read-control-state', kind: 'control_state_read', tool: 'synthi_codesite_get_radar', references: baseRefs('API-02') },
+      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_execution_plan', references: baseRefs('API-02') },
+      { action: 'read-inbox', kind: 'inbox_read', tool: 'synthi_codesite_get_inbox', references: { ...baseRefs('API-02'), documentId: ids.rfiDocumentId, eventId: ids.rfiInboxEventId } },
+      { action: 'ack-inbox-event', kind: 'inbox_event_acknowledged', tool: 'synthi_codesite_ack_event', references: { ...baseRefs('API-02'), inboxItemId: ids.rfiAckInboxItemId, eventId: ids.rfiInboxEventId } },
+      { action: 'file-change-order', kind: 'change_order_filed', tool: 'synthi_codesite_file_change_order', references: { ...baseRefs('API-02'), documentId: ids.changeOrderDocumentId, answersDocumentId: ids.rfiDocumentId } },
+      { action: 'abort-stale-transaction', kind: 'stale_transaction_aborted', tool: 'synthi_codesite_abort_transaction', references: { ...baseRefs('API-02'), transactionId: ids.apiAbortTransactionId, originalTransactionId: ids.apiTransactionId, staleAssumptionId: ids.staleAssumptionId } },
+    ],
+    'TEST-03': [
+      { action: 'read-control-state', kind: 'control_state_read', tool: 'synthi_codesite_get_radar', references: baseRefs('TEST-03') },
+      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_execution_plan', references: baseRefs('TEST-03') },
+      { action: 'request-landing', kind: 'landing_requested', tool: 'synthi_codesite_request_landing', references: { ...baseRefs('TEST-03'), inspectionRunId: ids.inspectionRunId, changedPath: workflowContext.changedPath } },
+      { action: 'read-metrics', kind: 'metrics_read', tool: 'synthi_codesite_get_metrics', references: { ...baseRefs('TEST-03'), inspectionRunId: ids.inspectionRunId, projectId: ids.projectId } },
+    ],
+  };
+}
+
+async function prepareCodexActorProjection({ evidenceDir, slug, projectId, proofRepo, agentRegistrations, workflowContext }) {
+  const actionScript = codexActorActionScriptSource();
+  const actionScriptPath = path.join(proofRepo.hostRoot, 'scripts', 'codesite-agent-action.mjs');
+  await fs.promises.writeFile(actionScriptPath, actionScript, { encoding: 'utf8', mode: 0o755 });
+  const actionContracts = buildCodexActorActionContracts({ agentRegistrations, workflowContext });
+  const state = {
+    schemaVersion: 'synthi.codesite.agentProjection.v1',
+    source: 'codesite-full-workflow-proof',
+    workspaceSlug: slug,
+    projectId,
+    generatedAt: new Date().toISOString(),
+    actionScriptSha256: await fileSha256(actionScriptPath),
+    agents: agentRegistrations.map((entry) => ({
+      callsign: entry.spec.callsign,
+      role: entry.spec.domain,
+      mission: entry.spec.mission,
+      status: entry.spec.status,
+      providerSessionRef: entry.spec.providerSessionRef,
+      agentSessionId: entry.agentSession.id,
+      executionPlanId: entry.executionPlan.id,
+      permissions: entry.agentSession.permissions,
+      requestedTools: entry.executionPlan.requestedTools,
+      route: entry.executionPlan.route,
+    })),
+    mutation: {
+      mutationLeaseId: workflowContext.lease.id,
+      transactionId: workflowContext.transaction.id,
+      allowedPaths: workflowContext.lease.allowedPaths,
+      writeSet: workflowContext.transaction.writeSet,
+      readSet: workflowContext.transaction.readSet,
+      observedReadSet: workflowContext.transaction.observedReadSet,
+    },
+    patch: {
+      path: workflowContext.changedPath,
+      afterSha256: workflowContext.patch.afterSha256,
+      reasonRef: workflowContext.patch.reasonRef,
+      evidenceRefs: workflowContext.patch.evidenceRefs,
+    },
+    coordination: {
+      rfiDocument: workflowContext.rfiDocument,
+      rfiInboxItem: workflowContext.rfiInboxItem,
+      rfiAck: workflowContext.rfiAck,
+      changeOrderDocument: workflowContext.changeOrderDocument,
+      changeOrderInboxItem: workflowContext.changeOrderInboxItem,
+      changeOrderAck: workflowContext.changeOrderAck,
+    },
+    assumptions: {
+      schema: workflowContext.schemaAssumption,
+      stale: workflowContext.staleAssumption,
+      apiTransaction: workflowContext.apiTransaction,
+      apiAbort: workflowContext.apiAbort,
+    },
+    inspection: {
+      inspectionRun: workflowContext.inspectionRun,
+      status: workflowContext.inspectionRun.status,
+      changedPaths: workflowContext.inspectionRun.changedPaths,
+    },
+    metrics: {
+      startupWorkflow: 'schema-first signup audit-log migration',
+      documentCount: workflowContext.documentCount,
+      inboxItemCount: workflowContext.inboxItemCount,
+      counterfactualRunId: workflowContext.counterfactualRun.id,
+    },
+    actionContracts,
+  };
+  const projectionRoot = path.join(proofRepo.hostRoot, '.synthi', 'codesite', 'projects', projectId);
+  await fs.promises.mkdir(projectionRoot, { recursive: true });
+  const controlStatePath = path.join(projectionRoot, 'control-state.json');
+  await fs.promises.writeFile(controlStatePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  const mirroredControlStatePath = path.join(evidenceDir, 'codex-actor-control-state.json');
+  const mirroredActionScriptPath = path.join(evidenceDir, 'codesite-agent-action.mjs.txt');
+  await fs.promises.copyFile(controlStatePath, mirroredControlStatePath);
+  await fs.promises.writeFile(mirroredActionScriptPath, actionScript, 'utf8');
+  return {
+    root: projectionRoot,
+    controlStatePath,
+    actionScriptPath,
+    mirroredControlStatePath,
+    mirroredActionScriptPath,
+    controlStateSha256: await fileSha256(mirroredControlStatePath),
+    actionScriptSha256: await fileSha256(mirroredActionScriptPath),
+    actionContracts,
+  };
+}
+
+function codexAgentCommands({ spec, proofRepo, projectId, actorProjection }) {
+  const repoPath = (absolutePath) => path.relative(repoRoot(), absolutePath).split(path.sep).join('/');
+  const scriptPath = repoPath(actorProjection.actionScriptPath);
+  const actionCommand = (action) => `node ${scriptPath} --project ${projectId} --callsign ${spec.callsign} ${action}`;
+  const contractCommands = (actorProjection.actionContracts[spec.callsign] || []).map((entry) => actionCommand(entry.action));
+  const proofRepoPath = repoPath(proofRepo.hostRoot);
+  if (spec.domain === 'schema') {
+    return [
+      ...contractCommands.slice(0, 6),
+      `cd ${proofRepoPath} && npm run typecheck`,
+      ...contractCommands.slice(6),
+    ];
+  }
+  if (spec.domain === 'inspection') {
+    return [
+      ...contractCommands,
+      `cd ${proofRepoPath} && npm test`,
+    ];
+  }
+  return [
+    ...contractCommands,
+    `rg -n "api.signup.depends_on_schema.v1|auth.signup.schema.v1" ${repoPath(actorProjection.controlStatePath)}`,
+  ];
+}
+
+async function mirrorActionReceipts({ evidenceDir, actorProjection, spec }) {
+  const safeCallsign = safeArtifactSegment(spec.callsign);
+  const receiptSourcePath = path.join(actorProjection.root, 'outbox', spec.callsign, 'actions.jsonl');
+  assertProof(fs.existsSync(receiptSourcePath), `Codex actor receipt file missing for ${spec.callsign}`);
+  const receiptMirrorPath = path.join(evidenceDir, `${safeCallsign}.actions.jsonl`);
+  await fs.promises.copyFile(receiptSourcePath, receiptMirrorPath);
+  const receiptText = await fs.promises.readFile(receiptMirrorPath, 'utf8');
+  const workflowActions = parseJsonl(receiptText);
+  return {
+    workflowActions,
+    receiptMirrorPath,
+    receiptSha256: await fileSha256(receiptMirrorPath),
   };
 }
 
@@ -1322,7 +1788,7 @@ function codexCommandEvidence(events, { transcriptDigest, finalMessageDigest }) 
     });
 }
 
-async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo, agentFlightSpecs, agentRegistrations }) {
+async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo, agentFlightSpecs, agentRegistrations, workflowContext }) {
   const codexHome = process.env.CODESITE_PROOF_CODEX_AGENT_HOME || '/tmp/codesite-codex-agent-home';
   assertProof(fs.existsSync(codexHome), `Codex agent proof home does not exist: ${codexHome}`);
   assertProof(fs.existsSync(path.join(codexHome, 'auth.json')), `Codex agent proof home is missing auth.json: ${codexHome}`);
@@ -1331,6 +1797,14 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
   await fs.promises.mkdir(evidenceDir, { recursive: true });
   const schemaPath = path.join(evidenceDir, 'codex-agent-output.schema.json');
   await fs.promises.writeFile(schemaPath, `${JSON.stringify(codexAgentOutputSchema(), null, 2)}\n`, 'utf8');
+  const actorProjection = await prepareCodexActorProjection({
+    evidenceDir,
+    slug,
+    projectId,
+    proofRepo,
+    agentRegistrations,
+    workflowContext,
+  });
 
   for (const spec of agentFlightSpecs) {
     const registration = agentRegistrations.find((entry) => entry.spec.callsign === spec.callsign);
@@ -1338,7 +1812,8 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
     const stdoutPath = path.join(evidenceDir, `${safeCallsign}.events.raw.jsonl`);
     const stderrPath = path.join(evidenceDir, `${safeCallsign}.stderr.log`);
     const finalPath = path.join(evidenceDir, `${safeCallsign}.final.txt`);
-    const prompt = codexAgentPrompt({ spec, registration, slug, projectId, proofRepo });
+    const actorCommands = codexAgentCommands({ spec, proofRepo, projectId, actorProjection });
+    const prompt = codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, actorCommands, actorProjection });
     const args = [
       '-a',
       'never',
@@ -1390,18 +1865,8 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
     const stderrSha256 = await fileSha256(stderrPath);
     const finalMessageSha256 = fs.existsSync(finalPath) ? await fileSha256(finalPath) : null;
     const commandEvidence = codexCommandEvidence(events, { transcriptDigest, finalMessageDigest });
-    const workflowActions = [
-      {
-        kind: 'role_execution',
-        callsign: spec.callsign,
-        summary: finalJson?.workflowFinding || '',
-        risk: finalJson?.risk || 'medium',
-      },
-      ...asArray(finalJson?.inspectedPaths).map((inspectedPath) => ({
-        kind: 'inspected_path',
-        path: inspectedPath,
-      })),
-    ];
+    const receiptEvidence = await mirrorActionReceipts({ evidenceDir, actorProjection, spec });
+    const workflowActions = receiptEvidence.workflowActions;
     const record = {
       schemaVersion: 'synthi.codesite.codexAgentExecutionEvidence.v1',
       callsign: spec.callsign,
@@ -1415,6 +1880,19 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
       commands: commandEvidence,
       reportedCommands: asArray(finalJson?.commandsRun),
       workflowActions,
+      actorProjection: {
+        surface: 'repo_local_codesite_projection',
+        runtimeControlStatePath: path.relative(repoRoot(), actorProjection.controlStatePath).split(path.sep).join('/'),
+        runtimeActionScriptPath: path.relative(repoRoot(), actorProjection.actionScriptPath).split(path.sep).join('/'),
+        controlStatePath: path.relative(repoRoot(), actorProjection.mirroredControlStatePath).split(path.sep).join('/'),
+        actionScriptPath: path.relative(repoRoot(), actorProjection.mirroredActionScriptPath).split(path.sep).join('/'),
+        receiptPath: path.relative(repoRoot(), receiptEvidence.receiptMirrorPath).split(path.sep).join('/'),
+        controlStateSha256: actorProjection.controlStateSha256,
+        actionScriptSha256: actorProjection.actionScriptSha256,
+        receiptSha256: receiptEvidence.receiptSha256,
+        requiredActions: roleWorkflowActionRequirements(spec.domain),
+      },
+      finalReportedWorkflowActions: asArray(finalJson?.workflowActions),
       finalMessageDigest,
       transcriptDigest,
       stdoutDigest,
@@ -3040,6 +3518,37 @@ async function main() {
     proofRepo,
     agentFlightSpecs,
     agentRegistrations,
+    workflowContext: {
+      project,
+      lease,
+      transaction,
+      schemaAssumption: assumptionResponse.assumption,
+      staleAssumption: staleAssumptionResponse.assumption,
+      apiLease,
+      apiTransaction,
+      apiAbort: apiAbortResponse.transaction,
+      rfiDocument: rfiResponse.document,
+      rfiInboxItem,
+      rfiAck: rfiAck.inboxItem,
+      changeOrderDocument: changeOrderResponse.document,
+      changeOrderInboxItem,
+      changeOrderAck: changeOrderAck.inboxItem,
+      inspectionRun: inspectionResponse.inspectionRun,
+      counterfactualRun: counterfactualResponse.counterfactualRun,
+      changedPath,
+      readPath,
+      patch: {
+        afterSha256: sha256Text(proofRepo.after),
+        reasonRef: `change_order:${changeOrderResponse.document.id}`,
+        evidenceRefs: [
+          `codesite:document:${rfiResponse.document.id}`,
+          `codesite:document:${changeOrderResponse.document.id}`,
+          `codesite:counterfactual-run:${counterfactualResponse.counterfactualRun.id}`,
+        ],
+      },
+      documentCount: 2,
+      inboxItemCount: 2,
+    },
   });
   assertProof(
     agentExecutionEvidence.missingCallsigns.length === 0,
@@ -3246,6 +3755,15 @@ async function main() {
         workflowActionCount: record.workflowActions.length,
         transcriptDigest: record.transcriptDigest || record.finalMessageDigest || record.transcript?.digest || null,
         evidenceDigest: record.evidenceDigest,
+        actorProjection: record.actorProjection,
+        workflowActions: record.workflowActions.map((action) => ({
+          kind: action.kind,
+          action: action.action,
+          tool: action.tool,
+          receiptDigest: action.receiptDigest,
+          references: action.references,
+          outputArtifacts: action.outputArtifacts || [],
+        })),
       })),
       codexSessionCount: agentSessions.filter((session) => (
         session.agentProvider === 'codex'
@@ -3488,7 +4006,22 @@ async function main() {
           && evidence.commands.every((command) => command.source === 'codex_jsonl_command_execution' && command.transcriptEventId)
           && evidence.workflowActions.length > 0
           && evidence.transcriptBinding?.ok === true
+          && evidence.actorProjectionBinding?.ok === true
           && Boolean(evidence.evidenceDigest);
+      }),
+      codexActorReceiptsBackedByTranscripts: agentFlightSpecs.every((spec) => {
+        const evidence = agentExecutionEvidence.recordsByCallsign.get(spec.callsign);
+        const transcriptCommands = (evidence?.commands || []).map((command) => normalizeCommandText(command.command));
+        return evidence?.validForProof === true
+          && evidence.actorProjection?.surface === 'repo_local_codesite_projection'
+          && roleWorkflowActionRequirements(spec.domain).every((kind) => evidence.workflowActions.some((action) => action.kind === kind))
+          && evidence.workflowActions.every((action) => (
+            action.source === 'codesite_repo_local_projection_actor'
+            && action.receiptDigest
+            && action.projectionControlStateSha256 === evidence.actorProjection?.controlStateSha256
+            && action.actionScriptSha256 === evidence.actorProjection?.actionScriptSha256
+            && workflowActionBackedByTranscript(action, transcriptCommands)
+          ));
       }),
       agentReadableSessionArtifactsExported: agentFlightSpecs.every((spec) => (
         exportedAgentSessions.some((artifact) => (
