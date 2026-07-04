@@ -2126,7 +2126,26 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}] }
+  // GET /program-runtime/:slug/context → { files:{name:contents} }
+  // Curated, read-only workspace files for AI manifest generation (allow-listed).
+  const contextMatch = /^\/program-runtime\/([^/]+)\/context$/.exec(programRuntimeUrl.pathname);
+  if (contextMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(contextMatch[1]);
+    const ctxUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const { readContextFiles } = require('./contextFiles');
+      const cwd = await resolveWorkspaceCwd(slug, ctxUserId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ files: readContextFiles(cwd) }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'context failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}], overwrite? }
   // Writes starter files into the workspace dir, ONLY when missing. Path-guarded.
   const scaffoldMatch = /^\/program-runtime\/([^/]+)\/scaffold$/.exec(programRuntimeUrl.pathname);
   if (scaffoldMatch && req.method === 'POST') {
@@ -2143,7 +2162,7 @@ const server = http.createServer(async (req, res) => {
       const { resolveWorkspaceCwd } = require('./terminalService');
       const { applyScaffoldFiles } = require('./scaffold');
       const cwd = await resolveWorkspaceCwd(slug, parsed.userId || undefined);
-      const result = applyScaffoldFiles(cwd, parsed.files || []);
+      const result = applyScaffoldFiles(cwd, parsed.files || [], { overwrite: parsed.overwrite === true });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
