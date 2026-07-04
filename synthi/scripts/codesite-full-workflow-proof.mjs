@@ -1566,7 +1566,7 @@ function buildCodexActorActionContracts({ agentRegistrations, workflowContext })
   return {
     'SCHEMA-01': [
       { action: 'read-control-state', kind: 'control_state_read', tool: 'synthi_codesite_get_radar', references: baseRefs('SCHEMA-01') },
-      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_execution_plan', references: baseRefs('SCHEMA-01') },
+      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_flight_plan', references: baseRefs('SCHEMA-01') },
       { action: 'request-mutation-lease', kind: 'mutation_lease_requested', tool: 'synthi_codesite_request_clearance', references: { ...baseRefs('SCHEMA-01'), mutationLeaseId: ids.mutationLeaseId } },
       { action: 'open-mutation-transaction', kind: 'mutation_transaction_opened', tool: 'synthi_codesite_open_transaction', references: { ...baseRefs('SCHEMA-01'), transactionId: ids.transactionId, mutationLeaseId: ids.mutationLeaseId } },
       { action: 'record-assumption', kind: 'assumption_recorded', tool: 'synthi_codesite_record_assumption', references: { ...baseRefs('SCHEMA-01'), assumptionId: ids.schemaAssumptionId, path: workflowContext.readPath } },
@@ -1576,7 +1576,7 @@ function buildCodexActorActionContracts({ agentRegistrations, workflowContext })
     ],
     'API-02': [
       { action: 'read-control-state', kind: 'control_state_read', tool: 'synthi_codesite_get_radar', references: baseRefs('API-02') },
-      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_execution_plan', references: baseRefs('API-02') },
+      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_flight_plan', references: baseRefs('API-02') },
       { action: 'read-inbox', kind: 'inbox_read', tool: 'synthi_codesite_get_inbox', references: { ...baseRefs('API-02'), documentId: ids.rfiDocumentId, eventId: ids.rfiInboxEventId } },
       { action: 'ack-inbox-event', kind: 'inbox_event_acknowledged', tool: 'synthi_codesite_ack_event', references: { ...baseRefs('API-02'), inboxItemId: ids.rfiAckInboxItemId, eventId: ids.rfiInboxEventId } },
       { action: 'file-change-order', kind: 'change_order_filed', tool: 'synthi_codesite_file_change_order', references: { ...baseRefs('API-02'), documentId: ids.changeOrderDocumentId, answersDocumentId: ids.rfiDocumentId } },
@@ -1584,7 +1584,7 @@ function buildCodexActorActionContracts({ agentRegistrations, workflowContext })
     ],
     'TEST-03': [
       { action: 'read-control-state', kind: 'control_state_read', tool: 'synthi_codesite_get_radar', references: baseRefs('TEST-03') },
-      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_execution_plan', references: baseRefs('TEST-03') },
+      { action: 'file-execution-plan', kind: 'execution_plan_filed', tool: 'synthi_codesite_file_flight_plan', references: baseRefs('TEST-03') },
       { action: 'request-landing', kind: 'landing_requested', tool: 'synthi_codesite_request_landing', references: { ...baseRefs('TEST-03'), inspectionRunId: ids.inspectionRunId, changedPath: workflowContext.changedPath } },
       { action: 'read-metrics', kind: 'metrics_read', tool: 'synthi_codesite_get_metrics', references: { ...baseRefs('TEST-03'), inspectionRunId: ids.inspectionRunId, projectId: ids.projectId } },
     ],

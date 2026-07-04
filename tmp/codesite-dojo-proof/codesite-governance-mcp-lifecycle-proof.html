@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CodeSite Governance MCP Lifecycle Proof</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b0d;color:#eef4f2;color-scheme:dark}
+body{margin:0;background:#080b0d;color:#eef4f2}
+main{width:min(1240px,calc(100vw - 56px));margin:0 auto;padding:38px 0 54px}
+header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:end;border-bottom:1px solid #26383c;padding-bottom:24px}
+h1{margin:0;font-size:35px;line-height:1.05;font-weight:790;letter-spacing:0}
+.sub{margin:12px 0 0;color:#a6b8b6;max-width:930px;line-height:1.55}
+.stamp{border:1px solid #2d8a6c;background:#0b2f29;color:#b9f7dd;padding:12px 34px;font-weight:790}
+.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:24px 0}
+.card,section{background:#0f1517;border:1px solid #26383c}
+.card{padding:16px;min-height:86px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8ba09f}
+.value{font-size:27px;font-weight:790;margin-top:10px;overflow-wrap:anywhere}
+section{padding:20px;margin-top:18px}
+h2{font-size:19px;margin:0 0 14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-top:1px solid #223236;padding:10px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9bb7b4;background:#0a1012}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+pre{background:#040708;color:#dbe8e5;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
+.cwd{color:#849997;font-size:12px;margin-top:4px}
+.ok{color:#83f0bd;font-weight:760}
+.fail{color:#ff9b8f;font-weight:760}
+@media(max-width:900px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<h1>CodeSite Governance MCP Lifecycle Proof</h1>
+<p class="sub">Verified 2026-07-04T14:32:30.264Z. Restricted construction governance and no-browser MCP lifecycle parity are release-gated with real Docker validation and registry-backed tool names.</p>
+</div>
+<div class="stamp">PASS</div>
+</header>
+<div class="cards">
+<div class="card"><div class="label">Governance Suite</div><div class="value">91/91</div></div>
+<div class="card"><div class="label">MCP Lifecycle</div><div class="value">18/18</div></div>
+<div class="card"><div class="label">Tool Registry</div><div class="value">63</div></div>
+<div class="card"><div class="label">Unknown Tools</div><div class="value">0</div></div>
+</div>
+<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>restricted airspace clearance requires approved governance evidence</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>governance workflows are covered by control-plane tests</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>MCP registry exposes the actual CodeSite tool names</td><td>{&quot;mcpToolCount&quot;:63}</td></tr><tr><td class="ok">PASS</td><td>agent manifest tool list matches MCP registry</td><td>{&quot;missingManifestTools&quot;:[],&quot;extraManifestTools&quot;:[]}</td></tr><tr><td class="ok">PASS</td><td>full workflow Codex contracts reference only real MCP tools</td><td>{&quot;invalidWorkflowToolNames&quot;:[]}</td></tr><tr><td class="ok">PASS</td><td>release gate validates Codex workflow action tool names</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>dockerGovernanceControlPlane command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:91,&quot;skipped&quot;:0,&quot;tests&quot;:91,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>dockerMcpLifecycle command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-mcp:/repo/mcp/synthi-mcp/node_modules -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:18,&quot;skipped&quot;:0,&quot;tests&quot;:18,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
+<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js</code><div class="cwd">.</div></td><td>91/91</td></tr><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-mcp:/repo/mcp/synthi-mcp/node_modules -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts</code><div class="cwd">.</div></td><td>18/18</td></tr></tbody></table></section>
+<section><h2>Tool Coverage</h2><pre>{
+  &quot;mcpToolCount&quot;: 63,
+  &quot;artifactToolCount&quot;: 63,
+  &quot;workflowToolCount&quot;: 13,
+  &quot;missingManifestTools&quot;: [],
+  &quot;extraManifestTools&quot;: [],
+  &quot;invalidWorkflowToolNames&quot;: []
+}</pre></section>
+<section><h2>Git Binding</h2><pre>{
+  &quot;head&quot;: &quot;cf75ecc62046bbde2c19b9f7438eaad8023bebaf&quot;,
+  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
+  &quot;statusShort&quot;: &quot;M synthi/scripts/codesite-full-workflow-proof.mjs\n M synthi/scripts/codesite-release-gate.mjs&quot;
+}</pre></section>
+</main>
+</body>
+</html>

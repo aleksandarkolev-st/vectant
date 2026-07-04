@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "synthi.codesite.governanceMcpLifecycleProof.v1",
+  "status": "validated",
+  "generatedAt": "2026-07-04T14:32:30.264Z",
+  "ok": true,
+  "git": {
+    "head": "cf75ecc62046bbde2c19b9f7438eaad8023bebaf",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M synthi/scripts/codesite-full-workflow-proof.mjs\n M synthi/scripts/codesite-release-gate.mjs"
+  },
+  "assertions": [
+    {
+      "name": "restricted airspace clearance requires approved governance evidence",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "governance workflows are covered by control-plane tests",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "MCP registry exposes the actual CodeSite tool names",
+      "ok": true,
+      "details": {
+        "mcpToolCount": 63
+      }
+    },
+    {
+      "name": "agent manifest tool list matches MCP registry",
+      "ok": true,
+      "details": {
+        "missingManifestTools": [],
+        "extraManifestTools": []
+      }
+    },
+    {
+      "name": "full workflow Codex contracts reference only real MCP tools",
+      "ok": true,
+      "details": {
+        "invalidWorkflowToolNames": []
+      }
+    },
+    {
+      "name": "release gate validates Codex workflow action tool names",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "dockerGovernanceControlPlane command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js",
+        "summary": {
+          "runner": "vitest",
+          "pass": 91,
+          "skipped": 0,
+          "tests": 91,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerMcpLifecycle command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-mcp:/repo/mcp/synthi-mcp/node_modules -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts",
+        "summary": {
+          "runner": "vitest",
+          "pass": 18,
+          "skipped": 0,
+          "tests": 18,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "dockerGovernanceControlPlane",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "runner": "vitest",
+        "pass": 91,
+        "skipped": 0,
+        "tests": 91,
+        "fail": 0
+      },
+      "outputTail": [
+        " RUN  v4.1.9 /repo/synthi",
+        " ✓ src/lib/codesite/__tests__/controlPlane.test.js (91 tests) 2441ms",
+        "     ✓ classifies landing inspection commands through first-class radar adapters  822ms",
+        "     ✓ executes real shadow-universe repo commands in isolated worktrees  333ms",
+        " Test Files  1 passed (1)",
+        "      Tests  91 passed (91)",
+        "   Start at  14:31:56",
+        "   Duration  6.24s (transform 2.64s, setup 0ms, import 2.90s, tests 2.44s, environment 697ms)",
+        "npm notice",
+        "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
+        "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
+        "npm notice To update run: npm install -g npm@11.18.0",
+        "npm notice"
+      ]
+    },
+    {
+      "name": "dockerMcpLifecycle",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-mcp:/repo/mcp/synthi-mcp/node_modules -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "runner": "vitest",
+        "pass": 18,
+        "skipped": 0,
+        "tests": 18,
+        "fail": 0
+      },
+      "outputTail": [
+        "96 packages are looking for funding",
+        "  run `npm fund` for details",
+        "11 vulnerabilities (4 moderate, 6 high, 1 critical)",
+        "To address issues that do not require attention, run:",
+        "  npm audit fix",
+        "To address all issues possible (including breaking changes), run:",
+        "  npm audit fix --force",
+        "Some issues need review, and may require choosing",
+        "a different dependency.",
+        "Run `npm audit` for details.",
+        " RUN  v2.1.9 /repo/mcp/synthi-mcp",
+        " ✓ tests/unit/codesite_tools.test.ts (18 tests) 112ms",
+        " Test Files  1 passed (1)",
+        "      Tests  18 passed (18)",
+        "   Start at  14:32:28",
+        "   Duration  1.23s (transform 551ms, setup 0ms, collect 613ms, tests 112ms, environment 0ms, prepare 104ms)",
+        "npm warn config ignoring workspace config at /repo/mcp/synthi-mcp/.npmrc",
+        "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead",
+        "npm notice",
+        "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
+        "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
+        "npm notice To update run: npm install -g npm@11.18.0",
+        "npm notice",
+        "npm warn config ignoring workspace config at /repo/mcp/synthi-mcp/.npmrc"
+      ]
+    }
+  ],
+  "toolCoverage": {
+    "mcpToolCount": 63,
+    "artifactToolCount": 63,
+    "workflowToolCount": 13,
+    "missingManifestTools": [],
+    "extraManifestTools": [],
+    "invalidWorkflowToolNames": []
+  }
+}

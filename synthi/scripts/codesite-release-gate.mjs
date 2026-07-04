@@ -74,6 +74,14 @@ const REQUIRED_MATURE_PROOFS = [
   { name: 'repoLocalAutosync', plan: '23', file: 'codesite-repo-local-autosync-proof.json', png: 'codesite-repo-local-autosync-proof.png' },
   { name: 'radarAdapter', plan: '8, 15, 25.3', file: 'codesite-radar-adapter-proof.json', png: 'codesite-radar-adapter-proof.png' },
   {
+    name: 'governanceMcpLifecycle',
+    plan: '2C, 16, 19, 20, 21.4-21.7, 23, 25.2B',
+    file: 'codesite-governance-mcp-lifecycle-proof.json',
+    png: 'codesite-governance-mcp-lifecycle-proof.png',
+    requiredCommands: ['dockerGovernanceControlPlane', 'dockerMcpLifecycle'],
+    dockerCommand: 'dockerGovernanceControlPlane',
+  },
+  {
     name: 'radarUi',
     plan: '8, 25.3, 26.1',
     file: 'codesite-radar-ui-proof.json',
@@ -1169,6 +1177,7 @@ function validateCodexEvidence({ root, proofRoot, slug, failures }) {
   const evidenceRoot = path.join(proofRoot, 'codex-agent-evidence', slug || '');
   const candidateRecords = listFiles(evidenceRoot).filter((file) => file.endsWith('.json') && !file.endsWith('schema.json'));
   const records = [];
+  const codeSiteToolNames = loadCodeSiteToolNames(root, failures);
   for (const candidatePath of candidateRecords) {
     const candidate = readJson(candidatePath, failures);
     if (candidate?.schemaVersion === 'synthi.codesite.codexAgentExecutionEvidence.v1') {
@@ -1279,6 +1288,13 @@ function validateCodexEvidence({ root, proofRoot, slug, failures }) {
         failures.push(`${label} missing receiptDigest/action/kind`);
         recordValid = false;
       }
+      if (!action?.tool) {
+        failures.push(`${label} missing MCP tool name`);
+        recordValid = false;
+      } else if (!codeSiteToolNames.has(action.tool)) {
+        failures.push(`${label} references unknown MCP tool ${action.tool}`);
+        recordValid = false;
+      }
       if (action?.projectionControlStateSha256 !== actorProjection.controlStateSha256) {
         failures.push(`${label}.projectionControlStateSha256 does not match actorProjection.controlStateSha256`);
         recordValid = false;
@@ -1320,6 +1336,24 @@ function validateCodexEvidence({ root, proofRoot, slug, failures }) {
   }
   if (records.length < 3) failures.push(`${relative(root, evidenceRoot)} must contain at least three Codex role evidence records`);
   return { records: records.length, valid, ok: records.length >= 3 && valid === records.length };
+}
+
+function loadCodeSiteToolNames(root, failures) {
+  const candidates = [
+    path.join(root, 'mcp/synthi-mcp/src/tools/codesite.ts'),
+    path.join(root, 'mcp/synthi-mcp/src/tool_registry.ts'),
+    path.join(root, 'synthi/src/lib/codesite/artifacts.js'),
+  ];
+  const names = new Set();
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const source = fs.readFileSync(candidate, 'utf8');
+    for (const match of source.matchAll(/['"](synthi_codesite_[a-z0-9_]+)['"]/g)) {
+      names.add(match[1]);
+    }
+  }
+  if (names.size === 0) failures.push('unable to load CodeSite MCP tool registry');
+  return names;
 }
 
 function roleWorkflowActionRequirements(role) {
