@@ -132,8 +132,8 @@ async function main(argv) {
     const failures = [];
     const result = readJson(path.resolve(root, options.inputPath), failures);
     if (!result || failures.length) throw new Error(`Unable to read release gate input: ${failures.join('; ')}`);
-    await writeReleaseGateArtifacts({ root, options, result });
-    if (!result.ok) process.exitCode = 1;
+    await writeReleaseGateArtifacts({ root, options, result: renderOnlyInputResult(root, options.inputPath, result) });
+    process.exitCode = 1;
     return;
   }
   const proofRoot = path.resolve(root, options.proofRoot);
@@ -271,7 +271,7 @@ function parseArgs(argv) {
     else if (arg === '--html') options.htmlPath = argv[++index];
     else if (arg === '--png') options.pngPath = argv[++index];
     else if (arg === '--help' || arg === '-h') {
-      process.stdout.write('Usage: node scripts/codesite-release-gate.mjs [--proof-root tmp/codesite-dojo-proof] [--minimum-assertions 43] [--out path] [--html path --png path] [--input result.json --html path --png path]\n');
+      process.stdout.write('Usage: node scripts/codesite-release-gate.mjs [--proof-root tmp/codesite-dojo-proof] [--minimum-assertions 43] [--out path] [--html path --png path] [--input result.json --html path --png path]\n\n--input is render-only and never exits successfully for release promotion.\n');
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
@@ -281,6 +281,27 @@ function parseArgs(argv) {
     throw new Error('--minimum-assertions must be a positive number');
   }
   return options;
+}
+
+function renderOnlyInputResult(root, inputPath, result) {
+  const failure = `release gate input replay is render-only and cannot pass promotion: ${relative(root, inputPath)}`;
+  return {
+    ...result,
+    ok: false,
+    inputReplay: {
+      mode: 'render_only',
+      input: relative(root, inputPath),
+      promotionEligible: false,
+    },
+    warnings: [
+      ...(Array.isArray(result?.warnings) ? result.warnings : []),
+      failure,
+    ],
+    failures: [
+      ...(Array.isArray(result?.failures) ? result.failures : []),
+      failure,
+    ],
+  };
 }
 
 function releaseGateHtml(result) {
@@ -311,8 +332,8 @@ function releaseGateHtml(result) {
     .value { font-size: 22px; line-height: 1.2; overflow-wrap: anywhere; }
     .good { color: #8dffb8; }
     .bad { color: #ff9999; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; color: #d8def1; background: #070a12; border: 1px solid #202842; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.45; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+    pre { white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; max-height: 360px; margin: 12px 0 0; color: #d8def1; background: #070a12; border: 1px solid #202842; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.45; }
     @media (max-width: 720px) { body { padding: 12px; } .meta, .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -651,6 +672,7 @@ function validateMatureProofSuite({ root, proofRoot, failures }) {
       browserCaptures: artifact.browserCaptures,
       commands: artifact.commands,
       dockerCommands: artifact.dockerCommands,
+      freshness: artifact.freshness,
       qualityCounters: artifact.qualityCounters,
       metricThresholds: artifact.metricThresholds,
       ok: artifact.ok,
@@ -677,6 +699,7 @@ function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
     browserCaptures: 0,
     commands: 0,
     dockerCommands: 0,
+    freshness: null,
     ok: false,
   };
 
@@ -694,6 +717,14 @@ function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
   if (!proof.generatedAt) {
     failures.push(`${relative(root, proofPath)} missing generatedAt`);
   }
+
+  summary.freshness = validateMatureProofFreshness({
+    root,
+    proofRoot,
+    proofPath,
+    proof,
+    failures,
+  });
 
   const assertionSummary = validateProofAssertions({
     root,
@@ -731,6 +762,9 @@ function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
   });
   summary.commands = commandSummary.commands;
   summary.dockerCommands = commandSummary.dockerCommands;
+  if (summary.commands <= 0) {
+    failures.push(`${relative(root, proofPath)} commands must include at least one executable validation command`);
+  }
   summary.qualityCounters = commandSummary.qualityCounters;
   summary.metricThresholds = validateProofMetricThresholds({
     root,
@@ -742,6 +776,119 @@ function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
   });
   summary.ok = failures.length === beforeFailureCount;
   return summary;
+}
+
+function validateMatureProofFreshness({ root, proofRoot, proofPath, proof, failures }) {
+  const proofHead = proofGitHead(proof);
+  const recordedStatus = proofGitStatusShort(proof);
+  const allowedPostProofPrefixes = [
+    ensureTrailingSlash(relative(root, proofRoot)),
+  ];
+  const summary = {
+    proofHead: proofHead || null,
+    currentHead: null,
+    postProofChangedPathCount: null,
+    artifactOnlyPostProofChanges: false,
+    recordedDirtyPathCount: null,
+    recordedDirtyPathsArtifactOnly: false,
+    ok: false,
+  };
+
+  if (!proofHead) {
+    failures.push(`${relative(root, proofPath)} missing git head provenance`);
+    return summary;
+  }
+
+  const dirtyPaths = parseGitStatusPaths(recordedStatus);
+  const nonArtifactDirtyPaths = dirtyPaths.filter((filePath) => !pathMatchesAnyPrefix(filePath, allowedPostProofPrefixes));
+  summary.recordedDirtyPathCount = dirtyPaths.length;
+  summary.recordedDirtyPathsArtifactOnly = nonArtifactDirtyPaths.length === 0;
+  if (nonArtifactDirtyPaths.length > 0) {
+    failures.push(`${relative(root, proofPath)} recorded dirty non-artifact paths during proof run: ${nonArtifactDirtyPaths.slice(0, 12).join(', ')}`);
+  }
+
+  let currentHead = null;
+  let mergeBase = null;
+  let changedPaths = [];
+  try {
+    currentHead = git(root, ['rev-parse', 'HEAD']);
+    mergeBase = git(root, ['merge-base', proofHead, currentHead]);
+    changedPaths = git(root, ['diff', '--name-only', `${proofHead}..${currentHead}`])
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch (error) {
+    const unavailableWorktree = unavailableExternalGitDir(root);
+    if (unavailableWorktree) {
+      return {
+        ...summary,
+        ok: true,
+        mode: 'git_unavailable_external_worktree_dir',
+        warning: `Git freshness must be validated by the host release gate; container cannot access ${unavailableWorktree}`,
+      };
+    }
+    failures.push(`${relative(root, proofPath)} unable to validate git freshness: ${error.message}`);
+    return summary;
+  }
+
+  summary.currentHead = currentHead;
+  summary.postProofChangedPathCount = changedPaths.length;
+  if (mergeBase !== proofHead) {
+    failures.push(`${relative(root, proofPath)} git head ${proofHead} is not an ancestor of current HEAD ${currentHead}`);
+  }
+  const disallowedPostProofChanges = changedPaths.filter((filePath) => !pathMatchesAnyPrefix(filePath, allowedPostProofPrefixes));
+  summary.artifactOnlyPostProofChanges = disallowedPostProofChanges.length === 0;
+  if (disallowedPostProofChanges.length > 0) {
+    failures.push(`${relative(root, proofPath)} non-artifact changes occurred after proof head ${proofHead}: ${disallowedPostProofChanges.slice(0, 24).join(', ')}`);
+  }
+  summary.ok = mergeBase === proofHead && disallowedPostProofChanges.length === 0 && nonArtifactDirtyPaths.length === 0;
+  return summary;
+}
+
+function proofGitHead(proof) {
+  return String(
+    proof?.git?.head
+    || proof?.git?.gitHead
+    || proof?.run?.gitHead
+    || proof?.run?.git?.head
+    || proof?.gitHead
+    || '',
+  ).trim();
+}
+
+function proofGitStatusShort(proof) {
+  return String(
+    proof?.git?.statusShort
+    || proof?.run?.gitStatusShort
+    || proof?.run?.git?.statusShort
+    || proof?.gitStatusShort
+    || '',
+  );
+}
+
+function parseGitStatusPaths(statusShort) {
+  return String(statusShort || '')
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const match = line.match(/^.{1,2}\s+(.+)$/);
+      const pathText = (match ? match[1] : line).trim();
+      if (!pathText) return [];
+      const renameParts = pathText.split(/\s+->\s+/);
+      return [renameParts.at(-1)].filter(Boolean);
+    })
+    .map((filePath) => filePath.replace(/\\/g, '/'));
+}
+
+function ensureTrailingSlash(value) {
+  const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalized ? `${normalized}/` : '';
+}
+
+function pathMatchesAnyPrefix(filePath, prefixes) {
+  const normalized = String(filePath || '').replace(/\\/g, '/');
+  return prefixes.some((prefix) => prefix && normalized.startsWith(prefix));
 }
 
 function validateProofMetricThresholds({ root, proofPath, proof, requiredMeasuredMetrics, requiredMetricThresholds, failures }) {
