@@ -222,6 +222,44 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
     }
 }
 
+#[cfg(test)]
+mod remote_read_policy_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn remote_read_policy_allows_only_narrow_source_roots() {
+        assert!(remote_read_path_allowed(Path::new("/usr/include/c++/11/iostream")));
+        assert!(remote_read_path_allowed(Path::new(
+            "/usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h"
+        )));
+        assert!(remote_read_path_allowed(Path::new(
+            "/root/.cargo/registry/src/index.crates.io-abc/serde/src/lib.rs"
+        )));
+        assert!(remote_read_path_allowed(Path::new(
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/lib.rs"
+        )));
+    }
+
+    #[test]
+    fn remote_read_policy_rejects_root_owned_toolchain_config_and_opt() {
+        assert!(!remote_read_path_allowed(Path::new("/root/.cargo/credentials.toml")));
+        assert!(!remote_read_path_allowed(Path::new("/root/.cargo/config.toml")));
+        assert!(!remote_read_path_allowed(Path::new("/root/.rustup/settings.toml")));
+        assert!(!remote_read_path_allowed(Path::new("/opt/vendor-sdk/token.json")));
+        assert!(!remote_read_path_allowed(Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn requested_remote_read_path_rejects_parent_components() {
+        assert!(requested_remote_read_path("/usr/include/stdio.h").is_some());
+        assert!(requested_remote_read_path("usr/include/stdio.h").is_some());
+        assert!(requested_remote_read_path("/usr/include/../etc/passwd").is_none());
+        assert!(requested_remote_read_path("../../etc/passwd").is_none());
+        assert!(requested_remote_read_path("/usr/include/\0secret").is_none());
+    }
+}
+
 // Removed: `const GUI_TOOLS = &["Xvfb", "matchbox-window-manager"]` — the
 // runner now handles input via stdin, no external GUI tooling needed.
 
@@ -842,6 +880,53 @@ fn install_x11_error_handlers() {
         // process, so the library must stay loaded.
         std::mem::forget(lib);
     }
+}
+
+fn requested_remote_read_path(raw_path: &str) -> Option<std::path::PathBuf> {
+    if raw_path.is_empty() || raw_path.contains('\0') {
+        return None;
+    }
+    let abs = if raw_path.starts_with('/') {
+        std::path::PathBuf::from(raw_path)
+    } else {
+        std::path::PathBuf::from(format!("/{}", raw_path))
+    };
+    if abs
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(abs)
+}
+
+fn remote_read_path_allowed(path: &std::path::Path) -> bool {
+    let path_text = path.to_string_lossy().replace('\\', "/");
+    const GENERAL_READ_PREFIXES: &[&str] = &[
+        "/usr/include/",
+        "/usr/local/include/",
+        "/usr/lib/gcc/",
+        "/usr/lib/clang/",
+        "/usr/lib/llvm-",
+        "/usr/lib/rustlib/",
+        "/usr/local/lib/node_modules/typescript/lib/",
+        "/lib/clang/",
+    ];
+    if GENERAL_READ_PREFIXES
+        .iter()
+        .any(|prefix| path_text.starts_with(prefix))
+    {
+        return true;
+    }
+
+    // Rust navigation needs source roots, not the entire root-owned toolchain
+    // home. Keep credentials/config such as /root/.cargo/credentials.toml and
+    // /root/.rustup/settings.toml outside the remote read surface.
+    if path_text.starts_with("/root/.cargo/registry/src/") {
+        return true;
+    }
+    path_text.starts_with("/root/.rustup/toolchains/")
+        && path_text.contains("/lib/rustlib/src/")
 }
 
 #[tokio::main]
@@ -4125,27 +4210,38 @@ async fn wire_peer_channels(
                                     }
                                     return;
                                 }
-                                // Allow only well-known read-only roots so the
-                                // channel can't be turned into an arbitrary
-                                // disk-read primitive.
-                                const READ_ALLOWED_PREFIXES: &[&str] = &[
-                                    "/usr/include/",
-                                    "/usr/lib/",
-                                    "/usr/local/include/",
-                                    "/usr/local/lib/",
-                                    "/opt/",
-                                    "/lib/",
-                                    "/lib64/",
-                                    "/root/.cargo/",
-                                    "/root/.rustup/",
-                                ];
-                                let abs = if raw_path.starts_with('/') {
-                                    raw_path.to_string()
-                                } else {
-                                    format!("/{}", raw_path)
+                                let requested_path = match requested_remote_read_path(raw_path) {
+                                    Some(path) => path,
+                                    None => {
+                                        let reply = serde_json::json!({
+                                            "op": "read-result",
+                                            "requestId": req_id,
+                                            "path": raw_path,
+                                            "error": "path not allowed",
+                                        });
+                                        if let Ok(text) = serde_json::to_string(&reply) {
+                                            let _ = dc_reply.send_text(text).await;
+                                        }
+                                        return;
+                                    }
                                 };
-                                let allowed = READ_ALLOWED_PREFIXES.iter().any(|p| abs.starts_with(p));
-                                if !allowed || abs.contains("..") {
+                                let canonical_path = match tokio::fs::canonicalize(&requested_path).await {
+                                    Ok(path) => path,
+                                    Err(e) => {
+                                        let reply = serde_json::json!({
+                                            "op": "read-result",
+                                            "requestId": req_id,
+                                            "path": requested_path.to_string_lossy(),
+                                            "error": e.to_string(),
+                                        });
+                                        if let Ok(text) = serde_json::to_string(&reply) {
+                                            let _ = dc_reply.send_text(text).await;
+                                        }
+                                        return;
+                                    }
+                                };
+                                let abs = canonical_path.to_string_lossy().to_string();
+                                if !remote_read_path_allowed(&canonical_path) {
                                     let reply = serde_json::json!({
                                         "op": "read-result",
                                         "requestId": req_id,
@@ -4157,8 +4253,7 @@ async fn wire_peer_channels(
                                     }
                                     return;
                                 }
-                                let read_path = std::path::PathBuf::from(&abs);
-                                let reply = match tokio::fs::read_to_string(&read_path).await {
+                                let reply = match tokio::fs::read_to_string(&canonical_path).await {
                                     Ok(content) => serde_json::json!({
                                         "op": "read-result",
                                         "requestId": req_id,
