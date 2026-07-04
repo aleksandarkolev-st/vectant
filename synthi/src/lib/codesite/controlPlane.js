@@ -1581,6 +1581,92 @@ export async function listActiveTransactions(workspaceSlug, actor = null) {
   return visible;
 }
 
+export async function getWorkspaceActiveState(workspaceSlug, actor = null) {
+  const transactions = await prisma.codeSiteMutationTransaction.findMany({
+    where: {
+      project: { workspaceSlug },
+      status: { in: WORKSPACE_ACTIVE_TRANSACTION_STATUSES },
+    },
+    include: {
+      project: {
+        include: {
+          members: true,
+          agentSessions: true,
+        },
+      },
+      mutationLease: true,
+      agentSession: true,
+    },
+    orderBy: { openedAt: 'desc' },
+  });
+  const visibleTransactions = [];
+  const visibleProjectIds = new Set();
+  for (const transaction of transactions) {
+    if (await actorCanAccessProject(transaction.project, actor, 'read')) {
+      visibleTransactions.push(activeTransactionProjection(transaction));
+      visibleProjectIds.add(transaction.projectId);
+    }
+  }
+  const activeLeases = [];
+  if (visibleProjectIds.size) {
+    const leases = await prisma.codeSiteMutationLease.findMany({
+      where: {
+        projectId: { in: [...visibleProjectIds] },
+        status: 'active',
+      },
+      include: {
+        project: {
+          include: {
+            members: true,
+          },
+        },
+        agentSession: true,
+        executionPlan: true,
+      },
+      orderBy: { issuedAt: 'desc' },
+    });
+    for (const lease of leases) {
+      if (await actorCanAccessProject(lease.project, actor, 'read')) {
+        activeLeases.push(mutationLeaseProjection(lease));
+      }
+    }
+  }
+  const zones = await prisma.codeSiteMutationZone.findMany({
+    where: { workspaceSlug },
+    orderBy: [{ zoneClass: 'asc' }, { zoneKey: 'asc' }],
+  });
+  const allowedPaths = unique(activeLeases.flatMap((lease) => leaseAuthorityAllowedPaths(lease)));
+  const blockedPaths = unique(activeLeases.flatMap((lease) => leaseAuthorityBlockedPaths(lease)));
+  const protectedZones = zones.map((zone) => ({
+    id: zone.id,
+    workspaceSlug: zone.workspaceSlug,
+    zoneKey: zone.zoneKey,
+    label: zone.label,
+    class: zone.zoneClass,
+    paths: parseJson(zone.pathsJson, []),
+    rules: parseJson(zone.rulesJson, []),
+    risk: zone.risk,
+    createdAt: zone.createdAt,
+    updatedAt: zone.updatedAt,
+  }));
+  const activeProjectIds = unique([
+    ...visibleTransactions.map((transaction) => transaction.projectId),
+    ...activeLeases.map((lease) => lease.projectId),
+  ].filter(Boolean));
+  return {
+    workspaceSlug,
+    generatedAt: new Date().toISOString(),
+    active: visibleTransactions.length > 0,
+    ambiguous: activeProjectIds.length > 1 || visibleTransactions.length > 1,
+    activeProjectIds,
+    activeTransactions: visibleTransactions,
+    activeLeases,
+    allowedPaths,
+    blockedPaths,
+    protectedZones,
+  };
+}
+
 export async function recordTransactionRead(workspaceSlug, transactionId, body = {}, actor = null) {
   const transaction = await requireOpenTransaction(workspaceSlug, transactionId, actor);
   const path = normalizePath(body.path || body.filePath || body.file_path);
@@ -7355,6 +7441,22 @@ function mutationLeaseProjection(lease, extra = {}) {
   };
 }
 
+function leaseAuthorityAllowedPaths(lease = {}) {
+  const body = lease.lease || parseJson(lease.leaseJson, {});
+  return pathsForRoute([
+    ...asArray(body.allowedPaths || body.allowed_paths),
+    ...asArray(body.route),
+  ]);
+}
+
+function leaseAuthorityBlockedPaths(lease = {}) {
+  const body = lease.lease || parseJson(lease.leaseJson, {});
+  return pathsForRoute([
+    ...asArray(body.blockedPaths || body.blocked_paths),
+    ...asArray(body.noFlyZones || body.no_fly_zones),
+  ]);
+}
+
 function transactionProjection(transaction) {
   return {
     id: transaction.id,
@@ -7381,14 +7483,20 @@ function transactionProjection(transaction) {
 
 function activeTransactionProjection(transaction) {
   const projected = transactionProjection(transaction);
+  const lease = transaction.mutationLease ? mutationLeaseProjection(transaction.mutationLease) : null;
   return {
     ...projected,
+    transactionId: transaction.id,
     workspaceSlug: transaction.project?.workspaceSlug || null,
     mutationLeaseId: transaction.mutationLeaseId,
     agentSessionId: transaction.agentSessionId,
+    executionPlanId: transaction.mutationLease?.executionPlanId || null,
     actorUserId: transaction.agentSession?.ownerUserId || null,
     effectiveUserId: transaction.agentSession?.ownerUserId || null,
     displayCallsign: transaction.mutationLease?.displayCallsign || transaction.agentSession?.displayCallsign || null,
+    lease: lease?.lease || null,
+    allowedPaths: lease ? leaseAuthorityAllowedPaths(lease) : [],
+    blockedPaths: lease ? leaseAuthorityBlockedPaths(lease) : [],
     openedAt: transaction.openedAt,
     closedAt: transaction.closedAt,
   };

@@ -252,6 +252,86 @@ test('CodeSite activity registry refreshes active transactions from control-plan
   });
 });
 
+test('CodeSite activity registry refreshes workspace active-state from control-plane authority', async (t) => {
+  await withTempRegistryPersistence(t, async () => {
+    const calls = [];
+    const state = await activityRegistry.refreshWorkspaceActiveStateFromControlPlane('registry-active-state-proof', {
+      controlPlaneUrl: 'http://codesite.test/api/workspace/registry-active-state-proof/codesite',
+      controlPlaneTrusted: true,
+      fetch: async (url, options) => {
+        calls.push({ url: String(url), headers: options.headers });
+        return new Response(JSON.stringify({
+          workspaceSlug: 'registry-active-state-proof',
+          active: true,
+          ambiguous: false,
+          activeTransactions: [{
+            id: 'txn-state',
+            transactionId: 'txn-state',
+            mutationLeaseId: 'lease-state',
+            agentSessionId: 'agent-state',
+            actorUserId: 'actor-state',
+            effectiveUserId: 'actor-state',
+            status: 'open',
+            allowedPaths: ['src/**'],
+            blockedPaths: ['infra/prod/**'],
+          }],
+          activeLeases: [{
+            id: 'lease-state',
+            lease: { allowedPaths: ['src/**'], blockedPaths: ['infra/prod/**'] },
+          }],
+        }), { status: 200 });
+      },
+      now: 40_000,
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'http://codesite.test/api/workspace/registry-active-state-proof/codesite/active-state');
+    assert.equal(state.active, true);
+    assert.equal(state.activeTransactions.length, 1);
+    const active = activityRegistry.activeTransactionsForWorkspace('registry-active-state-proof', { now: 41_000 });
+    assert.deepEqual(active.map((item) => ({
+      transactionId: item.transactionId,
+      mutationLeaseId: item.mutationLeaseId,
+      agentSessionId: item.agentSessionId,
+      controlPlaneUrl: item.controlPlaneUrl,
+      authoritative: item.authoritative,
+    })), [{
+      transactionId: 'txn-state',
+      mutationLeaseId: 'lease-state',
+      agentSessionId: 'agent-state',
+      controlPlaneUrl: 'http://codesite.test/api/workspace/registry-active-state-proof/codesite',
+      authoritative: true,
+    }]);
+  });
+});
+
+test('CodeSite activity registry clears stale records when workspace active-state is inactive', async (t) => {
+  await withTempRegistryPersistence(t, async () => {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: 'registry-inactive-state-proof',
+      transactionId: 'txn-old',
+      mutationLeaseId: 'lease-old',
+      source: 'next_codesite_route',
+      status: 'open',
+    }, { now: 50_000, ttlMs: 60_000 });
+
+    const state = await activityRegistry.refreshWorkspaceActiveStateFromControlPlane('registry-inactive-state-proof', {
+      controlPlaneUrl: 'http://codesite.test/api/workspace/registry-inactive-state-proof/codesite',
+      controlPlaneTrusted: true,
+      fetch: async () => new Response(JSON.stringify({
+        workspaceSlug: 'registry-inactive-state-proof',
+        active: false,
+        activeTransactions: [],
+        activeLeases: [],
+      }), { status: 200 }),
+      now: 51_000,
+    });
+
+    assert.equal(state.active, false);
+    assert.deepEqual(activityRegistry.activeTransactionsForWorkspace('registry-inactive-state-proof', { now: 52_000 }), []);
+  });
+});
+
 test('CodeSite activity registry rejects untrusted caller-supplied control-plane authority', async (t) => {
   await withTempRegistryPersistence(t, async () => {
     await withConfiguredCodeSiteBase(async () => {

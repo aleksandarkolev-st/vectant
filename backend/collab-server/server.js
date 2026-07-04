@@ -38,7 +38,10 @@ const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
-const { assertCodeSiteWorkspaceMutationAllowedAsync } = require('./codesiteActiveBoundary');
+const {
+  assertCodeSiteWorkspaceMutationAllowedAsync,
+  guardCodeSiteHostSurface,
+} = require('./codesiteActiveBoundary');
 const {
   configuredControlPlaneBaseUrl,
   trustedControlPlaneBaseUrl,
@@ -1561,6 +1564,19 @@ function requiresCodeSiteManagedRuntimeContext(context) {
   return Boolean(context?.managedAgent && !context.transactionId);
 }
 
+function guardCodeSiteRuntimeHostSurface(slug, context, surface) {
+  return guardCodeSiteHostSurface({
+    workspaceSlug: slug,
+    context,
+    surface,
+    operation: {
+      operation: surface,
+      tool: 'raw_terminal',
+      attempts: [{ path: '**', tool: 'raw_terminal' }],
+    },
+  });
+}
+
 /**
  * Force-flush any in-memory Yjs document content for a specific file to disk.
  * Called before selective staging (git apply) so the patch always matches the
@@ -2794,6 +2810,12 @@ const server = http.createServer(async (req, res) => {
         effectiveUserId: parsed.filesystemUserId || actorUserId,
       });
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'program-runtime:launch-program');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
       if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
         writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'program-runtime:launch-program');
         return;
@@ -2887,6 +2909,12 @@ const server = http.createServer(async (req, res) => {
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     try {
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'program-runtime:exec');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
       if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
         writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'program-runtime:exec');
         return;
@@ -2940,6 +2968,12 @@ const server = http.createServer(async (req, res) => {
         effectiveUserId: parsed.filesystemUserId || actorUserId,
       });
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'program-runtime:ensure-runtime');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
       const { status, body: out } = await handleEnsureRuntime({
         workspaceRuntime,
         slug,
@@ -3524,6 +3558,12 @@ const server = http.createServer(async (req, res) => {
         effectiveUserId: filesystemUserId,
       });
       const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'exec-terminal');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
       if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
         writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-terminal');
         return;
@@ -3744,12 +3784,14 @@ const server = http.createServer(async (req, res) => {
       effectiveUserId: filesystemUserId,
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
-    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
-      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-pty');
+    try {
+      guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'exec-pty');
+    } catch (err) {
+      writeCodeSiteDenied(res, err);
       return;
     }
-    if (codeSiteContext.active) {
-      writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec-pty');
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-pty');
       return;
     }
     let cwd;
@@ -3911,12 +3953,14 @@ const server = http.createServer(async (req, res) => {
       effectiveUserId: filesystemUserId,
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
-    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
-      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec');
+    try {
+      guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'exec');
+    } catch (err) {
+      writeCodeSiteDenied(res, err);
       return;
     }
-    if (codeSiteContext.active) {
-      writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec');
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec');
       return;
     }
     let cwd;

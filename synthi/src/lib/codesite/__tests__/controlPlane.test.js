@@ -98,6 +98,7 @@ const { prisma } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     codeSiteMutationZone: {
+      findMany: vi.fn(),
       upsert: vi.fn(),
     },
     workspace: {
@@ -135,6 +136,7 @@ import {
   getSourceStateSince,
   openTransaction,
   preflightCodeSiteFsWrite,
+  getWorkspaceActiveState,
   promotePolicyDelta,
   recordTransactionRead,
   recordTransactionQuarantineEvent,
@@ -438,8 +440,10 @@ describe('CodeSite control plane transaction validation', () => {
       ],
     });
     prisma.codeSiteMutationZone.upsert.mockResolvedValue({});
+    prisma.codeSiteMutationZone.findMany.mockResolvedValue([]);
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
     prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
     prisma.codeSiteExecutionPlan.create.mockImplementation(async ({ data }) => ({
       id: `plan-${data.displayCallsign}`,
       filedAt: new Date('2026-06-29T23:01:00.000Z'),
@@ -689,6 +693,87 @@ describe('CodeSite control plane transaction validation', () => {
       ...data,
     }));
 	  });
+
+  it('reports workspace active-state with transaction, lease, and protected-zone authority', async () => {
+    const transaction = {
+      ...transactionFixture(),
+      id: 'txn-active-1',
+      projectId: 'project-1',
+      mutationLeaseId: 'lease-active-1',
+      agentSessionId: 'agent-1',
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        members: [],
+        agentSessions: [],
+      },
+      mutationLease: {
+        id: 'lease-active-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        leaseJson: JSON.stringify({
+          allowedPaths: ['apps/web/**'],
+          route: ['components/auth/**'],
+          blockedPaths: ['api/auth/**'],
+          noFlyZones: ['infra/prod/**'],
+        }),
+        issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      },
+      agentSession: {
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        displayCallsign: 'ATLAS-1',
+      },
+    };
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValueOnce([transaction]);
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([{
+      ...transaction.mutationLease,
+      project: { id: 'project-1', workspaceSlug: 'acme', members: [] },
+      agentSession: transaction.agentSession,
+      executionPlan: executionPlanFixture(),
+    }]);
+    prisma.codeSiteMutationZone.findMany.mockResolvedValueOnce([{
+      id: 'zone-auth-api',
+      workspaceSlug: 'acme',
+      zoneKey: 'auth_api',
+      label: 'Auth API',
+      zoneClass: 'A',
+      pathsJson: JSON.stringify(['api/auth/**']),
+      rulesJson: JSON.stringify(['explicit_tower_clearance_required']),
+      risk: 'critical',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    }]);
+
+    const state = await getWorkspaceActiveState('acme');
+
+    expect(state.active).toBe(true);
+    expect(state.ambiguous).toBe(false);
+    expect(state.activeProjectIds).toEqual(['project-1']);
+    expect(state.activeTransactions).toHaveLength(1);
+    expect(state.activeTransactions[0]).toMatchObject({
+      id: 'txn-active-1',
+      transactionId: 'txn-active-1',
+      mutationLeaseId: 'lease-active-1',
+      executionPlanId: 'plan-1',
+      allowedPaths: ['apps/web/**', 'components/auth/**'],
+      blockedPaths: ['api/auth/**', 'infra/prod/**'],
+    });
+    expect(state.activeLeases).toHaveLength(1);
+    expect(state.allowedPaths).toEqual(['apps/web/**', 'components/auth/**']);
+    expect(state.blockedPaths).toEqual(['api/auth/**', 'infra/prod/**']);
+    expect(state.protectedZones[0]).toMatchObject({
+      zoneKey: 'auth_api',
+      class: 'A',
+      paths: ['api/auth/**'],
+    });
+  });
 
   it('serves the shared MCP tool contract from the agent manifest', async () => {
     const manifest = await getAgentManifest('acme', 'project-1');

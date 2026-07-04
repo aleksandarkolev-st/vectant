@@ -28,6 +28,7 @@ import {
   getSchemas,
   getSourceStateSince,
   getTransaction,
+  getWorkspaceActiveState,
   listActiveTransactions,
   listProjectMembers,
   listProjects,
@@ -129,6 +130,10 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'transactions' && route[1] === 'active' && route.length === 2) {
       return okJson({ activeTransactions: await listActiveTransactions(slug, access.actor) });
+    }
+
+    if (route[0] === 'active-state' && route.length === 1) {
+      return okJson(await getWorkspaceActiveState(slug, access.actor));
     }
 
     if (route[0] === 'transactions' && route.length === 2) {

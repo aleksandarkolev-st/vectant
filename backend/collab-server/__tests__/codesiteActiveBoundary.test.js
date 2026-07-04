@@ -10,7 +10,9 @@ const activityRegistry = require('../codesiteActivityRegistry');
 const {
   assertCodeSiteWorkspaceMutationAllowed,
   assertCodeSiteWorkspaceMutationAllowedAsync,
+  codeSiteWorkspaceActiveState,
   contextMatchesActiveTransaction,
+  guardCodeSiteHostSurface,
 } = require('../codesiteActiveBoundary');
 
 const registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-active-boundary-registry-'));
@@ -246,6 +248,137 @@ test('active workspace boundary allows matching transaction context', () => {
       actorUserId: 'actor-1',
       effectiveUserId: 'owner-1',
     }, active[0]), true);
+  } finally {
+    activityRegistry.resetRegistry();
+  }
+});
+
+test('workspace host-surface guard blocks contextless exec while active', () => {
+  activityRegistry.resetRegistry();
+  try {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: 'active-host-guard',
+      transactionId: 'txn-host-1',
+      mutationLeaseId: 'lease-host-1',
+      agentSessionId: 'agent-host-1',
+      actorUserId: 'actor-1',
+      effectiveUserId: 'fs-1',
+      source: 'next_codesite_route',
+      status: 'open',
+    });
+
+    const state = codeSiteWorkspaceActiveState('active-host-guard');
+    assert.equal(state.active, true);
+    assert.equal(state.activeTransactionCount, 1);
+
+    assert.throws(
+      () => guardCodeSiteHostSurface({
+        workspaceSlug: 'active-host-guard',
+        context: { active: false, workspaceSlug: 'active-host-guard' },
+        surface: 'exec',
+        operation: { operation: 'exec', tool: 'raw_terminal', attempts: [{ path: '**', tool: 'raw_terminal' }] },
+      }),
+      (error) => (
+        error.code === 'CODESITE_HOST_SURFACE_DENIED'
+        && error.status === 409
+        && error.event.details.reason_codes.includes('codesite_active_workspace_context_required')
+        && error.event.details.operation === 'exec'
+        && error.event.details.active_transactions[0].transactionId === 'txn-host-1'
+      ),
+    );
+  } finally {
+    activityRegistry.resetRegistry();
+  }
+});
+
+test('workspace host-surface guard refuses ambiguous active workspaces without a matching context', () => {
+  activityRegistry.resetRegistry();
+  try {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: 'active-host-ambiguous',
+      transactionId: 'txn-host-a',
+      mutationLeaseId: 'lease-host-a',
+      source: 'next_codesite_route',
+      status: 'open',
+    });
+    activityRegistry.markTransactionActive({
+      workspaceSlug: 'active-host-ambiguous',
+      transactionId: 'txn-host-b',
+      mutationLeaseId: 'lease-host-b',
+      source: 'next_codesite_route',
+      status: 'open',
+    });
+
+    assert.throws(
+      () => guardCodeSiteHostSurface({
+        workspaceSlug: 'active-host-ambiguous',
+        context: { active: false, workspaceSlug: 'active-host-ambiguous' },
+        surface: 'exec-pty',
+        operation: { operation: 'exec-pty', tool: 'raw_terminal', attempts: [{ path: '**', tool: 'raw_terminal' }] },
+      }),
+      (error) => (
+        error.code === 'CODESITE_HOST_SURFACE_DENIED'
+        && error.event.details.reason_codes.includes('codesite_active_workspace_ambiguous_context_required')
+        && error.event.details.active_transaction_count === 2
+      ),
+    );
+  } finally {
+    activityRegistry.resetRegistry();
+  }
+});
+
+test('workspace host-surface guard allows only matching active transaction context', () => {
+  activityRegistry.resetRegistry();
+  try {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: 'active-host-authorized',
+      transactionId: 'txn-host-1',
+      mutationLeaseId: 'lease-host-1',
+      agentSessionId: 'agent-host-1',
+      actorUserId: 'actor-1',
+      effectiveUserId: 'fs-1',
+      source: 'next_codesite_route',
+      status: 'open',
+    });
+
+    const allowed = guardCodeSiteHostSurface({
+      workspaceSlug: 'active-host-authorized',
+      context: {
+        active: true,
+        workspaceSlug: 'active-host-authorized',
+        transactionId: 'txn-host-1',
+        mutationLeaseId: 'lease-host-1',
+        agentSessionId: 'agent-host-1',
+        actorUserId: 'actor-1',
+        effectiveUserId: 'fs-1',
+      },
+      surface: 'exec',
+      operation: { operation: 'exec', tool: 'raw_terminal', attempts: [{ path: '**', tool: 'raw_terminal' }] },
+    });
+    assert.equal(allowed.ok, true);
+    assert.equal(allowed.action, 'allow_matching_transaction_context');
+
+    assert.throws(
+      () => guardCodeSiteHostSurface({
+        workspaceSlug: 'active-host-authorized',
+        context: {
+          active: true,
+          workspaceSlug: 'active-host-authorized',
+          transactionId: 'txn-host-1',
+          mutationLeaseId: 'other-lease',
+          agentSessionId: 'agent-host-1',
+          actorUserId: 'actor-1',
+          effectiveUserId: 'fs-1',
+        },
+        surface: 'exec',
+        operation: { operation: 'exec', tool: 'raw_terminal', attempts: [{ path: '**', tool: 'raw_terminal' }] },
+      }),
+      (error) => (
+        error.code === 'CODESITE_HOST_SURFACE_DENIED'
+        && error.status === 403
+        && error.event.details.reason_codes.includes('codesite_active_workspace_context_mismatch')
+      ),
+    );
   } finally {
     activityRegistry.resetRegistry();
   }

@@ -42,6 +42,7 @@ const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimeP
 const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('./terminalRouting');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
+const { guardCodeSiteHostSurface } = require('./codesiteActiveBoundary');
 const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
@@ -1443,9 +1444,6 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   const codeSiteContext = options.codesiteContext && typeof options.codesiteContext === 'object'
     ? options.codesiteContext
     : null;
-  if (codeSiteContext?.active) {
-    throw new Error('codesite_host_headless_terminal_blocked');
-  }
   await ensureRuntimeFilesystem({
     workspaceSlug: slug,
     filesystemUserId,
@@ -1631,6 +1629,28 @@ function createTerminalWSS({
     const codeSiteEnv = codeSiteRuntimeEnv(codeSiteContext, {
       processAncestry: ['collab-server', 'terminal-ws'],
     });
+    try {
+      guardCodeSiteHostSurface({
+        workspaceSlug,
+        context: codeSiteContext,
+        surface: 'terminal-ws',
+        operation: {
+          operation: 'terminal-ws',
+          tool: 'raw_terminal',
+          attempts: [{ path: '**', tool: 'raw_terminal' }],
+        },
+      });
+    } catch (err) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: err.code || 'codesite_terminal_workspace_active',
+        message: err.message,
+        event: err.event || null,
+        codesite: codeSiteMetadata,
+      }));
+      ws.close(1008, 'CodeSite terminal workspace active');
+      return;
+    }
     if (codeSiteContext?.managedAgent && !codeSiteContext.transactionId) {
       ws.send(JSON.stringify({
         type: 'error',

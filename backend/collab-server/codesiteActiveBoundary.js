@@ -118,6 +118,84 @@ function activeWorkspaceAuthorityUnavailableError(workspaceSlug, context = {}, o
   return error;
 }
 
+function codeSiteWorkspaceActiveState(workspaceSlug, options = {}) {
+  const slug = normalize(workspaceSlug || options.workspaceSlug || options.slug);
+  const activeTransactions = slug
+    ? codeSiteActivityRegistry.activeTransactionsForWorkspace(slug, options).map(activeTransactionSummary)
+    : [];
+  return {
+    active: activeTransactions.length > 0,
+    workspaceSlug: slug,
+    generatedAt: new Date(Number(options.now || Date.now())).toISOString(),
+    activeTransactionCount: activeTransactions.length,
+    ambiguous: activeTransactions.length > 1,
+    activeTransactions,
+  };
+}
+
+function activeWorkspaceHostSurfaceDeniedError(workspaceSlug, context = {}, operation = {}, options = {}) {
+  const state = options.state || codeSiteWorkspaceActiveState(workspaceSlug, options);
+  const firstAttempt = operationAttempts(operation)[0] || operation || {};
+  const tool = firstAttempt.tool || operation.tool || options.tool || 'host_workspace_exec';
+  const path = firstAttempt.path || operation.path || '**';
+  const surface = options.surface || operation.surface || operation.operation || operation.kind || 'host_workspace_exec';
+  const contextTransactionId = normalize(context?.transactionId) || null;
+  let reason = 'codesite_active_workspace_context_required';
+  if (context?.active && contextTransactionId) {
+    reason = 'codesite_active_workspace_context_mismatch';
+  } else if (state.ambiguous) {
+    reason = 'codesite_active_workspace_ambiguous_context_required';
+  }
+  const error = new Error(
+    `CodeSite active transaction blocks ${surface} on workspace ${state.workspaceSlug}; route the host surface through a matching CodeSite transaction boundary before touching the real repo.`,
+  );
+  error.code = 'CODESITE_HOST_SURFACE_DENIED';
+  error.status = context?.active ? 403 : 409;
+  error.event = {
+    type: 'write_denied',
+    path,
+    tool,
+    transaction_id: contextTransactionId,
+    lease_id: normalize(context?.mutationLeaseId || context?.leaseId) || null,
+    details: {
+      reason,
+      reason_codes: [reason],
+      operation: surface,
+      workspace_slug: state.workspaceSlug,
+      active_transaction_count: state.activeTransactionCount,
+      active_transactions: state.activeTransactions,
+    },
+  };
+  return error;
+}
+
+function guardCodeSiteHostSurface(input = {}) {
+  const workspaceSlug = input.workspaceSlug || input.workspace_slug || input.slug || input.context?.workspaceSlug;
+  const context = input.context || {};
+  const operation = input.operation || input;
+  const state = codeSiteWorkspaceActiveState(workspaceSlug, input);
+  if (!state.active) {
+    return {
+      ok: true,
+      action: 'allow_inactive_workspace',
+      state,
+    };
+  }
+  const matchesActive = context?.active
+    && state.activeTransactions.some((record) => contextMatchesActiveTransaction(context, record));
+  if (matchesActive) {
+    return {
+      ok: true,
+      action: 'allow_matching_transaction_context',
+      state,
+    };
+  }
+  throw activeWorkspaceHostSurfaceDeniedError(workspaceSlug, context, operation, {
+    ...input,
+    state,
+  });
+}
+
 function assertCodeSiteWorkspaceMutationAllowed(workspaceSlug, context = {}, operation = {}, options = {}) {
   const slug = normalize(workspaceSlug || context?.workspaceSlug || options.workspaceSlug || options.slug);
   if (!slug) return [];
@@ -154,6 +232,8 @@ async function assertCodeSiteWorkspaceMutationAllowedAsync(workspaceSlug, contex
 module.exports = {
   assertCodeSiteWorkspaceMutationAllowed,
   assertCodeSiteWorkspaceMutationAllowedAsync,
+  codeSiteWorkspaceActiveState,
   contextMatchesActiveTransaction,
+  guardCodeSiteHostSurface,
   recordCanAuthorizeWrite,
 };

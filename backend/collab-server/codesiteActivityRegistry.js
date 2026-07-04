@@ -451,6 +451,87 @@ async function refreshWorkspaceFromControlPlane(workspaceSlug, options = {}) {
   });
 }
 
+async function refreshWorkspaceActiveStateFromControlPlane(workspaceSlug, options = {}) {
+  const slug = normalize(workspaceSlug);
+  if (!slug) {
+    return {
+      active: false,
+      workspaceSlug: '',
+      activeTransactions: [],
+    };
+  }
+  loadLatestState();
+  const baseUrl = resolveControlPlaneBaseUrl(slug, options);
+  if (!baseUrl) {
+    if (options.requireAuthority) {
+      throw controlPlaneUnavailableError('CodeSite workspace active-state authority URL is not configured', null, {
+        workspaceSlug: slug,
+        reason: 'missing_control_plane_url',
+      });
+    }
+    const activeTransactions = activeTransactionsForWorkspace(slug, options);
+    return {
+      active: activeTransactions.length > 0,
+      workspaceSlug: slug,
+      generatedAt: new Date(Number(options.now || Date.now())).toISOString(),
+      activeTransactions,
+    };
+  }
+  const fetchImpl = options.fetch || global.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw controlPlaneUnavailableError('CodeSite workspace active-state authority fetch is unavailable', null, {
+      workspaceSlug: slug,
+      controlPlaneUrl: baseUrl,
+      reason: 'fetch_unavailable',
+    });
+  }
+  const url = `${baseUrl}/active-state`;
+  const timeoutMs = Number(options.timeoutMs || DEFAULT_REFRESH_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'GET',
+      headers: controlPlaneHeaders(options),
+      signal: fetchTimeoutSignal(timeoutMs),
+    });
+  } catch (error) {
+    throw controlPlaneUnavailableError(`CodeSite workspace active-state request failed for ${slug}: ${error.message}`, error, {
+      workspaceSlug: slug,
+      controlPlaneUrl: baseUrl,
+      reason: 'fetch_failed',
+    });
+  }
+  if (!response || !response.ok) {
+    throw controlPlaneUnavailableError(`CodeSite workspace active-state authority returned ${response?.status || 'no_response'} for ${slug}`, null, {
+      workspaceSlug: slug,
+      controlPlaneUrl: baseUrl,
+      reason: 'bad_status',
+      status: response?.status || null,
+    });
+  }
+  const body = await response.json().catch((error) => {
+    throw controlPlaneUnavailableError(`CodeSite workspace active-state authority returned invalid JSON for ${slug}: ${error.message}`, error, {
+      workspaceSlug: slug,
+      controlPlaneUrl: baseUrl,
+      reason: 'invalid_json',
+    });
+  });
+  const activeTransactions = Array.isArray(body?.activeTransactions)
+    ? body.activeTransactions
+    : (Array.isArray(body?.transactions) ? body.transactions : []);
+  const storedActiveTransactions = replaceWorkspaceActiveTransactions(slug, activeTransactions, {
+    ...options,
+    controlPlaneUrl: baseUrl,
+    source: 'control_plane_active_state',
+  });
+  return {
+    workspaceSlug: slug,
+    ...body,
+    activeTransactions: storedActiveTransactions,
+    active: Boolean(body?.active ?? storedActiveTransactions.length > 0),
+  };
+}
+
 function recordCodeSiteContext(context = {}, options = {}) {
   if (!context?.active || !context.transactionId) return null;
   const workspaceSlug = normalizeWorkspaceSlug(context);
@@ -568,6 +649,7 @@ module.exports = {
   markTransactionActive,
   markTransactionClosed,
   recordCodeSiteContext,
+  refreshWorkspaceActiveStateFromControlPlane,
   refreshWorkspaceFromControlPlane,
   replaceWorkspaceActiveTransactions,
   resetRegistry,
