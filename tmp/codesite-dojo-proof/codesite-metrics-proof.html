@@ -1,69 +1,56 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CodeSite Metrics Proof</title>
+<meta charset="utf-8" />
+<title>CodeSite Mature Metrics Proof</title>
 <style>
-:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a0f;color:#f5f7fb}
-body{margin:0;padding:28px;background:#080a0f}
-main{max-width:1180px;margin:0 auto;display:grid;gap:18px}
-.hero,.card{border:1px solid #293246;border-radius:8px;background:#10151f;padding:18px}
-.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
-h1{font-size:25px;margin:8px 0 6px;letter-spacing:0}
-h2{font-size:16px;margin:0 0 10px;letter-spacing:0}
-p{margin:0;color:#afbad0;line-height:1.5}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
-.label{font-size:12px;color:#98a2b8}
-.value{margin-top:6px;font-size:22px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{border-top:1px solid #293246;padding:8px;text-align:left;vertical-align:top}
-th{color:#afbad0;font-weight:600}
-pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#05060a;padding:14px;color:#cbd3e7;font-size:12px}
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b0d;color:#eef4f2;color-scheme:dark}
+body{margin:0;background:#080b0d;color:#eef4f2}
+main{width:min(1240px,calc(100vw - 56px));margin:0 auto;padding:38px 0 54px}
+header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:end;border-bottom:1px solid #26383c;padding-bottom:24px}
+h1{margin:0;font-size:35px;line-height:1.05;font-weight:790;letter-spacing:0}
+.sub{margin:12px 0 0;color:#a6b8b6;max-width:930px;line-height:1.55}
+.stamp{border:1px solid #2d8a6c;background:#0b2f29;color:#b9f7dd;padding:12px 34px;font-weight:790}
+.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:24px 0}
+.card,section{background:#0f1517;border:1px solid #26383c}
+.card{padding:16px;min-height:86px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8ba09f}
+.value{font-size:27px;font-weight:790;margin-top:10px;overflow-wrap:anywhere}
+section{padding:20px;margin-top:18px}
+h2{font-size:19px;margin:0 0 14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-top:1px solid #223236;padding:10px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9bb7b4;background:#0a1012}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+pre{background:#040708;color:#dbe8e5;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
+.cwd{color:#849997;font-size:12px;margin-top:4px}
+.ok{color:#83f0bd;font-weight:760}
+.fail{color:#ff9b8f;font-weight:760}
+@media(max-width:900px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
 </style>
 </head>
 <body>
 <main>
-<section class="hero">
-<span class="pass">PASS</span>
-<h1>CodeSite Success Metrics Proof</h1>
-<p>Live Docker workflow proving metrics are derived from real CodeSite API events, inspection runs, incidents, CodeSiteFS blocks, artifacts, and panel rendering.</p>
-</section>
-<section class="grid">
-<div class="card"><div class="label">Workspace</div><div>codesite-metrics-proof-1782890988455</div></div>
-<div class="card"><div class="label">Project</div><div>cmr1r9pui0000ob4sal686cih</div></div>
-<div class="card"><div class="label">Metrics artifact</div><div>projects/cmr1r9pui0000ob4sal686cih/metrics.json</div></div>
-<div class="card"><div class="label">Panel screenshot</div><div>tmp/codesite-dojo-proof/codesite-metrics-panel.png</div></div>
-</section>
-<section class="grid">
-<div class="card"><div class="label">Near-misses replayed</div><div class="value">1</div></div>
-<div class="card"><div class="label">No-fly blocks</div><div class="value">1</div></div>
-<div class="card"><div class="label">CodeSiteFS blocked writes</div><div class="value">1</div></div>
-<div class="card"><div class="label">Landings passed first try</div><div class="value">1</div></div>
-</section>
-<section class="card"><h2>ATC Metrics</h2><table><thead><tr><th>Metric</th><th>Value</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>Collisions predicted</td><td>3</td><td>measured</td><td>cmr1radc9001aob4sy5an8tgm, sha256:0c885614fd4e1d8d82cb9054acbdcacf06c366daec49cb02ee531b95c6480703, codesite:metrics-proof:near-miss, cmr1radd5001cob4scfo1pog7</td></tr><tr><td>Collisions avoided</td><td>1</td><td>measured</td><td>cmr1rak7z001gob4s7a9oj954</td></tr><tr><td>Near-misses replayed</td><td>1</td><td>measured</td><td>cmr1radc9001aob4sy5an8tgm, sha256:0c885614fd4e1d8d82cb9054acbdcacf06c366daec49cb02ee531b95c6480703, codesite:metrics-proof:near-miss</td></tr><tr><td>No-fly violations blocked</td><td>1</td><td>measured</td><td>cmr1ra5j30010ob4sb1f7jo5v, codesitefs:block:metrics-proof, cmr1ra5iv000yob4so4pwnrvn</td></tr><tr><td>Flights rerouted by tower</td><td>0</td><td>measured</td><td></td></tr><tr><td>Flights held before shared-zone conflict</td><td>0</td><td>measured</td><td></td></tr><tr><td>Landings passed first try</td><td>1</td><td>measured</td><td>cmr1ra77k0012ob4ssun0c0fp, test:run:sha256:4b0f121ff85d9773006300bda59f9e28333c554ad08583eeaaa1b4f07d44cb58, artifact:sha256:4b0f121ff85d9773006300bda59f9e28333c554ad08583eeaaa1b4f07d44cb58, security:scan:sha256:14494d6b75d687b9fdba98f951838a9e25e165e6480ef4d989fef8b1cbfccc84</td></tr><tr><td>Go-around rate</td><td>0</td><td>measured</td><td></td></tr><tr><td>Ground-stop events</td><td>0</td><td>measured</td><td></td></tr><tr><td>Average time to clearance</td><td>2000</td><td>measured</td><td>cmr1r9xwk000iob4ssdmnssal</td></tr><tr><td>Average time in holding</td><td>0</td><td>measured</td><td></td></tr>
-</tbody></table></section>
-<section class="card"><h2>Transaction Metrics</h2><table><thead><tr><th>Metric</th><th>Value</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>Stale reads detected</td><td>0</td><td>measured</td><td></td></tr><tr><td>Assumption invalidations before write</td><td>0</td><td>measured</td><td></td></tr><tr><td>Serializable transaction abort rate</td><td>0</td><td>measured</td><td></td></tr><tr><td>Shadow merge simulator accuracy</td><td>n/a</td><td>not_instrumented</td><td></td></tr><tr><td>CodeSiteFS blocked writes</td><td>1</td><td>measured</td><td>cmr1ra5j30010ob4sb1f7jo5v, codesitefs:block:metrics-proof</td></tr><tr><td>Illegal writes quarantined</td><td>0</td><td>measured</td><td></td></tr><tr><td>Proof bundles verified outside UI</td><td>0</td><td>measured</td><td></td></tr><tr><td>Lines with causal provenance coverage</td><td>0.5</td><td>measured</td><td>cmr1ra4v4000wob4sy0nvweoi, transaction:cmr1r9ztw000oob4sav45j53w, event:cmr1ra2wc000uob4spyoo81vz, codesite:metrics-proof:write-api</td></tr>
-</tbody></table></section>
-<section class="card"><h2>Quality Metrics</h2><table><thead><tr><th>Metric</th><th>Value</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>Merge conflicts avoided</td><td>0</td><td>measured</td><td>cmr1rak7z001gob4s7a9oj954, codesite:shadow_merge_simulator, codesite:repo-policy:sha256:16e9d94c98f15ed6852603cf75d02726ceb419829bd19453e592d239860b8e42, codesite:collision-forecast:sha256:7c2ed96738d5ba1e31b95e4dc6e3a684b669cd04529cb4e72fd6b1cee49cf5b1</td></tr><tr><td>Contract drift incidents</td><td>1</td><td>measured</td><td>cmr1radc9001aob4sy5an8tgm, sha256:0c885614fd4e1d8d82cb9054acbdcacf06c366daec49cb02ee531b95c6480703, codesite:metrics-proof:near-miss</td></tr><tr><td>Migration rollback coverage</td><td>1</td><td>measured</td><td>cmr1ra77k0012ob4ssun0c0fp:signal:3, migration:plan:sha256:10ee63a3581c18005ac6e80eff6479835693c110c26bb19635e4c20c3634b07f, artifact:sha256:10ee63a3581c18005ac6e80eff6479835693c110c26bb19635e4c20c3634b07f</td></tr><tr><td>Security findings before merge</td><td>0</td><td>measured</td><td></td></tr><tr><td>Tests red at landing</td><td>0</td><td>measured</td><td></td></tr><tr><td>Post-merge rollback rate</td><td>n/a</td><td>not_instrumented</td><td></td></tr>
-</tbody></table></section>
-<section class="card"><h2>Trust Metrics</h2><table><thead><tr><th>Metric</th><th>Value</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>Writes with valid clearance</td><td>0.5</td><td>measured</td><td>cmr1ra1s9000sob4sobjpdnij, codesite:metrics-proof:write-api, cmr1ra2wc000uob4spyoo81vz</td></tr><tr><td>Black-box completeness score</td><td>0.54</td><td>measured</td><td>cmr1radc9001aob4sy5an8tgm, sha256:0c885614fd4e1d8d82cb9054acbdcacf06c366daec49cb02ee531b95c6480703, codesite:metrics-proof:near-miss</td></tr><tr><td>Human review time saved</td><td>n/a</td><td>not_instrumented</td><td></td></tr><tr><td>Pilot license violation rate</td><td>0</td><td>measured</td><td></td></tr><tr><td>Repeated near-misses converted to airspace rules</td><td>0</td><td>measured</td><td></td></tr>
-</tbody></table></section>
-<section class="card"><h2>Assertions</h2><pre>{
-  &quot;metricsSchemaVersion&quot;: true,
-  &quot;nearMissReplayed&quot;: true,
-  &quot;noFlyBlocked&quot;: true,
-  &quot;codeSiteFsBlocked&quot;: true,
-  &quot;inspectionPassedFirstTry&quot;: true,
-  &quot;noFalseReroute&quot;: true,
-  &quot;writeClearanceCoverageUsesAttempts&quot;: true,
-  &quot;lineProvenanceRecorded&quot;: true,
-  &quot;metricsArtifactExported&quot;: true,
-  &quot;mcpManifestIncludesMetrics&quot;: true
+<header>
+<div>
+<h1>CodeSite Mature Metrics Proof</h1>
+<p class="sub">Verified 2026-07-04T14:25:18.182Z. Core section 27 metrics are measured from persisted workflow evidence and release-gated with thresholds.</p>
+</div>
+<div class="stamp">PASS</div>
+</header>
+<div class="cards">
+<div class="card"><div class="label">Docker Metrics</div><div class="value">pass</div></div>
+<div class="card"><div class="label">Proof Bundles</div><div class="value">2</div></div>
+<div class="card"><div class="label">Black Box Score</div><div class="value">0.855</div></div>
+<div class="card"><div class="label">Review Saved</div><div class="value">210000ms</div></div>
+</div>
+<section><h2>Thresholds</h2><table><thead><tr><th>Metric</th><th>Value</th><th>Minimum</th><th>Status</th></tr></thead><tbody><tr><td>proofBundlesVerifiedOutsideUi</td><td>2</td><td>1</td><td class="ok">PASS</td></tr><tr><td>shadowMergeSimulatorAccuracy</td><td>1</td><td>0.8</td><td class="ok">PASS</td></tr><tr><td>lineProvenanceCoverage</td><td>1</td><td>0.5</td><td class="ok">PASS</td></tr><tr><td>blackBoxCompletenessScore</td><td>0.855</td><td>0.75</td><td class="ok">PASS</td></tr><tr><td>humanReviewTimeSavedMs</td><td>210000</td><td>1</td><td class="ok">PASS</td></tr><tr><td>percentageWritesWithValidClearance</td><td>0.3333</td><td>0.3</td><td class="ok">PASS</td></tr></tbody></table></section>
+<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>docker metrics engine emitted CodeSite metrics JSON</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs&quot;,&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>proofBundlesVerifiedOutsideUi is measured and finite</td><td>{&quot;value&quot;:2,&quot;status&quot;:&quot;measured&quot;}</td></tr><tr><td class="ok">PASS</td><td>proofBundlesVerifiedOutsideUi meets release threshold</td><td>{&quot;value&quot;:2,&quot;minimum&quot;:1}</td></tr><tr><td class="ok">PASS</td><td>shadowMergeSimulatorAccuracy is measured and finite</td><td>{&quot;value&quot;:1,&quot;status&quot;:&quot;measured&quot;}</td></tr><tr><td class="ok">PASS</td><td>shadowMergeSimulatorAccuracy meets release threshold</td><td>{&quot;value&quot;:1,&quot;minimum&quot;:0.8}</td></tr><tr><td class="ok">PASS</td><td>lineProvenanceCoverage is measured and finite</td><td>{&quot;value&quot;:1,&quot;status&quot;:&quot;measured&quot;}</td></tr><tr><td class="ok">PASS</td><td>lineProvenanceCoverage meets release threshold</td><td>{&quot;value&quot;:1,&quot;minimum&quot;:0.5}</td></tr><tr><td class="ok">PASS</td><td>blackBoxCompletenessScore is measured and finite</td><td>{&quot;value&quot;:0.855,&quot;status&quot;:&quot;measured&quot;}</td></tr><tr><td class="ok">PASS</td><td>blackBoxCompletenessScore meets release threshold</td><td>{&quot;value&quot;:0.855,&quot;minimum&quot;:0.75}</td></tr><tr><td class="ok">PASS</td><td>humanReviewTimeSavedMs is measured and finite</td><td>{&quot;value&quot;:210000,&quot;status&quot;:&quot;measured&quot;}</td></tr><tr><td class="ok">PASS</td><td>humanReviewTimeSavedMs meets release threshold</td><td>{&quot;value&quot;:210000,&quot;minimum&quot;:1}</td></tr><tr><td class="ok">PASS</td><td>percentageWritesWithValidClearance is measured and finite</td><td>{&quot;value&quot;:0.3333,&quot;status&quot;:&quot;measured&quot;}</td></tr><tr><td class="ok">PASS</td><td>percentageWritesWithValidClearance meets release threshold</td><td>{&quot;value&quot;:0.3333,&quot;minimum&quot;:0.3}</td></tr><tr><td class="ok">PASS</td><td>dockerMetricsEngine command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;command&quot;,&quot;tests&quot;:0,&quot;pass&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>dockerMetricsSuite command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:6,&quot;skipped&quot;:0,&quot;tests&quot;:6,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
+<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs</code><div class="cwd">.</div></td><td>pass</td></tr><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js</code><div class="cwd">.</div></td><td>6/6</td></tr></tbody></table></section>
+<section><h2>Git Binding</h2><pre>{
+  &quot;head&quot;: &quot;505daf0870ea7f1444036f22769efaacd39e72b1&quot;,
+  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
+  &quot;statusShort&quot;: &quot;M synthi/scripts/codesite-release-gate.mjs&quot;
 }</pre></section>
 </main>
 </body>

@@ -84,7 +84,30 @@ const REQUIRED_MATURE_PROOFS = [
     requiredCaptureCounts: ['flightBlips', 'riskCones', 'holdingPatterns'],
   },
   { name: 'schemaFirstClearance', plan: '9, 17, 25.4', file: 'codesite-schema-first-clearance-proof.json', png: 'codesite-schema-first-clearance-proof.png' },
-  { name: 'metrics', plan: '27', file: 'codesite-metrics-proof.json', png: 'codesite-metrics-proof.png' },
+  {
+    name: 'metrics',
+    plan: '27',
+    file: 'codesite-metrics-proof.json',
+    png: 'codesite-metrics-proof.png',
+    requiredCommands: ['dockerMetricsEngine', 'dockerMetricsSuite'],
+    dockerCommand: 'dockerMetricsSuite',
+    requiredMeasuredMetrics: [
+      'proofBundlesVerifiedOutsideUi',
+      'shadowMergeSimulatorAccuracy',
+      'lineProvenanceCoverage',
+      'blackBoxCompletenessScore',
+      'humanReviewTimeSavedMs',
+      'percentageWritesWithValidClearance',
+    ],
+    requiredMetricThresholds: [
+      { key: 'proofBundlesVerifiedOutsideUi', min: 1 },
+      { key: 'shadowMergeSimulatorAccuracy', min: 0.8 },
+      { key: 'lineProvenanceCoverage', min: 0.5 },
+      { key: 'blackBoxCompletenessScore', min: 0.75 },
+      { key: 'humanReviewTimeSavedMs', min: 1 },
+      { key: 'percentageWritesWithValidClearance', min: 0.3 },
+    ],
+  },
   { name: 'isolationContract', plan: '2A.1, 26.7', file: 'codesite-isolation-contract-proof.json', png: 'codesite-isolation-contract-proof.png' },
   { name: 'serializableCommitRace', plan: '2A.1, 26.7', file: 'codesite-serializable-commit-race-proof.json', png: 'codesite-serializable-commit-race-proof.png' },
   { name: 'runtimeContext', plan: '20, 25.2C', file: 'codesite-runtime-context-proof.json', png: 'codesite-runtime-context-proof.png' },
@@ -621,6 +644,7 @@ function validateMatureProofSuite({ root, proofRoot, failures }) {
       commands: artifact.commands,
       dockerCommands: artifact.dockerCommands,
       qualityCounters: artifact.qualityCounters,
+      metricThresholds: artifact.metricThresholds,
       ok: artifact.ok,
     })),
     assertions: assertionCount,
@@ -700,8 +724,75 @@ function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
   summary.commands = commandSummary.commands;
   summary.dockerCommands = commandSummary.dockerCommands;
   summary.qualityCounters = commandSummary.qualityCounters;
+  summary.metricThresholds = validateProofMetricThresholds({
+    root,
+    proofPath,
+    proof,
+    requiredMeasuredMetrics: spec.requiredMeasuredMetrics || [],
+    requiredMetricThresholds: spec.requiredMetricThresholds || [],
+    failures,
+  });
   summary.ok = failures.length === beforeFailureCount;
   return summary;
+}
+
+function validateProofMetricThresholds({ root, proofPath, proof, requiredMeasuredMetrics, requiredMetricThresholds, failures }) {
+  const metrics = proof?.metrics || proof?.metricSnapshot || proof?.metricProof?.metrics || null;
+  const rowsByKey = metricRowsByKey(metrics);
+  const summary = {
+    requiredMeasured: requiredMeasuredMetrics.length,
+    thresholds: requiredMetricThresholds.length,
+    passed: 0,
+  };
+  if (!requiredMeasuredMetrics.length && !requiredMetricThresholds.length) return summary;
+  if (!metrics || typeof metrics !== 'object') {
+    failures.push(`${relative(root, proofPath)} missing metrics payload`);
+    return summary;
+  }
+  for (const key of requiredMeasuredMetrics) {
+    const row = rowsByKey.get(key);
+    const value = metricValue(metrics, key, row);
+    if (value == null || !Number.isFinite(Number(value))) {
+      failures.push(`${relative(root, proofPath)} metric ${key} must be finite and measured`);
+    }
+    if (row && row.status && row.status !== 'measured') {
+      failures.push(`${relative(root, proofPath)} metric ${key} status must be measured, observed ${row.status}`);
+    }
+  }
+  for (const threshold of requiredMetricThresholds) {
+    const value = Number(metricValue(metrics, threshold.key, rowsByKey.get(threshold.key)));
+    if (!Number.isFinite(value)) {
+      failures.push(`${relative(root, proofPath)} metric ${threshold.key} is not numeric`);
+      continue;
+    }
+    if (threshold.min != null && value < Number(threshold.min)) {
+      failures.push(`${relative(root, proofPath)} metric ${threshold.key} ${value} below minimum ${threshold.min}`);
+      continue;
+    }
+    if (threshold.max != null && value > Number(threshold.max)) {
+      failures.push(`${relative(root, proofPath)} metric ${threshold.key} ${value} above maximum ${threshold.max}`);
+      continue;
+    }
+    summary.passed += 1;
+  }
+  return summary;
+}
+
+function metricRowsByKey(metrics) {
+  const rows = new Map();
+  for (const sectionRows of Object.values(metrics?.sections || {})) {
+    if (!Array.isArray(sectionRows)) continue;
+    for (const row of sectionRows) {
+      if (row?.key) rows.set(row.key, row);
+    }
+  }
+  return rows;
+}
+
+function metricValue(metrics, key, row = null) {
+  if (metrics?.summary && Object.prototype.hasOwnProperty.call(metrics.summary, key)) return metrics.summary[key];
+  if (row && Object.prototype.hasOwnProperty.call(row, 'value')) return row.value;
+  return null;
 }
 
 function validateProofAssertions({ root, proofPath, assertions, allowNoAssertions, failures }) {
