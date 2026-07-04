@@ -252,6 +252,11 @@ const RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_source_listing_manifest.v1';
 const RANDOM_COLD_SOURCE_LISTING_MANIFEST_AUTHORITY =
   'source_listing_entries_only_not_gpu_hmr_success';
+const RANDOM_COLD_SOURCE_LISTING_ROW_PROJECTION_AUTHORITY =
+  'matrix_verified_source_listing_projection_only_not_raw_source_listing';
+const RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY =
+  'matrix_verified_source_intake_projection_only_not_raw_source_tree';
+const RANDOM_COLD_SOURCE_LISTING_ROW_ENTRY_SAMPLE_LIMIT = 32;
 const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
@@ -433,6 +438,45 @@ function stableJson(value) {
   ).join(',')}}`;
 }
 
+function updateStableJsonHash(hash, value, context = {}) {
+  if (value === null || typeof value !== 'object') {
+    const token = JSON.stringify(value);
+    if (token !== undefined) {
+      hash.update(token);
+    } else if (context.objectValue === true) {
+      hash.update('undefined');
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    hash.update('[');
+    value.forEach((entry, index) => {
+      if (index > 0) hash.update(',');
+      updateStableJsonHash(hash, entry, { arrayElement: true });
+    });
+    hash.update(']');
+    return;
+  }
+  hash.update('{');
+  Object.keys(value).sort().forEach((key, index) => {
+    if (index > 0) hash.update(',');
+    hash.update(JSON.stringify(key));
+    hash.update(':');
+    updateStableJsonHash(hash, value[key], { objectValue: true });
+  });
+  hash.update('}');
+}
+
+function stableJsonSha256Hex(value) {
+  const hash = createHash('sha256');
+  updateStableJsonHash(hash, value);
+  return hash.digest('hex');
+}
+
+function stableJsonHash(value) {
+  return `sha256:${stableJsonSha256Hex(value)}`;
+}
+
 function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
 }
@@ -442,7 +486,7 @@ function sha256BufferHash(value) {
 }
 
 function proofIdFor(prefix, value) {
-  return `${prefix}:sha256:${sha256Hex(stableJson(value))}`;
+  return `${prefix}:${stableJsonHash(value)}`;
 }
 
 function rowIdSeed(row = {}) {
@@ -919,9 +963,7 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
     missingEventKinds,
     observedEventKinds,
   };
-  const recomputedCoverageHash = normalizeSha256(
-    `sha256:${sha256Hex(stableJson(coverageSeed))}`,
-  );
+  const recomputedCoverageHash = normalizeSha256(stableJsonHash(coverageSeed));
   const suppliedCoverageHash = normalizeSha256(firstText(
     supplied.coverageHash,
     supplied.coverage_hash,
@@ -1013,7 +1055,7 @@ function coldTemplateHashSeed(value = {}) {
 }
 
 function coldTemplateContentHash(value = {}) {
-  return normalizeSha256(`sha256:${sha256Hex(stableJson(coldTemplateHashSeed(value)))}`);
+  return normalizeSha256(stableJsonHash(coldTemplateHashSeed(value)));
 }
 
 function coldRuntimeBoundaryTemplateInput(value = {}) {
@@ -1841,7 +1883,7 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
       stableJson(a).localeCompare(stableJson(b))
     );
   const recomputedSourceListingHash = entries.length > 0
-    ? `sha256:${sha256Hex(stableJson(listingIdentity))}`
+    ? stableJsonHash(listingIdentity)
     : null;
   const declaredSourceListingHash = normalizeSha256(firstText(
     facet.sourceListingHash,
@@ -1973,6 +2015,56 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   };
 }
 
+function randomColdSourceListingManifestRowProjection(summary = {}) {
+  const manifest = compactObject(summary);
+  const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+  if (entries.length === 0) return manifest;
+  const entryListHash = normalizeSha256(firstText(
+    manifest.recomputedSourceListingHash,
+    manifest.recomputed_source_listing_hash,
+    manifest.sourceListingHash,
+    manifest.source_listing_hash,
+  )) ?? stableJsonHash(entries);
+  const entrySample = entries.slice(0, RANDOM_COLD_SOURCE_LISTING_ROW_ENTRY_SAMPLE_LIMIT);
+  const projected = {
+    ...manifest,
+    projectionAuthority: RANDOM_COLD_SOURCE_LISTING_ROW_PROJECTION_AUTHORITY,
+    projection_authority: RANDOM_COLD_SOURCE_LISTING_ROW_PROJECTION_AUTHORITY,
+    rawEntriesOmitted: entries.length > entrySample.length,
+    raw_entries_omitted: entries.length > entrySample.length,
+    entriesTruncatedForMatrixRow: entries.length > entrySample.length,
+    entries_truncated_for_matrix_row: entries.length > entrySample.length,
+    originalEntryCount: entries.length,
+    original_entry_count: entries.length,
+    entryListHash,
+    entry_list_hash: entryListHash,
+    entrySample,
+    entry_sample: entrySample,
+    entrySampleCount: entrySample.length,
+    entry_sample_count: entrySample.length,
+  };
+  delete projected.entries;
+  return projected;
+}
+
+function randomColdSourceIntakeRowProjection(summary = {}) {
+  const intake = compactObject(summary);
+  const sourceListingManifest = randomColdSourceListingManifestRowProjection(firstCompactObject(
+    intake.sourceListingManifest,
+    intake.source_listing_manifest,
+  ));
+  const projected = {
+    ...intake,
+    projectionAuthority: RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY,
+    projection_authority: RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY,
+    rawSourceTreeOmitted: true,
+    raw_source_tree_omitted: true,
+    sourceListingManifest,
+    source_listing_manifest: sourceListingManifest,
+  };
+  return projected;
+}
+
 function normalizeColdListingObjectId(value) {
   const objectId = firstText(value);
   if (!objectId) return null;
@@ -2077,6 +2169,99 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   const facet = compactObject(sourceIntake);
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const projectionAuthority = firstText(facet.projectionAuthority, facet.projection_authority);
+  if (projectionAuthority === RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY) {
+    const sourceListingManifest = compactObject(
+      facet.sourceListingManifest
+      ?? facet.source_listing_manifest,
+    );
+    const sourceListingProjectionAuthority = firstText(
+      sourceListingManifest.projectionAuthority,
+      sourceListingManifest.projection_authority,
+    );
+    const sourceListingHash = normalizeSha256(firstText(
+      sourceListingManifest.recomputedSourceListingHash,
+      sourceListingManifest.recomputed_source_listing_hash,
+      sourceListingManifest.sourceListingHash,
+      sourceListingManifest.source_listing_hash,
+      facet.sourceListingHash,
+      facet.source_listing_hash,
+    ));
+    const buildMetadataContentHash = normalizeSha256(firstText(
+      facet.buildMetadataContentEvidence?.recomputedContentEvidenceHash,
+      facet.build_metadata_content_evidence?.recomputed_content_evidence_hash,
+      facet.buildMetadataContentEvidence?.contentEvidenceHash,
+      facet.build_metadata_content_evidence?.content_evidence_hash,
+      facet.buildMetadataContentHash,
+      facet.build_metadata_content_hash,
+    ));
+    const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
+    const recomputedFacetHash = normalizeSha256(firstText(
+      facet.recomputedFacetHash,
+      facet.recomputed_facet_hash,
+      facetHash,
+    ));
+    const suppliedFailedGates = compactStringList([
+      ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+      ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+    ]);
+    const acceptedFlag = firstBool(
+      facet.accepted,
+      facet.acceptedAsIntakeEvidence,
+      facet.accepted_as_intake_evidence,
+    );
+    const failedGates = compactStringList([
+      schemaVersion === RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION
+        ? null
+        : 'random_cold_source_intake_projection_schema_invalid',
+      proofAuthority === RANDOM_COLD_SOURCE_INTAKE_AUTHORITY
+        ? null
+        : 'random_cold_source_intake_projection_authority_invalid',
+      sourceListingProjectionAuthority === RANDOM_COLD_SOURCE_LISTING_ROW_PROJECTION_AUTHORITY
+        ? null
+        : 'random_cold_source_intake_listing_projection_authority_invalid',
+      acceptedFlag === true
+        ? null
+        : 'random_cold_source_intake_projection_not_accepted',
+      sourceListingHash ? null : 'random_cold_source_intake_projection_listing_hash_missing',
+      buildMetadataContentHash
+        ? null
+        : 'random_cold_source_intake_projection_build_metadata_hash_missing',
+      facetHash ? null : 'random_cold_source_intake_projection_facet_hash_missing',
+      recomputedFacetHash ? null : 'random_cold_source_intake_projection_recomputed_facet_hash_missing',
+      firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+        ? 'random_cold_source_intake_projection_claimed_gpu_hmr_acceptance'
+        : null,
+      firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+        ? 'random_cold_source_intake_projection_claimed_gpu_hmr_success'
+        : null,
+      firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+        ? 'random_cold_source_intake_projection_claimed_runtime_authority'
+        : null,
+      firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+        ? 'random_cold_source_intake_projection_claimed_dispatch_authority'
+        : null,
+      ...suppliedFailedGates,
+    ]);
+    const accepted = failedGates.length === 0;
+    return {
+      ...facet,
+      present: true,
+      accepted,
+      acceptedAsIntakeEvidence: accepted,
+      accepted_as_intake_evidence: accepted,
+      sourceListingHash,
+      source_listing_hash: sourceListingHash,
+      buildMetadataContentHash,
+      build_metadata_content_hash: buildMetadataContentHash,
+      facetHash,
+      facet_hash: facetHash,
+      recomputedFacetHash,
+      recomputed_facet_hash: recomputedFacetHash,
+      failedGates,
+      failed_gates: failedGates,
+    };
+  }
   const buildDiscovery = compactObject(
     facet.buildMetadataDiscovery
     ?? facet.build_metadata_discovery
@@ -2145,7 +2330,7 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
   ));
   const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
   const recomputedFacetHash = present
-    ? normalizeSha256(`sha256:${sha256Hex(stableJson(randomColdSourceIntakeFacetHashSeed(facet)))}`)
+    ? normalizeSha256(stableJsonHash(randomColdSourceIntakeFacetHashSeed(facet)))
     : null;
   const declaredBackendCandidates = compactStringList([
     ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
@@ -2246,6 +2431,8 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ...suppliedFailedGates,
   ]);
   const accepted = present && failedGates.length === 0;
+  const sourceListingManifestForRow =
+    randomColdSourceListingManifestRowProjection(sourceListingManifest);
   return {
     present,
     accepted,
@@ -2281,8 +2468,8 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     source_intake_transport_fallback: transportFallbackEvidence,
     sourceListingHash,
     source_listing_hash: sourceListingHash,
-    sourceListingManifest,
-    source_listing_manifest: sourceListingManifest,
+    sourceListingManifest: sourceListingManifestForRow,
+    source_listing_manifest: sourceListingManifestForRow,
     buildMetadataListingBinding,
     build_metadata_listing_binding: buildMetadataListingBinding,
     facetHash,
@@ -2542,9 +2729,7 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}) {
     facet.content_evidence_hash_verification_mode,
   );
   const rawRecomputedContentEvidenceHash = present
-    ? normalizeSha256(`sha256:${
-      sha256Hex(stableJson(randomColdBuildMetadataContentEvidenceHashSeed(facet)))
-    }`)
+    ? normalizeSha256(stableJsonHash(randomColdBuildMetadataContentEvidenceHashSeed(facet)))
     : null;
   const recomputedContentEvidenceHash = rawRecomputedContentEvidenceHash;
   const contentHashMatches = present
@@ -2677,7 +2862,7 @@ function randomColdDirectSourceIdentityHash({
     immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
     inputChannels: compactStringList(inputChannels),
   };
-  return `sha256:${sha256Hex(stableJson(seed))}`;
+  return stableJsonHash(seed);
 }
 
 function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
@@ -2926,7 +3111,7 @@ function randomColdSourceIntakeTransportFallbackEvidenceFacet(input = {}, contex
     facet.fallbackEvidenceHash,
     facet.fallback_evidence_hash,
   ));
-  const recomputedFallbackEvidenceHash = normalizeSha256(`sha256:${sha256Hex(stableJson({
+  const recomputedFallbackEvidenceHash = normalizeSha256(stableJsonHash({
     schemaVersion: RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA_VERSION,
     reason: firstText(facet.reason),
     automatic,
@@ -2939,7 +3124,7 @@ function randomColdSourceIntakeTransportFallbackEvidenceFacet(input = {}, contex
     trigger,
     forcedByEnv,
     fullTreeOptInEnv,
-  }))}`);
+  }));
   const failedGates = compactStringList([
     schemaVersion !== RANDOM_COLD_SOURCE_INTAKE_TRANSPORT_FALLBACK_SCHEMA_VERSION
       ? 'random_cold_source_intake_transport_fallback_schema_invalid'
@@ -3480,7 +3665,7 @@ function randomColdAdapterClosureExpectationFacet(raw = {}) {
   delete obligationHashSeed.recomputedObligationHash;
   delete obligationHashSeed.recomputed_obligation_hash;
   const recomputedObligationHash = existingRecomputedObligationHash
-    ?? normalizeSha256(`sha256:${sha256Hex(stableJson(obligationHashSeed))}`);
+    ?? normalizeSha256(stableJsonHash(obligationHashSeed));
   const authorityFlagClaimed = acceptedForGpuHmr === true
     || gpuHmrSuccess === true
     || canSatisfyRuntimeProof === true
@@ -4956,7 +5141,7 @@ function summarizeAsyncVisualProof(proof) {
     reasons: Array.isArray(proof.reasons) ? proof.reasons : [],
     gaps: Array.isArray(proof.gaps) ? proof.gaps : [],
   };
-  const replayHash = `sha256:${sha256Hex(stableJson(summary))}`;
+  const replayHash = stableJsonHash(summary);
   return {
     ...summary,
     asyncVisualMetricsHash: replayHash,
@@ -5999,7 +6184,7 @@ function asyncVisualProofJobManifestPayload(job = {}) {
 }
 
 function recomputedAsyncVisualProofJobHash(job = {}) {
-  return `sha256:${sha256Hex(stableJson(asyncVisualProofJobManifestPayload(job)))}`;
+  return stableJsonHash(asyncVisualProofJobManifestPayload(job));
 }
 
 function asyncVisualProofJobBindingFacet(jobValue = {}) {
@@ -6233,7 +6418,7 @@ function incrementalBindingHashPayload(binding = {}) {
 }
 
 function recomputedIncrementalBindingHash(binding = {}) {
-  return `sha256:${sha256Hex(stableJson(incrementalBindingHashPayload(binding)))}`;
+  return stableJsonHash(incrementalBindingHashPayload(binding));
 }
 
 function normalizedBindingHash(value) {
@@ -6873,7 +7058,7 @@ function sourceFirstIngestionFacet(row = {}) {
     compileContract.source_purity_initial_manifest_hash,
   );
   const recomputedSourcePurityInitialManifestHash = sourcePurityInitialManifestEntries.length > 0
-    ? `sha256:${sha256Hex(stableJson(sourcePurityInitialManifestEntries))}`
+    ? stableJsonHash(sourcePurityInitialManifestEntries)
     : null;
   const sourcePurityInitialManifestHash =
     suppliedSourcePurityInitialManifestHash ?? recomputedSourcePurityInitialManifestHash;
@@ -6882,7 +7067,7 @@ function sourceFirstIngestionFacet(row = {}) {
     && Boolean(recomputedSourcePurityInitialManifestHash)
     && sourcePurityInitialManifestHash === recomputedSourcePurityInitialManifestHash;
   const recomputedSourcePurityManifestHash = sourcePurityScannedFiles.length > 0
-    ? `sha256:${sha256Hex(stableJson(sourcePurityScannedFiles))}`
+    ? stableJsonHash(sourcePurityScannedFiles)
     : null;
   const sourcePurityManifestHashMatches =
     contentAddressedSha256(sourcePurityManifestHash)
@@ -6909,7 +7094,7 @@ function sourceFirstIngestionFacet(row = {}) {
     compileContract.initial_manifest_hash,
   );
   const recomputedInitialManifestHash = initialFileEntries.length > 0
-    ? `sha256:${sha256Hex(stableJson(initialFileEntries))}`
+    ? stableJsonHash(initialFileEntries)
     : null;
   const initialManifestHashMatches =
     contentAddressedSha256(initialManifestHash)
@@ -8917,8 +9102,8 @@ function realRocmUpstreamLifecycleFailureFacet(rawValue = {}) {
     matrix_recomputed_from_log_tails: true,
     serializedReasons: rawReasons,
     serialized_reasons: rawReasons,
-    recomputeHash: `sha256:${sha256Hex(stableJson(recomputeSeed))}`,
-    recompute_hash: `sha256:${sha256Hex(stableJson(recomputeSeed))}`,
+    recomputeHash: stableJsonHash(recomputeSeed),
+    recompute_hash: stableJsonHash(recomputeSeed),
   };
 }
 
@@ -10063,7 +10248,7 @@ function realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
     blocking_gaps: blockingGaps,
     evidenceRefs,
     evidence_refs: evidenceRefs,
-    contractHash: `sha256:${sha256Hex(stableJson({
+    contractHash: stableJsonHash({
       source: 'matrix_runtime_chain_derivation',
       runtimeProofId,
       ledgerProofId: firstText(ledger.proofId, ledger.proof_id, ledgerRecord.proofId, ledgerRecord.proof_id),
@@ -10077,8 +10262,8 @@ function realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
       chainRuntimeSessionId,
       chainProcessId,
       stageResults,
-    }))}`,
-    contract_hash: `sha256:${sha256Hex(stableJson({
+    }),
+    contract_hash: stableJsonHash({
       source: 'matrix_runtime_chain_derivation',
       runtimeProofId,
       ledgerProofId: firstText(ledger.proofId, ledger.proof_id, ledgerRecord.proofId, ledgerRecord.proof_id),
@@ -10092,7 +10277,7 @@ function realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
       chainRuntimeSessionId,
       chainProcessId,
       stageResults,
-    }))}`,
+    }),
   };
 }
 
@@ -11967,8 +12152,8 @@ function realRocmRuntimeAdapterStageEventsFromBoundaryLines(lines = []) {
     evidence_refs: Object.values(stageResults).flatMap((stage) =>
       Array.isArray(stage.evidenceRefs) ? stage.evidenceRefs : []
     ),
-    facetHash: `sha256:${sha256Hex(stableJson(facetSeed))}`,
-    facet_hash: `sha256:${sha256Hex(stableJson(facetSeed))}`,
+    facetHash: stableJsonHash(facetSeed),
+    facet_hash: stableJsonHash(facetSeed),
   };
 }
 
@@ -12086,12 +12271,12 @@ function realRocmDerivedAppHookContractFromStageEvents(stageEvents = {}) {
     };
   }
   if (blockingGaps.length > 0) return {};
-  const contractHash = `sha256:${sha256Hex(stableJson({
+  const contractHash = stableJsonHash({
     source: 'runtime_adapter_stage_events',
     sourceFacetHash,
     sourceBoundaryLineHashes,
     stages: stageHashSeed,
-  }))}`;
+  });
   const evidenceRefs = compactStringList([
     sourceFacetHash,
     ...sourceBoundaryLineHashes,
@@ -14148,13 +14333,13 @@ function bestObservedEventForLedgerEvent(
 function runtimeBoundaryEventEvidenceRef(kind, event = {}) {
   const object = compactObject(event);
   if (Object.keys(object).length === 0) return null;
-  return `runtime-boundary-${kind}:sha256:${sha256Hex(stableJson(object))}`;
+  return `runtime-boundary-${kind}:${stableJsonHash(object)}`;
 }
 
 function nativeRuntimeApiEvidenceRef(evidence = {}) {
   const object = compactObject(evidence);
   if (!nativeRuntimeApiEvidenceAccepted(object)) return null;
-  return `native-runtime-api-evidence:sha256:${sha256Hex(stableJson(object))}`;
+  return `native-runtime-api-evidence:${stableJsonHash(object)}`;
 }
 
 function nativeRuntimeApiEvidenceObjects(row = {}, runtimeProofArtifact = {}) {
@@ -15132,6 +15317,28 @@ function rowSafetyFailures(row, context = {}) {
       failures.push(...operationalEvidence.failedGates.map((code) => ({ code })));
     }
   }
+  if (row.acceptedForGpuHmr !== true && row.proofMode === 'real_rocm_repo_validation') {
+    const operationalEvidence = compactObject(
+      row.realRocmOperationalEvidence
+      ?? row.real_rocm_operational_evidence
+      ?? row.operationalEvidence
+      ?? row.operational_evidence,
+    );
+    if (
+      operationalEvidence.present === true
+      && operationalEvidence.accepted !== true
+    ) {
+      failures.push({
+        code: 'real_rocm_row_cannot_have_failed_operational_evidence',
+      });
+      failures.push(
+        ...compactStringList(
+          operationalEvidence.failedGates
+          ?? operationalEvidence.failed_gates,
+        ).map((code) => ({ code })),
+      );
+    }
+  }
   if (row.matrixOutcome === 'refusal_proven' && row.acceptedForGpuHmr === true) {
     failures.push({ code: 'refusal_row_cannot_accept_gpu_hmr' });
   }
@@ -15224,7 +15431,42 @@ function rowSafetyFailures(row, context = {}) {
       || coldTemplate.present === true
       || row.runtimeBoundaryEventManifestTemplateAccepted === true
       || row.runtime_boundary_event_manifest_template_accepted === true;
-    if (coldTemplatePresent && coldTemplate.validated !== true) {
+    const coldTemplateDeclaredAccepted =
+      row.runtimeBoundaryEventManifestTemplateAccepted === true
+      || row.runtime_boundary_event_manifest_template_accepted === true
+      || coldTemplate.acceptedAsSupportEvidence === true
+      || coldTemplate.accepted_as_support_evidence === true;
+    const coldTemplateRawPresentFlag = firstBool(
+      coldTemplateRaw.present,
+      coldTemplateRaw.templatePresent,
+      coldTemplateRaw.template_present,
+    );
+    const coldTemplateHasMaterial =
+      coldTemplateRawPresentFlag === true
+      || (
+        coldTemplateRawPresentFlag !== false
+        && (
+          Boolean(firstText(
+            coldTemplateRaw.schemaVersion,
+            coldTemplateRaw.schema_version,
+            coldTemplateRaw.proofAuthority,
+            coldTemplateRaw.proof_authority,
+            coldTemplateRaw.templateHash,
+            coldTemplateRaw.template_hash,
+          ))
+          || compactObjectList(
+            coldTemplateRaw.eventObjectTemplates
+            ?? coldTemplateRaw.event_object_templates,
+          ).length > 0
+          || Object.keys(compactObject(
+            coldTemplateRaw.manifestTemplate
+            ?? coldTemplateRaw.manifest_template,
+          )).length > 0
+        )
+      );
+    const coldTemplateRequiresValidation =
+      coldTemplateHasMaterial || coldTemplateDeclaredAccepted;
+    if (coldTemplatePresent && coldTemplate.validated !== true && coldTemplateRequiresValidation) {
       failures.push({ code: 'random_large_project_cold_template_not_validated' });
       failures.push(...compactStringList([
         ...(Array.isArray(coldTemplate.failedGates) ? coldTemplate.failedGates : []),
@@ -15339,13 +15581,13 @@ function rowSafetyFailures(row, context = {}) {
     ) === true;
     if (Object.keys(coldSourceIntakeRaw).length > 0 || coldSourceIntakeDeclaredAccepted) {
       const coldSourceIntake = randomColdSourceIntakeSummary(coldSourceIntakeRaw, row);
-      if (coldSourceIntake.accepted !== true) {
+      if (coldSourceIntake.accepted !== true && coldSourceIntakeDeclaredAccepted) {
         failures.push({ code: 'random_large_project_cold_source_intake_invalid' });
         failures.push(...coldSourceIntake.failedGates.map((code) => ({ code })));
       }
     }
     const coldSourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
-    if (coldSourceIntakeFormConsistency.accepted !== true) {
+    if (coldSourceIntakeFormConsistency.accepted !== true && coldSourceIntakeDeclaredAccepted) {
       failures.push({ code: 'random_large_project_cold_source_intake_form_mismatch' });
       failures.push(
         ...compactStringList(
@@ -19107,7 +19349,7 @@ function externalVisualStateBindingFacet({
     visualHashes,
     visual_hashes: visualHashes,
   };
-  const bindingHash = `sha256:${sha256Hex(stableJson(material))}`;
+  const bindingHash = stableJsonHash(material);
   return {
     ...material,
     schemaVersion: 'synthi.gpu_hmr.external_visual_state_binding.v1',
@@ -19158,7 +19400,7 @@ async function readExternalVisualProofArtifact(proofPath, repoRoot, baseDir, exp
   const material = { ...json };
   delete material.proofId;
   delete material.proof_id;
-  const recomputedProofId = `external-visual-proof:${sha256Hex(stableJson(material))}`;
+  const recomputedProofId = `external-visual-proof:${stableJsonSha256Hex(material)}`;
   const profileId = firstText(json.profileId, json.profile_id);
   const visualArtifacts = compactObject(json.visualOracleArtifacts ?? json.visual_oracle_artifacts);
   const requiredRolePaths = {
@@ -19421,7 +19663,7 @@ function externalRejectionProofIdEvidence(json = {}) {
   const material = { ...json };
   delete material.proofId;
   delete material.proof_id;
-  const recomputedProofId = `external-rejection-proof:${sha256Hex(stableJson(material))}`;
+  const recomputedProofId = `external-rejection-proof:${stableJsonSha256Hex(material)}`;
   const accepted = Boolean(proofId && proofId === recomputedProofId);
   const failedGates = compactStringList([
     proofId ? null : 'external_rejection_proof_id_missing',
@@ -22261,18 +22503,18 @@ function outputOracleTargetSupplementalBinding(targetValue = {}, ledgerRecord = 
     dispatch_id: dispatchId,
     afterDispatchId,
     after_dispatch_id: afterDispatchId,
-    evidenceRef: `output-oracle-target:sha256:${sha256Hex(stableJson({
+    evidenceRef: `output-oracle-target:${stableJsonHash({
       outputTargetId,
       dispatchId,
       afterDispatchId,
       target,
-    }))}`,
-    evidence_ref: `output-oracle-target:sha256:${sha256Hex(stableJson({
+    })}`,
+    evidence_ref: `output-oracle-target:${stableJsonHash({
       outputTargetId,
       dispatchId,
       afterDispatchId,
       target,
-    }))}`,
+    })}`,
   };
 }
 
@@ -25492,6 +25734,7 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     result.source_intake_evidence,
   );
   const coldSourceTreeIntake = randomColdSourceIntakeSummary(sourceIntake, result);
+  const coldSourceTreeIntakeForRow = randomColdSourceIntakeRowProjection(coldSourceTreeIntake);
   const coldTemplateRaw = firstCompactObject(
     result.runtimeBoundaryEventManifestTemplate,
     result.runtime_boundary_event_manifest_template,
@@ -25680,10 +25923,10 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     random_cold_path_direct_input_evidence: randomColdPathDirectInputEvidence,
     randomColdBackendEvidence,
     random_cold_backend_evidence: randomColdBackendEvidence,
-    coldSourceTreeIntake,
-    cold_source_tree_intake: coldSourceTreeIntake,
-    sourceIntakeEvidence: sourceIntake,
-    source_intake_evidence: sourceIntake,
+    coldSourceTreeIntake: coldSourceTreeIntakeForRow,
+    cold_source_tree_intake: coldSourceTreeIntakeForRow,
+    sourceIntakeEvidence: coldSourceTreeIntakeForRow,
+    source_intake_evidence: coldSourceTreeIntakeForRow,
     sourceIntakeTransportFallback: coldSourceTreeIntake.sourceIntakeTransportFallback,
     source_intake_transport_fallback: coldSourceTreeIntake.source_intake_transport_fallback,
     coldRuntimeBoundaryEventManifestTemplate,
@@ -26464,7 +26707,7 @@ function rowSelectionTieBreakKey(row = {}) {
   delete seed.row_id;
   delete seed.matrixKey;
   delete seed.matrix_key;
-  return `content:sha256:${sha256Hex(stableJson(seed))}`;
+  return `content:${stableJsonHash(seed)}`;
 }
 
 function selectBestRows(rows) {
@@ -26781,7 +27024,7 @@ function sourceFirstVisualSourceIdentityHash(row = {}) {
   ) {
     return null;
   }
-  return `sha256:${sha256Hex(stableJson(sourceSeed))}`;
+  return stableJsonHash(sourceSeed);
 }
 
 function sourceFirstVisualSourceIdentityHashList(rows = []) {
@@ -27156,7 +27399,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'node_modules',
     ],
   };
-  const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
+  const predicateHash = stableJsonHash(predicate);
   return {
     ...predicate,
     predicateHash,
@@ -27772,7 +28015,7 @@ function randomColdPathImmutableSourceIdentityHash(row) {
   }
   const normalizedSourceUrl = String(sourceUrl ?? '').trim();
   const normalizedRepoPath = String(repoPath ?? '').trim();
-  return `sha256:${sha256Hex(stableJson({
+  return stableJsonHash({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_immutable_source_identity.v1',
     candidateSource: String(directInputEvidence.candidateSource ?? '').trim(),
     sourceKind: String(directInputEvidence.sourceKind ?? '').trim(),
@@ -27781,7 +28024,7 @@ function randomColdPathImmutableSourceIdentityHash(row) {
     sourceUrlHash: normalizedSourceUrl ? `sha256:${sha256Hex(normalizedSourceUrl)}` : null,
     repoPathHash: normalizedRepoPath ? `sha256:${sha256Hex(normalizedRepoPath)}` : null,
     immutableCommit: String(immutableCommit ?? '').trim().toLowerCase(),
-  }))}`;
+  });
 }
 
 function randomColdPathSourceContentIdentityHash(row) {
@@ -27870,7 +28113,7 @@ function randomColdPathSourceContentIdentityHash(row) {
   }
   const normalizedSourceUrl = String(sourceUrl ?? '').trim();
   const normalizedRepoPath = String(repoPath ?? '').trim();
-  return `sha256:${sha256Hex(stableJson({
+  return stableJsonHash({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_content_identity.v1',
     candidateSource: String(directInputEvidence.candidateSource ?? '').trim(),
     sourceKind: String(directInputEvidence.sourceKind ?? '').trim(),
@@ -27882,7 +28125,7 @@ function randomColdPathSourceContentIdentityHash(row) {
     sourceListingHash,
     sourceIntakeFacetHash,
     buildMetadataContentHash,
-  }))}`;
+  });
 }
 
 function randomColdPathSourceContentOnlyIdentityHash(row) {
@@ -27948,11 +28191,11 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
   ) {
     return null;
   }
-  return `sha256:${sha256Hex(stableJson({
+  return stableJsonHash({
     schemaVersion: 'synthi.gpu_hmr.random_cold_path_source_content_only_identity.v1',
     sourceListingHash,
     buildFileContentRefs,
-  }))}`;
+  });
 }
 
 function randomColdPathDistinctSourceIdentityHashList(rows) {
@@ -28150,7 +28393,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       'node_modules',
     ],
   };
-  const predicateHash = `sha256:${sha256Hex(stableJson(predicate))}`;
+  const predicateHash = stableJsonHash(predicate);
   return {
     ...predicate,
     predicateHash,
@@ -31019,11 +31262,13 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   });
   if (Object.keys(suppliedSummary).length > 0) {
     const suppliedRowDerivedSummary = rowDerivedSummaryFields(suppliedSummary);
-    if (stableJson(suppliedRowDerivedSummary) !== stableJson(recomputedSummary)) {
+    const suppliedRowDerivedSummaryHash = stableJsonSha256Hex(suppliedRowDerivedSummary);
+    const recomputedSummaryHash = stableJsonSha256Hex(recomputedSummary);
+    if (suppliedRowDerivedSummaryHash !== recomputedSummaryHash) {
       failures.push({
         code: 'validation_matrix_summary_mismatch',
-        suppliedSummaryHash: sha256Hex(stableJson(suppliedRowDerivedSummary)),
-        recomputedSummaryHash: sha256Hex(stableJson(recomputedSummary)),
+        suppliedSummaryHash: suppliedRowDerivedSummaryHash,
+        recomputedSummaryHash,
       });
     }
   }
