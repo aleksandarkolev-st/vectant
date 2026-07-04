@@ -184,8 +184,10 @@ model MarketplaceProgram {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  versions ProgramVersion[]
-  installs ProgramInstall[]
+  versions     ProgramVersion[]
+  installs     ProgramInstall[]
+  pricing      ProgramPricing?
+  entitlements Entitlement[]
 }
 
 model ProgramVersion {
@@ -306,4 +308,55 @@ model ProgramReviewEvent {
 
   @@index([versionId])
   @@index([createdAt])
+}
+
+// ── Paid apps (marketplace billing control plane) ──
+// This repo owns pricing + entitlement + the paywall; the external payments app
+// (checkout-synthi, Stripe) owns card processing + payouts. See
+// docs/superpowers/specs/2026-07-04-paid-apps-design.md.
+
+model ProgramPricing {
+  id               String   @id @default(cuid())
+  programId        String   @unique
+  model            String   @default("one_time") // v1 = one_time; subscription/usage later
+  priceCents       Int // >= 0; 0 = free (but explicitly priced)
+  currency         String   @default("eur")
+  active           Boolean  @default(true)
+  payoutAccountRef String? // Stripe Connect account id (acct_…), owned by the payments app
+  takeRateBps      Int      @default(3000) // platform cut, basis points
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+}
+
+model Entitlement {
+  id          String    @id @default(cuid())
+  programId   String
+  subjectType String    @default("user") // user | workspace (v1 = user)
+  subjectId   String // userId (or workspaceSlug when workspace-scoped)
+  status      String    @default("active") // active | revoked
+  source      String // purchase | grant | trial
+  reference   String    @unique // idempotency key — carried in the PaymentIntent metadata
+  priceCents  Int? // captured at purchase (audit)
+  currency    String?
+  grantedAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@unique([programId, subjectType, subjectId]) // one live entitlement per subject+app
+  @@index([programId])
+  @@index([subjectId])
+}
+
+model PaymentWebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique // provider (Stripe) event id — dedupe/idempotency
+  type        String // purchase | refund
+  reference   String
+  payloadJson String
+  processedAt DateTime @default(now())
+
+  @@index([reference])
 }
