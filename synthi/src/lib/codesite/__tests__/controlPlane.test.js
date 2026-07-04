@@ -1465,6 +1465,13 @@ describe('CodeSite control plane transaction validation', () => {
 
   it('lands writeful automatic workflow plans only with durable agent evidence', async () => {
     const writePath = 'docs/release/plan.md';
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-auto-workflow-snapshot-'));
+    await fs.mkdir(path.join(repoRoot, 'docs', 'release'), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, 'docs', 'release', 'requirements.md'), 'Release requirements v1\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['docs/release/requirements.md'], {
+      repoRoot,
+      scope: 'repo_wide',
+    });
     const lineRange = {
       filePath: writePath,
       lineAnchor: `${writePath}#L4-L9`,
@@ -1475,7 +1482,7 @@ describe('CodeSite control plane transaction validation', () => {
     };
     const repoState = repoStateFixture([lineRange], {
       transactionId: 'txn-auto-write',
-      baseSnapshot: 'base',
+      baseSnapshot: snapshot.snapshotDigest,
       writePath,
     });
     const events = [];
@@ -1596,7 +1603,8 @@ describe('CodeSite control plane transaction validation', () => {
         'DOCS-01': {
           writeSet: [writePath],
           readSet: ['docs/release/requirements.md'],
-          baseSnapshot: 'base',
+          baseSnapshot: snapshot.snapshotDigest,
+          baseSnapshotEvidence: snapshot,
           writes: [{
             path: writePath,
             evidenceRefs: ['runtime:event:write-docs-1'],
@@ -4360,10 +4368,13 @@ describe('CodeSite control plane transaction validation', () => {
   });
 
   it('serializes overlapping proof-carrying commit races and blocks the stale loser', async () => {
-    const repoRoot = path.basename(process.cwd()) === 'synthi'
-      ? path.dirname(process.cwd())
-      : process.cwd();
-    const snapshot = await buildReadSnapshotEvidence(['synthi/prisma/schema.prisma'], { repoRoot });
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-race-snapshot-'));
+    await fs.mkdir(path.join(repoRoot, 'synthi', 'prisma'), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['synthi/prisma/schema.prisma'], {
+      repoRoot,
+      scope: 'repo_wide',
+    });
     const openedAt = new Date('2026-06-29T23:00:00.000Z');
     const transactions = new Map([
       ['txn-race-a', {

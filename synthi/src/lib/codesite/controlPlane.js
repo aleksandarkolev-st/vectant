@@ -3250,6 +3250,9 @@ async function findStaleReadEvents(transaction, readSet, db = prisma) {
 async function buildTransactionSnapshotEvidence(readSet, body = {}) {
   const explicitEvidence = body.baseSnapshotEvidence || body.base_snapshot_evidence;
   if (explicitEvidence) return normalizeReadSnapshotEvidence(explicitEvidence);
+  if (body.baseSnapshot || body.base_snapshot) {
+    return null;
+  }
   if (body.repoSnapshot === false || body.repo_snapshot === false || body.skipRepoSnapshot === true || body.skip_repo_snapshot === true) {
     return null;
   }
@@ -6961,77 +6964,74 @@ function parseOptionalNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function runCommand(executable, args, { cwd, timeoutMs }) {
-  return new Promise((resolve) => {
-    const child = spawn(executable, args, {
-      cwd,
-      env: process.env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stdoutTail = '';
-    let stdoutTruncated = false;
-    let stderr = '';
-    let stderrTail = '';
-    let stderrTruncated = false;
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-    }, timeoutMs);
+async function runCommand(executable, args, { cwd, timeoutMs }) {
+  const captureDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-command-'));
+  const stdoutPath = path.join(captureDir, 'stdout.log');
+  const stderrPath = path.join(captureDir, 'stderr.log');
+  const stdoutHandle = await fs.open(stdoutPath, 'w+');
+  const stderrHandle = await fs.open(stderrPath, 'w+');
+  let commandResult = null;
+  try {
+    commandResult = await new Promise((resolve) => {
+      const child = spawn(executable, args, {
+        cwd,
+        env: process.env,
+        shell: false,
+        stdio: ['ignore', stdoutHandle.fd, stderrHandle.fd],
+      });
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+      }, timeoutMs);
 
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString('utf8');
-      stdoutTail = tail(`${stdoutTail}${text}`);
-      const next = `${stdout}${text}`;
-      if (!stdoutTruncated && next.length <= MAX_JSON_COMMAND_OUTPUT_CHARS) {
-        stdout = next;
-      } else if (!stdoutTruncated) {
-        stdout = next.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS);
-        stdoutTruncated = true;
-      }
-    });
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString('utf8');
-      stderrTail = tail(`${stderrTail}${text}`);
-      const next = `${stderr}${text}`;
-      if (!stderrTruncated && next.length <= MAX_JSON_COMMAND_OUTPUT_CHARS) {
-        stderr = next;
-      } else if (!stderrTruncated) {
-        stderr = next.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS);
-        stderrTruncated = true;
-      }
-    });
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: 127,
-        signal: null,
-        timedOut,
-        stdout,
-        stdoutTail,
-        stdoutTruncated,
-        stderr,
-        stderrTail: tail(`${stderrTail}${error?.message || String(error)}`),
-        stderrTruncated,
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        resolve({
+          exitCode: 127,
+          signal: null,
+          timedOut,
+          spawnError: error?.message || String(error),
+        });
+      });
+      child.on('close', (exitCode, signal) => {
+        clearTimeout(timer);
+        resolve({
+          exitCode: Number.isInteger(exitCode) ? exitCode : null,
+          signal,
+          timedOut,
+          spawnError: null,
+        });
       });
     });
-    child.on('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: Number.isInteger(exitCode) ? exitCode : null,
-        signal,
-        timedOut,
-        stdout,
-        stdoutTail,
-        stdoutTruncated,
-        stderr,
-        stderrTail,
-        stderrTruncated,
-      });
-    });
-  });
+  } finally {
+    await stdoutHandle.close().catch(() => {});
+    await stderrHandle.close().catch(() => {});
+  }
+
+  const stdoutFull = await readCommandCapture(stdoutPath);
+  const stderrBase = await readCommandCapture(stderrPath);
+  const stderrText = stderrBase.text;
+  const stderrFull = commandResult?.spawnError ? `${stderrText}${stderrText ? '\n' : ''}${commandResult.spawnError}` : stderrText;
+  await fs.rm(captureDir, { recursive: true, force: true }).catch(() => {});
+  return {
+    ...commandResult,
+    stdout: stdoutFull.text,
+    stdoutTail: stdoutFull.tail,
+    stdoutTruncated: stdoutFull.truncated,
+    stderr: stderrFull.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS),
+    stderrTail: tail(stderrFull),
+    stderrTruncated: stderrFull.length > MAX_JSON_COMMAND_OUTPUT_CHARS,
+  };
+}
+
+async function readCommandCapture(filePath) {
+  const text = await fs.readFile(filePath, 'utf8').catch(() => '');
+  return {
+    text: text.slice(0, MAX_JSON_COMMAND_OUTPUT_CHARS),
+    tail: tail(text),
+    truncated: text.length > MAX_JSON_COMMAND_OUTPUT_CHARS,
+  };
 }
 
 function runJsonCommand(executable, args, { cwd, timeoutMs, input }) {
