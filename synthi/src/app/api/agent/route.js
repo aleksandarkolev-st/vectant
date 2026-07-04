@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/auth';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { requireRuntimeWorkspaceAccess } from '@/lib/workspaceAccess';
 
 /**
  * Agent API Route — executes a single agent step on the backend.
@@ -27,6 +30,37 @@ const GEMINI_BASE =
 
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 
+async function requireAgentSession() {
+    try {
+        const session = await getServerSession(authOptions);
+        const userId = session?.user?.id || session?.user?.email || null;
+        if (!userId) {
+            return { ok: false, status: 401, error: 'Authentication required' };
+        }
+        return { ok: true, session, userId };
+    } catch (error) {
+        console.error('[Agent API] Session check failed:', error?.message || error);
+        return { ok: false, status: 401, error: 'Authentication required' };
+    }
+}
+
+async function authorizeAgentWorkspace(workspacePath) {
+    const slug = String(workspacePath || '').trim();
+    if (!slug) {
+        return { ok: true, workspacePath: '' };
+    }
+
+    const access = await requireRuntimeWorkspaceAccess(slug);
+    if (!access.ok) {
+        return { ok: false, status: access.status || 403, error: access.error || 'Workspace access denied' };
+    }
+
+    return {
+        ok: true,
+        workspacePath: access.workspace?.slug || slug,
+    };
+}
+
 // ── File Operations ─────────────────────────────────────────────────
 
 const encodeFilePath = (filePath = '') =>
@@ -41,7 +75,7 @@ const fetchCollabFileContent = async (slug, filePath, signal) => {
     try {
         const safePath = encodeFilePath(filePath);
         const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
-        const res = await fetch(url, { method: 'GET', signal });
+        const res = await fetch(url, { method: 'GET', headers: withInternalAiAuth(), signal });
         if (!res.ok) return null;
         return await res.text();
     } catch (e) {
@@ -53,7 +87,7 @@ const fetchRepoFileList = async (slug, signal) => {
     if (!slug) return [];
     try {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
-        const res = await fetch(url, { method: 'GET', signal });
+        const res = await fetch(url, { method: 'GET', headers: withInternalAiAuth(), signal });
         if (!res.ok) return [];
         const data = await res.json();
         return Array.isArray(data?.files) ? data.files : [];
@@ -348,6 +382,11 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
 // ── Route Handler ───────────────────────────────────────────────────
 
 export async function POST(request) {
+    const sessionAccess = await requireAgentSession();
+    if (!sessionAccess.ok) {
+        return NextResponse.json({ error: sessionAccess.error }, { status: sessionAccess.status });
+    }
+
     let body;
     try {
         body = await request.json();
@@ -373,12 +412,17 @@ export async function POST(request) {
     }
 
     try {
+        const workspaceAccess = await authorizeAgentWorkspace(workspacePath);
+        if (!workspaceAccess.ok) {
+            return NextResponse.json({ error: workspaceAccess.error }, { status: workspaceAccess.status });
+        }
+
         const result = await executeAgent({
             agentType,
             instruction,
             context,
             tools,
-            workspacePath,
+            workspacePath: workspaceAccess.workspacePath,
             activeFilePath,
             activeFileContent,
             signal: request.signal,
