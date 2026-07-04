@@ -1294,6 +1294,7 @@ describe('CodeSite control plane transaction validation', () => {
       title: 'Update schema',
       request: 'Update schema contract',
       autoWorkflow: true,
+      repoPolicyCompiler: false,
       missions: [{
         callsign: 'SCHEMA-01',
         domain: 'schema',
