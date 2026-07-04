@@ -939,6 +939,28 @@ describe('CodeSite catch-all route', () => {
     expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null, expect.objectContaining({ userId: 'user-1' }));
   });
 
+  it('stops project event streams cleanly when the client cancels during load', async () => {
+    let resolveEvents;
+    controlPlane.getEvents.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveEvents = resolve;
+    }));
+
+    const response = await GET(
+      new Request('http://test/api/workspace/acme/codesite/projects/proj-1/events/stream'),
+      params(['projects', 'proj-1', 'events', 'stream']),
+    );
+    const reader = response.body.getReader();
+    const read = reader.read();
+
+    await reader.cancel();
+    resolveEvents([
+      { id: 'late-event', logicalTime: 9, eventType: 'flight_plan_filed', displayCallsign: 'ATLAS-1' },
+    ]);
+
+    await expect(read).resolves.toEqual(expect.objectContaining({ done: true }));
+    expect(controlPlane.getEvents).toHaveBeenCalledWith('acme', 'proj-1', null, expect.objectContaining({ userId: 'user-1' }));
+  });
+
   it('passes the resolved actor through agent inbox read and ack routes', async () => {
     canWriteScope.mockResolvedValue(false);
     controlPlane.getAgentInbox.mockResolvedValue([{ id: 'inbox-1', eventId: 'evt-1' }]);

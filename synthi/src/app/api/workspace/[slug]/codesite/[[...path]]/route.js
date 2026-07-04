@@ -483,24 +483,38 @@ function eventStreamResponse({ signal, initialSince = null, load, eventName, idO
 
   const stream = new ReadableStream({
     async start(controller) {
+      function safeEnqueue(payload) {
+        if (closed) return false;
+        try {
+          controller.enqueue(encoder.encode(payload));
+          return true;
+        } catch (_) {
+          closed = true;
+          if (timer) windowClearInterval(timer);
+          return false;
+        }
+      }
+
       async function send() {
         if (closed) return;
         try {
           const items = await load(since);
+          if (closed) return;
           let emitted = 0;
           for (const item of Array.isArray(items) ? items : []) {
+            if (closed) return;
             const id = idOf(item);
             if (id && seen.has(id)) continue;
             if (id) {
               seen.add(id);
               since = id;
             }
-            controller.enqueue(encoder.encode(`id: ${id || Date.now()}\nevent: ${eventName(item)}\ndata: ${JSON.stringify(item)}\n\n`));
+            if (!safeEnqueue(`id: ${id || Date.now()}\nevent: ${eventName(item)}\ndata: ${JSON.stringify(item)}\n\n`)) return;
             emitted += 1;
           }
-          if (!emitted) controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+          if (!emitted) safeEnqueue(`: heartbeat ${Date.now()}\n\n`);
         } catch (error) {
-          controller.enqueue(encoder.encode(`event: codesite_stream_error\ndata: ${JSON.stringify({ error: error?.message || 'stream_failed' })}\n\n`));
+          safeEnqueue(`event: codesite_stream_error\ndata: ${JSON.stringify({ error: error?.message || 'stream_failed' })}\n\n`);
         }
       }
 
