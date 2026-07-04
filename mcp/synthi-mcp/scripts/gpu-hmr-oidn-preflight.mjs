@@ -19,6 +19,29 @@ const args = new Set(rawArgs);
 
 const OIDN_OUTPUT_ORACLE_SCHEMA = 'synthi.gpu_hmr.oidn_output_oracle.v1';
 const OIDN_OUTPUT_ORACLE_AUTHORITY = 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success';
+const OIDN_OUTPUT_ORACLE_ROLES = [
+  {
+    role: 'noisy_input',
+    pathKeys: ['noisyInputPath', 'noisy_input_path', 'inputNoisyPath', 'input_noisy_path', 'inputPath', 'input_path'],
+    shaKeys: ['noisyInputSha256', 'noisy_input_sha256', 'inputNoisySha256', 'input_noisy_sha256', 'inputSha256', 'input_sha256'],
+    outputPathKey: 'noisyInputPath',
+    outputShaKey: 'noisyInputSha256',
+  },
+  {
+    role: 'denoised_output',
+    pathKeys: ['denoisedOutputPath', 'denoised_output_path', 'outputPath', 'output_path', 'afterPath', 'after_path'],
+    shaKeys: ['denoisedOutputSha256', 'denoised_output_sha256', 'outputSha256', 'output_sha256', 'afterSha256', 'after_sha256'],
+    outputPathKey: 'denoisedOutputPath',
+    outputShaKey: 'denoisedOutputSha256',
+  },
+  {
+    role: 'expected_output',
+    pathKeys: ['expectedOutputPath', 'expected_output_path'],
+    shaKeys: ['expectedOutputSha256', 'expected_output_sha256'],
+    outputPathKey: 'expectedOutputPath',
+    outputShaKey: 'expectedOutputSha256',
+  },
+];
 
 function argValue(name) {
   const eq = `${name}=`;
@@ -56,6 +79,11 @@ const CFG = {
   outputOracleManifestPath: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_MANIFEST_PATH
     ?? argValue('--output-oracle-manifest')
     ?? '',
+  workerOutputOracleManifestPath: process.env.SYNTHI_OIDN_WORKER_OUTPUT_ORACLE_MANIFEST_PATH
+    ?? process.env.SYNTHI_OIDN_WORKER_OUTPUT_ORACLE_MANIFEST
+    ?? argValue('--worker-output-oracle-manifest')
+    ?? '',
+  workerOutputOracleAllowedRoots: process.env.SYNTHI_OIDN_WORKER_OUTPUT_ORACLE_ALLOWED_ROOTS ?? '',
   runtimeBoundaryEventsPath: process.env.SYNTHI_OIDN_RUNTIME_BOUNDARY_EVENTS_PATH
     ?? process.env.SYNTHI_OIDN_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH
     ?? argValue('--runtime-boundary-events')
@@ -137,6 +165,32 @@ function runtimeBoundaryManifestClaimsSuccess(object) {
 function isPathInside(child, root) {
   const rel = path.relative(root, child);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function isPosixPathInside(child, root) {
+  const normalizedChild = path.posix.normalize(String(child || ''));
+  const normalizedRoot = path.posix.normalize(String(root || ''));
+  if (!normalizedChild || !normalizedRoot || !path.posix.isAbsolute(normalizedChild) || !path.posix.isAbsolute(normalizedRoot)) {
+    return false;
+  }
+  return normalizedChild === normalizedRoot || normalizedChild.startsWith(`${normalizedRoot.replace(/\/+$/, '')}/`);
+}
+
+function manifestText(manifest, keys) {
+  return firstText(...keys.map((key) => manifest?.[key]));
+}
+
+function workerManifestFilePath(manifestDir, value) {
+  const text = firstText(value);
+  if (!text) return '';
+  return path.posix.isAbsolute(text)
+    ? path.posix.normalize(text)
+    : path.posix.normalize(path.posix.join(manifestDir, text));
+}
+
+function safeLocalArtifactName(role, workerPath) {
+  const base = cleanToken(path.posix.basename(workerPath || role)) || `${role}.bin`;
+  return `${role}-${base}`;
 }
 
 async function safeRealpath(value) {
@@ -593,6 +647,291 @@ function execDockerShell(command, timeoutMs = CFG.timeoutMs) {
   });
 }
 
+function execDockerCpFromWorker(workerPath, localPath, timeoutMs = CFG.timeoutMs) {
+  return new Promise((resolve) => {
+    const started = process.hrtime.bigint();
+    execFile(
+      'docker',
+      ['cp', `${CFG.workerContainer}:${workerPath}`, localPath],
+      { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        const ended = process.hrtime.bigint();
+        resolve({
+          exitCode: typeof err?.code === 'number' ? err.code : 0,
+          signal: err?.signal ?? null,
+          stdout: String(stdout ?? ''),
+          stderr: String(stderr ?? ''),
+          durationMs: Number(ended - started) / 1_000_000,
+          timedOut: err?.killed === true && err?.signal === 'SIGTERM',
+        });
+      },
+    );
+  });
+}
+
+async function workerRealpath(workerPath) {
+  if (!workerPath) return null;
+  const result = await execDockerShell(
+    `p=${shellQuote(workerPath)}; if [ -e "$p" ]; then readlink -f "$p"; fi`,
+    30000,
+  );
+  const resolved = result.stdout.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] ?? '';
+  return path.posix.isAbsolute(resolved) ? path.posix.normalize(resolved) : null;
+}
+
+async function workerAllowedRoots(manifestPath) {
+  const manifestDir = path.posix.dirname(path.posix.normalize(manifestPath));
+  const configured = CFG.workerOutputOracleAllowedRoots
+    .split(/[;:]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const candidates = [
+    manifestDir,
+    CFG.repoPath,
+    ...configured,
+  ].filter(Boolean);
+  const roots = [];
+  for (const candidate of candidates) {
+    const resolved = await workerRealpath(candidate);
+    if (resolved && !roots.includes(resolved)) roots.push(resolved);
+  }
+  return roots;
+}
+
+async function copyWorkerOutputOracleFile({ roleConfig, manifest, workerManifestDir, localDir, allowedRoots }) {
+  const declaredPath = manifestText(manifest, roleConfig.pathKeys);
+  const declaredSha256 = normalizeSha256(manifestText(manifest, roleConfig.shaKeys));
+  if (!declaredPath) {
+    return {
+      role: roleConfig.role,
+      accepted: false,
+      workerPath: null,
+      worker_path: null,
+      workerResolvedPath: null,
+      worker_resolved_path: null,
+      localPath: null,
+      local_path: null,
+      relativePath: null,
+      relative_path: null,
+      byteLength: 0,
+      byte_length: 0,
+      sha256: null,
+      declaredSha256,
+      declared_sha256: declaredSha256,
+      failedGates: [`${roleConfig.role}:oidn_worker_output_oracle_path_missing`],
+      failed_gates: [`${roleConfig.role}:oidn_worker_output_oracle_path_missing`],
+    };
+  }
+  const workerPath = workerManifestFilePath(workerManifestDir, declaredPath);
+  const workerResolvedPath = await workerRealpath(workerPath);
+  const failedGates = [];
+  if (!workerResolvedPath) {
+    failedGates.push(`${roleConfig.role}:oidn_worker_output_oracle_file_unreadable`);
+  } else if (!allowedRoots.some((root) => isPosixPathInside(workerResolvedPath, root))) {
+    failedGates.push(`${roleConfig.role}:oidn_worker_output_oracle_path_outside_allowed_roots`);
+  }
+  let localPath = null;
+  let relativePath = null;
+  let byteLength = 0;
+  let sha256 = null;
+  let copyResult = null;
+  if (failedGates.length === 0) {
+    relativePath = safeLocalArtifactName(roleConfig.role, workerResolvedPath);
+    localPath = path.join(localDir, relativePath);
+    copyResult = await execDockerCpFromWorker(workerResolvedPath, localPath);
+    if (copyResult.exitCode !== 0) {
+      failedGates.push(`${roleConfig.role}:oidn_worker_output_oracle_copy_failed`);
+    } else {
+      try {
+        const bytes = await readFile(localPath);
+        byteLength = bytes.length;
+        sha256 = `sha256:${sha256Buffer(bytes)}`;
+        if (bytes.length <= 0) failedGates.push(`${roleConfig.role}:oidn_worker_output_oracle_file_empty`);
+        if (declaredSha256 && declaredSha256 !== sha256) {
+          failedGates.push(`${roleConfig.role}:oidn_worker_output_oracle_declared_hash_mismatch`);
+        }
+      } catch {
+        failedGates.push(`${roleConfig.role}:oidn_worker_output_oracle_local_file_unreadable`);
+      }
+    }
+  }
+  const accepted = failedGates.length === 0;
+  return {
+    role: roleConfig.role,
+    accepted,
+    workerPath,
+    worker_path: workerPath,
+    workerResolvedPath,
+    worker_resolved_path: workerResolvedPath,
+    localPath,
+    local_path: localPath,
+    relativePath,
+    relative_path: relativePath,
+    byteLength,
+    byte_length: byteLength,
+    sha256,
+    declaredSha256,
+    declared_sha256: declaredSha256,
+    copyResult: copyResult ? summarizeCommand(copyResult) : null,
+    copy_result: copyResult ? summarizeCommand(copyResult) : null,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function copiedOutputOracleManifest(manifest, copiedFiles) {
+  const byRole = new Map(copiedFiles.filter((file) => file.accepted).map((file) => [file.role, file]));
+  const output = {
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    backend: 'oidn_hip',
+    device: 'hip',
+  };
+  for (const roleConfig of OIDN_OUTPUT_ORACLE_ROLES) {
+    const copied = byRole.get(roleConfig.role);
+    if (copied?.relativePath && copied?.sha256) {
+      output[roleConfig.outputPathKey] = copied.relativePath;
+      output[roleConfig.outputShaKey] = copied.sha256;
+    }
+  }
+  const expected = byRole.get('expected_output');
+  const declaredExpected = normalizeSha256(manifestText(manifest, ['expectedOutputSha256', 'expected_output_sha256']));
+  if (!output.expectedOutputSha256 && (expected?.sha256 || declaredExpected)) {
+    output.expectedOutputSha256 = expected?.sha256 ?? declaredExpected;
+  }
+  for (const key of ['epoch', 'epochId', 'epoch_id', 'timestampAfterDispatch', 'timestamp_after_dispatch']) {
+    const value = manifest?.[key];
+    if (value !== undefined && value !== null && value !== '') output[key] = value;
+  }
+  return output;
+}
+
+function workerOutputOracleManifestStaticGates(manifest) {
+  const failedGates = [];
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    return ['oidn_worker_output_oracle_manifest_not_object'];
+  }
+  if (authorityClaimsSuccess(manifest)) {
+    failedGates.push('oidn_worker_output_oracle_manifest_claims_gpu_hmr_success');
+  }
+  const schema = firstText(manifest.schemaVersion, manifest.schema_version, manifest.schema);
+  if (schema && schema !== OIDN_OUTPUT_ORACLE_SCHEMA) {
+    failedGates.push('oidn_worker_output_oracle_schema_mismatch');
+  }
+  const authority = firstText(manifest.proofAuthority, manifest.proof_authority);
+  if (authority && authority !== OIDN_OUTPUT_ORACLE_AUTHORITY) {
+    failedGates.push('oidn_worker_output_oracle_authority_mismatch');
+  }
+  return failedGates;
+}
+
+async function stageWorkerOutputOracleManifest(workerManifestPath) {
+  if (!workerManifestPath) return null;
+  const workerManifestCandidate = workerManifestFilePath(CFG.repoPath || '/', workerManifestPath);
+  const workerManifestResolved = await workerRealpath(workerManifestCandidate);
+  const failedGates = [];
+  if (!workerManifestResolved) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport.v1',
+      proofAuthority: 'worker_output_oracle_transport_only_not_gpu_hmr_success',
+      accepted: false,
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      workerManifestPath: workerManifestCandidate,
+      worker_manifest_path: workerManifestCandidate,
+      failedGates: ['oidn_worker_output_oracle_manifest_unreadable'],
+      failed_gates: ['oidn_worker_output_oracle_manifest_unreadable'],
+    };
+  }
+  const cat = await execDockerShell(`cat ${shellQuote(workerManifestResolved)}`, 30000);
+  if (cat.exitCode !== 0) {
+    failedGates.push('oidn_worker_output_oracle_manifest_unreadable');
+  }
+  let manifest = {};
+  const manifestBytes = Buffer.from(cat.stdout ?? '', 'utf8');
+  try {
+    manifest = JSON.parse(manifestBytes.toString('utf8'));
+  } catch {
+    failedGates.push('oidn_worker_output_oracle_manifest_not_json');
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    failedGates.push('oidn_worker_output_oracle_manifest_not_object');
+    manifest = {};
+  }
+  failedGates.push(...workerOutputOracleManifestStaticGates(manifest));
+  const allowedRoots = await workerAllowedRoots(workerManifestResolved);
+  const localDir = path.join(CFG.outputDir, `${cleanToken(CFG.slug)}-worker-output-oracle`);
+  await mkdir(localDir, { recursive: true });
+  const workerManifestDir = path.posix.dirname(workerManifestResolved);
+  const copiedFiles = [];
+  for (const roleConfig of OIDN_OUTPUT_ORACLE_ROLES) {
+    const declaredPath = manifestText(manifest, roleConfig.pathKeys);
+    const declaredHash = normalizeSha256(manifestText(manifest, roleConfig.shaKeys));
+    if (!declaredPath && roleConfig.role === 'expected_output' && declaredHash) continue;
+    const copied = await copyWorkerOutputOracleFile({
+      roleConfig,
+      manifest,
+      workerManifestDir,
+      localDir,
+      allowedRoots,
+    });
+    copiedFiles.push(copied);
+    failedGates.push(...copied.failedGates);
+  }
+  const expectedCopied = copiedFiles.find((file) => file.role === 'expected_output' && file.accepted);
+  const expectedDeclared = normalizeSha256(manifestText(manifest, ['expectedOutputSha256', 'expected_output_sha256']));
+  if (!expectedCopied && !expectedDeclared) {
+    failedGates.push('expected_output:oidn_worker_output_oracle_expected_missing');
+  }
+  const uniqueFailedGates = [...new Set(failedGates)];
+  let localManifestPath = null;
+  let localManifestSha256 = null;
+  if (uniqueFailedGates.length === 0) {
+    localManifestPath = path.join(localDir, 'oracle.json');
+    const localManifest = copiedOutputOracleManifest(manifest, copiedFiles);
+    const localManifestBytes = Buffer.from(`${JSON.stringify(localManifest, null, 2)}\n`, 'utf8');
+    await writeFile(localManifestPath, localManifestBytes);
+    localManifestSha256 = `sha256:${sha256Buffer(localManifestBytes)}`;
+  }
+  const evidenceRefs = uniqueFailedGates.length === 0
+    ? [
+      `oidn-worker-output-oracle-manifest:sha256:${sha256Buffer(manifestBytes)}`,
+      `oidn-worker-output-oracle-local-manifest:${localManifestSha256}`,
+      ...copiedFiles.filter((file) => file.accepted).map((file) => `oidn-worker-output-oracle-${file.role}:${file.sha256}`),
+    ]
+    : [];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_worker_output_oracle_transport.v1',
+    proofAuthority: 'worker_output_oracle_transport_only_not_gpu_hmr_success',
+    proof_authority: 'worker_output_oracle_transport_only_not_gpu_hmr_success',
+    accepted: uniqueFailedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    workerManifestPath: workerManifestResolved,
+    worker_manifest_path: workerManifestResolved,
+    workerManifestSha256: `sha256:${sha256Buffer(manifestBytes)}`,
+    worker_manifest_sha256: `sha256:${sha256Buffer(manifestBytes)}`,
+    localManifestPath,
+    local_manifest_path: localManifestPath,
+    localManifestSha256,
+    local_manifest_sha256: localManifestSha256,
+    allowedRoots,
+    allowed_roots: allowedRoots,
+    copiedFiles,
+    copied_files: copiedFiles,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failedGates: uniqueFailedGates,
+    failed_gates: uniqueFailedGates,
+  };
+}
+
 async function findTool() {
   const repo = shellQuote(CFG.repoPath);
   const configuredTool = shellQuote(CFG.oidnTestPath);
@@ -866,6 +1205,10 @@ function preflightBackendEvidence({ toolProbe, libraryProbe, tests, ldd, pathInt
       configured_oidn_test_path: CFG.oidnTestPath || null,
       configuredHipDeviceLibraryPath: CFG.hipDeviceLibraryPath || null,
       configured_hip_device_library_path: CFG.hipDeviceLibraryPath || null,
+      configuredOutputOracleManifestPath: CFG.outputOracleManifestPath || null,
+      configured_output_oracle_manifest_path: CFG.outputOracleManifestPath || null,
+      configuredWorkerOutputOracleManifestPath: CFG.workerOutputOracleManifestPath || null,
+      configured_worker_output_oracle_manifest_path: CFG.workerOutputOracleManifestPath || null,
       toolFound: Boolean(toolProbe.tool),
       hipDeviceLibraryFound: Boolean(libraryProbe.library),
       hipTestCount: tests.filter((test) => test.device === 'hip').length,
@@ -891,6 +1234,7 @@ function oidnPreflightTimingMetrics({ durationNs, classification }) {
     configured_hip_device_library_path: CFG.hipDeviceLibraryPath || null,
     seed: CFG.seed,
     outputOracleManifestPath: CFG.outputOracleManifestPath || null,
+    workerOutputOracleManifestPath: CFG.workerOutputOracleManifestPath || null,
   });
   return {
     schemaVersion: 'synthi.gpu.hmr.runner_timing_metrics.v1',
@@ -946,7 +1290,10 @@ async function buildProof() {
     tests.push(await runOidnTest(toolProbe.tool, 'buffer read/write', 'cpu'));
   }
   const ldd = await runLdd(libraryProbe.library);
-  const outputOracle = await buildOidnOutputOracleEvidence(CFG.outputOracleManifestPath);
+  const workerOutputOracleTransport = await stageWorkerOutputOracleManifest(CFG.workerOutputOracleManifestPath);
+  const outputOracleManifestPath = CFG.outputOracleManifestPath
+    || (workerOutputOracleTransport?.accepted === true ? workerOutputOracleTransport.localManifestPath : '');
+  const outputOracle = await buildOidnOutputOracleEvidence(outputOracleManifestPath);
   const classification = classifyPreflight({
     oidnTool: toolProbe.tool,
     tests,
@@ -989,6 +1336,8 @@ async function buildProof() {
     }),
     outputOracle,
     output_oracle: outputOracle,
+    workerOutputOracleTransport,
+    worker_output_oracle_transport: workerOutputOracleTransport,
     runtimeBoundaryBridge,
     runtime_boundary_bridge: runtimeBoundaryBridge,
     runtimeBoundaryRunModeProof: runtimeBoundaryBridge?.runtimeBoundaryRunModeProof ?? null,
@@ -1038,6 +1387,8 @@ async function writeProof(proof) {
     `oidn_hip_output_proof_accepted=${proof.classification.oidnHipOutputProofAccepted}`,
     `oidn_output_oracle_manifest=${proof.outputOracle?.manifestPath ?? 'none'}`,
     `oidn_output_oracle_accepted=${proof.outputOracle?.accepted ?? false}`,
+    `oidn_worker_output_oracle_transport=${proof.workerOutputOracleTransport?.accepted ?? false}`,
+    `oidn_worker_output_oracle_manifest=${proof.workerOutputOracleTransport?.workerManifestPath ?? 'none'}`,
     `oidn_runtime_boundary_manifest=${proof.runtimeBoundaryBridge?.manifest?.manifestPath ?? 'none'}`,
     `oidn_runtime_boundary_accepted=${proof.runtimeBoundaryBridge?.accepted ?? false}`,
     `oidn_cpu_diagnostics_passed=${proof.classification.oidnCpuDiagnosticsPassed}`,
@@ -1195,6 +1546,52 @@ async function runOutputOracleSelfCheck() {
     forgedGates.includes('oidn_expected_output_hash_mismatch'),
     `forged expected hash gate missing: ${forgedGates.join(',')}`,
   );
+
+  const noisyHash = normalizeSha256(sha256Buffer(await readFile(noisyPath)));
+  const copiedManifest = copiedOutputOracleManifest(
+    {
+      schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+      proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+      backend: 'oidn_hip',
+      device: 'hip',
+      gpuHmrSuccess: true,
+      epoch: 'epoch-transport-self-check',
+    },
+    [
+      {
+        role: 'noisy_input',
+        accepted: true,
+        relativePath: 'noisy.bin',
+        sha256: noisyHash,
+      },
+      {
+        role: 'denoised_output',
+        accepted: true,
+        relativePath: 'denoised.bin',
+        sha256: denoisedHash,
+      },
+      {
+        role: 'expected_output',
+        accepted: true,
+        relativePath: 'expected.bin',
+        sha256: denoisedHash,
+      },
+    ],
+  );
+  assert(copiedManifest.gpuHmrSuccess === undefined, 'copied worker manifest must not preserve GPU HMR success claims');
+  assert(copiedManifest.backend === 'oidn_hip', 'copied worker manifest should preserve generic OIDN backend');
+  assert(copiedManifest.expectedOutputSha256 === denoisedHash, 'copied worker manifest expected hash missing');
+  const staticGates = workerOutputOracleManifestStaticGates({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    gpuHmrSuccess: true,
+  });
+  assert(
+    staticGates.includes('oidn_worker_output_oracle_manifest_claims_gpu_hmr_success'),
+    `worker success-claim gate missing: ${staticGates.join(',')}`,
+  );
+  assert(isPosixPathInside('/tmp/oidn/oracle/noisy.bin', '/tmp/oidn'), 'worker POSIX root check should accept child paths');
+  assert(!isPosixPathInside('/tmp/oidn-other/noisy.bin', '/tmp/oidn'), 'worker POSIX root check should reject prefix escapes');
 }
 
 function syntheticHash(label) {
