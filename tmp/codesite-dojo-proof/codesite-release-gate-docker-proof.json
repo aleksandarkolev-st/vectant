@@ -1,7 +1,7 @@
 {
   "ok": true,
   "schemaVersion": "synthi.codesite.releaseGate.v1",
-  "generatedAt": "2026-07-04T00:55:05.336Z",
+  "generatedAt": "2026-07-04T01:11:53.332Z",
   "proofRoot": "tmp/codesite-dojo-proof",
   "slug": "codesite-mature-full-proof-20260703-overlay13",
   "checks": [
