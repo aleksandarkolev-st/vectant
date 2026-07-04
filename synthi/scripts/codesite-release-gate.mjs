@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -130,6 +131,8 @@ async function main(argv) {
 
   verifySha(root, proofPath, publication?.proofSha256 || latest?.proofSha256, failures);
   if (publication?.publicationSha256) verifySha(root, publicationPath, publication.publicationSha256, failures);
+  const proofGitProvenanceSummary = validateProofGitProvenance({ root, proof, failures });
+  checks.push({ name: 'proofGitProvenance', ...proofGitProvenanceSummary });
 
   const visualArtifacts = [
     ...(publication?.artifactValidation?.visualArtifacts || []),
@@ -917,6 +920,60 @@ function resolveTrustedKeysPath(root, proofRoot, slug, failures) {
   if (trustedKeysPath) return trustedKeysPath;
   failures.push(`trusted proof authorities missing: ${candidates.map((candidate) => relative(root, candidate)).join(', ')}`);
   return candidates[0] || path.join(proofRoot, `trusted-proof-authorities-${slug}.json`);
+}
+
+function validateProofGitProvenance({ root, proof, failures }) {
+  const proofHead = String(proof?.run?.gitHead || '').trim();
+  const proofScript = String(proof?.run?.proofScript || '').trim();
+  if (!proofHead) {
+    failures.push('workflow proof missing run.gitHead');
+    return { ok: false, proofHead: null, currentHead: null, artifactOnlyPostProofChanges: false };
+  }
+  let currentHead = null;
+  let mergeBase = null;
+  let changedPaths = [];
+  try {
+    currentHead = git(root, ['rev-parse', 'HEAD']);
+    mergeBase = git(root, ['merge-base', proofHead, currentHead]);
+    changedPaths = git(root, ['diff', '--name-only', `${proofHead}..${currentHead}`])
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch (error) {
+    failures.push(`unable to validate proof git provenance: ${error.message}`);
+    return { ok: false, proofHead, currentHead, artifactOnlyPostProofChanges: false };
+  }
+  if (mergeBase !== proofHead) {
+    failures.push(`workflow proof gitHead ${proofHead} is not an ancestor of current HEAD ${currentHead}`);
+  }
+  const allowedPostProofPrefixes = [
+    'tmp/codesite-dojo-proof/',
+  ];
+  const disallowedPostProofChanges = changedPaths.filter((filePath) => (
+    !allowedPostProofPrefixes.some((prefix) => filePath.startsWith(prefix))
+  ));
+  if (disallowedPostProofChanges.length) {
+    failures.push(`post-proof non-artifact changes detected after ${proofHead}: ${disallowedPostProofChanges.join(', ')}`);
+  }
+  if (proofScript && changedPaths.includes(proofScript)) {
+    failures.push(`proof script ${proofScript} changed after recorded proof gitHead ${proofHead}`);
+  }
+  return {
+    ok: mergeBase === proofHead && disallowedPostProofChanges.length === 0 && !(proofScript && changedPaths.includes(proofScript)),
+    proofHead,
+    currentHead,
+    postProofChangedPathCount: changedPaths.length,
+    artifactOnlyPostProofChanges: disallowedPostProofChanges.length === 0,
+    samplePostProofChangedPaths: changedPaths.slice(0, 24),
+  };
+}
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
 function validateCodexEvidence({ root, proofRoot, slug, failures }) {
