@@ -271,6 +271,7 @@ function repoStateFixture(ranges = [{
 }], overrides = {}) {
   const workspaceSlug = overrides.workspaceSlug || 'acme';
   const transactionId = overrides.transactionId || 'txn-1';
+  const writePath = overrides.writePath || ranges[0]?.filePath || 'synthi/prisma/schema.prisma';
   const repoIdentity = {
     schemaVersion: 'synthi.codesite.repoIdentity.v1',
     workspaceSlug,
@@ -294,7 +295,7 @@ function repoStateFixture(ranges = [{
     headDiffDigest: 'sha256:head-diff',
     changedLineRanges: ranges,
     writeFileDigests: [{
-      path: 'synthi/prisma/schema.prisma',
+      path: writePath,
       digest: 'sha256:file',
       size: 120,
       exists: true,
@@ -1460,6 +1461,184 @@ describe('CodeSite control plane transaction validation', () => {
       'transaction_committed',
       'black_box_closed',
     ]));
+  });
+
+  it('lands writeful automatic workflow plans only with durable agent evidence', async () => {
+    const writePath = 'docs/release/plan.md';
+    const lineRange = {
+      filePath: writePath,
+      lineAnchor: `${writePath}#L4-L9`,
+      startLine: 4,
+      endLine: 9,
+      source: 'agent_patch',
+      evidenceRefs: ['runtime:event:write-docs-1'],
+    };
+    const repoState = repoStateFixture([lineRange], {
+      transactionId: 'txn-auto-write',
+      baseSnapshot: 'base',
+      writePath,
+    });
+    const events = [];
+    const inspections = [];
+    let eventSeq = 0;
+    let autoTransaction = null;
+    const autoLease = () => ({
+      id: 'lease-created',
+      projectId: 'project-created',
+      executionPlanId: 'plan-DOCS-01',
+      agentSessionId: 'agent-DOCS-01',
+      displayCallsign: 'DOCS-01',
+      status: 'active',
+      leaseJson: JSON.stringify({
+        allowedPaths: ['docs/release/**'],
+        blockedPaths: [],
+        allowedTools: ['file_write', 'npm_test'],
+        requiredRadar: ['clearance', 'handover', 'typecheck', 'tests'],
+        invariants: ['clearance.diff.inside_route', 'handover.packet.complete'],
+      }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    });
+    const autoProject = {
+      id: 'project-created',
+      workspaceSlug: 'acme',
+      title: 'Document release process',
+      request: 'Prepare release coordination docs',
+      status: 'active',
+      createdByUserId: 'user-1',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'docs', class: 'C', label: 'Docs coordination', paths: ['docs/release/**'], rules: [], risk: 'medium' },
+        ],
+      }),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+    };
+    prisma.codeSiteProject.findUnique.mockResolvedValue(autoProject);
+    prisma.codeSiteProject.findFirst.mockImplementation(async ({ where } = {}) => {
+      if (where?.id === 'project-created') return autoProject;
+      return {
+        ...autoProject,
+        id: where?.id || 'project-1',
+        workspaceSlug: where?.workspaceSlug || 'acme',
+      };
+    });
+    prisma.codeSiteMutationTransaction.create.mockImplementation(async ({ data }) => {
+      autoTransaction = {
+        id: 'txn-auto-write',
+        openedAt: new Date('2026-06-29T23:04:00.000Z'),
+        closedAt: null,
+        commitDecisionJson: null,
+        proofBundleDigest: null,
+        ...data,
+      };
+      return autoTransaction;
+    });
+    prisma.codeSiteMutationTransaction.findFirst.mockImplementation(async () => ({
+      ...autoTransaction,
+      project: autoProject,
+      mutationLease: autoLease(),
+      agentSession: {
+        id: 'agent-DOCS-01',
+        projectId: 'project-created',
+        ownerUserId: 'user-1',
+        displayCallsign: 'DOCS-01',
+      },
+    }));
+    prisma.codeSiteMutationTransaction.update.mockImplementation(async ({ data }) => {
+      autoTransaction = { ...autoTransaction, ...data };
+      return autoTransaction;
+    });
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => {
+      const event = {
+        id: `event-${data.eventType || 'codesite'}-${eventSeq += 1}`,
+        createdAt: new Date(`2026-06-29T23:${String(4 + eventSeq).padStart(2, '0')}:00.000Z`),
+        ...data,
+      };
+      events.push(event);
+      return event;
+    });
+    prisma.codeSiteEvent.findMany.mockImplementation(async ({ where } = {}) => events.filter((event) => (
+      (!where?.projectId || event.projectId === where.projectId)
+      && (!where?.eventType || event.eventType === where.eventType || (Array.isArray(where.eventType?.in) && where.eventType.in.includes(event.eventType)))
+    )));
+    prisma.codeSiteInspectionRun.create.mockImplementation(async ({ data }) => {
+      const run = {
+        id: `inspection-${inspections.length + 1}`,
+        requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+        ...data,
+      };
+      inspections.push(run);
+      return run;
+    });
+    prisma.codeSiteInspectionRun.findMany.mockImplementation(async () => inspections);
+
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Document release process',
+      request: 'Prepare release coordination docs',
+      autoWorkflow: true,
+      repoPolicyCompiler: false,
+      missions: [{
+        callsign: 'DOCS-01',
+        domain: 'docs',
+        mission: 'Coordinate release docs',
+        route: ['docs/release/**'],
+        requestedTools: ['file_write', 'npm_test'],
+      }],
+      zonePolicy: {
+        zones: [
+          { zoneKey: 'docs', class: 'C', label: 'Docs coordination', paths: ['docs/release/**'], rules: [], risk: 'medium' },
+        ],
+      },
+      autoWorkflowEvidenceByCallsign: {
+        'DOCS-01': {
+          writeSet: [writePath],
+          readSet: ['docs/release/requirements.md'],
+          baseSnapshot: 'base',
+          writes: [{
+            path: writePath,
+            evidenceRefs: ['runtime:event:write-docs-1'],
+            lineProvenance: [lineRange],
+            changedLineRanges: [lineRange],
+          }],
+          inspectionSignals: [
+            { key: 'clearance', status: 'passed', evidenceRefs: ['clearance:run:lease-created'] },
+            { key: 'handover', status: 'passed', evidenceRefs: ['handover:packet:txn-auto-write'] },
+            { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:run:docs-release'] },
+            { key: 'tests', status: 'passed', evidenceRefs: ['test:run:docs-release'] },
+          ],
+          repoState,
+          evidenceRefs: ['runtime:event:agent-docs-session'],
+        },
+      },
+    });
+
+    const controlPlan = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.controlPlanJson);
+    expect(controlPlan.automaticWorkflow.summary).toMatchObject({
+      clearances: 1,
+      transactions: 1,
+      inspections: 1,
+      proofBundles: 1,
+      skippedFlights: [],
+    });
+    expect(prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType)).toEqual(expect.arrayContaining([
+      'write_allowed',
+      'transaction_validated',
+      'transaction_committed',
+      'black_box_closed',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        transactionId: 'txn-auto-write',
+        landingStatus: 'completed',
+        evidenceRefsJson: expect.stringContaining('codesite:repo-state:'),
+      }),
+    }));
+    expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalled();
+    expect(autoTransaction.status).toBe('committed');
+    expect(autoTransaction.proofBundleDigest).toMatch(/^sha256:/);
   });
 
   it('preserves explicit auto-workflow mission license metadata', async () => {

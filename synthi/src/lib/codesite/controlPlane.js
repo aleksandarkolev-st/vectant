@@ -744,12 +744,53 @@ async function bootstrapAutomaticWorkflowOperations({
       continue;
     }
 
-    result.skipped.push({
-      displayCallsign: lease.displayCallsign,
-      transactionId: transaction.id,
-      reason: 'write_evidence_requires_agent_landing',
+    const landingEvidence = automaticWorkflowLandingEvidence({
+      evidence,
       writeSet,
+      lease,
+      transaction,
     });
+    if (!landingEvidence.ok) {
+      result.skipped.push({
+        displayCallsign: lease.displayCallsign,
+        transactionId: transaction.id,
+        reason: 'write_evidence_requires_agent_landing',
+        writeSet,
+        missingEvidence: landingEvidence.missingEvidence,
+        missingInspectionSignals: landingEvidence.missingInspectionSignals,
+      });
+      continue;
+    }
+
+    for (const write of landingEvidence.writes) {
+      await recordTransactionWrite(project.workspaceSlug, transaction.id, write, actorForSession);
+    }
+    const committed = await commitTransaction(project.workspaceSlug, transaction.id, {
+      repoState: landingEvidence.repoState,
+      commitSha: evidence.commitSha || evidence.commit_sha || null,
+      evidenceRefs: landingEvidence.commitEvidenceRefs,
+    }, actorForSession);
+    if (!committed?.proofBundle) {
+      result.skipped.push({
+        displayCallsign: lease.displayCallsign,
+        transactionId: transaction.id,
+        reason: 'write_landing_blocked',
+        decision: committed?.decision || committed?.transaction?.commitDecision || null,
+      });
+      result.transactions[result.transactions.length - 1] = {
+        id: committed?.transaction?.id || transaction.id,
+        status: committed?.transaction?.status || 'blocked',
+        displayCallsign: lease.displayCallsign,
+      };
+      continue;
+    }
+    result.proofBundles.push(committed.proofBundle);
+    result.transactions[result.transactions.length - 1] = {
+      id: committed.transaction.id,
+      status: committed.transaction.status,
+      displayCallsign: lease.displayCallsign,
+      proofBundleDigest: committed.transaction.proofBundleDigest,
+    };
   }
   return result;
 }
@@ -778,6 +819,99 @@ function automaticWorkflowInvariants(route, zonePolicy) {
   return unique([...defaultInvariantsForRoute(route, zonePolicy), 'handover.packet.complete']);
 }
 
+function automaticWorkflowLandingEvidence({
+  evidence = {},
+  writeSet = [],
+  lease,
+  transaction,
+}) {
+  const writes = automaticWorkflowWriteEvidence(evidence, writeSet);
+  const repoState = normalizeRepoStateEvidence(evidence.repoState || evidence.repo_state);
+  const requiredSignals = unique(asArray(lease.lease?.requiredRadar)
+    .map(canonicalInspectionSignal)
+    .filter(Boolean));
+  const inspectionSignals = automaticWorkflowExplicitInspectionSignals(evidence);
+  const missingWriteEvidence = writeSet.filter((path) => !writes.some((write) => normalizePath(write.path) === path));
+  const missingInspectionSignals = requiredSignals.filter((signal) => (
+    !inspectionSignals.some((inspectionSignal) =>
+      canonicalInspectionSignal(signalKey(inspectionSignal)) === signal
+      && signalEvidenceRefs(inspectionSignal).some(isDurableInspectionEvidenceRef))
+  ));
+  const missingEvidence = [
+    ...(missingWriteEvidence.length ? ['write_line_provenance'] : []),
+    ...(!repoState ? ['repo_state'] : []),
+    ...(missingInspectionSignals.length ? ['landing_inspection_signals'] : []),
+  ];
+  return {
+    ok: missingEvidence.length === 0,
+    writes,
+    repoState,
+    inspectionSignals,
+    missingEvidence: unique(missingEvidence),
+    missingInspectionSignals,
+    commitEvidenceRefs: unique([
+      ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
+      ...asArray(evidence.commitEvidenceRefs || evidence.commit_evidence_refs),
+      ...inspectionSignals.flatMap(signalEvidenceRefs),
+      `codesite:transaction:${transaction.id}`,
+    ]),
+  };
+}
+
+function automaticWorkflowWriteEvidence(evidence = {}, writeSet = []) {
+  const entries = asArray(
+    evidence.writes
+    || evidence.writeEvidence
+    || evidence.write_evidence
+    || evidence.writeEvents
+    || evidence.write_events,
+  ).filter((entry) => entry && typeof entry === 'object');
+  const byPath = new Map(entries
+    .map((entry) => [normalizePath(entry.path || entry.filePath || entry.file_path), entry])
+    .filter(([path]) => path));
+  return writeSet
+    .map((path) => {
+      const entry = byPath.get(path);
+      if (!entry) return null;
+      const lineProvenance = strictLineProvenanceRows(
+        entry.lineProvenance || entry.line_provenance,
+        path,
+      );
+      const changedLineRanges = strictLineProvenanceRows(
+        entry.changedLineRanges || entry.changed_line_ranges || entry.diffLineRanges || entry.diff_line_ranges,
+        path,
+      );
+      const evidenceRefs = unique([
+        ...asArray(entry.evidenceRefs || entry.evidence_refs),
+        ...lineProvenance.flatMap((row) => asArray(row.evidenceRefs)),
+      ]);
+      if (!lineProvenance.length || !evidenceRefs.some(isDurableInspectionEvidenceRef)) return null;
+      return {
+        path,
+        tool: entry.tool || 'file_write',
+        evidenceRefs,
+        lineProvenance,
+        changedLineRanges: changedLineRanges.length ? changedLineRanges : lineProvenance,
+        processAncestry: entry.processAncestry || entry.process_ancestry || [],
+        semanticDependencyRefs: entry.semanticDependencyRefs || entry.semantic_dependency_refs || [],
+      };
+    })
+    .filter(Boolean);
+}
+
+function automaticWorkflowExplicitInspectionSignals(evidence = {}) {
+  return asArray(
+    evidence.inspectionSignals
+    || evidence.inspection_signals
+    || evidence.radarResults
+    || evidence.radar_results
+    || evidence.landingSignals
+    || evidence.landing_signals,
+  )
+    .map(normalizeInspectionSignalPayload)
+    .filter(Boolean);
+}
+
 async function createAutomaticWorkflowInspection({
   project,
   plan,
@@ -792,24 +926,32 @@ async function createAutomaticWorkflowInspection({
     .filter(Boolean));
   const evidenceRefs = unique([
     ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
+    ...automaticWorkflowExplicitInspectionSignals(evidence).flatMap(signalEvidenceRefs),
     `clearance:run:${lease.id}`,
     `handover:packet:${transaction.id}`,
   ]);
-  const signals = requiredSignals.map((signal) => ({
-    key: signal,
-    status: 'passed',
-    evidenceRefs,
-  }));
+  const explicitSignals = automaticWorkflowExplicitInspectionSignals(evidence);
+  const signals = requiredSignals.map((signal) => {
+    const explicit = explicitSignals.find((item) => canonicalInspectionSignal(signalKey(item)) === signal);
+    if (explicit) return explicit;
+    return {
+      key: signal,
+      status: writeSet.length ? 'requested' : 'passed',
+      evidenceRefs,
+    };
+  });
+  const missingWriteEvidence = writeSet.length > 0
+    && signals.some((signal) => !signalEvidenceRefs(signal).some(isDurableInspectionEvidenceRef));
   const run = await prisma.codeSiteInspectionRun.create({
     data: {
       projectId: project.id,
       executionPlanId: plan.id,
       displayCallsign: lease.displayCallsign,
-      status: 'completed',
+      status: missingWriteEvidence ? 'requested' : 'completed',
       changedPathsJson: stringifyJson(writeSet),
       inspectionSignalsJson: stringifyJson(signals),
       evidenceRefsJson: stringifyJson(evidenceRefs),
-      completedAt: new Date(),
+      completedAt: missingWriteEvidence ? null : new Date(),
     },
   });
   await recordEvent(project.id, {
