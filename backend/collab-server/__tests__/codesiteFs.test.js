@@ -3,6 +3,8 @@ const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const {
   CodeSiteFS,
   assertCodeSiteWriteAllowed,
@@ -26,6 +28,8 @@ const {
   readCodeSiteQuarantineManifest,
   resolveCodeSiteRepoPath,
 } = require('../codesiteFs');
+
+const execFileAsync = promisify(execFile);
 
 const previousCodeSiteApiBaseUrl = process.env.SYNTHI_CODESITE_API_BASE_URL;
 process.env.SYNTHI_CODESITE_API_BASE_URL = 'http://app.test/api/workspace/{workspace_slug}/codesite';
@@ -1185,6 +1189,41 @@ test('collects repo-state evidence from actual workspace files', async () => {
     size: 20,
     exists: true,
   }]);
+});
+
+test('collects repo-state changed line ranges from actual git hunks', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-repo-state-hunks-'));
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'app.js'), ['alpha', 'beta', 'gamma'].join('\n'));
+  await execFileAsync('git', ['-C', repo, 'init']);
+  await execFileAsync('git', ['-C', repo, 'config', 'user.email', 'codesite@example.test']);
+  await execFileAsync('git', ['-C', repo, 'config', 'user.name', 'CodeSite Test']);
+  await execFileAsync('git', ['-C', repo, 'add', 'src/app.js']);
+  await execFileAsync('git', ['-C', repo, 'commit', '-m', 'initial']);
+  await fs.writeFile(path.join(repo, 'src', 'app.js'), ['alpha', 'BETA', 'gamma'].join('\n'));
+
+  const evidence = await collectCodeSiteRepoState(repo, {
+    workspaceSlug: 'acme',
+    transactionId: 'txn-1',
+    baseSnapshot: 'repo@sha256:base',
+    writePaths: ['src/app.js'],
+  });
+
+  assert.match(evidence.headDiffDigest, /^sha256:/);
+  assert.deepStrictEqual(evidence.changedLineRanges.map((range) => ({
+    filePath: range.filePath,
+    startLine: range.startLine,
+    endLine: range.endLine,
+    lineAnchor: range.lineAnchor,
+    source: range.source,
+  })), [{
+    filePath: 'src/app.js',
+    startLine: 2,
+    endLine: 2,
+    lineAnchor: 'src/app.js#L2-L2',
+    source: 'worktree_diff',
+  }]);
+  assert.deepStrictEqual(evidence.writeFileDigests[0].changedLineRanges, evidence.changedLineRanges);
 });
 
 test('passes caller git environment into repo-state evidence collection', async () => {

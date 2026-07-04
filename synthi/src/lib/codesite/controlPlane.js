@@ -2970,7 +2970,7 @@ async function landTransactionWithClient(db, workspaceSlug, transactionId, body 
     return { ...blocked, committed: false, projectId: transaction.projectId, artifactSync: { reason: 'repo_state_blocked', eventId: null } };
   }
 
-  const lineProvenanceDecision = await verifyLineProvenanceEvidence(transaction, db);
+  const lineProvenanceDecision = await verifyLineProvenanceEvidence(transaction, db, repoStateDecision.repoState);
   if (!lineProvenanceDecision.ok) {
     const decision = {
       ok: false,
@@ -3291,6 +3291,16 @@ function normalizeRepoStateEvidence(input) {
     gitHead: input.gitHead || input.git_head || null,
     stagedDiffDigest: input.stagedDiffDigest || input.staged_diff_digest || null,
     worktreeDiffDigest: input.worktreeDiffDigest || input.worktree_diff_digest || null,
+    headDiffDigest: input.headDiffDigest || input.head_diff_digest || input.commitDiffDigest || input.commit_diff_digest || null,
+    changedLineRanges: strictLineProvenanceRows(
+      input.changedLineRanges
+        || input.changed_line_ranges
+        || input.diffLineRanges
+        || input.diff_line_ranges
+        || input.hunkRanges
+        || input.hunk_ranges,
+      null,
+    ),
     writeFileDigests: normalizeRepoStateFiles(input.writeFileDigests || input.write_file_digests || input.fileDigests || input.files),
     generatedAt: input.generatedAt || input.generated_at || null,
     source: input.source || 'collab-server',
@@ -3306,6 +3316,15 @@ function normalizeRepoStateFiles(files) {
       digest: item?.digest || item?.contentDigest || item?.content_digest || null,
       size: Number.isFinite(item?.size) ? item.size : null,
       exists: item?.exists !== false,
+      changedLineRanges: strictLineProvenanceRows(
+        item?.changedLineRanges
+          || item?.changed_line_ranges
+          || item?.diffLineRanges
+          || item?.diff_line_ranges
+          || item?.hunkRanges
+          || item?.hunk_ranges,
+        normalizePath(item?.path || item?.filePath || item?.file_path),
+      ),
     }))
     .filter((item) => item.path);
 }
@@ -3515,7 +3534,7 @@ async function seedLineProvenance(transaction, bundle, db = prisma) {
   return { seededRows: eventRows.length, coveredPaths: unique(eventRows.map((row) => row.filePath)) };
 }
 
-async function verifyLineProvenanceEvidence(transaction, db = prisma) {
+async function verifyLineProvenanceEvidence(transaction, db = prisma, repoState = null) {
   const paths = unique([
     ...parseJson(transaction.writeSetJson, []),
     ...parseJson(transaction.observedWriteSetJson, []),
@@ -3533,16 +3552,28 @@ async function verifyLineProvenanceEvidence(transaction, db = prisma) {
   const transactionEvents = events
     .map((event) => ({ event, details: parseJson(event.detailsJson, {}) }))
     .filter(({ event, details }) => eventBelongsToTransaction(event, details, transaction));
+  const allRows = transactionEvents
+    .flatMap(({ details }) => strictLineProvenanceRows(details.lineProvenance || details.line_provenance, normalizePath(details.path)));
   const coveredPaths = new Set(transactionEvents
     .flatMap(({ details }) => strictLineProvenanceRows(details.lineProvenance || details.line_provenance, normalizePath(details.path)))
     .map((row) => row.filePath));
+  const repoStateRanges = repoStateChangedLineRanges(repoState, paths);
+  const eventExpectedRanges = transactionEvents
+    .flatMap(({ details }) => strictLineProvenanceRows(details.changedLineRanges || details.changed_line_ranges, normalizePath(details.path)));
+  const expectedRanges = repoStateRanges.length ? repoStateRanges : eventExpectedRanges;
+  const missingRepoStateRangePaths = repoState
+    ? paths.filter((filePath) => !repoStateRanges.some((range) => lineProvenanceFileCoversPath(range.filePath, filePath)))
+    : [];
+  const uncoveredRepoStateRanges = expectedRanges.filter((expectedRange) => (
+    !allRows.some((row) => lineProvenanceRowCoversRange(row, expectedRange))
+  ));
   const uncoveredWriteEvents = transactionEvents
     .map(({ event, details }) => {
       const path = normalizePath(details.path);
       const rows = strictLineProvenanceRows(details.lineProvenance || details.line_provenance, path);
-      const expectedRanges = strictLineProvenanceRows(details.changedLineRanges || details.changed_line_ranges, path);
+      const eventRanges = strictLineProvenanceRows(details.changedLineRanges || details.changed_line_ranges, path);
       const missingPathCoverage = path && !lineProvenanceRowsCoverPath(rows, path);
-      const missingRangeCoverage = expectedRanges.filter((expectedRange) => (
+      const missingRangeCoverage = eventRanges.filter((expectedRange) => (
         !rows.some((row) => lineProvenanceRowCoversRange(row, expectedRange))
       ));
       return {
@@ -3555,13 +3586,58 @@ async function verifyLineProvenanceEvidence(transaction, db = prisma) {
     .filter((item) => item.path && (item.missingPathCoverage || item.missingRangeCoverage.length));
   const missingPaths = paths.filter((filePath) => !lineProvenanceCoversPath(coveredPaths, filePath));
   const missingEventPaths = unique(uncoveredWriteEvents.map((event) => event.path));
-  const allMissingPaths = unique([...missingPaths, ...missingEventPaths]);
+  const missingActualRangePaths = unique(uncoveredRepoStateRanges.map((range) => range.filePath));
+  const allMissingPaths = unique([
+    ...missingPaths,
+    ...missingEventPaths,
+    ...missingRepoStateRangePaths,
+    ...missingActualRangePaths,
+  ]);
+  const reasonCodes = [
+    ...(allMissingPaths.length || uncoveredWriteEvents.length || uncoveredRepoStateRanges.length ? ['line_provenance_required'] : []),
+    ...(missingRepoStateRangePaths.length ? ['repo_state_line_ranges_required'] : []),
+    ...(uncoveredRepoStateRanges.length ? ['repo_state_line_range_coverage_required'] : []),
+  ];
   return {
-    ok: allMissingPaths.length === 0 && uncoveredWriteEvents.length === 0,
-    reasonCodes: allMissingPaths.length || uncoveredWriteEvents.length ? ['line_provenance_required'] : ['line_provenance_verified'],
+    ok: reasonCodes.length === 0,
+    reasonCodes: reasonCodes.length ? unique(reasonCodes) : ['line_provenance_verified'],
     missingPaths: allMissingPaths,
     uncoveredWriteEvents,
+    uncoveredRepoStateRanges,
+    expectedRanges,
   };
+}
+
+function repoStateChangedLineRanges(repoState, paths = []) {
+  if (!repoState) return [];
+  const pathList = normalizePathList(paths);
+  const fromTopLevel = strictLineProvenanceRows(repoState.changedLineRanges || repoState.changed_line_ranges, null);
+  const fromFiles = asArray(repoState.writeFileDigests || repoState.write_file_digests || repoState.files)
+    .flatMap((file) => strictLineProvenanceRows(
+      file?.changedLineRanges
+        || file?.changed_line_ranges
+        || file?.diffLineRanges
+        || file?.diff_line_ranges
+        || file?.hunkRanges
+        || file?.hunk_ranges,
+      normalizePath(file?.path || file?.filePath || file?.file_path),
+    ));
+  const ranges = uniqueLineProvenanceRanges([...fromTopLevel, ...fromFiles]);
+  if (!pathList.length) return ranges;
+  return ranges.filter((range) => pathList.some((filePath) => lineProvenanceFileCoversPath(range.filePath, filePath)));
+}
+
+function uniqueLineProvenanceRanges(ranges) {
+  const seen = new Set();
+  const result = [];
+  for (const range of ranges) {
+    if (!range?.filePath) continue;
+    const key = `${range.filePath}:${range.startLine}:${range.endLine}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(range);
+  }
+  return result;
 }
 
 function strictLineProvenanceRows(value, defaultPath) {

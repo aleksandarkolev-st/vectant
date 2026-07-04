@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CodeSite Line Provenance Diff Proof</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b0d;color:#eef4f2;color-scheme:dark}
+body{margin:0;background:#080b0d;color:#eef4f2}
+main{width:min(1220px,calc(100vw - 56px));margin:0 auto;padding:38px 0 54px}
+header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:end;border-bottom:1px solid #26383c;padding-bottom:24px}
+h1{margin:0;font-size:36px;line-height:1.05;font-weight:790;letter-spacing:0}
+.sub{margin:12px 0 0;color:#a6b8b6;max-width:900px;line-height:1.55}
+.stamp{border:1px solid #2d8a6c;background:#0b2f29;color:#b9f7dd;padding:12px 34px;font-weight:790}
+.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:24px 0}
+.card,section{background:#0f1517;border:1px solid #26383c}
+.card{padding:16px;min-height:86px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8ba09f}
+.value{font-size:27px;font-weight:790;margin-top:10px;overflow-wrap:anywhere}
+section{padding:20px;margin-top:18px}
+h2{font-size:19px;margin:0 0 14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-top:1px solid #223236;padding:10px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9bb7b4;background:#0a1012}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+pre{background:#040708;color:#dbe8e5;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
+.cwd{color:#849997;font-size:12px;margin-top:4px}
+.ok{color:#83f0bd;font-weight:760}
+.fail{color:#ff9b8f;font-weight:760}
+@media(max-width:900px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<h1>CodeSite Line Provenance Diff Proof</h1>
+<p class="sub">Verified 2026-07-04T13:21:10.755Z. CodeSite now derives actual changed line ranges from trusted Git diff evidence and rejects strict but forged provenance that does not cover those hunks.</p>
+</div>
+<div class="stamp">PASS</div>
+</header>
+<div class="cards">
+<div class="card"><div class="label">Diff Contract</div><div class="value">PASS</div></div>
+<div class="card"><div class="label">Docker Suite</div><div class="value">117/117</div></div>
+<div class="card"><div class="label">CodeSiteFS</div><div class="value">46/46</div></div>
+<div class="card"><div class="label">Assertions</div><div class="value">10/10</div></div>
+</div>
+<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>repo-state collector requests zero-context Git diff hunks</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>repo-state evidence carries changed line ranges from Git diff output</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>collector avoids stale HEAD hunks when staged or worktree diffs exist</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>repo-state hunk ranges are required for landing provenance</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>landing decision exposes uncovered actual hunk ranges</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>control-plane test rejects forged strict provenance</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>CodeSiteFS test derives hunk ranges from a real temporary Git repo</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>release gate requires the line provenance diff proof</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>dockerControlPlaneSuite command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:117,&quot;skipped&quot;:0,&quot;tests&quot;:117,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>codesiteFsTests command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteFs.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:46,&quot;suites&quot;:0,&quot;pass&quot;:46,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
+<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code><div class="cwd">.</div></td><td>117/117</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/codesiteFs.test.js</code><div class="cwd">.</div></td><td>46/46</td></tr></tbody></table></section>
+<section><h2>Git Binding</h2><pre>{
+  &quot;head&quot;: &quot;ab813ebb9ca60da71df7a0e7cca290b56398f0ce&quot;,
+  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
+  &quot;statusShort&quot;: &quot;M backend/collab-server/__tests__/codesiteFs.test.js\n M backend/collab-server/codesiteFs.js\n M synthi/scripts/codesite-release-gate.mjs\n M synthi/src/lib/codesite/__tests__/controlPlane.test.js\n M synthi/src/lib/codesite/controlPlane.js&quot;
+}</pre></section>
+<section><h2>Landing Contract</h2><pre>{
+  &quot;sourceOfTruth&quot;: &quot;trusted repo-state Git hunks, not writer-supplied claimed ranges&quot;,
+  &quot;liveWorktreeMode&quot;: &quot;staged/worktree hunks override previous HEAD commit hunks&quot;,
+  &quot;cleanCommitMode&quot;: &quot;clean post-commit proof falls back to HEAD commit hunks&quot;,
+  &quot;landingGate&quot;: &quot;proof-carrying commits reject uncovered repo-state changed line ranges&quot;,
+  &quot;visualEvidence&quot;: &quot;this PNG records Docker, backend CodeSiteFS, source-contract, and Git binding checks&quot;
+}</pre></section>
+</main>
+</body>
+</html>

@@ -52,6 +52,12 @@ const REQUIRED_MATURE_PROOFS = [
     browserProof: true,
   },
   {
+    name: 'lineProvenanceDiff',
+    plan: '2A.6, 25.7B, 26.10',
+    file: 'codesite-line-provenance-diff-proof.json',
+    png: 'codesite-line-provenance-diff-proof.png',
+  },
+  {
     name: 'shadowSimulator',
     plan: '2A.5, 25.4, 26.6',
     file: 'codesite-shadow-simulator-proof.json',

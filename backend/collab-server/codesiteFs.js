@@ -1227,12 +1227,25 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
   const root = path.resolve(repoRoot);
   const writePaths = [...new Set(asArray(input.writePaths).map(cleanPattern).filter(Boolean))];
   const exactPaths = writePaths.filter((item) => !item.includes('*'));
-  const [gitHead, stagedDiff, worktreeDiff, writeFileDigests] = await Promise.all([
+  const [gitHead, stagedDiff, worktreeDiff, headDiff, writeFileDigests] = await Promise.all([
     gitOutput(root, ['rev-parse', 'HEAD'], input.env),
-    gitOutput(root, ['diff', '--cached', '--binary', '--', ...exactPaths], input.env),
-    gitOutput(root, ['diff', '--binary', '--', ...exactPaths], input.env),
+    gitOutput(root, ['diff', '--cached', '--binary', '--unified=0', '--', ...exactPaths], input.env),
+    gitOutput(root, ['diff', '--binary', '--unified=0', '--', ...exactPaths], input.env),
+    gitOutput(root, ['show', '--format=', '--unified=0', '--', ...exactPaths], input.env),
     Promise.all(exactPaths.map((relPath) => fileDigestForRepoPath(root, relPath))),
   ]);
+  const stagedRanges = lineRangesFromUnifiedDiff(stagedDiff, 'staged_diff');
+  const worktreeRanges = lineRangesFromUnifiedDiff(worktreeDiff, 'worktree_diff');
+  const headRanges = lineRangesFromUnifiedDiff(headDiff, 'head_commit_diff');
+  const liveRanges = [...stagedRanges, ...worktreeRanges];
+  const changedLineRanges = uniqueLineRanges(liveRanges.length ? liveRanges : headRanges);
+  const enrichedWriteFileDigests = writeFileDigests.map((file) => {
+    const fileRanges = changedLineRanges.filter((range) => range.filePath === file.path);
+    return {
+      ...file,
+      ...(fileRanges.length ? { changedLineRanges: fileRanges } : {}),
+    };
+  });
   const evidence = {
     schemaVersion: 'synthi.codesite.repoStateEvidence.v1',
     workspaceSlug: input.workspaceSlug || null,
@@ -1241,7 +1254,9 @@ async function collectCodeSiteRepoState(repoRoot, input = {}) {
     gitHead: gitHead || null,
     stagedDiffDigest: digestBuffer(Buffer.from(stagedDiff || '')),
     worktreeDiffDigest: digestBuffer(Buffer.from(worktreeDiff || '')),
-    writeFileDigests,
+    headDiffDigest: digestBuffer(Buffer.from(headDiff || '')),
+    changedLineRanges,
+    writeFileDigests: enrichedWriteFileDigests,
     generatedAt: new Date().toISOString(),
     source: 'collab-server',
   };
@@ -1288,6 +1303,55 @@ async function fileDigestForRepoPath(repoRoot, relPath) {
     size: stat.size,
     exists: true,
   };
+}
+
+function lineRangesFromUnifiedDiff(diffText, source) {
+  const ranges = [];
+  let currentPath = null;
+  for (const line of String(diffText || '').split('\n')) {
+    const diffMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (diffMatch) {
+      currentPath = normalizeDiffPath(diffMatch[2]);
+      continue;
+    }
+    const newFileMatch = line.match(/^\+\+\+ (?:b\/)?(.+)$/);
+    if (newFileMatch && newFileMatch[1] !== '/dev/null') {
+      currentPath = normalizeDiffPath(newFileMatch[1]);
+      continue;
+    }
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!hunkMatch || !currentPath) continue;
+    const startLine = Math.max(1, Number.parseInt(hunkMatch[1], 10) || 1);
+    const span = Math.max(1, Number.parseInt(hunkMatch[2] || '1', 10) || 1);
+    const endLine = startLine + span - 1;
+    ranges.push({
+      filePath: currentPath,
+      startLine,
+      endLine,
+      lineAnchor: `${currentPath}#L${startLine}-L${endLine}`,
+      source,
+    });
+  }
+  return ranges;
+}
+
+function normalizeDiffPath(input) {
+  const value = String(input || '').trim();
+  if (!value || value === '/dev/null') return null;
+  return normalizeRepoRelativePath(value.replace(/^"?b\//, '').replace(/^"?a\//, '').replace(/"$/, ''));
+}
+
+function uniqueLineRanges(ranges) {
+  const seen = new Set();
+  const result = [];
+  for (const range of ranges) {
+    if (!range?.filePath) continue;
+    const key = `${range.filePath}:${range.startLine}:${range.endLine}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(range);
+  }
+  return result;
 }
 
 async function createCodeSiteQuarantineWorkspace(context, cwd, options = {}) {

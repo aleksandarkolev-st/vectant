@@ -233,7 +233,13 @@ function transactionFixture() {
   };
 }
 
-function repoStateFixture() {
+function repoStateFixture(ranges = [{
+  filePath: 'synthi/prisma/schema.prisma',
+  lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+  startLine: 12,
+  endLine: 15,
+  source: 'head_commit_diff',
+}]) {
   return {
     schemaVersion: 'synthi.codesite.repoStateEvidence.v1',
     workspaceSlug: 'acme',
@@ -242,11 +248,14 @@ function repoStateFixture() {
     gitHead: 'abc123',
     stagedDiffDigest: 'sha256:staged',
     worktreeDiffDigest: 'sha256:worktree',
+    headDiffDigest: 'sha256:head-diff',
+    changedLineRanges: ranges,
     writeFileDigests: [{
       path: 'synthi/prisma/schema.prisma',
       digest: 'sha256:file',
       size: 120,
       exists: true,
+      changedLineRanges: ranges,
     }],
     generatedAt: '2026-06-29T23:02:30.000Z',
     source: 'collab-server',
@@ -3806,9 +3815,9 @@ describe('CodeSite control plane transaction validation', () => {
           transactionId: 'txn-race-a',
           path: 'synthi/prisma/schema.prisma',
           lineProvenance: [{
-            lineAnchor: 'synthi/prisma/schema.prisma#L1-L2',
-            startLine: 1,
-            endLine: 2,
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
             evidenceRefs: ['hunk:evidence:a'],
           }],
           evidenceRefs: ['write:evidence:a'],
@@ -3825,9 +3834,9 @@ describe('CodeSite control plane transaction validation', () => {
           transactionId: 'txn-race-b',
           path: 'synthi/prisma/schema.prisma',
           lineProvenance: [{
-            lineAnchor: 'synthi/prisma/schema.prisma#L3-L4',
-            startLine: 3,
-            endLine: 4,
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
             evidenceRefs: ['hunk:evidence:b'],
           }],
           evidenceRefs: ['write:evidence:b'],
@@ -4197,7 +4206,10 @@ describe('CodeSite control plane transaction validation', () => {
     const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
 
     expect(result.decision.ok).toBe(false);
-    expect(result.decision.reasonCodes).toEqual(['line_provenance_required']);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'line_provenance_required',
+      'repo_state_line_range_coverage_required',
+    ]));
     expect(result.decision.missingLineProvenancePaths).toEqual(['synthi/prisma/schema.prisma']);
     expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
     expect(prisma.codeSiteLineProvenance.create).not.toHaveBeenCalled();
@@ -4308,8 +4320,70 @@ describe('CodeSite control plane transaction validation', () => {
     const result = await commitTransaction('acme', 'txn-1', { repoState: repoStateFixture() });
 
     expect(result.decision.ok).toBe(false);
-    expect(result.decision.reasonCodes).toEqual(['line_provenance_required']);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'line_provenance_required',
+      'repo_state_line_range_coverage_required',
+    ]));
     expect(result.decision.missingLineProvenancePaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects strict line provenance that does not cover repo-state diff ranges', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+          }],
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+    const forgedRepoState = repoStateFixture([{
+      filePath: 'synthi/prisma/schema.prisma',
+      lineAnchor: 'synthi/prisma/schema.prisma#L40-L42',
+      startLine: 40,
+      endLine: 42,
+      source: 'head_commit_diff',
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState: forgedRepoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'line_provenance_required',
+      'repo_state_line_range_coverage_required',
+    ]));
+    expect(result.decision.lineProvenance?.uncoveredRepoStateRanges).toEqual([expect.objectContaining({
+      filePath: 'synthi/prisma/schema.prisma',
+      startLine: 40,
+      endLine: 42,
+    })]);
     expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
   });
 
