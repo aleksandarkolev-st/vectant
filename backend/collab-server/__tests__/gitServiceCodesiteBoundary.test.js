@@ -7,6 +7,8 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const config = require('../config');
 const activityRegistry = require('../codesiteActivityRegistry');
+const { withCodeSiteBoundaryContext } = require('../codesiteActiveBoundary');
+const { createCodeSiteFS } = require('../codesiteFs');
 const gitService = require('../gitService');
 const workspaceManager = require('../workspaceManager');
 
@@ -276,6 +278,58 @@ test('direct gitService.writeFile accepts matching CodeSite context while regist
 
     assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'codesite write\n');
     assert.strictEqual(recordBodies.length, 1);
+  });
+});
+
+test('managed outer CodeSite boundary lets nested gitService.writeFile inherit context once', async (t) => {
+  activityRegistry.resetRegistry();
+  t.after(() => activityRegistry.resetRegistry());
+  const slug = uniqueSlug('active-registry-managed-nested-write');
+  const userId = 'user-1';
+  await withTempGitService(t, slug, userId, async ({ repoPath }) => {
+    activityRegistry.markTransactionActive({
+      workspaceSlug: slug,
+      transactionId: 'txn-direct-1',
+      mutationLeaseId: 'lease-direct-1',
+      agentSessionId: 'agent-direct-1',
+      actorUserId: 'user-1',
+      effectiveUserId: 'user-1',
+      source: 'next_codesite_route',
+      status: 'open',
+    });
+    const recordBodies = [];
+    const { fetch } = createCodeSiteFetch({ writeSet: ['src/**'], recordBodies });
+    const context = codeSiteContext(slug);
+    const codesiteFs = createCodeSiteFS(context, {
+      repoRoot: repoPath,
+      fetch,
+      requireAuthoritativeContext: true,
+    });
+
+    const boundary = await withCodeSiteBoundaryContext(context, () => codesiteFs.run({
+      operation: 'workspace-action:write-file',
+      tool: 'file_write',
+      attempts: [{
+        path: 'src/app.js',
+        kind: 'workspace-action:write-file',
+        tool: 'file_write',
+        evidenceRefs: ['outer-boundary:managed-write'],
+        processAncestry: ['collab-server:test-boundary'],
+      }],
+    }, async () => gitService.writeFile(slug, 'src/app.js', 'managed nested write\n', userId), {
+      repoRoot: repoPath,
+      fetch,
+    }), {
+      operation: 'workspace-action:write-file',
+      source: 'collab-server-test',
+    });
+
+    assert.strictEqual(await fs.readFile(path.join(repoPath, 'src/app.js'), 'utf8'), 'managed nested write\n');
+    assert.strictEqual(boundary.verification.length, 1);
+    assert.strictEqual(boundary.verification[0].ok, true);
+    assert.strictEqual(recordBodies.length, 1);
+    assert.strictEqual(recordBodies[0].path, 'src/app.js');
+    assert.strictEqual(recordBodies[0].tool, 'file_write');
   });
 });
 

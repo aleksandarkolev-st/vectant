@@ -41,6 +41,7 @@ const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 const {
   assertCodeSiteWorkspaceMutationAllowedAsync,
   guardCodeSiteHostSurface,
+  withCodeSiteBoundaryContext,
 } = require('./codesiteActiveBoundary');
 const {
   configuredControlPlaneBaseUrl,
@@ -1402,7 +1403,14 @@ async function runCodeSiteMutationBoundary(context, operation, applyFn, options 
     cookie: options.cookie || context?.cookie,
   });
   const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
-  return codesiteFs.run(operation, applyFn, options);
+  return withCodeSiteBoundaryContext(
+    context,
+    () => codesiteFs.run(operation, applyFn, options),
+    {
+      operation: operation.operation || operation.kind || options.surface || 'workspace_mutation',
+      source: 'collab-server',
+    },
+  );
 }
 
 async function runCodeSiteGitMutationBoundary(context, action, attempts, applyFn, options = {}) {

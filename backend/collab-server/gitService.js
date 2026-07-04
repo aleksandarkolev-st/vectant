@@ -12,7 +12,10 @@ const {
     createCodeSiteFS,
     normalizeRepoRelativePath,
 } = require('./codesiteFs');
-const { assertCodeSiteWorkspaceMutationAllowedAsync } = require('./codesiteActiveBoundary');
+const {
+    assertCodeSiteWorkspaceMutationAllowedAsync,
+    currentCodeSiteBoundaryScope,
+} = require('./codesiteActiveBoundary');
 
 let NodeGit = null;
 let nodeGitLoadError = null;
@@ -153,8 +156,18 @@ function uniqueArray(values) {
     return [...new Set(arrayValue(values))];
 }
 
-function codeSiteContextFromOptions(options = {}) {
+function explicitCodeSiteContextFromOptions(options = {}) {
     return options.codesiteContext || options.codeSiteContext || null;
+}
+
+function inheritedCodeSiteBoundaryScopeFromOptions(options = {}) {
+    if (explicitCodeSiteContextFromOptions(options)) return null;
+    const scope = currentCodeSiteBoundaryScope();
+    return scope?.context?.active ? scope : null;
+}
+
+function codeSiteContextFromOptions(options = {}) {
+    return explicitCodeSiteContextFromOptions(options) || inheritedCodeSiteBoundaryScopeFromOptions(options)?.context || null;
 }
 
 function splitTokenUserIdAndOptions(tokenUserId = null, options = {}) {
@@ -1290,6 +1303,7 @@ class GitService {
 
     async _runCodeSiteMutationBoundary(slug, userId, options = {}, operation = {}, applyFn, repoPath = null) {
         const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        const inheritedBoundaryScope = inheritedCodeSiteBoundaryScopeFromOptions(options);
         const context = codeSiteContextFromOptions(options);
         const nestedOptions = options.codesiteOptions || options.codeSiteOptions || {};
         await assertCodeSiteWorkspaceMutationAllowedAsync(slug, context, operation, {
@@ -1300,6 +1314,14 @@ class GitService {
             authToken: options.authToken || nestedOptions.authToken || nestedOptions.auth_token || context?.authToken,
             cookie: options.cookie || nestedOptions.cookie || context?.cookie,
         });
+        const skipNestedBoundary = Boolean(
+            inheritedBoundaryScope
+            && !options.requireCodeSiteBoundary
+            && !nestedOptions.requireCodeSiteBoundary
+        );
+        if (skipNestedBoundary) {
+            return applyFn({ repoPath: effectiveRepoPath });
+        }
         const boundaryOptions = this._codeSiteBoundaryOptions(context, options, effectiveRepoPath);
         if (!boundaryOptions) {
             return applyFn({ repoPath: effectiveRepoPath });

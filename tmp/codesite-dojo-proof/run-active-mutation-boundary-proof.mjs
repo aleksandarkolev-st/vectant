@@ -117,7 +117,7 @@ pre{background:#111811;color:#edf4ed;padding:14px;white-space:pre-wrap;overflow:
 <header>
 <div>
 <h1>CodeSite Active Mutation Boundary Proof</h1>
-<p class="sub">Verified ${escapeHtml(proof.generatedAt)}. Active CodeSite workspaces now reject contextless or mismatched real-tree mutations through the shared collab mutation boundary and direct gitService mutation wrapper while preserving ordinary non-CodeSite writes when no transaction is active.</p>
+<p class="sub">Verified ${escapeHtml(proof.generatedAt)}. Active CodeSite workspaces reject contextless or mismatched real-tree mutations, and managed collab boundaries carry their verified transaction context into nested gitService writes without double-recording CodeSiteFS events.</p>
 </div>
 <div class="stamp">${proof.ok ? 'PASS' : 'FAIL'}</div>
 </header>
@@ -158,11 +158,15 @@ async function main() {
 
   assert(activeBoundarySource.includes('codesite_active_workspace_context_required'), 'shared boundary rejects contextless active-workspace mutations', assertions);
   assert(activeBoundarySource.includes('codesite_active_workspace_context_mismatch'), 'shared boundary rejects mismatched transaction contexts', assertions);
+  assert(activeBoundarySource.includes('AsyncLocalStorage') && activeBoundarySource.includes('withCodeSiteBoundaryContext'), 'shared boundary exposes async inherited CodeSite context for managed nested writes', assertions);
   assert(serverSource.includes('assertCodeSiteWorkspaceMutationAllowed') && serverSource.includes('enforceCodeSiteProvisioningAllowed'), 'collab server mutation and provisioning helpers use active workspace gate', assertions);
+  assert(serverSource.includes('withCodeSiteBoundaryContext') && serverSource.includes('codesiteFs.run(operation, applyFn, options)'), 'collab server publishes verified CodeSite context around the managed apply callback', assertions);
   assert(serverSource.includes('workspaceSlug: slug'), 'Yjs flush paths pass workspace slug into the active boundary', assertions);
-  assert(gitServiceSource.includes('assertCodeSiteWorkspaceMutationAllowed(slug') && gitServiceSource.includes('_runCodeSiteMutationBoundary'), 'direct gitService mutations use active workspace gate', assertions);
+  assert(gitServiceSource.includes('currentCodeSiteBoundaryScope') && gitServiceSource.includes('skipNestedBoundary'), 'nested gitService mutations inherit outer boundary context without duplicate event recording', assertions);
+  assert(gitServiceSource.includes('assertCodeSiteWorkspaceMutationAllowedAsync(slug') && gitServiceSource.includes('_runCodeSiteMutationBoundary'), 'direct gitService mutations use active workspace gate', assertions);
   assert(activeBoundaryTestSource.includes('rejects contextless real-tree mutations') && activeBoundaryTestSource.includes('allows matching transaction context'), 'unit tests cover required, mismatch, and matching contexts', assertions);
   assert(gitServiceTestSource.includes('denies contextless writes while CodeSite transaction is active') && gitServiceTestSource.includes('legacy direct gitService.writeFile still writes'), 'gitService tests prove active-only denial without breaking ordinary writes', assertions);
+  assert(gitServiceTestSource.includes('managed outer CodeSite boundary lets nested gitService.writeFile inherit context once') && gitServiceTestSource.includes('recordBodies.length, 1'), 'managed nested write regression proves success through inherited context with one write record', assertions);
 
   const commands = [
     run('node', ['--check', 'backend/collab-server/codesiteActiveBoundary.js'], { name: 'syntaxActiveBoundary' }),
@@ -216,9 +220,11 @@ async function main() {
       allowed: [
         'no active workspace transaction => legacy direct write remains allowed',
         'active workspace + matching transaction id/lease => CodeSiteFS authoritative boundary still runs',
+        'active managed collab boundary + nested gitService.writeFile without explicit options => allowed through inherited verified context',
       ],
       surfaces: [
         'collab runCodeSiteMutationBoundary',
+        'async managed boundary context',
         'collab provisioning guard',
         'Yjs save/pre-stage flushes',
         'direct gitService mutation wrapper',

@@ -1,6 +1,9 @@
 'use strict';
 
+const { AsyncLocalStorage } = require('node:async_hooks');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
+
+const codeSiteBoundaryStorage = new AsyncLocalStorage();
 
 function normalize(value) {
   return String(value || '').trim();
@@ -25,6 +28,29 @@ function activeTransactionSummary(record = {}) {
     lastSeenAt: record.lastSeenAt || null,
     expiresAt: record.expiresAt || null,
   };
+}
+
+function currentCodeSiteBoundaryScope() {
+  return codeSiteBoundaryStorage.getStore() || null;
+}
+
+function currentCodeSiteBoundaryContext() {
+  return currentCodeSiteBoundaryScope()?.context || null;
+}
+
+function withCodeSiteBoundaryContext(context = {}, fn, options = {}) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('withCodeSiteBoundaryContext requires a function');
+  }
+  if (!context?.active) return fn();
+  const parent = currentCodeSiteBoundaryScope();
+  const scope = {
+    context: { ...context },
+    depth: Number(parent?.depth || 0) + 1,
+    operation: options.operation || parent?.operation || null,
+    source: options.source || parent?.source || 'codesite_boundary',
+  };
+  return codeSiteBoundaryStorage.run(scope, fn);
 }
 
 function recordCanAuthorizeWrite(record = {}) {
@@ -234,6 +260,9 @@ module.exports = {
   assertCodeSiteWorkspaceMutationAllowedAsync,
   codeSiteWorkspaceActiveState,
   contextMatchesActiveTransaction,
+  currentCodeSiteBoundaryContext,
+  currentCodeSiteBoundaryScope,
   guardCodeSiteHostSurface,
   recordCanAuthorizeWrite,
+  withCodeSiteBoundaryContext,
 };
