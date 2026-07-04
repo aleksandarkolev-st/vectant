@@ -1281,7 +1281,6 @@ function codexAgentOutputSchema() {
           properties: {
             kind: { type: 'string' },
             action: { type: 'string' },
-            reference: { type: 'string' },
           },
         },
       },
