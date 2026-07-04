@@ -90,6 +90,7 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteDocument: {
       create: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       update: vi.fn(),
     },
     codeSitePermit: {
@@ -291,6 +292,36 @@ function executionPlanFixture(route = ['synthi/prisma/**']) {
         requiredRadar: ['api_contract', 'security'],
       }),
     },
+  };
+}
+
+function approvedPermitFixture(overrides = {}) {
+  const scope = {
+    executionPlanId: 'plan-1',
+    allowedPaths: ['synthi/prisma/**'],
+    blockedPaths: [],
+    affectedZones: ['schema'],
+    contractRefs: ['auth.signup.v2'],
+    ...(overrides.scope || {}),
+  };
+  return {
+    id: overrides.id || 'permit-approved',
+    projectId: 'project-1',
+    executionPlanId: overrides.executionPlanId ?? 'plan-1',
+    mutationLeaseId: overrides.mutationLeaseId ?? null,
+    documentId: overrides.documentId ?? 'doc-1',
+    permitType: overrides.permitType || 'schema_work_permit',
+    status: overrides.status || 'issued',
+    title: overrides.title || 'Schema work permit',
+    scopeJson: JSON.stringify(scope),
+    approvalJson: JSON.stringify(overrides.approval || { approved: true, approvedByUserId: 'reviewer-1' }),
+    evidenceRefsJson: JSON.stringify(overrides.evidenceRefs || ['evidence:permit-review']),
+    issuedByUserId: overrides.issuedByUserId || 'reviewer-1',
+    issuedAt: new Date('2026-06-29T23:04:30.000Z'),
+    expiresAt: null,
+    closedAt: null,
+    ...overrides,
+    scopeJson: JSON.stringify(scope),
   };
 }
 
@@ -603,6 +634,7 @@ describe('CodeSite control plane transaction validation', () => {
         agentSessions: [],
       },
     });
+    prisma.codeSiteDocument.findMany.mockResolvedValue([]);
     prisma.codeSiteDocument.update.mockImplementation(async ({ where, data }) => ({
       id: where.id,
       projectId: 'project-1',
@@ -1478,13 +1510,13 @@ describe('CodeSite control plane transaction validation', () => {
     ]));
   });
 
-  it('allows restricted airspace clearances with a verified Dojo proof capsule', async () => {
+  it('holds restricted airspace clearances without approved governance evidence even with verified Dojo proof', async () => {
     const lease = await requestMutationLease('acme', 'plan-1', {
       allowedPaths: ['synthi/prisma/**'],
       ...signedDojoProofFixture(),
     });
 
-    expect(lease.status).toBe('active');
+    expect(lease.status).toBe('holding');
     expect(lease.dojoProofRef).toBe('pcap-auth-schema');
     expect(lease.dojoDecisionDigest).toMatch(/^sha256:/);
     expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
@@ -1492,6 +1524,31 @@ describe('CodeSite control plane transaction validation', () => {
       'dojo_public_proof_signature_verified',
       'pilot_license_health_active',
       'pilot_license_level_authorized',
+      'governance_approval_required',
+      'governance_permit_or_change_order_required',
+    ]));
+    expect(lease.lease.governancePolicy).toMatchObject({
+      required: true,
+      verified: false,
+    });
+    expect(lease.lease.towerInstruction).toContain('requires an approved work permit');
+  });
+
+  it('allows restricted airspace clearances with verified Dojo proof and an approved permit', async () => {
+    prisma.codeSitePermit.findMany.mockResolvedValueOnce([approvedPermitFixture()]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_clearance_proof_verified',
+      'dojo_public_proof_signature_verified',
+      'pilot_license_health_active',
+      'pilot_license_level_authorized',
+      'governance_clearance_evidence_verified',
     ]));
     expect(lease.pilotLicenseHealth).toMatchObject({
       status: 'active',
@@ -1503,6 +1560,13 @@ describe('CodeSite control plane transaction validation', () => {
       status: 'active',
       level: 'IFR',
       dojoProofRef: 'pcap-auth-schema',
+    });
+    expect(storedLease.governancePolicy).toMatchObject({
+      required: true,
+      verified: true,
+      evidence: {
+        permits: [expect.objectContaining({ id: 'permit-approved', status: 'issued' })],
+      },
     });
   });
 
@@ -1555,6 +1619,7 @@ describe('CodeSite control plane transaction validation', () => {
 
   it('allows the verified schema-first leader through restricted collision airspace', async () => {
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture(['synthi/prisma/**']));
+    prisma.codeSitePermit.findMany.mockResolvedValueOnce([approvedPermitFixture()]);
     prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([{
       ...executionPlanFixture(['synthi/prisma/**']),
       id: 'plan-api',

@@ -66,6 +66,10 @@ const RADAR_INSPECTION_ADAPTERS = [
   { key: 'handover', label: 'Handover radar', evidencePrefix: 'handover:packet', aliases: ['handover', 'handoff', 'packet', 'review_packet'] },
 ];
 const PROMOTED_POLICY_DELTA_STATES = new Set(['accepted', 'active', 'promoted', 'validated']);
+const GOVERNANCE_APPROVED_PERMIT_STATUSES = new Set(['issued', 'active', 'approved']);
+const GOVERNANCE_APPROVED_DOCUMENT_STATUSES = new Set(['approved', 'resolved', 'closed', 'accepted', 'answered']);
+const GOVERNANCE_APPROVED_ROUTE_REVISION_STATUSES = new Set(['approved', 'applied']);
+const GOVERNANCE_DOCUMENT_KINDS = new Set(['change_order', 'rfi', 'submittal', 'permit']);
 const BLACK_BOX_MINIMUM_EVENT_TYPES = [
   'transaction.opened',
   'assumption.recorded',
@@ -1057,18 +1061,29 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
     zonePolicy,
     dojoProof,
   });
-  const clearancePolicy = applyCounterfactualPolicyGate(
-    applyPilotLicenseHealthGate(
-      applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
-      pilotLicenseHealth,
+  const governancePolicy = await governancePolicyGateForLeaseRequest({
+    projectId: plan.projectId,
+    executionPlan,
+    requestedLease,
+    zonePolicy,
+    body,
+  });
+  const clearancePolicy = applyGovernancePolicyGate(
+    applyCounterfactualPolicyGate(
+      applyPilotLicenseHealthGate(
+        applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
+        pilotLicenseHealth,
+      ),
+      counterfactualPolicy,
     ),
-    counterfactualPolicy,
+    governancePolicy,
   );
   const finalRequestedLease = {
     ...requestedLease,
     requiredRadar: unique([
       ...asArray(requestedLease.requiredRadar),
       ...asArray(counterfactualPolicy.requiredRadar),
+      ...asArray(governancePolicy.requiredRadar),
     ]),
   };
   const lease = await prisma.codeSiteMutationLease.create({
@@ -1088,6 +1103,7 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
         pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
         counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+        governancePolicy: governancePolicy.required ? governancePolicy : null,
       }),
       dojoProofRef: dojoProof.proofRef,
       dojoLicenseRef: dojoProof.licenseRef,
@@ -1108,6 +1124,7 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       requestedLease: finalRequestedLease,
       dojoProof: dojoProofSummary,
       pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
+      governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
     decisionJson: {
       status: clearancePolicy.status,
@@ -1118,6 +1135,7 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+      governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
   });
   await recordEvent(plan.projectId, {
@@ -1136,6 +1154,7 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
       pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+      governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
   });
   if (clearancePolicy.collisionAvoidance) {
@@ -1365,6 +1384,203 @@ function applyCounterfactualPolicyGate(policy, counterfactualPolicy = {}) {
     towerInstruction,
     counterfactualPolicy,
   };
+}
+
+async function governancePolicyGateForLeaseRequest({
+  projectId,
+  executionPlan,
+  requestedLease,
+  zonePolicy,
+  body = {},
+}) {
+  const route = pathsForRoute(requestedLease.allowedPaths || requestedLease.route || executionPlan?.route);
+  const restrictedZones = uniqueById(route
+    .map((pathValue) => classifyPath(samplePathForGovernancePattern(pathValue), zonePolicy))
+    .filter((zone) => ['A', 'B'].includes(String(zone?.class || '').toUpperCase()))
+    .map((zone) => ({
+      zoneKey: zone.zoneKey,
+      label: zone.label,
+      class: String(zone.class || '').toUpperCase(),
+      path: zone.path,
+    })));
+  if (!restrictedZones.length) {
+    return emptyGovernancePolicyGate();
+  }
+
+  const permitIds = unique(asArray(body.permitId || body.permit_id || body.permitIds || body.permit_ids).filter(Boolean));
+  const documentIds = unique(asArray(body.documentId || body.document_id || body.documentIds || body.document_ids).filter(Boolean));
+  const routeRevisionIds = unique(asArray(body.routeRevisionId || body.route_revision_id || body.routeRevisionIds || body.route_revision_ids).filter(Boolean));
+  const [permits, routeRevisions, documents] = await Promise.all([
+    prisma.codeSitePermit.findMany({
+      where: {
+        projectId,
+        status: { in: [...GOVERNANCE_APPROVED_PERMIT_STATUSES] },
+      },
+      orderBy: { issuedAt: 'desc' },
+    }),
+    prisma.codeSiteRouteRevision.findMany({
+      where: {
+        projectId,
+        status: { in: [...GOVERNANCE_APPROVED_ROUTE_REVISION_STATUSES] },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.codeSiteDocument.findMany({
+      where: {
+        projectId,
+        kind: { in: [...GOVERNANCE_DOCUMENT_KINDS] },
+        status: { in: [...GOVERNANCE_APPROVED_DOCUMENT_STATUSES] },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
+
+  const matchingPermits = permits.filter((permit) =>
+    governancePermitCoversLease(permit, { executionPlan, route, permitIds }));
+  const matchingRouteRevisions = routeRevisions.filter((revision) =>
+    governanceRouteRevisionCoversLease(revision, { executionPlan, route, routeRevisionIds }));
+  const matchingDocuments = documents.filter((document) =>
+    governanceDocumentCoversLease(document, { executionPlan, route, documentIds }));
+  const evidence = {
+    permits: matchingPermits.map((permit) => ({
+      id: permit.id,
+      permitType: permit.permitType,
+      status: permit.status,
+      executionPlanId: permit.executionPlanId || parseJson(permit.scopeJson, {})?.executionPlanId || null,
+      documentId: permit.documentId || null,
+      evidenceRefs: parseJson(permit.evidenceRefsJson, []),
+    })),
+    routeRevisions: matchingRouteRevisions.map((revision) => ({
+      id: revision.id,
+      status: revision.status,
+      executionPlanId: revision.executionPlanId,
+      documentId: revision.documentId || null,
+      evidenceRefs: parseJson(revision.evidenceRefsJson, []),
+    })),
+    documents: matchingDocuments.map((document) => ({
+      id: document.id,
+      kind: document.kind,
+      status: document.status,
+      evidenceRefs: parseJson(document.bodyJson, {})?.evidenceRefs || [],
+    })),
+  };
+  const verified = evidence.permits.length > 0
+    || evidence.routeRevisions.length > 0
+    || evidence.documents.length > 0;
+  if (verified) {
+    return {
+      required: true,
+      verified: true,
+      restrictedZones,
+      evidence,
+      requiredRadar: ['governance'],
+      reasonCodes: ['governance_clearance_evidence_verified'],
+      towerInstruction: null,
+    };
+  }
+  return {
+    required: true,
+    verified: false,
+    restrictedZones,
+    evidence,
+    requiredRadar: ['governance'],
+    reasonCodes: ['governance_approval_required', 'governance_permit_or_change_order_required'],
+    towerInstruction: `Hold position: ${restrictedZones.map((zone) => zone.zoneKey).join(', ')} requires an approved work permit, change order, or route revision before clearance.`,
+  };
+}
+
+function emptyGovernancePolicyGate() {
+  return {
+    required: false,
+    verified: true,
+    restrictedZones: [],
+    evidence: { permits: [], routeRevisions: [], documents: [] },
+    requiredRadar: [],
+    reasonCodes: [],
+    towerInstruction: null,
+  };
+}
+
+function applyGovernancePolicyGate(policy, governancePolicy = emptyGovernancePolicyGate()) {
+  if (policy.decision === 'block' || !governancePolicy.required) return policy;
+  const reasonCodes = unique([
+    ...asArray(policy.reasonCodes),
+    ...asArray(governancePolicy.reasonCodes),
+  ]);
+  if (governancePolicy.verified) {
+    return {
+      ...policy,
+      reasonCodes,
+      governancePolicy,
+    };
+  }
+  return {
+    ...policy,
+    decision: 'hold',
+    status: 'holding',
+    reasonCodes,
+    towerInstruction: governancePolicy.towerInstruction || policy.towerInstruction,
+    governancePolicy,
+  };
+}
+
+function governancePermitCoversLease(permit, { executionPlan, route, permitIds = [] }) {
+  if (!GOVERNANCE_APPROVED_PERMIT_STATUSES.has(String(permit.status || '').toLowerCase())) return false;
+  if (permitIds.length && !permitIds.includes(permit.id)) return false;
+  const scope = parseJson(permit.scopeJson, {});
+  const executionPlanRef = permit.executionPlanId || scope.executionPlanId || scope.execution_plan_id || null;
+  const planMatches = executionPlanRef && executionPlanRef === executionPlan.id;
+  if (executionPlanRef && !planMatches) return false;
+  const permitRoute = pathsForRoute(scope.allowedPaths || scope.allowed_paths || scope.route || scope.paths || []);
+  if (!permitRoute.length) return Boolean(planMatches || permitIds.includes(permit.id));
+  return routeCoveredByGovernance(permitRoute, route);
+}
+
+function governanceRouteRevisionCoversLease(revision, { executionPlan, route, routeRevisionIds = [] }) {
+  if (!GOVERNANCE_APPROVED_ROUTE_REVISION_STATUSES.has(String(revision.status || '').toLowerCase())) return false;
+  if (routeRevisionIds.length && !routeRevisionIds.includes(revision.id)) return false;
+  if (revision.executionPlanId && revision.executionPlanId !== executionPlan.id) return false;
+  const revisionRoute = pathsForRoute(parseJson(revision.proposedRouteJson, []));
+  return revisionRoute.length ? routeCoveredByGovernance(revisionRoute, route) : true;
+}
+
+function governanceDocumentCoversLease(document, { executionPlan, route, documentIds = [] }) {
+  if (!GOVERNANCE_DOCUMENT_KINDS.has(String(document.kind || '').toLowerCase())) return false;
+  if (!GOVERNANCE_APPROVED_DOCUMENT_STATUSES.has(String(document.status || '').toLowerCase())) return false;
+  if (documentIds.length && !documentIds.includes(document.id)) return false;
+  const body = parseJson(document.bodyJson, {});
+  const executionPlanRef = body.executionPlanId || body.execution_plan_id || body.projectRefs?.executionPlanId || body.routing?.projectRefs?.executionPlanId || null;
+  const planMatches = executionPlanRef && executionPlanRef === executionPlan.id;
+  if (executionPlanRef && !planMatches) return false;
+  const documentRoute = pathsForRoute(body.proposedRoute || body.proposed_route || body.allowedPaths || body.allowed_paths || body.route || body.paths || []);
+  if (!documentRoute.length) return Boolean(planMatches || documentIds.includes(document.id));
+  return routeCoveredByGovernance(documentRoute, route);
+}
+
+function routeCoveredByGovernance(governanceRoute = [], requestedRoute = []) {
+  const normalizedGovernance = pathsForRoute(governanceRoute);
+  const normalizedRequested = pathsForRoute(requestedRoute);
+  if (!normalizedRequested.length) return false;
+  return normalizedRequested.every((requested) =>
+    normalizedGovernance.some((approved) => governancePatternsOverlap(approved, requested)));
+}
+
+function governancePatternsOverlap(left, right) {
+  const leftPattern = String(left || '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
+  const rightPattern = String(right || '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
+  if (!leftPattern || !rightPattern) return false;
+  if (leftPattern === rightPattern) return true;
+  const leftSample = samplePathForGovernancePattern(leftPattern);
+  const rightSample = samplePathForGovernancePattern(rightPattern);
+  return matchPathPattern(leftSample, rightPattern)
+    || matchPathPattern(rightSample, leftPattern);
+}
+
+function samplePathForGovernancePattern(pattern) {
+  return normalizePath(String(pattern || '')
+    .replace(/\*\*/g, 'index')
+    .replace(/\*/g, 'index')
+    .replace(/\/index$/, '/index.ts')) || normalizePath(pattern);
 }
 
 function learnedPolicyDeltaHoldsLease(delta) {
