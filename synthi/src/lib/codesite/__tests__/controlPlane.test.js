@@ -3704,6 +3704,7 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.proofBundle.incidentReplayDigest).toMatch(/^sha256:/);
     expect(result.proofBundle.incidentReplayDigest).not.toBe(result.proofBundle.bundleDigest);
     expect(result.proofBundle.landingStatus).toBe('completed');
+    expect(result.proofBundle.portableDigest).toMatch(/^sha256:/);
     expect(result.proofBundle.trailers).toMatchObject({
       'CodeSite-Project': 'project-1',
       'CodeSite-Flight': 'ATLAS-1',
@@ -3717,6 +3718,8 @@ describe('CodeSite control plane transaction validation', () => {
       'CodeSite-Proof-Digest': expect.stringMatching(/^sha256:/),
       'CodeSite-Proof-Signature': expect.stringMatching(/^hmac-sha256:/),
     });
+    expect(result.proofBundle.trailers['CodeSite-Proof-Digest']).toBe(result.proofBundle.portableDigest);
+    expect(JSON.parse(finalSignatureUpdate.data.proofSignatureJson).payloadDigest).toBe(result.proofBundle.portableDigest);
     expect(result.proofBundle.trailers['CodeSite-Black-Box']).toBe(result.proofBundle.incidentReplayDigest);
     expect(proofCreate.data.landingStatus).toBe('completed');
     expect(replayProofUpdate).toMatchObject({

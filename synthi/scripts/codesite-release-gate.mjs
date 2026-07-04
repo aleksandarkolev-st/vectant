@@ -45,6 +45,7 @@ const REQUIRED_MATURE_PROOFS = [
   { name: 'quarantineReview', plan: '2A.3, 26.9', file: 'codesite-quarantine-review-proof.json', png: 'codesite-quarantine-review-proof.png' },
   { name: 'proofCarryingCommit', plan: '2A.4, 25.7B, 26.4', file: 'codesite-proof-carrying-commit-proof.json', png: 'codesite-proof-carrying-commit-proof.png' },
   { name: 'actualGitCommitProof', plan: '2A.4, 25.7B, 26.4', file: 'codesite-actual-git-commit-proof.json', png: 'codesite-actual-git-commit-proof.png' },
+  { name: 'proofBundleGitContext', plan: '2A.4, 25.7B, 26.4', file: 'codesite-proof-bundle-git-context-proof.json', png: 'codesite-proof-bundle-git-context-proof.png' },
   { name: 'repoStateIdentity', plan: '2A.2, 2A.4, 25.7A, 26.4', file: 'codesite-repo-state-identity-proof.json', png: 'codesite-repo-state-identity-proof.png' },
   { name: 'blackBoxCompleteness', plan: '2A.5, 25.7B, 26.8', file: 'codesite-black-box-completeness-proof.json', png: 'codesite-black-box-completeness-proof.png' },
   {
@@ -178,7 +179,7 @@ async function main(argv) {
   checks.push({ name: 'maturePlanProofSuite', ...matureProofSummary });
 
   const trustedKeysPath = resolveTrustedKeysPath(root, proofRoot, slug, failures);
-  const proofBundleSummary = verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures });
+  const proofBundleSummary = verifyProofBundles({ root, proofRoot, slug, proof, trustedKeysPath, failures });
   checks.push({ name: 'proofBundles', ...proofBundleSummary });
 
   const codexSummary = validateCodexEvidence({ root, proofRoot, slug, failures });
@@ -897,27 +898,88 @@ function resolveProofArtifactPath(root, proofRoot, artifactPath) {
   return path.resolve(proofRoot, normalized);
 }
 
-function verifyProofBundles({ root, proofRoot, slug, trustedKeysPath, failures }) {
+function verifyProofBundles({ root, proofRoot, slug, proof, trustedKeysPath, failures }) {
   const appArtifactsRoot = path.join(proofRoot, 'app-artifacts', slug || '');
   const bundles = listFiles(appArtifactsRoot).filter((file) => file.endsWith('.proof.json'));
   let verified = 0;
+  let gitVerified = 0;
   for (const bundlePath of bundles) {
     const trailersPath = bundlePath.replace(/\.proof\.json$/, '.trailers.txt');
+    const bundle = readJson(bundlePath, failures);
+    const gitContext = resolveProofBundleGitContext({
+      root,
+      proofRoot,
+      slug,
+      proof,
+      bundle,
+      bundlePath,
+      bundleCount: bundles.length,
+      failures,
+    });
     const result = verifyProofBundleFile(bundlePath, {
       trailersPath,
       requireTrailers: true,
+      repoPath: gitContext?.repoPath || null,
+      commitSha: gitContext?.commitSha || null,
+      requireGitCommit: true,
       trustedKeysPath,
       requireTrustedAuthority: true,
       allowEmbeddedPublicKey: false,
     });
     if (!result.ok) {
       failures.push(`${relative(root, bundlePath)} failed trusted proof verification: ${result.errors.join('; ')}`);
+    } else if (!result.reasonCodes?.includes('proof_git_commit_trailers_match')) {
+      failures.push(`${relative(root, bundlePath)} proof verification did not load matching actual git commit trailers`);
     } else {
       verified += 1;
+      gitVerified += 1;
     }
   }
   if (bundles.length === 0) failures.push(`${relative(root, appArtifactsRoot)} contains no proof bundles`);
-  return { found: bundles.length, verified, ok: bundles.length > 0 && verified === bundles.length };
+  return {
+    found: bundles.length,
+    verified,
+    gitVerified,
+    ok: bundles.length > 0 && verified === bundles.length && gitVerified === bundles.length,
+  };
+}
+
+function resolveProofBundleGitContext({ root, proofRoot, slug, proof, bundle, bundlePath, bundleCount, failures }) {
+  const repoPath = path.join(proofRoot, 'codesite-full-workflow-repos', slug || '');
+  const commitSha = proofBundleCommitSha(proof, bundle, bundlePath, bundleCount);
+  const label = relative(root, bundlePath);
+  if (!commitSha) {
+    failures.push(`${label} missing proof-bundle git commit provenance`);
+    return null;
+  }
+  if (!fs.existsSync(repoPath)) {
+    failures.push(`${label} proof-bundle git repo missing: ${relative(root, repoPath)}`);
+    return null;
+  }
+  return { repoPath, commitSha };
+}
+
+function proofBundleCommitSha(proof, bundle, bundlePath, bundleCount) {
+  const proofBundle = proof?.proofBundle || {};
+  const proofGit = proof?.git || {};
+  const candidates = [
+    bundle?.commitSha,
+    bundle?.gitCommitSha,
+  ];
+  const bundlePathText = String(bundlePath || '');
+  const matchesWorkflowBundle = Boolean(
+    (proofBundle.id && bundlePathText.includes(`/proof-bundles/${proofBundle.id}.proof.json`))
+    || (proofBundle.transactionId && bundle?.transactionId === proofBundle.transactionId)
+    || bundleCount === 1
+  );
+  if (matchesWorkflowBundle) {
+    candidates.push(
+      proofBundle.commitSha,
+      proofGit.proofBundleCommitSha,
+      proofGit.trailerCommit?.sha,
+    );
+  }
+  return candidates.map((value) => String(value || '').trim()).find((value) => /^[0-9a-f]{7,64}$/i.test(value)) || null;
 }
 
 function resolveTrustedKeysPath(root, proofRoot, slug, failures) {

@@ -2900,6 +2900,7 @@ export async function commitTransaction(workspaceSlug, transactionId, body = {},
       transaction: landedTransaction,
       mutationLease: landedTransaction.mutationLease,
       landingRuns: inspectionDecision.inspectionRuns,
+      portableProofBundle: closeout?.portableProofBundle || null,
     }),
   };
 }
@@ -3200,37 +3201,7 @@ function normalizeProofLandingStatus(value) {
 }
 
 async function signProofBundleRecord(bundle, context = {}, db = prisma) {
-  const transaction = context.transaction || bundle.transaction || null;
-  const mutationLease = context.mutationLease || transaction?.mutationLease || bundle.transaction?.mutationLease || null;
-  const project = context.project || bundle.project || transaction?.project || null;
-  const portable = buildPortableProofBundle({
-    project: project ? projectProjection(project) : { id: bundle.projectId },
-    transaction: transaction
-      ? transactionProjection(transaction)
-      : {
-        id: bundle.transactionId,
-        projectId: bundle.projectId,
-        mutationLeaseId: null,
-      },
-    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
-    proofBundle: {
-      id: bundle.id,
-      projectId: bundle.projectId,
-      transactionId: bundle.transactionId,
-      commitSha: bundle.commitSha,
-      readSetDigest: bundle.readSetDigest,
-      writeSetDigest: bundle.writeSetDigest,
-      invariants: parseJson(bundle.invariantsJson, []),
-      evidenceRefs: parseJson(bundle.evidenceRefsJson, []),
-      dojoEvidenceRefs: parseJson(bundle.dojoEvidenceRefsJson, []),
-      repoState: parseJson(bundle.repoStateJson, null),
-      incidentReplayDigest: bundle.incidentReplayDigest,
-      landingStatus: bundle.landingStatus || context.landingStatus || null,
-      bundleDigest: bundle.bundleDigest,
-      proofSignature: parseJson(bundle.proofSignatureJson, null),
-      createdAt: bundle.createdAt,
-    },
-  });
+  const portable = proofBundlePortable(bundle, context);
   return db.codeSiteProofBundle.update({
     where: { id: bundle.id },
     data: {
@@ -5139,6 +5110,11 @@ async function closeTransactionBlackBox(workspaceSlug, transaction, context = {}
 
   let proofBundle = context.bundle || null;
   if (context.bundle?.id) {
+    const landingRuns = asArray(context.inspectionDecision?.inspectionRuns);
+    const lineProvenance = await prisma.codeSiteLineProvenance.findMany({
+      where: { proofBundleId: context.bundle.id },
+      orderBy: { createdAt: 'asc' },
+    });
     proofBundle = await prisma.codeSiteProofBundle.update({
       where: { id: context.bundle.id },
       data: {
@@ -5151,6 +5127,9 @@ async function closeTransactionBlackBox(workspaceSlug, transaction, context = {}
       transaction,
       mutationLease: transaction.mutationLease,
       landingStatus: context.landingStatus || context.terminalStatus || transaction.status || null,
+      incidents: [incident],
+      landingRuns,
+      lineProvenance,
     });
   }
   await syncArtifactsForProject(project.id, {
@@ -5162,6 +5141,19 @@ async function closeTransactionBlackBox(workspaceSlug, transaction, context = {}
     replay: finalReplay,
     replayDigest,
     proofBundle,
+    portableProofBundle: proofBundle ? proofBundlePortable(proofBundle, {
+      project,
+      transaction,
+      mutationLease: transaction.mutationLease,
+      incidents: [incident],
+      landingRuns: asArray(context.inspectionDecision?.inspectionRuns),
+      lineProvenance: proofBundle?.id
+        ? await prisma.codeSiteLineProvenance.findMany({
+          where: { proofBundleId: proofBundle.id },
+          orderBy: { createdAt: 'asc' },
+        })
+        : [],
+    }) : null,
     event: closeEvent,
   };
 }
@@ -7903,17 +7895,23 @@ export async function getProofBundle(workspaceSlug, bundleId, actor = null) {
     mutationLease: bundle.transaction?.mutationLease,
     landingRuns,
   });
+  const portableProofBundle = buildPortableProofBundle({
+    project: projectProjection(bundle.project),
+    transaction: transactionProjection(bundle.transaction),
+    mutationLease: bundle.transaction?.mutationLease ? mutationLeaseProjection(bundle.transaction.mutationLease) : null,
+    proofBundle: projection,
+    incidents: incidents.map(incidentProjection),
+    landingRuns: landingRuns.map(inspectionProjection),
+    lineProvenance: lineProvenance.map(lineProvenanceProjection),
+  });
   return {
-    ...projection,
-    portableProofBundle: buildPortableProofBundle({
-      project: projectProjection(bundle.project),
-      transaction: transactionProjection(bundle.transaction),
-      mutationLease: bundle.transaction?.mutationLease ? mutationLeaseProjection(bundle.transaction.mutationLease) : null,
-      proofBundle: projection,
-      incidents: incidents.map(incidentProjection),
-      landingRuns: landingRuns.map(inspectionProjection),
-      lineProvenance: lineProvenance.map(lineProvenanceProjection),
+    ...proofBundleProjection(bundle, {
+      transaction: bundle.transaction,
+      mutationLease: bundle.transaction?.mutationLease,
+      landingRuns,
+      portableProofBundle,
     }),
+    portableProofBundle,
   };
 }
 
@@ -7947,9 +7945,11 @@ export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}
     ? normalizeCommitTrailers(commitMessage)
     : normalizeCommitTrailers(body.trailers || body.commitTrailers || body.commit_trailers);
   const trailerSource = commitMessage ? 'git_commit_message' : 'supplied_commit_trailers';
+  const portableContext = await loadProofBundlePortableContext(bundle);
   const expectedTrailers = proofBundleProjection(bundle, {
     transaction: bundle.transaction,
     mutationLease: bundle.transaction?.mutationLease,
+    ...portableContext,
   }).trailers;
   const mismatchedTrailers = Object.entries(expectedTrailers)
     .filter(([, value]) => value != null && value !== '')
@@ -8006,6 +8006,7 @@ export async function attachProofBundleCommit(workspaceSlug, bundleId, body = {}
   return proofBundleProjection(updated, {
     transaction: updated.transaction,
     mutationLease: updated.transaction?.mutationLease,
+    ...portableContext,
   });
 }
 
@@ -8378,6 +8379,8 @@ function projectProjection(project) {
   const mutationTxns = asArray(project.mutationTxns);
   const mutationLeases = asArray(project.mutationLeases);
   const inspectionRuns = asArray(project.inspectionRuns);
+  const incidents = asArray(project.incidents);
+  const lineProvenance = asArray(project.lineProvenance);
   return {
     ...projectSummary(project),
     zonePolicy: parseJson(project.zonePolicyJson, {}),
@@ -8400,7 +8403,22 @@ function projectProjection(project) {
           ? run.executionPlanId === mutationLease.executionPlanId
           : run.displayCallsign === mutationLease?.displayCallsign
       ));
-      return proofBundleProjection(bundle, { transaction, mutationLease, landingRuns });
+      const bundleLineProvenance = lineProvenance.filter((row) => row.proofBundleId === bundle.id);
+      return proofBundleProjection(bundle, {
+        transaction,
+        mutationLease,
+        landingRuns,
+        incidents,
+        lineProvenance: bundleLineProvenance,
+        portableProofBundle: proofBundlePortable(bundle, {
+          project,
+          transaction,
+          mutationLease,
+          landingRuns,
+          incidents,
+          lineProvenance: bundleLineProvenance,
+        }),
+      });
     }),
     lineProvenance: asArray(project.lineProvenance).map(lineProvenanceProjection),
     documents: asArray(project.documents).map(documentSummaryProjection),
@@ -8593,10 +8611,10 @@ function eventProjection(event) {
   };
 }
 
-function proofBundleProjection(bundle, context = {}) {
+function proofBundleCoreProjection(bundle, context = {}) {
   const transaction = context.transaction || bundle.transaction || null;
   const mutationLease = context.mutationLease || transaction?.mutationLease || null;
-  const projection = {
+  return {
     id: bundle.id,
     projectId: bundle.projectId,
     transactionId: bundle.transactionId,
@@ -8614,8 +8632,83 @@ function proofBundleProjection(bundle, context = {}) {
     signatureKeyId: bundle.signatureKeyId || null,
     createdAt: bundle.createdAt,
   };
-  const portable = buildPortableProofBundle({
-    project: bundle.project ? projectProjection(bundle.project) : { id: bundle.projectId },
+}
+
+function proofBundleProjectIdentity(project, projectId = null) {
+  return {
+    id: project?.id || projectId || null,
+    workspaceSlug: project?.workspaceSlug || null,
+  };
+}
+
+function proofBundlePortable(bundle, context = {}) {
+  const transaction = context.transaction || bundle.transaction || null;
+  const mutationLease = context.mutationLease || transaction?.mutationLease || null;
+  const project = context.project || bundle.project || transaction?.project || null;
+  const projection = proofBundleCoreProjection(bundle, context);
+  return buildPortableProofBundle({
+    project: proofBundleProjectIdentity(project, bundle.projectId),
+    transaction: transaction
+      ? transactionProjection(transaction)
+      : {
+        id: bundle.transactionId,
+        projectId: bundle.projectId,
+        mutationLeaseId: null,
+      },
+    mutationLease: mutationLease ? mutationLeaseProjection(mutationLease) : null,
+    proofBundle: projection,
+    incidents: asArray(context.incidents).map((incident) => (
+      incident?.participantsJson != null ? incidentProjection(incident) : incident
+    )),
+    landingRuns: asArray(context.landingRuns).map((run) => (
+      run?.changedPathsJson != null ? inspectionProjection(run) : run
+    )),
+    lineProvenance: asArray(context.lineProvenance).map((row) => (
+      row?.evidenceRefsJson != null ? lineProvenanceProjection(row) : row
+    )),
+  });
+}
+
+async function loadProofBundlePortableContext(bundle, db = prisma) {
+  const transaction = bundle.transaction || null;
+  const mutationLease = transaction?.mutationLease || null;
+  const [incidents, lineProvenance, landingRuns] = await Promise.all([
+    db.codeSiteIncident.findMany({
+      where: { projectId: bundle.projectId },
+      orderBy: { createdAt: 'asc' },
+    }),
+    db.codeSiteLineProvenance.findMany({
+      where: { proofBundleId: bundle.id },
+      orderBy: { createdAt: 'asc' },
+    }),
+    db.codeSiteInspectionRun.findMany({
+      where: {
+        projectId: bundle.projectId,
+        ...(mutationLease?.executionPlanId ? { executionPlanId: mutationLease.executionPlanId } : {}),
+      },
+      orderBy: [{ completedAt: 'asc' }, { requestedAt: 'asc' }],
+    }),
+  ]);
+  const context = {
+    project: bundle.project || transaction?.project || null,
+    transaction,
+    mutationLease,
+    incidents,
+    landingRuns,
+    lineProvenance,
+  };
+  return {
+    ...context,
+    portableProofBundle: proofBundlePortable(bundle, context),
+  };
+}
+
+function proofBundleProjection(bundle, context = {}) {
+  const transaction = context.transaction || bundle.transaction || null;
+  const mutationLease = context.mutationLease || transaction?.mutationLease || null;
+  const projection = proofBundleCoreProjection(bundle, context);
+  const portable = context.portableProofBundle || buildPortableProofBundle({
+    project: proofBundleProjectIdentity(bundle.project, bundle.projectId),
     transaction: transaction
       ? transactionProjection(transaction)
       : {
@@ -8631,6 +8724,7 @@ function proofBundleProjection(bundle, context = {}) {
   });
   return {
     ...projection,
+    portableDigest: portable.portableDigest || null,
     trailers: proofCommitTrailers(portable),
   };
 }
