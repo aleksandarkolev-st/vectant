@@ -1168,12 +1168,26 @@ function withExternalVisualStateHashes(mode, visualState) {
   };
 }
 
-function externalVisualStateHashMaterial(profile, report, visualArtifacts) {
-  const deterministicMode = isObject(report.deterministicVisualMode ?? report.deterministic_visual_mode)
+function deterministicModeWithoutExternalVisualStateHashes(mode) {
+  if (!isObject(mode)) return {};
+  const copy = { ...mode };
+  delete copy.seed_policy_hash;
+  delete copy.seedPolicyHash;
+  delete copy.camera_state_hash;
+  delete copy.cameraStateHash;
+  delete copy.deterministic_camera_state_hash;
+  delete copy.deterministicCameraStateHash;
+  delete copy.external_visual_state_material_hash;
+  delete copy.externalVisualStateMaterialHash;
+  return copy;
+}
+
+function externalVisualStateHashMaterial(report, visualArtifacts) {
+  const deterministicMode = deterministicModeWithoutExternalVisualStateHashes(
+    isObject(report.deterministicVisualMode ?? report.deterministic_visual_mode)
     ? report.deterministicVisualMode ?? report.deterministic_visual_mode
-    : isObject(profile.visualProof?.deterministicMode)
-      ? profile.visualProof.deterministicMode
-      : {};
+    : {},
+  );
   const visualDiff = isObject(report.visualDiff ?? report.visual_diff)
     ? report.visualDiff ?? report.visual_diff
     : {};
@@ -1193,19 +1207,19 @@ function externalVisualStateHashMaterial(profile, report, visualArtifacts) {
     ?? visualArtifacts.captureBackend
     ?? screenshots.find((row) => row.capture_backend)?.capture_backend
     ?? null;
-  const screenshotCommand = profile.visualProof?.screenshot?.command ?? null;
+  const artifactHashes = {
+    before_image_hash:
+      visualArtifacts.before_image_hash ?? visualArtifacts.beforeImageHash ?? report.beforeImageHash ?? null,
+    after_image_hash:
+      visualArtifacts.after_image_hash ?? visualArtifacts.afterImageHash ?? report.afterImageHash ?? null,
+    diff_image_hash:
+      visualArtifacts.diff_image_hash ?? visualArtifacts.diffImageHash ?? report.diffImageHash ?? null,
+  };
   const base = {
     schemaVersion: 'synthi.gpu_hmr.external_visual_state_hash_material.v1',
-    profileId: profile.id ?? null,
-    proofMode: report.proofMode ?? profile.proofMode ?? null,
-    backend: profile.backend ?? null,
-    backendFamily: profile.backendFamily ?? null,
-    libraryFamily: profile.libraryFamily ?? null,
-    runtimeEnvironment: profile.runtimeEnvironment ?? null,
-    profileClass: profile.profileClass ?? null,
-    sourceFile: profile.source?.file ?? null,
+    proofMode: report.proofMode ?? report.proof_mode ?? null,
     captureBackend,
-    screenshotCommandHash: screenshotCommand ? sha256(screenshotCommand) : null,
+    artifactHashes,
     visualDiffWidth: Number.isFinite(Number(visualDiff.width)) ? Number(visualDiff.width) : null,
     visualDiffHeight: Number.isFinite(Number(visualDiff.height)) ? Number(visualDiff.height) : null,
     deterministicMode,
@@ -1218,8 +1232,8 @@ function externalVisualStateHashMaterial(profile, report, visualArtifacts) {
   const seedMaterial = {
     schemaVersion: 'synthi.gpu_hmr.external_visual_state_hash_material.v1',
     materialKind: 'seed_policy',
-    profileId: profile.id ?? null,
-    proofMode: report.proofMode ?? profile.proofMode ?? null,
+    proofMode: report.proofMode ?? report.proof_mode ?? null,
+    captureBackend,
     deterministicMode: {
       fixed_seed: deterministicMode.fixed_seed ?? deterministicMode.fixedSeed ?? null,
       seed_policy_fixed: deterministicMode.seed_policy_fixed ?? deterministicMode.seedPolicyFixed ?? null,
@@ -1404,7 +1418,6 @@ async function writeExternalVisualProofArtifact(profile, report) {
     .filter((artifact) => visualEvidenceArtifactAccepted(artifact));
   const status = deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts);
   const visualState = externalVisualStateHashMaterial(
-    profile,
     report,
     report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? {},
   );
@@ -2545,9 +2558,21 @@ async function runProfile(profile, profileSelection) {
       },
     });
     report.deterministicVisualMode = deterministicVisualModeForExternal(profile, before, after);
+    report.deterministic_visual_mode = report.deterministicVisualMode;
+    const visualState = externalVisualStateHashMaterial(report, report.visualOracleArtifacts);
+    report.visualOracleArtifacts = visualArtifactsWithExternalVisualState(
+      report.visualOracleArtifacts,
+      visualState,
+    );
+    report.visual_oracle_artifacts = report.visualOracleArtifacts;
+    report.deterministicVisualMode = withExternalVisualStateHashes(report.deterministicVisualMode, visualState);
+    report.deterministic_visual_mode = report.deterministicVisualMode;
+    report.externalVisualStateMaterialHash = visualState.materialHash;
+    report.external_visual_state_material_hash = visualState.materialHash;
     report.deterministicVisualModeEvaluation = report.deterministicVisualMode
       ? evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode)
       : null;
+    report.deterministic_visual_mode_evaluation = report.deterministicVisualModeEvaluation;
     const accepted =
       report.visualDiff.changedPixelRatio >= profile.visualProof.minChangedPixelRatio
       && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit
@@ -2695,8 +2720,23 @@ async function runMcpPreviewProfile(profile, dir, report) {
       },
     });
     report.deterministicVisualMode = deterministicVisualModeForMcp(profile, before, after, afterCompile);
+    report.deterministic_visual_mode = report.deterministicVisualMode;
+    const visualState = externalVisualStateHashMaterial(report, report.visualOracleArtifacts);
+    report.visualOracleArtifacts = visualArtifactsWithExternalVisualState(
+      report.visualOracleArtifacts,
+      visualState,
+    );
+    report.visual_oracle_artifacts = report.visualOracleArtifacts;
+    report.deterministicVisualMode = withExternalVisualStateHashes(
+      report.deterministicVisualMode,
+      visualState,
+    );
+    report.deterministic_visual_mode = report.deterministicVisualMode;
+    report.externalVisualStateMaterialHash = visualState.materialHash;
+    report.external_visual_state_material_hash = visualState.materialHash;
     report.deterministicVisualModeEvaluation =
       evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode);
+    report.deterministic_visual_mode_evaluation = report.deterministicVisualModeEvaluation;
     const accepted =
       report.visualDiff.changedPixelRatio >= profile.visualProof.minChangedPixelRatio
       && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit
