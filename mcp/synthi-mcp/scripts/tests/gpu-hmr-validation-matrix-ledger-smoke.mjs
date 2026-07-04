@@ -17881,6 +17881,58 @@ assert.equal(runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output')?.sta
 assert.ok(runtimeRefusedOidnOutputSupportCoverage.get('oidn_hip_output')?.openGaps.includes(
   'matching_oidn_hip_runtime_required',
 ));
+const missingFacetOidnOutputAttemptQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    artifactSchema: 'synthi.gpu_hmr.oidn_preflight.v1',
+    artifactPath: 'synthetic/missing-facet-oidn-output-attempt.json',
+    updatedAt: '2026-06-09T00:00:00.073Z',
+    backend: 'oidn_hip',
+    targetId: 'missing-facet-oidn-output-attempt',
+    profileId: 'missing-facet-oidn-output-attempt',
+    proofMode: 'runtime_preflight',
+    evidenceKind: 'runtime_preflight_refusal',
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: 'refusal_proven',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: true,
+    proofChain: 'structured_runtime_refusal',
+    proofIds: ['oidn-preflight-proof:sha256:missing-facet-output-attempt'],
+    backendEvidence: {
+      accepted: true,
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+      failedGates: [],
+    },
+    outputOracleFacet: {
+      schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      schema_version: 'synthi.gpu_hmr.oidn_output_oracle_matrix_facet.v1',
+      present: false,
+      accepted: false,
+      failedGates: [{ code: 'oidn_output_oracle_facet_missing' }],
+      failed_gates: [{ code: 'oidn_output_oracle_facet_missing' }],
+    },
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: ['runtime_preflight_failed'],
+    },
+    reasons: ['oidn_hip_runtime_preflight_rejected'],
+    openGaps: ['matching_oidn_hip_runtime_required'],
+  })],
+});
+const missingFacetOidnOutputAttemptCoverage = new Map(
+  missingFacetOidnOutputAttemptQuery.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(missingFacetOidnOutputAttemptCoverage.get('oidn_hip_output')?.status, 'missing');
+assert.ok(missingFacetOidnOutputAttemptCoverage.get('oidn_hip_output')?.openGaps.includes(
+  'oidn_output_oracle_attempt_required',
+));
 assert.equal(coverageById.get('oidn_hip_output')?.status, 'missing');
 assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('oidn_hip_runtime_proof_required'));
 assert.equal(ledger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows, 0);

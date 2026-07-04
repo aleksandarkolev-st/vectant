@@ -29629,12 +29629,16 @@ function oidnOutputProofAttempted(row = {}) {
     ?? row.outputOracle
     ?? row.output_oracle,
   );
+  const present = firstBool(outputOracleFacet.present);
   return row.backend === 'oidn_hip'
     && (
-      firstBool(outputOracleFacet.present) === true
+      present === true
       || firstBool(outputOracleFacet.accepted) === true
-      || Boolean(firstText(outputOracleFacet.schemaVersion, outputOracleFacet.schema_version))
       || proofChain.includes('output_oracle')
+      || (
+        present !== false
+        && Boolean(firstText(outputOracleFacet.schemaVersion, outputOracleFacet.schema_version))
+      )
     );
 }
 
