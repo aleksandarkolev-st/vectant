@@ -13,6 +13,7 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteMutationTransaction: {
       create: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       update: vi.fn(),
     },
     codeSiteProject: {
@@ -32,6 +33,7 @@ const { prisma } = vi.hoisted(() => ({
       create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteMutationLease: {
       create: vi.fn(),
@@ -87,6 +89,22 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteDocument: {
       create: vi.fn(),
+      findFirst: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSitePermit: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteDocumentReview: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteRouteRevision: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteCounterfactualRun: {
       create: vi.fn(),
@@ -116,6 +134,7 @@ import {
   attachProofBundleCommit,
   commitTransaction,
   acknowledgeInboxItem,
+  applyRouteRevision,
   createAgentSession,
   createCounterfactualRun,
   createExecutionPlan,
@@ -123,6 +142,7 @@ import {
   createIncident,
   createDocument,
   createInspectionRun,
+  createPermit,
   createPolicyDelta,
   dryRunTransactionWrites,
   getAgentInbox,
@@ -137,11 +157,14 @@ import {
   openTransaction,
   preflightCodeSiteFsWrite,
   getWorkspaceActiveState,
+  proposeRouteRevision,
   promotePolicyDelta,
   recordTransactionRead,
   recordTransactionQuarantineEvent,
   recordTransactionWrite,
   requestMutationLease,
+  reviewDocument,
+  reviewRouteRevision,
   shadowMergeSimulate,
   updateZonePolicy,
   validateTransaction,
@@ -450,6 +473,23 @@ describe('CodeSite control plane transaction validation', () => {
       closedAt: null,
       ...data,
     }));
+    prisma.codeSiteExecutionPlan.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      mission: 'Update schema',
+      domain: 'schema',
+      status: 'filed',
+      routeJson: JSON.stringify(['synthi/prisma/**']),
+      blockedZonesJson: JSON.stringify([]),
+      abortJson: JSON.stringify([]),
+      requestedToolsJson: JSON.stringify(['file_write']),
+      estimatedDurationMs: null,
+      filedAt: new Date('2026-06-29T22:59:00.000Z'),
+      closedAt: null,
+      ...data,
+    }));
     prisma.codeSiteMutationLease.create.mockImplementation(async ({ data }) => ({
       id: 'lease-created',
       issuedAt: new Date('2026-06-29T23:00:00.000Z'),
@@ -529,6 +569,142 @@ describe('CodeSite control plane transaction validation', () => {
       id: 'doc-1',
       createdAt: new Date('2026-06-29T23:04:00.000Z'),
       resolvedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteDocument.findFirst.mockResolvedValue({
+      id: 'doc-1',
+      projectId: 'project-1',
+      kind: 'change_order',
+      status: 'pending_review',
+      title: 'Route change',
+      bodyJson: JSON.stringify({ summary: 'Route revision proposed' }),
+      blocking: true,
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      resolvedAt: null,
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup',
+        request: 'Build signup',
+        status: 'active',
+        createdByUserId: 'user-1',
+        members: [
+          {
+            id: 'member-owner',
+            projectId: 'project-1',
+            workspaceSlug: 'acme',
+            userId: 'user-1',
+            role: 'owner',
+            permissionsJson: JSON.stringify(['project:read', 'project:write']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          },
+        ],
+        agentSessions: [],
+      },
+    });
+    prisma.codeSiteDocument.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      kind: 'change_order',
+      status: 'pending_review',
+      title: 'Route change',
+      bodyJson: JSON.stringify({ summary: 'Route revision proposed' }),
+      blocking: true,
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      resolvedAt: null,
+      ...data,
+    }));
+    prisma.codeSitePermit.create.mockImplementation(async ({ data }) => ({
+      id: 'permit-created',
+      issuedAt: new Date('2026-06-29T23:04:30.000Z'),
+      expiresAt: null,
+      closedAt: null,
+      ...data,
+    }));
+    prisma.codeSitePermit.findMany.mockResolvedValue([]);
+    prisma.codeSiteDocumentReview.create.mockImplementation(async ({ data }) => ({
+      id: 'review-created',
+      requestedAt: new Date('2026-06-29T23:04:30.000Z'),
+      reviewedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteDocumentReview.findMany.mockResolvedValue([]);
+    prisma.codeSiteRouteRevision.create.mockImplementation(async ({ data }) => ({
+      id: 'route-revision-created',
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      appliedAt: null,
+      approvedByUserId: null,
+      ...data,
+    }));
+    prisma.codeSiteRouteRevision.findMany.mockResolvedValue([]);
+    prisma.codeSiteRouteRevision.findFirst.mockResolvedValue({
+      id: 'route-revision-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      documentId: 'doc-1',
+      status: 'approved',
+      previousRouteJson: JSON.stringify(['synthi/prisma/**']),
+      proposedRouteJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      affectedLeasesJson: JSON.stringify([{ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }]),
+      approvalJson: JSON.stringify({ decision: 'approved', approved: true }),
+      evidenceRefsJson: JSON.stringify(['evidence:route-review']),
+      proposedByUserId: 'user-1',
+      approvedByUserId: 'reviewer-1',
+      appliedAt: null,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup',
+        request: 'Build signup',
+        status: 'active',
+        createdByUserId: 'user-1',
+        members: [
+          {
+            id: 'member-owner',
+            projectId: 'project-1',
+            workspaceSlug: 'acme',
+            userId: 'user-1',
+            role: 'owner',
+            permissionsJson: JSON.stringify(['project:read', 'project:write']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          },
+        ],
+        agentSessions: [],
+      },
+      executionPlan: executionPlanFixture(),
+      document: {
+        id: 'doc-1',
+        projectId: 'project-1',
+        kind: 'change_order',
+        status: 'approved',
+        title: 'Route change',
+        bodyJson: JSON.stringify({ summary: 'Route revision approved' }),
+        blocking: true,
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+        resolvedAt: null,
+      },
+    });
+    prisma.codeSiteRouteRevision.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      documentId: 'doc-1',
+      status: 'approved',
+      previousRouteJson: JSON.stringify(['synthi/prisma/**']),
+      proposedRouteJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      affectedLeasesJson: JSON.stringify([{ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }]),
+      approvalJson: JSON.stringify({ decision: 'approved', approved: true }),
+      evidenceRefsJson: JSON.stringify(['evidence:route-review']),
+      proposedByUserId: 'user-1',
+      approvedByUserId: 'reviewer-1',
+      appliedAt: null,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
       ...data,
     }));
     prisma.codeSiteAgentInboxItem.create.mockImplementation(async ({ data }) => ({
@@ -2977,6 +3153,222 @@ describe('CodeSite control plane transaction validation', () => {
       status: 400,
       code: 'document_project_reference_required',
     });
+  });
+
+  it('issues construction permits against real project, plan, lease, and document refs', async () => {
+    const result = await createPermit('acme', 'project-1', {
+      permitType: 'schema_work_permit',
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      documentId: 'doc-1',
+      allowedPaths: ['synthi/prisma/**', 'packages/schemas/**'],
+      blockedPaths: ['infra/prod/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.v2'],
+      evidenceRefs: ['evidence:permit-review'],
+    }, { userId: 'user-1' });
+    const permitCreate = prisma.codeSitePermit.create.mock.calls.at(-1)[0].data;
+    const scope = JSON.parse(permitCreate.scopeJson);
+    const approval = JSON.parse(permitCreate.approvalJson);
+    const eventCreate = prisma.codeSiteEvent.create.mock.calls.at(-1)[0].data;
+
+    expect(result.permit).toMatchObject({
+      id: 'permit-created',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      documentId: 'doc-1',
+      permitType: 'schema_work_permit',
+      status: 'issued',
+    });
+    expect(scope).toMatchObject({
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      allowedPaths: ['synthi/prisma/**', 'packages/schemas/**'],
+      blockedPaths: ['infra/prod/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.v2'],
+    });
+    expect(approval).toMatchObject({
+      approved: true,
+      approvedByUserId: 'user-1',
+    });
+    expect(eventCreate).toMatchObject({
+      eventType: 'tower_instruction',
+      actorType: 'permit',
+      actorId: 'permit-created',
+      evidenceRefsJson: JSON.stringify(['evidence:permit-review']),
+    });
+  });
+
+  it('records document reviews as measured governance decisions', async () => {
+    const result = await reviewDocument('acme', 'doc-1', {
+      decision: 'approved',
+      summary: 'Schema reroute approved by tower',
+      routeRevisionId: 'route-revision-1',
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+      evidenceRefs: ['evidence:review-session'],
+    }, { userId: 'reviewer-1' });
+    const reviewCreate = prisma.codeSiteDocumentReview.create.mock.calls.at(-1)[0].data;
+    const reviewBody = JSON.parse(reviewCreate.bodyJson);
+    const documentUpdate = prisma.codeSiteDocument.update.mock.calls.at(-1)[0].data;
+    const eventCreate = prisma.codeSiteEvent.create.mock.calls.at(-1)[0].data;
+
+    expect(result.review).toMatchObject({
+      id: 'review-created',
+      projectId: 'project-1',
+      documentId: 'doc-1',
+      reviewerUserId: 'reviewer-1',
+      status: 'completed',
+      decision: 'approved',
+    });
+    expect(reviewBody).toMatchObject({
+      summary: 'Schema reroute approved by tower',
+      routeRevisionId: 'route-revision-1',
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+    });
+    expect(documentUpdate.status).toBe('approved');
+    expect(documentUpdate.resolvedAt).toBeInstanceOf(Date);
+    expect(eventCreate).toMatchObject({
+      eventType: 'tower_instruction',
+      actorType: 'document_review',
+      actorId: 'review-created',
+      evidenceRefsJson: JSON.stringify(['evidence:review-session']),
+    });
+  });
+
+  it('proposes, approves, and applies route revisions with affected clearance holds', async () => {
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([{
+      id: 'lease-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'active',
+      leaseJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }]);
+
+    const proposed = await proposeRouteRevision('acme', 'plan-1', {
+      title: 'Route auth schema through shared package',
+      proposedRoute: ['synthi/prisma/**', 'packages/schemas/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.v2'],
+      evidenceRefs: ['evidence:route-proposal'],
+    }, { userId: 'user-1' });
+    const revisionCreate = prisma.codeSiteRouteRevision.create.mock.calls.at(-1)[0].data;
+    expect(proposed.routeRevision).toMatchObject({
+      id: 'route-revision-created',
+      status: 'proposed',
+      previousRoute: ['synthi/prisma/**'],
+      proposedRoute: ['synthi/prisma/**', 'packages/schemas/**'],
+    });
+    expect(proposed.changeOrder).toMatchObject({
+      id: 'doc-1',
+      kind: 'change_order',
+      status: 'pending_review',
+    });
+    expect(JSON.parse(revisionCreate.affectedLeasesJson)).toEqual([
+      expect.objectContaining({ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }),
+    ]);
+
+    prisma.codeSiteRouteRevision.findFirst.mockResolvedValueOnce({
+      id: 'route-revision-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      documentId: 'doc-1',
+      status: 'proposed',
+      previousRouteJson: JSON.stringify(['synthi/prisma/**']),
+      proposedRouteJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      affectedLeasesJson: JSON.stringify([{ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }]),
+      approvalJson: JSON.stringify({ required: true }),
+      evidenceRefsJson: JSON.stringify(['evidence:route-proposal']),
+      proposedByUserId: 'user-1',
+      approvedByUserId: null,
+      appliedAt: null,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup',
+        request: 'Build signup',
+        status: 'active',
+        createdByUserId: 'user-1',
+        members: [{
+          id: 'member-reviewer',
+          projectId: 'project-1',
+          workspaceSlug: 'acme',
+          userId: 'reviewer-1',
+          role: 'admin',
+          permissionsJson: JSON.stringify(['project:read', 'project:write']),
+          participationStatus: 'enabled',
+          revokedAt: null,
+        }],
+        agentSessions: [],
+      },
+      executionPlan: executionPlanFixture(),
+      document: null,
+    });
+    const reviewed = await reviewRouteRevision('acme', 'route-revision-1', {
+      decision: 'approved',
+      rationale: 'Schema-first reroute reduces stale frontend assumptions.',
+      evidenceRefs: ['evidence:route-review'],
+    }, { userId: 'reviewer-1' });
+    const revisionUpdate = prisma.codeSiteRouteRevision.update.mock.calls.at(-1)[0].data;
+    expect(reviewed.routeRevision).toMatchObject({
+      id: 'route-revision-1',
+      status: 'approved',
+      approvedByUserId: 'reviewer-1',
+    });
+    expect(JSON.parse(revisionUpdate.approvalJson)).toMatchObject({
+      decision: 'approved',
+      approved: true,
+      reviewedByUserId: 'reviewer-1',
+    });
+
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([{
+      id: 'lease-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'active',
+      leaseJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }]);
+    const applied = await applyRouteRevision('acme', 'route-revision-1', {
+      evidenceRefs: ['evidence:route-apply'],
+    }, { userId: 'user-1' });
+    const planUpdate = prisma.codeSiteExecutionPlan.update.mock.calls.at(-1)[0].data;
+    const leaseUpdate = prisma.codeSiteMutationLease.update.mock.calls.at(-1);
+    const policyDecision = prisma.codeSitePolicyDecision.create.mock.calls.at(-1)[0].data;
+
+    expect(applied.executionPlan).toMatchObject({
+      id: 'plan-1',
+      status: 'rerouted',
+      route: ['synthi/prisma/**', 'packages/schemas/**'],
+    });
+    expect(planUpdate).toMatchObject({
+      routeJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      status: 'rerouted',
+    });
+    expect(leaseUpdate).toEqual([expect.objectContaining({
+      where: { id: 'lease-1' },
+      data: { status: 'suspended', revokedAt: null },
+    })]);
+    expect(policyDecision).toMatchObject({
+      mutationLeaseId: 'lease-1',
+      decision: 'hold',
+      reasonCodesJson: JSON.stringify(['route_revision_applied', 'clearance_reissue_required']),
+    });
+    expect(applied.affectedLeases[0]).toMatchObject({ id: 'lease-1', status: 'suspended' });
   });
 
   it('blocks proof-carrying commits until landing inspection evidence covers the write set', async () => {

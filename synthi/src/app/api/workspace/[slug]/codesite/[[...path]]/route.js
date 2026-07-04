@@ -11,8 +11,10 @@ import {
   createExecutionPlan,
   createIncident,
   createInspectionRun,
+  createPermit,
   createPolicyDelta,
   createProject,
+  applyRouteRevision,
   dryRunTransactionWrites,
   eventCursor,
   exportArtifacts,
@@ -30,8 +32,10 @@ import {
   getTransaction,
   getWorkspaceActiveState,
   listActiveTransactions,
+  listPermits,
   listProjectMembers,
   listProjects,
+  listRouteRevisions,
   openTransaction,
   preflightCodeSiteFsWrite,
   recordPolicyDecision,
@@ -39,6 +43,7 @@ import {
   recordTransactionQuarantineEvent,
   recordTransactionRead,
   recordTransactionWrite,
+  proposeRouteRevision,
   requestMutationLease,
   resumeMaydayIncident,
   previewArtifacts,
@@ -46,6 +51,8 @@ import {
   revokeProjectMember,
   revokeMutationLease,
   rejectPolicyDelta,
+  reviewDocument,
+  reviewRouteRevision,
   shadowMergeSimulate,
   upsertProjectMember,
   updateControlPlan,
@@ -94,6 +101,14 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'members') {
       return okJson({ members: await listProjectMembers(slug, route[1], access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'permits') {
+      return okJson({ permits: await listPermits(slug, route[1], access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'route-revisions') {
+      return okJson({ routeRevisions: await listRouteRevisions(slug, route[1], access.actor) });
     }
 
     if (route[0] === 'projects' && route[2] === 'events' && route[3] !== 'stream') {
@@ -350,6 +365,26 @@ export async function POST(request, { params }) {
       return okJson(await createDocument(slug, route[1], body, access.actor), { status: 201 });
     }
 
+    if (route[0] === 'projects' && route[2] === 'permits') {
+      return okJson(await createPermit(slug, route[1], body, access.actor), { status: 201 });
+    }
+
+    if (route[0] === 'documents' && route[2] === 'reviews') {
+      return okJson(await reviewDocument(slug, route[1], body, access.actor), { status: 201 });
+    }
+
+    if (route[0] === 'execution-plans' && route[2] === 'route-revisions') {
+      return okJson(await proposeRouteRevision(slug, route[1], body, access.actor), { status: 201 });
+    }
+
+    if (route[0] === 'route-revisions' && route[2] === 'review') {
+      return okJson(await reviewRouteRevision(slug, route[1], body, access.actor));
+    }
+
+    if (route[0] === 'route-revisions' && route[2] === 'apply') {
+      return okJson(await applyRouteRevision(slug, route[1], body, access.actor));
+    }
+
     if (route[0] === 'projects' && route[2] === 'incidents') {
       return okJson({ incident: await createIncident(slug, route[1], body, access.actor) }, { status: 201 });
     }
@@ -421,6 +456,8 @@ function postAccessMode(route) {
   if (route[0] === 'projects' && [
     'codesitefs-events',
     'documents',
+    'permits',
+    'route-revisions',
     'incidents',
     'incident-replays',
     'counterfactual-runs',
@@ -428,6 +465,9 @@ function postAccessMode(route) {
     'members',
     'collision-predict',
   ].includes(route[2])) return 'read';
+  if (route[0] === 'documents' && route[2] === 'reviews') return 'read';
+  if (route[0] === 'execution-plans' && route[2] === 'route-revisions') return 'read';
+  if (route[0] === 'route-revisions' && ['review', 'apply'].includes(route[2])) return 'read';
   if (route[0] === 'incidents' && route[2] === 'resume') return 'read';
   if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) return 'read';
   if (route[0] === 'proof-bundles' && route[2] === 'commit') return 'read';

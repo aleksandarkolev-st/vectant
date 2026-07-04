@@ -135,6 +135,9 @@ const PROJECT_INCLUDE = {
   proofBundles: true,
   lineProvenance: true,
   documents: true,
+  permits: true,
+  documentReviews: true,
+  routeRevisions: true,
   counterfactualRuns: true,
   policyDeltas: true,
   inboxItems: true,
@@ -3366,14 +3369,433 @@ export async function createDocument(workspaceSlug, projectId, body = {}, actor 
   return { document: documentProjection(document), inboxItems: inboxItems.map(inboxProjection) };
 }
 
+export async function listPermits(workspaceSlug, projectId, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  const permits = await prisma.codeSitePermit.findMany({
+    where: { projectId: project.id },
+    orderBy: { issuedAt: 'desc' },
+  });
+  return permits.map(permitProjection);
+}
+
+export async function createPermit(workspaceSlug, projectId, body = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const executionPlanId = body.executionPlanId || body.execution_plan_id || null;
+  const mutationLeaseId = body.mutationLeaseId || body.mutation_lease_id || body.clearanceId || body.clearance_id || null;
+  if (executionPlanId) {
+    const plan = await prisma.codeSiteExecutionPlan.findFirst({ where: { id: executionPlanId, projectId: project.id } });
+    if (!plan) throw notFound('execution_plan_not_found');
+  }
+  if (mutationLeaseId) {
+    const lease = await prisma.codeSiteMutationLease.findFirst({ where: { id: mutationLeaseId, projectId: project.id } });
+    if (!lease) throw notFound('mutation_lease_not_found');
+  }
+  const documentId = body.documentId || body.document_id || null;
+  if (documentId) await requireDocument(project.id, documentId);
+  const permitType = String(body.permitType || body.permit_type || body.kind || 'work_permit');
+  const status = String(body.status || (body.approved === false ? 'requested' : 'issued'));
+  const scope = {
+    executionPlanId,
+    mutationLeaseId,
+    allowedPaths: pathsForRoute(body.allowedPaths || body.allowed_paths || body.route || []),
+    blockedPaths: pathsForRoute(body.blockedPaths || body.blocked_paths || body.noFlyZones || body.no_fly_zones || []),
+    affectedZones: asArray(body.affectedZones || body.affected_zones),
+    contractRefs: asArray(body.contractRefs || body.contract_refs),
+    expiresAt: body.expiresAt || body.expires_at || null,
+    ...(body.scope && typeof body.scope === 'object' ? body.scope : {}),
+  };
+  const approval = {
+    approved: ['issued', 'active', 'approved'].includes(status),
+    approvedByUserId: body.approvedByUserId || body.approved_by_user_id || actorUserId(actor),
+    rationale: body.rationale || body.reason || null,
+    reviewRef: body.reviewRef || body.review_ref || null,
+  };
+  const permit = await prisma.codeSitePermit.create({
+    data: {
+      projectId: project.id,
+      executionPlanId,
+      mutationLeaseId,
+      documentId,
+      permitType,
+      status,
+      title: String(body.title || defaultPermitTitle(permitType, executionPlanId, mutationLeaseId)),
+      scopeJson: stringifyJson(scope),
+      approvalJson: stringifyJson(approval),
+      evidenceRefsJson: stringifyJson(asArray(body.evidenceRefs || body.evidence_refs)),
+      issuedByUserId: actorUserId(actor),
+      expiresAt: body.expiresAt || body.expires_at ? new Date(body.expiresAt || body.expires_at) : null,
+      closedAt: body.closedAt || body.closed_at ? new Date(body.closedAt || body.closed_at) : null,
+    },
+  });
+  const event = await recordEvent(project.id, {
+    eventType: 'tower_instruction',
+    displayCallsign: body.displayCallsign || body.display_callsign || null,
+    actorType: 'permit',
+    actorId: permit.id,
+    details: {
+      permitId: permit.id,
+      permitType,
+      status,
+      executionPlanId,
+      mutationLeaseId,
+      documentId,
+      scope,
+      approval,
+    },
+    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
+  });
+  await syncArtifactsForProject(project.id, { reason: 'permit_recorded', eventId: event.id });
+  return { permit: permitProjection(permit), event };
+}
+
+export async function reviewDocument(workspaceSlug, documentId, body = {}, actor = null) {
+  const document = await prisma.codeSiteDocument.findFirst({
+    where: { id: documentId, project: { workspaceSlug } },
+    include: { project: { include: { members: true, agentSessions: true } } },
+  });
+  if (!document) throw notFound('document_not_found');
+  await requireProjectAccess(document.project, actor, 'write');
+  const decision = normalizeReviewDecision(body.decision || body.status || body.outcome || 'approved');
+  const nextStatus = documentStatusForReviewDecision(decision);
+  const reasonCodes = unique([
+    ...asArray(body.reasonCodes || body.reason_codes),
+    `document_${decision}`,
+  ]);
+  const reviewedAt = new Date();
+  const review = await prisma.codeSiteDocumentReview.create({
+    data: {
+      projectId: document.projectId,
+      documentId: document.id,
+      reviewerUserId: body.reviewerUserId || body.reviewer_user_id || actorUserId(actor),
+      status: decision === 'pending' ? 'pending' : 'completed',
+      decision,
+      reasonCodesJson: stringifyJson(reasonCodes),
+      bodyJson: stringifyJson({
+        summary: body.summary || body.rationale || body.reason || null,
+        routeRevisionId: body.routeRevisionId || body.route_revision_id || null,
+        permitId: body.permitId || body.permit_id || null,
+        reviewTimeMs: normalizePositiveInt(body.reviewTimeMs || body.review_time_ms),
+        baselineReviewTimeMs: normalizePositiveInt(body.baselineReviewTimeMs || body.baseline_review_time_ms),
+      }),
+      evidenceRefsJson: stringifyJson(asArray(body.evidenceRefs || body.evidence_refs)),
+      reviewedAt: decision === 'pending' ? null : reviewedAt,
+    },
+  });
+  const updatedDocument = await prisma.codeSiteDocument.update({
+    where: { id: document.id },
+    data: {
+      status: nextStatus,
+      resolvedAt: ['approved', 'rejected'].includes(nextStatus) ? reviewedAt : null,
+    },
+  });
+  const event = await recordEvent(document.projectId, {
+    eventType: 'tower_instruction',
+    displayCallsign: body.displayCallsign || body.display_callsign || null,
+    actorType: 'document_review',
+    actorId: review.id,
+    details: {
+      documentId: document.id,
+      reviewId: review.id,
+      kind: document.kind,
+      decision,
+      status: nextStatus,
+      reasonCodes,
+    },
+    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
+  });
+  await syncArtifactsForProject(document.projectId, { reason: 'document_reviewed', eventId: event.id });
+  return {
+    document: documentProjection(updatedDocument),
+    review: documentReviewProjection(review),
+    event,
+  };
+}
+
+export async function listRouteRevisions(workspaceSlug, projectId, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  const revisions = await prisma.codeSiteRouteRevision.findMany({
+    where: { projectId: project.id },
+    orderBy: { createdAt: 'desc' },
+  });
+  return revisions.map(routeRevisionProjection);
+}
+
+export async function proposeRouteRevision(workspaceSlug, executionPlanId, body = {}, actor = null) {
+  const plan = await prisma.codeSiteExecutionPlan.findFirst({
+    where: { id: executionPlanId, project: { workspaceSlug } },
+    include: { project: { include: { members: true, agentSessions: true } } },
+  });
+  if (!plan) throw notFound('execution_plan_not_found');
+  await requireProjectAccess(plan.project, actor, 'write');
+  const previousRoute = pathsForRoute(parseJson(plan.routeJson, []));
+  const proposedRoute = pathsForRoute(body.proposedRoute || body.proposed_route || body.route || body.nextRoute || body.next_route || []);
+  if (!proposedRoute.length) throw badRequest('route_revision_proposed_route_required');
+  const suppliedDocumentId = body.documentId || body.document_id || null;
+  let document = suppliedDocumentId ? await requireDocument(plan.projectId, suppliedDocumentId) : null;
+  if (!document && body.createChangeOrder !== false && body.create_change_order !== false) {
+    document = await prisma.codeSiteDocument.create({
+      data: {
+        projectId: plan.projectId,
+        kind: 'change_order',
+        status: 'pending_review',
+        title: String(body.title || `Route change for ${plan.displayCallsign}`),
+        bodyJson: stringifyJson(redactDocumentBody({
+          summary: body.summary || body.reason || 'Route revision proposed',
+          executionPlanId: plan.id,
+          previousRoute,
+          proposedRoute,
+          affectedZones: asArray(body.affectedZones || body.affected_zones),
+          contractRefs: asArray(body.contractRefs || body.contract_refs),
+        })),
+        blocking: body.blocking !== false,
+      },
+    });
+  }
+  const affectedLeases = await prisma.codeSiteMutationLease.findMany({
+    where: {
+      projectId: plan.projectId,
+      executionPlanId: plan.id,
+      status: { in: ['active', 'issued', 'holding', 'suspended'] },
+    },
+    orderBy: { issuedAt: 'desc' },
+  });
+  const revision = await prisma.codeSiteRouteRevision.create({
+    data: {
+      projectId: plan.projectId,
+      executionPlanId: plan.id,
+      documentId: document?.id || null,
+      status: String(body.status || 'proposed'),
+      previousRouteJson: stringifyJson(previousRoute),
+      proposedRouteJson: stringifyJson(proposedRoute),
+      affectedLeasesJson: stringifyJson(affectedLeases.map((lease) => ({
+        id: lease.id,
+        status: lease.status,
+        displayCallsign: lease.displayCallsign,
+        mutationLeaseId: lease.id,
+      }))),
+      approvalJson: stringifyJson({ required: true }),
+      evidenceRefsJson: stringifyJson(asArray(body.evidenceRefs || body.evidence_refs)),
+      proposedByUserId: actorUserId(actor),
+    },
+  });
+  const event = await recordEvent(plan.projectId, {
+    eventType: 'route_deviation',
+    displayCallsign: plan.displayCallsign,
+    actorType: 'route_revision',
+    actorId: revision.id,
+    details: {
+      routeRevisionId: revision.id,
+      executionPlanId: plan.id,
+      documentId: document?.id || null,
+      previousRoute,
+      proposedRoute,
+      affectedLeaseIds: affectedLeases.map((lease) => lease.id),
+      towerInstruction: 'Route revision proposed; hold affected clearances until review is approved and applied.',
+    },
+    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
+  });
+  await syncArtifactsForProject(plan.projectId, { reason: 'route_revision_proposed', eventId: event.id });
+  return {
+    routeRevision: routeRevisionProjection(revision),
+    changeOrder: document ? documentProjection(document) : null,
+    event,
+  };
+}
+
+export async function reviewRouteRevision(workspaceSlug, routeRevisionId, body = {}, actor = null) {
+  const revision = await requireRouteRevision(workspaceSlug, routeRevisionId, actor, 'write');
+  const decision = normalizeReviewDecision(body.decision || body.status || body.outcome || 'approved');
+  const approved = decision === 'approved';
+  const nextStatus = approved ? 'approved' : (decision === 'rejected' ? 'rejected' : 'needs_info');
+  const approval = {
+    ...parseJson(revision.approvalJson, {}),
+    decision,
+    approved,
+    reviewedByUserId: body.reviewerUserId || body.reviewer_user_id || actorUserId(actor),
+    rationale: body.rationale || body.reason || body.summary || null,
+    reviewedAt: new Date().toISOString(),
+  };
+  const updated = await prisma.codeSiteRouteRevision.update({
+    where: { id: revision.id },
+    data: {
+      status: nextStatus,
+      approvalJson: stringifyJson(approval),
+      approvedByUserId: approved ? approval.reviewedByUserId : null,
+    },
+  });
+  const event = await recordEvent(revision.projectId, {
+    eventType: 'tower_instruction',
+    displayCallsign: revision.executionPlan?.displayCallsign || null,
+    actorType: 'route_revision',
+    actorId: revision.id,
+    details: {
+      routeRevisionId: revision.id,
+      executionPlanId: revision.executionPlanId,
+      decision,
+      status: nextStatus,
+      approval,
+    },
+    evidenceRefs: asArray(body.evidenceRefs || body.evidence_refs),
+  });
+  if (revision.documentId) {
+    await reviewDocument(workspaceSlug, revision.documentId, {
+      decision,
+      summary: body.summary || body.rationale || body.reason || null,
+      routeRevisionId: revision.id,
+      evidenceRefs: body.evidenceRefs || body.evidence_refs,
+    }, actor);
+  }
+  await syncArtifactsForProject(revision.projectId, { reason: 'route_revision_reviewed', eventId: event.id });
+  return { routeRevision: routeRevisionProjection(updated), event };
+}
+
+export async function applyRouteRevision(workspaceSlug, routeRevisionId, body = {}, actor = null) {
+  let revision = await requireRouteRevision(workspaceSlug, routeRevisionId, actor, 'write');
+  if (revision.status !== 'approved') {
+    if (body.approve === true || body.approved === true) {
+      const reviewed = await reviewRouteRevision(workspaceSlug, routeRevisionId, { ...body, decision: 'approved' }, actor);
+      revision = await requireRouteRevision(workspaceSlug, reviewed.routeRevision.id, actor, 'write');
+    } else {
+      throw badRequest('route_revision_not_approved', { status: revision.status });
+    }
+  }
+  const proposedRoute = pathsForRoute(parseJson(revision.proposedRouteJson, []));
+  if (!proposedRoute.length) throw badRequest('route_revision_proposed_route_required');
+  const now = new Date();
+  const updatedPlan = await prisma.codeSiteExecutionPlan.update({
+    where: { id: revision.executionPlanId },
+    data: {
+      routeJson: stringifyJson(proposedRoute),
+      status: 'rerouted',
+    },
+  });
+  const affectedRefs = parseJson(revision.affectedLeasesJson, []);
+  const affectedLeaseIds = unique([
+    ...affectedRefs.map((lease) => lease.id || lease.mutationLeaseId).filter(Boolean),
+    ...asArray(body.affectedLeaseIds || body.affected_lease_ids),
+  ]);
+  const affectedLeases = [];
+  const policyDecisions = [];
+  if (affectedLeaseIds.length) {
+    const leases = await prisma.codeSiteMutationLease.findMany({
+      where: { id: { in: affectedLeaseIds }, projectId: revision.projectId },
+    });
+    for (const lease of leases) {
+      const nextStatus = body.revokeAffectedLeases || body.revoke_affected_leases ? 'revoked' : 'suspended';
+      const updatedLease = await prisma.codeSiteMutationLease.update({
+        where: { id: lease.id },
+        data: {
+          status: nextStatus,
+          revokedAt: nextStatus === 'revoked' ? now : lease.revokedAt,
+        },
+      });
+      affectedLeases.push(mutationLeaseProjection(updatedLease));
+      const decision = await createPolicyDecision(revision.projectId, {
+        mutationLeaseId: lease.id,
+        displayCallsign: lease.displayCallsign,
+        decision: nextStatus === 'revoked' ? 'revoke' : 'hold',
+        reasonCodes: ['route_revision_applied', 'clearance_reissue_required'],
+        input: {
+          routeRevisionId: revision.id,
+          previousRoute: parseJson(revision.previousRouteJson, []),
+          proposedRoute,
+        },
+        decisionJson: {
+          routeRevisionId: revision.id,
+          previousStatus: lease.status,
+          status: nextStatus,
+          appliedByUserId: actorUserId(actor),
+        },
+      });
+      policyDecisions.push(policyDecisionProjection(decision));
+    }
+  }
+  const approval = {
+    ...parseJson(revision.approvalJson, {}),
+    appliedByUserId: actorUserId(actor),
+    appliedAt: now.toISOString(),
+  };
+  const updatedRevision = await prisma.codeSiteRouteRevision.update({
+    where: { id: revision.id },
+    data: {
+      status: 'applied',
+      approvalJson: stringifyJson(approval),
+      appliedAt: now,
+    },
+  });
+  const event = await recordEvent(revision.projectId, {
+    eventType: 'tower_instruction',
+    displayCallsign: updatedPlan.displayCallsign,
+    actorType: 'route_revision',
+    actorId: revision.id,
+    details: {
+      routeRevisionId: revision.id,
+      executionPlanId: updatedPlan.id,
+      previousRoute: parseJson(revision.previousRouteJson, []),
+      proposedRoute,
+      affectedLeaseIds,
+      affectedLeaseStatus: affectedLeases.map((lease) => ({ id: lease.id, status: lease.status })),
+      towerInstruction: 'Route revision applied. Affected clearances must be reissued before further writes.',
+    },
+    evidenceRefs: unique([
+      ...parseJson(revision.evidenceRefsJson, []),
+      ...asArray(body.evidenceRefs || body.evidence_refs),
+    ]),
+  });
+  await syncArtifactsForProject(revision.projectId, { reason: 'route_revision_applied', eventId: event.id });
+  return {
+    routeRevision: routeRevisionProjection(updatedRevision),
+    executionPlan: executionPlanProjection(updatedPlan),
+    affectedLeases,
+    policyDecisions,
+    event,
+  };
+}
+
 function defaultDocumentTitle(kind) {
   return {
     rfi: 'Request for information',
     change_order: 'Change order',
+    submittal: 'Submittal',
+    handover: 'Handover packet',
+    permit: 'Work permit',
     mayday: 'Mayday',
     stop_work: 'Stop-work order',
     punch: 'Punch item',
   }[kind] || 'CodeSite document';
+}
+
+function defaultPermitTitle(permitType, executionPlanId = null, mutationLeaseId = null) {
+  const label = String(permitType || 'work_permit')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+  const ref = mutationLeaseId || executionPlanId;
+  return ref ? `${label} for ${ref}` : label;
+}
+
+function normalizeReviewDecision(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (['approve', 'approved', 'accept', 'accepted', 'pass', 'passed', 'issued'].includes(normalized)) return 'approved';
+  if (['reject', 'rejected', 'deny', 'denied', 'fail', 'failed'].includes(normalized)) return 'rejected';
+  if (['needs_info', 'needs_information', 'more_info', 'revise', 'revisions_requested', 'changes_requested'].includes(normalized)) {
+    return 'needs_info';
+  }
+  if (['pending', 'open', 'requested'].includes(normalized)) return 'pending';
+  return normalized || 'approved';
+}
+
+function documentStatusForReviewDecision(decision) {
+  return {
+    approved: 'approved',
+    rejected: 'rejected',
+    needs_info: 'needs_info',
+    pending: 'pending_review',
+  }[decision] || 'reviewed';
+}
+
+function normalizePositiveInt(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
 }
 
 function eventTypeForDocument(kind) {
@@ -7202,6 +7624,28 @@ async function requireAgentSession(projectId, agentSessionId) {
   return session;
 }
 
+async function requireDocument(projectId, documentId) {
+  if (!documentId) throw badRequest('document_required');
+  const document = await prisma.codeSiteDocument.findFirst({ where: { id: documentId, projectId } });
+  if (!document) throw notFound('document_not_found');
+  return document;
+}
+
+async function requireRouteRevision(workspaceSlug, routeRevisionId, actor = null, mode = 'read') {
+  if (!routeRevisionId) throw badRequest('route_revision_required');
+  const revision = await prisma.codeSiteRouteRevision.findFirst({
+    where: { id: routeRevisionId, project: { workspaceSlug } },
+    include: {
+      project: { include: { members: true, agentSessions: true } },
+      executionPlan: true,
+      document: true,
+    },
+  });
+  if (!revision) throw notFound('route_revision_not_found');
+  await requireProjectAccess(revision.project, actor, mode);
+  return revision;
+}
+
 async function requireLease(workspaceSlug, mutationLeaseId) {
   const lease = await prisma.codeSiteMutationLease.findFirst({
     where: { id: mutationLeaseId, project: { workspaceSlug } },
@@ -7328,6 +7772,9 @@ function projectSummary(project) {
       mutationLeases: project.mutationLeases?.length || 0,
       incidents: project.incidents?.length || 0,
       inspectionRuns: project.inspectionRuns?.length || 0,
+      permits: project.permits?.length || 0,
+      documentReviews: project.documentReviews?.length || 0,
+      routeRevisions: project.routeRevisions?.length || 0,
     },
   };
 }
@@ -7362,6 +7809,9 @@ function projectProjection(project) {
     }),
     lineProvenance: asArray(project.lineProvenance).map(lineProvenanceProjection),
     documents: asArray(project.documents).map(documentSummaryProjection),
+    permits: asArray(project.permits).map(permitProjection),
+    documentReviews: asArray(project.documentReviews).map(documentReviewProjection),
+    routeRevisions: asArray(project.routeRevisions).map(routeRevisionProjection),
     counterfactualRuns: asArray(project.counterfactualRuns).map(counterfactualProjection),
     policyDeltas: asArray(project.policyDeltas).map(policyDeltaProjection),
     inboxItems: asArray(project.inboxItems).map(inboxSummaryProjection),
@@ -7701,6 +8151,62 @@ function documentSummaryProjection(document) {
     blocking: document.blocking,
     createdAt: document.createdAt,
     resolvedAt: document.resolvedAt,
+  };
+}
+
+function permitProjection(permit) {
+  return {
+    id: permit.id,
+    projectId: permit.projectId,
+    executionPlanId: permit.executionPlanId,
+    mutationLeaseId: permit.mutationLeaseId,
+    documentId: permit.documentId,
+    permitType: permit.permitType,
+    status: permit.status,
+    title: permit.title,
+    scope: parseJson(permit.scopeJson, {}),
+    approval: parseJson(permit.approvalJson, {}),
+    evidenceRefs: parseJson(permit.evidenceRefsJson, []),
+    issuedByUserId: permit.issuedByUserId,
+    issuedAt: permit.issuedAt,
+    expiresAt: permit.expiresAt,
+    closedAt: permit.closedAt,
+  };
+}
+
+function documentReviewProjection(review) {
+  return {
+    id: review.id,
+    projectId: review.projectId,
+    documentId: review.documentId,
+    reviewerUserId: review.reviewerUserId,
+    status: review.status,
+    decision: review.decision,
+    reasonCodes: parseJson(review.reasonCodesJson, []),
+    body: parseJson(review.bodyJson, {}),
+    evidenceRefs: parseJson(review.evidenceRefsJson, []),
+    requestedAt: review.requestedAt,
+    reviewedAt: review.reviewedAt,
+  };
+}
+
+function routeRevisionProjection(revision) {
+  return {
+    id: revision.id,
+    projectId: revision.projectId,
+    executionPlanId: revision.executionPlanId,
+    documentId: revision.documentId,
+    status: revision.status,
+    previousRoute: parseJson(revision.previousRouteJson, []),
+    proposedRoute: parseJson(revision.proposedRouteJson, []),
+    affectedLeases: parseJson(revision.affectedLeasesJson, []),
+    approval: parseJson(revision.approvalJson, {}),
+    evidenceRefs: parseJson(revision.evidenceRefsJson, []),
+    proposedByUserId: revision.proposedByUserId,
+    approvedByUserId: revision.approvedByUserId,
+    appliedAt: revision.appliedAt,
+    createdAt: revision.createdAt,
+    updatedAt: revision.updatedAt,
   };
 }
 
