@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { requireRuntimeWorkspaceAccess } from '@/lib/workspaceAccess';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 import { buildExternalTools, isExternalToolName, callExternalTool } from './externalTools.js';
 import { resolveActor } from '@/lib/integrations/session';
@@ -714,7 +715,7 @@ const fetchCollabFileContent = async (slug, filePath, signal, userId) => {
         const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
         const headers = {};
         if (userId) headers['x-user-id'] = userId;
-        const res = await fetch(url, { method: 'GET', signal, headers });
+        const res = await fetch(url, { method: 'GET', signal, headers: withInternalAiAuth(headers) });
         if (!res.ok) return null;
         return await res.text();
     } catch (e) {
@@ -735,7 +736,7 @@ const fetchRepoFileList = async (slug, signal, userId) => {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
         const headers = {};
         if (userId) headers['x-user-id'] = userId;
-        const res = await fetch(url, { method: 'GET', signal, headers });
+        const res = await fetch(url, { method: 'GET', signal, headers: withInternalAiAuth(headers) });
         if (!res.ok) return [];
         const data = await res.json();
         return Array.isArray(data?.files) ? data.files : [];
@@ -1794,6 +1795,17 @@ const withTimeoutSignal = (requestSignal, timeoutMs = UPSTREAM_TIMEOUT_MS) => {
 };
 
 export async function POST(request) {
+    let userId = null;
+    try {
+        const session = await getServerSession(authOptions);
+        userId = session?.user?.id || session?.user?.email || null;
+    } catch (e) {
+        console.warn('[Chat] Could not resolve userId from session:', e?.message || e);
+    }
+    if (!userId) {
+        return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
     let body;
     try {
         body = await request.json();
@@ -1827,23 +1839,24 @@ export async function POST(request) {
 
     const provider = (providerOverride && String(providerOverride).toLowerCase()) || inferProvider(model);
 
-    // ── Resolve userId from server session ──────────────────────────
-    // The collab server needs x-user-id to resolve per-user repos at
-    // repos/{slug}/{userId}/.  Without this, all file reads fail with
-    // ENOENT — the root cause of "No response received" on AI features.
-    let userId = null;
-    try {
-        const session = await getServerSession(authOptions);
-        userId = session?.user?.id || session?.user?.email || null;
-    } catch (e) {
-        console.warn('[Chat] Could not resolve userId from session:', e.message);
+    let authorizedWorkspacePath = String(workspacePath || '').trim();
+    if (authorizedWorkspacePath) {
+        const access = await requireRuntimeWorkspaceAccess(authorizedWorkspacePath);
+        if (!access.ok) {
+            return NextResponse.json(
+                { error: access.error || 'Workspace access denied' },
+                { status: access.status || 403 },
+            );
+        }
+        authorizedWorkspacePath = access.workspace?.slug || authorizedWorkspacePath;
+        userId = access.session?.user?.id || access.email || userId;
     }
 
     // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
     // This reduces latency by running both operations concurrently
-    const codeIntelPromise = (useCodeIntel && workspacePath && prompt)
+    const codeIntelPromise = (useCodeIntel && authorizedWorkspacePath && prompt)
         ? fetchCodeIntelContext({
-            workspacePath,
+            workspacePath: authorizedWorkspacePath,
             query: prompt,
             maxTokens: maxContextTokens,
             conversationHistory,
@@ -1855,7 +1868,7 @@ export async function POST(request) {
         : Promise.resolve(null);
     
     const hydratePromise = hydrateFromCollab({
-        workspacePath,
+        workspacePath: authorizedWorkspacePath,
         focusPath,
         code,
         files,
@@ -1876,7 +1889,7 @@ export async function POST(request) {
     // ensures the LLM sees full file content for RAG-sourced files,
     // not just the text blob summary.
     let finalFiles = hydratedFiles;
-    if (codeIntelContext?.sources?.length && workspacePath) {
+    if (codeIntelContext?.sources?.length && authorizedWorkspacePath) {
         const existingPaths = new Set(
             (hydratedFiles || []).map((f) => f?.path || f?.name).filter(Boolean)
         );
@@ -1896,7 +1909,7 @@ export async function POST(request) {
             const ragHydrated = [];
             for (const ragPath of ragNewPaths.slice(0, 8)) {
                 try {
-                    const content = await fetchCollabFileContent(workspacePath, ragPath, request.signal, userId);
+                    const content = await fetchCollabFileContent(authorizedWorkspacePath, ragPath, request.signal, userId);
                     if (typeof content === 'string' && content) {
                         const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
                         ragHydrated.push({
@@ -1959,11 +1972,11 @@ export async function POST(request) {
         const shouldUseTools =
             provider === 'gemini' && (
                 useTools === true ||
-                (useTools === 'auto' && workspacePath && isComplexTask(prompt, (files || []).length))
+                (useTools === 'auto' && authorizedWorkspacePath && isComplexTask(prompt, (files || []).length))
             );
 
         let stream;
-        if (shouldUseTools && workspacePath) {
+        if (shouldUseTools && authorizedWorkspacePath) {
             console.log('[Chat API] Using agentic tool-calling path (provider=gemini)');
             stream = await streamGeminiWithTools({
                 model,
@@ -1971,7 +1984,7 @@ export async function POST(request) {
                 userContent,
                 conversationHistory,
                 attachments,
-                workspacePath,
+                workspacePath: authorizedWorkspacePath,
                 runtimeScope,
                 filesystemUserId,
                 userId,
