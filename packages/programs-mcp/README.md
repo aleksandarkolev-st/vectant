@@ -29,11 +29,19 @@ generate one from the workspace's files.
 node packages/programs-mcp/src/index.js
 ```
 
-Register with an MCP host, e.g. Claude Code:
+### Registration
+
+The monorepo ships a project-scoped [`.mcp.json`](../../.mcp.json) at the repo root, so
+any MCP host opened in this repo/workspace (Claude Code, Cursor, …) auto-registers this
+server as `vectant-programs` — no manual step. To register it elsewhere, e.g. Claude Code
+in another directory:
 
 ```bash
 claude mcp add vectant-programs -- node /abs/path/to/packages/programs-mcp/src/index.js
 ```
+
+> Per-user workspace terminals do not yet auto-provision MCP config — seeding this server
+> into the workspace runtime image/dotfiles is a separate infra step.
 
 ## Configuration (generation only)
 
