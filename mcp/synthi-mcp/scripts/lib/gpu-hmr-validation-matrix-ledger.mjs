@@ -1690,6 +1690,8 @@ function randomColdNormalizeSourceListingEntries(entries) {
         firstText(object.path, object.sourcePath, object.source_path),
       );
       if (!pathName) return null;
+      const mode = firstText(object.mode, object.gitMode, object.git_mode);
+      const type = firstText(object.type, object.objectType, object.object_type);
       return {
         path: pathName,
         object: firstText(object.object, object.objectId, object.object_id, object.sha, object.hash) ?? null,
@@ -1699,9 +1701,18 @@ function randomColdNormalizeSourceListingEntries(entries) {
           ?? object.size
           ?? object.size_bytes
         ),
+        ...(mode ? { mode } : {}),
+        ...(type ? { type } : {}),
       };
     })
     .filter(Boolean);
+}
+
+function randomColdSourceListingEntryHasSizeProof(entry = {}) {
+  if (Number.isFinite(entry.byteLength) && entry.byteLength >= 0) return true;
+  const type = String(entry.type ?? '').trim().toLowerCase();
+  const mode = String(entry.mode ?? '').trim();
+  return (type && type !== 'blob') || mode === '160000' || mode === '040000';
 }
 
 function randomColdListingClassification(entries) {
@@ -1816,14 +1827,18 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
   const listingIdentity = entries
-    .map((entry) => ({
-      path: entry.path,
-      object: entry.object,
-      byteLength: entry.byteLength,
-    }))
+    .map((entry) => {
+      const identity = {
+        path: entry.path,
+        object: entry.object,
+        byteLength: entry.byteLength,
+      };
+      if (entry.mode) identity.mode = entry.mode;
+      if (entry.type) identity.type = entry.type;
+      return identity;
+    })
     .sort((a, b) =>
-      `${a.path}\0${a.object}\0${a.byteLength}`
-        .localeCompare(`${b.path}\0${b.object}\0${b.byteLength}`)
+      stableJson(a).localeCompare(stableJson(b))
     );
   const recomputedSourceListingHash = entries.length > 0
     ? `sha256:${sha256Hex(stableJson(listingIdentity))}`
@@ -1861,6 +1876,7 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   const entryByteLengthCount = entries.filter((entry) =>
     Number.isFinite(entry.byteLength) && entry.byteLength >= 0
   ).length;
+  const entryByteLengthProofCount = entries.filter(randomColdSourceListingEntryHasSizeProof).length;
   const failedGates = compactStringList([
     present ? null : 'random_cold_source_listing_manifest_missing',
     present && schemaVersion !== RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION
@@ -1878,7 +1894,7 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     present && entries.length > 0 && entryObjectVerifiableCount < entries.length
       ? 'random_cold_source_listing_manifest_entry_object_unverifiable'
       : null,
-    present && entries.length > 0 && entryByteLengthCount < entries.length
+    present && entries.length > 0 && entryByteLengthProofCount < entries.length
       ? 'random_cold_source_listing_manifest_entry_byte_length_missing'
       : null,
     present && !declaredSourceListingHash
@@ -1948,6 +1964,8 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     entry_object_verifiable_count: entryObjectVerifiableCount,
     entryByteLengthCount,
     entry_byte_length_count: entryByteLengthCount,
+    entryByteLengthProofCount,
+    entry_byte_length_proof_count: entryByteLengthProofCount,
     entries,
     ...classification,
     failedGates,
@@ -3001,11 +3019,19 @@ function randomColdSourceIntakeTransportFallbackEvidenceFacet(input = {}, contex
     candidate_source: candidateSource,
     immutableCommit,
     immutable_commit: immutableCommit,
+    reason: firstText(facet.reason) ?? null,
     automatic,
+    automaticReason,
+    automatic_reason: automaticReason,
     requiresExplicitOptIn,
     requires_explicit_opt_in: requiresExplicitOptIn,
     recommendedTransport,
     recommended_transport: recommendedTransport,
+    trigger,
+    forcedByEnv,
+    forced_by_env: forcedByEnv,
+    fullTreeOptInEnv,
+    full_tree_opt_in_env: fullTreeOptInEnv,
     directSourceInputEvidenceHash,
     direct_source_input_evidence_hash: directSourceInputEvidenceHash,
     fallbackEvidenceHash,

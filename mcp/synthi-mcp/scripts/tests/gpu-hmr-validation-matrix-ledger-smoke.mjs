@@ -101,14 +101,18 @@ function contentHashFor(value) {
 
 function sourceListingHashForEntries(entries) {
   const listingIdentity = entries
-    .map((entry) => ({
-      path: entry.path,
-      object: entry.object,
-      byteLength: entry.byteLength,
-    }))
+    .map((entry) => {
+      const identity = {
+        path: entry.path,
+        object: entry.object,
+        byteLength: entry.byteLength,
+      };
+      if (entry.mode) identity.mode = entry.mode;
+      if (entry.type) identity.type = entry.type;
+      return identity;
+    })
     .sort((a, b) =>
-      `${a.path}\0${a.object}\0${a.byteLength}`
-        .localeCompare(`${b.path}\0${b.object}\0${b.byteLength}`)
+      stableJson(a).localeCompare(stableJson(b))
     );
   return contentHashFor(listingIdentity);
 }
@@ -12228,6 +12232,39 @@ assert.ok(
   broadReadinessWithPathOnlyListingQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
+const broadReadinessWithGitlinkListingRows = Array.from({ length: 5 }, (_, index) => {
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId: `gitlink-listing-${index + 1}`,
+  });
+  sourceListingManifest.entries.push({
+    path: `third_party/git-submodule-${index + 1}`,
+    object: sha256Hex(`gitlink-object-${index + 1}`).slice(0, 40),
+    mode: '160000',
+    type: 'commit',
+    byteLength: null,
+  });
+  sourceListingManifest.fileCount = sourceListingManifest.entries.length;
+  sourceListingManifest.file_count = sourceListingManifest.entries.length;
+  sourceListingManifest.sourceListingHash = sourceListingHashForEntries(sourceListingManifest.entries);
+  sourceListingManifest.source_listing_hash = sourceListingManifest.sourceListingHash;
+  return randomColdReadinessMatrixRow({
+    targetId: `gitlink-listing-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/gitlink-listing/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`gitlink-listing-commit-${index + 1}`).slice(0, 40),
+    sourceListingManifest,
+  });
+});
+const broadReadinessWithGitlinkListingQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessWithGitlinkListingRows,
+  ],
+});
+assert.equal(broadReadinessWithGitlinkListingQuery.accepted, true);
+assert.ok(!broadReadinessWithGitlinkListingQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_entry_byte_length_missing'
+));
 const broadReadinessWithUnverifiableListingObjectRows = Array.from({ length: 5 }, (_, index) => {
   const sourceListingManifest = randomColdSourceListingManifestFixture({
     targetId: `unverifiable-listing-object-${index + 1}`,

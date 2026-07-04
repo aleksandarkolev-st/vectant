@@ -280,15 +280,21 @@ function claimsGpuHmrAuthority(value) {
 
 function canonicalSourceListingIdentity(files = []) {
   return (Array.isArray(files) ? files : [])
-    .map((file) => ({
-      path: String(file.path ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\/+/, ''),
-      object: file.object ?? null,
-      byteLength: Number.isFinite(file.byteLength) ? file.byteLength : null,
-    }))
+    .map((file) => {
+      const mode = String(file.mode ?? file.gitMode ?? file.git_mode ?? '').trim();
+      const type = String(file.type ?? file.objectType ?? file.object_type ?? '').trim();
+      const identity = {
+        path: String(file.path ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\/+/, ''),
+        object: file.object ?? null,
+        byteLength: Number.isFinite(file.byteLength) ? file.byteLength : null,
+      };
+      if (mode) identity.mode = mode;
+      if (type) identity.type = type;
+      return identity;
+    })
     .filter((file) => file.path)
     .sort((a, b) =>
-      `${a.path}\0${a.object}\0${a.byteLength}`
-        .localeCompare(`${b.path}\0${b.object}\0${b.byteLength}`)
+      stableJson(a).localeCompare(stableJson(b))
     );
 }
 
