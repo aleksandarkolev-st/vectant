@@ -1334,6 +1334,106 @@ describe('CodeSite control plane transaction validation', () => {
     }));
   });
 
+  it('runs eligible automatic workflow plans through clearance, inspection, proof, and black-box closeout', async () => {
+    prisma.codeSiteMutationTransaction.create.mockImplementation(async ({ data }) => ({
+      id: 'txn-auto-docs',
+      openedAt: new Date('2026-06-29T23:04:00.000Z'),
+      closedAt: null,
+      commitDecisionJson: null,
+      proofBundleDigest: null,
+      ...data,
+    }));
+
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Document release process',
+      request: 'Prepare release coordination docs',
+      autoWorkflow: true,
+      repoPolicyCompiler: false,
+      missions: [{
+        callsign: 'DOCS-01',
+        domain: 'docs',
+        mission: 'Coordinate release docs',
+        route: ['docs/release/**'],
+        requestedTools: ['file_read'],
+      }],
+      zonePolicy: {
+        zones: [
+          { zoneKey: 'docs', class: 'C', label: 'Docs coordination', paths: ['docs/release/**'], rules: [], risk: 'medium' },
+        ],
+      },
+    });
+
+    const controlPlan = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.controlPlanJson);
+    expect(controlPlan.automaticWorkflow.summary).toMatchObject({
+      clearances: 1,
+      transactions: 1,
+      inspections: 1,
+      proofBundles: 1,
+      skippedFlights: [],
+    });
+    expect(prisma.codeSiteMutationLease.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        displayCallsign: 'DOCS-01',
+        status: 'active',
+      }),
+    }));
+    const leaseBody = JSON.parse(prisma.codeSiteMutationLease.create.mock.calls.at(-1)[0].data.leaseJson);
+    expect(leaseBody).toMatchObject({
+      allowedPaths: ['docs/release/**'],
+      blockedPaths: [],
+    });
+    expect(leaseBody.requiredRadar).toEqual(expect.arrayContaining(['handover']));
+    expect(leaseBody.invariants).toEqual(expect.arrayContaining(['handover.packet.complete']));
+
+    expect(prisma.codeSiteMutationTransaction.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-created',
+        status: 'open',
+        readSetJson: JSON.stringify([]),
+        writeSetJson: JSON.stringify([]),
+        baseSnapshotEvidenceJson: JSON.stringify(null),
+      }),
+    }));
+    expect(prisma.codeSiteInspectionRun.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        executionPlanId: 'plan-DOCS-01',
+        displayCallsign: 'DOCS-01',
+        status: 'completed',
+        changedPathsJson: JSON.stringify([]),
+      }),
+    }));
+    expect(prisma.codeSiteProofBundle.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        transactionId: 'txn-auto-docs',
+        landingStatus: 'landed-noop',
+        writeSetDigest: expect.stringMatching(/^sha256:/),
+      }),
+    }));
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-auto-docs' },
+      data: expect.objectContaining({
+        status: 'committed',
+        proofBundleDigest: expect.stringMatching(/^sha256:/),
+      }),
+    }));
+    expect(prisma.codeSiteIncident.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        category: 'black_box',
+        evidenceRefsJson: expect.stringContaining('codesite:transaction:txn-auto-docs'),
+      }),
+    }));
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      'clearance_requested',
+      'clearance_issued',
+      'transaction_opened',
+      'landing_requested',
+      'inspection_result',
+      'transaction_committed',
+      'black_box_closed',
+    ]));
+  });
+
   it('preserves explicit auto-workflow mission license metadata', async () => {
     await createProject('acme', { userId: 'user-1' }, {
       title: 'Update schema',

@@ -461,6 +461,8 @@ export async function createProject(workspaceSlug, actor, body = {}) {
             agentSessionIds: workflowBootstrap.agentSessions.map((session) => session.id),
             executionPlanIds: workflowBootstrap.executionPlans.map((plan) => plan.id),
             collisionForecast: workflowBootstrap.forecast,
+            operational: workflowBootstrap.operational,
+            summary: workflowBootstrap.summary,
           },
         }),
       },
@@ -602,6 +604,15 @@ async function bootstrapAutomaticWorkflow({ project, actor, zonePolicy, controlP
       },
     });
   }
+  const operational = await bootstrapAutomaticWorkflowOperations({
+    project,
+    actor,
+    missions,
+    agentSessions,
+    executionPlans,
+    zonePolicy,
+    body,
+  });
   return {
     enabled: true,
     missions,
@@ -609,13 +620,332 @@ async function bootstrapAutomaticWorkflow({ project, actor, zonePolicy, controlP
     selectedStrategy,
     agentSessions,
     executionPlans,
+    operational,
     summary: {
       selectedStrategy,
       riskLevel: forecast.riskLevel,
       missionCount: missions.length,
       heldFlights: executionPlans.filter((plan) => plan.status === 'holding').map((plan) => plan.displayCallsign),
+      clearances: operational.clearances.length,
+      transactions: operational.transactions.length,
+      inspections: operational.inspections.length,
+      proofBundles: operational.proofBundles.length,
+      skippedFlights: operational.skipped,
     },
   };
+}
+
+async function bootstrapAutomaticWorkflowOperations({
+  project,
+  actor,
+  missions,
+  agentSessions,
+  executionPlans,
+  zonePolicy,
+  body = {},
+}) {
+  const enabled = body.autoWorkflowOperations !== false
+    && body.auto_workflow_operations !== false
+    && body.operationalBootstrap !== false
+    && body.operational_bootstrap !== false;
+  const result = {
+    enabled,
+    clearances: [],
+    transactions: [],
+    inspections: [],
+    proofBundles: [],
+    skipped: [],
+  };
+  if (!enabled) return result;
+
+  const evidenceByCallsign = automaticWorkflowEvidenceByCallsign(body);
+  for (let index = 0; index < executionPlans.length; index += 1) {
+    const plan = executionPlans[index];
+    const mission = missions[index] || {};
+    const session = agentSessions[index];
+    if (!automaticWorkflowPlanReadyForOperations(plan)) {
+      result.skipped.push({
+        displayCallsign: plan.displayCallsign,
+        reason: 'flight_not_ready_for_clearance',
+        status: plan.status,
+      });
+      continue;
+    }
+    const actorForSession = { ...(actor || {}), userId: session?.ownerUserId || actor?.userId || 'codesite-tower' };
+    const planWithContext = { ...plan, project, agentSession: session };
+    const evidence = evidenceByCallsign.get(plan.displayCallsign) || {};
+    const lease = await requestMutationLeaseForPlan(project.workspaceSlug, planWithContext, {
+      allowedPaths: mission.route,
+      blockedPaths: mission.blockedZones,
+      allowedTools: mission.requestedTools,
+      requiredRadar: evidence.requiredRadar || evidence.required_radar || automaticWorkflowRequiredRadar(mission.route, zonePolicy),
+      invariants: evidence.invariants || automaticWorkflowInvariants(mission.route, zonePolicy),
+      dojoProofRef: mission.dojoProofRef,
+      dojoLicenseRef: mission.dojoPilotLicenseRef,
+      dojoEvidenceRefs: mission.dojoEvidenceRefs,
+      dojoDecisionDigest: mission.dojoDecisionDigest,
+      dojoImplementationStatus: mission.pilotLicenseSnapshot?.implementationStatus,
+    }, actorForSession);
+    result.clearances.push({ id: lease.id, status: lease.status, displayCallsign: lease.displayCallsign });
+    if (lease.status !== 'active') {
+      result.skipped.push({
+        displayCallsign: lease.displayCallsign,
+        reason: 'clearance_not_active',
+        status: lease.status,
+      });
+      continue;
+    }
+
+    const writeSet = normalizePathList(evidence.writeSet || evidence.write_set || evidence.changedPaths || evidence.changed_paths || []);
+    const transaction = await createMutationTransactionForLease(project.workspaceSlug, {
+      ...lease,
+      project,
+      agentSession: session,
+      leaseJson: stringifyJson(lease.lease || {}),
+    }, {
+      readSet: normalizePathList(evidence.readSet || evidence.read_set || []),
+      writeSet,
+      semanticDependencyRefs: evidence.semanticDependencyRefs || evidence.semantic_dependency_refs || [],
+      invariants: evidence.invariants || lease.lease?.invariants || [],
+      assumptionRefs: evidence.assumptionRefs || evidence.assumption_refs || [],
+      baseSnapshot: evidence.baseSnapshot || evidence.base_snapshot || null,
+      baseSnapshotEvidence: evidence.baseSnapshotEvidence || evidence.base_snapshot_evidence || null,
+      skipRepoSnapshot: evidence.skipRepoSnapshot ?? evidence.skip_repo_snapshot ?? writeSet.length === 0,
+    });
+    result.transactions.push({ id: transaction.id, status: transaction.status, displayCallsign: lease.displayCallsign });
+
+    const inspection = await createAutomaticWorkflowInspection({
+      project,
+      plan,
+      lease,
+      transaction,
+      evidence,
+      writeSet,
+      zonePolicy,
+    });
+    result.inspections.push({ id: inspection.id, status: inspection.status, displayCallsign: inspection.displayCallsign });
+
+    if (writeSet.length === 0) {
+      const closeout = await closeAutomaticNoopTransaction({
+        project,
+        lease,
+        transaction,
+        inspection,
+        evidence,
+      });
+      result.proofBundles.push(closeout.proofBundle);
+      continue;
+    }
+
+    result.skipped.push({
+      displayCallsign: lease.displayCallsign,
+      transactionId: transaction.id,
+      reason: 'write_evidence_requires_agent_landing',
+      writeSet,
+    });
+  }
+  return result;
+}
+
+function automaticWorkflowPlanReadyForOperations(plan = {}) {
+  return ['preflight', 'filed', 'active'].includes(String(plan.status || '').toLowerCase());
+}
+
+function automaticWorkflowEvidenceByCallsign(body = {}) {
+  const entries = [
+    ...asArray(body.autoWorkflowEvidence || body.auto_workflow_evidence || body.workflowEvidence || body.workflow_evidence),
+    ...Object.entries(body.autoWorkflowEvidenceByCallsign || body.auto_workflow_evidence_by_callsign || {})
+      .map(([callsign, evidence]) => ({ displayCallsign: callsign, ...(evidence || {}) })),
+  ];
+  return new Map(entries
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => [String(entry.displayCallsign || entry.callsign || '').toUpperCase(), entry])
+    .filter(([callsign]) => callsign));
+}
+
+function automaticWorkflowRequiredRadar(route, zonePolicy) {
+  return unique([...defaultRadarForRoute(route, zonePolicy), 'handover']);
+}
+
+function automaticWorkflowInvariants(route, zonePolicy) {
+  return unique([...defaultInvariantsForRoute(route, zonePolicy), 'handover.packet.complete']);
+}
+
+async function createAutomaticWorkflowInspection({
+  project,
+  plan,
+  lease,
+  transaction,
+  evidence = {},
+  writeSet = [],
+  zonePolicy,
+}) {
+  const requiredSignals = unique(asArray(lease.lease?.requiredRadar || automaticWorkflowRequiredRadar(plan.route, zonePolicy))
+    .map(canonicalInspectionSignal)
+    .filter(Boolean));
+  const evidenceRefs = unique([
+    ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
+    `clearance:run:${lease.id}`,
+    `handover:packet:${transaction.id}`,
+  ]);
+  const signals = requiredSignals.map((signal) => ({
+    key: signal,
+    status: 'passed',
+    evidenceRefs,
+  }));
+  const run = await prisma.codeSiteInspectionRun.create({
+    data: {
+      projectId: project.id,
+      executionPlanId: plan.id,
+      displayCallsign: lease.displayCallsign,
+      status: 'completed',
+      changedPathsJson: stringifyJson(writeSet),
+      inspectionSignalsJson: stringifyJson(signals),
+      evidenceRefsJson: stringifyJson(evidenceRefs),
+      completedAt: new Date(),
+    },
+  });
+  await recordEvent(project.id, {
+    mutationLeaseId: lease.id,
+    eventType: 'landing_requested',
+    displayCallsign: lease.displayCallsign,
+    actorType: 'inspection',
+    actorId: run.id,
+    evidenceRefs,
+    details: {
+      inspectionRunId: run.id,
+      transactionId: transaction.id,
+      automaticWorkflow: true,
+      changedPaths: writeSet,
+      inspectionEvidenceRefs: evidenceRefs,
+    },
+  });
+  await recordEvent(project.id, {
+    mutationLeaseId: lease.id,
+    eventType: 'inspection_result',
+    displayCallsign: lease.displayCallsign,
+    actorType: 'inspection',
+    actorId: run.id,
+    evidenceRefs,
+    details: {
+      inspectionRunId: run.id,
+      transactionId: transaction.id,
+      status: run.status,
+      signals,
+      changedPaths: writeSet,
+      inspectionEvidenceRefs: evidenceRefs,
+      automaticWorkflow: true,
+    },
+  });
+  return run;
+}
+
+async function closeAutomaticNoopTransaction({
+  project,
+  lease,
+  transaction,
+  inspection,
+  evidence = {},
+}) {
+  const transactionWithContext = {
+    ...transaction,
+    project,
+    mutationLease: {
+      ...lease,
+      leaseJson: stringifyJson(lease.lease || {}),
+    },
+  };
+  const inspectionEvidenceRefs = inspectionEvidenceRefsFromRun(inspection);
+  const proofBundle = await createProofBundleForTransaction(transactionWithContext, {
+    commitSha: evidence.commitSha || evidence.commit_sha || null,
+    evidenceRefs: unique([
+      ...asArray(evidence.evidenceRefs || evidence.evidence_refs),
+      ...inspectionEvidenceRefs,
+      `handover:packet:${transaction.id}`,
+    ]),
+    inspectionEvidenceRefs,
+    inspectionRunRefs: [inspection.id],
+    landingStatus: 'landed-noop',
+  });
+  const committedAt = new Date();
+  const updated = await prisma.codeSiteMutationTransaction.update({
+    where: { id: transaction.id },
+    data: {
+      status: 'committed',
+      proofBundleDigest: proofBundle.bundleDigest,
+      commitDecisionJson: stringifyJson({
+        ok: true,
+        isolation: transaction.isolation,
+        reasonCodes: ['automatic_workflow_noop_closeout', 'serializable_commit_landed'],
+        committedAt: committedAt.toISOString(),
+      }),
+      closedAt: committedAt,
+    },
+  });
+  const commitEvent = await recordEvent(project.id, {
+    mutationLeaseId: lease.id,
+    eventType: 'transaction_committed',
+    displayCallsign: lease.displayCallsign,
+    actorType: 'transaction',
+    actorId: transaction.id,
+    evidenceRefs: proofBundleEvidenceRefs(proofBundle),
+    details: {
+      transactionId: transaction.id,
+      proofBundleId: proofBundle.id,
+      proofBundleDigest: proofBundle.bundleDigest,
+      writeSet: [],
+      inspectionRunIds: [inspection.id],
+      inspectionEvidenceRefs,
+      automaticWorkflow: true,
+      noCodeMutation: true,
+    },
+  });
+  const closeout = await closeTransactionBlackBox(project.workspaceSlug, {
+    ...transactionWithContext,
+    status: updated.status,
+    proofBundleDigest: proofBundle.bundleDigest,
+    closedAt: updated.closedAt,
+  }, {
+    body: {
+      reason: 'automatic_workflow_noop_closeout',
+      handover: {
+        status: 'completed',
+        proofBundleId: proofBundle.id,
+        proofBundleDigest: proofBundle.bundleDigest,
+      },
+    },
+    bundle: proofBundle,
+    terminalEvent: commitEvent,
+    validationDecision: {
+      ok: true,
+      reasonCodes: ['automatic_workflow_noop_closeout'],
+    },
+    inspectionDecision: {
+      ok: true,
+      reasonCodes: ['landing_inspection_passed'],
+      inspectionRuns: [inspection],
+      evidenceRefs: inspectionEvidenceRefs,
+    },
+    landingStatus: 'landed-noop',
+  });
+  return {
+    transaction: updated,
+    proofBundle: proofBundleProjection(closeout?.proofBundle || proofBundle, {
+      transaction: transactionWithContext,
+      mutationLease: transactionWithContext.mutationLease,
+      landingRuns: [inspection],
+      portableProofBundle: closeout?.portableProofBundle || null,
+    }),
+  };
+}
+
+function inspectionEvidenceRefsFromRun(run) {
+  return unique([
+    ...asArray(parseJson(run.evidenceRefsJson, [])),
+    ...asArray(parseJson(run.inspectionSignalsJson, [])).flatMap((signal) =>
+      asArray(signal?.evidenceRefs || signal?.evidence_refs)),
+    `codesite:inspection:${run.id}`,
+  ]);
 }
 
 function normalizeAutomaticMissions(inputMissions, zonePolicy, request) {
@@ -1021,7 +1351,10 @@ export async function requestMutationLease(workspaceSlug, executionPlanId, body 
   });
   if (!plan) throw notFound('execution_plan_not_found');
   requireAgentSessionOwnerAccess(plan.agentSession, actor, 'mutation_lease_agent_forbidden');
+  return requestMutationLeaseForPlan(workspaceSlug, plan, body, actor);
+}
 
+async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor = null) {
   const zonePolicy = parseJson(plan.project.zonePolicyJson, compileZonePolicy());
   const executionPlan = executionPlanProjection(plan);
   const requestedLease = {
@@ -1710,6 +2043,11 @@ export async function recordPolicyDecision(workspaceSlug, mutationLeaseId, body 
 export async function openTransaction(workspaceSlug, mutationLeaseId, body = {}, actor = null) {
   const lease = await requireLease(workspaceSlug, mutationLeaseId);
   requireLeaseActorAccess(lease, actor);
+  const transaction = await createMutationTransactionForLease(workspaceSlug, lease, body);
+  return transactionProjection(transaction);
+}
+
+async function createMutationTransactionForLease(workspaceSlug, lease, body = {}) {
   if (lease.status !== 'active') {
     throw badRequest('clearance_not_active', { status: lease.status });
   }
@@ -1722,7 +2060,7 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
       projectId: lease.projectId,
       mutationLeaseId: lease.id,
       agentSessionId: lease.agentSessionId,
-      baseSnapshot: body.baseSnapshot || body.base_snapshot || baseSnapshotEvidence?.snapshotDigest || digest({ workspaceSlug, mutationLeaseId, openedAt: Date.now() }),
+      baseSnapshot: body.baseSnapshot || body.base_snapshot || baseSnapshotEvidence?.snapshotDigest || digest({ workspaceSlug, mutationLeaseId: lease.id, openedAt: Date.now() }),
       baseSnapshotEvidenceJson: stringifyJson(baseSnapshotEvidence),
       isolation,
       status: 'open',
@@ -1772,7 +2110,7 @@ export async function openTransaction(workspaceSlug, mutationLeaseId, body = {},
       },
     });
   }
-  return transactionProjection(transaction);
+  return transaction;
 }
 
 export async function getTransaction(workspaceSlug, transactionId, actor = null) {
@@ -3205,6 +3543,13 @@ async function createProofBundleForTransaction(transaction, body = {}, db = pris
     transaction,
     mutationLease: transaction.mutationLease,
   }, db);
+}
+
+function proofBundleEvidenceRefs(proofBundle = {}) {
+  return unique([
+    ...asArray(proofBundle.evidenceRefs || proofBundle.evidence_refs),
+    ...asArray(parseJson(proofBundle.evidenceRefsJson, [])),
+  ].map(String).filter(Boolean));
 }
 
 function normalizeProofLandingStatus(value) {
