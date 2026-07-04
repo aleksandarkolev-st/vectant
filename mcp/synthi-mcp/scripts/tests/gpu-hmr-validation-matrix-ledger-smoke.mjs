@@ -25907,7 +25907,7 @@ const forgedEmergencyRetainedCheckpointRow =
   forgedEmergencyRetainedCheckpointLedger.rows.find((row) =>
     row.proofMode === 'real_rocm_repo_validation'
   );
-assert.equal(forgedEmergencyRetainedCheckpointRow?.matrixOutcome, 'unproven');
+assert.equal(forgedEmergencyRetainedCheckpointRow?.matrixOutcome, 'refusal_proven');
 assert.equal(forgedEmergencyRetainedCheckpointRow.acceptedForGpuHmr, false);
 assert.equal(forgedEmergencyRetainedCheckpointRow.realRocmOperationalEvidence.present, true);
 assert.equal(forgedEmergencyRetainedCheckpointRow.realRocmOperationalEvidence.accepted, false);
