@@ -10541,6 +10541,57 @@ function randomColdReadinessMatrixRow({
   const coldRuntimeBoundaryTemplateSnake = JSON.parse(
     JSON.stringify(coldRuntimeBoundaryTemplate ?? {}),
   );
+  const selectionAudit = {
+    schemaVersion: 'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1',
+    schema_version: 'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1',
+    proofAuthority: 'random_large_project_selection_audit_only_not_gpu_hmr_success',
+    proof_authority: 'random_large_project_selection_audit_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsSelectionAudit: true,
+    accepted_as_selection_audit: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceMode: candidateSource === 'direct_local_git_repo_path'
+      ? 'direct_local_user_source'
+      : 'direct_user_source',
+    source_mode: candidateSource === 'direct_local_git_repo_path'
+      ? 'direct_local_user_source'
+      : 'direct_user_source',
+    deterministicSelectionAlgorithm: 'sha256_seed_candidate_identity_sort_v1',
+    deterministic_selection_algorithm: 'sha256_seed_candidate_identity_sort_v1',
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    directSourceRequired: true,
+    direct_source_required: true,
+    samplePoolExplicitlyRequested: false,
+    sample_pool_explicitly_requested: false,
+    directUserSourceCount: 1,
+    direct_user_source_count: 1,
+    configuredPoolCount: 0,
+    configured_pool_count: 0,
+    selectedCount: 1,
+    selected_count: 1,
+    resultCount: 1,
+    result_count: 1,
+    selectedResultsMatch: true,
+    selected_results_match: true,
+    authorityClaims: [],
+    authority_claims: [],
+    blockingGaps: [],
+    blocking_gaps: [],
+    auditHash: contentHashFor({ targetId, role: 'selection-audit' }),
+    audit_hash: contentHashFor({ targetId, role: 'selection-audit' }),
+  };
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
     rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`random-cold:${targetId}`)}`,
@@ -10597,6 +10648,8 @@ function randomColdReadinessMatrixRow({
       dry_run: dryRun,
       actualAttempt,
       actual_attempt: actualAttempt,
+      selectionAudit,
+      selection_audit: selectionAudit,
       ...directInputEvidenceFields,
       candidateId: targetId,
       candidate_id: targetId,
@@ -10643,6 +10696,8 @@ function randomColdReadinessMatrixRow({
       dry_run: dryRun,
       actualAttempt,
       actual_attempt: actualAttempt,
+      selectionAudit,
+      selection_audit: selectionAudit,
       ...directInputEvidenceFields,
       candidateId: targetId,
       candidate_id: targetId,
@@ -10777,6 +10832,10 @@ function randomColdReadinessMatrixRow({
     build_metadata_content_evidence: buildMetadataContentEvidence,
     runtimeBoundaryEventManifestTemplateAccepted: true,
     runtime_boundary_event_manifest_template_accepted: true,
+    selectionAudit,
+    selection_audit: selectionAudit,
+    randomColdPathSelectionAudit: selectionAudit,
+    random_cold_path_selection_audit: selectionAudit,
     randomColdPathDirectInputEvidence:
       directInputEvidenceFacet ?? { present: false, accepted: false, failedGates: [] },
     random_cold_path_direct_input_evidence:
@@ -13702,6 +13761,42 @@ assert.equal(
 );
 assert.ok(
   profileIdOnlyRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+const auditlessRandomColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'auditless-random-cold',
+    sourceUrl: 'https://example.invalid/auditless/random-cold.git',
+    immutableCommit: '3535353535353535353535353535353535353535',
+  });
+  delete row.selectionAudit;
+  delete row.selection_audit;
+  delete row.randomColdPathSelectionAudit;
+  delete row.random_cold_path_selection_audit;
+  delete row.randomLargeProjectColdPath.selectionAudit;
+  delete row.randomLargeProjectColdPath.selection_audit;
+  delete row.random_large_project_cold_path.selectionAudit;
+  delete row.random_large_project_cold_path.selection_audit;
+  return row;
+})());
+const auditlessRandomColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    auditlessRandomColdRow,
+  ],
+});
+assert.equal(auditlessRandomColdQuery.accepted, true);
+assert.equal(
+  auditlessRandomColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  auditlessRandomColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathCandidateRowCount,
+  0,
+);
+assert.ok(
+  auditlessRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
     .includes('broad_acceptance_requires_random_large_project_cold_path'),
 );
 const staleUnsafeAcceptedRow = withoutOutputOracleFacet(acceptedBroadReadinessCandidate({

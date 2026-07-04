@@ -3166,6 +3166,10 @@ function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
     direct_user_source_count: directUserSourceCount ?? null,
     configuredPoolCount: finiteNumber(raw.configuredPoolCount ?? raw.configured_pool_count) ?? null,
     configured_pool_count: finiteNumber(raw.configuredPoolCount ?? raw.configured_pool_count) ?? null,
+    selectedCount: selectedCount ?? null,
+    selected_count: selectedCount ?? null,
+    resultCount: resultCount ?? null,
+    result_count: resultCount ?? null,
     selectedResultsMatch: selectedResultsMatch === true,
     selected_results_match: selectedResultsMatch === true,
     candidatePoolHash: normalizeSha256(firstText(raw.candidatePoolHash, raw.candidate_pool_hash)),
@@ -27067,6 +27071,17 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     const intake = randomColdSourceIntakeForRow(row);
     const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
     const sourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
+    const selectionAudit = randomColdPathSelectionAuditFacet(firstCompactObject(
+      facet.selectionAudit,
+      facet.selection_audit,
+      row.randomColdPathSelectionAudit,
+      row.random_cold_path_selection_audit,
+      row.selectionAudit,
+      row.selection_audit,
+    ), {
+      selectedCount: finiteNumber(facet.selectedCount ?? facet.selected_count ?? 1),
+      resultCount: finiteNumber(facet.resultCount ?? facet.result_count ?? 1),
+    });
     const templateRaw = firstCompactObject(
       row.coldRuntimeBoundaryEventManifestTemplate,
       row.cold_runtime_boundary_event_manifest_template,
@@ -27273,6 +27288,8 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     const freshness = randomColdPathBroadReadinessFreshness(row, context);
     return authority === RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY
       && finalizedActualAttempt
+      && selectionAudit.present === true
+      && selectionAudit.accepted === true
       && arbitraryColdIntake
       && sourceDerivedBackendObserved
       && !candidateBackendUsedForAcceptance
@@ -27709,6 +27726,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY,
     requiredSignals: [
       'direct_source_input_evidence_accepted',
+      'selection_audit_present_and_accepted',
       'direct_cli_or_env_input_mode_observed',
       'direct_local_git_repo_path_outside_matrix_fixture_roots',
       'distinct_direct_source_identities_observed',
@@ -27735,6 +27753,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
     ],
     required_signals: [
       'direct_source_input_evidence_accepted',
+      'selection_audit_present_and_accepted',
       'direct_cli_or_env_input_mode_observed',
       'direct_local_git_repo_path_outside_matrix_fixture_roots',
       'distinct_direct_source_identities_observed',
