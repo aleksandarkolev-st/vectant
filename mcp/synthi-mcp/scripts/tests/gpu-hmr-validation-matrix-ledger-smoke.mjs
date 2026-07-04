@@ -5491,6 +5491,7 @@ await writeJson(path.join(artifactsRoot, 'hiprt-preflight', 'hiprt-proof.json'),
       'hiprt_runtime_preflight_failed',
       'hiprt_worker_repo_missing',
       'hiprt_native_launch_observer_missing',
+      'hiprt_source_file_missing',
     ],
   },
   acceptance: {
@@ -5510,7 +5511,11 @@ await writeJson(path.join(artifactsRoot, 'hiprt-preflight', 'hiprt-proof.json'),
     accepted: false,
     acceptedForGpuHmr: false,
     gpuHmrSuccess: false,
-    blockingGaps: ['hiprt_worker_repo_missing', 'hiprt_native_launch_observer_missing'],
+    blockingGaps: [
+      'hiprt_worker_repo_missing',
+      'hiprt_native_launch_observer_missing',
+      'hiprt_source_file_missing',
+    ],
   },
   proofAuthority: 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success',
   acceptedForGpuHmr: false,
@@ -15124,6 +15129,7 @@ assert.equal(hiprtPreflight.backendEvidence.backend, 'hiprt');
 assert.equal(hiprtPreflight.backendEvidence.backendFamily, 'hiprt');
 assert.deepEqual(hiprtPreflight.backendEvidence.evidenceRefs, [hiprtPreflightEvidenceRef]);
 assert.ok(hiprtPreflight.reasons.includes('hiprt_worker_repo_missing'));
+assert.ok(hiprtPreflight.reasons.includes('hiprt_source_file_missing'));
 assert.ok(!hiprtPreflight.reasons.includes('preflight_typed_backend_evidence_required'));
 
 const webgpuPreflight = ledger.rows.find((row) =>

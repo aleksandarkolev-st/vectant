@@ -618,18 +618,20 @@ set +e
 repo_dir_present=0
 repo_git_present=0
 native_observer_present=0
+source_file_present=0
 repo_commit=''
 build_executable=missing
 build_config=missing
 [ -d ${shQuote(CFG.workerRepoPath)} ] && repo_dir_present=1
 [ -d ${shQuote(`${CFG.workerRepoPath}/.git`)} ] && repo_git_present=1
 [ -f ${shQuote(CFG.nativeLaunchObserverPath)} ] && native_observer_present=1
+[ -f ${shQuote(`${CFG.workerRepoPath}/${CFG.sourceRel}`)} ] && source_file_present=1
 if [ "$repo_git_present" = "1" ]; then
   repo_commit="$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD 2>/dev/null || true)"
 fi
 [ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ] && build_executable=present
 [ -f ${shQuote(`${CFG.workerRepoPath}/build/CMakeCache.txt`)} ] && build_config=present
-printf 'repo_dir_present=%s\\nrepo_git_present=%s\\nnative_observer_present=%s\\nrepo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_dir_present" "$repo_git_present" "$native_observer_present" "$repo_commit" "$build_executable" "$build_config"
+printf 'repo_dir_present=%s\\nrepo_git_present=%s\\nnative_observer_present=%s\\nsource_file_present=%s\\nrepo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_dir_present" "$repo_git_present" "$native_observer_present" "$source_file_present" "$repo_commit" "$build_executable" "$build_config"
 ${requiredFilePrints}
 exit 0
 `;
@@ -656,6 +658,7 @@ exit 0
     fields.get('repo_dir_present') === '1' ? null : 'hiprt_worker_repo_missing',
     fields.get('repo_git_present') === '1' ? null : 'hiprt_worker_repo_git_missing',
     fields.get('native_observer_present') === '1' ? null : 'hiprt_native_launch_observer_missing',
+    fields.get('source_file_present') === '1' ? null : 'hiprt_source_file_missing',
     ...requiredFiles
       .filter((entry) => entry.present !== true)
       .map((entry) => `hiprt_required_runtime_file_missing:${entry.file}`),
@@ -678,12 +681,18 @@ exit 0
     worker_repo_path: CFG.workerRepoPath,
     nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
     native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    sourceRel: CFG.sourceRel,
+    source_rel: CFG.sourceRel,
+    sourceWorkerPath: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    source_worker_path: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
     repoDirPresent: fields.get('repo_dir_present') === '1',
     repo_dir_present: fields.get('repo_dir_present') === '1',
     repoGitPresent: fields.get('repo_git_present') === '1',
     repo_git_present: fields.get('repo_git_present') === '1',
     nativeObserverPresent: fields.get('native_observer_present') === '1',
     native_observer_present: fields.get('native_observer_present') === '1',
+    sourceFilePresent: fields.get('source_file_present') === '1',
+    source_file_present: fields.get('source_file_present') === '1',
     repoCommit: firstText(fields.get('repo_commit')) || null,
     repo_commit: firstText(fields.get('repo_commit')) || null,
     buildExecutable: firstText(fields.get('build_executable')) || 'missing',
@@ -750,6 +759,8 @@ async function writeHiprtPreflightRefusalArtifact({
     workerContainer: prerequisiteProbe.workerContainer,
     workerRepoPath: prerequisiteProbe.workerRepoPath,
     nativeLaunchObserverPath: prerequisiteProbe.nativeLaunchObserverPath,
+    sourceRel: prerequisiteProbe.sourceRel,
+    sourceWorkerPath: prerequisiteProbe.sourceWorkerPath,
     requiredFiles: prerequisiteProbe.requiredFiles,
     blockingGaps: prerequisiteProbe.blockingGaps,
   }))}`;
