@@ -141,6 +141,209 @@ const DEFAULT_CANDIDATES = [
     },
   },
   {
+    id: 'unprofiled-rocm-hipdnn-large-ml',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/hipDNN.git',
+    immutableCommit: 'ebba3d34660ed206491f33a7dc1825efe0571780',
+    sizeSignals: {
+      class: 'large_rocm_ml_infrastructure',
+      target: 'generic_hipdnn_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['structured_tensor_readback', 'compute_readback'],
+    },
+  },
+  {
+    id: 'unprofiled-rocm-migraphx-large-ml',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/AMDMIGraphX.git',
+    immutableCommit: 'db2b920b468dd77b74e0f4a7fa633cfc0209f52f',
+    sizeSignals: {
+      class: 'large_rocm_ml_infrastructure',
+      target: 'generic_migraphx_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['structured_tensor_readback', 'compute_readback'],
+    },
+  },
+  {
+    id: 'unprofiled-rocm-rocmlir-large-ml-compiler',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/rocMLIR.git',
+    immutableCommit: 'c4c1caef7293b5003b902f9a45e550919c61db4d',
+    sizeSignals: {
+      class: 'large_rocm_ml_compiler_infrastructure',
+      target: 'generic_rocmlir_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['compiled_kernel_metadata', 'compute_readback'],
+    },
+  },
+  {
+    id: 'unprofiled-rocm-tensile-large-ml-kernels',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/Tensile.git',
+    immutableCommit: 'e8a8999e0e7374aaae546a6d7cb703d9e06b0ebf',
+    sizeSignals: {
+      class: 'large_rocm_ml_kernel_generator',
+      target: 'generic_tensile_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['structured_tensor_readback', 'compute_readback'],
+    },
+  },
+  {
+    id: 'unprofiled-rocm-rocblas-large-ml',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/rocBLAS.git',
+    immutableCommit: 'defce200a69e5346eeadd7ac1e199238758add61',
+    sizeSignals: {
+      class: 'large_rocm_ml_infrastructure',
+      target: 'generic_rocblas_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['structured_tensor_readback', 'compute_readback'],
+    },
+  },
+  {
+    id: 'unprofiled-rocm-rocrand-large-ml',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/rocRAND.git',
+    immutableCommit: '9a2aab8643f1e2390e202fc6a71e0e8ae181ac48',
+    sizeSignals: {
+      class: 'large_rocm_ml_infrastructure',
+      target: 'generic_rocrand_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['statistical_readback', 'compute_readback'],
+    },
+  },
+  {
+    id: 'unprofiled-rocm-aotriton-large-ml-kernels',
+    backendFamily: 'real_rocm',
+    sourceUrl: 'https://github.com/ROCm/aotriton.git',
+    immutableCommit: '27b92c90887716395fba7c8e5522c51342a7af63',
+    sizeSignals: {
+      class: 'large_rocm_ml_kernel_infrastructure',
+      target: 'generic_aotriton_runtime_boundary',
+      coldPathKind: 'github_source_tree_intake_only',
+    },
+    buildSystemHints: {
+      expectedFiles: ['CMakeLists.txt'],
+    },
+    runtimeBoundaryHints: {
+      required: [
+        'runtime_profile_contract',
+        'same_process_loader',
+        'artifact_transport',
+        'epoch_publication',
+        'dispatch_trace',
+        'host_identity',
+        'output_oracle',
+      ],
+    },
+    oracleHints: {
+      acceptedByDeclaration: false,
+      expectedKinds: ['structured_tensor_readback', 'compute_readback'],
+    },
+  },
+  {
     id: 'unprofiled-llama-cpp-multibackend',
     backendFamily: 'unknown_gpu_project',
     sourceUrl: 'https://github.com/ggerganov/llama.cpp.git',
@@ -4675,6 +4878,24 @@ async function selfCheck() {
   const second = selectCandidates({ candidates, seed: 'self-check-seed', count: 2 });
   if (stableJson(first) !== stableJson(second) || first.length !== 2) {
     throw new Error('random large-project cold-path selection is not deterministic');
+  }
+  const unprofiledRocmMlCandidates = DEFAULT_CANDIDATES.filter((candidate) =>
+    String(candidate.id ?? '').startsWith('unprofiled-rocm-')
+  );
+  if (
+    unprofiledRocmMlCandidates.length < 7
+    || unprofiledRocmMlCandidates.some((candidate) =>
+      candidate.profilePath
+      || candidate.profile_path
+      || candidate.runtimeProofProfilePath
+      || candidate.runtime_proof_profile_path
+      || candidate.oracleHints?.acceptedByDeclaration !== false
+      || !/^[0-9a-f]{40}$/i.test(String(candidate.immutableCommit ?? ''))
+      || !Array.isArray(candidate.runtimeBoundaryHints?.required)
+      || !candidate.runtimeBoundaryHints.required.includes('output_oracle')
+    )
+  ) {
+    throw new Error('random large-project cold-path ROCm/ML sample-pool candidates must stay unprofiled diagnostic exact-commit inputs');
   }
   if (
     parseArgs(['--require-direct-source']).requireDirectSource !== true
