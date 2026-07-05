@@ -208,6 +208,10 @@ async function main(argv) {
 
   const matureProofSummary = validateMatureProofSuite({ root, proofRoot, failures });
   checks.push({ name: 'maturePlanProofSuite', ...matureProofSummary });
+  if (options.requireMatureSuiteRun) {
+    const matureSuiteRunSummary = validateMatureProofSuiteRun({ root, proofRoot, failures });
+    checks.push({ name: 'matureProofSuiteRun', ...matureSuiteRunSummary });
+  }
 
   const trustedKeysPath = resolveTrustedKeysPath(root, proofRoot, slug, failures);
   const proofBundleSummary = verifyProofBundles({ root, proofRoot, slug, proof, trustedKeysPath, failures });
@@ -261,6 +265,7 @@ function parseArgs(argv) {
     outPath: process.env.CODESITE_RELEASE_GATE_OUT || null,
     htmlPath: process.env.CODESITE_RELEASE_GATE_HTML || null,
     pngPath: process.env.CODESITE_RELEASE_GATE_PNG || null,
+    requireMatureSuiteRun: process.env.CODESITE_RELEASE_GATE_REQUIRE_MATURE_SUITE_RUN === '1',
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -270,8 +275,9 @@ function parseArgs(argv) {
     else if (arg === '--out') options.outPath = argv[++index];
     else if (arg === '--html') options.htmlPath = argv[++index];
     else if (arg === '--png') options.pngPath = argv[++index];
+    else if (arg === '--require-mature-suite-run') options.requireMatureSuiteRun = true;
     else if (arg === '--help' || arg === '-h') {
-      process.stdout.write('Usage: node scripts/codesite-release-gate.mjs [--proof-root tmp/codesite-dojo-proof] [--minimum-assertions 43] [--out path] [--html path --png path] [--input result.json --html path --png path]\n\n--input is render-only and never exits successfully for release promotion.\n');
+      process.stdout.write('Usage: node scripts/codesite-release-gate.mjs [--proof-root tmp/codesite-dojo-proof] [--minimum-assertions 43] [--require-mature-suite-run] [--out path] [--html path --png path] [--input result.json --html path --png path]\n\n--input is render-only and never exits successfully for release promotion.\n');
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
@@ -684,6 +690,62 @@ function validateMatureProofSuite({ root, proofRoot, failures }) {
     dockerCommands: dockerCommandCount,
     ok: artifacts.every((artifact) => artifact.ok),
   };
+}
+
+function validateMatureProofSuiteRun({ root, proofRoot, failures }) {
+  const runPath = path.join(proofRoot, 'codesite-mature-proof-suite-run.json');
+  const beforeFailureCount = failures.length;
+  const run = readJson(runPath, failures);
+  const summary = {
+    file: relative(root, runPath),
+    required: REQUIRED_MATURE_PROOFS.length,
+    results: 0,
+    currentHead: null,
+    proofHead: null,
+    ok: false,
+  };
+  if (!run) return summary;
+
+  if (run.ok !== true) failures.push(`${relative(root, runPath)} ok must be true`);
+  if (run.proofRoot !== relative(root, proofRoot)) {
+    failures.push(`${relative(root, runPath)} proofRoot expected ${relative(root, proofRoot)}, observed ${run.proofRoot || '<missing>'}`);
+  }
+  const results = Array.isArray(run.results) ? run.results : [];
+  summary.results = results.length;
+  const missing = REQUIRED_MATURE_PROOFS
+    .map((spec) => spec.name)
+    .filter((name) => !results.some((result) => result?.name === name && result.ok === true));
+  if (missing.length > 0) {
+    failures.push(`${relative(root, runPath)} missing passing mature proof results: ${missing.slice(0, 24).join(', ')}`);
+  }
+
+  const proofHead = String(run?.git?.head || '').trim();
+  summary.proofHead = proofHead || null;
+  if (!proofHead) failures.push(`${relative(root, runPath)} missing git.head`);
+  const dirtyPaths = parseGitStatusPaths(run?.git?.statusShort || '');
+  const allowedPostProofPrefixes = [ensureTrailingSlash(relative(root, proofRoot))];
+  const nonArtifactDirtyPaths = dirtyPaths.filter((filePath) => !pathMatchesAnyPrefix(filePath, allowedPostProofPrefixes));
+  if (nonArtifactDirtyPaths.length > 0) {
+    failures.push(`${relative(root, runPath)} recorded dirty non-artifact paths during suite run: ${nonArtifactDirtyPaths.slice(0, 12).join(', ')}`);
+  }
+
+  if (proofHead) {
+    try {
+      const currentHead = git(root, ['rev-parse', 'HEAD']);
+      summary.currentHead = currentHead;
+      if (proofHead !== currentHead) {
+        failures.push(`${relative(root, runPath)} git.head ${proofHead} must match current HEAD ${currentHead}`);
+      }
+    } catch (error) {
+      const unavailableWorktree = unavailableExternalGitDir(root);
+      if (!unavailableWorktree) {
+        failures.push(`${relative(root, runPath)} unable to validate git head: ${error.message}`);
+      }
+    }
+  }
+
+  summary.ok = failures.length === beforeFailureCount;
+  return summary;
 }
 
 function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {

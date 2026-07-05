@@ -75,8 +75,20 @@ steps:
           exit 1
         fi
 
-  - id: codesite-release-gate
+  - id: codesite-mature-proof-suite
     waitFor: ['reject-mutable-images']
+    name: docker.io/library/node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm --prefix synthi run codesite:proof:mature-suite -- \
+          --proof-root tmp/codesite-dojo-proof \
+          --no-screenshot
+
+  - id: codesite-release-gate
+    waitFor: ['codesite-mature-proof-suite']
     name: docker.io/library/node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
     entrypoint: bash
     args:
@@ -85,6 +97,7 @@ steps:
         set -euo pipefail
         npm --prefix synthi run codesite:release-gate -- \
           --proof-root tmp/codesite-dojo-proof \
+          --require-mature-suite-run \
           --out tmp/codesite-dojo-proof/codesite-release-gate-cloudbuild.json
 
   # ───────────────────────────────────────────────────────────────────────────

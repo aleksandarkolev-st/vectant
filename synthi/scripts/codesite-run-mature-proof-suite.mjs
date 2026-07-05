@@ -623,6 +623,11 @@ async function main(argv) {
     ok: results.every((item) => item.ok),
     generatedAt: new Date().toISOString(),
     proofRoot: relative(root, proofRoot),
+    git: {
+      head: safeGit(root, ['rev-parse', 'HEAD']),
+      branch: safeGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      statusShort: safeGit(root, ['status', '--short']),
+    },
     results,
   };
   const outPath = path.join(proofRoot, 'codesite-mature-proof-suite-run.json');
