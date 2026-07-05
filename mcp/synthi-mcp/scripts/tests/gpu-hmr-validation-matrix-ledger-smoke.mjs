@@ -3785,8 +3785,6 @@ const fileBackedAdapterImportDir = path.join(
   'random-large-project-cold-path-runtime-bridge-file-backed-import',
 );
 const fileBackedEventManifestHash = hashValue('file-backed-adapter-import:event-manifest');
-const fileBackedLineMaterializationHash =
-  hashValue('file-backed-adapter-import:line-materialization');
 const fileBackedArtifactBeforeHash = hashValue('file-backed-adapter-import:artifact-before');
 const fileBackedArtifactAfterHash =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -3806,6 +3804,46 @@ const fileBackedBoundaryLines = [
   `[gpu-runtime-boundary] output_oracle after_dispatch_id=${fileBackedDispatchId} output_target_id=${fileBackedOutputTargetId} raw_readback_hash=${fileBackedRawReadbackHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} timestamp_monotonic_ns=400`,
 ];
 const fileBackedLineHashes = fileBackedBoundaryLines.map(hashValue);
+const fileBackedLineSourceEventHashes = fileBackedBoundaryLines.map((_, index) =>
+  hashValue(`file-backed-adapter-import:source-event:${index}`)
+);
+const fileBackedLineMaterializationHash = contentHashFor({
+  boundaryLineHashes: fileBackedLineHashes,
+  sourceEventHashes: fileBackedLineSourceEventHashes,
+});
+const fileBackedLineMaterialization = {
+  schemaVersion: 'synthi.gpu_hmr.runtime_boundary_materialized_lines.v1',
+  schema_version: 'synthi.gpu_hmr.runtime_boundary_materialized_lines.v1',
+  proofAuthority: 'typed_runtime_boundary_event_materialization_only_not_gpu_hmr_success',
+  proof_authority: 'typed_runtime_boundary_event_materialization_only_not_gpu_hmr_success',
+  accepted: true,
+  acceptedAsMaterializedBoundaryLines: true,
+  accepted_as_materialized_boundary_lines: true,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+  canSatisfyDispatchProof: false,
+  can_satisfy_dispatch_proof: false,
+  runtimeBoundaryLines: fileBackedBoundaryLines,
+  runtime_boundary_lines: fileBackedBoundaryLines,
+  adapterRuntimeBoundaryLines: fileBackedBoundaryLines,
+  adapter_runtime_boundary_lines: fileBackedBoundaryLines,
+  boundaryLineHashes: fileBackedLineHashes,
+  boundary_line_hashes: fileBackedLineHashes,
+  runtimeBoundaryLineHashes: fileBackedLineHashes,
+  runtime_boundary_line_hashes: fileBackedLineHashes,
+  adapterRuntimeBoundaryLineHashes: fileBackedLineHashes,
+  adapter_runtime_boundary_line_hashes: fileBackedLineHashes,
+  sourceEventHashes: fileBackedLineSourceEventHashes,
+  source_event_hashes: fileBackedLineSourceEventHashes,
+  bindingHash: fileBackedLineMaterializationHash,
+  binding_hash: fileBackedLineMaterializationHash,
+  failedGates: [],
+  failed_gates: [],
+};
 const fileBackedRuntimeBoundaryEvents = [
   {
     kind: 'artifact_transport',
@@ -3975,14 +4013,10 @@ const fileBackedProof = {
     manifest_sha256: fileBackedEventManifestHash,
   },
   runtimeBoundaryLineMaterialization: {
-    accepted: true,
-    bindingHash: fileBackedLineMaterializationHash,
-    binding_hash: fileBackedLineMaterializationHash,
+    ...fileBackedLineMaterialization,
   },
   runtime_boundary_line_materialization: {
-    accepted: true,
-    bindingHash: fileBackedLineMaterializationHash,
-    binding_hash: fileBackedLineMaterializationHash,
+    ...fileBackedLineMaterialization,
   },
   runtimeBoundaryLines: fileBackedBoundaryLines,
   runtime_boundary_lines: fileBackedBoundaryLines,
@@ -4158,6 +4192,19 @@ assert.equal(
 );
 assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLineHashesAccepted,
+  true,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLineMaterializationAccepted,
+  true,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLineMaterializationHash,
+  fileBackedLineMaterializationHash,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport
+    .runtimeBoundaryLineMaterialization.accepted,
   true,
 );
 assert.equal(
@@ -4574,6 +4621,114 @@ assert.ok(forgedAdapterLineHashRow.safety.failedGates.some((gate) =>
 ));
 assert.ok(forgedAdapterLineHashRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_adapter_result_import_adapter_boundary_line_hash_mismatch'
+));
+const forgedAdapterMaterializationDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-file-backed-import-line-materialization',
+);
+const forgedAdapterMaterializationProofPath = path.join(
+  forgedAdapterMaterializationDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-boundary-adapter-proof.json',
+);
+const forgedAdapterMaterializationResultPath = path.join(
+  forgedAdapterMaterializationDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-adapter-result.json',
+);
+const forgedAdapterMaterializationProofRelPath =
+  path.relative(tmpRoot, forgedAdapterMaterializationProofPath).replace(/\\/g, '/');
+const forgedAdapterMaterializationResultRelPath =
+  path.relative(tmpRoot, forgedAdapterMaterializationResultPath).replace(/\\/g, '/');
+const forgedAdapterMaterializationProof = JSON.parse(JSON.stringify(fileBackedProof));
+delete forgedAdapterMaterializationProof.runtimeBoundaryLineMaterialization;
+delete forgedAdapterMaterializationProof.runtime_boundary_line_materialization;
+await writeJson(forgedAdapterMaterializationProofPath, forgedAdapterMaterializationProof);
+const forgedAdapterMaterializationProofHash = jsonFileHash(forgedAdapterMaterializationProof);
+const forgedAdapterMaterializationResult = {
+  ...fileBackedAdapterResult,
+  proofPath: forgedAdapterMaterializationProofRelPath,
+  proof_path: forgedAdapterMaterializationProofRelPath,
+  proofJsonSha256: forgedAdapterMaterializationProofHash,
+  proof_json_sha256: forgedAdapterMaterializationProofHash,
+};
+await writeJson(forgedAdapterMaterializationResultPath, forgedAdapterMaterializationResult);
+const forgedAdapterMaterializationResultHash = jsonFileHash(forgedAdapterMaterializationResult);
+await writeJson(
+  path.join(
+    forgedAdapterMaterializationDir,
+    'random-cold-runtime-bridge-file-backed-import-line-materialization.json',
+  ),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import-line-materialization',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import-line-materialization.git',
+    immutableCommit: sha256Hex('runtime-bridge-file-backed-import-line-materialization:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        runtimeProfileAdapterResultPath: forgedAdapterMaterializationResultRelPath,
+        runtime_profile_adapter_result_path: forgedAdapterMaterializationResultRelPath,
+        runtimeProfileAdapterResultSha256: forgedAdapterMaterializationResultHash,
+        runtime_profile_adapter_result_sha256: forgedAdapterMaterializationResultHash,
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+        strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+        proofLedgerId: fileBackedLedgerId,
+        proof_ledger_id: fileBackedLedgerId,
+        runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+        runtime_boundary_event_manifest_sha256: fileBackedEventManifestHash,
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+        runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+        blockingGaps: [],
+        blocking_gaps: [],
+        adapterResultBlockingGaps: [],
+        adapter_result_blocking_gaps: [],
+      }),
+    },
+  }),
+);
+const forgedAdapterMaterializationLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAdapterMaterializationDir],
+  includeInvalidated: true,
+});
+const forgedAdapterMaterializationRow = forgedAdapterMaterializationLedger.rows.find(
+  (row) =>
+    row.targetId === 'direct-random-arbitrary-runtime-bridge-file-backed-import-line-materialization',
+);
+assert.equal(forgedAdapterMaterializationRow?.safety.accepted, false);
+assert.equal(forgedAdapterMaterializationRow.acceptedForGpuHmr, false);
+assert.equal(forgedAdapterMaterializationRow.gpuHmrSuccess, false);
+assert.equal(forgedAdapterMaterializationRow.randomColdRuntimeProfileAdapterResultImport.accepted, false);
+assert.deepEqual(
+  forgedAdapterMaterializationRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLines,
+  [],
+);
+assert.deepEqual(
+  forgedAdapterMaterializationRow.randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines,
+  [],
+);
+assert.equal(forgedAdapterMaterializationRow.randomColdRuntimeAdapterStageEvents, null);
+assert.equal(
+  forgedAdapterMaterializationRow.randomColdRuntimeStrictImportProjection.projectedGateAccepted
+    .output_or_visual_oracle,
+  false,
+);
+assert.equal(
+  forgedAdapterMaterializationRow.randomColdRuntimeStrictImportProjection.projectedGateAccepted
+    .strict_runtime_ledger,
+  false,
+);
+assert.ok(forgedAdapterMaterializationRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_result_import_boundary_line_materialization_missing'
+));
+assert.ok(forgedAdapterMaterializationRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_result_import_boundary_line_materialization_not_accepted'
 ));
 const forgedAdapterAuthorityDir = path.join(
   tmpRoot,

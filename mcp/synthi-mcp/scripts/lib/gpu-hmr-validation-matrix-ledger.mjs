@@ -4712,7 +4712,7 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     strictRuntimeProofGate.accepted === true
     || strictRuntimeProofGate.status === 'pass';
   const strictRuntimeProofGateFailures = compactStringList(strictRuntimeProofGate.failures);
-  const runtimeBoundaryLineMaterialization = compactObject(
+  const rawRuntimeBoundaryLineMaterialization = compactObject(
     adapterResult.runtimeBoundaryLineMaterialization
     ?? adapterResult.runtime_boundary_line_materialization
     ?? proofJson.runtimeBoundaryLineMaterialization
@@ -4836,6 +4836,25 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
       adapterRuntimeBoundaryLineHashes.length,
       adapterRuntimeBoundaryLines.length,
     );
+  const runtimeBoundaryLineMaterialization = runtimeBoundaryLineMaterializationFacet(
+    rawRuntimeBoundaryLineMaterialization,
+    runtimeBoundaryLines.length > 0 ? runtimeBoundaryLines : adapterRuntimeBoundaryLines,
+  );
+  const runtimeBoundaryLineMaterializationAccepted =
+    runtimeBoundaryLineMaterialization.present === true
+    && runtimeBoundaryLineMaterialization.accepted === true;
+  const runtimeBoundaryLineMaterializationHash = normalizeSha256(firstText(
+    runtimeBoundaryLineMaterialization.bindingHash,
+    runtimeBoundaryLineMaterialization.binding_hash,
+    runtimeBoundaryLineMaterialization.suppliedBindingHash,
+    runtimeBoundaryLineMaterialization.supplied_binding_hash,
+    rawRuntimeBoundaryLineMaterialization.bindingHash,
+    rawRuntimeBoundaryLineMaterialization.binding_hash,
+    adapterResult.runtimeBoundaryLineMaterializationHash,
+    adapterResult.runtime_boundary_line_materialization_hash,
+    proofJson.runtimeBoundaryLineMaterializationHash,
+    proofJson.runtime_boundary_line_materialization_hash,
+  ));
   const adapterResultClaimedAuthority =
     firstBool(adapterResult.acceptedForGpuHmr, adapterResult.accepted_for_gpu_hmr) === true
     || firstBool(adapterResult.gpuHmrSuccess, adapterResult.gpu_hmr_success) === true
@@ -4933,6 +4952,14 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     adapterRuntimeBoundaryLineHashesAccepted
       ? null
       : 'random_cold_adapter_result_import_adapter_boundary_line_hash_mismatch',
+    runtimeBoundaryLineMaterialization.present === true
+      ? null
+      : 'random_cold_adapter_result_import_boundary_line_materialization_missing',
+    runtimeBoundaryLineMaterializationAccepted
+      ? null
+      : 'random_cold_adapter_result_import_boundary_line_materialization_not_accepted',
+    ...runtimeBoundaryLineMaterialization.failedGates
+      .map((code) => `random_cold_adapter_result_import_${code}`),
     bridgeProofAdapterAccepted
       && runtimeBoundaryLines.length === 0
       && adapterRuntimeBoundaryLines.length === 0
@@ -5033,34 +5060,12 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     runtime_boundary_proof_adapter_accepted: runtimeBoundaryProofAdapterAccepted,
     runtimeBoundaryProofAdapterProofId,
     runtime_boundary_proof_adapter_proof_id: runtimeBoundaryProofAdapterProofId,
-    runtimeBoundaryLineMaterializationAccepted:
-      firstBool(
-        runtimeBoundaryLineMaterialization.accepted,
-        adapterResult.runtimeBoundaryLineMaterializationAccepted,
-        adapterResult.runtime_boundary_line_materialization_accepted,
-      ) === true,
-    runtime_boundary_line_materialization_accepted:
-      firstBool(
-        runtimeBoundaryLineMaterialization.accepted,
-        adapterResult.runtimeBoundaryLineMaterializationAccepted,
-        adapterResult.runtime_boundary_line_materialization_accepted,
-      ) === true,
-    runtimeBoundaryLineMaterializationHash: normalizeSha256(firstText(
-      runtimeBoundaryLineMaterialization.bindingHash,
-      runtimeBoundaryLineMaterialization.binding_hash,
-      adapterResult.runtimeBoundaryLineMaterializationHash,
-      adapterResult.runtime_boundary_line_materialization_hash,
-      proofJson.runtimeBoundaryLineMaterializationHash,
-      proofJson.runtime_boundary_line_materialization_hash,
-    )),
-    runtime_boundary_line_materialization_hash: normalizeSha256(firstText(
-      runtimeBoundaryLineMaterialization.bindingHash,
-      runtimeBoundaryLineMaterialization.binding_hash,
-      adapterResult.runtimeBoundaryLineMaterializationHash,
-      adapterResult.runtime_boundary_line_materialization_hash,
-      proofJson.runtimeBoundaryLineMaterializationHash,
-      proofJson.runtime_boundary_line_materialization_hash,
-    )),
+    runtimeBoundaryLineMaterialization,
+    runtime_boundary_line_materialization: runtimeBoundaryLineMaterialization,
+    runtimeBoundaryLineMaterializationAccepted,
+    runtime_boundary_line_materialization_accepted: runtimeBoundaryLineMaterializationAccepted,
+    runtimeBoundaryLineMaterializationHash,
+    runtime_boundary_line_materialization_hash: runtimeBoundaryLineMaterializationHash,
     runtimeBoundaryLineCount,
     runtime_boundary_line_count: runtimeBoundaryLineCount,
     adapterRuntimeBoundaryLineCount,
@@ -5160,6 +5165,10 @@ function randomColdRuntimeStrictImportProjectionFacet({
     && firstBool(
       adapterImport.adapterRuntimeBoundaryLineHashesAccepted,
       adapterImport.adapter_runtime_boundary_line_hashes_accepted,
+    ) === true
+    && firstBool(
+      adapterImport.runtimeBoundaryLineMaterializationAccepted,
+      adapterImport.runtime_boundary_line_materialization_accepted,
     ) === true
     && importFailedGates.length === 0
     && strictGateFailures.length === 0;
