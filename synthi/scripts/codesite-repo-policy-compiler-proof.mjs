@@ -11,6 +11,18 @@ function repoRoot() {
     : process.cwd();
 }
 
+function apiVisiblePath(hostPath) {
+  const appRepoRoot = process.env.CODESITE_PROOF_APP_REPO_ROOT;
+  if (!appRepoRoot) return hostPath;
+  const root = repoRoot();
+  const relativePath = path.relative(root, hostPath);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) return hostPath;
+  return path.posix.join(
+    appRepoRoot.replace(/\\/g, '/').replace(/\/+$/, ''),
+    ...relativePath.split(path.sep),
+  );
+}
+
 function proofDir() {
   return path.resolve(process.env.CODESITE_PROOF_OUT_DIR || path.join(repoRoot(), 'tmp', 'codesite-dojo-proof'));
 }
@@ -196,6 +208,7 @@ async function main() {
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
   const fixtureRepo = prepareFixtureRepo(dir, slug);
+  const apiFixtureRepo = apiVisiblePath(fixtureRepo);
   const { api } = await ensureProofWorkspace(baseUrl, slug, {
     workspaceName: 'Repo policy compiler proof workspace',
   });
@@ -205,7 +218,7 @@ async function main() {
     body: JSON.stringify({
       title: 'Repo policy compiler proof',
       request: 'Compile CodeSite airspace policy from real repo signals',
-      repoRoot: fixtureRepo,
+      repoRoot: apiFixtureRepo,
       autoWorkflow: true,
       missions: [
         {
@@ -270,6 +283,7 @@ async function main() {
     baseUrl,
     slug,
     fixtureRepo,
+    apiFixtureRepo,
     project: {
       id: project.id,
       title: project.title,

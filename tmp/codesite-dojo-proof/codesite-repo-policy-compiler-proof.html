@@ -3,83 +3,112 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CodeSite Repo Policy Compiler Proof</title>
+<title>CodeSite Mature Proof: repoPolicyCompiler</title>
 <style>
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a10;color:#f4f7fb}
-body{margin:0;padding:28px;background:#080a10}
-main{max-width:1180px;margin:0 auto;display:grid;gap:18px}
-.hero,.card{border:1px solid #252d3f;border-radius:8px;background:#10131c;padding:18px}
-.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
-h1{margin:8px 0 6px;font-size:25px;letter-spacing:0}
-h2{font-size:16px;margin:0 0 10px}
-p{margin:0;color:#a5adbf;line-height:1.5}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
-.label{color:#98a2b8;font-size:12px}
-.value{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
-table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{border-top:1px solid #252d3f;padding:8px;text-align:left;vertical-align:top}
-th{color:#a5adbf;font-weight:600}
-pre{white-space:pre-wrap;border:1px solid #252d3f;border-radius:8px;background:#05060a;padding:14px;color:#cbd1e3;font-size:12px}
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b10;color:#f5f7fb}
+body{margin:0;background:#080b10;padding:30px}
+main{max-width:1180px;margin:0 auto;display:grid;gap:16px}
+.hero,.card{border:1px solid #2c3443;background:#111722;border-radius:8px;padding:18px}
+.hero{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
+h1{margin:8px 0 8px;font-size:30px;line-height:1.12;letter-spacing:0}
+h2{margin:0 0 10px;font-size:16px;letter-spacing:0}
+p{margin:0;color:#aeb8c9;line-height:1.55;max-width:92ch}
+.stamp{border-radius:6px;padding:7px 11px;font-size:12px;font-weight:800;background:#133d2a;color:#9df1bd}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.metric{border:1px solid #2c3443;background:#0b1018;border-radius:8px;padding:12px;min-width:0}
+.label{font-size:12px;color:#8f9caf}.value{margin-top:6px;font-size:16px;font-weight:750;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+th,td{border-top:1px solid #2c3443;padding:8px;text-align:left;vertical-align:top}
+th{font-size:12px;color:#aeb8c9}
+code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere;color:#dce5f5}
+.ok{color:#9df1bd;font-weight:800}.bad{color:#ffc1c1;font-weight:800}
+@media(max-width:820px){body{padding:14px}.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}h1{font-size:25px}}
 </style>
 </head>
 <body>
 <main>
 <section class="hero">
-<span class="pass">PASS</span>
-<h1>CodeSite Repo Policy Compiler Proof</h1>
-<p>Live Docker workflow using a real fixture repository, package-name imports, conditional and wildcard package export maps, OpenAPI paths, CODEOWNERS, Prisma migrations, test ownership, deployment config, secret patterns, past incidents, and the CodeSite project API.</p>
+  <div>
+    <span class="stamp">VALIDATED</span>
+    <h1>CodeSite Mature Proof: repoPolicyCompiler</h1>
+    <p>Generated from the current proof-suite runner. This visual summary binds assertions, executable commands, and git provenance for release-gate verification.</p>
+  </div>
+  <span class="stamp">validated</span>
 </section>
 <section class="grid">
-<div class="card"><div class="label">Workspace</div><div class="value">codesite-repo-policy-compiler-proof-1782880248312</div></div>
-<div class="card"><div class="label">Project</div><div class="value">cmr1kvu7c0000ob5aew06if6m</div></div>
-<div class="card"><div class="label">Compiler digest</div><div class="value">sha256:38fc0491430ec7a4b0fbce8c3526a7dfbf93f2732d4561adfc893884bc794092</div></div>
-<div class="card"><div class="label">Repo root</div><div class="value">/workspace/tmp/codesite-dojo-proof/codesite-policy-compiler-repos/codesite-repo-policy-compiler-proof-1782880248312</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">5a569f885c1e485733ecaec99a22cc9d5dcdf031</div></div>
+  <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
+  <div class="metric"><div class="label">Assertions</div><div class="value">10/10</div></div>
+  <div class="metric"><div class="label">Commands</div><div class="value">1/1</div></div>
 </section>
-<section class="card"><h2>Policy Sources</h2><table><tbody><tr><td>defaults</td><td>4</td></tr>
-<tr><td>repoSignals</td><td>8</td></tr>
-<tr><td>custom</td><td>0</td></tr>
-<tr><td>codeowners</td><td>2</td></tr>
-<tr><td>openapi</td><td>1</td></tr>
-<tr><td>prismaSchemas</td><td>1</td></tr>
-<tr><td>prismaMigrations</td><td>1</td></tr>
-<tr><td>packageExports</td><td>1</td></tr>
-<tr><td>importEdges</td><td>3</td></tr>
-<tr><td>testOwnership</td><td>1</td></tr>
-<tr><td>deployment</td><td>1</td></tr>
-<tr><td>pastIncidents</td><td>1</td></tr>
-<tr><td>secretPatterns</td><td>6</td></tr></tbody></table></section>
-<section class="card"><h2>Package Export Maps</h2><table><thead><tr><th>Package</th><th>Root</th><th>Export map</th></tr></thead><tbody><tr><td>@acme/contracts</td><td>packages/contracts</td><td>{
-  &quot;.&quot;: [
-    &quot;packages/contracts/src/index.d.ts&quot;,
-    &quot;packages/contracts/src/index.ts&quot;,
-    &quot;packages/contracts/dist/index.cjs&quot;
-  ],
-  &quot;./features/*&quot;: [
-    &quot;packages/contracts/src/features/*.ts&quot;
-  ],
-  &quot;./server&quot;: [
-    &quot;packages/contracts/src/server.ts&quot;
-  ]
-}</td></tr></tbody></table></section>
-<section class="card"><h2>Import Graph</h2><table><thead><tr><th>From</th><th>Resolved imports</th></tr></thead><tbody><tr><td>apps/web/signup/SignupForm.test.tsx</td><td>apps/web/signup/SignupForm.tsx</td></tr>
-<tr><td>apps/web/signup/SignupForm.tsx</td><td>packages/contracts/src/index.ts, packages/contracts/src/server.ts, packages/contracts/src/features/audit.ts</td></tr>
-<tr><td>app/api/auth/signup/route.ts</td><td>packages/contracts/src/index.ts</td></tr></tbody></table></section>
-<section class="card"><h2>Contract Zones</h2><table><thead><tr><th>Source</th><th>Label</th><th>Class</th><th>Paths</th></tr></thead><tbody><tr><td>repo_openapi</td><td>API contract: openapi/auth.yaml</td><td>B</td><td>openapi/auth.yaml, api/auth/signup/**, app/api/auth/signup/**, src/app/api/auth/signup/**, pages/api/auth/signup/**</td></tr>
-<tr><td>repo_prisma_migration</td><td>Migration runway: synthi/prisma/migrations</td><td>A</td><td>synthi/prisma/migrations/**</td></tr>
-<tr><td>repo_package_exports</td><td>Public package exports: @acme/contracts</td><td>B</td><td>packages/contracts/**, packages/contracts/src/index.d.ts, packages/contracts/src/index.ts, packages/contracts/dist/index.cjs, packages/contracts/src/features/*.ts, packages/contracts/src/server.ts</td></tr>
-<tr><td>repo_past_incident</td><td>Incident hot zone: near_miss</td><td>A</td><td>packages/contracts/**, api/auth/**</td></tr></tbody></table></section>
-<section><pre>{
-  &quot;packageNameImportResolved&quot;: true,
-  &quot;packageExportMapPreserved&quot;: true,
-  &quot;openApiContractParsed&quot;: true,
-  &quot;openApiRoutesClassified&quot;: true,
-  &quot;testOwnershipResolved&quot;: true,
-  &quot;prismaMigrationLockCompiled&quot;: true,
-  &quot;pastIncidentCompiled&quot;: true,
-  &quot;codeownersAndSecretsCompiled&quot;: true,
-  &quot;apiProjectUsedCompiler&quot;: true,
-  &quot;compilerArtifactExported&quot;: true
-}</pre></section>
+<section class="card"><h2>Executable Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Summary</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node synthi/scripts/codesite-repo-policy-compiler-proof.mjs</code></td>
+      <td><code>{&quot;tests&quot;:1,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;}</code></td>
+    </tr>
+  </tbody></table></section>
+<section class="card"><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Name</th><th>Details</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>packageNameImportResolved</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>packageExportMapPreserved</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>openApiContractParsed</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>openApiRoutesClassified</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>testOwnershipResolved</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>prismaMigrationLockCompiled</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>pastIncidentCompiled</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>codeownersAndSecretsCompiled</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>apiProjectUsedCompiler</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>compilerArtifactExported</td>
+      <td><code>{}</code></td>
+    </tr>
+  </tbody></table></section>
 </main>
 </body>
 </html>

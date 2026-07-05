@@ -72,6 +72,25 @@ function gitText(args) {
   return result.status === 0 ? String(result.stdout || '').trim() : null;
 }
 
+function writeVitestNoPostcssConfig() {
+  const configPath = path.join(repoRoot, 'synthi', 'tmp', 'codesite-proof-runtime', 'vitest-no-postcss.config.mjs');
+  const source = [
+    "import { defineConfig } from 'vitest/config';",
+    "import { fileURLToPath } from 'node:url';",
+    '',
+    'export default defineConfig({',
+    "  root: fileURLToPath(new URL('../..', import.meta.url)),",
+    '  css: { postcss: { plugins: [] } },',
+    "  resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } },",
+    "  test: { environment: 'node', globals: true },",
+    '});',
+    '',
+  ].join('\n');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, source, 'utf8');
+  return configPath;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -171,6 +190,8 @@ async function main() {
   const registrySource = read('backend/collab-server/codesiteActivityRegistry.js');
   const registryTestSource = read('backend/collab-server/__tests__/codesiteActivityRegistry.test.js');
   const releaseGateSource = read('synthi/scripts/codesite-release-gate.mjs');
+  const vitestConfigPath = writeVitestNoPostcssConfig();
+  const dockerVitestConfig = `/repo/${path.relative(repoRoot, vitestConfigPath).split(path.sep).join('/')}`;
 
   assert(controlPlaneSource.includes('withSerializableProjectCommitLanding'), 'commit path enters a project-scoped serializable landing gate', assertions);
   assert(controlPlaneSource.includes("isolationLevel: 'Serializable'"), 'landing gate requests serializable Prisma transaction isolation', assertions);
@@ -201,7 +222,7 @@ async function main() {
   const commands = [
     run('docker', [
       ...dockerBase,
-      'npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js',
+      `node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js`,
     ], { name: 'dockerAffectedSuite' }),
     run('node', ['--test', 'backend/collab-server/__tests__/codesiteActivityRegistry.test.js'], { name: 'registryTests' }),
   ];

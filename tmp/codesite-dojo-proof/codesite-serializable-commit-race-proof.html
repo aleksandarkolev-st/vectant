@@ -1,64 +1,150 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<title>CodeSite Serializable Commit Race Proof</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Mature Proof: serializableCommitRace</title>
 <style>
-:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b0d;color:#eef4f2;color-scheme:dark}
-body{margin:0;background:#080b0d;color:#eef4f2}
-main{width:min(1220px,calc(100vw - 56px));margin:0 auto;padding:38px 0 54px}
-header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:end;border-bottom:1px solid #26383c;padding-bottom:24px}
-h1{margin:0;font-size:36px;line-height:1.05;font-weight:790;letter-spacing:0}
-.sub{margin:12px 0 0;color:#a6b8b6;max-width:900px;line-height:1.55}
-.stamp{border:1px solid #2d8a6c;background:#0b2f29;color:#b9f7dd;padding:12px 34px;font-weight:790}
-.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:24px 0}
-.card,section{background:#0f1517;border:1px solid #26383c}
-.card{padding:16px;min-height:86px}
-.label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8ba09f}
-.value{font-size:27px;font-weight:790;margin-top:10px;overflow-wrap:anywhere}
-section{padding:20px;margin-top:18px}
-h2{font-size:19px;margin:0 0 14px}
-table{border-collapse:collapse;width:100%;font-size:13px}
-th,td{border-top:1px solid #223236;padding:10px 8px;text-align:left;vertical-align:top}
-th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9bb7b4;background:#0a1012}
-code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
-pre{background:#040708;color:#dbe8e5;padding:14px;white-space:pre-wrap;overflow:auto;font-size:12px;line-height:1.45}
-.cwd{color:#849997;font-size:12px;margin-top:4px}
-.ok{color:#83f0bd;font-weight:760}
-.fail{color:#ff9b8f;font-weight:760}
-@media(max-width:900px){main{width:min(100% - 28px,760px);padding-top:26px}.cards{grid-template-columns:1fr 1fr}header{grid-template-columns:1fr}.stamp{width:max-content}h1{font-size:30px}}
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b10;color:#f5f7fb}
+body{margin:0;background:#080b10;padding:30px}
+main{max-width:1180px;margin:0 auto;display:grid;gap:16px}
+.hero,.card{border:1px solid #2c3443;background:#111722;border-radius:8px;padding:18px}
+.hero{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
+h1{margin:8px 0 8px;font-size:30px;line-height:1.12;letter-spacing:0}
+h2{margin:0 0 10px;font-size:16px;letter-spacing:0}
+p{margin:0;color:#aeb8c9;line-height:1.55;max-width:92ch}
+.stamp{border-radius:6px;padding:7px 11px;font-size:12px;font-weight:800;background:#133d2a;color:#9df1bd}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.metric{border:1px solid #2c3443;background:#0b1018;border-radius:8px;padding:12px;min-width:0}
+.label{font-size:12px;color:#8f9caf}.value{margin-top:6px;font-size:16px;font-weight:750;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+th,td{border-top:1px solid #2c3443;padding:8px;text-align:left;vertical-align:top}
+th{font-size:12px;color:#aeb8c9}
+code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere;color:#dce5f5}
+.ok{color:#9df1bd;font-weight:800}.bad{color:#ffc1c1;font-weight:800}
+@media(max-width:820px){body{padding:14px}.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}h1{font-size:25px}}
 </style>
 </head>
 <body>
 <main>
-<header>
-<div>
-<h1>CodeSite Serializable Commit Race Proof</h1>
-<p class="sub">Verified 2026-07-04T13:06:10.023Z. Two overlapping proof-carrying commit attempts race through the real CodeSite control-plane API. The landing gate allows one proof bundle and one transaction_committed event; the stale loser is blocked by serializable read validation.</p>
-</div>
-<div class="stamp">PASS</div>
-</header>
-<div class="cards">
-<div class="card"><div class="label">Race Contract</div><div class="value">PASS</div></div>
-<div class="card"><div class="label">Affected Suite</div><div class="value">116/116</div></div>
-<div class="card"><div class="label">Registry</div><div class="value">11/11</div></div>
-<div class="card"><div class="label">Assertions</div><div class="value">14/14</div></div>
-</div>
-<section><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Assertion</th><th>Details</th></tr></thead><tbody><tr><td class="ok">PASS</td><td>commit path enters a project-scoped serializable landing gate</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>landing gate requests serializable Prisma transaction isolation</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>landing gate locks the CodeSite project row before final revalidation</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>final stale-read validation runs through the same database client</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>proof creation is fenced by a committable-status updateMany guard</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>transaction_committed event is written inside the landing gate client</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>commit event stale-read surface includes observed write paths</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>committing status remains workspace-active in Next and collab registries</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>control-plane test covers concurrent overlapping commit race</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>race test asserts one commit, one stale loser, and one proof bundle</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>registry test proves committing remains an active workspace state</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>release gate requires this mature serializable race proof</td><td>{}</td></tr><tr><td class="ok">PASS</td><td>dockerAffectedSuite command exited successfully</td><td>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:116,&quot;skipped&quot;:0,&quot;tests&quot;:116,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</td></tr><tr><td class="ok">PASS</td><td>registryTests command exited successfully</td><td>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:11,&quot;suites&quot;:0,&quot;pass&quot;:11,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</td></tr></tbody></table></section>
-<section><h2>Executed Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Result</th></tr></thead><tbody><tr><td class="ok">PASS</td><td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code><div class="cwd">.</div></td><td>116/116</td></tr><tr><td class="ok">PASS</td><td><code>node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js</code><div class="cwd">.</div></td><td>11/11</td></tr></tbody></table></section>
-<section><h2>Git Binding</h2><pre>{
-  &quot;head&quot;: &quot;31f90d1f170d2bdf5dff209ba9bf3b9f96f451e6&quot;,
-  &quot;branch&quot;: &quot;codex/codesite-atc-full-from-dev-20260630&quot;,
-  &quot;statusShort&quot;: &quot;M tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs&quot;
-}</pre></section>
-<section><h2>Landing Contract</h2><pre>{
-  &quot;criticalSection&quot;: &quot;project-scoped serializable landing gate&quot;,
-  &quot;lock&quot;: &quot;CodeSiteProject row update inside Prisma interactive transaction&quot;,
-  &quot;finalValidation&quot;: &quot;validateTransactionWithClient rechecks stale reads after lock acquisition&quot;,
-  &quot;fence&quot;: &quot;updateMany id + status in [open, validated] + proofBundleDigest null -&gt; committing&quot;,
-  &quot;visibleRaceOutcome&quot;: &quot;one committed transaction, one blocked stale loser, one transaction_committed event, one proof bundle&quot;,
-  &quot;activeProtection&quot;: &quot;committing status remains active until transaction_committed closes the registry record&quot;
-}</pre></section>
+<section class="hero">
+  <div>
+    <span class="stamp">VALIDATED</span>
+    <h1>CodeSite Mature Proof: serializableCommitRace</h1>
+    <p>Generated from the current proof-suite runner. This visual summary binds assertions, executable commands, and git provenance for release-gate verification.</p>
+  </div>
+  <span class="stamp">validated</span>
+</section>
+<section class="grid">
+  <div class="metric"><div class="label">Git head</div><div class="value">5a569f885c1e485733ecaec99a22cc9d5dcdf031</div></div>
+  <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
+  <div class="metric"><div class="label">Assertions</div><div class="value">14/14</div></div>
+  <div class="metric"><div class="label">Commands</div><div class="value">3/3</div></div>
+</section>
+<section class="card"><h2>Executable Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Summary</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code></td>
+      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js</code></td>
+      <td><code>{&quot;tests&quot;:11,&quot;suites&quot;:0,&quot;pass&quot;:11,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs</code></td>
+      <td><code>{&quot;tests&quot;:1,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;}</code></td>
+    </tr>
+  </tbody></table></section>
+<section class="card"><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Name</th><th>Details</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>commit path enters a project-scoped serializable landing gate</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>landing gate requests serializable Prisma transaction isolation</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>landing gate locks the CodeSite project row before final revalidation</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>final stale-read validation runs through the same database client</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>proof creation is fenced by a committable-status updateMany guard</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>transaction_committed event is written inside the landing gate client</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>commit event stale-read surface includes observed write paths</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>committing status remains workspace-active in Next and collab registries</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>control-plane test covers concurrent overlapping commit race</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>race test asserts one commit, one stale loser, and one proof bundle</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>registry test proves committing remains an active workspace state</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>release gate requires this mature serializable race proof</td>
+      <td><code>{}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>dockerAffectedSuite command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>registryTests command exited successfully</td>
+      <td><code>{&quot;command&quot;:&quot;node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js&quot;,&quot;summary&quot;:{&quot;tests&quot;:11,&quot;suites&quot;:0,&quot;pass&quot;:11,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;},&quot;exitCode&quot;:0}</code></td>
+    </tr>
+  </tbody></table></section>
 </main>
 </body>
 </html>

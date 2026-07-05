@@ -273,20 +273,43 @@ function sampleProject() {
 }
 
 function writeMetricsEngineRunner() {
-  const runnerPath = path.join(proofRoot, '.codesite-metrics-engine-runner.mjs');
+  const runnerPath = path.join(repoRoot, 'synthi', 'tmp', 'codesite-proof-runtime', 'codesite-metrics-engine-runner.test.js');
   const source = [
+    "import { test } from 'vitest';",
     "import { buildCodeSiteMetrics } from '/repo/synthi/src/lib/codesite/metrics.js';",
-    `const project = ${JSON.stringify(sampleProject())};`,
-    "const metrics = buildCodeSiteMetrics({",
-    "  workspaceSlug: 'codesite-mature-metrics-proof',",
-    "  controlState: { collisionForecast: { risks: [{ id: 'risk-schema', risk: 'semantic_collision', conflictZone: 'synthi/prisma/**' }] } },",
-    "  project,",
+    "test('emits CodeSite metrics JSON for mature proof thresholds', () => {",
+    `  const project = ${JSON.stringify(sampleProject())};`,
+    "  const metrics = buildCodeSiteMetrics({",
+    "    workspaceSlug: 'codesite-mature-metrics-proof',",
+    "    controlState: { collisionForecast: { risks: [{ id: 'risk-schema', risk: 'semantic_collision', conflictZone: 'synthi/prisma/**' }] } },",
+    "    project,",
+    "  });",
+    "  console.log(JSON.stringify(metrics));",
     "});",
-    "console.log(JSON.stringify(metrics));",
     '',
   ].join('\n');
+  fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
   fs.writeFileSync(runnerPath, source, 'utf8');
   return runnerPath;
+}
+
+function writeVitestNoPostcssConfig() {
+  const configPath = path.join(repoRoot, 'synthi', 'tmp', 'codesite-proof-runtime', 'vitest-no-postcss.config.mjs');
+  const source = [
+    "import { defineConfig } from 'vitest/config';",
+    "import { fileURLToPath } from 'node:url';",
+    '',
+    'export default defineConfig({',
+    "  root: fileURLToPath(new URL('../..', import.meta.url)),",
+    '  css: { postcss: { plugins: [] } },',
+    "  resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } },",
+    "  test: { environment: 'node', globals: true },",
+    '});',
+    '',
+  ].join('\n');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, source, 'utf8');
+  return configPath;
 }
 
 function parseMetricsFromCommand(command) {
@@ -384,6 +407,9 @@ async function main() {
   fs.mkdirSync(proofRoot, { recursive: true });
   const assertions = [];
   const metricsRunnerPath = writeMetricsEngineRunner();
+  const vitestConfigPath = writeVitestNoPostcssConfig();
+  const dockerVitestConfig = `/repo/${path.relative(repoRoot, vitestConfigPath).split(path.sep).join('/')}`;
+  const dockerMetricsRunner = `/repo/${path.relative(repoRoot, metricsRunnerPath).split(path.sep).join('/')}`;
 
   const commands = [
     run('docker', [
@@ -398,7 +424,7 @@ async function main() {
       'node:22-bookworm',
       'bash',
       '-lc',
-      `npm exec vite-node -- /repo/${path.relative(repoRoot, metricsRunnerPath).split(path.sep).join('/')}`,
+      `node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism ${dockerMetricsRunner}`,
     ], { name: 'dockerMetricsEngine' }),
     run('docker', [
       'run',
@@ -412,7 +438,7 @@ async function main() {
       'node:22-bookworm',
       'bash',
       '-lc',
-      'npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js',
+      `node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/metrics.test.js`,
     ], { name: 'dockerMetricsSuite' }),
   ];
   const metrics = parseMetricsFromCommand(commands[0]);
