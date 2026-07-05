@@ -1,12 +1,12 @@
 {
   "schemaVersion": "synthi.codesite.governanceMcpLifecycleProof.v1",
   "status": "validated",
-  "generatedAt": "2026-07-04T14:32:30.264Z",
+  "generatedAt": "2026-07-05T14:26:56.104Z",
   "ok": true,
   "git": {
-    "head": "cf75ecc62046bbde2c19b9f7438eaad8023bebaf",
+    "head": "41c0f2af9ffa1b6f6896a3199abd5ff9a522325b",
     "branch": "codex/codesite-atc-full-from-dev-20260630",
-    "statusShort": "M synthi/scripts/codesite-full-workflow-proof.mjs\n M synthi/scripts/codesite-release-gate.mjs"
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n M tmp/codesite-dojo-proof/run-actual-git-commit-proof.mjs\n M tmp/codesite-dojo-proof/run-black-box-completeness-proof.mjs\n M tmp/codesite-dojo-proof/run-governance-mcp-lifecycle-proof.mjs\n M tmp/codesite-dojo-proof/run-line-provenance-diff-proof.mjs\n M tmp/codesite-dojo-proof/run-mature-metrics-proof.mjs\n M tmp/codesite-dojo-proof/run-proof-bundle-git-context-proof.mjs\n M tmp/codesite-dojo-proof/run-repo-state-identity-proof.mjs\n M tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs\n?? .synthi/codesite/"
   },
   "assertions": [
     {
@@ -50,12 +50,12 @@
       "name": "dockerGovernanceControlPlane command exited successfully",
       "ok": true,
       "details": {
-        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js",
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js",
         "summary": {
           "runner": "vitest",
-          "pass": 91,
+          "pass": 100,
           "skipped": 0,
-          "tests": 91,
+          "tests": 100,
           "fail": 0
         },
         "exitCode": 0
@@ -65,7 +65,7 @@
       "name": "dockerMcpLifecycle command exited successfully",
       "ok": true,
       "details": {
-        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-mcp:/repo/mcp/synthi-mcp/node_modules -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts",
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts",
         "summary": {
           "runner": "vitest",
           "pass": 18,
@@ -80,26 +80,25 @@
   "commands": [
     {
       "name": "dockerGovernanceControlPlane",
-      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js",
       "cwd": ".",
       "exitCode": 0,
       "signal": null,
       "summary": {
         "runner": "vitest",
-        "pass": 91,
+        "pass": 100,
         "skipped": 0,
-        "tests": 91,
+        "tests": 100,
         "fail": 0
       },
       "outputTail": [
         " RUN  v4.1.9 /repo/synthi",
-        " ✓ src/lib/codesite/__tests__/controlPlane.test.js (91 tests) 2441ms",
-        "     ✓ classifies landing inspection commands through first-class radar adapters  822ms",
-        "     ✓ executes real shadow-universe repo commands in isolated worktrees  333ms",
+        " ✓ src/lib/codesite/__tests__/controlPlane.test.js (100 tests) 1131ms",
+        "     ✓ classifies landing inspection commands through first-class radar adapters  373ms",
         " Test Files  1 passed (1)",
-        "      Tests  91 passed (91)",
-        "   Start at  14:31:56",
-        "   Duration  6.24s (transform 2.64s, setup 0ms, import 2.90s, tests 2.44s, environment 697ms)",
+        "      Tests  100 passed (100)",
+        "   Start at  14:20:51",
+        "   Duration  46.95s (transform 1.37s, setup 0ms, import 1.79s, tests 1.13s, environment 40.95s)",
         "npm notice",
         "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
         "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
@@ -109,7 +108,7 @@
     },
     {
       "name": "dockerMcpLifecycle",
-      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-mcp:/repo/mcp/synthi-mcp/node_modules -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts",
       "cwd": ".",
       "exitCode": 0,
       "signal": null,
@@ -132,11 +131,11 @@
         "a different dependency.",
         "Run `npm audit` for details.",
         " RUN  v2.1.9 /repo/mcp/synthi-mcp",
-        " ✓ tests/unit/codesite_tools.test.ts (18 tests) 112ms",
+        " ✓ tests/unit/codesite_tools.test.ts (18 tests) 36ms",
         " Test Files  1 passed (1)",
         "      Tests  18 passed (18)",
-        "   Start at  14:32:28",
-        "   Duration  1.23s (transform 551ms, setup 0ms, collect 613ms, tests 112ms, environment 0ms, prepare 104ms)",
+        "   Start at  14:26:37",
+        "   Duration  4.53s (transform 273ms, setup 0ms, collect 504ms, tests 36ms, environment 0ms, prepare 2.79s)",
         "npm warn config ignoring workspace config at /repo/mcp/synthi-mcp/.npmrc",
         "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead",
         "npm notice",
@@ -145,6 +144,27 @@
         "npm notice To update run: npm install -g npm@11.18.0",
         "npm notice",
         "npm warn config ignoring workspace config at /repo/mcp/synthi-mcp/.npmrc"
+      ]
+    },
+    {
+      "name": "proofSuiteGenerator:governanceMcpLifecycle",
+      "command": "node tmp/codesite-dojo-proof/run-governance-mcp-lifecycle-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\",",
+        "  \"htmlPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\",",
+        "  \"pngPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\"",
+        "}"
       ]
     }
   ],
@@ -155,5 +175,10 @@
     "missingManifestTools": [],
     "extraManifestTools": [],
     "invalidWorkflowToolNames": []
+  },
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-05T14:26:56.104Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json"
   }
 }

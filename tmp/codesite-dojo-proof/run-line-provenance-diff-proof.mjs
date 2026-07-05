@@ -196,7 +196,7 @@ async function main() {
   const commands = [
     run('docker', [
       ...dockerBase,
-      'npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js',
+      'if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js',
     ], { name: 'dockerControlPlaneSuite' }),
     run('node', ['--test', 'backend/collab-server/__tests__/codesiteFs.test.js'], { name: 'codesiteFsTests' }),
   ];

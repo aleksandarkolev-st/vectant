@@ -424,7 +424,7 @@ async function main() {
       'node:22-bookworm',
       'bash',
       '-lc',
-      `node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism ${dockerMetricsRunner}`,
+      `if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism ${dockerMetricsRunner}`,
     ], { name: 'dockerMetricsEngine' }),
     run('docker', [
       'run',
@@ -438,7 +438,7 @@ async function main() {
       'node:22-bookworm',
       'bash',
       '-lc',
-      `node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/metrics.test.js`,
+      `if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/metrics.test.js`,
     ], { name: 'dockerMetricsSuite' }),
   ];
   const metrics = parseMetricsFromCommand(commands[0]);

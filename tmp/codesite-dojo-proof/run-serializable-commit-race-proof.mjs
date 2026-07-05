@@ -222,7 +222,7 @@ async function main() {
   const commands = [
     run('docker', [
       ...dockerBase,
-      `node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js`,
+      `if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config ${dockerVitestConfig} --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js`,
     ], { name: 'dockerAffectedSuite' }),
     run('node', ['--test', 'backend/collab-server/__tests__/codesiteActivityRegistry.test.js'], { name: 'registryTests' }),
   ];
