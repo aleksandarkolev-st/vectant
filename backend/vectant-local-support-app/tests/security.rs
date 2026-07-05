@@ -16,6 +16,9 @@ use vectant_local_support_app::preview::{
 use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::{SessionError, SessionGuard};
+use vectant_local_support_app::update::{
+    signed_test_manifest, verify_update_manifest, UpdateError,
+};
 use vectant_local_support_app::workspace::{FileReadRequest, WorkspacePolicy};
 
 fn request(path: &str) -> FileReadRequest {
@@ -432,4 +435,39 @@ fn audit_export_contains_consent_receipts_and_detects_tampering() {
     let mut tampered = export.clone();
     tampered.events[0].summary = "Consent silently changed".to_string();
     assert!(!tampered.verify_hash_chain());
+}
+
+#[test]
+fn update_manifest_requires_valid_signature_and_blocks_downgrades() {
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    assert!(verify_update_manifest(&trusted_key, "0.1.0", &manifest).is_ok());
+
+    let mut tampered = manifest.clone();
+    tampered.artifact_sha256 = format!("sha256:{}", "b".repeat(64));
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &tampered),
+        Err(UpdateError::BadSignature)
+    );
+
+    let (_, downgrade) = signed_test_manifest("0.0.9", "0.1.0", Vec::new());
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &downgrade),
+        Err(UpdateError::Downgrade)
+    );
+}
+
+#[test]
+fn update_manifest_supports_emergency_version_revocation() {
+    let (trusted_key, manifest) =
+        signed_test_manifest("0.2.0", "0.1.0", vec!["0.1.0".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::VersionRevoked)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.2.0", Vec::new());
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::UnsupportedCurrentVersion)
+    );
 }

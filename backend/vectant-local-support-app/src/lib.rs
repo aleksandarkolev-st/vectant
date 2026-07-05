@@ -5,6 +5,7 @@ pub mod policy;
 pub mod preview;
 pub mod scanner;
 pub mod session;
+pub mod update;
 pub mod workspace;
 
 pub const APP_PROTOCOL_VERSION: &str = "local-support-mvp.1";
