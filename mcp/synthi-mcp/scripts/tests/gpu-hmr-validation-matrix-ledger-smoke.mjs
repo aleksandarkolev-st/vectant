@@ -6077,6 +6077,180 @@ function validationProfileEvidenceFor({
   };
 }
 
+function visualSemanticProbeBindingPayloadFor({
+  beforeImageHash,
+  afterImageHash,
+  diffImageHash,
+  visualSceneManifestHash,
+  deterministicVisualModeHash,
+  probes,
+}) {
+  return {
+    schemaVersion: 'synthi.gpu_hmr.visual_semantic_probe_binding.v1',
+    schema_version: 'synthi.gpu_hmr.visual_semantic_probe_binding.v1',
+    proofAuthority: 'semantic_visual_probe_binding_only_not_gpu_hmr_success',
+    proof_authority: 'semantic_visual_probe_binding_only_not_gpu_hmr_success',
+    beforeImageHash,
+    before_image_hash: beforeImageHash,
+    afterImageHash,
+    after_image_hash: afterImageHash,
+    diffImageHash,
+    diff_image_hash: diffImageHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    probes: probes.map((probe) => ({
+      probeId: probe.probeId,
+      probe_id: probe.probe_id,
+      probeClass: probe.probeClass,
+      probe_class: probe.probe_class,
+      source: probe.source,
+      beforeRegionHash: probe.beforeRegionHash,
+      before_region_hash: probe.before_region_hash,
+      afterRegionHash: probe.afterRegionHash,
+      after_region_hash: probe.after_region_hash,
+      diffRegionHash: probe.diffRegionHash,
+      diff_region_hash: probe.diff_region_hash,
+      tileBindingHash: probe.tileBindingHash,
+      tile_binding_hash: probe.tile_binding_hash,
+      roiBindingHash: probe.roiBindingHash,
+      roi_binding_hash: probe.roi_binding_hash,
+      region: probe.region,
+      changedPixelRatio: probe.changedPixelRatio,
+      changed_pixel_ratio: probe.changed_pixel_ratio,
+      meanAbsDelta: probe.meanAbsDelta,
+      mean_abs_delta: probe.mean_abs_delta,
+      evidenceRefs: probe.evidenceRefs,
+      evidence_refs: probe.evidence_refs,
+    })),
+  };
+}
+
+function semanticVisualProbeEvidenceFor({
+  artifacts,
+  visualSceneManifestHash,
+  deterministicVisualModeHash = hashValue('semantic-visual-deterministic-mode'),
+  seed = 'semantic-visual',
+  includeLightingProbe = true,
+  acceptedForGpuHmr = false,
+  gpuHmrSuccess = false,
+  bindingHashOverride = null,
+} = {}) {
+  const probes = [
+    {
+      probeId: 'material-response',
+      probe_id: 'material-response',
+      probeClass: 'material_response',
+      probe_class: 'material_response',
+      source: 'visual_worker_roi',
+      beforeRegionHash: hashValue(`${seed}:material-before-region`),
+      before_region_hash: hashValue(`${seed}:material-before-region`),
+      afterRegionHash: hashValue(`${seed}:material-after-region`),
+      after_region_hash: hashValue(`${seed}:material-after-region`),
+      diffRegionHash: hashValue(`${seed}:material-diff-region`),
+      diff_region_hash: hashValue(`${seed}:material-diff-region`),
+      tileBindingHash: hashValue(`${seed}:tile-binding`),
+      tile_binding_hash: hashValue(`${seed}:tile-binding`),
+      roiBindingHash: hashValue(`${seed}:material-roi-binding`),
+      roi_binding_hash: hashValue(`${seed}:material-roi-binding`),
+      region: { x: 1, y: 1, width: 4, height: 4 },
+      changedPixelRatio: 0.42,
+      changed_pixel_ratio: 0.42,
+      meanAbsDelta: 21.5,
+      mean_abs_delta: 21.5,
+      evidenceRefs: [
+        artifacts.beforeImageHash,
+        artifacts.afterImageHash,
+        visualSceneManifestHash,
+      ],
+      evidence_refs: [
+        artifacts.beforeImageHash,
+        artifacts.afterImageHash,
+        visualSceneManifestHash,
+      ],
+      accepted: true,
+      acceptedAsSemanticProbe: true,
+      accepted_as_semantic_probe: true,
+    },
+    includeLightingProbe ? {
+      probeId: 'lighting-response',
+      probe_id: 'lighting-response',
+      probeClass: 'lighting_response',
+      probe_class: 'lighting_response',
+      source: 'deterministic_oracle_region',
+      beforeRegionHash: hashValue(`${seed}:lighting-before-region`),
+      before_region_hash: hashValue(`${seed}:lighting-before-region`),
+      afterRegionHash: hashValue(`${seed}:lighting-after-region`),
+      after_region_hash: hashValue(`${seed}:lighting-after-region`),
+      diffRegionHash: hashValue(`${seed}:lighting-diff-region`),
+      diff_region_hash: hashValue(`${seed}:lighting-diff-region`),
+      tileBindingHash: hashValue(`${seed}:tile-binding`),
+      tile_binding_hash: hashValue(`${seed}:tile-binding`),
+      roiBindingHash: hashValue(`${seed}:lighting-roi-binding`),
+      roi_binding_hash: hashValue(`${seed}:lighting-roi-binding`),
+      region: { x: 3, y: 2, width: 3, height: 4 },
+      changedPixelRatio: 0.31,
+      changed_pixel_ratio: 0.31,
+      meanAbsDelta: 14.25,
+      mean_abs_delta: 14.25,
+      evidenceRefs: [
+        artifacts.diffImageHash,
+        visualSceneManifestHash,
+        deterministicVisualModeHash,
+      ],
+      evidence_refs: [
+        artifacts.diffImageHash,
+        visualSceneManifestHash,
+        deterministicVisualModeHash,
+      ],
+      accepted: true,
+      acceptedAsSemanticProbe: true,
+      accepted_as_semantic_probe: true,
+    } : null,
+  ].filter(Boolean);
+  const bindingPayload = visualSemanticProbeBindingPayloadFor({
+    beforeImageHash: artifacts.beforeImageHash,
+    afterImageHash: artifacts.afterImageHash,
+    diffImageHash: artifacts.diffImageHash,
+    visualSceneManifestHash,
+    deterministicVisualModeHash,
+    probes,
+  });
+  const bindingHash = bindingHashOverride ?? contentHashFor(bindingPayload);
+  return {
+    ...bindingPayload,
+    probes,
+    accepted: true,
+    acceptedAsSemanticVisualProbeEvidence: true,
+    accepted_as_semantic_visual_probe_evidence: true,
+    acceptedForGpuHmr,
+    accepted_for_gpu_hmr: acceptedForGpuHmr,
+    gpuHmrSuccess,
+    gpu_hmr_success: gpuHmrSuccess,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    bindingHash,
+    binding_hash: bindingHash,
+    evidenceRefs: [
+      artifacts.beforeImageHash,
+      artifacts.afterImageHash,
+      artifacts.diffImageHash,
+      visualSceneManifestHash,
+      deterministicVisualModeHash,
+    ],
+    evidence_refs: [
+      artifacts.beforeImageHash,
+      artifacts.afterImageHash,
+      artifacts.diffImageHash,
+      visualSceneManifestHash,
+      deterministicVisualModeHash,
+    ],
+  };
+}
+
 function sourceFirstIngestionEvidenceFor({
   targetId = 'flow',
   entryPath = 'src/main.cpp',
@@ -22716,6 +22890,231 @@ assert.equal(hashBoundProfileRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(hashBoundProfileRuntime.validationProfileEvidence.accepted, true);
 assert.equal(hashBoundProfileRuntime.validationProfileEvidence.binding.sourceContentHashBoundToEvidenceRefs, true);
 assert.equal(hashBoundProfileRuntime.validationProfileEvidence.binding.visualSceneManifestHashBoundToEvidenceRefs, true);
+
+const semanticProbeProfileDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-flow-semantic-visual-probes',
+);
+await writeRgbaPng(path.join(semanticProbeProfileDir, 'before.png'), 8, 8, () => [10, 10, 12, 255]);
+await writeRgbaPng(path.join(semanticProbeProfileDir, 'after.png'), 8, 8, (x, y) => [
+  x > 1 && y > 1 ? 180 + x : 24,
+  x > 1 && y > 1 ? 172 + y : 28,
+  x > 1 && y > 1 ? 132 : 36,
+  255,
+]);
+await writeRgbaPng(path.join(semanticProbeProfileDir, 'diff.png'), 8, 8, (x, y) => [
+  x > 1 && y > 1 ? 255 : 32,
+  x > 1 && y > 1 ? 240 : 32,
+  x > 1 && y > 1 ? 180 : 32,
+  255,
+]);
+const semanticProbeVisualArtifacts = visualArtifactSet({
+  before: path.join(semanticProbeProfileDir, 'before.png'),
+  after: path.join(semanticProbeProfileDir, 'after.png'),
+  diff: path.join(semanticProbeProfileDir, 'diff.png'),
+});
+const semanticProbeSceneManifestHash = hashValue('flow-semantic-probe-scene-manifest');
+const semanticProbeDeterministicModeHash = hashValue('flow-semantic-probe-deterministic-mode');
+const semanticProbeMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
+  projectId: 'flow-semantic-probe',
+  visualRoot: semanticProbeProfileDir,
+  extraEvidenceRefs: [semanticProbeSceneManifestHash, semanticProbeDeterministicModeHash],
+}, semanticProbeVisualArtifacts);
+await writeJson(path.join(semanticProbeProfileDir, 'hot1-semantic-visual-probes.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    semanticProbeMaterials.proofLedgerQuery.record.proofId,
+    semanticProbeMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...semanticProbeMaterials,
+  targetId: 'flow-semantic-probe',
+  profileId: 'flow-semantic-probe',
+  proofId: 'agent-split-run-mode-proof:sha256:flow-semantic-visual-probes',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow-semantic-probe',
+    profileClass: 'flow_semantic_realistic_visual_profile',
+    evidenceRefs: [
+      'evidence:validation-profile:flow-semantic:runtime-visual',
+      semanticProbeMaterials.proofLedgerQuery.record.proofId,
+      semanticProbeSceneManifestHash,
+      semanticProbeDeterministicModeHash,
+      semanticProbeVisualArtifacts.beforeImageHash,
+      semanticProbeVisualArtifacts.afterImageHash,
+      semanticProbeVisualArtifacts.diffImageHash,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-semantic-visual-probes',
+      semanticProbeMaterials.proofLedgerQuery.record.proofId,
+      semanticProbeMaterials.runtimeProofArtifact.proofId,
+    ],
+    deterministicVisualModeHash: semanticProbeDeterministicModeHash,
+    visualSceneManifestHash: semanticProbeSceneManifestHash,
+  }),
+  visualSemanticProbes: semanticVisualProbeEvidenceFor({
+    artifacts: semanticProbeVisualArtifacts,
+    visualSceneManifestHash: semanticProbeSceneManifestHash,
+    deterministicVisualModeHash: semanticProbeDeterministicModeHash,
+    seed: 'flow-semantic-probe',
+  }),
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: completeVisualOracleArtifacts(
+    'hot_delta_1',
+    semanticProbeProfileDir,
+    semanticProbeVisualArtifacts,
+  ),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-semantic-visual-probes',
+    editHash: hashValue('flow-semantic-visual-probes'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const semanticProbeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [semanticProbeProfileDir],
+  generatedAt: '2026-06-09T00:00:01.052Z',
+  includeUnproven: true,
+});
+const semanticProbeRuntime = semanticProbeLedger.rows.find((row) =>
+  row.targetId === 'flow-semantic-probe'
+);
+assert.equal(semanticProbeRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(semanticProbeRuntime.visualSemanticProbes.accepted, true);
+assert.equal(semanticProbeRuntime.visualSemanticProbes.acceptedForGpuHmr, false);
+assert.equal(semanticProbeRuntime.visualSemanticProbes.gpuHmrSuccess, false);
+assert.equal(semanticProbeRuntime.visualSemanticProbes.materialProbeAccepted, true);
+assert.equal(semanticProbeRuntime.visualSemanticProbes.lightingProbeAccepted, true);
+assert.match(semanticProbeRuntime.visualSemanticProbes.bindingHash, /^sha256:[a-f0-9]{64}$/);
+const semanticProbeCoverage = semanticProbeLedger.summary.planCoverage.find(
+  (entry) => entry.id === 'semantic_realistic_visual_probes',
+);
+assert.equal(semanticProbeCoverage?.status, 'support_only');
+assert.equal(semanticProbeCoverage.acceptedForGpuHmr, false);
+assert.equal(semanticProbeCoverage.gpuHmrSuccess, false);
+assert.equal(semanticProbeCoverage.acceptedProbeRowCount, 1);
+assert.ok(semanticProbeCoverage.openGaps.includes(
+  'semantic_visual_probes_support_only_not_gpu_hmr_authority',
+));
+
+const forgedSemanticProbeDir = path.join(
+  logsRoot,
+  'agent-split-artifacts',
+  'synthetic-flow-forged-semantic-visual-labels',
+);
+await writeRgbaPng(path.join(forgedSemanticProbeDir, 'before.png'), 8, 8, () => [12, 12, 12, 255]);
+await writeRgbaPng(path.join(forgedSemanticProbeDir, 'after.png'), 8, 8, (x, y) => [140 + x, 124 + y, 104, 255]);
+await writeRgbaPng(path.join(forgedSemanticProbeDir, 'diff.png'), 8, 8, () => [255, 210, 160, 255]);
+const forgedSemanticProbeVisualArtifacts = visualArtifactSet({
+  before: path.join(forgedSemanticProbeDir, 'before.png'),
+  after: path.join(forgedSemanticProbeDir, 'after.png'),
+  diff: path.join(forgedSemanticProbeDir, 'diff.png'),
+});
+const forgedSemanticProbeMaterials = runtimeProofMaterialsWithVisualArtifacts('hot_delta_1', {
+  projectId: 'flow-forged-semantic-probe',
+  visualRoot: forgedSemanticProbeDir,
+}, forgedSemanticProbeVisualArtifacts);
+await writeJson(path.join(forgedSemanticProbeDir, 'hot1-forged-semantic-visual-labels.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation(
+    forgedSemanticProbeMaterials.proofLedgerQuery.record.proofId,
+    forgedSemanticProbeMaterials.runtimeProofArtifact.proofId,
+  ),
+  ...forgedSemanticProbeMaterials,
+  targetId: 'flow-forged-semantic-probe',
+  profileId: 'flow-forged-semantic-probe',
+  proofId: 'agent-split-run-mode-proof:sha256:flow-forged-semantic-visual-labels',
+  validationProfileEvidence: validationProfileEvidenceFor({
+    profileId: 'flow-forged-semantic-probe',
+    profileClass: 'flow_semantic_realistic_visual_profile',
+    evidenceRefs: [
+      'evidence:validation-profile:flow-forged-semantic:runtime-visual',
+      forgedSemanticProbeMaterials.proofLedgerQuery.record.proofId,
+    ],
+    proofIds: [
+      'agent-split-run-mode-proof:sha256:flow-forged-semantic-visual-labels',
+      forgedSemanticProbeMaterials.proofLedgerQuery.record.proofId,
+      forgedSemanticProbeMaterials.runtimeProofArtifact.proofId,
+    ],
+  }),
+  visualSemanticProbes: {
+    schemaVersion: 'synthi.gpu_hmr.visual_semantic_probe_binding.v1',
+    proofAuthority: 'semantic_visual_probe_binding_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsSemanticVisualProbeEvidence: true,
+    acceptedForGpuHmr: true,
+    gpuHmrSuccess: true,
+    canSatisfyRuntimeProof: true,
+    beforeImageHash: forgedSemanticProbeVisualArtifacts.beforeImageHash,
+    afterImageHash: forgedSemanticProbeVisualArtifacts.afterImageHash,
+    diffImageHash: forgedSemanticProbeVisualArtifacts.diffImageHash,
+    visualSceneName: 'realistic diamond with cinematic lighting',
+    bindingHash: hashValue('forged-semantic-visual-label-only-binding'),
+    evidenceRefs: ['label:diamond', 'label:realistic-lighting'],
+    probes: [{
+      probeId: 'label-only-realism',
+      probeClass: 'diamond_lighting_label',
+      source: 'serialized_label',
+      region: { x: 0, y: 0, width: 8, height: 8 },
+      changedPixelRatio: 0.5,
+      meanAbsDelta: 12,
+      accepted: true,
+      evidenceRefs: ['label:diamond'],
+    }],
+  },
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: completeVisualOracleArtifacts(
+    'hot_delta_1',
+    forgedSemanticProbeDir,
+    forgedSemanticProbeVisualArtifacts,
+  ),
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:flow-forged-semantic-visual-labels',
+    editHash: hashValue('flow-forged-semantic-visual-labels'),
+    editKind: 'gpu_artifact_edit',
+  },
+});
+const forgedSemanticProbeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedSemanticProbeDir],
+  generatedAt: '2026-06-09T00:00:01.053Z',
+  includeUnproven: true,
+});
+const forgedSemanticProbeRuntime = forgedSemanticProbeLedger.rows.find((row) =>
+  row.targetId === 'flow-forged-semantic-probe'
+);
+assert.equal(forgedSemanticProbeRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(forgedSemanticProbeRuntime.visualSemanticProbes.accepted, false);
+assert.equal(forgedSemanticProbeRuntime.safety.accepted, false);
+assert.ok(forgedSemanticProbeRuntime.safety.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_unaccepted_visual_semantic_probe'
+));
+assert.ok(forgedSemanticProbeRuntime.visualSemanticProbes.failedGates.includes(
+  'visual_semantic_probe_claims_gpu_hmr_acceptance',
+));
+assert.ok(forgedSemanticProbeRuntime.visualSemanticProbes.failedGates.includes(
+  'visual_semantic_probe_material_lighting_classes_required',
+));
+assert.ok(forgedSemanticProbeRuntime.visualSemanticProbes.failedGates.includes(
+  'visual_semantic_probe_scene_manifest_hash_missing',
+));
+const forgedSemanticProbeQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: forgedSemanticProbeLedger.rows,
+});
+assert.equal(forgedSemanticProbeQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(forgedSemanticProbeQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_unaccepted_visual_semantic_probe'
+));
 
 const unboundSceneManifestProfileDir = path.join(
   logsRoot,

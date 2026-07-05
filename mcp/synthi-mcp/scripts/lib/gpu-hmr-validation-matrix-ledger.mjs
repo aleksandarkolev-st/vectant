@@ -70,6 +70,10 @@ const LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION =
   'synthi.gpu_hmr.large_rocm_ml_random_cold_source_intake.v1';
 const LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY =
   'source_and_build_metadata_rocm_ml_signals_only_not_gpu_hmr_success';
+const VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_semantic_probe_binding.v1';
+const VISUAL_SEMANTIC_PROBE_AUTHORITY =
+  'semantic_visual_probe_binding_only_not_gpu_hmr_success';
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
 const CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES = 8192;
@@ -312,6 +316,22 @@ const LARGE_ROCM_ML_RANDOM_COLD_DOMAIN_TOKENS = Object.freeze([
   'tensor',
   'training',
   'transformer',
+]);
+const VISUAL_SEMANTIC_PROBE_REQUIRED_CLASSES = Object.freeze([
+  'material_response',
+  'lighting_response',
+]);
+const VISUAL_SEMANTIC_PROBE_ACCEPTED_CLASSES = new Set([
+  ...VISUAL_SEMANTIC_PROBE_REQUIRED_CLASSES,
+  'geometry_response',
+  'color_response',
+  'temporal_stability',
+]);
+const VISUAL_SEMANTIC_PROBE_ACCEPTED_SOURCES = new Set([
+  'visual_worker_roi',
+  'visual_worker_tile_grid',
+  'deterministic_oracle_region',
+  'runtime_visual_oracle',
 ]);
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
@@ -9248,6 +9268,459 @@ function visualArtifactHashesForRow(row = {}) {
   ]);
 }
 
+function rawVisualSemanticProbeEvidence(row = {}) {
+  return compactObject(
+    row.visualSemanticProbes
+      ?? row.visual_semantic_probes
+      ?? row.semanticVisualProbes
+      ?? row.semantic_visual_probes
+      ?? row.realisticVisualProbeEvidence
+      ?? row.realistic_visual_probe_evidence,
+  );
+}
+
+function visualSemanticProbeClass(value) {
+  const raw = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!raw) return null;
+  if (VISUAL_SEMANTIC_PROBE_ACCEPTED_CLASSES.has(raw)) return raw;
+  if (/\b(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|surface)\b/.test(raw)) {
+    return 'material_response';
+  }
+  if (/\b(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce)\b/.test(raw)) {
+    return 'lighting_response';
+  }
+  if (/\b(geometry|silhouette|edge|normal|depth|parallax|occlusion)\b/.test(raw)) {
+    return 'geometry_response';
+  }
+  if (/\b(color|tone|albedo|hue|temperature|white_balance)\b/.test(raw)) {
+    return 'color_response';
+  }
+  if (/\b(temporal|stability|convergence|accumulation)\b/.test(raw)) {
+    return 'temporal_stability';
+  }
+  return raw;
+}
+
+function visualSemanticProbeSource(value) {
+  const raw = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (raw === 'roi' || raw === 'oracle_roi' || raw === 'roi_hash') return 'visual_worker_roi';
+  if (raw === 'tile' || raw === 'tile_grid' || raw === 'tile_hash_grid') {
+    return 'visual_worker_tile_grid';
+  }
+  if (raw === 'deterministic_region' || raw === 'oracle_region') {
+    return 'deterministic_oracle_region';
+  }
+  if (raw === 'visual_oracle' || raw === 'runtime_oracle') return 'runtime_visual_oracle';
+  return raw || null;
+}
+
+function normalizedVisualSemanticProbe(probe = {}, index = 0) {
+  const probeClass = visualSemanticProbeClass(firstText(
+    probe.probeClass,
+    probe.probe_class,
+    probe.semanticClass,
+    probe.semantic_class,
+    probe.kind,
+    probe.type,
+  ));
+  const source = visualSemanticProbeSource(firstText(
+    probe.source,
+    probe.probeSource,
+    probe.probe_source,
+    probe.evidenceSource,
+    probe.evidence_source,
+  ));
+  const region = compactObject(probe.region ?? probe.roi ?? probe.bounds ?? probe.region_bounds);
+  const width = finiteNumber(region.width ?? probe.width);
+  const height = finiteNumber(region.height ?? probe.height);
+  const beforeRegionHash = normalizedArtifactHash(
+    probe.beforeRegionHash
+      ?? probe.before_region_hash
+      ?? probe.beforeHash
+      ?? probe.before_hash,
+  );
+  const afterRegionHash = normalizedArtifactHash(
+    probe.afterRegionHash
+      ?? probe.after_region_hash
+      ?? probe.afterHash
+      ?? probe.after_hash,
+  );
+  const diffRegionHash = normalizedArtifactHash(
+    probe.diffRegionHash
+      ?? probe.diff_region_hash
+      ?? probe.diffHash
+      ?? probe.diff_hash,
+  );
+  const tileBindingHash = normalizedArtifactHash(
+    probe.tileBindingHash
+      ?? probe.tile_binding_hash,
+  );
+  const roiBindingHash = normalizedArtifactHash(
+    probe.roiBindingHash
+      ?? probe.roi_binding_hash,
+  );
+  const changedPixelRatio = finiteNumber(
+    probe.changedPixelRatio
+      ?? probe.changed_pixel_ratio
+      ?? probe.deltaRatio
+      ?? probe.delta_ratio,
+  );
+  const meanAbsDelta = finiteNumber(
+    probe.meanAbsDelta
+      ?? probe.mean_abs_delta
+      ?? probe.meanAbs
+      ?? probe.mean_abs,
+  );
+  const evidenceRefs = compactStringList(probe.evidenceRefs ?? probe.evidence_refs);
+  const accepted = firstBool(
+    probe.accepted,
+    probe.acceptedAsSemanticProbe,
+    probe.accepted_as_semantic_probe,
+    probe.acceptedAsProbeEvidence,
+    probe.accepted_as_probe_evidence,
+  );
+  const probeId = firstText(probe.probeId, probe.probe_id, probe.id) ?? `semantic-probe:${index}`;
+  const normalized = compactObject({
+    probeId,
+    probe_id: probeId,
+    probeClass,
+    probe_class: probeClass,
+    source,
+    beforeRegionHash,
+    before_region_hash: beforeRegionHash,
+    afterRegionHash,
+    after_region_hash: afterRegionHash,
+    diffRegionHash,
+    diff_region_hash: diffRegionHash,
+    tileBindingHash,
+    tile_binding_hash: tileBindingHash,
+    roiBindingHash,
+    roi_binding_hash: roiBindingHash,
+    region: Object.keys(region).length > 0 ? {
+      x: finiteNumber(region.x),
+      y: finiteNumber(region.y),
+      width,
+      height,
+    } : null,
+    changedPixelRatio,
+    changed_pixel_ratio: changedPixelRatio,
+    meanAbsDelta,
+    mean_abs_delta: meanAbsDelta,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    accepted,
+  });
+  const failedGates = compactStringList([
+    accepted === true ? null : 'visual_semantic_probe_not_accepted',
+    VISUAL_SEMANTIC_PROBE_ACCEPTED_CLASSES.has(probeClass)
+      ? null
+      : 'visual_semantic_probe_class_unknown',
+    VISUAL_SEMANTIC_PROBE_ACCEPTED_SOURCES.has(source)
+      ? null
+      : 'visual_semantic_probe_source_unknown',
+    contentAddressedSha256(beforeRegionHash)
+      ? null
+      : 'visual_semantic_probe_before_region_hash_missing',
+    contentAddressedSha256(afterRegionHash)
+      ? null
+      : 'visual_semantic_probe_after_region_hash_missing',
+    beforeRegionHash && afterRegionHash && beforeRegionHash !== afterRegionHash
+      ? null
+      : 'visual_semantic_probe_region_hash_unchanged',
+    width !== null && width > 0 && height !== null && height > 0
+      ? null
+      : 'visual_semantic_probe_region_bounds_missing',
+    changedPixelRatio !== null && changedPixelRatio > 0
+      ? null
+      : 'visual_semantic_probe_changed_pixel_ratio_missing',
+    meanAbsDelta !== null && meanAbsDelta > 0
+      ? null
+      : 'visual_semantic_probe_mean_abs_delta_missing',
+    evidenceRefs.length > 0 ? null : 'visual_semantic_probe_evidence_refs_missing',
+  ]);
+  return {
+    ...normalized,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function visualSemanticProbeBindingPayload({
+  schemaVersion,
+  proofAuthority,
+  beforeImageHash,
+  afterImageHash,
+  diffImageHash,
+  visualSceneManifestHash,
+  deterministicVisualModeHash,
+  probes,
+}) {
+  return compactObject({
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    beforeImageHash,
+    before_image_hash: beforeImageHash,
+    afterImageHash,
+    after_image_hash: afterImageHash,
+    diffImageHash,
+    diff_image_hash: diffImageHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    probes: probes.map((probe) => compactObject({
+      probeId: probe.probeId,
+      probe_id: probe.probe_id,
+      probeClass: probe.probeClass,
+      probe_class: probe.probe_class,
+      source: probe.source,
+      beforeRegionHash: probe.beforeRegionHash,
+      before_region_hash: probe.before_region_hash,
+      afterRegionHash: probe.afterRegionHash,
+      after_region_hash: probe.after_region_hash,
+      diffRegionHash: probe.diffRegionHash,
+      diff_region_hash: probe.diff_region_hash,
+      tileBindingHash: probe.tileBindingHash,
+      tile_binding_hash: probe.tile_binding_hash,
+      roiBindingHash: probe.roiBindingHash,
+      roi_binding_hash: probe.roi_binding_hash,
+      region: probe.region,
+      changedPixelRatio: probe.changedPixelRatio,
+      changed_pixel_ratio: probe.changed_pixel_ratio,
+      meanAbsDelta: probe.meanAbsDelta,
+      mean_abs_delta: probe.mean_abs_delta,
+      evidenceRefs: probe.evidenceRefs,
+      evidence_refs: probe.evidence_refs,
+    })),
+  });
+}
+
+function visualSemanticBoundEvidenceRefs(row = {}) {
+  const validationProfileEvidence = compactObject(
+    row.validationProfileEvidence ?? row.validation_profile_evidence,
+  );
+  const validationProfileRefs =
+    validationProfileEvidence.accepted === true
+      ? compactStringList(validationProfileEvidence.evidenceRefs ?? validationProfileEvidence.evidence_refs)
+      : [];
+  const asyncVisual = compactObject(row.asyncVisualCasBundle ?? row.async_visual_cas_bundle);
+  return new Set(compactStringList([
+    ...rowEvidenceRefs(row),
+    ...visualArtifactHashesForRow(row),
+    ...validationProfileRefs,
+    asyncVisual.tileBindingHash,
+    asyncVisual.tile_binding_hash,
+    asyncVisual.roiBindingHash,
+    asyncVisual.roi_binding_hash,
+    asyncVisual.workerExecutableHash,
+    asyncVisual.worker_executable_hash,
+    asyncVisual.workerNativeDependencyManifestHash,
+    asyncVisual.worker_native_dependency_manifest_hash,
+  ]));
+}
+
+function visualSemanticProbeFacet(row = {}, visual = {}) {
+  const supplied = rawVisualSemanticProbeEvidence(row);
+  const suppliedSchemaVersion = firstText(
+    supplied.schemaVersion,
+    supplied.schema_version,
+    supplied.schema,
+  );
+  const suppliedProbeEntries = compactObjectList(
+    supplied.probes
+      ?? supplied.semanticProbes
+      ?? supplied.semantic_probes
+      ?? supplied.visualSemanticProbes
+      ?? supplied.visual_semantic_probes,
+  );
+  if (
+    Object.keys(supplied).length === 0
+    || (
+      supplied.present === false
+      && !suppliedSchemaVersion
+      && suppliedProbeEntries.length === 0
+    )
+  ) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = suppliedSchemaVersion;
+  const proofAuthority = firstText(
+    supplied.proofAuthority,
+    supplied.proof_authority,
+    supplied.authority,
+  );
+  const acceptedFlag = firstBool(
+    supplied.accepted,
+    supplied.acceptedAsSemanticVisualProbeEvidence,
+    supplied.accepted_as_semantic_visual_probe_evidence,
+  );
+  const acceptedForGpuHmr = firstBool(supplied.acceptedForGpuHmr, supplied.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(supplied.gpuHmrSuccess, supplied.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    supplied.canSatisfyRuntimeProof,
+    supplied.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    supplied.canSatisfyDispatchProof,
+    supplied.can_satisfy_dispatch_proof,
+  );
+  const beforeImageHash = normalizedArtifactHash(
+    supplied.beforeImageHash
+      ?? supplied.before_image_hash,
+  );
+  const afterImageHash = normalizedArtifactHash(
+    supplied.afterImageHash
+      ?? supplied.after_image_hash,
+  );
+  const diffImageHash = normalizedArtifactHash(
+    supplied.diffImageHash
+      ?? supplied.diff_image_hash,
+  );
+  const visualSceneManifestHash = normalizedArtifactHash(
+    supplied.visualSceneManifestHash
+      ?? supplied.visual_scene_manifest_hash
+      ?? supplied.renderSceneManifestHash
+      ?? supplied.render_scene_manifest_hash,
+  );
+  const deterministicVisualModeHash = normalizedArtifactHash(
+    supplied.deterministicVisualModeHash
+      ?? supplied.deterministic_visual_mode_hash,
+  );
+  const bindingHash = normalizedArtifactHash(supplied.bindingHash ?? supplied.binding_hash);
+  const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
+  const probes = suppliedProbeEntries.map(normalizedVisualSemanticProbe);
+  const visualHashes = visualImageHashesByRole(visual);
+  const boundRefs = visualSemanticBoundEvidenceRefs(row);
+  const requiredClassesCovered = VISUAL_SEMANTIC_PROBE_REQUIRED_CLASSES
+    .every((requiredClass) => probes.some((probe) => probe.probeClass === requiredClass));
+  const probeFailedGates = compactStringList(probes.flatMap((probe) =>
+    probe.failedGates.map((gate) => `${probe.probeId}:${gate}`)
+  ));
+  const allProbeRefsBound = probes.every((probe) =>
+    probe.evidenceRefs.length > 0
+    && probe.evidenceRefs.some((ref) => boundRefs.has(ref) || evidenceRefs.includes(ref))
+  );
+  const requiredTopLevelRefs = compactStringList([
+    beforeImageHash,
+    afterImageHash,
+    diffImageHash,
+    visualSceneManifestHash,
+  ]);
+  const topLevelRefsBound = requiredTopLevelRefs.every((ref) =>
+    evidenceRefs.includes(ref) && boundRefs.has(ref)
+  );
+  const sceneManifestBound =
+    contentAddressedSha256(visualSceneManifestHash)
+    && evidenceRefs.includes(visualSceneManifestHash)
+    && boundRefs.has(visualSceneManifestHash);
+  const bindingPayload = visualSemanticProbeBindingPayload({
+    schemaVersion,
+    proofAuthority,
+    beforeImageHash,
+    afterImageHash,
+    diffImageHash,
+    visualSceneManifestHash,
+    deterministicVisualModeHash,
+    probes,
+  });
+  const recomputedBindingHash = stableJsonHash(bindingPayload);
+  const bindingHashMatches = bindingHash === recomputedBindingHash;
+  const failedGates = compactStringList([
+    schemaVersion === VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION
+      ? null
+      : 'visual_semantic_probe_schema_mismatch',
+    proofAuthority === VISUAL_SEMANTIC_PROBE_AUTHORITY
+      ? null
+      : 'visual_semantic_probe_authority_mismatch',
+    acceptedFlag === true ? null : 'visual_semantic_probe_not_explicitly_accepted',
+    acceptedForGpuHmr === false ? null : 'visual_semantic_probe_claims_gpu_hmr_acceptance',
+    gpuHmrSuccess === false ? null : 'visual_semantic_probe_claims_gpu_hmr_success',
+    canSatisfyRuntimeProof === false ? null : 'visual_semantic_probe_claims_runtime_authority',
+    canSatisfyDispatchProof === false ? null : 'visual_semantic_probe_claims_dispatch_authority',
+    visual.accepted === true ? null : 'visual_semantic_probe_visual_artifacts_not_accepted',
+    visualHashes.get('before') === beforeImageHash
+      ? null
+      : 'visual_semantic_probe_before_image_hash_mismatch',
+    visualHashes.get('after') === afterImageHash
+      ? null
+      : 'visual_semantic_probe_after_image_hash_mismatch',
+    visualHashes.get('diff') === diffImageHash
+      ? null
+      : 'visual_semantic_probe_diff_image_hash_mismatch',
+    contentAddressedSha256(visualSceneManifestHash)
+      ? null
+      : 'visual_semantic_probe_scene_manifest_hash_missing',
+    sceneManifestBound ? null : 'visual_semantic_probe_scene_manifest_not_bound',
+    topLevelRefsBound ? null : 'visual_semantic_probe_image_hashes_not_bound',
+    probes.length > 0 ? null : 'visual_semantic_probe_entries_missing',
+    requiredClassesCovered ? null : 'visual_semantic_probe_material_lighting_classes_required',
+    allProbeRefsBound ? null : 'visual_semantic_probe_evidence_refs_not_bound',
+    contentAddressedSha256(bindingHash) ? null : 'visual_semantic_probe_binding_hash_missing',
+    bindingHashMatches ? null : 'visual_semantic_probe_binding_hash_mismatch',
+    ...probeFailedGates,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0,
+    acceptedAsSupportEvidence: failedGates.length === 0,
+    accepted_as_support_evidence: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    beforeImageHash,
+    before_image_hash: beforeImageHash,
+    afterImageHash,
+    after_image_hash: afterImageHash,
+    diffImageHash,
+    diff_image_hash: diffImageHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    probes,
+    materialProbeAccepted: probes.some((probe) => probe.probeClass === 'material_response'
+      && probe.failedGates.length === 0),
+    material_probe_accepted: probes.some((probe) => probe.probeClass === 'material_response'
+      && probe.failedGates.length === 0),
+    lightingProbeAccepted: probes.some((probe) => probe.probeClass === 'lighting_response'
+      && probe.failedGates.length === 0),
+    lighting_probe_accepted: probes.some((probe) => probe.probeClass === 'lighting_response'
+      && probe.failedGates.length === 0),
+    bindingHash,
+    binding_hash: bindingHash,
+    recomputedBindingHash,
+    recomputed_binding_hash: recomputedBindingHash,
+    bindingHashMatches,
+    binding_hash_matches: bindingHashMatches,
+    topLevelRefsBound,
+    top_level_refs_bound: topLevelRefsBound,
+    sceneManifestBound,
+    scene_manifest_bound: sceneManifestBound,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const proofIds = compactStringList(supplied.proofIds ?? supplied.proof_ids);
   const evidenceRefs = compactStringList(supplied.evidenceRefs ?? supplied.evidence_refs);
@@ -11069,6 +11542,8 @@ function finalizeRow(seed) {
   row.run_mode_coverage_support = row.runModeCoverageSupport;
   row.validationProfileEvidence = validationProfileEvidenceFacet(row);
   row.validation_profile_evidence = row.validationProfileEvidence;
+  row.visualSemanticProbes = visualSemanticProbeFacet(row, compactObject(row.visual));
+  row.visual_semantic_probes = row.visualSemanticProbes;
   row.fullRuntimeRowIdentityBinding = fullRuntimeRowIdentityBindingFacet(row);
   row.full_runtime_row_identity_binding = row.fullRuntimeRowIdentityBinding;
   row.declaredAcceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope) ?? null;
@@ -16807,6 +17282,16 @@ function rowSafetyFailures(row, context = {}) {
     }
     if (!rowHasAcceptedOutputOracleClosure(row)) {
       failures.push({ code: 'gpu_hmr_success_requires_accepted_output_oracle_facet' });
+    }
+    const visualSemanticProbes = compactObject(
+      row.visualSemanticProbes ?? row.visual_semantic_probes,
+    );
+    if (visualSemanticProbes.present === true && visualSemanticProbes.accepted !== true) {
+      failures.push({ code: 'gpu_hmr_success_cannot_use_unaccepted_visual_semantic_probe' });
+      failures.push(
+        ...compactStringList(visualSemanticProbes.failedGates ?? visualSemanticProbes.failed_gates)
+          .map((code) => ({ code })),
+      );
     }
     const missingDependencyProbe = compactObject(
       row.realRocmMissingDependencyProbe
@@ -28533,6 +29018,14 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     source_first_ingestion: sourceFirstIngestion,
     visualArtifacts,
     visual_artifacts: visualArtifacts,
+    visualSemanticProbes: compactObject(
+      json.visualSemanticProbes
+        ?? json.visual_semantic_probes
+        ?? json.semanticVisualProbes
+        ?? json.semantic_visual_probes
+        ?? json.realisticVisualProbeEvidence
+        ?? json.realistic_visual_probe_evidence,
+    ),
     asyncVisualProofJob,
     async_visual_proof_job: asyncVisualProofJob,
     asyncVisualCasBundle,
@@ -33195,11 +33688,16 @@ function dedupeFailedGates(failures) {
 }
 
 function rowWithEvaluatedSafety(row, context = {}) {
-  const suppliedFailures = row.safety?.accepted === false
-    ? Array.isArray(row.safety.failedGates) ? row.safety.failedGates : []
+  const normalizedRow = {
+    ...row,
+    visualSemanticProbes: visualSemanticProbeFacet(row, compactObject(row.visual)),
+  };
+  normalizedRow.visual_semantic_probes = normalizedRow.visualSemanticProbes;
+  const suppliedFailures = normalizedRow.safety?.accepted === false
+    ? Array.isArray(normalizedRow.safety.failedGates) ? normalizedRow.safety.failedGates : []
     : [];
   const failedGates = dedupeFailedGates([
-    ...rowSafetyFailures(row, context),
+    ...rowSafetyFailures(normalizedRow, context),
     ...suppliedFailures,
   ]);
   const safetyAccepted = failedGates.length === 0;
@@ -33209,35 +33707,35 @@ function rowWithEvaluatedSafety(row, context = {}) {
   const safetyInvalidatesGpuHmr =
     safetyAccepted !== true
     && (
-      row.acceptedForGpuHmr === true
-      || row.accepted_for_gpu_hmr === true
-      || row.gpuHmrSuccess === true
-      || row.gpu_hmr_success === true
-      || row.matrixOutcome === 'full_runtime_gpu_hmr'
+      normalizedRow.acceptedForGpuHmr === true
+      || normalizedRow.accepted_for_gpu_hmr === true
+      || normalizedRow.gpuHmrSuccess === true
+      || normalizedRow.gpu_hmr_success === true
+      || normalizedRow.matrixOutcome === 'full_runtime_gpu_hmr'
     );
   const evaluatedRow = {
-    ...row,
-    acceptedForGpuHmr: safetyInvalidatesGpuHmr ? false : row.acceptedForGpuHmr,
-    accepted_for_gpu_hmr: safetyInvalidatesGpuHmr ? false : row.accepted_for_gpu_hmr,
-    gpuHmrSuccess: safetyInvalidatesGpuHmr ? false : row.gpuHmrSuccess,
-    gpu_hmr_success: safetyInvalidatesGpuHmr ? false : row.gpu_hmr_success,
-    matrixOutcome: safetyInvalidatesGpuHmr ? 'unproven' : row.matrixOutcome,
-    proofChainAccepted: safetyInvalidatesGpuHmr ? false : row.proofChainAccepted,
-    proof_chain_accepted: safetyInvalidatesGpuHmr ? false : row.proof_chain_accepted,
+    ...normalizedRow,
+    acceptedForGpuHmr: safetyInvalidatesGpuHmr ? false : normalizedRow.acceptedForGpuHmr,
+    accepted_for_gpu_hmr: safetyInvalidatesGpuHmr ? false : normalizedRow.accepted_for_gpu_hmr,
+    gpuHmrSuccess: safetyInvalidatesGpuHmr ? false : normalizedRow.gpuHmrSuccess,
+    gpu_hmr_success: safetyInvalidatesGpuHmr ? false : normalizedRow.gpu_hmr_success,
+    matrixOutcome: safetyInvalidatesGpuHmr ? 'unproven' : normalizedRow.matrixOutcome,
+    proofChainAccepted: safetyInvalidatesGpuHmr ? false : normalizedRow.proofChainAccepted,
+    proof_chain_accepted: safetyInvalidatesGpuHmr ? false : normalizedRow.proof_chain_accepted,
     reasons: safetyInvalidatesGpuHmr
       ? compactStringList([
-          ...(Array.isArray(row.reasons) ? row.reasons : []),
+          ...(Array.isArray(normalizedRow.reasons) ? normalizedRow.reasons : []),
           'gpu_hmr_success_invalidated_by_matrix_safety',
           ...safetyFailureCodes,
         ])
-      : row.reasons,
+      : normalizedRow.reasons,
     openGaps: safetyInvalidatesGpuHmr
       ? compactStringList([
-          ...(Array.isArray(row.openGaps) ? row.openGaps : []),
+          ...(Array.isArray(normalizedRow.openGaps) ? normalizedRow.openGaps : []),
           'gpu_hmr_success_invalidated_by_matrix_safety',
           ...safetyFailureCodes,
         ])
-      : row.openGaps,
+      : normalizedRow.openGaps,
     safety: {
       accepted: safetyAccepted,
       failedGates,
@@ -33277,6 +33775,8 @@ function rowRefs(rows) {
     source_first_ingestion: row.sourceFirstIngestion,
     asyncVisualCasBundle: row.asyncVisualCasBundle,
     async_visual_cas_bundle: row.asyncVisualCasBundle,
+    visualSemanticProbes: row.visualSemanticProbes ?? row.visual_semantic_probes,
+    visual_semantic_probes: row.visualSemanticProbes ?? row.visual_semantic_probes,
     validationProfileEvidence: row.validationProfileEvidence,
     externalProfileSelection: row.externalProfileSelection,
     externalSourceDelta: row.externalSourceDelta,
@@ -33451,6 +33951,66 @@ function rowHasAcceptedVisualEvidence(row) {
   return outputOracleFacet.accepted === true
     && firstText(outputOracleFacet.kind, outputOracleFacet.oracleKind, outputOracleFacet.oracle_kind)
       === 'visual_oracle';
+}
+
+function rowVisualSemanticProbeFacet(row = {}) {
+  const supplied = compactObject(row.visualSemanticProbes ?? row.visual_semantic_probes);
+  if (supplied.present === true || Object.keys(rawVisualSemanticProbeEvidence(row)).length > 0) {
+    return visualSemanticProbeFacet(row, compactObject(row.visual));
+  }
+  return {
+    present: false,
+    accepted: null,
+    failedGates: [],
+    failed_gates: [],
+  };
+}
+
+function rowHasAcceptedVisualSemanticProbes(row = {}) {
+  const facet = rowVisualSemanticProbeFacet(row);
+  return facet.present === true
+    && facet.accepted === true
+    && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === false
+    && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === false
+    && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === false
+    && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === false
+    && rowHasAcceptedVisualEvidence(row);
+}
+
+function semanticVisualProbeCoverage(rows) {
+  const candidateRows = rows.filter((row) => rowVisualSemanticProbeFacet(row).present === true);
+  const acceptedProbeRows = candidateRows.filter(rowHasAcceptedVisualSemanticProbes);
+  const failedGates = compactStringList(candidateRows.flatMap((row) =>
+    rowVisualSemanticProbeFacet(row).failedGates ?? rowVisualSemanticProbeFacet(row).failed_gates
+  ));
+  return coverageEntry({
+    id: 'semantic_realistic_visual_probes',
+    requirement:
+      'Generic material and lighting semantic visual probes bound to strict visual artifacts, scene manifest, and deterministic regions',
+    status: acceptedProbeRows.length > 0
+      ? 'support_only'
+      : candidateRows.length > 0
+        ? 'candidate_only'
+        : 'missing',
+    rows: candidateRows,
+    openGaps: acceptedProbeRows.length > 0
+      ? ['semantic_visual_probes_support_only_not_gpu_hmr_authority']
+      : candidateRows.length > 0
+        ? failedGates
+        : ['semantic_visual_probe_binding_required'],
+    proofAuthority: VISUAL_SEMANTIC_PROBE_AUTHORITY,
+    proof_authority: VISUAL_SEMANTIC_PROBE_AUTHORITY,
+    acceptedProbeRowCount: acceptedProbeRows.length,
+    accepted_probe_row_count: acceptedProbeRows.length,
+    candidateProbeRowCount: candidateRows.length,
+    candidate_probe_row_count: candidateRows.length,
+    requiredProbeClasses: VISUAL_SEMANTIC_PROBE_REQUIRED_CLASSES,
+    required_probe_classes: VISUAL_SEMANTIC_PROBE_REQUIRED_CLASSES,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  });
 }
 
 function webgpuRuntimeResourceCount(trace = {}, ...keys) {
@@ -35100,6 +35660,7 @@ function planCoverage(rows, context = {}) {
       sourceIdentityHashes: sourceFirstFullRuntimeSourceIdentities,
       source_identity_hashes: sourceFirstFullRuntimeSourceIdentities,
     }),
+    semanticVisualProbeCoverage(rows),
     coverageEntry({
       id: 'random_large_arbitrary_project_cold_path',
       requirement: 'Random large arbitrary-project cold-path intake with immutable source, build metadata, runtime-boundary expectation, and fail-closed proof gaps',
