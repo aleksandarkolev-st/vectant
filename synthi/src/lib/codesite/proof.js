@@ -409,5 +409,18 @@ function proofAuthorityEnvValue(key) {
   if (direct) return direct;
   const filePath = envValue(`${key}_FILE`);
   if (!filePath) return undefined;
-  return fs.readFileSync(filePath, 'utf8');
+  return fs.readFileSync(resolveProofAuthorityFilePath(filePath), 'utf8');
+}
+
+function resolveProofAuthorityFilePath(filePath) {
+  if (pathIsAbsolute(filePath)) return filePath;
+  const cwd = typeof process !== 'undefined' ? process.cwd?.() : '';
+  const base = cwd && cwd.split(/[\\/]/).at(-1) === 'synthi'
+    ? cwd.replace(/[\\/]synthi$/, '')
+    : cwd;
+  return `${base}/${filePath}`;
+}
+
+function pathIsAbsolute(filePath) {
+  return /^(?:[A-Za-z]:[\\/]|[\\/])/.test(String(filePath || ''));
 }

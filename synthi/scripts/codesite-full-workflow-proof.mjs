@@ -2418,7 +2418,13 @@ function proofAuthorityEnvValue(key) {
   if (direct) return direct;
   const filePath = process.env[`${key}_FILE`];
   if (!filePath) return undefined;
-  return fs.readFileSync(path.resolve(filePath), 'utf8');
+  return fs.readFileSync(resolveProofAuthorityFilePath(filePath), 'utf8');
+}
+
+function resolveProofAuthorityFilePath(filePath) {
+  return path.isAbsolute(filePath)
+    ? path.resolve(filePath)
+    : path.resolve(repoRoot(), filePath);
 }
 
 async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRoot, commitSha }) {

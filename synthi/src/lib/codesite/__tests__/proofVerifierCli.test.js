@@ -368,7 +368,10 @@ describe('CodeSite proof verifier CLI', () => {
   });
 
   it('signs and verifies an Ed25519 proof from authority file inputs', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    const repoRoot = path.basename(process.cwd()) === 'synthi' ? path.dirname(process.cwd()) : process.cwd();
+    const relativeRoot = path.join('tmp', `codesite-proof-cli-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const root = path.join(repoRoot, relativeRoot);
+    fs.mkdirSync(root, { recursive: true });
     roots.push(root);
     const keyId = 'codesite-proof-ed25519-file-test';
     const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
@@ -377,6 +380,9 @@ describe('CodeSite proof verifier CLI', () => {
     const privateKeyPath = path.join(root, 'proof-authority.private.pem');
     const publicKeyPath = path.join(root, 'proof-authority.public.pem');
     const publicKeysPath = path.join(root, 'trusted-proof-authorities.json');
+    const privateKeyRelativePath = path.posix.join(relativeRoot, 'proof-authority.private.pem');
+    const publicKeyRelativePath = path.posix.join(relativeRoot, 'proof-authority.public.pem');
+    const publicKeysRelativePath = path.posix.join(relativeRoot, 'trusted-proof-authorities.json');
     fs.writeFileSync(privateKeyPath, privateKeyPem);
     fs.writeFileSync(publicKeyPath, publicKeyPem);
     fs.writeFileSync(publicKeysPath, JSON.stringify({
@@ -391,9 +397,9 @@ describe('CodeSite proof verifier CLI', () => {
       SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
       SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID: keyId,
       SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
-      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: privateKeyPath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: privateKeyRelativePath,
       SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
-      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: publicKeyPath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: publicKeyRelativePath,
       SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
       SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
       AUTH_SECRET: null,
@@ -411,7 +417,7 @@ describe('CodeSite proof verifier CLI', () => {
       SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
       SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
       SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
-      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: publicKeysPath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: publicKeysRelativePath,
       AUTH_SECRET: null,
       NEXTAUTH_SECRET: null,
       NODE_ENV: 'development',
