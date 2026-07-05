@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -11,6 +12,9 @@ const {
   runtimeContainerName,
   volumeSubpathForPath,
 } = require('../../backend/collab-server/workspaceRuntimeContainer.js');
+const {
+  createCodeSiteHostWriteSentinel,
+} = require('../../backend/collab-server/codesiteHostWriteSentinel.js');
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_IMAGE = 'node:20-bookworm';
@@ -88,6 +92,99 @@ async function prepareSourceAndOverlay(root) {
   await fs.writeFile(path.join(sourceRoot, 'package.json'), `${JSON.stringify({ name: 'codesite-boundary-proof', version: '1.0.0' }, null, 2)}\n`, 'utf8');
   await fs.cp(sourceRoot, overlayRoot, { recursive: true, dereference: false });
   return { sourceRoot, overlayRoot };
+}
+
+async function captureDeniedWrite(fn) {
+  try {
+    await fn();
+    return { denied: false, code: null, message: null };
+  } catch (error) {
+    return {
+      denied: ['EACCES', 'EPERM', 'EROFS'].includes(error?.code),
+      code: error?.code || null,
+      message: error?.message || String(error),
+    };
+  }
+}
+
+async function runHostPrewriteGuardProbe({ root, slug }) {
+  const sourceBase = path.resolve(
+    process.env.CODESITE_HOST_PREWRITE_GUARD_SOURCE_ROOT ||
+    path.join(os.tmpdir(), 'codesite-unmanaged-host-prewrite', slug),
+  );
+  const sourceRoot = path.join(sourceBase, 'source');
+  const sentinelRoot = path.join(root, 'host-prewrite-sentinel');
+  const appPath = path.join(sourceRoot, 'src', 'app.js');
+  const roguePath = path.join(sourceRoot, 'src', 'rogue.js');
+  await fs.rm(sourceBase, { recursive: true, force: true });
+  await fs.rm(sentinelRoot, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(appPath), { recursive: true });
+  await fs.writeFile(appPath, 'export const prewrite = "base";\n', 'utf8');
+  const before = {
+    app: await digestFile(appPath),
+    rogueExists: await exists(roguePath),
+  };
+  const sentinel = createCodeSiteHostWriteSentinel({
+    repoRoot: sourceRoot,
+    baseDir: sentinelRoot,
+    sentinelId: `prewrite-${slug}`,
+    prewriteGuard: true,
+    codeSiteContext: {
+      active: true,
+      workspaceSlug: slug,
+      transactionId: 'txn-unmanaged-host-boundary-prewrite',
+      mutationLeaseId: 'lease-unmanaged-host-boundary-prewrite',
+      agentSessionId: 'agent-unmanaged-host-boundary-prewrite',
+      displayCallsign: 'HOST-PREWRITE',
+      processAncestry: ['codesite-proof', 'unmanaged-host-boundary'],
+    },
+    fetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  });
+
+  let started = null;
+  let scan = null;
+  let stopped = null;
+  try {
+    started = await sentinel.start({ watch: false, reason: 'unmanaged_host_boundary_prewrite_probe' });
+    const overwrite = await captureDeniedWrite(() => (
+      fs.writeFile(appPath, 'export const prewrite = "rogue";\n', 'utf8')
+    ));
+    const create = await captureDeniedWrite(() => (
+      fs.writeFile(roguePath, 'export const rogue = true;\n', 'utf8')
+    ));
+    const afterDenied = {
+      app: await digestFile(appPath),
+      rogueExists: await exists(roguePath),
+    };
+    scan = await sentinel.scanNow({ reason: 'prewrite_guard_audit' });
+    const manifest = JSON.parse(await fs.readFile(scan.manifestPath, 'utf8'));
+    stopped = await sentinel.stop();
+    const postStopWrite = await captureDeniedWrite(() => (
+      fs.writeFile(appPath, 'export const prewrite = "post-stop-write-ok";\n', 'utf8')
+    ));
+    return {
+      sourceRoot,
+      sourceBase,
+      sentinelRoot,
+      started,
+      stopped,
+      attempts: { overwrite, create, postStopWrite },
+      before,
+      afterDenied,
+      scan: {
+        ok: scan.ok,
+        quarantinedCount: scan.quarantined.length,
+        manifestPath: scan.manifestPath,
+      },
+      manifest: {
+        status: manifest.status,
+        reason: manifest.reason,
+        prewriteBoundary: manifest.prewriteBoundary,
+      },
+    };
+  } finally {
+    if (!stopped) await sentinel.stop();
+  }
 }
 
 function dockerProbeScript() {
@@ -174,6 +271,14 @@ function renderHtml(proof) {
   const assertionRows = Object.entries(proof.assertions).map(([name, ok]) => `
     <tr><td><span class="${ok ? 'ok' : 'bad'}">${ok ? 'PASS' : 'FAIL'}</span></td><td>${escapeHtml(name)}</td></tr>
   `).join('');
+  const prewriteRows = Object.entries(proof.hostPrewriteGuard?.attempts || {}).map(([name, attempt]) => `
+    <tr>
+      <td>${escapeHtml(name)}</td>
+      <td><span class="${attempt.denied ? 'bad' : 'ok'}">${attempt.denied ? 'denied' : 'allowed'}</span></td>
+      <td><code>${escapeHtml(attempt.code || '')}</code></td>
+      <td><code>${escapeHtml((attempt.message || '').slice(0, 260))}</code></td>
+    </tr>
+  `).join('');
   const attemptRows = proof.docker.parsed?.attempts?.map((attempt) => `
     <tr>
       <td>${escapeHtml(attempt.name)}</td>
@@ -209,7 +314,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--
     <div>
       <span class="badge">${proof.ok ? 'PASS' : 'FAIL'}</span>
       <h1>CodeSite Unmanaged Host Boundary Proof</h1>
-      <p>Unmanaged Node and shell writes were attempted against the real tree mounted as read-only. The same process could write to the transaction overlay, proving a general sealed-base plus writable-overlay boundary without relying on polling restoration.</p>
+      <p>Unmanaged Node and shell writes were denied before real-tree mutation by the host prewrite guard, then attempted again against a read-only Docker base with a writable transaction overlay. This proves the mature sealed-base boundary without relying on polling restoration.</p>
     </div>
     <span class="badge">${escapeHtml(proof.boundary.mode)}</span>
   </section>
@@ -220,6 +325,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--
     <div class="metric"><div class="label">Denied base writes</div><div class="value">${proof.summary.deniedBaseWrites}/${proof.summary.baseWriteAttempts}</div></div>
   </section>
   <section class="card"><h2>Assertions</h2><table><tbody>${assertionRows}</tbody></table></section>
+  <section class="card"><h2>Host Prewrite Guard</h2><table><thead><tr><th>Attempt</th><th>Disposition</th><th>Code</th><th>Evidence</th></tr></thead><tbody>${prewriteRows}</tbody></table><pre>${escapeHtml(JSON.stringify(proof.hostPrewriteGuard?.manifest?.prewriteBoundary || {}, null, 2))}</pre></section>
   <section class="card"><h2>Raw Process Attempts</h2><table><thead><tr><th>Attempt</th><th>Disposition</th><th>Code</th><th>Evidence</th></tr></thead><tbody>${attemptRows}</tbody></table></section>
   <section class="card"><h2>Digest Evidence</h2><pre>${escapeHtml(JSON.stringify(proof.digests, null, 2))}</pre></section>
   <section class="card"><h2>Product Runtime Contract</h2><pre>${escapeHtml(JSON.stringify(proof.productRuntimeContract, null, 2))}</pre></section>
@@ -290,6 +396,7 @@ async function main() {
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
   const runRoot = path.join(proofRoot(), 'unmanaged-host-boundary', slug);
   const { sourceRoot, overlayRoot } = await prepareSourceAndOverlay(runRoot);
+  const hostPrewriteGuard = await runHostPrewriteGuardProbe({ root: runRoot, slug });
   const trackedFiles = [
     'src/app.js',
     'api/auth/signup.ts',
@@ -314,6 +421,16 @@ async function main() {
   const baseMountFlags = String(docker.parsed?.mounts?.base || '').split(',');
   const overlayMountFlags = String(docker.parsed?.mounts?.workspace || '').split(',');
   const assertions = {
+    hostPrewriteGuardArmed: hostPrewriteGuard.started?.prewriteBoundary?.active === true
+      && hostPrewriteGuard.started?.prewriteBoundary?.enforcedBeforeMutation === true,
+    hostPrewriteExistingWriteDenied: hostPrewriteGuard.attempts.overwrite.denied === true,
+    hostPrewriteCreateDenied: hostPrewriteGuard.attempts.create.denied === true,
+    hostPrewriteRealTreeUnchanged: hostPrewriteGuard.before.app === hostPrewriteGuard.afterDenied.app
+      && hostPrewriteGuard.afterDenied.rogueExists === false,
+    hostPrewriteNoPostWriteQuarantineNeeded: hostPrewriteGuard.scan.ok === true
+      && hostPrewriteGuard.scan.quarantinedCount === 0,
+    hostPrewriteGuardRestoredPermissions: hostPrewriteGuard.stopped?.prewriteBoundary?.active === false
+      && hostPrewriteGuard.attempts.postStopWrite.denied === false,
     dockerProcessExecuted: docker.exitCode === 0 && !docker.parsed?.parseError,
     sourceMountedReadOnly: baseMountFlags.includes('ro'),
     overlayMountedWritable: overlayMountFlags.includes('rw'),
@@ -333,8 +450,8 @@ async function main() {
     generatedAt: new Date().toISOString(),
     slug,
     boundary: {
-      mode: 'read_only_real_tree_with_writable_transaction_overlay',
-      claim: 'Unmanaged writes target a sealed base mount and cannot mutate the real tree before CodeSite review; writable changes land only in transaction overlay/quarantine.',
+      mode: 'host_prewrite_guard_plus_read_only_real_tree_with_writable_transaction_overlay',
+      claim: 'Unmanaged writes are denied before real-tree mutation by a host prewrite guard, and runtime writes target a sealed base mount whose writable changes land only in transaction overlay/quarantine.',
       notSatisfiedBy: 'post_write_polling_restore',
     },
     workspaces: {
@@ -342,15 +459,21 @@ async function main() {
       overlayRoot,
     },
     summary: {
+      hostPrewriteDeniedWrites: [
+        hostPrewriteGuard.attempts.overwrite,
+        hostPrewriteGuard.attempts.create,
+      ].filter((attempt) => attempt.denied).length,
       baseWriteAttempts: baseAttempts.length,
       deniedBaseWrites: baseAttempts.filter((attempt) => attempt.ok === false).length,
       overlayWriteAttempts: overlayAttempts.length,
       allowedOverlayWrites: overlayAttempts.filter((attempt) => attempt.ok === true).length,
     },
+    hostPrewriteGuard,
     docker,
     productRuntimeContract: {
-      activeHostShellPolicy: 'block-host',
+      activeHostShellPolicy: 'deny unmanaged host writes with prewrite guard or block host shell',
       activeRuntimePolicy: 'mount read-only base plus writable overlay/quarantine',
+      prewriteBoundary: hostPrewriteGuard.manifest.prewriteBoundary,
       readonlyRuntimeName: runtimeContainerName(slug, 'proof-user', { codeSiteReadonly: true }),
       activeOverlayRuntimeName: runtimeContainerName(slug, 'proof-user', {
         codesiteContext: { active: true, transactionId: 'txn-unmanaged-host-boundary' },
@@ -368,6 +491,18 @@ async function main() {
     assertions,
     failedAssertions,
     commands: [{
+      name: 'hostPrewriteGuardProbe',
+      command: 'node codesite-unmanaged-host-boundary-proof.mjs <prewrite-guard-probe>',
+      runner: 'node',
+      exitCode: assertions.hostPrewriteExistingWriteDenied && assertions.hostPrewriteCreateDenied ? 0 : 1,
+      summary: {
+        deniedWritesBeforeMutation: [
+          hostPrewriteGuard.attempts.overwrite,
+          hostPrewriteGuard.attempts.create,
+        ].filter((attempt) => attempt.denied).length,
+        quarantinedAfterScan: hostPrewriteGuard.scan.quarantinedCount,
+      },
+    }, {
       name: 'unmanagedDockerWriteProbe',
       command: `docker run --rm -v <source>:/codesite-base:ro -v <overlay>:/workspace ${docker.image} node <unmanaged-write-probe>`,
       runner: 'docker',
