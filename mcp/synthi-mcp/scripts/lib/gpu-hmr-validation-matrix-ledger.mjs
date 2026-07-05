@@ -284,6 +284,10 @@ const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_adapter_result_import.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY =
   'matrix_imported_adapter_result_bytes_only_not_gpu_hmr_success';
+const RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_runtime_strict_import_projection.v1';
+const RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_AUTHORITY =
+  'matrix_projected_strict_import_runtime_gates_only_not_gpu_hmr_success';
 const RUNTIME_PROFILE_ADAPTER_RESULT_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_profile_adapter_result.v1';
 const RUNTIME_PROFILE_ADAPTER_RESULT_AUTHORITY =
@@ -4647,6 +4651,212 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     recomputed_runtime_boundary_line_hashes: recomputedRuntimeBoundaryLineHashes,
     recomputedAdapterRuntimeBoundaryLineHashes,
     recomputed_adapter_runtime_boundary_line_hashes: recomputedAdapterRuntimeBoundaryLineHashes,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdRuntimeStrictImportProjectionFacet({
+  adapterResultImport = {},
+  stageEvents = {},
+  appHookGate = {},
+} = {}) {
+  const adapterImport = compactObject(adapterResultImport);
+  const stages = compactObject(stageEvents);
+  const hookGate = compactObject(appHookGate);
+  const present =
+    adapterImport.present === true
+    || stages.present === true;
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      projectedGateAccepted: {},
+      projected_gate_accepted: {},
+      failedGates: [],
+      failed_gates: [],
+      clearedOpenGaps: [],
+      cleared_open_gaps: [],
+    };
+  }
+  const importFailedGates = compactStringList([
+    ...(Array.isArray(adapterImport.failedGates) ? adapterImport.failedGates : []),
+    ...(Array.isArray(adapterImport.failed_gates) ? adapterImport.failed_gates : []),
+  ]);
+  const strictGateFailures = compactStringList([
+    ...(Array.isArray(adapterImport.strictRuntimeProofGateFailures)
+      ? adapterImport.strictRuntimeProofGateFailures
+      : []),
+    ...(Array.isArray(adapterImport.strict_runtime_proof_gate_failures)
+      ? adapterImport.strict_runtime_proof_gate_failures
+      : []),
+  ]);
+  const stageFailedGates = compactStringList([
+    ...(Array.isArray(stages.failedGates) ? stages.failedGates : []),
+    ...(Array.isArray(stages.failed_gates) ? stages.failed_gates : []),
+  ]);
+  const stageBlockingGaps = compactStringList([
+    ...(Array.isArray(stages.blockingGaps) ? stages.blockingGaps : []),
+    ...(Array.isArray(stages.blocking_gaps) ? stages.blocking_gaps : []),
+  ]);
+  const appHookFailedGaps = compactStringList([
+    ...(Array.isArray(hookGate.failedGaps) ? hookGate.failedGaps : []),
+    ...(Array.isArray(hookGate.failed_gaps) ? hookGate.failed_gaps : []),
+  ]);
+  const strictImportAccepted =
+    adapterImport.accepted === true
+    && firstBool(
+      adapterImport.strictRuntimeProofAccepted,
+      adapterImport.strict_runtime_proof_accepted,
+    ) === true
+    && firstBool(
+      adapterImport.strictRuntimeProofGateAccepted,
+      adapterImport.strict_runtime_proof_gate_accepted,
+    ) === true
+    && firstBool(
+      adapterImport.runtimeBoundaryLineHashesAccepted,
+      adapterImport.runtime_boundary_line_hashes_accepted,
+    ) === true
+    && firstBool(
+      adapterImport.adapterRuntimeBoundaryLineHashesAccepted,
+      adapterImport.adapter_runtime_boundary_line_hashes_accepted,
+    ) === true
+    && importFailedGates.length === 0
+    && strictGateFailures.length === 0;
+  const stageEventsAccepted =
+    stages.present === true
+    && stages.accepted === true
+    && stages.complete === true
+    && (
+      stages.acceptedAsSupportEvidence === true
+      || stages.accepted_as_support_evidence === true
+    )
+    && stageFailedGates.length === 0
+    && stageBlockingGaps.length === 0;
+  const appHookAccepted =
+    hookGate.accepted === true
+    && hookGate.proven === true
+    && appHookFailedGaps.length === 0;
+  const stageGateAccepted = (stageName) =>
+    strictImportAccepted
+    && stageEventsAccepted
+    && runtimeClosureStageObserved(stages, stageName);
+  const projectedGateAccepted = {
+    runtime_adapter_or_app_hook_contract:
+      strictImportAccepted && stageEventsAccepted && appHookAccepted,
+    artifact_transport: stageGateAccepted('artifact_transport'),
+    epoch_publication: stageGateAccepted('epoch_publication'),
+    dispatch_trace: stageGateAccepted('dispatch_trace'),
+    host_identity: stageGateAccepted('host_identity'),
+    output_or_visual_oracle: stageGateAccepted('output_oracle'),
+    cpu_gpu_firewall: false,
+    same_process_runtime_oracle: false,
+    runtime_chain: false,
+    strict_runtime_ledger: strictImportAccepted,
+  };
+  const requiredProjectedGates = [
+    'runtime_adapter_or_app_hook_contract',
+    'artifact_transport',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_or_visual_oracle',
+    'strict_runtime_ledger',
+  ];
+  const missingProjectedGates = requiredProjectedGates
+    .filter((gate) => projectedGateAccepted[gate] !== true);
+  const failedGates = compactStringList([
+    adapterImport.present === true ? null : 'random_cold_strict_import_projection_import_missing',
+    strictImportAccepted ? null : 'random_cold_strict_import_projection_import_not_strictly_accepted',
+    stageEventsAccepted ? null : 'random_cold_strict_import_projection_stage_events_not_accepted',
+    appHookAccepted ? null : 'random_cold_strict_import_projection_app_hook_contract_not_accepted',
+    ...missingProjectedGates.map((gate) => `random_cold_strict_import_projection_${gate}_not_projected`),
+  ]);
+  const accepted = failedGates.length === 0;
+  const clearedOpenGaps = compactStringList([
+    projectedGateAccepted.runtime_adapter_or_app_hook_contract
+      ? 'runtime_profile_contract_missing'
+      : null,
+    projectedGateAccepted.runtime_adapter_or_app_hook_contract
+      ? 'runtime_support_closure_requires_app_hook'
+      : null,
+    projectedGateAccepted.epoch_publication ? 'epoch_publication_unproven' : null,
+    projectedGateAccepted.dispatch_trace ? 'dispatch_trace_unproven' : null,
+    projectedGateAccepted.host_identity ? 'host_identity_unproven' : null,
+    projectedGateAccepted.output_or_visual_oracle ? 'output_oracle_unproven' : null,
+    projectedGateAccepted.strict_runtime_ledger ? 'strict_runtime_ledger_missing' : null,
+  ]);
+  const unprojectedRequiredGates = [
+    'cpu_gpu_firewall',
+    'same_process_runtime_oracle',
+    'runtime_chain',
+  ];
+  const facetHash = stableJsonHash({
+    schemaVersion: RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_SCHEMA_VERSION,
+    adapterResultSha256: adapterImport.adapterResultSha256 ?? adapterImport.adapter_result_sha256,
+    proofJsonSha256: adapterImport.proofJsonSha256 ?? adapterImport.proof_json_sha256,
+    strictRuntimeProofId: adapterImport.strictRuntimeProofId ?? adapterImport.strict_runtime_proof_id,
+    stageEventsFacetHash: stages.facetHash ?? stages.facet_hash,
+    projectedGateAccepted,
+    failedGates,
+  });
+  return {
+    present: true,
+    schemaVersion: RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_SCHEMA_VERSION,
+    schema_version: RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_AUTHORITY,
+    proof_authority: RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_AUTHORITY,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    strictImportAccepted,
+    strict_import_accepted: strictImportAccepted,
+    stageEventsAccepted,
+    stage_events_accepted: stageEventsAccepted,
+    appHookAccepted,
+    app_hook_accepted: appHookAccepted,
+    projectedGateAccepted,
+    projected_gate_accepted: projectedGateAccepted,
+    missingProjectedGates,
+    missing_projected_gates: missingProjectedGates,
+    unprojectedRequiredGates,
+    unprojected_required_gates: unprojectedRequiredGates,
+    clearedOpenGaps,
+    cleared_open_gaps: clearedOpenGaps,
+    strictRuntimeProofId: adapterImport.strictRuntimeProofId ?? adapterImport.strict_runtime_proof_id ?? null,
+    strict_runtime_proof_id: adapterImport.strictRuntimeProofId ?? adapterImport.strict_runtime_proof_id ?? null,
+    proofLedgerId: adapterImport.proofLedgerId ?? adapterImport.proof_ledger_id ?? null,
+    proof_ledger_id: adapterImport.proofLedgerId ?? adapterImport.proof_ledger_id ?? null,
+    runtimeBoundaryProofAdapterProofId:
+      adapterImport.runtimeBoundaryProofAdapterProofId
+      ?? adapterImport.runtime_boundary_proof_adapter_proof_id
+      ?? null,
+    runtime_boundary_proof_adapter_proof_id:
+      adapterImport.runtimeBoundaryProofAdapterProofId
+      ?? adapterImport.runtime_boundary_proof_adapter_proof_id
+      ?? null,
+    stageEventsFacetHash: stages.facetHash ?? stages.facet_hash ?? null,
+    stage_events_facet_hash: stages.facetHash ?? stages.facet_hash ?? null,
+    facetHash,
+    facet_hash: facetHash,
     failedGates,
     failed_gates: failedGates,
   };
@@ -16921,6 +17131,76 @@ function rowSafetyFailures(row, context = {}) {
         });
       }
     }
+    const runtimeStrictImportProjection = compactObject(
+      row.randomColdRuntimeStrictImportProjection
+      ?? row.random_cold_runtime_strict_import_projection
+      ?? row.runtimeStrictImportProjection
+      ?? row.runtime_strict_import_projection,
+    );
+    const runtimeStrictImportProjectionPresent =
+      Object.keys(runtimeStrictImportProjection).length > 0
+      || runtimeStrictImportProjection.present === true;
+    if (runtimeStrictImportProjectionPresent) {
+      const projectionSchema = firstText(
+        runtimeStrictImportProjection.schemaVersion,
+        runtimeStrictImportProjection.schema_version,
+      );
+      const projectionAuthority = firstText(
+        runtimeStrictImportProjection.proofAuthority,
+        runtimeStrictImportProjection.proof_authority,
+      );
+      const projectionAccepted = firstBool(
+        runtimeStrictImportProjection.accepted,
+        runtimeStrictImportProjection.acceptedAsSupportEvidence,
+        runtimeStrictImportProjection.accepted_as_support_evidence,
+      ) === true;
+      const projectionFailedGates = compactStringList([
+        ...(Array.isArray(runtimeStrictImportProjection.failedGates)
+          ? runtimeStrictImportProjection.failedGates
+          : []),
+        ...(Array.isArray(runtimeStrictImportProjection.failed_gates)
+          ? runtimeStrictImportProjection.failed_gates
+          : []),
+      ]);
+      if (projectionSchema !== RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_SCHEMA_VERSION) {
+        failures.push({
+          code: 'random_large_project_cold_strict_import_projection_schema_invalid',
+        });
+      }
+      if (projectionAuthority !== RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_AUTHORITY) {
+        failures.push({
+          code: 'random_large_project_cold_strict_import_projection_authority_invalid',
+        });
+      }
+      if (projectionAccepted !== true || projectionFailedGates.length > 0) {
+        failures.push({
+          code: 'random_large_project_cold_strict_import_projection_invalid',
+        });
+        failures.push(...projectionFailedGates.map((code) => ({ code })));
+      }
+      if (
+        firstBool(
+          runtimeStrictImportProjection.acceptedForGpuHmr,
+          runtimeStrictImportProjection.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          runtimeStrictImportProjection.gpuHmrSuccess,
+          runtimeStrictImportProjection.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          runtimeStrictImportProjection.canSatisfyRuntimeProof,
+          runtimeStrictImportProjection.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeStrictImportProjection.canSatisfyDispatchProof,
+          runtimeStrictImportProjection.can_satisfy_dispatch_proof,
+        ) === true
+      ) {
+        failures.push({
+          code: 'random_large_project_cold_strict_import_projection_claimed_authority',
+        });
+      }
+    }
     const runtimeSupportClosureRaw = firstCompactObject(
       row.randomColdRuntimeSupportClosureObligation,
       row.random_cold_runtime_support_closure_obligation,
@@ -27966,6 +28246,18 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     realRocmRuntimeAdapterStageEventsFacet(
       realRocmRuntimeAdapterStageEventsFromBoundaryLines(importedRuntimeBoundaryLinesForStageEvents),
     );
+  const randomColdRuntimeAppHookContract =
+    realRocmDerivedAppHookContractFromStageEvents(randomColdRuntimeAdapterStageEvents);
+  const randomColdRuntimeAppHookContractGate = realRocmAppHookContractGate({
+    realRocmAppHookContract: randomColdRuntimeAppHookContract,
+    realRocmRuntimeAdapterStageEvents: randomColdRuntimeAdapterStageEvents,
+  });
+  const randomColdRuntimeStrictImportProjection =
+    randomColdRuntimeStrictImportProjectionFacet({
+      adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
+      stageEvents: randomColdRuntimeAdapterStageEvents,
+      appHookGate: randomColdRuntimeAppHookContractGate,
+    });
   const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
     result.runtimeSupportClosureObligation,
     result.runtime_support_closure_obligation,
@@ -28029,7 +28321,7 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     resultStatus && /failed|error/i.test(resultStatus) ? 'random_cold_path_runner_failed_closed' : null,
     resultStatus && /refused/i.test(resultStatus) ? 'random_cold_path_refused' : null,
   ]);
-  const proofGaps = compactStringList([
+  const rawProofGaps = compactStringList([
     ...resultBlockingGaps,
     ...failClosedStatusGaps,
     ...(randomColdRuntimeProfileProofBridge.present === true
@@ -28060,6 +28352,19 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     'output_oracle_unproven',
     'strict_runtime_ledger_missing',
   ]);
+  const projectedClearedOpenGaps = new Set(
+    randomColdRuntimeStrictImportProjection.accepted === true
+      ? compactStringList([
+          ...(Array.isArray(randomColdRuntimeStrictImportProjection.clearedOpenGaps)
+            ? randomColdRuntimeStrictImportProjection.clearedOpenGaps
+            : []),
+          ...(Array.isArray(randomColdRuntimeStrictImportProjection.cleared_open_gaps)
+            ? randomColdRuntimeStrictImportProjection.cleared_open_gaps
+            : []),
+        ])
+      : [],
+  );
+  const proofGaps = rawProofGaps.filter((gap) => !projectedClearedOpenGaps.has(gap));
   const pending = eventType === 'cold_path_pending';
   const actualAttempt = eventType === 'cold_path_complete' && dryRun !== true;
   const matrixOutcome = pending
@@ -28094,6 +28399,10 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryProofAdapterProofId,
     randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLineMaterializationHash,
     randomColdRuntimeAdapterStageEvents.facetHash,
+    randomColdRuntimeAppHookContract.contractHash,
+    randomColdRuntimeAppHookContract.contract_hash,
+    randomColdRuntimeStrictImportProjection.facetHash,
+    randomColdRuntimeStrictImportProjection.facet_hash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
   ]);
   return finalizeRow({
@@ -28179,6 +28488,46 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     runtime_adapter_stage_events:
       randomColdRuntimeAdapterStageEvents.present === true
         ? randomColdRuntimeAdapterStageEvents
+        : null,
+    randomColdRuntimeAppHookContract:
+      Object.keys(randomColdRuntimeAppHookContract).length > 0
+        ? randomColdRuntimeAppHookContract
+        : null,
+    random_cold_runtime_app_hook_contract:
+      Object.keys(randomColdRuntimeAppHookContract).length > 0
+        ? randomColdRuntimeAppHookContract
+        : null,
+    randomColdRuntimeAppHookContractGate:
+      randomColdRuntimeAppHookContractGate.facetPresent === true
+        ? randomColdRuntimeAppHookContractGate
+        : null,
+    random_cold_runtime_app_hook_contract_gate:
+      randomColdRuntimeAppHookContractGate.facetPresent === true
+        ? randomColdRuntimeAppHookContractGate
+        : null,
+    appHookContractGate:
+      randomColdRuntimeAppHookContractGate.facetPresent === true
+        ? randomColdRuntimeAppHookContractGate
+        : null,
+    app_hook_contract_gate:
+      randomColdRuntimeAppHookContractGate.facetPresent === true
+        ? randomColdRuntimeAppHookContractGate
+        : null,
+    randomColdRuntimeStrictImportProjection:
+      randomColdRuntimeStrictImportProjection.present === true
+        ? randomColdRuntimeStrictImportProjection
+        : null,
+    random_cold_runtime_strict_import_projection:
+      randomColdRuntimeStrictImportProjection.present === true
+        ? randomColdRuntimeStrictImportProjection
+        : null,
+    runtimeStrictImportProjection:
+      randomColdRuntimeStrictImportProjection.present === true
+        ? randomColdRuntimeStrictImportProjection
+        : null,
+    runtime_strict_import_projection:
+      randomColdRuntimeStrictImportProjection.present === true
+        ? randomColdRuntimeStrictImportProjection
         : null,
     randomColdRuntimeSupportClosureObligation:
       randomColdRuntimeSupportClosureObligation.present === true
@@ -32954,6 +33303,20 @@ function runtimeClosureRowSignals(row = {}) {
   const appHookGate = compactObject(
     row.realRocmAppHookContractGate
     ?? row.real_rocm_app_hook_contract_gate
+    ?? row.randomColdRuntimeAppHookContractGate
+    ?? row.random_cold_runtime_app_hook_contract_gate
+    ?? row.appHookContractGate
+    ?? row.app_hook_contract_gate
+  );
+  const strictImportProjection = compactObject(
+    row.randomColdRuntimeStrictImportProjection
+    ?? row.random_cold_runtime_strict_import_projection
+    ?? row.runtimeStrictImportProjection
+    ?? row.runtime_strict_import_projection
+  );
+  const projectedGateAccepted = compactObject(
+    strictImportProjection.projectedGateAccepted
+    ?? strictImportProjection.projected_gate_accepted
   );
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
   const firewall = compactObject(row.realRocmFirewall ?? row.real_rocm_firewall);
@@ -33007,32 +33370,43 @@ function runtimeClosureRowSignals(row = {}) {
       coldSourceTreeIntake.accepted === true
       || compactObject(row.realRocmSourceTreeTransport ?? row.real_rocm_source_tree_transport)
         .accepted === true,
-    runtime_adapter_or_app_hook_contract: appHookGate.accepted === true,
+    runtime_adapter_or_app_hook_contract:
+      appHookGate.accepted === true
+      || projectedGateAccepted.runtime_adapter_or_app_hook_contract === true,
     artifact_transport:
-      runtimeChain.accepted === true
+      projectedGateAccepted.artifact_transport === true
+      || runtimeChain.accepted === true
         && Boolean(firstText(runtimeChain.artifactHash, runtimeChain.artifact_hash))
         && Boolean(firstText(runtimeChain.selectedLoaderTransport, runtimeChain.selected_loader_transport)),
     epoch_publication:
-      runtimeChain.accepted === true
+      projectedGateAccepted.epoch_publication === true
+      || runtimeChain.accepted === true
       && Boolean(firstText(runtimeChain.epoch)),
     dispatch_trace:
-      runtimeChain.accepted === true
+      projectedGateAccepted.dispatch_trace === true
+      || runtimeChain.accepted === true
       && Boolean(firstText(runtimeChain.dispatchId, runtimeChain.dispatch_id)),
     host_identity:
-      runtimeChain.accepted === true
+      projectedGateAccepted.host_identity === true
+      || runtimeChain.accepted === true
       && Boolean(firstText(runtimeChain.processId, runtimeChain.process_id))
       && (
         targetProcessProvenance.accepted === true
         || sameProcessGate.accepted === true
       ),
-    output_or_visual_oracle: outputOracle.accepted === true,
+    output_or_visual_oracle:
+      outputOracle.accepted === true
+      || projectedGateAccepted.output_or_visual_oracle === true,
     cpu_gpu_firewall: firewall.accepted === true,
     same_process_runtime_oracle: sameProcessGate.accepted === true,
     runtime_chain: runtimeChain.accepted === true,
     strict_runtime_ledger: (
+      projectedGateAccepted.strict_runtime_ledger === true
+      || (
       runtimeProofArtifact.accepted === true
       && ledger.present === true
       && ledger.gpuHmrSuccess === true
+      )
     ),
   };
   const gateObserved = {

@@ -3876,10 +3876,35 @@ assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publicatio
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.observed, true);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.accepted, false);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publication.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.strict_runtime_ledger.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cpu_gpu_firewall.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_chain.accepted, false);
 assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, true);
-assert.ok(fileBackedAdapterImportRow.openGaps.includes('strict_runtime_ledger_missing'));
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.accepted, true);
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.gpuHmrSuccess, false);
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.acceptedForGpuHmr, false);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.projectedGateAccepted.strict_runtime_ledger,
+  true,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.projectedGateAccepted.runtime_chain,
+  false,
+);
+assert.ok(!fileBackedAdapterImportRow.openGaps.includes('strict_runtime_ledger_missing'));
+assert.ok(!fileBackedAdapterImportRow.openGaps.includes('epoch_publication_unproven'));
+assert.ok(!fileBackedAdapterImportRow.openGaps.includes('dispatch_trace_unproven'));
+assert.ok(!fileBackedAdapterImportRow.openGaps.includes('host_identity_unproven'));
+assert.ok(!fileBackedAdapterImportRow.openGaps.includes('output_oracle_unproven'));
+assert.ok(fileBackedAdapterImportRow.openGaps.includes('same_process_loader_unproven'));
+assert.ok(fileBackedAdapterImportRow.openGaps.includes('semantic_build_metadata_execution_missing'));
 const forgedAdapterStrictShellDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-file-backed-import-strict-shell',
@@ -4043,6 +4068,11 @@ assert.equal(forgedAdapterStrictShellRow?.safety.accepted, false);
 assert.equal(forgedAdapterStrictShellRow.acceptedForGpuHmr, false);
 assert.equal(forgedAdapterStrictShellRow.gpuHmrSuccess, false);
 assert.equal(forgedAdapterStrictShellRow.randomColdRuntimeProfileAdapterResultImport.accepted, false);
+assert.equal(forgedAdapterStrictShellRow.randomColdRuntimeStrictImportProjection.accepted, false);
+assert.equal(
+  forgedAdapterStrictShellRow.randomColdRuntimeStrictImportProjection.projectedGateAccepted.strict_runtime_ledger,
+  false,
+);
 assert.equal(
   forgedAdapterStrictShellRow.randomColdRuntimeProfileAdapterResultImport.strictRuntimeProofGateAccepted,
   false,
