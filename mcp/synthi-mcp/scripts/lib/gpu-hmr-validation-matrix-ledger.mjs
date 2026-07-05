@@ -1093,6 +1093,8 @@ function runtimeBoundaryLineMaterializationFacet(input = {}, lines = []) {
   if (!present) {
     return {
       present: false,
+      serializedPresent: false,
+      serialized_present: false,
       accepted: null,
       acceptedAsMaterializedBoundaryLines: false,
       accepted_as_materialized_boundary_lines: false,
@@ -1115,6 +1117,8 @@ function runtimeBoundaryLineMaterializationFacet(input = {}, lines = []) {
   if (firstBool(facet.present) === false && !hasSerializedPayload) {
     return {
       present: false,
+      serializedPresent: false,
+      serialized_present: false,
       accepted: null,
       acceptedAsMaterializedBoundaryLines: false,
       accepted_as_materialized_boundary_lines: false,
@@ -1226,6 +1230,8 @@ function runtimeBoundaryLineMaterializationFacet(input = {}, lines = []) {
   const accepted = acceptedAsMaterializedBoundaryLines && failedGates.length === 0;
   return {
     present: true,
+    serializedPresent: true,
+    serialized_present: true,
     accepted,
     acceptedAsMaterializedBoundaryLines: accepted,
     accepted_as_materialized_boundary_lines: accepted,
