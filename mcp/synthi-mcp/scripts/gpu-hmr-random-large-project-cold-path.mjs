@@ -1340,13 +1340,158 @@ function classifyBuildSystemPath(pathName) {
   return 'unknown_build_file';
 }
 
+function buildMetadataBackendSignals(pathName, text) {
+  const source = String(text ?? '');
+  const pathHint = String(pathName ?? '').replace(/\\/g, '/').toLowerCase();
+  const signals = [];
+  const add = (backend, reason, regex) => {
+    if (!regex.test(source) && !regex.test(pathHint)) return;
+    signals.push({ backend, reason });
+  };
+  add(
+    'hip_rocm',
+    'rocm_hip_build_metadata_token',
+    /\b(?:find_package\s*\(\s*(?:hip|rocm|rocblas|miopen|hipblas|hipdnn|migraphx|tensile|rocprim|rocrand|rocsolver|rocsparse|hipfft)\b|enable_language\s*\(\s*hip\b|languages\s+[^)\n]*\bhip\b|cmake_hip|hip::|hip_add_|hipcc|amdgpu_targets?|--amdgpu-target|rocm_path|rocm_cmake)\b/i,
+  );
+  add(
+    'cuda',
+    'cuda_build_metadata_token',
+    /\b(?:find_package\s*\(\s*(?:cuda|cudatoolkit)\b|enable_language\s*\(\s*cuda\b|languages\s+[^)\n]*\bcuda\b|cmake_cuda|cuda::|cuda_add_|nvcc)\b/i,
+  );
+  add(
+    'opencl',
+    'opencl_build_metadata_token',
+    /\b(?:find_package\s*\(\s*opencl\b|opencl::|cl_khr|clenqueue|opencl)\b/i,
+  );
+  add(
+    'vulkan',
+    'vulkan_build_metadata_token',
+    /\b(?:find_package\s*\(\s*vulkan\b|vulkan::|glslang|shaderc|spirv|spir-v)\b/i,
+  );
+  add(
+    'webgpu_wgsl',
+    'webgpu_build_metadata_token',
+    /\b(?:webgpu|wgpu|wgsl|naga)\b/i,
+  );
+  add(
+    'sycl',
+    'sycl_build_metadata_token',
+    /\b(?:find_package\s*\(\s*(?:sycl|dpcpp|adaptivecpp|hipsycl)\b|-fsycl|dpcpp|oneapi::dpl|sycl)\b/i,
+  );
+  add(
+    'metal',
+    'metal_build_metadata_token',
+    /\b(?:metal::|metal-cpp|metallib|xcrun\s+metal|metal)\b/i,
+  );
+  const seen = new Set();
+  return signals.filter((signal) => {
+    const key = `${signal.backend}:${signal.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildMetadataBackendCandidates(contentEvidence = {}) {
+  const accepted = contentEvidence?.acceptedAsBuildMetadataContent === true
+    || contentEvidence?.accepted_as_build_metadata_content === true
+    || contentEvidence?.accepted === true;
+  if (!accepted) {
+    return {
+      candidates: [],
+      signals: [],
+    };
+  }
+  const buildFiles = Array.isArray(contentEvidence.buildFiles)
+    ? contentEvidence.buildFiles
+    : Array.isArray(contentEvidence.build_files)
+      ? contentEvidence.build_files
+      : [];
+  const candidates = new Set();
+  const signals = [];
+  for (const buildFile of buildFiles) {
+    const summary = buildFile.semanticSummary ?? buildFile.semantic_summary ?? {};
+    const fileSignals = Array.isArray(summary.backendSignals)
+      ? summary.backendSignals
+      : Array.isArray(summary.backend_signals)
+        ? summary.backend_signals
+        : [];
+    for (const signal of fileSignals) {
+      const backend = typeof signal.backend === 'string' ? signal.backend.trim() : '';
+      const reason = typeof signal.reason === 'string' ? signal.reason.trim() : 'build_metadata_token';
+      if (!backend) continue;
+      candidates.add(backend);
+      if (signals.length < 40) {
+        signals.push({
+          path: buildFile.path,
+          backend,
+          reason,
+        });
+      }
+    }
+  }
+  return {
+    candidates: [...candidates].sort(),
+    signals,
+  };
+}
+
+function mergeClassificationWithBuildMetadataContent(classification = {}, contentEvidence = {}) {
+  const backendSignals = new Map(Object.entries(classification.backendSignals ?? {}));
+  const buildMetadata = buildMetadataBackendCandidates(contentEvidence);
+  for (const signal of buildMetadata.signals) {
+    if (!backendSignals.has(signal.backend)) backendSignals.set(signal.backend, []);
+    const entries = backendSignals.get(signal.backend);
+    if (entries.length < 20) {
+      entries.push({
+        path: signal.path,
+        reason: signal.reason,
+        source: 'verified_build_metadata_content',
+      });
+    }
+  }
+  const backendCandidates = [
+    ...new Set([
+      ...(Array.isArray(classification.backendCandidates)
+        ? classification.backendCandidates
+        : []),
+      ...buildMetadata.candidates,
+    ]),
+  ].sort();
+  return {
+    ...classification,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    backendSignals: Object.fromEntries([...backendSignals.entries()]),
+    backend_signals: Object.fromEntries([...backendSignals.entries()]),
+    buildMetadataBackendCandidates: buildMetadata.candidates,
+    build_metadata_backend_candidates: buildMetadata.candidates,
+    buildMetadataBackendSignals: buildMetadata.signals,
+    build_metadata_backend_signals: buildMetadata.signals,
+    backendCandidateAuthority:
+      'source_listing_and_verified_build_metadata_classification_only_not_runtime_authority',
+    backend_candidate_authority:
+      'source_listing_and_verified_build_metadata_classification_only_not_runtime_authority',
+  };
+}
+
 function summarizeBuildMetadataContent(pathName, text) {
   const family = classifyBuildSystemPath(pathName);
   const lines = String(text ?? '').split(/\r?\n/);
+  const backendSignals = buildMetadataBackendSignals(pathName, text);
+  const backendSignalCandidates = [...new Set(backendSignals.map((entry) => entry.backend))].sort();
   const summary = {
     family,
     nonEmptyLineCount: lines.filter((line) => line.trim()).length,
     non_empty_line_count: lines.filter((line) => line.trim()).length,
+    backendSignalCandidates,
+    backend_signal_candidates: backendSignalCandidates,
+    backendSignals,
+    backend_signals: backendSignals,
+    backendSignalAuthority:
+      'build_metadata_semantic_tokens_only_not_runtime_authority',
+    backend_signal_authority:
+      'build_metadata_semantic_tokens_only_not_runtime_authority',
   };
   if (family === 'cmake') {
     const projectMatch = String(text).match(/\bproject\s*\(\s*([A-Za-z0-9_.+-]+)/i);
@@ -3094,7 +3239,7 @@ async function buildAcceptedSourceIntakeFacet({
 }) {
   const listingIdentity = canonicalSourceListingIdentity(files);
   const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
-  const classification = classifySourceListing(files);
+  const listingClassification = classifySourceListing(files);
   const sourceListingHash = contentHash(stableJson(listingIdentity));
   const sourceListingManifest = {
     schemaVersion: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
@@ -3116,21 +3261,25 @@ async function buildAcceptedSourceIntakeFacet({
     file_count: files.length,
     totalKnownBytes,
     total_known_bytes: totalKnownBytes,
-    sourceRelevantFileCount: classification.sourceRelevantFileCount,
-    source_relevant_file_count: classification.sourceRelevantFileCount,
-    sourceOrBuildRelevantFileCount: classification.sourceOrBuildRelevantFileCount,
-    source_or_build_relevant_file_count: classification.sourceOrBuildRelevantFileCount,
-    gpuSourceSignalCount: classification.gpuSourceSignalCount,
-    gpu_source_signal_count: classification.gpuSourceSignalCount,
+    sourceRelevantFileCount: listingClassification.sourceRelevantFileCount,
+    source_relevant_file_count: listingClassification.sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount: listingClassification.sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: listingClassification.sourceOrBuildRelevantFileCount,
+    gpuSourceSignalCount: listingClassification.gpuSourceSignalCount,
+    gpu_source_signal_count: listingClassification.gpuSourceSignalCount,
   };
   const buildMetadataContentEvidence = await collectBuildMetadataContentEvidence({
     candidate,
     files,
-    classification,
+    classification: listingClassification,
     transport,
     transportEvidence,
     sourceIntakeTimeoutMs,
   });
+  const classification = mergeClassificationWithBuildMetadataContent(
+    listingClassification,
+    buildMetadataContentEvidence,
+  );
   const buildMetadataDiscovery = discoverBuildMetadata({
     candidate,
     files,
@@ -5029,6 +5178,77 @@ async function selfCheck() {
     '100644 blob dddddddddddddddddddddddddddddddddddddddd 78\tinclude/math/kernel/tile_pipeline.hpp',
     '100644 blob eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 90\tinclude/math/host/reference_gemm.hpp',
   ].join('\n')));
+  const buildMetadataOnlyListing = parseGitLsTree([
+    '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
+    '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tsrc/model_runtime.cpp',
+    '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tinclude/model_runtime.hpp',
+  ].join('\n'));
+  const buildMetadataOnlyListingClassification = classifySourceListing(buildMetadataOnlyListing);
+  const buildMetadataOnlyText = [
+    'cmake_minimum_required(VERSION 3.24)',
+    'project(arbitrary_ml_runtime LANGUAGES CXX HIP)',
+    'enable_language(HIP)',
+    'find_package(hip REQUIRED)',
+    'set(AMDGPU_TARGETS gfx1201 CACHE STRING "")',
+    'add_library(arbitrary_runtime src/model_runtime.cpp)',
+  ].join('\n');
+  const buildMetadataOnlySummary =
+    summarizeBuildMetadataContent('CMakeLists.txt', buildMetadataOnlyText);
+  const buildMetadataOnlyContentEvidence = {
+    schemaVersion: BUILD_METADATA_CONTENT_SCHEMA,
+    schema_version: BUILD_METADATA_CONTENT_SCHEMA,
+    proofAuthority: BUILD_METADATA_CONTENT_AUTHORITY,
+    proof_authority: BUILD_METADATA_CONTENT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    acceptedAsBuildMetadataContent: true,
+    accepted_as_build_metadata_content: true,
+    buildFiles: [{
+      path: 'CMakeLists.txt',
+      object: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      declaredByteLength: 12,
+      declared_byte_length: 12,
+      observedByteLength: Buffer.byteLength(buildMetadataOnlyText),
+      observed_byte_length: Buffer.byteLength(buildMetadataOnlyText),
+      contentHash: contentHash(buildMetadataOnlyText),
+      content_hash: contentHash(buildMetadataOnlyText),
+      transport: 'self_check_fixture_bytes',
+      semanticSummary: buildMetadataOnlySummary,
+      semantic_summary: buildMetadataOnlySummary,
+    }],
+    build_files: [{
+      path: 'CMakeLists.txt',
+      object: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      declaredByteLength: 12,
+      declared_byte_length: 12,
+      observedByteLength: Buffer.byteLength(buildMetadataOnlyText),
+      observed_byte_length: Buffer.byteLength(buildMetadataOnlyText),
+      contentHash: contentHash(buildMetadataOnlyText),
+      content_hash: contentHash(buildMetadataOnlyText),
+      transport: 'self_check_fixture_bytes',
+      semanticSummary: buildMetadataOnlySummary,
+      semantic_summary: buildMetadataOnlySummary,
+    }],
+  };
+  const buildMetadataOnlyMergedClassification = mergeClassificationWithBuildMetadataContent(
+    buildMetadataOnlyListingClassification,
+    buildMetadataOnlyContentEvidence,
+  );
+  const buildMetadataOnlyDiscovery = discoverBuildMetadata({
+    candidate: candidates[0],
+    files: buildMetadataOnlyListing,
+    classification: buildMetadataOnlyMergedClassification,
+    contentEvidence: buildMetadataOnlyContentEvidence,
+  });
+  const buildMetadataOnlyRuntimeExpectation = deriveRuntimeBoundaryExpectation({
+    candidate: candidates[0],
+    classification: buildMetadataOnlyMergedClassification,
+    buildMetadataDiscovery: buildMetadataOnlyDiscovery,
+  });
   const buildDiscovery = discoverBuildMetadata({
     candidate: candidates[0],
     files: parsedListing,
@@ -5103,6 +5323,16 @@ async function selfCheck() {
     || headerHeavyGpuClassification.gpuSourceSignalCount !== 3
     || headerHeavyGpuClassification.sourceRelevantFileCount !== 4
     || !headerHeavyGpuClassification.backendCandidates.includes('hip_rocm')
+    || buildMetadataOnlyListingClassification.backendCandidates.length !== 0
+    || !buildMetadataOnlySummary.backendSignalCandidates.includes('hip_rocm')
+    || !buildMetadataOnlyMergedClassification.backendCandidates.includes('hip_rocm')
+    || !buildMetadataOnlyMergedClassification.buildMetadataBackendCandidates.includes('hip_rocm')
+    || buildMetadataOnlyMergedClassification.backendCandidateAuthority
+      !== 'source_listing_and_verified_build_metadata_classification_only_not_runtime_authority'
+    || !buildMetadataOnlyDiscovery.backendCandidates.includes('hip_rocm')
+    || buildMetadataOnlyRuntimeExpectation.acceptedAsRuntimeBoundaryExpectation !== true
+    || !buildMetadataOnlyRuntimeExpectation.expectedRuntimeEvents.includes('hip_kernel_dispatch')
+    || buildMetadataOnlyRuntimeExpectation.gpuHmrSuccess !== false
     || buildDiscovery.acceptedAsBuildMetadataDiscovery !== true
     || !buildDiscovery.detectedBuildSystems.includes('cmake')
     || !buildDiscovery.detectedBuildSystems.includes('cargo')

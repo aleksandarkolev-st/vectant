@@ -1568,18 +1568,68 @@ function normalizeRandomColdBackend(backend) {
   return backend;
 }
 
+function randomColdBuildMetadataBackendSignalsFromContentEvidence(buildContentEvidence = {}) {
+  const accepted = firstBool(
+    buildContentEvidence.acceptedAsBuildMetadataContent,
+    buildContentEvidence.accepted_as_build_metadata_content,
+    buildContentEvidence.accepted,
+  ) === true;
+  if (!accepted) {
+    return {
+      candidates: [],
+      signals: [],
+    };
+  }
+  const buildFiles = compactObjectList(
+    buildContentEvidence.buildFiles
+    ?? buildContentEvidence.build_files,
+  );
+  const candidates = new Set();
+  const signals = [];
+  for (const buildFile of buildFiles) {
+    const summary = compactObject(buildFile.semanticSummary ?? buildFile.semantic_summary);
+    const fileSignals = compactObjectList(summary.backendSignals ?? summary.backend_signals);
+    for (const signal of fileSignals) {
+      const backend = firstText(signal.backend);
+      if (!backend) continue;
+      candidates.add(backend);
+      if (signals.length < 40) {
+        signals.push({
+          path: firstText(buildFile.path) ?? null,
+          backend,
+          reason: firstText(signal.reason) ?? 'build_metadata_semantic_token',
+        });
+      }
+    }
+  }
+  return {
+    candidates: [...candidates].sort(),
+    signals,
+  };
+}
+
 function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sourceIntake = {} } = {}) {
   const sourceListingManifest = compactObject(
     sourceIntake.sourceListingManifest
     ?? sourceIntake.source_listing_manifest,
   );
-  const backendCandidates = compactStringList([
+  const sourceListingBackendCandidates = compactStringList([
     ...(Array.isArray(sourceListingManifest.backendCandidates)
       ? sourceListingManifest.backendCandidates
       : []),
     ...(Array.isArray(sourceListingManifest.backend_candidates)
       ? sourceListingManifest.backend_candidates
       : []),
+  ]);
+  const buildMetadataBackendSignals = randomColdBuildMetadataBackendSignalsFromContentEvidence(
+    compactObject(
+      sourceIntake.buildMetadataContentEvidence
+      ?? sourceIntake.build_metadata_content_evidence,
+    ),
+  );
+  const backendCandidates = compactStringList([
+    ...sourceListingBackendCandidates,
+    ...buildMetadataBackendSignals.candidates,
   ]);
   const candidateDeclaredBackend = firstText(result.backend, candidate.backend);
   const candidateDeclaredBackendFamily = firstText(
@@ -1608,10 +1658,20 @@ function randomColdBackendEvidenceFromSource({ result = {}, candidate = {}, sour
     backendSource,
     sourceDerivedBackendCandidates: backendCandidates,
     source_derived_backend_candidates: backendCandidates,
+    sourceListingDerivedBackendCandidates: sourceListingBackendCandidates,
+    source_listing_derived_backend_candidates: sourceListingBackendCandidates,
+    buildMetadataDerivedBackendCandidates: buildMetadataBackendSignals.candidates,
+    build_metadata_derived_backend_candidates: buildMetadataBackendSignals.candidates,
+    buildMetadataDerivedBackendSignals: buildMetadataBackendSignals.signals,
+    build_metadata_derived_backend_signals: buildMetadataBackendSignals.signals,
     sourceDerivedBackendAuthority:
-      'source_listing_classification_only_not_serialized_backend_declaration',
+      buildMetadataBackendSignals.candidates.length > 0
+        ? 'source_listing_and_verified_build_metadata_classification_only_not_serialized_backend_declaration'
+        : 'source_listing_classification_only_not_serialized_backend_declaration',
     source_derived_backend_authority:
-      'source_listing_classification_only_not_serialized_backend_declaration',
+      buildMetadataBackendSignals.candidates.length > 0
+        ? 'source_listing_and_verified_build_metadata_classification_only_not_serialized_backend_declaration'
+        : 'source_listing_classification_only_not_serialized_backend_declaration',
     candidateDeclaredBackend: candidateDeclaredBackend ?? null,
     candidate_declared_backend: candidateDeclaredBackend ?? null,
     candidateDeclaredBackendFamily: candidateDeclaredBackendFamily ?? null,
@@ -2349,13 +2409,19 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       ? runtimeBoundaryExpectation.backend_candidates
       : []),
   ]);
-  const backendCandidates = compactStringList([
+  const sourceListingBackendCandidates = compactStringList([
     ...(Array.isArray(sourceListingManifest.backendCandidates)
       ? sourceListingManifest.backendCandidates
       : []),
     ...(Array.isArray(sourceListingManifest.backend_candidates)
       ? sourceListingManifest.backend_candidates
       : []),
+  ]);
+  const buildMetadataBackendSignals =
+    randomColdBuildMetadataBackendSignalsFromContentEvidence(buildContentEvidence);
+  const backendCandidates = compactStringList([
+    ...sourceListingBackendCandidates,
+    ...buildMetadataBackendSignals.candidates,
   ]);
   const detectedBuildSystems = compactStringList([
     ...(Array.isArray(facet.detectedBuildSystems) ? facet.detectedBuildSystems : []),
@@ -2489,10 +2555,20 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     byte_length_mode: firstText(facet.byteLengthMode, facet.byte_length_mode),
     backendCandidates,
     backend_candidates: backendCandidates,
+    sourceListingDerivedBackendCandidates: sourceListingBackendCandidates,
+    source_listing_derived_backend_candidates: sourceListingBackendCandidates,
+    buildMetadataDerivedBackendCandidates: buildMetadataBackendSignals.candidates,
+    build_metadata_derived_backend_candidates: buildMetadataBackendSignals.candidates,
+    buildMetadataDerivedBackendSignals: buildMetadataBackendSignals.signals,
+    build_metadata_derived_backend_signals: buildMetadataBackendSignals.signals,
     backendCandidateAuthority:
-      'source_listing_classification_only_not_serialized_backend_declaration',
+      buildMetadataBackendSignals.candidates.length > 0
+        ? 'source_listing_and_verified_build_metadata_classification_only_not_serialized_backend_declaration'
+        : 'source_listing_classification_only_not_serialized_backend_declaration',
     backend_candidate_authority:
-      'source_listing_classification_only_not_serialized_backend_declaration',
+      buildMetadataBackendSignals.candidates.length > 0
+        ? 'source_listing_and_verified_build_metadata_classification_only_not_serialized_backend_declaration'
+        : 'source_listing_classification_only_not_serialized_backend_declaration',
     declaredBackendCandidates,
     declared_backend_candidates: declaredBackendCandidates,
     detectedBuildSystems,
@@ -2688,6 +2764,7 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}, options = {}) {
       ?? file.observedByteLength
       ?? file.observed_byte_length,
     );
+    const semanticSummary = compactObject(file.semanticSummary ?? file.semantic_summary);
     return {
       path: repoPath,
       object: objectId,
@@ -2699,6 +2776,12 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}, options = {}) {
       byteLength,
       byte_length: byteLength,
       transport: firstText(file.transport) ?? null,
+      ...(Object.keys(semanticSummary).length > 0
+        ? {
+          semanticSummary,
+          semantic_summary: semanticSummary,
+        }
+        : {}),
     };
   });
   const buildFileHashCount = normalizedBuildFiles.filter((file) =>
@@ -27982,6 +28065,12 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       ?? sourceIntakeEvidence.source_listing_manifest,
     );
     const sourceDerivedBackendCandidates = compactStringList([
+      ...(Array.isArray(sourceIntakeEvidence.backendCandidates)
+        ? sourceIntakeEvidence.backendCandidates
+        : []),
+      ...(Array.isArray(sourceIntakeEvidence.backend_candidates)
+        ? sourceIntakeEvidence.backend_candidates
+        : []),
       ...(Array.isArray(sourceListingManifest.backendCandidates)
         ? sourceListingManifest.backendCandidates
         : []),

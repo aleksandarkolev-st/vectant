@@ -1968,6 +1968,7 @@ function randomColdBuildMetadataContentEvidenceFixture({
   buildFilePath = 'CMakeLists.txt',
   buildFileObject = null,
   declaredByteLength = null,
+  semanticSummary = null,
 } = {}) {
   const observedByteLength = Number.isFinite(declaredByteLength)
     ? declaredByteLength
@@ -1999,6 +2000,12 @@ function randomColdBuildMetadataContentEvidenceFixture({
         ...(includeTransport
           ? {
             transport: 'git_show_immutable_commit',
+          }
+          : {}),
+        ...(semanticSummary
+          ? {
+            semanticSummary,
+            semantic_summary: semanticSummary,
           }
           : {}),
       },
@@ -2196,6 +2203,7 @@ function randomColdBuildMetadataContentEvidenceForListing({
   targetId,
   sourceListingManifest,
   buildFilePath = 'CMakeLists.txt',
+  semanticSummary = null,
 } = {}) {
   const buildEntry = randomColdFirstBuildListingEntry(sourceListingManifest, buildFilePath);
   return randomColdBuildMetadataContentEvidenceFixture({
@@ -2204,6 +2212,7 @@ function randomColdBuildMetadataContentEvidenceForListing({
     buildFilePath: buildEntry?.path ?? buildFilePath,
     buildFileObject: buildEntry?.object ?? null,
     declaredByteLength: buildEntry?.byteLength ?? null,
+    semanticSummary,
   });
 }
 
@@ -2216,6 +2225,7 @@ function randomColdPathManifest({
   template = hashedColdRuntimeBoundaryTemplateFacet(),
   directInputEvidenceOverrides = null,
   sourceListingManifestOptions = {},
+  buildMetadataSemanticSummary = null,
   resultOverrides = {},
   topLevelOverrides = {},
 } = {}) {
@@ -2255,6 +2265,7 @@ function randomColdPathManifest({
   const buildMetadataContentEvidence = randomColdBuildMetadataContentEvidenceForListing({
     targetId: candidateId,
     sourceListingManifest,
+    semanticSummary: buildMetadataSemanticSummary,
   });
   const runtimeSupportClosureObligation = randomColdRuntimeSupportClosureFixture();
   const sourceIntakeEvidence = {
@@ -2801,6 +2812,87 @@ assert.equal(
   unknownBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceIdentityCount,
   1,
 );
+const buildMetadataBackendColdDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-build-metadata-backend-source',
+);
+await writeJson(
+  path.join(buildMetadataBackendColdDir, 'random-cold-build-metadata-backend-source.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-build-metadata-backend',
+    sourceUrl: 'https://example.invalid/arbitrary/build-metadata-backend-large-project.git',
+    immutableCommit: sha256Hex('build-metadata-backend-large-project:commit').slice(0, 40),
+    sourceListingManifestOptions: {
+      gpuSourceSignalCount: 0,
+      sourceRelevantFileCount: 73,
+    },
+    buildMetadataSemanticSummary: {
+      family: 'cmake',
+      nonEmptyLineCount: 6,
+      non_empty_line_count: 6,
+      backendSignalCandidates: ['hip_rocm'],
+      backend_signal_candidates: ['hip_rocm'],
+      backendSignals: [
+        {
+          backend: 'hip_rocm',
+          reason: 'rocm_hip_build_metadata_token',
+        },
+      ],
+      backend_signals: [
+        {
+          backend: 'hip_rocm',
+          reason: 'rocm_hip_build_metadata_token',
+        },
+      ],
+      backendSignalAuthority:
+        'build_metadata_semantic_tokens_only_not_runtime_authority',
+      backend_signal_authority:
+        'build_metadata_semantic_tokens_only_not_runtime_authority',
+    },
+  }),
+);
+const buildMetadataBackendColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [buildMetadataBackendColdDir],
+  includeUnproven: true,
+});
+const buildMetadataBackendColdRow = buildMetadataBackendColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(buildMetadataBackendColdRow?.matrixOutcome, 'refusal_proven');
+assert.equal(buildMetadataBackendColdRow.acceptedForGpuHmr, false);
+assert.equal(buildMetadataBackendColdRow.gpuHmrSuccess, false);
+assert.equal(buildMetadataBackendColdRow.backend, 'hip');
+assert.deepEqual(
+  buildMetadataBackendColdRow.randomColdBackendEvidence.sourceListingDerivedBackendCandidates,
+  [],
+);
+assert.deepEqual(
+  buildMetadataBackendColdRow.randomColdBackendEvidence.buildMetadataDerivedBackendCandidates,
+  ['hip_rocm'],
+);
+assert.deepEqual(
+  buildMetadataBackendColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
+  ['hip_rocm'],
+);
+assert.equal(
+  buildMetadataBackendColdRow.randomColdBackendEvidence.sourceDerivedBackendAuthority,
+  'source_listing_and_verified_build_metadata_classification_only_not_serialized_backend_declaration',
+);
+assert.equal(
+  buildMetadataBackendColdRow.coldSourceTreeIntake.backendCandidateAuthority,
+  'source_listing_and_verified_build_metadata_classification_only_not_serialized_backend_declaration',
+);
+assert.deepEqual(
+  buildMetadataBackendColdRow.coldSourceTreeIntake.buildMetadataDerivedBackendCandidates,
+  ['hip_rocm'],
+);
+assert.equal(
+  buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
+
 const externalLocalColdDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-external-local-segments',
