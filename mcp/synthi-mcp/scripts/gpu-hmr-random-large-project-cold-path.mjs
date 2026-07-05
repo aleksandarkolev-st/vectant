@@ -48,6 +48,12 @@ const RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
   'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success';
+const DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA =
+  'synthi.gpu_hmr.random_cold_path_derived_runtime_profile_contract.v1';
+const DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY =
+  'cold_intake_derived_runtime_profile_contract_only_not_gpu_hmr_success';
+const DERIVED_RUNTIME_PROFILE_EVENT_MANIFEST_AUTHORITY =
+  'cold_intake_runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
 const ADAPTER_CLOSURE_EXPECTATION_SCHEMA =
   'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1';
 const ADAPTER_CLOSURE_EXPECTATION_AUTHORITY =
@@ -596,6 +602,23 @@ function firstString(...values) {
     if (text) return text;
   }
   return null;
+}
+
+function firstArrayField(object, ...keys) {
+  const source = object && typeof object === 'object' ? object : {};
+  for (const key of keys) {
+    if (Array.isArray(source[key])) return source[key];
+  }
+  return [];
+}
+
+function firstObjectField(object, ...keys) {
+  const source = object && typeof object === 'object' ? object : {};
+  for (const key of keys) {
+    const value = source[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  }
+  return {};
 }
 
 function runtimeBoundaryHintsWithSupportClosure(raw = {}) {
@@ -4121,9 +4144,348 @@ async function readJsonArtifact(filePath) {
   }
 }
 
-async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
-  const profilePath = candidate.runtimeProofProfilePath;
+function runtimeBoundaryProfileBackend(backendCandidate) {
+  const backend = String(backendCandidate ?? '').trim().toLowerCase();
+  if (backend === 'hip_rocm') return 'hip';
+  if (backend === 'webgpu_wgsl') return 'webgpu';
+  return backend || 'unknown';
+}
+
+function derivedRuntimeProfileSourcePath(sourceIntakeEvidence = {}) {
+  const sourcePath = firstString(
+    firstArrayField(sourceIntakeEvidence, 'gpuSourceSignals', 'gpu_source_signals')[0],
+    firstArrayField(sourceIntakeEvidence, 'sourceRelevantFiles', 'source_relevant_files')[0],
+    firstArrayField(sourceIntakeEvidence, 'sampleFiles', 'sample_files')[0],
+  );
+  return sourcePath ? sourcePath.replace(/\\/g, '/') : null;
+}
+
+function derivedRuntimeProfileEntryPoint(backendCandidate) {
+  const backend = String(backendCandidate ?? 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  return `${backend || 'unknown'}_runtime_boundary_entrypoint`;
+}
+
+async function deriveRuntimeProofProfileFromColdIntake(candidate, sourceIntakeEvidence = {}) {
+  if (candidate.runtimeProofProfilePath) return null;
+  const runtimeBoundaryExpectation = firstObjectField(
+    sourceIntakeEvidence,
+    'runtimeBoundaryExpectation',
+    'runtime_boundary_expectation',
+  );
+  const runtimeBoundaryEventManifestTemplate = firstObjectField(
+    sourceIntakeEvidence,
+    'runtimeBoundaryEventManifestTemplate',
+    'runtime_boundary_event_manifest_template',
+  );
+  const buildMetadataContentEvidence = firstObjectField(
+    sourceIntakeEvidence,
+    'buildMetadataContentEvidence',
+    'build_metadata_content_evidence',
+  );
+  const sourceListingHash = firstString(
+    sourceIntakeEvidence.sourceListingHash,
+    sourceIntakeEvidence.source_listing_hash,
+    sourceIntakeEvidence.listingHash,
+    sourceIntakeEvidence.listing_hash,
+  );
+  const buildMetadataContentHash = firstString(
+    buildMetadataContentEvidence.contentEvidenceHash,
+    buildMetadataContentEvidence.content_evidence_hash,
+  );
+  const expectationHash = firstString(
+    runtimeBoundaryExpectation.expectationHash,
+    runtimeBoundaryExpectation.expectation_hash,
+  );
+  const templateHash = firstString(
+    runtimeBoundaryEventManifestTemplate.templateHash,
+    runtimeBoundaryEventManifestTemplate.template_hash,
+  );
+  const backendCandidates = uniqueSortedStrings([
+    ...firstArrayField(runtimeBoundaryExpectation, 'backendCandidates', 'backend_candidates'),
+    ...firstArrayField(sourceIntakeEvidence, 'backendCandidates', 'backend_candidates'),
+  ]);
+  const acceptedSourceIntake =
+    sourceIntakeEvidence.acceptedAsIntakeEvidence === true
+    || sourceIntakeEvidence.accepted_as_intake_evidence === true;
+  const buildMetadataContentAccepted =
+    buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true
+    || buildMetadataContentEvidence.accepted_as_build_metadata_content === true;
+  const expectationAccepted =
+    runtimeBoundaryExpectation.acceptedAsRuntimeBoundaryExpectation === true
+    || runtimeBoundaryExpectation.accepted_as_runtime_boundary_expectation === true;
+  const templateAccepted =
+    runtimeBoundaryEventManifestTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate === true
+    || runtimeBoundaryEventManifestTemplate.accepted_as_runtime_boundary_event_manifest_template === true;
+  const primaryBackend = backendCandidates[0] ?? 'unknown';
+  const boundaryBackend = runtimeBoundaryProfileBackend(primaryBackend);
+  const sourceFile = derivedRuntimeProfileSourcePath(sourceIntakeEvidence);
+  const entryPoint = derivedRuntimeProfileEntryPoint(primaryBackend);
+  const blockingGaps = [
+    acceptedSourceIntake ? null : 'derived_runtime_profile_source_intake_not_accepted',
+    buildMetadataContentAccepted ? null : 'derived_runtime_profile_build_metadata_content_not_accepted',
+    expectationAccepted ? null : 'derived_runtime_profile_runtime_boundary_expectation_not_accepted',
+    templateAccepted ? null : 'derived_runtime_profile_event_manifest_template_not_accepted',
+    sourceListingHash ? null : 'derived_runtime_profile_source_listing_hash_missing',
+    buildMetadataContentHash ? null : 'derived_runtime_profile_build_metadata_hash_missing',
+    expectationHash ? null : 'derived_runtime_profile_expectation_hash_missing',
+    templateHash ? null : 'derived_runtime_profile_template_hash_missing',
+    backendCandidates.length > 0 ? null : 'derived_runtime_profile_backend_candidate_missing',
+    sourceFile ? null : 'derived_runtime_profile_source_path_missing',
+  ].filter(Boolean);
+  const accepted = blockingGaps.length === 0;
+  const profileSeed = {
+    candidateId: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    sourceListingHash,
+    buildMetadataContentHash,
+    expectationHash,
+    templateHash,
+    backendCandidates,
+    sourceFile,
+    entryPoint,
+  };
+  const profileId = `derived-${safeSlug(candidate.id)}-${sha256(stableJson(profileSeed)).slice(0, 12)}`;
+  const baseDir = path.join(
+    LOG_DIR,
+    'derived-runtime-profiles',
+    safeSlug(candidate.id),
+    makeStamp(),
+  );
+  const eventManifestPath = path.join(baseDir, 'runtime-boundary-events-template.json');
+  const profilePath = path.join(baseDir, 'runtime-profile.json');
+  const eventManifestRelativePath = repoRelativePath(eventManifestPath);
+  const profileRelativePath = repoRelativePath(profilePath);
+  const sourceIdentityEvidenceRefs = [
+    sourceListingHash ? `random-cold-source-listing:${sourceListingHash}` : null,
+    buildMetadataContentHash ? `random-cold-build-metadata:${buildMetadataContentHash}` : null,
+    expectationHash ? `random-cold-runtime-boundary-expectation:${expectationHash}` : null,
+    templateHash ? `random-cold-runtime-boundary-template:${templateHash}` : null,
+    candidate.directInputEvidence?.sourceIdentityHash
+      ? `direct-source-input:${candidate.directInputEvidence.sourceIdentityHash}`
+      : null,
+  ].filter(Boolean);
+  const eventManifest = {
+    schemaVersion: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+    schema_version: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+    proofAuthority: DERIVED_RUNTIME_PROFILE_EVENT_MANIFEST_AUTHORITY,
+    proof_authority: DERIVED_RUNTIME_PROFILE_EVENT_MANIFEST_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    derivedFromColdIntake: true,
+    derived_from_cold_intake: true,
+    requiresObservedRuntimeEvents: true,
+    requires_observed_runtime_events: true,
+    runtimeBoundaryEvents: [],
+    runtime_boundary_events: [],
+    missingRuntimeEventsReason: 'derived_contract_requires_target_process_boundary_events',
+    missing_runtime_events_reason: 'derived_contract_requires_target_process_boundary_events',
+    runtimeBoundaryAdapterInput: {
+      projectId: candidate.id,
+      project_id: candidate.id,
+      editId: 'cold-intake-derived-runtime-profile-contract',
+      edit_id: 'cold-intake-derived-runtime-profile-contract',
+      targetId: `${candidate.id}:runtime-boundary`,
+      target_id: `${candidate.id}:runtime-boundary`,
+      backend: boundaryBackend,
+      sourcePaths: [sourceFile],
+      source_paths: [sourceFile],
+      sourceManifestHash: sourceListingHash,
+      source_manifest_hash: sourceListingHash,
+      sourceManifestHashVerified: acceptedSourceIntake,
+      source_manifest_hash_verified: acceptedSourceIntake,
+      sourceIdentityEvidenceRefs,
+      source_identity_evidence_refs: sourceIdentityEvidenceRefs,
+      entryPoint,
+      entry_point: entryPoint,
+      runtimeBoundaryEvents: [],
+      runtime_boundary_events: [],
+    },
+    runtime_boundary_adapter_input: {
+      project_id: candidate.id,
+      edit_id: 'cold-intake-derived-runtime-profile-contract',
+      target_id: `${candidate.id}:runtime-boundary`,
+      backend: boundaryBackend,
+      source_paths: [sourceFile],
+      source_manifest_hash: sourceListingHash,
+      source_manifest_hash_verified: acceptedSourceIntake,
+      source_identity_evidence_refs: sourceIdentityEvidenceRefs,
+      entry_point: entryPoint,
+      runtime_boundary_events: [],
+    },
+    runtimeBoundaryExpectationHash: expectationHash,
+    runtime_boundary_expectation_hash: expectationHash,
+    runtimeBoundaryEventManifestTemplateHash: templateHash,
+    runtime_boundary_event_manifest_template_hash: templateHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    manifestTemplate: runtimeBoundaryEventManifestTemplate.manifestTemplate
+      ?? runtimeBoundaryEventManifestTemplate.manifest_template
+      ?? null,
+    manifest_template: runtimeBoundaryEventManifestTemplate.manifest_template
+      ?? runtimeBoundaryEventManifestTemplate.manifestTemplate
+      ?? null,
+    eventObjectTemplates: runtimeBoundaryEventManifestTemplate.eventObjectTemplates
+      ?? runtimeBoundaryEventManifestTemplate.event_object_templates
+      ?? [],
+    event_object_templates: runtimeBoundaryEventManifestTemplate.event_object_templates
+      ?? runtimeBoundaryEventManifestTemplate.eventObjectTemplates
+      ?? [],
+  };
+  const profile = {
+    schemaVersion: GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
+    id: profileId,
+    adapter: {
+      family: 'generic-runtime-boundary-adapter',
+      proofRunner: 'runtime-boundary-proof-adapter',
+      runtimeBoundaryEventManifestPath: eventManifestRelativePath,
+      runtimeBoundaryAppHook: {
+        derivedFromColdIntake: true,
+        sourceListingHash,
+        buildMetadataContentHash,
+        runtimeBoundaryExpectationHash: expectationHash,
+        runtimeBoundaryEventManifestTemplateHash: templateHash,
+      },
+    },
+    runtime: {
+      targetName: `${candidate.id}:runtime-boundary`,
+      requiredKernels: [entryPoint],
+      reload: {
+        kernelName: entryPoint,
+        kernelSymbol: entryPoint,
+      },
+    },
+    source: {
+      file: sourceFile,
+      before: 'synthi_runtime_boundary_contract_before',
+      after: 'synthi_runtime_boundary_contract_after',
+    },
+    runMode: {
+      metricScope: 'cold',
+      cacheState: 'clean',
+      editKind: 'gpu_artifact_edit',
+    },
+    proof: {
+      requireStrictProvenance: true,
+    },
+  };
+  const profileBody = `${JSON.stringify(profile, null, 2)}\n`;
+  const eventManifestBody = `${JSON.stringify(eventManifest, null, 2)}\n`;
+  const profileHash = contentHash(profileBody);
+  const eventManifestHash = contentHash(eventManifestBody);
+  const facetSeed = {
+    schemaVersion: DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA,
+    candidateId: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    accepted,
+    profileHash,
+    eventManifestHash,
+    profileRelativePath,
+    eventManifestRelativePath,
+    sourceListingHash,
+    buildMetadataContentHash,
+    expectationHash,
+    templateHash,
+    backendCandidates,
+    sourceFile,
+    entryPoint,
+    blockingGaps,
+  };
+  const facetHash = contentHash(stableJson(facetSeed));
+  if (accepted) {
+    await mkdir(baseDir, { recursive: true });
+    await writeFile(eventManifestPath, eventManifestBody);
+    await writeFile(profilePath, profileBody);
+  }
+  return {
+    schemaVersion: DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA,
+    schema_version: DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA,
+    proofAuthority: DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY,
+    proof_authority: DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY,
+    accepted,
+    acceptedAsDerivedRuntimeProfileContract: accepted,
+    accepted_as_derived_runtime_profile_contract: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    candidateId: candidate.id,
+    candidate_id: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    source_url: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    immutable_commit: candidate.immutableCommit,
+    runtimeProofProfileMode: accepted ? 'derived_from_cold_intake_contract' : 'none',
+    runtime_proof_profile_mode: accepted ? 'derived_from_cold_intake_contract' : 'none',
+    runtimeProofProfilePath: accepted ? profileRelativePath : null,
+    runtime_proof_profile_path: accepted ? profileRelativePath : null,
+    runtimeProofProfileResolvedPath: accepted ? profilePath : null,
+    runtime_proof_profile_resolved_path: accepted ? profilePath : null,
+    runtimeProofProfileSha256: accepted ? profileHash : null,
+    runtime_proof_profile_sha256: accepted ? profileHash : null,
+    runtimeBoundaryEventManifestPath: accepted ? eventManifestRelativePath : null,
+    runtime_boundary_event_manifest_path: accepted ? eventManifestRelativePath : null,
+    runtimeBoundaryEventManifestSha256: accepted ? eventManifestHash : null,
+    runtime_boundary_event_manifest_sha256: accepted ? eventManifestHash : null,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash: expectationHash,
+    runtime_boundary_expectation_hash: expectationHash,
+    runtimeBoundaryEventManifestTemplateHash: templateHash,
+    runtime_boundary_event_manifest_template_hash: templateHash,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    selectedBackend: primaryBackend,
+    selected_backend: primaryBackend,
+    runtimeBoundaryBackend: boundaryBackend,
+    runtime_boundary_backend: boundaryBackend,
+    sourceFile,
+    source_file: sourceFile,
+    entryPoint,
+    entry_point: entryPoint,
+    sourceIdentityEvidenceRefs,
+    source_identity_evidence_refs: sourceIdentityEvidenceRefs,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    facetHash,
+    facet_hash: facetHash,
+  };
+}
+
+async function runRuntimeProfileProofBridge(
+  candidate,
+  {
+    runnerTimeoutMs,
+    runtimeProofProfilePath = null,
+    runtimeProofProfileRelativePath = null,
+    runtimeProofProfileMode = null,
+  } = {},
+) {
+  const profilePath = runtimeProofProfilePath ?? candidate.runtimeProofProfilePath;
   if (!profilePath) return null;
+  const profileRelativePath = runtimeProofProfileRelativePath
+    ?? candidate.runtimeProofProfileRelativePath
+    ?? repoRelativePath(profilePath);
+  const profileMode = runtimeProofProfileMode
+    ?? candidate.runtimeProofProfileMode
+    ?? 'declared_generic_runtime_profile';
   const profileRead = await readJsonArtifact(profilePath);
   const runtimeProofProfileSchemaVersion =
     profileRead.value?.schemaVersion
@@ -4145,7 +4507,7 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
       [
         path.join(SCRIPT_DIR, 'gpu-hmr-runtime-profile-proof.mjs'),
         '--profile',
-        repoRelativePath(profilePath),
+        profileRelativePath,
         '--result-path',
         repoRelativePath(resultPath),
       ],
@@ -4218,7 +4580,8 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     candidateId: candidate.id,
     sourceUrl: candidate.sourceUrl,
     immutableCommit: candidate.immutableCommit,
-    runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
+    runtimeProofProfilePath: profileRelativePath,
+    runtimeProofProfileMode: profileMode,
     runtimeProofProfileSchemaVersion,
     runtimeProofProfileSchemaAccepted,
     runtimeProofProfileSha256: profileRead.textSha256,
@@ -4256,8 +4619,10 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     source_url: candidate.sourceUrl,
     immutableCommit: candidate.immutableCommit,
     immutable_commit: candidate.immutableCommit,
-    runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
-    runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
+    runtimeProofProfilePath: profileRelativePath,
+    runtime_proof_profile_path: profileRelativePath,
+    runtimeProofProfileMode: profileMode,
+    runtime_proof_profile_mode: profileMode,
     runtimeProofProfileSchemaVersion,
     runtime_proof_profile_schema_version: runtimeProofProfileSchemaVersion,
     runtimeProofProfileSchemaAccepted,
@@ -4387,13 +4752,36 @@ async function runSelectedCandidate(
       sourceIntakeEvidence?.gpuSourceSignalCount,
       sourceIntakeEvidence?.gpu_source_signal_count,
     );
-    const runtimeProfileProofBridge = await runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs });
+    const derivedRuntimeProfileContract = sourceIntakeEvidence
+      ? await deriveRuntimeProofProfileFromColdIntake(candidate, sourceIntakeEvidence)
+      : null;
+    const derivedRuntimeProfileContractAccepted =
+      derivedRuntimeProfileContract?.acceptedAsDerivedRuntimeProfileContract === true
+      || derivedRuntimeProfileContract?.accepted_as_derived_runtime_profile_contract === true;
+    const runtimeProfileProofBridge = await runRuntimeProfileProofBridge(candidate, {
+      runnerTimeoutMs,
+      runtimeProofProfilePath: derivedRuntimeProfileContractAccepted
+        ? derivedRuntimeProfileContract.runtimeProofProfileResolvedPath
+        : null,
+      runtimeProofProfileRelativePath: derivedRuntimeProfileContractAccepted
+        ? derivedRuntimeProfileContract.runtimeProofProfilePath
+        : null,
+      runtimeProofProfileMode: derivedRuntimeProfileContractAccepted
+        ? derivedRuntimeProfileContract.runtimeProofProfileMode
+        : null,
+    });
     const runtimeProfileProofBridgeAccepted =
       runtimeProfileProofBridge?.acceptedAsRuntimeProfileProofBridge === true
       || runtimeProfileProofBridge?.accepted_as_runtime_profile_proof_bridge === true;
-    const runtimeProfileStrictRuntimeProofAccepted =
+    const runtimeProfileBridgeStrictRuntimeProofAccepted =
       runtimeProfileProofBridge?.strictRuntimeProofAccepted === true
       || runtimeProfileProofBridge?.strict_runtime_proof_accepted === true;
+    const derivedRuntimeProfileStrictRuntimeProofSuppressed =
+      derivedRuntimeProfileContractAccepted
+      && runtimeProfileBridgeStrictRuntimeProofAccepted;
+    const runtimeProfileStrictRuntimeProofAccepted =
+      runtimeProfileBridgeStrictRuntimeProofAccepted
+      && !derivedRuntimeProfileContractAccepted;
     const runtimeSupportClosureObligation = deriveRuntimeSupportClosureObligation({
       candidate,
       runtimeBoundaryExpectation: sourceIntakeEvidence?.runtimeBoundaryExpectation
@@ -4422,6 +4810,9 @@ async function runSelectedCandidate(
         ...(Array.isArray(runtimeProfileProofBridge.blocking_gaps)
           ? runtimeProfileProofBridge.blocking_gaps
           : []),
+        derivedRuntimeProfileStrictRuntimeProofSuppressed
+          ? 'derived_runtime_profile_contract_support_only_not_strict_runtime_authority'
+          : null,
       ]
       : [];
     const missingRuntimeGaps = runtimeProfileStrictRuntimeProofAccepted
@@ -4444,9 +4835,25 @@ async function runSelectedCandidate(
     if (!sourceTreeIntakeAccepted) {
       blockingGaps.unshift('source_tree_intake_missing');
     }
+    if (
+      derivedRuntimeProfileContract
+      && derivedRuntimeProfileContractAccepted !== true
+    ) {
+      blockingGaps.push(...(derivedRuntimeProfileContract.blockingGaps ?? []));
+    }
     if (candidate.backendFamily !== 'real_rocm' && !runtimeProfileProofBridge) {
       blockingGaps.unshift('local_backend_runner_unavailable');
     }
+    const effectiveRuntimeProofProfilePath =
+      runtimeProfileProofBridge?.runtimeProofProfilePath
+      ?? runtimeProfileProofBridge?.runtime_proof_profile_path
+      ?? derivedRuntimeProfileContract?.runtimeProofProfilePath
+      ?? candidate.runtimeProofProfileRelativePath;
+    const effectiveRuntimeProofProfileMode =
+      runtimeProfileProofBridge?.runtimeProofProfileMode
+      ?? runtimeProfileProofBridge?.runtime_proof_profile_mode
+      ?? derivedRuntimeProfileContract?.runtimeProofProfileMode
+      ?? candidate.runtimeProofProfileMode;
     return {
       candidateId: candidate.id,
       status: runtimeProfileProofBridge
@@ -4456,10 +4863,10 @@ async function runSelectedCandidate(
       backend_family: candidate.backendFamily,
       profileMode: candidate.profileMode,
       profile_mode: candidate.profileMode,
-      runtimeProofProfilePath: candidate.runtimeProofProfileRelativePath,
-      runtime_proof_profile_path: candidate.runtimeProofProfileRelativePath,
-      runtimeProofProfileMode: candidate.runtimeProofProfileMode,
-      runtime_proof_profile_mode: candidate.runtimeProofProfileMode,
+      runtimeProofProfilePath: effectiveRuntimeProofProfilePath,
+      runtime_proof_profile_path: effectiveRuntimeProofProfilePath,
+      runtimeProofProfileMode: effectiveRuntimeProofProfileMode,
+      runtime_proof_profile_mode: effectiveRuntimeProofProfileMode,
       candidateSource: candidate.candidateSource,
       candidate_source: candidate.candidateSource,
       directInputEvidence: candidate.directInputEvidence ?? null,
@@ -4502,10 +4909,20 @@ async function runSelectedCandidate(
       runtime_support_closure_obligation: runtimeSupportClosureObligation,
       runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
       runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
+      derivedRuntimeProfileContract,
+      derived_runtime_profile_contract: derivedRuntimeProfileContract,
+      derivedRuntimeProfileContractAccepted,
+      derived_runtime_profile_contract_accepted: derivedRuntimeProfileContractAccepted,
       runtimeProfileProofBridgeAccepted,
       runtime_profile_proof_bridge_accepted: runtimeProfileProofBridgeAccepted,
       runtimeProfileStrictRuntimeProofAccepted,
       runtime_profile_strict_runtime_proof_accepted: runtimeProfileStrictRuntimeProofAccepted,
+      runtimeProfileBridgeStrictRuntimeProofAccepted,
+      runtime_profile_bridge_strict_runtime_proof_accepted:
+        runtimeProfileBridgeStrictRuntimeProofAccepted,
+      derivedRuntimeProfileStrictRuntimeProofSuppressed,
+      derived_runtime_profile_strict_runtime_proof_suppressed:
+        derivedRuntimeProfileStrictRuntimeProofSuppressed,
       runtimeProfileProofBridge,
       runtime_profile_proof_bridge: runtimeProfileProofBridge,
       sourceIntakeEvidence,
@@ -6062,7 +6479,10 @@ async function selfCheck() {
     || localManifest.selectionAudit?.accepted !== true
     || localManifest.selectionAudit?.acceptedForGpuHmr !== false
     || localManifest.selectionAudit?.gpuHmrSuccess !== false
-    || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_refused'
+    || localResult.status !== 'unprofiled_arbitrary_project_cold_intake_runtime_profile_bridged_refused'
+    || localResult.runtimeProofProfileMode !== 'derived_from_cold_intake_contract'
+    || !String(localResult.runtimeProofProfilePath ?? '')
+      .includes('/derived-runtime-profiles/local-user-project/')
     || localResult.sourceTreeIntakeAccepted !== true
     || localResult.buildMetadataDiscoveryAccepted !== true
     || localResult.buildMetadataContentAccepted !== true
@@ -6071,7 +6491,31 @@ async function selfCheck() {
     || localResult.gpuSourceFileCount !== 1
     || localResult.runtimeBoundaryExpectationAccepted !== true
     || localResult.runtimeBoundaryEventManifestTemplateAccepted !== true
-    || localResult.runtimeSupportClosureOutcome !== 'unsupported_requires_app_hook'
+    || localResult.derivedRuntimeProfileContractAccepted !== true
+    || localResult.derivedRuntimeProfileContract?.schemaVersion
+      !== DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA
+    || localResult.derivedRuntimeProfileContract?.proofAuthority
+      !== DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY
+    || localResult.derivedRuntimeProfileContract?.acceptedForGpuHmr !== false
+    || localResult.derivedRuntimeProfileContract?.gpuHmrSuccess !== false
+    || localResult.derivedRuntimeProfileContract?.canSatisfyRuntimeProof !== false
+    || !localResult.derivedRuntimeProfileContract?.runtimeProofProfileSha256?.startsWith('sha256:')
+    || !localResult.derivedRuntimeProfileContract?.runtimeBoundaryEventManifestSha256?.startsWith('sha256:')
+    || localResult.derivedRuntimeProfileContract?.runtimeBoundaryEventManifestTemplateHash
+      !== localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.templateHash
+    || localResult.derivedRuntimeProfileContract?.sourceListingHash
+      !== localResult.sourceIntakeEvidence?.sourceListingHash
+    || localResult.runtimeProfileProofBridgeAccepted !== true
+    || localResult.runtimeProfileStrictRuntimeProofAccepted !== false
+    || localResult.runtimeProfileProofBridge?.acceptedAsRuntimeProfileProofBridge !== true
+    || localResult.runtimeProfileProofBridge?.strictRuntimeProofAccepted !== false
+    || localResult.runtimeProfileProofBridge?.runtimeProofProfileMode
+      !== 'derived_from_cold_intake_contract'
+    || !localResult.runtimeProfileProofBridge?.blockingGaps
+      ?.includes('runtime_profile_adapter_strict_runtime_proof_not_accepted')
+    || !localResult.runtimeProfileProofBridge?.adapterResultBlockingGaps
+      ?.includes('runtime_profile_adapter_strict_runtime_proof_artifact_missing')
+    || localResult.runtimeSupportClosureOutcome !== 'generated_adapter'
     || localResult.sourceIntakeEvidence?.transport !== 'local_git_ls_tree_clean_worktree'
     || localResult.sourceIntakeEvidence?.sourceRelevantFileCount !== 1
     || localResult.sourceIntakeEvidence?.sourceOrBuildRelevantFileCount !== 2
@@ -6114,6 +6558,11 @@ async function selfCheck() {
     || !(localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.acceptedBuildFileCount >= 1)
     || !localBuildContentFiles.some((file) => file.family === 'cmake' && file.contentHash?.startsWith('sha256:'))
     || !localResult.blockingGaps?.includes('semantic_build_metadata_execution_missing')
+    || localResult.blockingGaps?.includes('runtime_profile_contract_missing')
+    || !localResult.blockingGaps?.includes('same_process_loader_unproven')
+    || !localResult.blockingGaps?.includes('dispatch_trace_unproven')
+    || !localResult.blockingGaps?.includes('output_oracle_unproven')
+    || !localResult.blockingGaps?.includes('strict_runtime_ledger_missing')
     || localResult.acceptedForGpuHmr !== false
     || localResult.gpuHmrSuccess !== false
   ) {

@@ -280,6 +280,10 @@ const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
   'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success';
+const RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_derived_runtime_profile_contract.v1';
+const RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY =
+  'cold_intake_derived_runtime_profile_contract_only_not_gpu_hmr_success';
 const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_adapter_result_import.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY =
@@ -3929,6 +3933,10 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     facet.runtimeProofProfileSha256,
     facet.runtime_proof_profile_sha256,
   ));
+  const runtimeProofProfileMode = firstText(
+    facet.runtimeProofProfileMode,
+    facet.runtime_proof_profile_mode,
+  );
   const adapterResultSha256 = normalizeSha256(firstText(
     facet.runtimeProfileAdapterResultSha256,
     facet.runtime_profile_adapter_result_sha256,
@@ -3995,6 +4003,7 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
       || proofLedgerId
       || runnerAttempted
       || adapterResultPresent
+      || runtimeProofProfileMode
       || runtimeProofProfileSha256
       || adapterResultSha256
       || adapterResultPath
@@ -4133,6 +4142,8 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     ),
     runtimeProofProfileSha256,
     runtime_proof_profile_sha256: runtimeProofProfileSha256,
+    runtimeProofProfileMode,
+    runtime_proof_profile_mode: runtimeProofProfileMode,
     runtimeProfileAdapterResultPath: adapterResultPath,
     runtime_profile_adapter_result_path: adapterResultPath,
     runtimeProfileAdapterResultSha256: adapterResultSha256,
@@ -4167,6 +4178,409 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     authority_claims: authorityClaims,
     facetHash,
     facet_hash: facetHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdDerivedRuntimeProfileContractFacet(
+  raw = {},
+  {
+    sourceIntake = {},
+    coldTemplate = {},
+    runtimeProfileBridge = {},
+  } = {},
+) {
+  const facet = compactObject(raw);
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedFlag = firstBool(facet.accepted) === true;
+  const acceptedAsDerived = firstBool(
+    facet.acceptedAsDerivedRuntimeProfileContract,
+    facet.accepted_as_derived_runtime_profile_contract,
+  ) === true;
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const runtimeProofProfileMode = firstText(
+    facet.runtimeProofProfileMode,
+    facet.runtime_proof_profile_mode,
+  );
+  const runtimeProofProfilePath = firstText(
+    facet.runtimeProofProfilePath,
+    facet.runtime_proof_profile_path,
+  );
+  const runtimeProofProfileSha256 = normalizeSha256(firstText(
+    facet.runtimeProofProfileSha256,
+    facet.runtime_proof_profile_sha256,
+  ));
+  const runtimeBoundaryEventManifestPath = firstText(
+    facet.runtimeBoundaryEventManifestPath,
+    facet.runtime_boundary_event_manifest_path,
+  );
+  const runtimeBoundaryEventManifestSha256 = normalizeSha256(firstText(
+    facet.runtimeBoundaryEventManifestSha256,
+    facet.runtime_boundary_event_manifest_sha256,
+  ));
+  const sourceListingHash = normalizeSha256(firstText(
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+  ));
+  const buildMetadataContentHash = normalizeSha256(firstText(
+    facet.buildMetadataContentHash,
+    facet.build_metadata_content_hash,
+  ));
+  const runtimeBoundaryExpectationHash = normalizeSha256(firstText(
+    facet.runtimeBoundaryExpectationHash,
+    facet.runtime_boundary_expectation_hash,
+  ));
+  const runtimeBoundaryEventManifestTemplateHash = normalizeSha256(firstText(
+    facet.runtimeBoundaryEventManifestTemplateHash,
+    facet.runtime_boundary_event_manifest_template_hash,
+  ));
+  const backendCandidates = compactStringList([
+    ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
+    ...(Array.isArray(facet.backend_candidates) ? facet.backend_candidates : []),
+  ]);
+  const sourceFile = firstText(facet.sourceFile, facet.source_file);
+  const entryPoint = firstText(facet.entryPoint, facet.entry_point);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const suppliedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const authorityClaims = compactStringList([
+    ...(Array.isArray(facet.authorityClaims) ? facet.authorityClaims : []),
+    ...(Array.isArray(facet.authority_claims) ? facet.authority_claims : []),
+  ]);
+  const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
+  const sourceIntakeSourceListingHash = normalizeSha256(firstText(
+    sourceIntake.sourceListingHash,
+    sourceIntake.source_listing_hash,
+  ));
+  const sourceIntakeBuildMetadataContentHash = normalizeSha256(firstText(
+    sourceIntake.buildMetadataContentHash,
+    sourceIntake.build_metadata_content_hash,
+  ));
+  const sourceIntakeRuntimeBoundaryExpectationHash = normalizeSha256(firstText(
+    sourceIntake.runtimeBoundaryExpectationHash,
+    sourceIntake.runtime_boundary_expectation_hash,
+  ));
+  const coldTemplateHash = normalizeSha256(firstText(
+    coldTemplate.templateHash,
+    coldTemplate.template_hash,
+  ));
+  const bridgeRuntimeProofProfileSha256 = normalizeSha256(firstText(
+    runtimeProfileBridge.runtimeProofProfileSha256,
+    runtimeProfileBridge.runtime_proof_profile_sha256,
+  ));
+  const bridgeRuntimeBoundaryEventManifestSha256 = normalizeSha256(firstText(
+    runtimeProfileBridge.runtimeBoundaryEventManifestSha256,
+    runtimeProfileBridge.runtime_boundary_event_manifest_sha256,
+  ));
+  const bridgeRuntimeProofProfilePath = firstText(
+    runtimeProfileBridge.runtimeProofProfilePath,
+    runtimeProfileBridge.runtime_proof_profile_path,
+  );
+  const bridgeRuntimeBoundaryEventManifestPath = firstText(
+    runtimeProfileBridge.runtimeBoundaryEventManifestPath,
+    runtimeProfileBridge.runtime_boundary_event_manifest_path,
+  );
+  const bridgeRuntimeProofProfileMode = firstText(
+    runtimeProfileBridge.runtimeProofProfileMode,
+    runtimeProfileBridge.runtime_proof_profile_mode,
+  );
+  const hasContractMaterial = Boolean(
+    schemaVersion
+      || proofAuthority
+      || acceptedFlag
+      || acceptedAsDerived
+      || runtimeProofProfileMode
+      || runtimeProofProfilePath
+      || runtimeProofProfileSha256
+      || runtimeBoundaryEventManifestPath
+      || runtimeBoundaryEventManifestSha256
+      || sourceListingHash
+      || buildMetadataContentHash
+      || runtimeBoundaryExpectationHash
+      || runtimeBoundaryEventManifestTemplateHash
+      || backendCandidates.length
+      || blockingGaps.length
+      || suppliedFailedGates.length
+      || facetHash
+  );
+  const present = Object.keys(facet).length > 0
+    && (firstBool(facet.present) !== false || hasContractMaterial);
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      blockingGaps: [],
+      blocking_gaps: [],
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const recomputedFacetHash = stableJsonHash({
+    schemaVersion: RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA_VERSION,
+    candidateId: firstText(facet.candidateId, facet.candidate_id),
+    sourceUrl: firstText(facet.sourceUrl, facet.source_url),
+    immutableCommit: firstText(facet.immutableCommit, facet.immutable_commit),
+    accepted: acceptedFlag,
+    profileHash: runtimeProofProfileSha256,
+    eventManifestHash: runtimeBoundaryEventManifestSha256,
+    profileRelativePath: runtimeProofProfilePath,
+    eventManifestRelativePath: runtimeBoundaryEventManifestPath,
+    sourceListingHash,
+    buildMetadataContentHash,
+    expectationHash: runtimeBoundaryExpectationHash,
+    templateHash: runtimeBoundaryEventManifestTemplateHash,
+    backendCandidates,
+    sourceFile,
+    entryPoint,
+    blockingGaps,
+  });
+  const sourceIntakeAccepted =
+    sourceIntake.accepted === true
+    || sourceIntake.acceptedAsIntakeEvidence === true
+    || sourceIntake.accepted_as_intake_evidence === true;
+  const templateAccepted =
+    coldTemplate.acceptedAsSupportEvidence === true
+    || coldTemplate.accepted_as_support_evidence === true;
+  const bridgePresent = runtimeProfileBridge.present === true;
+  const failedGates = compactStringList([
+    ...suppliedFailedGates,
+    schemaVersion === RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA_VERSION
+      ? null
+      : 'random_cold_derived_runtime_profile_contract_schema_invalid',
+    proofAuthority === RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY
+      ? null
+      : 'random_cold_derived_runtime_profile_contract_authority_invalid',
+    acceptedForGpuHmr === true
+      ? 'random_cold_derived_runtime_profile_contract_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'random_cold_derived_runtime_profile_contract_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'random_cold_derived_runtime_profile_contract_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'random_cold_derived_runtime_profile_contract_claimed_dispatch_authority'
+      : null,
+    authorityClaims.length === 0
+      ? null
+      : 'random_cold_derived_runtime_profile_contract_authority_claim_present',
+    acceptedFlag && acceptedAsDerived !== true
+      ? 'random_cold_derived_runtime_profile_contract_loose_accept_flag_ignored'
+      : null,
+    acceptedAsDerived && acceptedFlag !== true
+      ? 'random_cold_derived_runtime_profile_contract_missing_accepted_flag'
+      : null,
+    acceptedAsDerived && runtimeProofProfileMode !== 'derived_from_cold_intake_contract'
+      ? 'random_cold_derived_runtime_profile_contract_mode_invalid'
+      : null,
+    acceptedAsDerived && !sourceIntakeAccepted
+      ? 'random_cold_derived_runtime_profile_contract_source_intake_not_accepted'
+      : null,
+    acceptedAsDerived && !templateAccepted
+      ? 'random_cold_derived_runtime_profile_contract_template_not_accepted'
+      : null,
+    acceptedAsDerived && !runtimeProofProfilePath
+      ? 'random_cold_derived_runtime_profile_contract_profile_path_missing'
+      : null,
+    acceptedAsDerived && !runtimeProofProfileSha256
+      ? 'random_cold_derived_runtime_profile_contract_profile_hash_missing'
+      : null,
+    acceptedAsDerived && runtimeProofProfileSha256 && !isSha256(runtimeProofProfileSha256)
+      ? 'random_cold_derived_runtime_profile_contract_profile_hash_invalid'
+      : null,
+    acceptedAsDerived && !runtimeBoundaryEventManifestPath
+      ? 'random_cold_derived_runtime_profile_contract_event_manifest_path_missing'
+      : null,
+    acceptedAsDerived && !runtimeBoundaryEventManifestSha256
+      ? 'random_cold_derived_runtime_profile_contract_event_manifest_hash_missing'
+      : null,
+    acceptedAsDerived
+      && runtimeBoundaryEventManifestSha256
+      && !isSha256(runtimeBoundaryEventManifestSha256)
+      ? 'random_cold_derived_runtime_profile_contract_event_manifest_hash_invalid'
+      : null,
+    acceptedAsDerived && !sourceListingHash
+      ? 'random_cold_derived_runtime_profile_contract_source_listing_hash_missing'
+      : null,
+    acceptedAsDerived
+      && sourceListingHash
+      && sourceIntakeSourceListingHash
+      && sourceListingHash !== sourceIntakeSourceListingHash
+      ? 'random_cold_derived_runtime_profile_contract_source_listing_hash_mismatch'
+      : null,
+    acceptedAsDerived && !buildMetadataContentHash
+      ? 'random_cold_derived_runtime_profile_contract_build_metadata_hash_missing'
+      : null,
+    acceptedAsDerived
+      && buildMetadataContentHash
+      && sourceIntakeBuildMetadataContentHash
+      && buildMetadataContentHash !== sourceIntakeBuildMetadataContentHash
+      ? 'random_cold_derived_runtime_profile_contract_build_metadata_hash_mismatch'
+      : null,
+    acceptedAsDerived && !runtimeBoundaryExpectationHash
+      ? 'random_cold_derived_runtime_profile_contract_expectation_hash_missing'
+      : null,
+    acceptedAsDerived
+      && runtimeBoundaryExpectationHash
+      && sourceIntakeRuntimeBoundaryExpectationHash
+      && runtimeBoundaryExpectationHash !== sourceIntakeRuntimeBoundaryExpectationHash
+      ? 'random_cold_derived_runtime_profile_contract_expectation_hash_mismatch'
+      : null,
+    acceptedAsDerived && !runtimeBoundaryEventManifestTemplateHash
+      ? 'random_cold_derived_runtime_profile_contract_template_hash_missing'
+      : null,
+    acceptedAsDerived
+      && runtimeBoundaryEventManifestTemplateHash
+      && coldTemplateHash
+      && runtimeBoundaryEventManifestTemplateHash !== coldTemplateHash
+      ? 'random_cold_derived_runtime_profile_contract_template_hash_mismatch'
+      : null,
+    acceptedAsDerived && backendCandidates.length === 0
+      ? 'random_cold_derived_runtime_profile_contract_backend_candidates_missing'
+      : null,
+    acceptedAsDerived && !sourceFile
+      ? 'random_cold_derived_runtime_profile_contract_source_file_missing'
+      : null,
+    acceptedAsDerived && !entryPoint
+      ? 'random_cold_derived_runtime_profile_contract_entry_point_missing'
+      : null,
+    acceptedAsDerived && blockingGaps.length > 0
+      ? 'random_cold_derived_runtime_profile_contract_accepted_with_blocking_gaps'
+      : null,
+    acceptedAsDerived && !facetHash
+      ? 'random_cold_derived_runtime_profile_contract_hash_missing'
+      : null,
+    acceptedAsDerived && facetHash && !isSha256(facetHash)
+      ? 'random_cold_derived_runtime_profile_contract_hash_invalid'
+      : null,
+    acceptedAsDerived && facetHash && facetHash !== recomputedFacetHash
+      ? 'random_cold_derived_runtime_profile_contract_hash_mismatch'
+      : null,
+    acceptedAsDerived
+      && bridgePresent
+      && bridgeRuntimeProofProfileSha256
+      && runtimeProofProfileSha256 !== bridgeRuntimeProofProfileSha256
+      ? 'random_cold_derived_runtime_profile_contract_bridge_profile_hash_mismatch'
+      : null,
+    acceptedAsDerived
+      && bridgePresent
+      && bridgeRuntimeBoundaryEventManifestSha256
+      && runtimeBoundaryEventManifestSha256 !== bridgeRuntimeBoundaryEventManifestSha256
+      ? 'random_cold_derived_runtime_profile_contract_bridge_event_manifest_hash_mismatch'
+      : null,
+    acceptedAsDerived
+      && bridgePresent
+      && bridgeRuntimeProofProfilePath
+      && runtimeProofProfilePath !== bridgeRuntimeProofProfilePath
+      ? 'random_cold_derived_runtime_profile_contract_bridge_profile_path_mismatch'
+      : null,
+    acceptedAsDerived
+      && bridgePresent
+      && bridgeRuntimeBoundaryEventManifestPath
+      && runtimeBoundaryEventManifestPath !== bridgeRuntimeBoundaryEventManifestPath
+      ? 'random_cold_derived_runtime_profile_contract_bridge_event_manifest_path_mismatch'
+      : null,
+    acceptedAsDerived
+      && bridgePresent
+      && bridgeRuntimeProofProfileMode
+      && bridgeRuntimeProofProfileMode !== 'derived_from_cold_intake_contract'
+      ? 'random_cold_derived_runtime_profile_contract_bridge_mode_mismatch'
+      : null,
+  ]);
+  const accepted =
+    acceptedFlag === true
+    && acceptedAsDerived === true
+    && failedGates.length === 0;
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedAsDerivedRuntimeProfileContract: acceptedAsDerived,
+    accepted_as_derived_runtime_profile_contract: acceptedAsDerived,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    runtimeProofProfileMode,
+    runtime_proof_profile_mode: runtimeProofProfileMode,
+    runtimeProofProfilePath,
+    runtime_proof_profile_path: runtimeProofProfilePath,
+    runtimeProofProfileSha256,
+    runtime_proof_profile_sha256: runtimeProofProfileSha256,
+    runtimeBoundaryEventManifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventManifestPath,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    selectedBackend: firstText(facet.selectedBackend, facet.selected_backend),
+    selected_backend: firstText(facet.selectedBackend, facet.selected_backend),
+    runtimeBoundaryBackend: firstText(facet.runtimeBoundaryBackend, facet.runtime_boundary_backend),
+    runtime_boundary_backend: firstText(facet.runtimeBoundaryBackend, facet.runtime_boundary_backend),
+    sourceFile,
+    source_file: sourceFile,
+    entryPoint,
+    entry_point: entryPoint,
+    sourceIntakeSourceListingHash,
+    source_intake_source_listing_hash: sourceIntakeSourceListingHash,
+    sourceIntakeBuildMetadataContentHash,
+    source_intake_build_metadata_content_hash: sourceIntakeBuildMetadataContentHash,
+    sourceIntakeRuntimeBoundaryExpectationHash,
+    source_intake_runtime_boundary_expectation_hash: sourceIntakeRuntimeBoundaryExpectationHash,
+    coldRuntimeBoundaryEventManifestTemplateHash: coldTemplateHash,
+    cold_runtime_boundary_event_manifest_template_hash: coldTemplateHash,
+    recomputedFacetHash,
+    recomputed_facet_hash: recomputedFacetHash,
+    facetHash,
+    facet_hash: facetHash,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    authorityClaims,
+    authority_claims: authorityClaims,
     failedGates,
     failed_gates: failedGates,
   };
@@ -16944,6 +17358,61 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_runtime_profile_bridge_claimed_authority' });
     }
+    const derivedRuntimeProfileContractRaw = firstCompactObject(
+      row.randomColdDerivedRuntimeProfileContract,
+      row.random_cold_derived_runtime_profile_contract,
+      row.derivedRuntimeProfileContract,
+      row.derived_runtime_profile_contract,
+      coldPathFacet.derivedRuntimeProfileContract,
+      coldPathFacet.derived_runtime_profile_contract,
+    );
+    const derivedRuntimeProfileContract =
+      randomColdDerivedRuntimeProfileContractFacet(derivedRuntimeProfileContractRaw, {
+        sourceIntake: compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake),
+        coldTemplate,
+        runtimeProfileBridge,
+      });
+    if (
+      derivedRuntimeProfileContract.present === true
+      && derivedRuntimeProfileContract.accepted !== true
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_derived_runtime_profile_contract_invalid',
+      });
+      failures.push(...compactStringList([
+        ...(Array.isArray(derivedRuntimeProfileContract.failedGates)
+          ? derivedRuntimeProfileContract.failedGates
+          : []),
+        ...(Array.isArray(derivedRuntimeProfileContract.failed_gates)
+          ? derivedRuntimeProfileContract.failed_gates
+          : []),
+      ]).map((code) => ({ code })));
+    }
+    if (
+      derivedRuntimeProfileContract.present === true
+      && (
+        firstBool(
+          derivedRuntimeProfileContract.acceptedForGpuHmr,
+          derivedRuntimeProfileContract.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          derivedRuntimeProfileContract.gpuHmrSuccess,
+          derivedRuntimeProfileContract.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          derivedRuntimeProfileContract.canSatisfyRuntimeProof,
+          derivedRuntimeProfileContract.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          derivedRuntimeProfileContract.canSatisfyDispatchProof,
+          derivedRuntimeProfileContract.can_satisfy_dispatch_proof,
+        ) === true
+      )
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_derived_runtime_profile_contract_claimed_authority',
+      });
+    }
     const runtimeProfileAdapterResultImport = compactObject(
       row.randomColdRuntimeProfileAdapterResultImport
       ?? row.random_cold_runtime_profile_adapter_result_import
@@ -17176,7 +17645,7 @@ function rowSafetyFailures(row, context = {}) {
           code: 'random_large_project_cold_strict_import_projection_authority_invalid',
         });
       }
-      if (projectionAccepted !== true || projectionFailedGates.length > 0) {
+      if (projectionAccepted === true && projectionFailedGates.length > 0) {
         failures.push({
           code: 'random_large_project_cold_strict_import_projection_invalid',
         });
@@ -28242,6 +28711,17 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomLargeProjectColdPath.runtimeProfileProofBridge,
     randomLargeProjectColdPath.runtime_profile_proof_bridge,
   ));
+  const randomColdDerivedRuntimeProfileContract =
+    randomColdDerivedRuntimeProfileContractFacet(firstCompactObject(
+      result.derivedRuntimeProfileContract,
+      result.derived_runtime_profile_contract,
+      randomLargeProjectColdPath.derivedRuntimeProfileContract,
+      randomLargeProjectColdPath.derived_runtime_profile_contract,
+    ), {
+      sourceIntake: coldSourceTreeIntake,
+      coldTemplate: coldRuntimeBoundaryEventManifestTemplate,
+      runtimeProfileBridge: randomColdRuntimeProfileProofBridge,
+    });
   const randomColdRuntimeProfileAdapterResultImport =
     await randomColdRuntimeProfileAdapterResultImportFacet(
       randomColdRuntimeProfileProofBridge,
@@ -28386,6 +28866,12 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdRuntimeProfileProofBridge.present === true
       ? randomColdRuntimeProfileProofBridge.failedGates
       : []),
+    ...(randomColdDerivedRuntimeProfileContract.present === true
+      ? randomColdDerivedRuntimeProfileContract.blockingGaps
+      : []),
+    ...(randomColdDerivedRuntimeProfileContract.present === true
+      ? randomColdDerivedRuntimeProfileContract.failedGates
+      : []),
     ...(randomColdRuntimeProfileAdapterResultImport.present === true
       ? randomColdRuntimeProfileAdapterResultImport.failedGates
       : []),
@@ -28451,6 +28937,13 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     coldSourceTreeIntake.sourceIntakeTransportFallback?.fallbackEvidenceHash,
     coldSourceTreeIntake.source_intake_transport_fallback?.fallback_evidence_hash,
     coldRuntimeBoundaryEventManifestTemplate.templateHash,
+    randomColdDerivedRuntimeProfileContract.runtimeProofProfileSha256,
+    randomColdDerivedRuntimeProfileContract.runtimeBoundaryEventManifestSha256,
+    randomColdDerivedRuntimeProfileContract.sourceListingHash,
+    randomColdDerivedRuntimeProfileContract.buildMetadataContentHash,
+    randomColdDerivedRuntimeProfileContract.runtimeBoundaryExpectationHash,
+    randomColdDerivedRuntimeProfileContract.runtimeBoundaryEventManifestTemplateHash,
+    randomColdDerivedRuntimeProfileContract.facetHash,
     randomColdRuntimeProfileProofBridge.runtimeProofProfileSha256,
     randomColdRuntimeProfileProofBridge.runtimeProfileAdapterResultSha256,
     randomColdRuntimeProfileProofBridge.strictRuntimeProofId,
@@ -28509,6 +29002,22 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     source_intake_transport_fallback: coldSourceTreeIntake.source_intake_transport_fallback,
     coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
+    randomColdDerivedRuntimeProfileContract:
+      randomColdDerivedRuntimeProfileContract.present === true
+        ? randomColdDerivedRuntimeProfileContract
+        : null,
+    random_cold_derived_runtime_profile_contract:
+      randomColdDerivedRuntimeProfileContract.present === true
+        ? randomColdDerivedRuntimeProfileContract
+        : null,
+    derivedRuntimeProfileContract:
+      randomColdDerivedRuntimeProfileContract.present === true
+        ? randomColdDerivedRuntimeProfileContract
+        : null,
+    derived_runtime_profile_contract:
+      randomColdDerivedRuntimeProfileContract.present === true
+        ? randomColdDerivedRuntimeProfileContract
+        : null,
     randomColdRuntimeProfileProofBridge: randomColdRuntimeProfileProofBridge.present === true
       ? randomColdRuntimeProfileProofBridge
       : null,
@@ -28867,6 +29376,24 @@ function runtimeBoundaryCoverageDiagnosticAccepted(facet = {}) {
 }
 
 function rowRuntimeBoundarySupportScore(row) {
+  const randomColdDerivedRuntimeProfileContract = compactObject(
+    row.randomColdDerivedRuntimeProfileContract
+    ?? row.random_cold_derived_runtime_profile_contract
+    ?? row.derivedRuntimeProfileContract
+    ?? row.derived_runtime_profile_contract,
+  );
+  const randomColdRuntimeProfileProofBridge = compactObject(
+    row.randomColdRuntimeProfileProofBridge
+    ?? row.random_cold_runtime_profile_proof_bridge
+    ?? row.runtimeProfileProofBridge
+    ?? row.runtime_profile_proof_bridge,
+  );
+  const randomColdRuntimeProfileAdapterResultImport = compactObject(
+    row.randomColdRuntimeProfileAdapterResultImport
+    ?? row.random_cold_runtime_profile_adapter_result_import
+    ?? row.runtimeProfileAdapterResultImport
+    ?? row.runtime_profile_adapter_result_import,
+  );
   const adapterResult = compactObject(
     row.realRocmRuntimeProfileAdapterResult
     ?? row.real_rocm_runtime_profile_adapter_result,
@@ -28893,6 +29420,49 @@ function rowRuntimeBoundarySupportScore(row) {
   );
 
   let score = 0;
+  if (
+    firstText(
+      randomColdDerivedRuntimeProfileContract.proofAuthority,
+      randomColdDerivedRuntimeProfileContract.proof_authority,
+    ) === RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_AUTHORITY
+    && firstBool(
+      randomColdDerivedRuntimeProfileContract.acceptedAsSupportEvidence,
+      randomColdDerivedRuntimeProfileContract.accepted_as_support_evidence,
+    ) === true
+    && runtimeBoundarySupportAuthorityNeutral(randomColdDerivedRuntimeProfileContract)
+  ) {
+    score += 15;
+  }
+  if (
+    firstText(
+      randomColdRuntimeProfileProofBridge.proofAuthority,
+      randomColdRuntimeProfileProofBridge.proof_authority,
+    ) === RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY
+    && firstBool(
+      randomColdRuntimeProfileProofBridge.acceptedAsSupportEvidence,
+      randomColdRuntimeProfileProofBridge.accepted_as_support_evidence,
+    ) === true
+    && runtimeBoundarySupportAuthorityNeutral(randomColdRuntimeProfileProofBridge)
+  ) {
+    score += 15;
+  }
+  if (
+    firstText(
+      randomColdRuntimeProfileAdapterResultImport.proofAuthority,
+      randomColdRuntimeProfileAdapterResultImport.proof_authority,
+    ) === RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY
+    && randomColdRuntimeProfileAdapterResultImport.accepted === true
+    && runtimeBoundarySupportAuthorityNeutral(randomColdRuntimeProfileAdapterResultImport)
+  ) {
+    score += 10;
+    score += boundedSupportCount(
+      randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLines
+      ?? randomColdRuntimeProfileAdapterResultImport.runtime_boundary_lines
+      ?? randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines
+      ?? randomColdRuntimeProfileAdapterResultImport.adapter_runtime_boundary_lines,
+      10,
+    );
+  }
   if (
     firstBool(
       adapterResult.acceptedAsBoundaryEvidence,
@@ -32009,6 +32579,12 @@ function rowRefs(rows) {
       row.coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template:
       row.coldRuntimeBoundaryEventManifestTemplate,
+    randomColdDerivedRuntimeProfileContract:
+      row.randomColdDerivedRuntimeProfileContract,
+    random_cold_derived_runtime_profile_contract:
+      row.randomColdDerivedRuntimeProfileContract,
+    derivedRuntimeProfileContract: row.derivedRuntimeProfileContract,
+    derived_runtime_profile_contract: row.derivedRuntimeProfileContract,
     randomColdRuntimeSupportClosureObligation:
       row.randomColdRuntimeSupportClosureObligation,
     random_cold_runtime_support_closure_obligation:
@@ -33346,6 +33922,12 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.runtimeProfileProofBridge
     ?? row.runtime_profile_proof_bridge
   );
+  const derivedRuntimeProfileContract = compactObject(
+    row.randomColdDerivedRuntimeProfileContract
+    ?? row.random_cold_derived_runtime_profile_contract
+    ?? row.derivedRuntimeProfileContract
+    ?? row.derived_runtime_profile_contract
+  );
   const runtimeProfileAdapterResultImport = compactObject(
     row.randomColdRuntimeProfileAdapterResultImport
     ?? row.random_cold_runtime_profile_adapter_result_import
@@ -33384,10 +33966,24 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.runtimeStrictImportProjection
     ?? row.runtime_strict_import_projection
   );
-  const projectedGateAccepted = compactObject(
+  const rawProjectedGateAccepted = compactObject(
     strictImportProjection.projectedGateAccepted
     ?? strictImportProjection.projected_gate_accepted
   );
+  const strictImportProjectionFailedGates = compactStringList([
+    ...(Array.isArray(strictImportProjection.failedGates)
+      ? strictImportProjection.failedGates
+      : []),
+    ...(Array.isArray(strictImportProjection.failed_gates)
+      ? strictImportProjection.failed_gates
+      : []),
+  ]);
+  const strictImportProjectionAccepted =
+    strictImportProjection.accepted === true
+    && strictImportProjectionFailedGates.length === 0;
+  const projectedGateAccepted = strictImportProjectionAccepted
+    ? rawProjectedGateAccepted
+    : {};
   const outputOracle = compactObject(row.outputOracleFacet ?? row.output_oracle_facet);
   const firewall = compactObject(row.realRocmFirewall ?? row.real_rocm_firewall);
   const sameProcessGate = compactObject(
@@ -33428,6 +34024,15 @@ function runtimeClosureRowSignals(row = {}) {
     && (
       runtimeBridge.acceptedAsRuntimeProfileProofBridge === true
       || runtimeBridge.accepted_as_runtime_profile_proof_bridge === true
+    );
+  const derivedRuntimeProfileContractAccepted =
+    (
+      derivedRuntimeProfileContract.acceptedAsSupportEvidence === true
+      || derivedRuntimeProfileContract.accepted_as_support_evidence === true
+    )
+    && (
+      derivedRuntimeProfileContract.acceptedAsDerivedRuntimeProfileContract === true
+      || derivedRuntimeProfileContract.accepted_as_derived_runtime_profile_contract === true
     );
   const runtimeClosureAttempted =
     fullRuntimeAccepted
@@ -33489,6 +34094,7 @@ function runtimeClosureRowSignals(row = {}) {
       || runtimeSupportClosure.acceptedAsSupportEvidence === true
       || runtimeSupportClosure.accepted_as_support_evidence === true
       || runtimeSupportClosure.present === true
+      || derivedRuntimeProfileContract.present === true
       || coldTemplate.acceptedAsSupportEvidence === true
       || runtimeProfileBridgePresent,
     artifact_transport:
@@ -33529,6 +34135,8 @@ function runtimeClosureRowSignals(row = {}) {
     runtimeClosureAttempted,
     runtimeProfileBridgePresent,
     runtimeProfileBridgeAccepted,
+    derivedRuntimeProfileContractPresent: derivedRuntimeProfileContract.present === true,
+    derivedRuntimeProfileContractAccepted,
     runtimeSupportClosurePresent: runtimeSupportClosure.present === true,
     runtimeSupportClosureAccepted:
       runtimeSupportClosure.acceptedAsSupportEvidence === true
@@ -33582,6 +34190,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     signals.filter((signal) => signal.runtimeProfileBridgePresent).length;
   const runtimeProfileBridgeAcceptedCount =
     signals.filter((signal) => signal.runtimeProfileBridgeAccepted).length;
+  const derivedRuntimeProfileContractPresentCount =
+    signals.filter((signal) => signal.derivedRuntimeProfileContractPresent).length;
+  const derivedRuntimeProfileContractAcceptedCount =
+    signals.filter((signal) => signal.derivedRuntimeProfileContractAccepted).length;
   const runtimeSupportClosurePresentCount =
     signals.filter((signal) => signal.runtimeSupportClosurePresent).length;
   const runtimeSupportClosureAcceptedCount =
@@ -33629,6 +34241,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     runtime_profile_bridge_present_count: runtimeProfileBridgePresentCount,
     runtimeProfileBridgeAcceptedCount,
     runtime_profile_bridge_accepted_count: runtimeProfileBridgeAcceptedCount,
+    derivedRuntimeProfileContractPresentCount,
+    derived_runtime_profile_contract_present_count: derivedRuntimeProfileContractPresentCount,
+    derivedRuntimeProfileContractAcceptedCount,
+    derived_runtime_profile_contract_accepted_count: derivedRuntimeProfileContractAcceptedCount,
     runtimeSupportClosurePresentCount,
     runtime_support_closure_present_count: runtimeSupportClosurePresentCount,
     runtimeSupportClosureAcceptedCount,

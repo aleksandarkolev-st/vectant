@@ -2814,6 +2814,152 @@ function randomColdRuntimeProfileProofBridgeFixture(overrides = {}) {
   };
 }
 
+function randomColdDerivedRuntimeProfileContractFixture({
+  candidateId,
+  sourceUrl,
+  immutableCommit,
+  sourceIntakeEvidence,
+  runtimeProofProfilePath = 'profiles/arbitrary/derived-runtime-profile.json',
+  runtimeBoundaryEventManifestPath = 'profiles/arbitrary/derived-runtime-boundary-events.json',
+  runtimeProofProfileSha256 = hashValue('random-cold-derived-runtime-profile:profile'),
+  runtimeBoundaryEventManifestSha256 =
+    hashValue('random-cold-derived-runtime-profile:event-manifest'),
+  sourceFile = 'src/kernel/main.hip',
+  entryPoint = 'hip_rocm_runtime_boundary_entrypoint',
+  overrides = {},
+} = {}) {
+  const sourceListingHash =
+    sourceIntakeEvidence.sourceListingHash
+    ?? sourceIntakeEvidence.source_listing_hash;
+  const buildMetadataContentEvidence =
+    sourceIntakeEvidence.buildMetadataContentEvidence
+    ?? sourceIntakeEvidence.build_metadata_content_evidence
+    ?? {};
+  const runtimeBoundaryExpectation =
+    sourceIntakeEvidence.runtimeBoundaryExpectation
+    ?? sourceIntakeEvidence.runtime_boundary_expectation
+    ?? {};
+  const runtimeBoundaryEventManifestTemplate =
+    sourceIntakeEvidence.runtimeBoundaryEventManifestTemplate
+    ?? sourceIntakeEvidence.runtime_boundary_event_manifest_template
+    ?? {};
+  const buildMetadataContentHash =
+    buildMetadataContentEvidence.contentEvidenceHash
+    ?? buildMetadataContentEvidence.content_evidence_hash;
+  const runtimeBoundaryExpectationHash =
+    runtimeBoundaryExpectation.expectationHash
+    ?? runtimeBoundaryExpectation.expectation_hash;
+  const runtimeBoundaryEventManifestTemplateHash =
+    runtimeBoundaryEventManifestTemplate.templateHash
+    ?? runtimeBoundaryEventManifestTemplate.template_hash;
+  const backendCandidates = [
+    ...new Set([
+      ...(
+        Array.isArray(runtimeBoundaryExpectation.backendCandidates)
+          ? runtimeBoundaryExpectation.backendCandidates
+          : []
+      ),
+      ...(
+        Array.isArray(runtimeBoundaryExpectation.backend_candidates)
+          ? runtimeBoundaryExpectation.backend_candidates
+          : []
+      ),
+      ...(
+        Array.isArray(sourceIntakeEvidence.backendCandidates)
+          ? sourceIntakeEvidence.backendCandidates
+          : []
+      ),
+      ...(
+        Array.isArray(sourceIntakeEvidence.backend_candidates)
+          ? sourceIntakeEvidence.backend_candidates
+          : []
+      ),
+    ]),
+  ].sort();
+  const blockingGaps = overrides.blockingGaps ?? overrides.blocking_gaps ?? [];
+  const seed = {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_derived_runtime_profile_contract.v1',
+    candidateId,
+    sourceUrl,
+    immutableCommit,
+    accepted: true,
+    profileHash: runtimeProofProfileSha256,
+    eventManifestHash: runtimeBoundaryEventManifestSha256,
+    profileRelativePath: runtimeProofProfilePath,
+    eventManifestRelativePath: runtimeBoundaryEventManifestPath,
+    sourceListingHash,
+    buildMetadataContentHash,
+    expectationHash: runtimeBoundaryExpectationHash,
+    templateHash: runtimeBoundaryEventManifestTemplateHash,
+    backendCandidates,
+    sourceFile,
+    entryPoint,
+    blockingGaps,
+  };
+  return {
+    schemaVersion: seed.schemaVersion,
+    schema_version: seed.schemaVersion,
+    proofAuthority: 'cold_intake_derived_runtime_profile_contract_only_not_gpu_hmr_success',
+    proof_authority: 'cold_intake_derived_runtime_profile_contract_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsDerivedRuntimeProfileContract: true,
+    accepted_as_derived_runtime_profile_contract: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    candidateId,
+    candidate_id: candidateId,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    runtimeProofProfileMode: 'derived_from_cold_intake_contract',
+    runtime_proof_profile_mode: 'derived_from_cold_intake_contract',
+    runtimeProofProfilePath,
+    runtime_proof_profile_path: runtimeProofProfilePath,
+    runtimeProofProfileSha256,
+    runtime_proof_profile_sha256: runtimeProofProfileSha256,
+    runtimeBoundaryEventManifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventManifestPath,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    selectedBackend: backendCandidates[0] ?? 'unknown',
+    selected_backend: backendCandidates[0] ?? 'unknown',
+    runtimeBoundaryBackend: backendCandidates[0] === 'hip_rocm'
+      ? 'hip'
+      : backendCandidates[0] ?? 'unknown',
+    runtime_boundary_backend: backendCandidates[0] === 'hip_rocm'
+      ? 'hip'
+      : backendCandidates[0] ?? 'unknown',
+    sourceFile,
+    source_file: sourceFile,
+    entryPoint,
+    entry_point: entryPoint,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    facetHash: contentHashFor(seed),
+    facet_hash: contentHashFor(seed),
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+}
+
 const randomColdPathDir = path.join(tmpRoot, 'random-large-project-cold-path-smoke');
 await writeJson(
   path.join(randomColdPathDir, 'random-cold-valid.json'),
@@ -3465,6 +3611,197 @@ assert.equal(strictAcceptedBridgeRuntimeClosure.strictRuntimeProofAcceptedCount,
 assert.equal(strictAcceptedBridgeRuntimeClosure.matrixRuntimeIngestionRequired, false);
 assert.equal(strictAcceptedBridgeRuntimeClosure.acceptedForGpuHmr, false);
 assert.equal(strictAcceptedBridgeRuntimeClosure.gpuHmrSuccess, false);
+
+const derivedRuntimeProfileContractDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-derived-runtime-profile-contract',
+);
+const derivedRuntimeProfileCandidateId =
+  'direct-random-arbitrary-derived-runtime-profile-contract';
+const derivedRuntimeProfileSourceUrl =
+  'https://example.invalid/arbitrary/derived-runtime-profile-contract.git';
+const derivedRuntimeProfileCommit =
+  sha256Hex('derived-runtime-profile-contract:commit').slice(0, 40);
+const derivedRuntimeProfileManifest = randomColdPathManifest({
+  candidateId: derivedRuntimeProfileCandidateId,
+  sourceUrl: derivedRuntimeProfileSourceUrl,
+  immutableCommit: derivedRuntimeProfileCommit,
+});
+const derivedRuntimeProfileResult = derivedRuntimeProfileManifest.results[0];
+const derivedRuntimeProfilePath = 'profiles/arbitrary/derived-runtime-profile.json';
+const derivedRuntimeProfileEventManifestPath =
+  'profiles/arbitrary/derived-runtime-boundary-events.json';
+const derivedRuntimeProfileHash = hashValue('derived-runtime-profile-contract:profile');
+const derivedRuntimeProfileEventManifestHash =
+  hashValue('derived-runtime-profile-contract:event-manifest');
+const derivedRuntimeProfileContract = randomColdDerivedRuntimeProfileContractFixture({
+  candidateId: derivedRuntimeProfileCandidateId,
+  sourceUrl: derivedRuntimeProfileSourceUrl,
+  immutableCommit: derivedRuntimeProfileCommit,
+  sourceIntakeEvidence: derivedRuntimeProfileResult.sourceIntakeEvidence,
+  runtimeProofProfilePath: derivedRuntimeProfilePath,
+  runtimeBoundaryEventManifestPath: derivedRuntimeProfileEventManifestPath,
+  runtimeProofProfileSha256: derivedRuntimeProfileHash,
+  runtimeBoundaryEventManifestSha256: derivedRuntimeProfileEventManifestHash,
+});
+const derivedRuntimeProfileBridge = randomColdRuntimeProfileProofBridgeFixture({
+  runtimeProofProfilePath: derivedRuntimeProfilePath,
+  runtime_proof_profile_path: derivedRuntimeProfilePath,
+  runtimeProofProfileMode: 'derived_from_cold_intake_contract',
+  runtime_proof_profile_mode: 'derived_from_cold_intake_contract',
+  runtimeProofProfileSha256: derivedRuntimeProfileHash,
+  runtime_proof_profile_sha256: derivedRuntimeProfileHash,
+  runtimeBoundaryEventManifestPath: derivedRuntimeProfileEventManifestPath,
+  runtime_boundary_event_manifest_path: derivedRuntimeProfileEventManifestPath,
+  runtimeBoundaryEventManifestSha256: derivedRuntimeProfileEventManifestHash,
+  runtime_boundary_event_manifest_sha256: derivedRuntimeProfileEventManifestHash,
+  blockingGaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+  blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
+  adapterResultBlockingGaps: ['runtime_profile_adapter_strict_runtime_proof_artifact_missing'],
+  adapter_result_blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_artifact_missing'],
+});
+Object.assign(derivedRuntimeProfileResult, {
+  status: 'unprofiled_arbitrary_project_cold_intake_runtime_profile_bridged_refused',
+  profileMode: 'derived_from_cold_intake_contract',
+  profile_mode: 'derived_from_cold_intake_contract',
+  runnerAttempted: true,
+  runner_attempted: true,
+  derivedRuntimeProfileContract,
+  derived_runtime_profile_contract: derivedRuntimeProfileContract,
+  derivedRuntimeProfileContractAccepted: true,
+  derived_runtime_profile_contract_accepted: true,
+  runtimeProfileProofBridge: derivedRuntimeProfileBridge,
+  runtime_profile_proof_bridge: derivedRuntimeProfileBridge,
+  blockingGaps: [
+    'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+    'runtime_support_closure_requires_strict_runtime_proof',
+    'semantic_build_metadata_execution_missing',
+    'same_process_loader_unproven',
+    'epoch_publication_unproven',
+    'dispatch_trace_unproven',
+    'host_identity_unproven',
+    'output_oracle_unproven',
+    'strict_runtime_ledger_missing',
+  ],
+  blocking_gaps: [
+    'runtime_profile_adapter_strict_runtime_proof_not_accepted',
+    'runtime_support_closure_requires_strict_runtime_proof',
+    'semantic_build_metadata_execution_missing',
+    'same_process_loader_unproven',
+    'epoch_publication_unproven',
+    'dispatch_trace_unproven',
+    'host_identity_unproven',
+    'output_oracle_unproven',
+    'strict_runtime_ledger_missing',
+  ],
+});
+await writeJson(
+  path.join(derivedRuntimeProfileContractDir, 'random-cold-derived-runtime-profile-contract.json'),
+  derivedRuntimeProfileManifest,
+);
+const derivedRuntimeProfileContractLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [derivedRuntimeProfileContractDir],
+  });
+const derivedRuntimeProfileContractRow =
+  derivedRuntimeProfileContractLedger.rows.find(
+    (row) => row.targetId === derivedRuntimeProfileCandidateId,
+  );
+const derivedRuntimeProfileContractCoverage = new Map(
+  derivedRuntimeProfileContractLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const derivedRuntimeProfileContractClosure =
+  derivedRuntimeProfileContractCoverage.get('large_arbitrary_project_runtime_closure');
+assert.equal(derivedRuntimeProfileContractRow?.acceptedForGpuHmr, false);
+assert.equal(derivedRuntimeProfileContractRow.gpuHmrSuccess, false);
+assert.equal(derivedRuntimeProfileContractRow.safety.accepted, true);
+assert.equal(derivedRuntimeProfileContractRow.derivedRuntimeProfileContract.accepted, true);
+assert.equal(
+  derivedRuntimeProfileContractRow.derivedRuntimeProfileContract.acceptedAsSupportEvidence,
+  true,
+);
+assert.equal(
+  derivedRuntimeProfileContractRow.derivedRuntimeProfileContract.facetHash,
+  derivedRuntimeProfileContractRow.derivedRuntimeProfileContract.recomputedFacetHash,
+);
+assert.equal(
+  derivedRuntimeProfileContractRow.runtimeProfileProofBridge.runtimeProofProfileMode,
+  'derived_from_cold_intake_contract',
+);
+assert.equal(derivedRuntimeProfileContractRow.runtimeProfileProofBridge.accepted, true);
+assert.ok(!derivedRuntimeProfileContractRow.openGaps.includes('runtime_profile_contract_missing'));
+assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('same_process_loader_unproven'));
+assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('dispatch_trace_unproven'));
+assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('output_oracle_unproven'));
+assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('strict_runtime_ledger_missing'));
+assert.equal(derivedRuntimeProfileContractClosure?.derivedRuntimeProfileContractAcceptedCount, 1);
+assert.equal(derivedRuntimeProfileContractClosure.runtimeProfileBridgeAcceptedCount, 1);
+assert.ok(derivedRuntimeProfileContractClosure.openGaps.includes(
+  'large_arbitrary_project_runtime_adapter_or_app_hook_contract_required',
+));
+assert.ok(derivedRuntimeProfileContractClosure.openGaps.includes(
+  'large_arbitrary_project_dispatch_trace_required',
+));
+assert.equal(derivedRuntimeProfileContractClosure.acceptedForGpuHmr, false);
+assert.equal(derivedRuntimeProfileContractClosure.gpuHmrSuccess, false);
+
+const forgedDerivedRuntimeProfileContractDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-forged-derived-runtime-profile-contract',
+);
+const forgedDerivedRuntimeProfileManifest = randomColdPathManifest({
+  candidateId: 'direct-random-arbitrary-forged-derived-runtime-profile-contract',
+  sourceUrl: 'https://example.invalid/arbitrary/forged-derived-runtime-profile-contract.git',
+  immutableCommit: sha256Hex('forged-derived-runtime-profile-contract:commit').slice(0, 40),
+});
+const forgedDerivedRuntimeProfileResult = forgedDerivedRuntimeProfileManifest.results[0];
+const forgedDerivedRuntimeProfileContract =
+  randomColdDerivedRuntimeProfileContractFixture({
+    candidateId: 'direct-random-arbitrary-forged-derived-runtime-profile-contract',
+    sourceUrl: 'https://example.invalid/arbitrary/forged-derived-runtime-profile-contract.git',
+    immutableCommit: sha256Hex('forged-derived-runtime-profile-contract:commit').slice(0, 40),
+    sourceIntakeEvidence: forgedDerivedRuntimeProfileResult.sourceIntakeEvidence,
+    overrides: {
+      gpuHmrSuccess: true,
+      gpu_hmr_success: true,
+      canSatisfyRuntimeProof: true,
+      can_satisfy_runtime_proof: true,
+    },
+  });
+Object.assign(forgedDerivedRuntimeProfileResult, {
+  derivedRuntimeProfileContract: forgedDerivedRuntimeProfileContract,
+  derived_runtime_profile_contract: forgedDerivedRuntimeProfileContract,
+});
+await writeJson(
+  path.join(
+    forgedDerivedRuntimeProfileContractDir,
+    'random-cold-forged-derived-runtime-profile-contract.json',
+  ),
+  forgedDerivedRuntimeProfileManifest,
+);
+const forgedDerivedRuntimeProfileContractLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [forgedDerivedRuntimeProfileContractDir],
+    includeInvalidated: true,
+  });
+const forgedDerivedRuntimeProfileContractRow =
+  forgedDerivedRuntimeProfileContractLedger.rows.find(
+    (row) => row.proofMode === 'random_large_project_cold_path',
+  );
+assert.equal(forgedDerivedRuntimeProfileContractRow?.acceptedForGpuHmr, false);
+assert.equal(forgedDerivedRuntimeProfileContractRow.gpuHmrSuccess, false);
+assert.equal(forgedDerivedRuntimeProfileContractRow.safety.accepted, false);
+assert.ok(forgedDerivedRuntimeProfileContractRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_derived_runtime_profile_contract_claimed_gpu_hmr_success'
+));
+assert.ok(forgedDerivedRuntimeProfileContractRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_derived_runtime_profile_contract_claimed_runtime_authority'
+));
+
 const fileBackedAdapterImportDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-file-backed-import',
