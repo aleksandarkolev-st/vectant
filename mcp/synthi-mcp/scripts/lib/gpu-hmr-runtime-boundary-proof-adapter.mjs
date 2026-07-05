@@ -93,6 +93,50 @@ const STAGE_ALIASES = Object.freeze({
   ]),
 });
 
+const STAGE_BOUNDARY_LINE_TOKENS = Object.freeze({
+  artifact_transport: 'artifact_transport',
+  epoch_publication: 'dispatcher_epoch',
+  dispatch_trace: 'synthi_gpu_launch',
+  host_identity: 'host_identity',
+  output_oracle: 'output_oracle',
+});
+
+const MATERIALIZED_BOUNDARY_LINES_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_materialized_lines.v1';
+const MATERIALIZED_BOUNDARY_LINES_AUTHORITY =
+  'typed_runtime_boundary_event_materialization_only_not_gpu_hmr_success';
+
+const MATERIALIZED_LINE_OMIT_KEYS = new Set([
+  'adapter_runtime_boundary_events',
+  'adapterRuntimeBoundaryEvents',
+  'accepted_for_gpu_hmr',
+  'acceptedForGpuHmr',
+  'can_satisfy_dispatch_proof',
+  'can_satisfy_runtime_proof',
+  'canSatisfyDispatchProof',
+  'canSatisfyRuntimeProof',
+  'event_fields',
+  'eventFields',
+  'event_kind',
+  'eventKind',
+  'evidence_ref',
+  'evidence_refs',
+  'evidenceRef',
+  'evidenceRefs',
+  'fields',
+  'gpu_hmr_success',
+  'gpuHmrSuccess',
+  'kind',
+  'raw',
+  'runtime_authority',
+  'runtime_boundary_events',
+  'runtimeAuthority',
+  'runtimeBoundaryEvents',
+  'stage',
+  'stage_kind',
+  'stageKind',
+]);
+
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -655,6 +699,168 @@ export function normalizeRuntimeBoundaryEvents(events = []) {
         evidence_refs: eventEvidenceRefs(event),
       };
     });
+}
+
+function boundaryLineHash(line) {
+  return `sha256:${sha256Hex(line)}`;
+}
+
+function snakeKey(key) {
+  return String(key ?? '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+}
+
+function scalarBoundaryLineValue(value) {
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || /\s/.test(text)) return null;
+  return text;
+}
+
+function scalarBoundaryLineFields(source = {}) {
+  const out = {};
+  const object = objectOrNull(source) ?? {};
+  for (const [key, value] of Object.entries(object)) {
+    if (MATERIALIZED_LINE_OMIT_KEYS.has(key)) continue;
+    const normalizedKey = snakeKey(key);
+    if (!normalizedKey || MATERIALIZED_LINE_OMIT_KEYS.has(normalizedKey)) continue;
+    const normalizedValue = scalarBoundaryLineValue(value);
+    if (normalizedValue !== null) out[normalizedKey] = normalizedValue;
+  }
+  return out;
+}
+
+function addLineField(fields, key, value) {
+  const normalizedValue = scalarBoundaryLineValue(value);
+  if (normalizedValue !== null) fields[key] = normalizedValue;
+}
+
+function canonicalBoundaryLineFields(event) {
+  const fields = {
+    ...scalarBoundaryLineFields(event.raw),
+    ...scalarBoundaryLineFields(event.raw?.fields),
+    ...scalarBoundaryLineFields(event.raw?.eventFields),
+    ...scalarBoundaryLineFields(event.raw?.event_fields),
+  };
+  addLineField(fields, 'id', event.eventId);
+  addLineField(fields, 'event_id', event.eventId);
+  addLineField(fields, 'artifact_hash', event.artifactHash);
+  addLineField(fields, 'artifact_id', event.artifactId);
+  addLineField(fields, 'epoch', event.epoch);
+  addLineField(fields, 'dispatch_id', event.dispatchId);
+  addLineField(fields, 'after_dispatch_id', event.afterDispatchId);
+  addLineField(fields, 'process_id', event.processId);
+  addLineField(fields, 'runtime_session', event.runtimeSessionId);
+  addLineField(fields, 'runtime_session_id', event.runtimeSessionId);
+  addLineField(fields, 'device_uuid', event.deviceUuid);
+  addLineField(fields, 'context_id', event.contextId);
+  addLineField(fields, 'queue_or_stream_id', event.queueOrStream);
+  addLineField(fields, 'stream_id', event.queueOrStream);
+  addLineField(fields, 'dispatch_table_entry', event.dispatchTableEntry);
+  addLineField(fields, 'dispatch_table_hash_before', event.dispatchTableHashBefore);
+  addLineField(fields, 'dispatch_table_hash_after', event.dispatchTableHashAfter);
+  addLineField(fields, 'output_target', event.outputTargetId);
+  addLineField(fields, 'output_target_id', event.outputTargetId);
+  addLineField(fields, 'oracle_kind', event.oracleKind);
+  addLineField(fields, 'camera_state_hash', event.cameraStateHash);
+  addLineField(fields, 'frame_number', event.frameNumber);
+  addLineField(fields, 'capture_backend', event.captureBackend);
+  addLineField(fields, 'framebuffer_identity', event.swapchainOrFramebufferIdentity);
+  addLineField(fields, 'swapchain_or_framebuffer_identity', event.swapchainOrFramebufferIdentity);
+  if (Array.isArray(event.swapchainSize) && event.swapchainSize.length >= 2) {
+    addLineField(fields, 'swapchain_size', `${event.swapchainSize[0]}x${event.swapchainSize[1]}`);
+  }
+  addLineField(fields, 'timestamp_monotonic_ns', event.timestampMonotonicNs);
+  addLineField(fields, 'timestamp_ns', event.timestampMonotonicNs);
+  return fields;
+}
+
+export function materializeRuntimeBoundaryEventLines(events = []) {
+  const normalizedEvents = normalizeRuntimeBoundaryEvents(events);
+  const materializedEvents = normalizedEvents.map((event) => {
+    const token = STAGE_BOUNDARY_LINE_TOKENS[event.stage] ?? eventKind(event.raw) ?? 'unknown_event';
+    const fields = canonicalBoundaryLineFields(event);
+    const orderedFields = Object.fromEntries(
+      Object.entries(fields).sort(([left], [right]) => left.localeCompare(right)),
+    );
+    const fieldText = Object.entries(orderedFields)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(' ');
+    const line = fieldText
+      ? `[gpu-runtime-boundary] ${token} ${fieldText}`
+      : `[gpu-runtime-boundary] ${token}`;
+    return {
+      sourceEventIndex: event.index,
+      source_event_index: event.index,
+      sourceEventHash: event.lineHash,
+      source_event_hash: event.lineHash,
+      stage: event.stage,
+      token,
+      boundaryLine: line,
+      boundary_line: line,
+      boundaryLineHash: boundaryLineHash(line),
+      boundary_line_hash: boundaryLineHash(line),
+      fieldCount: Object.keys(orderedFields).length,
+      field_count: Object.keys(orderedFields).length,
+      fields: orderedFields,
+    };
+  });
+  const runtimeBoundaryLines = materializedEvents.map((entry) => entry.boundaryLine);
+  const boundaryLineHashes = materializedEvents.map((entry) => entry.boundaryLineHash);
+  const sourceEventHashes = materializedEvents.map((entry) => entry.sourceEventHash);
+  const failedGates = [
+    normalizedEvents.length > 0 ? null : 'runtime_boundary_materialization_events_missing',
+    ...materializedEvents.flatMap((entry) => [
+      entry.stage ? null : 'runtime_boundary_materialization_stage_unknown',
+      entry.fieldCount > 0 ? null : 'runtime_boundary_materialization_fields_missing',
+    ]),
+  ].filter(Boolean);
+  const bindingSeed = { boundaryLineHashes, sourceEventHashes };
+  return {
+    schemaVersion: MATERIALIZED_BOUNDARY_LINES_SCHEMA_VERSION,
+    schema_version: MATERIALIZED_BOUNDARY_LINES_SCHEMA_VERSION,
+    proofAuthority: MATERIALIZED_BOUNDARY_LINES_AUTHORITY,
+    proof_authority: MATERIALIZED_BOUNDARY_LINES_AUTHORITY,
+    accepted: failedGates.length === 0,
+    acceptedAsMaterializedBoundaryLines: failedGates.length === 0,
+    accepted_as_materialized_boundary_lines: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    eventCount: normalizedEvents.length,
+    event_count: normalizedEvents.length,
+    lineCount: runtimeBoundaryLines.length,
+    line_count: runtimeBoundaryLines.length,
+    runtimeBoundaryLines,
+    runtime_boundary_lines: runtimeBoundaryLines,
+    adapterRuntimeBoundaryLines: runtimeBoundaryLines,
+    adapter_runtime_boundary_lines: runtimeBoundaryLines,
+    boundaryLineHashes,
+    boundary_line_hashes: boundaryLineHashes,
+    runtimeBoundaryLineHashes: boundaryLineHashes,
+    runtime_boundary_line_hashes: boundaryLineHashes,
+    adapterRuntimeBoundaryLineHashes: boundaryLineHashes,
+    adapter_runtime_boundary_line_hashes: boundaryLineHashes,
+    sourceEventHashes,
+    source_event_hashes: sourceEventHashes,
+    materializedEvents,
+    materialized_events: materializedEvents,
+    bindingHash: sha256Stable(bindingSeed),
+    binding_hash: sha256Stable(bindingSeed),
+    failedGates: [...new Set(failedGates)],
+    failed_gates: [...new Set(failedGates)],
+  };
 }
 
 function boundaryEventByStage(events) {

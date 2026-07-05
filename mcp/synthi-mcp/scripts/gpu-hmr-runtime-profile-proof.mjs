@@ -13,6 +13,7 @@ import {
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
   buildRuntimeBoundaryProofAdapter,
+  materializeRuntimeBoundaryEventLines,
 } from './lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -631,12 +632,17 @@ async function runRuntimeBoundaryProofAdapterProfile(profile, { resultPath = nul
   const manifest = await readRuntimeBoundaryEventManifest(profile);
   const adapterInput = runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest);
   const adapterProof = buildRuntimeBoundaryProofAdapter(adapterInput);
+  const boundaryLineMaterialization = materializeRuntimeBoundaryEventLines(manifest.events);
   const adapterProofSummary = runtimeBoundaryProofAdapterSummary(adapterProof);
-  const accepted = manifest.accepted === true && adapterProof.accepted === true;
+  const accepted =
+    manifest.accepted === true
+    && boundaryLineMaterialization.accepted === true
+    && adapterProof.accepted === true;
   const runtimeProofArtifact = accepted ? adapterProof.runtimeProofArtifact : null;
   const proofLedger = runtimeProofArtifact?.proofLedger ?? runtimeProofArtifact?.proof_ledger ?? null;
   const failedGates = [
     ...firstArray(manifest.failedGates, manifest.failed_gates),
+    ...firstArray(boundaryLineMaterialization.failedGates, boundaryLineMaterialization.failed_gates),
     ...firstArray(adapterProof.failedGates, adapterProof.failed_gates),
   ];
   const runModeProofSummary = {
@@ -680,6 +686,18 @@ async function runRuntimeBoundaryProofAdapterProfile(profile, { resultPath = nul
     proof_runner: profile.adapter.proofRunner,
     runtimeBoundaryEventManifest: manifest,
     runtime_boundary_event_manifest: manifest,
+    runtimeBoundaryLineMaterialization: boundaryLineMaterialization,
+    runtime_boundary_line_materialization: boundaryLineMaterialization,
+    runtimeBoundaryLines: boundaryLineMaterialization.runtimeBoundaryLines,
+    runtime_boundary_lines: boundaryLineMaterialization.runtime_boundary_lines,
+    adapterRuntimeBoundaryLines: boundaryLineMaterialization.adapterRuntimeBoundaryLines,
+    adapter_runtime_boundary_lines: boundaryLineMaterialization.adapter_runtime_boundary_lines,
+    runtimeBoundaryLineHashes: boundaryLineMaterialization.runtimeBoundaryLineHashes,
+    runtime_boundary_line_hashes: boundaryLineMaterialization.runtime_boundary_line_hashes,
+    adapterRuntimeBoundaryLineHashes: boundaryLineMaterialization.adapterRuntimeBoundaryLineHashes,
+    adapter_runtime_boundary_line_hashes: boundaryLineMaterialization.adapter_runtime_boundary_line_hashes,
+    runtimeBoundaryLineMaterializationHash: boundaryLineMaterialization.bindingHash,
+    runtime_boundary_line_materialization_hash: boundaryLineMaterialization.binding_hash,
     runtimeBoundaryAdapterInputEvidence: adapterProof.inputEvidence ?? null,
     runtime_boundary_adapter_input_evidence: adapterProof.input_evidence ?? null,
     runtimeBoundaryProofAdapter: adapterProofSummary,
@@ -808,6 +826,22 @@ async function writeRuntimeProfileAdapterResult({
   const proofPath = resolveProofPath(rawProofPath);
   const proofRead = await readJsonIfPresent(proofPath);
   const proofSummary = summarizeProofArtifact(proofRead.value ?? {});
+  const lineMaterialization =
+    proofRead.value?.runtimeBoundaryLineMaterialization
+    ?? proofRead.value?.runtime_boundary_line_materialization
+    ?? null;
+  const runtimeBoundaryLines = firstArray(
+    proofRead.value?.runtimeBoundaryLines,
+    proofRead.value?.runtime_boundary_lines,
+    lineMaterialization?.runtimeBoundaryLines,
+    lineMaterialization?.runtime_boundary_lines,
+  );
+  const runtimeBoundaryLineHashes = firstArray(
+    proofRead.value?.runtimeBoundaryLineHashes,
+    proofRead.value?.runtime_boundary_line_hashes,
+    lineMaterialization?.runtimeBoundaryLineHashes,
+    lineMaterialization?.runtime_boundary_line_hashes,
+  );
   const runnerSucceeded = spawnResult.exitCode === 0;
   const strictRuntimeProofAccepted =
     proofSummary.strictRuntimeProofArtifactPresent === true
@@ -822,6 +856,9 @@ async function writeRuntimeProfileAdapterResult({
     proofPath && !proofRead.present ? 'runtime_profile_adapter_proof_json_unreadable' : null,
     proofRead.present && !proofSummary.strictRuntimeProofArtifactPresent
       ? 'runtime_profile_adapter_strict_runtime_proof_artifact_missing'
+      : null,
+    lineMaterialization && lineMaterialization.accepted !== true
+      ? 'runtime_profile_adapter_boundary_line_materialization_failed'
       : null,
     proofSummary.strictRuntimeProofArtifactPresent && proofSummary.gpuHmrSuccess !== true
       ? 'runtime_profile_adapter_gpu_hmr_success_false'
@@ -886,6 +923,30 @@ async function writeRuntimeProfileAdapterResult({
       proofRead.value?.runtimeBoundaryEventManifest?.manifestSha256
       ?? proofRead.value?.runtime_boundary_event_manifest?.manifest_sha256
       ?? null,
+    runtimeBoundaryLineMaterialization: lineMaterialization,
+    runtime_boundary_line_materialization: lineMaterialization,
+    runtimeBoundaryLineMaterializationAccepted: lineMaterialization?.accepted === true,
+    runtime_boundary_line_materialization_accepted: lineMaterialization?.accepted === true,
+    runtimeBoundaryLineMaterializationHash:
+      lineMaterialization?.bindingHash
+      ?? lineMaterialization?.binding_hash
+      ?? proofRead.value?.runtimeBoundaryLineMaterializationHash
+      ?? proofRead.value?.runtime_boundary_line_materialization_hash
+      ?? null,
+    runtime_boundary_line_materialization_hash:
+      lineMaterialization?.bindingHash
+      ?? lineMaterialization?.binding_hash
+      ?? proofRead.value?.runtimeBoundaryLineMaterializationHash
+      ?? proofRead.value?.runtime_boundary_line_materialization_hash
+      ?? null,
+    runtimeBoundaryLines,
+    runtime_boundary_lines: runtimeBoundaryLines,
+    adapterRuntimeBoundaryLines: runtimeBoundaryLines,
+    adapter_runtime_boundary_lines: runtimeBoundaryLines,
+    runtimeBoundaryLineHashes,
+    runtime_boundary_line_hashes: runtimeBoundaryLineHashes,
+    adapterRuntimeBoundaryLineHashes: runtimeBoundaryLineHashes,
+    adapter_runtime_boundary_line_hashes: runtimeBoundaryLineHashes,
     runtimeBoundaryProofAdapterAccepted:
       proofRead.value?.runtimeBoundaryProofAdapter?.accepted === true
       || proofRead.value?.runtime_boundary_proof_adapter?.accepted === true,
@@ -1106,6 +1167,10 @@ async function selfCheck() {
       timestampMonotonicNs: 200,
       dispatchTableHashBefore: hashD,
       dispatchTableHashAfter: hashE,
+      hostIdentityPreviousGeneration: 1,
+      host_identity_previous_generation: 1,
+      hostIdentityActiveGeneration: 2,
+      host_identity_active_generation: 2,
       evidenceRefs: ['runtime-boundary:epoch-publication'],
     },
     {
@@ -1263,6 +1328,14 @@ async function selfCheck() {
       && runtimeBoundaryResult.strictRuntimeProofAccepted === true
       && runtimeBoundaryResult.proofLedgerId
       && runtimeBoundaryResult.runtimeBoundaryProofAdapterAccepted === true
+      && runtimeBoundaryResult.runtimeBoundaryLineMaterializationAccepted === true
+      && runtimeBoundaryResult.runtimeBoundaryLineMaterializationHash?.startsWith('sha256:')
+      && runtimeBoundaryResult.runtimeBoundaryLines?.length === 5
+      && runtimeBoundaryResult.adapterRuntimeBoundaryLines?.length === 5
+      && runtimeBoundaryResult.runtimeBoundaryLines.some((line) =>
+        line.includes('[gpu-runtime-boundary] dispatcher_epoch ')
+        && line.includes('host_identity_previous_generation=1')
+      )
       && runtimeBoundaryResult.acceptedForGpuHmr === false
       && runtimeBoundaryResult.canSatisfyRuntimeProof === false
       && runtimeBoundaryResult.gpuHmrSuccess === false

@@ -10,6 +10,7 @@ import {
   buildRuntimeBoundaryProofAdapter,
   buildRuntimeBoundaryRunModeProof,
   buildRuntimeBoundaryStageEvidence,
+  materializeRuntimeBoundaryEventLines,
 } from '../lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
 
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -257,6 +258,27 @@ assert.equal(stageEvidence.accepted, true, stageEvidence.failedGates.join(','));
 assert.equal(stageEvidence.normalizedEvents.length, 5);
 assert.equal(stageEvidence.gpuHmrSuccess, false);
 assert.equal(buildRuntimeBoundaryInputEvidence(adapterInput()).accepted, true);
+
+const materializedLines = materializeRuntimeBoundaryEventLines(boundaryEvents({
+  epochPublication: {
+    fields: {
+      host_identity_previous_generation: 1,
+      host_identity_active_generation: 2,
+    },
+  },
+}));
+assert.equal(materializedLines.accepted, true, materializedLines.failedGates.join(','));
+assert.equal(materializedLines.gpuHmrSuccess, false);
+assert.equal(materializedLines.canSatisfyRuntimeProof, false);
+assert.equal(materializedLines.runtimeBoundaryLines.length, 5);
+assert.equal(materializedLines.boundaryLineHashes.length, 5);
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] artifact_transport ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] dispatcher_epoch ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] synthi_gpu_launch ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] host_identity ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('[gpu-runtime-boundary] output_oracle ')));
+assert.ok(materializedLines.runtimeBoundaryLines.some((line) => line.includes('host_identity_previous_generation=1')));
+assert.ok(materializedLines.bindingHash.startsWith('sha256:'));
 
 const accepted = buildRuntimeBoundaryProofAdapter(adapterInput());
 assert.equal(accepted.accepted, true, accepted.failedGates.join(','));

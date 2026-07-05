@@ -17375,6 +17375,49 @@ const importedRuntimeProfileAdapterBoundary = runtimeAdapterBoundaryBridgeFixtur
   'runtime-profile-adapter-result',
   {},
 );
+const importedRuntimeProfileAdapterBoundaryLineHashes =
+  importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines.map(hashValue);
+const importedRuntimeProfileAdapterSourceEventHashes =
+  importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines.map((_, index) =>
+    hashValue(`runtime-profile-adapter-result:typed-event:${index}`)
+  );
+const importedRuntimeProfileAdapterLineMaterialization = {
+  schemaVersion: 'synthi.gpu_hmr.runtime_boundary_materialized_lines.v1',
+  schema_version: 'synthi.gpu_hmr.runtime_boundary_materialized_lines.v1',
+  proofAuthority: 'typed_runtime_boundary_event_materialization_only_not_gpu_hmr_success',
+  proof_authority: 'typed_runtime_boundary_event_materialization_only_not_gpu_hmr_success',
+  accepted: true,
+  acceptedAsMaterializedBoundaryLines: true,
+  accepted_as_materialized_boundary_lines: true,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+  canSatisfyDispatchProof: false,
+  can_satisfy_dispatch_proof: false,
+  runtimeBoundaryLines: importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
+  runtime_boundary_lines: importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
+  adapterRuntimeBoundaryLines: importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
+  adapter_runtime_boundary_lines: importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
+  boundaryLineHashes: importedRuntimeProfileAdapterBoundaryLineHashes,
+  boundary_line_hashes: importedRuntimeProfileAdapterBoundaryLineHashes,
+  runtimeBoundaryLineHashes: importedRuntimeProfileAdapterBoundaryLineHashes,
+  runtime_boundary_line_hashes: importedRuntimeProfileAdapterBoundaryLineHashes,
+  sourceEventHashes: importedRuntimeProfileAdapterSourceEventHashes,
+  source_event_hashes: importedRuntimeProfileAdapterSourceEventHashes,
+  bindingHash: contentHashFor({
+    boundaryLineHashes: importedRuntimeProfileAdapterBoundaryLineHashes,
+    sourceEventHashes: importedRuntimeProfileAdapterSourceEventHashes,
+  }),
+  binding_hash: contentHashFor({
+    boundaryLineHashes: importedRuntimeProfileAdapterBoundaryLineHashes,
+    sourceEventHashes: importedRuntimeProfileAdapterSourceEventHashes,
+  }),
+  failedGates: [],
+  failed_gates: [],
+};
 const importedRuntimeProfileAdapterResult = {
   schemaVersion: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
   schema_version: 'synthi.real_rocm.runtime_profile_adapter_result_bridge.v1',
@@ -17419,6 +17462,8 @@ const importedRuntimeProfileAdapterResult = {
     importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
   adapter_runtime_boundary_lines:
     importedRuntimeProfileAdapterBoundary.adapterRuntimeBoundaryLines,
+  runtimeBoundaryLineMaterialization: importedRuntimeProfileAdapterLineMaterialization,
+  runtime_boundary_line_materialization: importedRuntimeProfileAdapterLineMaterialization,
   blockingGaps: [],
   blocking_gaps: [],
   evidenceRefs: [
@@ -17468,8 +17513,93 @@ assert.equal(runtimeProfileAdapterResultRocm.gpuHmrSuccess, false);
 assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.accepted, true);
 assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.acceptedForGpuHmr, false);
 assert.equal(runtimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.canSatisfyRuntimeProof, false);
+assert.equal(
+  runtimeProfileAdapterResultRocm
+    .realRocmRuntimeProfileAdapterResult
+    .runtimeBoundaryLineMaterialization
+    .accepted,
+  true,
+);
+assert.equal(
+  runtimeProfileAdapterResultRocm
+    .realRocmRuntimeProfileAdapterResult
+    .runtimeBoundaryLineMaterialization
+    .gpuHmrSuccess,
+  false,
+);
 assert.ok(runtimeProfileAdapterResultRocm.reasons.includes(
   'real_rocm_runtime_profile_adapter_result:runtime_profile_adapter_result_imported',
+));
+
+const forgedMaterializedRuntimeProfileAdapterResult = {
+  ...importedRuntimeProfileAdapterResult,
+  runtimeBoundaryLineMaterialization: {
+    ...importedRuntimeProfileAdapterLineMaterialization,
+    bindingHash: hashValue('forged-runtime-profile-adapter-line-materialization-binding'),
+    binding_hash: hashValue('forged-runtime-profile-adapter-line-materialization-binding'),
+  },
+  runtime_boundary_line_materialization: {
+    ...importedRuntimeProfileAdapterLineMaterialization,
+    bindingHash: hashValue('forged-runtime-profile-adapter-line-materialization-binding'),
+    binding_hash: hashValue('forged-runtime-profile-adapter-line-materialization-binding'),
+  },
+};
+const forgedMaterializedRuntimeProfileAdapterResultDir = path.join(
+  logsRoot,
+  'real-rocm-forged-materialized-runtime-profile-adapter-result',
+);
+await writeJson(
+  path.join(
+    forgedMaterializedRuntimeProfileAdapterResultDir,
+    'real-rocm-forged-materialized-runtime-profile-adapter-result.json',
+  ),
+  {
+    ...largeRocmLatestReport,
+    slug: 'gpu-real-rocm-forged-materialized-runtime-profile-adapter-result-20260705',
+    real_rocm_profile: {
+      ...largeRocmLatestReport.real_rocm_profile,
+      id: 'real-rocm-forged-materialized-runtime-profile-adapter-result',
+      source: 'scripts/profiles/real-rocm-forged-materialized-runtime-profile-adapter-result.json',
+    },
+    source_url: 'https://example.invalid/rocm/forged-materialized-runtime-profile-adapter-result.git',
+    target_name: 'ForgedMaterializedRuntimeProfileAdapterResultDriver',
+    real_rocm_runtime_profile_adapter_result: forgedMaterializedRuntimeProfileAdapterResult,
+    realRocmRuntimeProfileAdapterResult: forgedMaterializedRuntimeProfileAdapterResult,
+    runtime_profile_adapter_result: forgedMaterializedRuntimeProfileAdapterResult,
+    runtimeProfileAdapterResult: forgedMaterializedRuntimeProfileAdapterResult,
+  },
+);
+const forgedMaterializedRuntimeProfileAdapterResultLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [forgedMaterializedRuntimeProfileAdapterResultDir],
+    generatedAt: '2026-07-05T00:00:03.125Z',
+  });
+const forgedMaterializedRuntimeProfileAdapterResultRocm =
+  forgedMaterializedRuntimeProfileAdapterResultLedger.rows.find(
+    (row) => row.proofMode === 'real_rocm_repo_validation',
+  );
+assert.equal(forgedMaterializedRuntimeProfileAdapterResultRocm?.acceptedForGpuHmr, false);
+assert.equal(forgedMaterializedRuntimeProfileAdapterResultRocm.gpuHmrSuccess, false);
+assert.equal(
+  forgedMaterializedRuntimeProfileAdapterResultRocm.realRocmRuntimeProfileAdapterResult.accepted,
+  false,
+);
+assert.ok(
+  forgedMaterializedRuntimeProfileAdapterResultRocm
+    .realRocmRuntimeProfileAdapterResult
+    .failedGates
+    .includes('runtime_boundary_line_materialization_binding_hash_mismatch'),
+);
+assert.ok(
+  forgedMaterializedRuntimeProfileAdapterResultRocm
+    .realRocmRuntimeProfileAdapterResult
+    .failedGates
+    .includes('runtime_profile_adapter_boundary_line_materialization_failed'),
+);
+assert.ok(forgedMaterializedRuntimeProfileAdapterResultRocm.reasons.includes(
+  'real_rocm_runtime_profile_adapter_result_not_accepted',
 ));
 
 const {

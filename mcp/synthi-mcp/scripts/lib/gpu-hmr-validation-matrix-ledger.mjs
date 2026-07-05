@@ -212,6 +212,10 @@ const RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_boundary_event.v1';
 const RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_boundary_event_manifest.v1';
+const RUNTIME_BOUNDARY_MATERIALIZED_LINES_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_materialized_lines.v1';
+const RUNTIME_BOUNDARY_MATERIALIZED_LINES_AUTHORITY =
+  'typed_runtime_boundary_event_materialization_only_not_gpu_hmr_success';
 const COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS = Object.freeze([
   'artifact_transport',
   'epoch_publication',
@@ -1055,6 +1059,153 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
     supplied_coverage_hash: suppliedCoverageHash ?? null,
     coverageHash: recomputedCoverageHash,
     coverage_hash: recomputedCoverageHash,
+  };
+}
+
+function runtimeBoundaryLineMaterializationFacet(input = {}, lines = []) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsMaterializedBoundaryLines: false,
+      accepted_as_materialized_boundary_lines: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      boundaryLineHashes: [],
+      boundary_line_hashes: [],
+      sourceEventHashes: [],
+      source_event_hashes: [],
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedAsMaterializedBoundaryLines = firstBool(
+    facet.acceptedAsMaterializedBoundaryLines,
+    facet.accepted_as_materialized_boundary_lines,
+    facet.accepted,
+  ) === true;
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const materializedLines = compactStringList([
+    ...(Array.isArray(facet.runtimeBoundaryLines) ? facet.runtimeBoundaryLines : []),
+    ...(Array.isArray(facet.runtime_boundary_lines) ? facet.runtime_boundary_lines : []),
+    ...(Array.isArray(facet.adapterRuntimeBoundaryLines) ? facet.adapterRuntimeBoundaryLines : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_lines) ? facet.adapter_runtime_boundary_lines : []),
+  ]).filter((line) => /\[gpu-runtime-boundary\]/i.test(line));
+  const expectedLineHashes = runtimeBoundaryLineHashes(lines);
+  const materializedLineHashes = runtimeBoundaryLineHashes(materializedLines);
+  const suppliedLineHashes = compactStringList([
+    ...(Array.isArray(facet.boundaryLineHashes) ? facet.boundaryLineHashes : []),
+    ...(Array.isArray(facet.boundary_line_hashes) ? facet.boundary_line_hashes : []),
+    ...(Array.isArray(facet.runtimeBoundaryLineHashes) ? facet.runtimeBoundaryLineHashes : []),
+    ...(Array.isArray(facet.runtime_boundary_line_hashes) ? facet.runtime_boundary_line_hashes : []),
+    ...(Array.isArray(facet.adapterRuntimeBoundaryLineHashes)
+      ? facet.adapterRuntimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(facet.adapter_runtime_boundary_line_hashes)
+      ? facet.adapter_runtime_boundary_line_hashes
+      : []),
+  ]).map(normalizeSha256).filter(isSha256);
+  const sourceEventHashes = compactStringList([
+    ...(Array.isArray(facet.sourceEventHashes) ? facet.sourceEventHashes : []),
+    ...(Array.isArray(facet.source_event_hashes) ? facet.source_event_hashes : []),
+  ]).map(normalizeSha256).filter(isSha256);
+  const suppliedBindingHash = normalizeSha256(firstText(facet.bindingHash, facet.binding_hash));
+  const recomputedBindingHash = sourceEventHashes.length > 0
+    ? stableJsonHash({ boundaryLineHashes: expectedLineHashes, sourceEventHashes })
+    : null;
+  const sameSet = (left, right) => {
+    if (left.length !== right.length) return false;
+    const rightSet = new Set(right);
+    return left.every((item) => rightSet.has(item));
+  };
+  const failedGates = compactStringList([
+    schemaVersion ? null : 'runtime_boundary_line_materialization_schema_missing',
+    schemaVersion && schemaVersion !== RUNTIME_BOUNDARY_MATERIALIZED_LINES_SCHEMA_VERSION
+      ? 'runtime_boundary_line_materialization_schema_unknown'
+      : null,
+    proofAuthority === RUNTIME_BOUNDARY_MATERIALIZED_LINES_AUTHORITY
+      ? null
+      : 'runtime_boundary_line_materialization_authority_unknown',
+    acceptedForGpuHmr === true
+      ? 'runtime_boundary_line_materialization_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'runtime_boundary_line_materialization_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'runtime_boundary_line_materialization_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'runtime_boundary_line_materialization_claimed_dispatch_authority'
+      : null,
+    acceptedAsMaterializedBoundaryLines && expectedLineHashes.length === 0
+      ? 'runtime_boundary_line_materialization_lines_missing'
+      : null,
+    materializedLineHashes.length > 0 && !sameSet(materializedLineHashes, expectedLineHashes)
+      ? 'runtime_boundary_line_materialization_line_text_mismatch'
+      : null,
+    suppliedLineHashes.length > 0 && !sameSet(suppliedLineHashes, expectedLineHashes)
+      ? 'runtime_boundary_line_materialization_line_hash_mismatch'
+      : null,
+    acceptedAsMaterializedBoundaryLines && sourceEventHashes.length === 0
+      ? 'runtime_boundary_line_materialization_source_event_hashes_missing'
+      : null,
+    acceptedAsMaterializedBoundaryLines && !isSha256(suppliedBindingHash)
+      ? 'runtime_boundary_line_materialization_binding_hash_missing'
+      : null,
+    recomputedBindingHash && suppliedBindingHash && recomputedBindingHash !== suppliedBindingHash
+      ? 'runtime_boundary_line_materialization_binding_hash_mismatch'
+      : null,
+  ]);
+  const accepted = acceptedAsMaterializedBoundaryLines && failedGates.length === 0;
+  return {
+    present: true,
+    accepted,
+    acceptedAsMaterializedBoundaryLines: accepted,
+    accepted_as_materialized_boundary_lines: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    boundaryLineHashes: expectedLineHashes,
+    boundary_line_hashes: expectedLineHashes,
+    suppliedLineHashes,
+    supplied_line_hashes: suppliedLineHashes,
+    sourceEventHashes,
+    source_event_hashes: sourceEventHashes,
+    bindingHash: recomputedBindingHash,
+    binding_hash: recomputedBindingHash,
+    suppliedBindingHash,
+    supplied_binding_hash: suppliedBindingHash,
+    failedGates,
+    failed_gates: failedGates,
   };
 }
 
@@ -11743,6 +11894,10 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     adapterRuntimeBoundaryLines,
     facet.adapterBoundaryCoverage ?? facet.adapter_boundary_coverage,
   );
+  const runtimeBoundaryLineMaterialization = runtimeBoundaryLineMaterializationFacet(
+    facet.runtimeBoundaryLineMaterialization ?? facet.runtime_boundary_line_materialization,
+    adapterRuntimeBoundaryLines,
+  );
   const adapterRuntimeBoundaryLineHashes = compactStringList([
     ...(Array.isArray(facet.adapterRuntimeBoundaryLineHashes)
       ? facet.adapterRuntimeBoundaryLineHashes
@@ -11767,6 +11922,7 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
   const evidenceRefs = compactStringList([
     ...serializedEvidenceRefs,
     adapterBoundaryCoverage.coverageHash,
+    runtimeBoundaryLineMaterialization.bindingHash,
     ...adapterRuntimeBoundaryEvidenceRefs,
   ]);
   const serializedFailedGates = compactStringList([
@@ -11799,10 +11955,15 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     adapterRuntimeBoundaryLines.length > 0
       ? null
       : 'runtime_profile_adapter_boundary_lines_missing',
+    runtimeBoundaryLineMaterialization.present === true
+      && runtimeBoundaryLineMaterialization.accepted !== true
+      ? 'runtime_profile_adapter_boundary_line_materialization_failed'
+      : null,
     adapterBoundaryCoverage.missingEventKinds.length === 0
       ? null
       : 'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete',
     ...adapterBoundaryCoverage.failedGates,
+    ...runtimeBoundaryLineMaterialization.failedGates,
   ]);
   const imported = status === 'runtime_profile_adapter_result_imported';
   const failedGates = compactStringList([
@@ -11865,6 +12026,7 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
       ? 'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete'
       : null,
     ...adapterBoundaryCoverage.failedGates,
+    ...runtimeBoundaryLineMaterialization.failedGates,
     ...serializedFailedGates,
   ]);
   const strictSummaryOnlyGates = new Set([
@@ -11950,6 +12112,8 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     adapter_runtime_boundary_evidence_refs: adapterRuntimeBoundaryEvidenceRefs,
     adapterBoundaryCoverage,
     adapter_boundary_coverage: adapterBoundaryCoverage,
+    runtimeBoundaryLineMaterialization,
+    runtime_boundary_line_materialization: runtimeBoundaryLineMaterialization,
     evidenceRefs,
     evidence_refs: evidenceRefs,
   };
