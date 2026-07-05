@@ -1971,6 +1971,7 @@ async function prepareProofRepo({ dir, slug, changedPath, readPath }) {
   await fs.promises.writeFile(path.join(hostRoot, changedPath), before, 'utf8');
   await fs.promises.writeFile(path.join(hostRoot, readPath), 'schema-contract-read-v1\n', 'utf8');
   await fs.promises.mkdir(path.join(hostRoot, 'scripts'), { recursive: true });
+  await fs.promises.writeFile(path.join(hostRoot, 'scripts', 'codesite-agent-action.mjs'), codexActorActionScriptSource(), { encoding: 'utf8', mode: 0o755 });
   await fs.promises.writeFile(path.join(hostRoot, 'package.json'), JSON.stringify({
     name: `codesite-proof-${slug}`,
     private: true,
