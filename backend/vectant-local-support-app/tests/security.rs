@@ -171,6 +171,21 @@ fn session_rejects_bad_token_replay_and_pause() {
 }
 
 #[test]
+fn session_control_can_resume_from_paused_state() {
+    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let token = session.token_for_pairing_response().to_string();
+
+    session.pause();
+    assert_eq!(session.validate(&token, "req_data"), Err(SessionError::Paused));
+    assert!(session.validate_control(&token, "req_resume").is_ok());
+    session.resume();
+    assert!(session.validate(&token, "req_after_resume").is_ok());
+    assert!(session.validate_control(&token, "req_disconnect").is_ok());
+    session.disconnect();
+    assert_eq!(session.validate_control(&token, "req_after_disconnect"), Err(SessionError::Expired));
+}
+
+#[test]
 fn local_api_rate_limiter_denies_after_window_budget() {
     let start = std::time::Instant::now();
     let mut limiter = RateLimiter::new(2, std::time::Duration::from_secs(60));

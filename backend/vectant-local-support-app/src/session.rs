@@ -60,14 +60,27 @@ impl SessionGuard {
     }
 
     pub fn validate(&mut self, token: &str, request_id: &str) -> Result<(), SessionError> {
-        if self.paused {
-            return Err(SessionError::Paused);
-        }
+        self.validate_inner(token, request_id, false)
+    }
+
+    pub fn validate_control(&mut self, token: &str, request_id: &str) -> Result<(), SessionError> {
+        self.validate_inner(token, request_id, true)
+    }
+
+    fn validate_inner(
+        &mut self,
+        token: &str,
+        request_id: &str,
+        allow_paused: bool,
+    ) -> Result<(), SessionError> {
         if Instant::now() > self.expires_at {
             return Err(SessionError::Expired);
         }
         if !constant_time_eq(token.as_bytes(), self.token.as_bytes()) {
             return Err(SessionError::BadToken);
+        }
+        if self.paused && !allow_paused {
+            return Err(SessionError::Paused);
         }
         if !self.seen_request_ids.insert(request_id.to_string()) {
             return Err(SessionError::Replay);

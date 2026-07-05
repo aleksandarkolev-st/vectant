@@ -77,6 +77,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/status/:request_id", get(status))
         .route("/v1/file/review", post(review_file))
+        .route("/v1/session/pause/:request_id", post(pause_session))
+        .route("/v1/session/resume/:request_id", post(resume_session))
+        .route("/v1/session/disconnect/:request_id", post(disconnect_session))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .with_state(state)
 }
@@ -128,6 +131,63 @@ async fn review_file(
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
     Ok(Json(state.workspace.read_file_for_review(&request)))
+}
+
+async fn pause_session(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    let mut session = state.session.lock().await;
+    session
+        .validate(token, &request_id)
+        .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    session.pause();
+    Ok(Json(serde_json::json!(session.state())))
+}
+
+async fn resume_session(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    control_session(state, request_id, headers, SessionAction::Resume).await
+}
+
+async fn disconnect_session(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    control_session(state, request_id, headers, SessionAction::Disconnect).await
+}
+
+enum SessionAction {
+    Resume,
+    Disconnect,
+}
+
+async fn control_session(
+    state: AppState,
+    request_id: String,
+    headers: HeaderMap,
+    action: SessionAction,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    let mut session = state.session.lock().await;
+    session
+        .validate_control(token, &request_id)
+        .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    match action {
+        SessionAction::Resume => session.resume(),
+        SessionAction::Disconnect => session.disconnect(),
+    }
+    Ok(Json(serde_json::json!(session.state())))
 }
 
 async fn enforce_rate_limit(state: &AppState) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
