@@ -13,7 +13,6 @@ import {
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 import {
   buildRuntimeBoundaryProofAdapter,
-  buildRuntimeBoundaryRunModeProof,
 } from './lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -550,16 +549,89 @@ function runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest) {
   };
 }
 
+function runtimeBoundaryProofAdapterSummary(adapterProof = {}) {
+  return {
+    schemaVersion: adapterProof.schemaVersion ?? adapterProof.schema_version ?? null,
+    schema_version: adapterProof.schema_version ?? adapterProof.schemaVersion ?? null,
+    proofAuthority: adapterProof.proofAuthority ?? adapterProof.proof_authority ?? null,
+    proof_authority: adapterProof.proof_authority ?? adapterProof.proofAuthority ?? null,
+    accepted: adapterProof.accepted === true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof:
+      adapterProof.canSatisfyRuntimeProof === true
+      || adapterProof.can_satisfy_runtime_proof === true,
+    can_satisfy_runtime_proof:
+      adapterProof.canSatisfyRuntimeProof === true
+      || adapterProof.can_satisfy_runtime_proof === true,
+    stageEvidence: adapterProof.stageEvidence ?? adapterProof.stage_evidence ?? null,
+    stage_evidence: adapterProof.stage_evidence ?? adapterProof.stageEvidence ?? null,
+    inputEvidence: adapterProof.inputEvidence ?? adapterProof.input_evidence ?? null,
+    input_evidence: adapterProof.input_evidence ?? adapterProof.inputEvidence ?? null,
+    inputStageBindingEvidence:
+      adapterProof.inputStageBindingEvidence
+      ?? adapterProof.input_stage_binding_evidence
+      ?? null,
+    input_stage_binding_evidence:
+      adapterProof.input_stage_binding_evidence
+      ?? adapterProof.inputStageBindingEvidence
+      ?? null,
+    strictGate: adapterProof.strictGate ?? adapterProof.strict_gate ?? null,
+    strict_gate: adapterProof.strict_gate ?? adapterProof.strictGate ?? null,
+    fullRuntimeProof: adapterProof.fullRuntimeProof ?? adapterProof.full_runtime_proof ?? null,
+    full_runtime_proof: adapterProof.full_runtime_proof ?? adapterProof.fullRuntimeProof ?? null,
+    runtimeProofArtifactId:
+      adapterProof.runtimeProofArtifact?.proofId
+      ?? adapterProof.runtimeProofArtifact?.proof_id
+      ?? adapterProof.runtime_proof_artifact?.proof_id
+      ?? null,
+    runtime_proof_artifact_id:
+      adapterProof.runtimeProofArtifact?.proofId
+      ?? adapterProof.runtimeProofArtifact?.proof_id
+      ?? adapterProof.runtime_proof_artifact?.proof_id
+      ?? null,
+    proofId: adapterProof.proofId ?? adapterProof.proof_id ?? null,
+    proof_id: adapterProof.proof_id ?? adapterProof.proofId ?? null,
+    failedGates: firstArray(adapterProof.failedGates, adapterProof.failed_gates),
+    failed_gates: firstArray(adapterProof.failed_gates, adapterProof.failedGates),
+  };
+}
+
 async function runRuntimeBoundaryProofAdapterProfile(profile, { resultPath = null } = {}) {
   const manifest = await readRuntimeBoundaryEventManifest(profile);
   const adapterInput = runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest);
   const adapterProof = buildRuntimeBoundaryProofAdapter(adapterInput);
-  const runModeProof = buildRuntimeBoundaryRunModeProof(adapterInput);
+  const adapterProofSummary = runtimeBoundaryProofAdapterSummary(adapterProof);
   const accepted = manifest.accepted === true && adapterProof.accepted === true;
+  const runtimeProofArtifact = accepted ? adapterProof.runtimeProofArtifact : null;
+  const proofLedger = runtimeProofArtifact?.proofLedger ?? runtimeProofArtifact?.proof_ledger ?? null;
   const failedGates = [
     ...firstArray(manifest.failedGates, manifest.failed_gates),
     ...firstArray(adapterProof.failedGates, adapterProof.failed_gates),
   ];
+  const runModeProofSummary = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.summary.v1',
+    schema_version: 'synthi.gpu.hmr.runtime_run_mode_proof.summary.v1',
+    proofAuthority: 'runtime_boundary_run_mode_summary_only_not_success_authority',
+    proof_authority: 'runtime_boundary_run_mode_summary_only_not_success_authority',
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    fullRuntimeProven: runtimeProofArtifact?.fullRuntimeProven === true,
+    full_runtime_proven: runtimeProofArtifact?.fullRuntimeProven === true,
+    strictRuntimeProofId: runtimeProofArtifact?.proofId ?? runtimeProofArtifact?.proof_id ?? null,
+    strict_runtime_proof_id: runtimeProofArtifact?.proofId ?? runtimeProofArtifact?.proof_id ?? null,
+    proofLedgerId: proofLedger?.proofId ?? proofLedger?.proof_id ?? null,
+    proof_ledger_id: proofLedger?.proofId ?? proofLedger?.proof_id ?? null,
+    runtimeBoundaryProofAdapterProofId: adapterProof.proofId ?? adapterProof.proof_id ?? null,
+    runtime_boundary_proof_adapter_proof_id: adapterProof.proofId ?? adapterProof.proof_id ?? null,
+    failedGates: [...new Set(failedGates)],
+    failed_gates: [...new Set(failedGates)],
+  };
   const proof = {
     schemaVersion: RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA,
     schema_version: RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA,
@@ -582,18 +654,14 @@ async function runRuntimeBoundaryProofAdapterProfile(profile, { resultPath = nul
     runtime_boundary_event_manifest: manifest,
     runtimeBoundaryAdapterInputEvidence: adapterProof.inputEvidence ?? null,
     runtime_boundary_adapter_input_evidence: adapterProof.input_evidence ?? null,
-    runtimeBoundaryProofAdapter: adapterProof,
-    runtime_boundary_proof_adapter: adapterProof,
-    runtimeBoundaryRunModeProof: runModeProof,
-    runtime_boundary_run_mode_proof: runModeProof,
-    runtimeProofArtifact: accepted ? adapterProof.runtimeProofArtifact : null,
-    runtime_proof_artifact: accepted ? adapterProof.runtime_proof_artifact : null,
-    proofLedger: accepted
-      ? (adapterProof.runtimeProofArtifact?.proofLedger ?? adapterProof.runtimeProofArtifact?.proof_ledger ?? null)
-      : null,
-    proof_ledger: accepted
-      ? (adapterProof.runtimeProofArtifact?.proofLedger ?? adapterProof.runtimeProofArtifact?.proof_ledger ?? null)
-      : null,
+    runtimeBoundaryProofAdapter: adapterProofSummary,
+    runtime_boundary_proof_adapter: adapterProofSummary,
+    runtimeBoundaryRunModeProofSummary: runModeProofSummary,
+    runtime_boundary_run_mode_proof_summary: runModeProofSummary,
+    runtimeProofArtifact,
+    runtime_proof_artifact: runtimeProofArtifact,
+    proofLedger,
+    proof_ledger: proofLedger,
     failedGates: [...new Set(failedGates)],
     failed_gates: [...new Set(failedGates)],
   };
