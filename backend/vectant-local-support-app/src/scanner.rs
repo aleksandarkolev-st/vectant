@@ -17,10 +17,16 @@ pub struct ScanReport {
     pub scanner_version: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScannerError {
+    Unavailable,
+}
+
 #[derive(Debug, Clone)]
 pub struct SecretScanner {
     patterns: Vec<(&'static str, Regex)>,
     version: String,
+    unavailable: bool,
 }
 
 impl SecretScanner {
@@ -47,7 +53,23 @@ impl SecretScanner {
         Self {
             patterns,
             version: version.into(),
+            unavailable: false,
         }
+    }
+
+    pub fn unavailable(version: impl Into<String>) -> Self {
+        Self {
+            patterns: Vec::new(),
+            version: version.into(),
+            unavailable: true,
+        }
+    }
+
+    pub fn try_scan(&self, input: &str) -> Result<ScanReport, ScannerError> {
+        if self.unavailable {
+            return Err(ScannerError::Unavailable);
+        }
+        Ok(self.scan(input))
     }
 
     pub fn scan(&self, input: &str) -> ScanReport {

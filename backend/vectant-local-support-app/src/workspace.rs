@@ -97,7 +97,27 @@ impl WorkspacePolicy {
 
         match self.safe_read_text(&request.path, request.max_bytes.unwrap_or(MAX_FILE_BYTES)) {
             Ok((content, sha)) => {
-                let scan = self.scanner.scan(&content);
+                let scan = match self.scanner.try_scan(&content) {
+                    Ok(scan) => scan,
+                    Err(_) => {
+                        return FileReadResponse {
+                            request_id: request.request_id.clone(),
+                            decision: "denied".to_string(),
+                            path_display: request.path.clone(),
+                            classification: Classification::L5,
+                            bytes_sent: 0,
+                            content_sha256: None,
+                            redactions: Vec::new(),
+                            scanner_version: crate::SCANNER_VERSION.to_string(),
+                            policy_version: crate::POLICY_VERSION.to_string(),
+                            user_visible_message: Some(
+                                "Blocked because the local secret scanner was unavailable. Nothing was sent."
+                                    .to_string(),
+                            ),
+                            content: None,
+                        };
+                    }
+                };
                 if !scan.findings.is_empty() {
                     let redacted = self.scanner.redact(&content, &scan);
                     return FileReadResponse {

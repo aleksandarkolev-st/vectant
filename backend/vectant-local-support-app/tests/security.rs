@@ -164,6 +164,27 @@ fn scanner_redacts_required_secret_fixtures() {
 }
 
 #[test]
+fn scanner_failure_denies_file_reads() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.ts"), "export const ok = true;\n").unwrap();
+    let policy = WorkspacePolicy::new(
+        dir.path(),
+        "wk_123",
+        SecretScanner::unavailable("scanner-test"),
+    )
+    .unwrap();
+
+    let response = policy.read_file_for_review(&request("app.ts"));
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+    assert!(response
+        .user_visible_message
+        .unwrap()
+        .contains("secret scanner was unavailable"));
+}
+
+#[test]
 fn session_rejects_bad_token_replay_and_pause() {
     let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
     let token = session.token_for_pairing_response().to_string();
