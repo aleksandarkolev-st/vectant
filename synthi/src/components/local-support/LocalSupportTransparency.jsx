@@ -72,6 +72,14 @@ const activity = [
   { kind: "Preview", text: "Approved browser preview for localhost:5173. AI page reading remains off.", at: "12:47:31" },
 ];
 
+const orgRestrictions = [
+  ["Browser preview", "Allowed", "good", null],
+  ["Vectant AI page reading", "Blocked", "bad", "Blocked by organization"],
+  ["Support agent page reading", "Blocked", "bad", "Blocked by organization"],
+  ["Fast Support", "Disabled", "bad", "Disabled for MVP"],
+  ["Minimum app version", "Required", "warn", "0.1.0 required"],
+];
+
 const ports = [
   {
     port: 5173,
@@ -226,6 +234,10 @@ export default function LocalSupportTransparency() {
               </div>
               <div className="grid min-w-[260px] gap-2 text-sm">
                 <div className="flex items-center justify-between rounded-md bg-white/[0.04] px-3 py-2">
+                  <span className="text-zinc-400">App version gate</span>
+                  <span className="text-right text-sm font-medium text-amber-200">Update required below 0.1.0</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-white/[0.04] px-3 py-2">
                   <span className="text-zinc-400">AI page reading remains off</span>
                   <Pill tone="bad">Off</Pill>
                 </div>
@@ -279,6 +291,23 @@ export default function LocalSupportTransparency() {
                     <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">{label}</div>
                     <div className="mt-2 font-medium text-zinc-100">{value}</div>
                     <div className="mt-1 text-sm text-zinc-400">{detail}</div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel
+              title="Organization restrictions"
+              description="Your organization allows browser preview but blocks Vectant AI and support agents from reading local page contents."
+            >
+              <div className="space-y-3">
+                {orgRestrictions.map(([label, value, tone, detail]) => (
+                  <div key={label} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
+                    <span className="text-zinc-400">{label}</span>
+                    <span className="flex flex-col items-end gap-1 text-right">
+                      <Pill tone={tone}>{value}</Pill>
+                      {detail ? <span className={cn("text-xs", tone === "bad" ? "text-red-200" : "text-amber-200")}>{detail}</span> : null}
+                    </span>
                   </div>
                 ))}
               </div>

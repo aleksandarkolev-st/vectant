@@ -9,6 +9,10 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("heading", { name: "Vectant Local Support" })).toBeVisible();
     await expect(page.getByText("Available locally is not the same as sent.")).toBeVisible();
     await expect(page.getByText("AI page reading remains off")).toBeVisible();
+    await expect(page.getByText("Update required below 0.1.0")).toBeVisible();
+    await expect(page.getByText("Your organization allows browser preview")).toBeVisible();
+    await expect(page.getByText("Vectant AI page reading")).toBeVisible();
+    await expect(page.getByText("Blocked by organization").first()).toBeVisible();
 
     await page.getByRole("tab", { name: "Inventory" }).click();
     await expect(page.getByText(".env")).toBeVisible();
