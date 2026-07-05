@@ -2176,8 +2176,17 @@ function randomColdListingClassification(entries) {
     const isBuildSignal =
       RANDOM_COLD_BUILD_FILE_BASENAMES.has(basename)
       || RANDOM_COLD_BUILD_FILE_EXTENSIONS.has(ext);
-    const isGpuSourceSignal = RANDOM_COLD_GPU_SOURCE_EXTENSIONS.has(ext);
     const isSourceRelevant = RANDOM_COLD_SOURCE_RELEVANT_EXTENSIONS.has(ext);
+    const isGpuPathSourceSignal = isSourceRelevant && (
+      lower.includes('/gpu/')
+      || lower.includes('/kernel/')
+      || lower.includes('/kernels/')
+      || lower.includes('/shader/')
+      || lower.includes('/shaders/')
+      || /(^|\/)(device|kernel|shader)[^/]*\.(c|cc|cpp|cxx|h|hh|hpp|hxx|ipp|inl)$/i.test(lower)
+    );
+    const isGpuSourceSignal =
+      RANDOM_COLD_GPU_SOURCE_EXTENSIONS.has(ext) || isGpuPathSourceSignal;
     if (Number.isFinite(entry.byteLength)) totalKnownBytes += entry.byteLength;
     if (isBuildSignal) {
       buildSignalCount += 1;
