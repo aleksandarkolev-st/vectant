@@ -24,9 +24,22 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Sent to Vectant")).toBeVisible();
 
     await page.getByRole("tab", { name: "Ports" }).click();
-    await expect(page.getByText("localhost:5173")).toBeVisible();
+    await expect(page.getByText("127.0.0.1:5173")).toBeVisible();
     await expect(page.getByText("GET, HEAD, OPTIONS")).toBeVisible();
-    await expect(page.getByRole("cell", { name: "Off" }).first()).toBeVisible();
+    await expect(page.getByText("Current session only")).toBeVisible();
+    await expect(page.getByText("Process binding")).toBeVisible();
+    await expect(page.getByText("60 requests per minute")).toBeVisible();
+    await expect(page.getByText("5 MB hard cap")).toBeVisible();
+    await expect(page.getByText("Cookie and Authorization stripped")).toBeVisible();
+    await expect(page.getByText("Loopback only, private network blocked")).toBeVisible();
+    await expect(page.getByText("Vectant AI can read page")).toBeVisible();
+    await expect(page.getByText("Send response bodies")).toBeVisible();
+    await expect(page.getByText("Send screenshots")).toBeVisible();
+    await expect(page.getByText("Console and network summaries")).toBeVisible();
+    await expect(page.getByText("Persistent approval")).toBeVisible();
+    await page.getByRole("button", { name: "Revoke port approval" }).click();
+    await expect(page.getByText("Revoked").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeDisabled();
 
     await page.getByRole("tab", { name: "Permission mode" }).click();
     await expect(page.getByRole("cell", { name: "Balanced mode" })).toBeVisible();

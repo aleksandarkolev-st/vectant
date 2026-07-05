@@ -130,9 +130,22 @@ const ports = [
   {
     port: 5173,
     service: "Vite dev server",
+    targetHost: "127.0.0.1",
     previewHost: "br-local-p5173.vectant-preview.dev",
+    process: "vite dev server",
+    processHash: "sha256:9c4f...b812",
+    ttl: "Current session only",
+    token: "Short lived preview token",
+    requestRate: "60 requests per minute",
+    responseLimit: "5 MB hard cap",
     browser: true,
     aiRead: false,
+    supportRead: false,
+    aiInteract: false,
+    responseBodies: false,
+    screenshots: false,
+    consoleNetwork: false,
+    persistent: false,
     methods: "GET, HEAD, OPTIONS",
   },
 ];
@@ -200,6 +213,15 @@ function DataTable({ columns, rows, renderRow }) {
   );
 }
 
+function CapabilityFlag({ label, enabled }) {
+  return (
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
+      <span className="text-zinc-300">{label}</span>
+      <Pill tone={enabled ? "good" : "bad"}>{enabled ? "Allowed" : "Off"}</Pill>
+    </div>
+  );
+}
+
 export default function LocalSupportTransparency() {
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(true);
@@ -207,6 +229,7 @@ export default function LocalSupportTransparency() {
   const [historyDeleted, setHistoryDeleted] = useState(false);
   const [lastExport, setLastExport] = useState(null);
   const [approvalsRevoked, setApprovalsRevoked] = useState(false);
+  const [revokedPorts, setRevokedPorts] = useState([]);
 
   const sessionState = useMemo(() => {
     if (!connected) return { label: "Disconnected", tone: "bad", Icon: XCircle };
@@ -505,20 +528,89 @@ Error: module failed to resolve`}
 
           <TabsContent value="ports" className="mt-4">
             <Panel title="Local ports" description="Manual approval only. Preview is browser-only unless a separate future security review enables AI read.">
-              <DataTable
-                columns={["Port", "Service", "Preview host", "Browser", "AI read", "Allowed methods"]}
-                rows={ports}
-                renderRow={(item) => (
-                  <tr key={item.port} className="text-zinc-300">
-                    <td className="px-4 py-3 font-mono text-xs">localhost:{item.port}</td>
-                    <td className="px-4 py-3">{item.service}</td>
-                    <td className="px-4 py-3 font-mono text-xs">{item.previewHost}</td>
-                    <td className="px-4 py-3"><Pill tone="good">{item.browser ? "Allowed" : "Off"}</Pill></td>
-                    <td className="px-4 py-3"><Pill tone="bad">{item.aiRead ? "Allowed" : "Off"}</Pill></td>
-                    <td className="px-4 py-3">{item.methods}</td>
-                  </tr>
-                )}
-              />
+              <div className="grid gap-4">
+                {ports.map((item) => {
+                  const revoked = revokedPorts.includes(item.port);
+                  return (
+                    <div key={item.port} className="rounded-lg border border-white/10 bg-zinc-950/70">
+                      <div className="grid gap-4 border-b border-white/10 p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-mono text-sm font-semibold text-zinc-100">
+                              {item.targetHost}:{item.port}
+                            </h3>
+                            <Pill tone={revoked ? "bad" : "good"}>{revoked ? "Revoked" : "Approved"}</Pill>
+                            <Pill tone="neutral">{item.ttl}</Pill>
+                          </div>
+                          <p className="mt-2 text-sm text-zinc-400">{item.service}</p>
+                          <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
+                            <div className="rounded-md bg-white/[0.03] px-3 py-2">
+                              <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">Preview host</div>
+                              <div className="mt-1 break-all font-mono text-xs text-zinc-300">{item.previewHost}</div>
+                            </div>
+                            <div className="rounded-md bg-white/[0.03] px-3 py-2">
+                              <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">Process binding</div>
+                              <div className="mt-1 font-mono text-xs text-zinc-300">{item.processHash}</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid content-start gap-2">
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
+                            onClick={() => setRevokedPorts((values) => Array.from(new Set([...values, item.port])))}
+                            disabled={revoked}
+                          >
+                            <Unplug className="size-4" aria-hidden="true" />
+                            Revoke port approval
+                          </Button>
+                          <div className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-400">
+                            Revoke invalidates the host and preview token for this session.
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                        <div>
+                          <div className="mb-2 text-xs uppercase tracking-[0.08em] text-zinc-500">Capability flags</div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <CapabilityFlag label="Browser preview for me" enabled={!revoked && item.browser} />
+                            <CapabilityFlag label="Vectant AI can read page" enabled={!revoked && item.aiRead} />
+                            <CapabilityFlag label="Support agent can read page" enabled={!revoked && item.supportRead} />
+                            <CapabilityFlag label="Vectant AI can click" enabled={!revoked && item.aiInteract} />
+                            <CapabilityFlag label="Send response bodies" enabled={!revoked && item.responseBodies} />
+                            <CapabilityFlag label="Send screenshots" enabled={!revoked && item.screenshots} />
+                            <CapabilityFlag label="Console and network summaries" enabled={!revoked && item.consoleNetwork} />
+                            <CapabilityFlag label="Persistent approval" enabled={!revoked && item.persistent} />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-2 text-xs uppercase tracking-[0.08em] text-zinc-500">Bridge limits</div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {[
+                              ["Allowed methods", item.methods],
+                              ["Request rate", item.requestRate],
+                              ["Response size", item.responseLimit],
+                              ["Preview token", revoked ? "Revoked" : item.token],
+                              ["Credential headers", "Cookie and Authorization stripped"],
+                              ["Redirects", "Loopback only, private network blocked"],
+                              ["Service workers", "Blocked"],
+                              ["Cache and referrer", "No-store, no-referrer"],
+                            ].map(([label, value]) => (
+                              <div key={label} className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2">
+                                <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">{label}</div>
+                                <div className="mt-1 text-sm text-zinc-300">{value}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </Panel>
           </TabsContent>
 
