@@ -95,6 +95,10 @@ services:
         # public host URL, not the compose-network hostname. Default to 8081
     ports:
       - "127.0.0.1:${FRONTEND_HOST_PORT:-3000}:3000"
+    volumes:
+      # Read-only workspace mirror for server-side CodeSite snapshot validation.
+      # Runtime mutation surfaces still use managed overlays/quarantine paths.
+      - .:/workspace:ro
     environment:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
