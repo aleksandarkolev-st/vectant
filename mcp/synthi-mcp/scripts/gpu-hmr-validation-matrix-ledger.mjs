@@ -621,6 +621,27 @@ function compactBroadLibraryAgnosticReadiness(readiness = {}) {
       ?? broadProof.random_cold_path_distinct_source_content_only_identity_hashes,
     32,
   );
+  const largeRocmMlRandomColdPathTargets = compactPrimitiveArraySample(
+    readiness.largeRocmMlRandomColdPathTargets
+      ?? readiness.large_rocm_ml_random_cold_path_targets
+      ?? broadProof.largeRocmMlRandomColdPathTargets
+      ?? broadProof.large_rocm_ml_random_cold_path_targets,
+    32,
+  );
+  const largeRocmMlRandomColdPathSourceHashes = compactPrimitiveArraySample(
+    readiness.largeRocmMlRandomColdPathDistinctSourceIdentityHashes
+      ?? readiness.large_rocm_ml_random_cold_path_distinct_source_identity_hashes
+      ?? broadProof.largeRocmMlRandomColdPathDistinctSourceIdentityHashes
+      ?? broadProof.large_rocm_ml_random_cold_path_distinct_source_identity_hashes,
+    32,
+  );
+  const largeRocmMlRandomColdPathContentOnlyHashes = compactPrimitiveArraySample(
+    readiness.largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes
+      ?? readiness.large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes
+      ?? broadProof.largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes
+      ?? broadProof.large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes,
+    32,
+  );
   const sourceFirstVisualSourceHashes = compactPrimitiveArraySample(
     readiness.sourceFirstVisualSourceIdentityHashes
       ?? readiness.source_first_visual_source_identity_hashes
@@ -780,6 +801,130 @@ function compactBroadLibraryAgnosticReadiness(readiness = {}) {
       randomColdPathContentOnlyHashes.contentHash,
     random_cold_path_distinct_source_content_only_identity_hashes_hash:
       randomColdPathContentOnlyHashes.contentHash,
+    largeRocmMlRandomColdPathRowCount:
+      numberField(
+        readiness.largeRocmMlRandomColdPathRowCount,
+        readiness.large_rocm_ml_random_cold_path_row_count,
+        broadProof.largeRocmMlRandomColdPathRows,
+        broadProof.large_rocm_ml_random_cold_path_rows,
+      ),
+    large_rocm_ml_random_cold_path_row_count:
+      numberField(
+        readiness.largeRocmMlRandomColdPathRowCount,
+        readiness.large_rocm_ml_random_cold_path_row_count,
+        broadProof.largeRocmMlRandomColdPathRows,
+        broadProof.large_rocm_ml_random_cold_path_rows,
+      ),
+    largeRocmMlRandomColdPathCandidateRowCount:
+      numberField(
+        readiness.largeRocmMlRandomColdPathCandidateRowCount,
+        readiness.large_rocm_ml_random_cold_path_candidate_row_count,
+        broadProof.largeRocmMlRandomColdPathCandidateRows,
+        broadProof.large_rocm_ml_random_cold_path_candidate_rows,
+      ),
+    large_rocm_ml_random_cold_path_candidate_row_count:
+      numberField(
+        readiness.largeRocmMlRandomColdPathCandidateRowCount,
+        readiness.large_rocm_ml_random_cold_path_candidate_row_count,
+        broadProof.largeRocmMlRandomColdPathCandidateRows,
+        broadProof.large_rocm_ml_random_cold_path_candidate_rows,
+      ),
+    largeRocmMlRandomColdPathSourceEvidenceAccepted:
+      firstBool(
+        readiness.largeRocmMlRandomColdPathSourceEvidenceAccepted,
+        readiness.large_rocm_ml_random_cold_path_source_evidence_accepted,
+        broadProof.largeRocmMlRandomColdPathSourceEvidenceAccepted,
+        broadProof.large_rocm_ml_random_cold_path_source_evidence_accepted,
+      ) === true,
+    large_rocm_ml_random_cold_path_source_evidence_accepted:
+      firstBool(
+        readiness.largeRocmMlRandomColdPathSourceEvidenceAccepted,
+        readiness.large_rocm_ml_random_cold_path_source_evidence_accepted,
+        broadProof.largeRocmMlRandomColdPathSourceEvidenceAccepted,
+        broadProof.large_rocm_ml_random_cold_path_source_evidence_accepted,
+      ) === true,
+    largeRocmMlRandomColdPathDistinctSourceIdentityCount:
+      numberField(
+        readiness.largeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        readiness.large_rocm_ml_random_cold_path_distinct_source_identity_count,
+        broadProof.largeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        broadProof.large_rocm_ml_random_cold_path_distinct_source_identity_count,
+      ),
+    large_rocm_ml_random_cold_path_distinct_source_identity_count:
+      numberField(
+        readiness.largeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        readiness.large_rocm_ml_random_cold_path_distinct_source_identity_count,
+        broadProof.largeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        broadProof.large_rocm_ml_random_cold_path_distinct_source_identity_count,
+      ),
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      numberField(
+        readiness.largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount,
+        readiness.large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count,
+        broadProof.largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount,
+        broadProof.large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count,
+      ),
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count:
+      numberField(
+        readiness.largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount,
+        readiness.large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count,
+        broadProof.largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount,
+        broadProof.large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count,
+      ),
+    minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount:
+      numberField(
+        readiness.minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        readiness.minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count,
+        broadProof.minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        broadProof.minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count,
+      ),
+    minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count:
+      numberField(
+        readiness.minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        readiness.minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count,
+        broadProof.minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount,
+        broadProof.minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count,
+      ),
+    largeRocmMlRandomColdPathTargets: largeRocmMlRandomColdPathTargets.entries,
+    large_rocm_ml_random_cold_path_targets: largeRocmMlRandomColdPathTargets.entries,
+    largeRocmMlRandomColdPathTargetsCount: largeRocmMlRandomColdPathTargets.count,
+    large_rocm_ml_random_cold_path_targets_count: largeRocmMlRandomColdPathTargets.count,
+    largeRocmMlRandomColdPathTargetsTruncated: largeRocmMlRandomColdPathTargets.truncated,
+    large_rocm_ml_random_cold_path_targets_truncated: largeRocmMlRandomColdPathTargets.truncated,
+    largeRocmMlRandomColdPathTargetsHash: largeRocmMlRandomColdPathTargets.contentHash,
+    large_rocm_ml_random_cold_path_targets_hash: largeRocmMlRandomColdPathTargets.contentHash,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashes:
+      largeRocmMlRandomColdPathSourceHashes.entries,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes:
+      largeRocmMlRandomColdPathSourceHashes.entries,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashesCount:
+      largeRocmMlRandomColdPathSourceHashes.count,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes_count:
+      largeRocmMlRandomColdPathSourceHashes.count,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashesTruncated:
+      largeRocmMlRandomColdPathSourceHashes.truncated,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes_truncated:
+      largeRocmMlRandomColdPathSourceHashes.truncated,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashesHash:
+      largeRocmMlRandomColdPathSourceHashes.contentHash,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes_hash:
+      largeRocmMlRandomColdPathSourceHashes.contentHash,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes:
+      largeRocmMlRandomColdPathContentOnlyHashes.entries,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes:
+      largeRocmMlRandomColdPathContentOnlyHashes.entries,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashesCount:
+      largeRocmMlRandomColdPathContentOnlyHashes.count,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes_count:
+      largeRocmMlRandomColdPathContentOnlyHashes.count,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashesTruncated:
+      largeRocmMlRandomColdPathContentOnlyHashes.truncated,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes_truncated:
+      largeRocmMlRandomColdPathContentOnlyHashes.truncated,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashesHash:
+      largeRocmMlRandomColdPathContentOnlyHashes.contentHash,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes_hash:
+      largeRocmMlRandomColdPathContentOnlyHashes.contentHash,
     sourceFirstVisualRowCount:
       numberField(readiness.sourceFirstVisualRowCount, readiness.source_first_visual_row_count),
     source_first_visual_row_count:

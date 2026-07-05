@@ -60,11 +60,16 @@ const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT = 5;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT = 1000;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES = 10 * 1024 * 1024;
 const BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT = 25;
+const BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT = 3;
 const BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS = 15 * 60 * 1000;
 const BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT = 2;
 const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
+const LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.large_rocm_ml_random_cold_source_intake.v1';
+const LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY =
+  'source_and_build_metadata_rocm_ml_signals_only_not_gpu_hmr_success';
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
 const CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES = 8192;
@@ -276,6 +281,38 @@ const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
   'build_metadata_content_bytes_only_not_gpu_hmr_success';
 const RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
   'build_metadata_semantic_tokens_only_not_runtime_authority';
+const LARGE_ROCM_ML_RANDOM_COLD_ROCM_BACKEND_CANDIDATES = new Set([
+  'hip',
+  'hip_rocm',
+  'hiprt',
+]);
+const LARGE_ROCM_ML_RANDOM_COLD_DOMAIN_TOKENS = Object.freeze([
+  'activation',
+  'attention',
+  'batch_norm',
+  'batchnorm',
+  'blas',
+  'conv',
+  'conv2d',
+  'convolution',
+  'dnn',
+  'gemm',
+  'gradient',
+  'gru',
+  'inference',
+  'layer_norm',
+  'layernorm',
+  'lstm',
+  'matmul',
+  'matrix_multiply',
+  'neural',
+  'pooling',
+  'rnn',
+  'softmax',
+  'tensor',
+  'training',
+  'transformer',
+]);
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
@@ -31203,6 +31240,469 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
   });
 }
 
+function largeRocmMlRandomColdDomainTokenMatches(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return [];
+  const normalized = text.replace(/[_-]+/g, '_');
+  return LARGE_ROCM_ML_RANDOM_COLD_DOMAIN_TOKENS.filter((token) => {
+    const tokenPattern = token
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/_/g, '[_-]+');
+    return new RegExp(`(^|[^a-z0-9])${tokenPattern}([^a-z0-9]|$)`, 'i')
+      .test(normalized);
+  });
+}
+
+function largeRocmMlRandomColdTextSignals(values, source) {
+  const signals = [];
+  const seen = new Set();
+  for (const value of compactStringList(values)) {
+    const tokens = largeRocmMlRandomColdDomainTokenMatches(value);
+    for (const token of tokens) {
+      const key = `${source}:${token}:${value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (signals.length < 60) {
+        signals.push({
+          source,
+          token,
+          value,
+        });
+      }
+    }
+  }
+  return signals;
+}
+
+function largeRocmMlRandomColdListingTextValues(sourceListingManifest = {}) {
+  const manifest = compactObject(sourceListingManifest);
+  const entries = randomColdNormalizeSourceListingEntries(
+    manifest.entries
+    ?? manifest.entrySample
+    ?? manifest.entry_sample
+    ?? manifest.sourceListingEntries
+    ?? manifest.source_listing_entries
+    ?? manifest.files
+    ?? manifest.sourceFiles
+    ?? manifest.source_files,
+  );
+  const backendSignals = compactObject(manifest.backendSignals ?? manifest.backend_signals);
+  const backendSignalPaths = Object.values(backendSignals).flatMap((signals) =>
+    compactObjectList(signals).map((signal) => firstText(signal.path))
+  );
+  return compactStringList([
+    ...entries.map((entry) => entry.path),
+    ...(Array.isArray(manifest.buildSignals) ? manifest.buildSignals : []),
+    ...(Array.isArray(manifest.build_signals) ? manifest.build_signals : []),
+    ...(Array.isArray(manifest.gpuSourceSignals) ? manifest.gpuSourceSignals : []),
+    ...(Array.isArray(manifest.gpu_source_signals) ? manifest.gpu_source_signals : []),
+    ...(Array.isArray(manifest.sourceRelevantFiles) ? manifest.sourceRelevantFiles : []),
+    ...(Array.isArray(manifest.source_relevant_files) ? manifest.source_relevant_files : []),
+    ...backendSignalPaths,
+  ]);
+}
+
+function largeRocmMlRandomColdSemanticTextValues(summary = {}) {
+  const semanticSummary = compactObject(summary);
+  const values = [];
+  const objectLists = [
+    semanticSummary.mlDomainSignals,
+    semanticSummary.ml_domain_signals,
+    semanticSummary.domainSignals,
+    semanticSummary.domain_signals,
+    semanticSummary.semanticTokens,
+    semanticSummary.semantic_tokens,
+    semanticSummary.backendSignals,
+    semanticSummary.backend_signals,
+  ];
+  for (const list of objectLists) {
+    for (const item of Array.isArray(list) ? list : []) {
+      if (typeof item === 'string') {
+        values.push(item);
+        continue;
+      }
+      const object = compactObject(item);
+      values.push(
+        firstText(object.token),
+        firstText(object.name),
+        firstText(object.value),
+        firstText(object.kind),
+        firstText(object.reason),
+        firstText(object.path),
+      );
+    }
+  }
+  for (const key of [
+    'domain',
+    'domain_token',
+    'domainToken',
+    'kernel_family',
+    'kernelFamily',
+    'operator',
+    'operation',
+    'target',
+  ]) {
+    values.push(firstText(semanticSummary[key]));
+  }
+  return compactStringList(values);
+}
+
+function largeRocmMlRandomColdBuildTextSignals(buildContentEvidence = {}) {
+  const buildContent = compactObject(buildContentEvidence);
+  const buildFiles = compactObjectList(buildContent.buildFiles ?? buildContent.build_files);
+  const values = [];
+  for (const buildFile of buildFiles) {
+    values.push(firstText(buildFile.path));
+    const semanticSummary = compactObject(buildFile.semanticSummary ?? buildFile.semantic_summary);
+    values.push(...largeRocmMlRandomColdSemanticTextValues(semanticSummary));
+  }
+  return largeRocmMlRandomColdTextSignals(values, 'verified_build_metadata');
+}
+
+function largeRocmMlRandomColdRocmBackendSignals({
+  backendEvidence = {},
+  sourceListingManifest = {},
+  buildContentEvidence = {},
+} = {}) {
+  const sourceListing = compactObject(sourceListingManifest);
+  const buildContent = compactObject(buildContentEvidence);
+  const backendFacet = compactObject(backendEvidence);
+  const candidates = compactStringList([
+    ...(Array.isArray(backendFacet.sourceDerivedBackendCandidates)
+      ? backendFacet.sourceDerivedBackendCandidates
+      : []),
+    ...(Array.isArray(backendFacet.source_derived_backend_candidates)
+      ? backendFacet.source_derived_backend_candidates
+      : []),
+    ...(Array.isArray(backendFacet.sourceListingDerivedBackendCandidates)
+      ? backendFacet.sourceListingDerivedBackendCandidates
+      : []),
+    ...(Array.isArray(backendFacet.source_listing_derived_backend_candidates)
+      ? backendFacet.source_listing_derived_backend_candidates
+      : []),
+    ...(Array.isArray(backendFacet.buildMetadataDerivedBackendCandidates)
+      ? backendFacet.buildMetadataDerivedBackendCandidates
+      : []),
+    ...(Array.isArray(backendFacet.build_metadata_derived_backend_candidates)
+      ? backendFacet.build_metadata_derived_backend_candidates
+      : []),
+    ...(Array.isArray(sourceListing.backendCandidates) ? sourceListing.backendCandidates : []),
+    ...(Array.isArray(sourceListing.backend_candidates) ? sourceListing.backend_candidates : []),
+  ]);
+  const buildMetadataSignals = compactObjectList([
+    ...(Array.isArray(backendFacet.buildMetadataDerivedBackendSignals)
+      ? backendFacet.buildMetadataDerivedBackendSignals
+      : []),
+    ...(Array.isArray(backendFacet.build_metadata_derived_backend_signals)
+      ? backendFacet.build_metadata_derived_backend_signals
+      : []),
+  ]);
+  const buildFiles = compactObjectList(buildContent.buildFiles ?? buildContent.build_files);
+  const semanticBackendSignals = buildFiles.flatMap((buildFile) => {
+    const semanticSummary = compactObject(buildFile.semanticSummary ?? buildFile.semantic_summary);
+    const authority = firstText(
+      semanticSummary.backendSignalAuthority,
+      semanticSummary.backend_signal_authority,
+    );
+    if (authority !== RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY) return [];
+    return compactObjectList(semanticSummary.backendSignals ?? semanticSummary.backend_signals)
+      .map((signal) => ({
+        path: firstText(buildFile.path),
+        backend: firstText(signal.backend),
+        reason: firstText(signal.reason) ?? 'build_metadata_semantic_token',
+      }));
+  });
+  const signals = [];
+  const seen = new Set();
+  for (const backend of candidates) {
+    if (!LARGE_ROCM_ML_RANDOM_COLD_ROCM_BACKEND_CANDIDATES.has(backend)) continue;
+    const key = `candidate:${backend}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    signals.push({
+      source: 'source_or_build_backend_candidate',
+      backend,
+    });
+  }
+  for (const signal of [...buildMetadataSignals, ...semanticBackendSignals]) {
+    const backend = firstText(signal.backend);
+    if (!LARGE_ROCM_ML_RANDOM_COLD_ROCM_BACKEND_CANDIDATES.has(backend)) continue;
+    const key = `build:${backend}:${signal.path ?? ''}:${signal.reason ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    signals.push({
+      source: 'verified_build_metadata',
+      backend,
+      path: firstText(signal.path) ?? null,
+      reason: firstText(signal.reason) ?? 'build_metadata_semantic_token',
+    });
+  }
+  return signals.slice(0, 60);
+}
+
+function largeRocmMlRandomColdSourceIntakeFacet(row) {
+  const facet = compactObject(row.randomLargeProjectColdPath ?? row.random_large_project_cold_path);
+  const intake = randomColdSourceIntakeForRow(row);
+  const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
+  const allowSerializedBuildContentReplay =
+    firstText(intake.projectionAuthority, intake.projection_authority)
+      === RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY
+    && sourceIntakeEvidence.accepted === true;
+  const buildContentEvidence = randomColdBuildMetadataContentEvidenceFacet(firstCompactObject(
+    intake.buildMetadataContentEvidence,
+    intake.build_metadata_content_evidence,
+    row.buildMetadataContentEvidence,
+    row.build_metadata_content_evidence,
+    facet.buildMetadataContentEvidence,
+    facet.build_metadata_content_evidence,
+  ), {
+    allowSerializedVerifierOutputReplay: allowSerializedBuildContentReplay,
+  });
+  const sourceListingManifest = compactObject(
+    sourceIntakeEvidence.sourceListingManifest
+    ?? sourceIntakeEvidence.source_listing_manifest,
+  );
+  const backendEvidence = compactObject(
+    row.randomColdBackendEvidence
+    ?? row.random_cold_backend_evidence,
+  );
+  const rocmBackendSignals = largeRocmMlRandomColdRocmBackendSignals({
+    backendEvidence,
+    sourceListingManifest,
+    buildContentEvidence,
+  });
+  const sourceMlSignals = largeRocmMlRandomColdTextSignals(
+    largeRocmMlRandomColdListingTextValues(sourceListingManifest),
+    'source_listing',
+  );
+  const buildMlSignals = largeRocmMlRandomColdBuildTextSignals(buildContentEvidence);
+  const sourceIdentityHash = randomColdPathSourceIdentityHash(row);
+  const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
+  const sourceContentOnlyIdentityHash = randomColdPathSourceContentOnlyIdentityHash(row);
+  const candidateBackendUsedForAcceptance = firstBool(
+    backendEvidence.candidateBackendUsedForAcceptance,
+    backendEvidence.candidate_backend_used_for_acceptance,
+  ) === true;
+  const forbiddenAuthority =
+    firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+    || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+    || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+    || firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+    || firstBool(
+      buildContentEvidence.acceptedForGpuHmr,
+      buildContentEvidence.accepted_for_gpu_hmr,
+    ) === true
+    || firstBool(buildContentEvidence.gpuHmrSuccess, buildContentEvidence.gpu_hmr_success) === true;
+  const failedGates = compactStringList([
+    row.proofMode === 'random_large_project_cold_path'
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_wrong_proof_mode',
+    row.matrixOutcome === 'refusal_proven'
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_refusal_row_required',
+    sourceIntakeEvidence.accepted === true
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_source_tree_not_accepted',
+    buildContentEvidence.acceptedAsBuildMetadataContent === true
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_build_metadata_not_accepted',
+    candidateBackendUsedForAcceptance
+      ? 'large_rocm_ml_random_cold_source_intake_candidate_backend_used'
+      : null,
+    rocmBackendSignals.length > 0
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_rocm_backend_not_observed',
+    sourceMlSignals.length > 0 || buildMlSignals.length > 0
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_ml_domain_not_observed',
+    sourceIdentityHash
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_source_identity_missing',
+    sourceContentOnlyIdentityHash
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_source_content_identity_missing',
+    forbiddenAuthority
+      ? 'large_rocm_ml_random_cold_source_intake_authority_claimed'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  const facetHash = stableJsonHash({
+    schemaVersion: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION,
+    proofAuthority: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY,
+    accepted,
+    rowId: row.rowId ?? null,
+    targetId: row.targetId ?? null,
+    sourceIdentityHash,
+    sourceContentIdentityHash,
+    sourceContentOnlyIdentityHash,
+    sourceListingHash: sourceListingManifest.sourceListingHash
+      ?? sourceListingManifest.source_listing_hash
+      ?? null,
+    buildMetadataContentHash: buildContentEvidence.contentEvidenceHash
+      ?? buildContentEvidence.content_evidence_hash
+      ?? null,
+    rocmBackendSignals,
+    sourceMlSignals,
+    buildMlSignals,
+    failedGates,
+  });
+  return {
+    schemaVersion: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION,
+    schema_version: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION,
+    proofAuthority: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY,
+    proof_authority: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY,
+    accepted,
+    acceptedAsLargeRocmMlRandomColdSourceIntake: accepted,
+    accepted_as_large_rocm_ml_random_cold_source_intake: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    sourceContentIdentityHash,
+    source_content_identity_hash: sourceContentIdentityHash,
+    sourceContentOnlyIdentityHash,
+    source_content_only_identity_hash: sourceContentOnlyIdentityHash,
+    rocmBackendSignalCount: rocmBackendSignals.length,
+    rocm_backend_signal_count: rocmBackendSignals.length,
+    rocmBackendSignals,
+    rocm_backend_signals: rocmBackendSignals,
+    sourceMlSignalCount: sourceMlSignals.length,
+    source_ml_signal_count: sourceMlSignals.length,
+    sourceMlSignals,
+    source_ml_signals: sourceMlSignals,
+    buildMlSignalCount: buildMlSignals.length,
+    build_ml_signal_count: buildMlSignals.length,
+    buildMlSignals,
+    build_ml_signals: buildMlSignals,
+    sourceListingHash: sourceListingManifest.sourceListingHash
+      ?? sourceListingManifest.source_listing_hash
+      ?? null,
+    source_listing_hash: sourceListingManifest.sourceListingHash
+      ?? sourceListingManifest.source_listing_hash
+      ?? null,
+    buildMetadataContentHash: buildContentEvidence.contentEvidenceHash
+      ?? buildContentEvidence.content_evidence_hash
+      ?? null,
+    build_metadata_content_hash: buildContentEvidence.contentEvidenceHash
+      ?? buildContentEvidence.content_evidence_hash
+      ?? null,
+    facetHash,
+    facet_hash: facetHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function largeRocmMlRandomColdSourceRowsForBroadReadiness(rows, context = {}) {
+  return randomColdPathRowsForBroadReadiness(rows, context)
+    .filter((row) => largeRocmMlRandomColdSourceIntakeFacet(row).accepted === true);
+}
+
+function largeRocmMlRandomColdSourceIntakeCoverage(rows, context = {}) {
+  const randomColdRows = rows.filter((row) =>
+    row.proofMode === 'random_large_project_cold_path'
+  );
+  const qualifyingRows = randomColdPathRowsForBroadReadiness(rows, context);
+  const candidateRows = randomColdPathRowsForBroadReadiness(rows, {
+    requireLargeSourceTree: false,
+    ...context,
+  });
+  const qualifyingPairs = qualifyingRows.map((row) => ({
+    row,
+    facet: largeRocmMlRandomColdSourceIntakeFacet(row),
+  }));
+  const candidatePairs = candidateRows.map((row) => ({
+    row,
+    facet: largeRocmMlRandomColdSourceIntakeFacet(row),
+  }));
+  const acceptedPairs = qualifyingPairs.filter((pair) => pair.facet.accepted === true);
+  const acceptedRows = acceptedPairs.map((pair) => pair.row);
+  const candidateAcceptedPairs = candidatePairs.filter((pair) => pair.facet.accepted === true);
+  const distinctSourceIdentityHashes =
+    randomColdPathDistinctSourceIdentityHashList(acceptedRows);
+  const distinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(acceptedRows);
+  const sourceFloorAccepted =
+    distinctSourceIdentityHashes.length
+      >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT;
+  const contentFloorAccepted =
+    distinctSourceContentOnlyIdentityHashes.length
+      >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT;
+  const accepted = acceptedRows.length > 0 && sourceFloorAccepted && contentFloorAccepted;
+  const observedFailedGates = [
+    ...new Set(compactStringList(candidatePairs.flatMap((pair) => pair.facet.failedGates))),
+  ].slice(0, 40);
+  const openGaps = accepted
+    ? []
+    : compactStringList([
+      acceptedRows.length > 0
+        ? null
+        : candidateAcceptedPairs.length > 0
+          ? 'large_rocm_ml_random_cold_path_large_source_required'
+          : 'large_rocm_ml_random_cold_path_source_evidence_required',
+      sourceFloorAccepted
+        ? null
+        : 'large_rocm_ml_random_cold_path_more_distinct_sources_required',
+      contentFloorAccepted
+        ? null
+        : 'large_rocm_ml_random_cold_path_more_distinct_source_content_required',
+      ...observedFailedGates,
+    ]);
+  return coverageEntry({
+    id: 'large_rocm_ml_random_cold_source_intake',
+    requirement: 'Large ROCm/ML arbitrary-project cold-path intake derived from source and build metadata, with fail-closed runtime proof gaps',
+    status: accepted
+      ? 'refused'
+      : candidateAcceptedPairs.length > 0
+        ? 'candidate_only'
+        : randomColdRows.length > 0
+          ? 'diagnostic_only'
+          : 'missing',
+    rows: randomColdRows,
+    openGaps,
+    qualifyingRowCount: acceptedRows.length,
+    qualifying_row_count: acceptedRows.length,
+    qualifyingRowIds: compactStringList(acceptedRows.map((row) => row.rowId)),
+    qualifying_row_ids: compactStringList(acceptedRows.map((row) => row.rowId)),
+    qualifyingTargets: compactStringList(acceptedRows.map((row) => row.targetId)),
+    qualifying_targets: compactStringList(acceptedRows.map((row) => row.targetId)),
+    candidateRowCount: candidateAcceptedPairs.length,
+    candidate_row_count: candidateAcceptedPairs.length,
+    distinctSourceIdentityCount: distinctSourceIdentityHashes.length,
+    distinct_source_identity_count: distinctSourceIdentityHashes.length,
+    distinctSourceIdentityHashes,
+    distinct_source_identity_hashes: distinctSourceIdentityHashes,
+    distinctSourceContentOnlyIdentityCount: distinctSourceContentOnlyIdentityHashes.length,
+    distinct_source_content_only_identity_count: distinctSourceContentOnlyIdentityHashes.length,
+    distinctSourceContentOnlyIdentityHashes,
+    distinct_source_content_only_identity_hashes: distinctSourceContentOnlyIdentityHashes,
+    minimumDistinctSourceIdentityCount:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimum_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimumDistinctSourceContentOnlyIdentityCount:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimum_distinct_source_content_only_identity_count:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    sourceFloorAccepted,
+    source_floor_accepted: sourceFloorAccepted,
+    contentFloorAccepted,
+    content_floor_accepted: contentFloorAccepted,
+    sampleFacets: acceptedPairs.slice(0, 10).map((pair) => pair.facet),
+    sample_facets: acceptedPairs.slice(0, 10).map((pair) => pair.facet),
+    proofAuthority: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY,
+    proof_authority: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_AUTHORITY,
+    schemaVersion: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION,
+    schema_version: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION,
+  });
+}
+
 function randomColdInternalLocalPathReason(normalized, context = {}) {
   const normalizedForSegments = String(normalized ?? '').replace(/\\/g, '/').toLowerCase();
   const segments = normalizedForSegments.split('/').filter(Boolean);
@@ -31778,6 +32278,13 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     requireLargeSourceTree: false,
     ...context,
   });
+  const largeRocmMlRandomColdPathRows =
+    largeRocmMlRandomColdSourceRowsForBroadReadiness(rows, context);
+  const largeRocmMlRandomColdPathCandidateRows =
+    largeRocmMlRandomColdSourceRowsForBroadReadiness(rows, {
+      requireLargeSourceTree: false,
+      ...context,
+    });
   const randomColdPathSelectionPredicate = randomColdPathBroadReadinessPredicate(context);
   const randomColdPathCandidateSelectionPredicate =
     randomColdPathBroadReadinessPredicate({ requireLargeSourceTree: false, ...context });
@@ -31831,6 +32338,22 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const randomColdPathCandidateRowIds = compactStringList(
     randomColdPathCandidateRows.map((row) => row.rowId),
   );
+  const largeRocmMlRandomColdPathTargets = compactStringList(
+    largeRocmMlRandomColdPathRows.map((row) => row.targetId),
+  );
+  const largeRocmMlRandomColdPathRowIds = compactStringList(
+    largeRocmMlRandomColdPathRows.map((row) => row.rowId),
+  );
+  const largeRocmMlRandomColdPathDistinctSourceIdentityHashes =
+    randomColdPathDistinctSourceIdentityHashList(largeRocmMlRandomColdPathRows);
+  const largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(largeRocmMlRandomColdPathRows);
+  const largeRocmMlRandomColdPathCandidateTargets = compactStringList(
+    largeRocmMlRandomColdPathCandidateRows.map((row) => row.targetId),
+  );
+  const largeRocmMlRandomColdPathCandidateRowIds = compactStringList(
+    largeRocmMlRandomColdPathCandidateRows.map((row) => row.rowId),
+  );
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const sourceFirstVisualRowIds = compactStringList(sourceFirstVisualRows.map((row) => row.rowId));
   const sourceFirstVisualSourceIdentityHashes =
@@ -31881,6 +32404,12 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
           : randomColdPathRows.length >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT
             ? 'broad_acceptance_requires_distinct_random_large_project_cold_sources'
             : 'broad_acceptance_requires_more_random_large_project_cold_paths',
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length
+      >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
+      && largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
+      ? null
+      : 'large_rocm_ml_random_cold_path_source_evidence_required',
     sourceFirstVisualSourceIdentityHashes.length
       >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT
       ? null
@@ -31911,6 +32440,8 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     ...compactStringList(refusalRowsForReadiness.map((row) => row.rowId)),
     ...randomColdPathRowIds,
     ...randomColdPathCandidateRowIds,
+    ...largeRocmMlRandomColdPathRowIds,
+    ...largeRocmMlRandomColdPathCandidateRowIds,
     ...sourceFirstVisualRowIds,
   ]);
   const proofId = proofIdFor('gpu-hmr-broad-library-agnostic-proof', {
@@ -31950,6 +32481,16 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
     randomColdPathCandidateTargets,
     randomColdPathCandidateRowIds,
+    largeRocmMlRandomColdPathTargets,
+    largeRocmMlRandomColdPathRowIds,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes,
+    largeRocmMlRandomColdPathCandidateTargets,
+    largeRocmMlRandomColdPathCandidateRowIds,
     randomColdPathSelectionPredicateHash: randomColdPathSelectionPredicate.predicateHash,
     randomColdPathCandidateSelectionPredicateHash:
       randomColdPathCandidateSelectionPredicate.predicateHash,
@@ -31961,6 +32502,8 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     randomColdPathKnownBytesThreshold: BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES,
     randomColdPathSourceRelevantFileCountThreshold:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
+    largeRocmMlRandomColdPathDistinctSourceIdentityThreshold:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
     sourceFirstVisualTargets,
     sourceFirstVisualRowIds,
     sourceFirstVisualSourceIdentityHashes,
@@ -32075,6 +32618,45 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     random_cold_path_row_ids: randomColdPathRowIds,
     randomColdPathTargets,
     random_cold_path_targets: randomColdPathTargets,
+    largeRocmMlRandomColdPathRows: largeRocmMlRandomColdPathRows.length,
+    large_rocm_ml_random_cold_path_rows: largeRocmMlRandomColdPathRows.length,
+    largeRocmMlRandomColdPathRowIds,
+    large_rocm_ml_random_cold_path_row_ids: largeRocmMlRandomColdPathRowIds,
+    largeRocmMlRandomColdPathTargets,
+    large_rocm_ml_random_cold_path_targets: largeRocmMlRandomColdPathTargets,
+    largeRocmMlRandomColdPathDistinctSourceIdentityCount:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length,
+    large_rocm_ml_random_cold_path_distinct_source_identity_count:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashes:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes,
+    largeRocmMlRandomColdPathCandidateRows: largeRocmMlRandomColdPathCandidateRows.length,
+    large_rocm_ml_random_cold_path_candidate_rows:
+      largeRocmMlRandomColdPathCandidateRows.length,
+    largeRocmMlRandomColdPathCandidateRowIds,
+    large_rocm_ml_random_cold_path_candidate_row_ids: largeRocmMlRandomColdPathCandidateRowIds,
+    largeRocmMlRandomColdPathCandidateTargets,
+    large_rocm_ml_random_cold_path_candidate_targets: largeRocmMlRandomColdPathCandidateTargets,
+    largeRocmMlRandomColdPathSourceEvidenceAccepted:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
+      && largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    large_rocm_ml_random_cold_path_source_evidence_accepted:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
+      && largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
     randomColdPathSelectionPredicate,
     random_cold_path_selection_predicate: randomColdPathSelectionPredicate,
     randomColdPathCandidateSelectionPredicate,
@@ -32138,6 +32720,14 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
     minimum_random_cold_path_source_relevant_file_count:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT,
+    minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimumLargeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimum_large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
     minimumSourceFirstVisualFullRuntimeCount:
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     minimum_source_first_visual_full_runtime_count:
@@ -32234,6 +32824,13 @@ function broadLibraryAgnosticReadiness(
     requireLargeSourceTree: false,
     ...context,
   });
+  const largeRocmMlRandomColdPathRows =
+    largeRocmMlRandomColdSourceRowsForBroadReadiness(rows, context);
+  const largeRocmMlRandomColdPathCandidateRows =
+    largeRocmMlRandomColdSourceRowsForBroadReadiness(rows, {
+      requireLargeSourceTree: false,
+      ...context,
+    });
   const sourceFirstVisualCandidateRows = sourceFirstVisualRowsForBroadReadiness(rows, context);
   const sourceFirstVisualRows = broadReadinessFreshRows(
     sourceFirstVisualCandidateRows,
@@ -32267,6 +32864,16 @@ function broadLibraryAgnosticReadiness(
     randomColdPathDistinctSourceContentIdentityHashList(randomColdPathCandidateRows);
   const randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes =
     randomColdPathDistinctSourceContentOnlyIdentityHashList(randomColdPathCandidateRows);
+  const largeRocmMlRandomColdPathTargets = compactStringList(
+    largeRocmMlRandomColdPathRows.map((row) => row.targetId),
+  );
+  const largeRocmMlRandomColdPathDistinctSourceIdentityHashes =
+    randomColdPathDistinctSourceIdentityHashList(largeRocmMlRandomColdPathRows);
+  const largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes =
+    randomColdPathDistinctSourceContentOnlyIdentityHashList(largeRocmMlRandomColdPathRows);
+  const largeRocmMlRandomColdPathCandidateTargets = compactStringList(
+    largeRocmMlRandomColdPathCandidateRows.map((row) => row.targetId),
+  );
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const sourceFirstVisualSourceIdentityHashes =
     sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
@@ -32443,6 +33050,43 @@ function broadLibraryAgnosticReadiness(
       randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
     random_cold_path_candidate_distinct_source_content_only_identity_hashes:
       randomColdPathCandidateDistinctSourceContentOnlyIdentityHashes,
+    largeRocmMlRandomColdPathRowCount: largeRocmMlRandomColdPathRows.length,
+    large_rocm_ml_random_cold_path_row_count: largeRocmMlRandomColdPathRows.length,
+    largeRocmMlRandomColdPathTargets,
+    large_rocm_ml_random_cold_path_targets: largeRocmMlRandomColdPathTargets,
+    largeRocmMlRandomColdPathDistinctSourceIdentityCount:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length,
+    large_rocm_ml_random_cold_path_distinct_source_identity_count:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length,
+    largeRocmMlRandomColdPathDistinctSourceIdentityHashes:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
+    large_rocm_ml_random_cold_path_distinct_source_identity_hashes:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length,
+    largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes,
+    large_rocm_ml_random_cold_path_distinct_source_content_only_identity_hashes:
+      largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes,
+    largeRocmMlRandomColdPathCandidateRowCount:
+      largeRocmMlRandomColdPathCandidateRows.length,
+    large_rocm_ml_random_cold_path_candidate_row_count:
+      largeRocmMlRandomColdPathCandidateRows.length,
+    largeRocmMlRandomColdPathCandidateTargets,
+    large_rocm_ml_random_cold_path_candidate_targets:
+      largeRocmMlRandomColdPathCandidateTargets,
+    largeRocmMlRandomColdPathSourceEvidenceAccepted:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
+      && largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    large_rocm_ml_random_cold_path_source_evidence_accepted:
+      largeRocmMlRandomColdPathDistinctSourceIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT
+      && largeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
     sourceFirstVisualRowCount: sourceFirstVisualRows.length,
     source_first_visual_row_count: sourceFirstVisualRows.length,
     sourceFirstVisualSourceIdentityCount: sourceFirstVisualSourceIdentityHashes.length,
@@ -32472,6 +33116,14 @@ function broadLibraryAgnosticReadiness(
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
     minimum_random_cold_path_distinct_source_content_only_identity_count:
       BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_COUNT,
+    minimumLargeRocmMlRandomColdPathDistinctSourceIdentityCount:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimum_large_rocm_ml_random_cold_path_distinct_source_identity_count:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimumLargeRocmMlRandomColdPathDistinctSourceContentOnlyIdentityCount:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
+    minimum_large_rocm_ml_random_cold_path_distinct_source_content_only_identity_count:
+      BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT,
     sourceFirstVisualTargets,
     source_first_visual_targets: sourceFirstVisualTargets,
     minimumSourceFirstVisualDistinctSourceIdentityCount:
@@ -34516,6 +35168,7 @@ function planCoverage(rows, context = {}) {
       proofAuthority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
       proof_authority: RANDOM_LARGE_PROJECT_COLD_PATH_AUTHORITY,
     }),
+    largeRocmMlRandomColdSourceIntakeCoverage(rows, context),
     largeArbitraryProjectRuntimeClosureCoverage(rows),
     hiprtVisualPathCoverage({ rows, fullRuntimeRows: hiprtRows }),
     hiprtRunModeCoverage({

@@ -2273,6 +2273,99 @@ function randomColdSourceListingManifestFixture({
   };
 }
 
+function randomColdRocmMlSourceListingManifestFixture(options = {}) {
+  const manifest = randomColdSourceListingManifestFixture({
+    fileCount: 1800,
+    totalKnownBytes: 24 * 1024 * 1024,
+    sourceRelevantFileCount: 240,
+    gpuSourceSignalCount: 48,
+    ...options,
+  });
+  let gpuIndex = 0;
+  manifest.entries = manifest.entries.map((entry) => {
+    if (!/\.hip$/i.test(entry.path ?? '')) return entry;
+    const pathName = gpuIndex % 3 === 0
+      ? `src/gpu/tensor_ops/gemm_kernel_${gpuIndex}.hip`
+      : gpuIndex % 3 === 1
+        ? `src/gpu/convolution/conv2d_kernel_${gpuIndex}.hip`
+        : `src/gpu/attention/softmax_tensor_${gpuIndex}.hip`;
+    gpuIndex += 1;
+    return {
+      ...entry,
+      path: pathName,
+    };
+  });
+  manifest.sourceListingHash = sourceListingHashForEntries(manifest.entries);
+  manifest.source_listing_hash = manifest.sourceListingHash;
+  return manifest;
+}
+
+function randomColdRocmMlBuildMetadataSemanticSummary() {
+  return {
+    backendSignalAuthority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
+    backend_signal_authority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
+    backendSignals: [
+      {
+        backend: 'hip_rocm',
+        reason: 'cmake_language_enables_hip',
+      },
+    ],
+    backend_signals: [
+      {
+        backend: 'hip_rocm',
+        reason: 'cmake_language_enables_hip',
+      },
+    ],
+    mlDomainSignals: [
+      {
+        token: 'gemm',
+        reason: 'build_target_name',
+      },
+      {
+        token: 'tensor',
+        reason: 'source_group',
+      },
+      {
+        token: 'convolution',
+        reason: 'operator_source_path',
+      },
+    ],
+    ml_domain_signals: [
+      {
+        token: 'gemm',
+        reason: 'build_target_name',
+      },
+      {
+        token: 'tensor',
+        reason: 'source_group',
+      },
+      {
+        token: 'convolution',
+        reason: 'operator_source_path',
+      },
+    ],
+  };
+}
+
+function randomColdRocmMlReadinessMatrixRow(index, overrides = {}) {
+  const targetId = `large-rocm-ml-cold-readiness-${index}`;
+  const sourceListingManifest = randomColdRocmMlSourceListingManifestFixture({
+    targetId,
+  });
+  return randomColdReadinessMatrixRow({
+    targetId,
+    sourceUrl: `https://example.invalid/arbitrary-rocm-ml/source-${index}.git`,
+    immutableCommit: sha256Hex(`large-rocm-ml-cold-readiness-${index}`).slice(0, 40),
+    sourceListingManifest,
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceForListing({
+      targetId,
+      sourceListingManifest,
+      semanticSummary: randomColdRocmMlBuildMetadataSemanticSummary(),
+    }),
+    ...overrides,
+  });
+}
+
 function randomColdFirstBuildListingEntry(manifest, preferredPath = 'CMakeLists.txt') {
   const entries = Array.isArray(manifest?.entries) ? manifest.entries : [];
   return entries.find((entry) => entry.path === preferredPath)
@@ -14365,11 +14458,7 @@ const broadReadinessVisualArtifactComputeOracleRows = [
   ),
 ];
 const broadReadinessRandomColdRows = Array.from({ length: 5 }, (_, index) =>
-  randomColdReadinessMatrixRow({
-    targetId: `random-cold-readiness-user-project-${index + 1}`,
-    sourceUrl: `https://example.invalid/user/project-${index + 1}.git`,
-    immutableCommit: sha256Hex(`random-cold-readiness-commit-${index + 1}`).slice(0, 40),
-  })
+  randomColdRocmMlReadinessMatrixRow(index + 1)
 );
 const inflatedCountSmallListingRandomColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
@@ -14899,7 +14988,7 @@ const broadReadinessWithSerializedBackendOnlyQuery = queryGpuHmrValidationMatrix
 assert.equal(broadReadinessWithSerializedBackendOnlyQuery.accepted, true);
 assert.equal(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
 );
 assert.equal(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
@@ -14913,6 +15002,10 @@ assert.equal(
 );
 assert.ok(!broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
   .includes('broad_acceptance_requires_random_large_project_cold_path'));
+assert.ok(
+  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
+);
 assert.equal(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathTargets
@@ -14956,6 +15049,10 @@ const broadReadinessWithDocOnlyBackendSignalQuery = queryGpuHmrValidationMatrixL
 });
 assert.equal(broadReadinessWithDocOnlyBackendSignalQuery.accepted, true);
 assert.equal(
+  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
   broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathRowCount,
   5,
@@ -14967,12 +15064,56 @@ assert.equal(
 );
 assert.ok(!broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness.openGaps
   .includes('broad_acceptance_requires_random_large_project_cold_path'));
+assert.ok(
+  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
+);
 assert.equal(
   broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathTargets
     .filter((target) => String(target).startsWith('doc-only-backend-signal-cold-readiness-'))
     .length,
   5,
+);
+const broadReadinessLabelOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `label-only-large-cold-readiness-${index + 1}`,
+    sourceUrl:
+      `https://example.invalid/rocm-neural-network-label-only/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`label-only-rocm-ml-cold-readiness-${index + 1}`).slice(0, 40),
+  })
+);
+const broadReadinessWithLabelOnlyRocmMlQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessLabelOnlyRocmMlColdRows,
+  ],
+});
+assert.equal(broadReadinessWithLabelOnlyRocmMlQuery.accepted, true);
+assert.equal(
+  broadReadinessWithLabelOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithLabelOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness
+    .largeRocmMlRandomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithLabelOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
+);
+const labelOnlyRocmMlCoverage = new Map(
+  broadReadinessWithLabelOnlyRocmMlQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  labelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.status,
+  'diagnostic_only',
+);
+assert.ok(
+  labelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
+    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
 );
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);
@@ -17325,6 +17466,24 @@ assert.equal(
   true,
 );
 assert.equal(
+  broadReadinessCoverage.get('large_rocm_ml_random_cold_source_intake')?.status,
+  'refused',
+);
+assert.equal(
+  broadReadinessCoverage.get('large_rocm_ml_random_cold_source_intake')?.qualifyingRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessCoverage.get('large_rocm_ml_random_cold_source_intake')
+    ?.distinctSourceIdentityCount,
+  5,
+);
+assert.equal(
+  broadReadinessCoverage.get('large_rocm_ml_random_cold_source_intake')
+    ?.distinctSourceContentOnlyIdentityCount,
+  5,
+);
+assert.equal(
   broadReadinessCoverage.get('source_first_uncompiled_project_validation')?.status,
   'accepted',
 );
@@ -17355,6 +17514,16 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  true,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .largeRocmMlRandomColdPathRowCount,
+  5,
+);
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness
+    .largeRocmMlRandomColdPathSourceEvidenceAccepted,
   true,
 );
 assert.equal(
