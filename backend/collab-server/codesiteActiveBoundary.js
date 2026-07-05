@@ -239,6 +239,12 @@ function assertCodeSiteWorkspaceMutationAllowed(workspaceSlug, context = {}, ope
 async function assertCodeSiteWorkspaceMutationAllowedAsync(workspaceSlug, context = {}, operation = {}, options = {}) {
   const slug = normalize(workspaceSlug || context?.workspaceSlug || options.workspaceSlug || options.slug);
   if (!slug) return [];
+  const requireAuthority = Boolean(
+    options.requireAuthority
+      || options.requireAuthoritativeContext
+      || context?.active
+      || context?.required
+  );
   try {
     await codeSiteActivityRegistry.refreshWorkspaceFromControlPlane(slug, {
       controlPlaneUrl: options.controlPlaneUrl || context?.controlPlaneUrl,
@@ -247,7 +253,7 @@ async function assertCodeSiteWorkspaceMutationAllowedAsync(workspaceSlug, contex
       authToken: options.authToken || context?.authToken,
       cookie: options.cookie || context?.cookie,
       timeoutMs: options.timeoutMs,
-      requireAuthority: true,
+      requireAuthority,
     });
   } catch (error) {
     throw activeWorkspaceAuthorityUnavailableError(slug, context, operation, error);

@@ -41,6 +41,29 @@ async function withConfiguredCodeSiteBase(fn) {
   }
 }
 
+async function withoutConfiguredCodeSiteBase(fn) {
+  const keys = [
+    'SYNTHI_CODESITE_API_BASE_URL',
+    'CODESITE_API_BASE_URL',
+    'SYNTHI_CODESITE_BASE_URL',
+    'SYNTHI_APP_INTERNAL_URL',
+    'SYNTHI_APP_URL',
+    'SYNTHI_PUBLIC_APP_URL',
+    'NEXTAUTH_URL',
+  ];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  try {
+    return await fn();
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 test('active workspace boundary rejects contextless real-tree mutations', () => {
   activityRegistry.resetRegistry();
   try {
@@ -456,6 +479,57 @@ test('async active workspace boundary refreshes from control-plane before allowi
 
       assert.equal(active.length, 1);
       assert.equal(active[0].source, 'control_plane_active_list');
+    });
+  } finally {
+    activityRegistry.resetRegistry();
+  }
+});
+
+test('async active workspace boundary allows inactive bootstrap when no authority is configured', async () => {
+  activityRegistry.resetRegistry();
+  try {
+    await withoutConfiguredCodeSiteBase(async () => {
+      const active = await assertCodeSiteWorkspaceMutationAllowedAsync('inactive-bootstrap-workspace', {
+        active: false,
+        workspaceSlug: 'inactive-bootstrap-workspace',
+      }, {
+        operation: 'git:auto-init',
+        tool: 'git_provisioning',
+        attempts: [{ path: '**', tool: 'git_provisioning' }],
+      }, {
+        fetch: async () => {
+          throw new Error('inactive bootstrap should not require control-plane fetch');
+        },
+      });
+
+      assert.deepEqual(active, []);
+    });
+  } finally {
+    activityRegistry.resetRegistry();
+  }
+});
+
+test('async active workspace boundary still requires authority for active CodeSite contexts', async () => {
+  activityRegistry.resetRegistry();
+  try {
+    await withoutConfiguredCodeSiteBase(async () => {
+      await assert.rejects(
+        () => assertCodeSiteWorkspaceMutationAllowedAsync('active-without-authority', {
+          active: true,
+          workspaceSlug: 'active-without-authority',
+          transactionId: 'txn-1',
+          mutationLeaseId: 'lease-1',
+        }, {
+          operation: 'write-file',
+          tool: 'file_write',
+          attempts: [{ path: 'src/app.js', tool: 'file_write' }],
+        }),
+        (error) => (
+          error.code === 'CODESITE_WRITE_DENIED'
+          && error.status === 503
+          && error.event.details.reason_codes.includes('codesite_active_workspace_authority_unavailable')
+        ),
+      );
     });
   } finally {
     activityRegistry.resetRegistry();
