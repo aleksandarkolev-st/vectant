@@ -203,15 +203,32 @@ async function proofActors(baseUrl, slug) {
 function createAppApi(baseUrl, { authCookie = '' } = {}) {
   const appBase = baseUrl.replace(/\/+$/, '');
   async function appApi(route, options = {}) {
-    const response = await fetch(`${appBase}${route}`, {
-      ...options,
-      headers: {
-        'content-type': 'application/json',
-        ...(authCookie ? { cookie: authCookie } : {}),
-        ...(options.headers || {}),
-      },
-    });
-    return parseJsonResponse(response, route, options.method || 'GET');
+    const method = options.method || 'GET';
+    let response;
+    try {
+      response = await fetch(`${appBase}${route}`, {
+        ...options,
+        headers: {
+          'content-type': 'application/json',
+          ...(authCookie ? { cookie: authCookie } : {}),
+          ...(options.headers || {}),
+        },
+      });
+    } catch (error) {
+      const cause = error?.cause;
+      const detail = [
+        `${method} ${route} fetch failed`,
+        cause?.code ? `code=${cause.code}` : null,
+        cause?.errno ? `errno=${cause.errno}` : null,
+        cause?.address ? `address=${cause.address}` : null,
+        cause?.port ? `port=${cause.port}` : null,
+        cause?.message ? `cause=${cause.message}` : null,
+      ].filter(Boolean).join('; ');
+      const wrapped = new Error(detail || `${method} ${route} fetch failed`);
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    return parseJsonResponse(response, route, method);
   }
   return appApi;
 }
