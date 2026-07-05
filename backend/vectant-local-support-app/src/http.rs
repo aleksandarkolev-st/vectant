@@ -1,6 +1,9 @@
+use std::collections::VecDeque;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
@@ -10,10 +13,63 @@ use tokio::sync::Mutex;
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
 
+pub const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
+pub const DEFAULT_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+pub const DEFAULT_RATE_LIMIT_REQUESTS: usize = 120;
+
 #[derive(Clone)]
 pub struct AppState {
     pub session: Arc<Mutex<SessionGuard>>,
     pub workspace: Arc<WorkspacePolicy>,
+    pub rate_limiter: Arc<Mutex<RateLimiter>>,
+}
+
+impl AppState {
+    pub fn new(session: SessionGuard, workspace: WorkspacePolicy) -> Self {
+        Self {
+            session: Arc::new(Mutex::new(session)),
+            workspace: Arc::new(workspace),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
+                DEFAULT_RATE_LIMIT_REQUESTS,
+                DEFAULT_RATE_LIMIT_WINDOW,
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RateLimiter {
+    max_requests: usize,
+    window: Duration,
+    accepted_at: VecDeque<Instant>,
+}
+
+impl RateLimiter {
+    pub fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            max_requests,
+            window,
+            accepted_at: VecDeque::new(),
+        }
+    }
+
+    pub fn allow_at(&mut self, now: Instant) -> bool {
+        while let Some(oldest) = self.accepted_at.front() {
+            if now.saturating_duration_since(*oldest) < self.window {
+                break;
+            }
+            self.accepted_at.pop_front();
+        }
+        if self.accepted_at.len() >= self.max_requests {
+            return false;
+        }
+        self.accepted_at.push_back(now);
+        true
+    }
+
+    pub fn allow_now(&mut self) -> bool {
+        self.allow_at(Instant::now())
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -21,6 +77,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/status/:request_id", get(status))
         .route("/v1/file/review", post(review_file))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .with_state(state)
 }
 
@@ -47,6 +104,7 @@ async fn status(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
     let token = bearer(&headers)?;
     let mut session = state.session.lock().await;
     session
@@ -61,6 +119,7 @@ async fn review_file(
     Json(request): Json<FileReadRequest>,
 ) -> Result<Json<FileReadResponse>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -69,6 +128,15 @@ async fn review_file(
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
     Ok(Json(state.workspace.read_file_for_review(&request)))
+}
+
+async fn enforce_rate_limit(state: &AppState) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let mut limiter = state.rate_limiter.lock().await;
+    if limiter.allow_now() {
+        Ok(())
+    } else {
+        Err(denied(StatusCode::TOO_MANY_REQUESTS, "rate_limit_exceeded"))
+    }
 }
 
 fn validate_headers(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_json::Value>)> {

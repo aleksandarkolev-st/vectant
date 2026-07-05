@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog};
+use vectant_local_support_app::http::{RateLimiter, MAX_JSON_BODY_BYTES};
 use vectant_local_support_app::pair::{PairingError, PairingSession};
 use vectant_local_support_app::preview::{
     decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
@@ -74,6 +75,22 @@ fn session_rejects_bad_token_replay_and_pause() {
     assert_eq!(session.validate(&token, "req_1"), Err(SessionError::Replay));
     session.pause();
     assert_eq!(session.validate(&token, "req_2"), Err(SessionError::Paused));
+}
+
+#[test]
+fn local_api_rate_limiter_denies_after_window_budget() {
+    let start = std::time::Instant::now();
+    let mut limiter = RateLimiter::new(2, std::time::Duration::from_secs(60));
+
+    assert!(limiter.allow_at(start));
+    assert!(limiter.allow_at(start + std::time::Duration::from_secs(1)));
+    assert!(!limiter.allow_at(start + std::time::Duration::from_secs(2)));
+    assert!(limiter.allow_at(start + std::time::Duration::from_secs(61)));
+}
+
+#[test]
+fn local_api_body_limit_matches_file_review_cap() {
+    assert_eq!(MAX_JSON_BODY_BYTES, 262_144);
 }
 
 #[test]

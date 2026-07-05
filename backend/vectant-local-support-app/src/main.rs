@@ -1,8 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
 use vectant_local_support_app::http::{bind_loopback, AppState};
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
@@ -19,10 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let policy = WorkspacePolicy::new(workspace, workspace_id, scanner)?;
     let session = SessionGuard::new(workspace_id, Duration::from_secs(30 * 60));
     let token = session.token_for_pairing_response().to_string();
-    let state = AppState {
-        session: Arc::new(Mutex::new(session)),
-        workspace: Arc::new(policy),
-    };
+    let state = AppState::new(session, policy);
     let addr = bind_loopback(state).await?;
     println!("Vectant Local Support listening on http://{addr}");
     println!("Development pairing bearer token: {token}");
