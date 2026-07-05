@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
@@ -14,6 +13,23 @@ const proofJsonPath = path.join(proofDir, 'codesite-gitservice-index-proof.json'
 const proofHtmlPath = path.join(proofDir, 'codesite-gitservice-index-proof.html');
 const proofPngPath = path.join(proofDir, 'codesite-gitservice-index-proof.png');
 const args = new Set(process.argv.slice(2));
+
+function proofTempRoot() {
+  return path.resolve(process.env.CODESITE_PROOF_TMPDIR || path.join(proofDir, '.tmp'));
+}
+
+async function ensureProofTempRoot() {
+  const tempRoot = proofTempRoot();
+  await fs.mkdir(tempRoot, { recursive: true });
+  return tempRoot;
+}
+
+async function ensureBrowserTempRoot() {
+  const tempRoot = path.resolve(process.env.CODESITE_BROWSER_TMPDIR || '/tmp/codesite-playwright');
+  await fs.mkdir(tempRoot, { recursive: true });
+  process.env.TMPDIR = tempRoot;
+  return tempRoot;
+}
 
 function sha256(value) {
   return `sha256:${createHash('sha256').update(String(value)).digest('hex')}`;
@@ -37,7 +53,11 @@ function contextFor(slugValue, overrides = {}) {
     workspaceSlug: slugValue,
     transactionId: 'txn-index-1',
     mutationLeaseId: 'lease-index-1',
+    agentSessionId: 'agent-index-1',
+    actorUserId: 'proof-user',
+    effectiveUserId: 'proof-user',
     controlPlaneUrl: `http://codesite.test/api/workspace/${slugValue}/codesite`,
+    controlPlaneTrusted: true,
     allowedTools: ['git_index'],
     evidenceRefs: ['proof:index-context'],
     processAncestry: ['index-proof-runner'],
@@ -49,16 +69,21 @@ function createCodeSiteFetch({ writeSet = ['src/**'], recordBodies = [] } = {}) 
   const calls = [];
   const fetch = async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || 'GET' });
+    const transaction = {
+      id: 'txn-index-1',
+      status: 'open',
+      mutationLeaseId: 'lease-index-1',
+      agentSessionId: 'agent-index-1',
+      actorUserId: 'proof-user',
+      effectiveUserId: 'proof-user',
+      writeSet,
+      observedWriteSet: [],
+    };
+    if (String(url).endsWith('/transactions/active')) {
+      return new Response(JSON.stringify({ activeTransactions: [transaction] }), { status: 200 });
+    }
     if (String(url).endsWith('/transactions/txn-index-1')) {
-      return new Response(JSON.stringify({
-        transaction: {
-          id: 'txn-index-1',
-          status: 'open',
-          mutationLeaseId: 'lease-index-1',
-          writeSet,
-          observedWriteSet: [],
-        },
-      }), { status: 200 });
+      return new Response(JSON.stringify({ transaction }), { status: 200 });
     }
     if (String(url).endsWith('/transactions/txn-index-1/record-write')) {
       const body = JSON.parse(options.body || '{}');
@@ -104,7 +129,8 @@ async function withTempGitService(slugValue, userId, fn) {
   const gitService = require('../backend/collab-server/gitService');
   const config = require('../backend/collab-server/config');
   const previousBaseDir = gitService.baseDir;
-  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-gitservice-index-'));
+  const tempRoot = await ensureProofTempRoot();
+  const baseDir = await fs.mkdtemp(path.join(tempRoot, 'codesite-gitservice-index-'));
   gitService.baseDir = baseDir;
   const repoPath = gitService.getEffectiveRepoPath(slugValue, userId);
   await fs.mkdir(repoPath, { recursive: true });
@@ -550,6 +576,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;color:#d7e0e
 }
 
 async function screenshot() {
+  await ensureBrowserTempRoot();
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({
     headless: true,
@@ -567,6 +594,7 @@ async function screenshot() {
 
 async function main() {
   await fs.mkdir(proofDir, { recursive: true });
+  await ensureProofTempRoot();
   if (args.has('--screenshot-only')) {
     await screenshot();
     return;

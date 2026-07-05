@@ -1,6 +1,6 @@
 {
   "schemaVersion": "synthi.codesite.gitServiceBoundaryProof.v1",
-  "generatedAt": "2026-07-01T20:25:32.587Z",
+  "generatedAt": "2026-07-05T07:17:13.189Z",
   "source": "scripts/codesite-gitservice-boundary-proof.mjs",
   "assertions": [
     {
@@ -23,7 +23,7 @@
       "ok": true,
       "detail": {
         "path": "src/app.js",
-        "calls": 2
+        "calls": 3
       }
     },
     {
@@ -136,7 +136,7 @@
     {
       "name": "Legacy direct write",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-Zy3l4u/legacy-write-1782937523468-a5bb6041/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-vXQgdN/legacy-write-1783235823828-9d2080cd/proof-user",
       "mutations": [
         {
           "path": "src/app.js",
@@ -151,7 +151,7 @@
     {
       "name": "CodeSite direct write",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-0O5Y4P/allowed-write-1782937532420-6e2c27f7/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-NROnwC/allowed-write-1783235831310-ac6f9e73/proof-user",
       "mutations": [
         {
           "path": "src/app.js",
@@ -162,7 +162,10 @@
           ],
           "processAncestry": [
             "proof-runner",
-            "gitService.writeFile"
+            "gitService.writeFile",
+            "node",
+            "codex",
+            "init"
           ],
           "digest": "sha256:094fcb5223ab89c9ca8aa0faff1ae6daafc9cb577b12989d4bb812b196dce75a"
         }
@@ -174,7 +177,7 @@
     {
       "name": "Mixed batch preflight",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-B0Yxbk/mixed-batch-1782937532462-23d37d72/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-dwVJHo/mixed-batch-1783235831587-720e92a9/proof-user",
       "mutations": [
         {
           "path": "api/auth/signup.ts",
@@ -192,7 +195,7 @@
     {
       "name": "Symlink parent rename",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-B1DNtg/rename-symlink-1782937532522-307c96cd/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-qtuga6/rename-symlink-1783235832126-9f3206ff/proof-user",
       "mutations": [
         {
           "path": "linked-outside/app.js",
@@ -210,7 +213,7 @@
     {
       "name": "Inside-repo symlink alias",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-R5KP2l/inside-symlink-alias-1782937532541-60c182b2/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-riMTss/inside-symlink-alias-1783235832340-2dea2cb3/proof-user",
       "mutations": [
         {
           "path": "allowed-link/new.js",
@@ -228,7 +231,7 @@
     {
       "name": "Sync and delete primitives",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-CvvyyE/sync-delete-1782937532555-f6221441/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-ZBQ2wd/sync-delete-1783235832497-d3daf906/proof-user",
       "mutations": [
         {
           "path": "src/synced.js",
@@ -254,7 +257,7 @@
     {
       "name": "Required boundary without context",
       "status": "pass",
-      "repoPath": "/tmp/codesite-gitservice-boundary-SQ8MWK/required-context-1782937532578-a95ff206/proof-user",
+      "repoPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/.tmp/codesite-gitservice-boundary-vO0fqV/required-context-1783235833094-df149a42/proof-user",
       "mutations": [
         {
           "path": "src/new-dir",

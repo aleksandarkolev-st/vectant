@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -11,6 +10,23 @@ const proofJsonPath = path.join(proofDir, 'codesite-gitservice-boundary-proof.js
 const proofHtmlPath = path.join(proofDir, 'codesite-gitservice-boundary-proof.html');
 const proofPngPath = path.join(proofDir, 'codesite-gitservice-boundary-proof.png');
 const args = new Set(process.argv.slice(2));
+
+function proofTempRoot() {
+  return path.resolve(process.env.CODESITE_PROOF_TMPDIR || path.join(proofDir, '.tmp'));
+}
+
+async function ensureProofTempRoot() {
+  const tempRoot = proofTempRoot();
+  await fs.mkdir(tempRoot, { recursive: true });
+  return tempRoot;
+}
+
+async function ensureBrowserTempRoot() {
+  const tempRoot = path.resolve(process.env.CODESITE_BROWSER_TMPDIR || '/tmp/codesite-playwright');
+  await fs.mkdir(tempRoot, { recursive: true });
+  process.env.TMPDIR = tempRoot;
+  return tempRoot;
+}
 
 function sha256(value) {
   return `sha256:${createHash('sha256').update(String(value)).digest('hex')}`;
@@ -34,7 +50,11 @@ function contextFor(slugValue, overrides = {}) {
     workspaceSlug: slugValue,
     transactionId: 'txn-proof-1',
     mutationLeaseId: 'lease-proof-1',
+    agentSessionId: 'agent-proof-1',
+    actorUserId: 'proof-user',
+    effectiveUserId: 'proof-user',
     controlPlaneUrl: `http://codesite.test/api/workspace/${slugValue}/codesite`,
+    controlPlaneTrusted: true,
     allowedPaths: ['forged-client-path/**'],
     allowedTools: ['file_write', 'file_delete', 'file_rename'],
     evidenceRefs: ['proof:context'],
@@ -47,17 +67,21 @@ function createCodeSiteFetch({ writeSet = ['src/**'], recordBodies = [] } = {}) 
   const calls = [];
   const fetch = async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || 'GET' });
+    const transaction = {
+      id: 'txn-proof-1',
+      status: 'open',
+      mutationLeaseId: 'lease-proof-1',
+      agentSessionId: 'agent-proof-1',
+      actorUserId: 'proof-user',
+      effectiveUserId: 'proof-user',
+      writeSet,
+      observedWriteSet: [],
+    };
+    if (String(url).endsWith('/transactions/active')) {
+      return new Response(JSON.stringify({ activeTransactions: [transaction] }), { status: 200 });
+    }
     if (String(url).endsWith('/transactions/txn-proof-1')) {
-      return new Response(JSON.stringify({
-        transaction: {
-          id: 'txn-proof-1',
-          status: 'open',
-          mutationLeaseId: 'lease-proof-1',
-          agentSessionId: 'agent-proof-1',
-          writeSet,
-          observedWriteSet: [],
-        },
-      }), { status: 200 });
+      return new Response(JSON.stringify({ transaction }), { status: 200 });
     }
     if (String(url).endsWith('/transactions/txn-proof-1/record-write')) {
       const body = JSON.parse(options.body || '{}');
@@ -100,7 +124,8 @@ async function withTempGitService(slugValue, userId, fn) {
   const gitService = require('../backend/collab-server/gitService');
   const config = require('../backend/collab-server/config');
   const previousBaseDir = gitService.baseDir;
-  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-gitservice-boundary-'));
+  const tempRoot = await ensureProofTempRoot();
+  const baseDir = await fs.mkdtemp(path.join(tempRoot, 'codesite-gitservice-boundary-'));
   gitService.baseDir = baseDir;
   const repoPath = gitService.getEffectiveRepoPath(slugValue, userId);
   await fs.mkdir(repoPath, { recursive: true });
@@ -215,7 +240,7 @@ async function runProofScenarios() {
   });
 
   const renameSlug = slug('rename-symlink');
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-gitservice-outside-'));
+  const outside = await fs.mkdtemp(path.join(await ensureProofTempRoot(), 'codesite-gitservice-outside-'));
   try {
     await withTempGitService(renameSlug, userId, async ({ gitService, repoPath }) => {
       await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
@@ -441,6 +466,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;color:#d8e1f
 }
 
 async function screenshot(htmlPath = proofHtmlPath, pngPath = proofPngPath) {
+  await ensureBrowserTempRoot();
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({
     headless: true,
@@ -458,6 +484,7 @@ async function screenshot(htmlPath = proofHtmlPath, pngPath = proofPngPath) {
 
 async function main() {
   await fs.mkdir(proofDir, { recursive: true });
+  await ensureProofTempRoot();
   if (args.has('--screenshot-only')) {
     await screenshot();
     return;
