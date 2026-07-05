@@ -4595,6 +4595,10 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     runtime_boundary_line_count: runtimeBoundaryLineCount,
     adapterRuntimeBoundaryLineCount,
     adapter_runtime_boundary_line_count: adapterRuntimeBoundaryLineCount,
+    runtimeBoundaryLines: accepted ? runtimeBoundaryLines : [],
+    runtime_boundary_lines: accepted ? runtimeBoundaryLines : [],
+    adapterRuntimeBoundaryLines: accepted ? adapterRuntimeBoundaryLines : [],
+    adapter_runtime_boundary_lines: accepted ? adapterRuntimeBoundaryLines : [],
     runtimeBoundaryLineHashesAccepted,
     runtime_boundary_line_hashes_accepted: runtimeBoundaryLineHashesAccepted,
     adapterRuntimeBoundaryLineHashesAccepted,
@@ -16760,6 +16764,127 @@ function rowSafetyFailures(row, context = {}) {
         });
       }
     }
+    const runtimeAdapterStageEvents = compactObject(
+      row.randomColdRuntimeAdapterStageEvents
+      ?? row.random_cold_runtime_adapter_stage_events
+      ?? row.runtimeAdapterStageEvents
+      ?? row.runtime_adapter_stage_events,
+    );
+    const runtimeAdapterStageEventsPresent =
+      Object.keys(runtimeAdapterStageEvents).length > 0
+      || runtimeAdapterStageEvents.present === true;
+    if (runtimeAdapterStageEventsPresent) {
+      const importAcceptedForStageEvents =
+        runtimeProfileAdapterResultImportPresent
+        && firstBool(
+          runtimeProfileAdapterResultImport.accepted,
+          runtimeProfileAdapterResultImport.acceptedAsSupportEvidence,
+          runtimeProfileAdapterResultImport.accepted_as_support_evidence,
+        ) === true
+        && compactStringList([
+          ...(Array.isArray(runtimeProfileAdapterResultImport.failedGates)
+            ? runtimeProfileAdapterResultImport.failedGates
+            : []),
+          ...(Array.isArray(runtimeProfileAdapterResultImport.failed_gates)
+            ? runtimeProfileAdapterResultImport.failed_gates
+            : []),
+        ]).length === 0;
+      const stageEventsSchema = firstText(
+        runtimeAdapterStageEvents.schemaVersion,
+        runtimeAdapterStageEvents.schema_version,
+      );
+      const stageEventsAuthority = firstText(
+        runtimeAdapterStageEvents.proofAuthority,
+        runtimeAdapterStageEvents.proof_authority,
+      );
+      const stageEventsAcceptedAsSupport = firstBool(
+        runtimeAdapterStageEvents.acceptedAsSupportEvidence,
+        runtimeAdapterStageEvents.accepted_as_support_evidence,
+        runtimeAdapterStageEvents.accepted,
+      ) === true;
+      const stageEventsFailedGates = compactStringList([
+        ...(Array.isArray(runtimeAdapterStageEvents.failedGates)
+          ? runtimeAdapterStageEvents.failedGates
+          : []),
+        ...(Array.isArray(runtimeAdapterStageEvents.failed_gates)
+          ? runtimeAdapterStageEvents.failed_gates
+          : []),
+      ]);
+      const stageEventsBoundaryHashes = compactStringList([
+        ...(Array.isArray(runtimeAdapterStageEvents.boundaryLineHashes)
+          ? runtimeAdapterStageEvents.boundaryLineHashes
+          : []),
+        ...(Array.isArray(runtimeAdapterStageEvents.boundary_line_hashes)
+          ? runtimeAdapterStageEvents.boundary_line_hashes
+          : []),
+      ]).map(normalizeSha256).filter(Boolean);
+      const importedBoundaryHashSet = new Set(compactStringList([
+        ...(Array.isArray(runtimeProfileAdapterResultImport.recomputedRuntimeBoundaryLineHashes)
+          ? runtimeProfileAdapterResultImport.recomputedRuntimeBoundaryLineHashes
+          : []),
+        ...(Array.isArray(runtimeProfileAdapterResultImport.recomputed_runtime_boundary_line_hashes)
+          ? runtimeProfileAdapterResultImport.recomputed_runtime_boundary_line_hashes
+          : []),
+        ...(Array.isArray(runtimeProfileAdapterResultImport.recomputedAdapterRuntimeBoundaryLineHashes)
+          ? runtimeProfileAdapterResultImport.recomputedAdapterRuntimeBoundaryLineHashes
+          : []),
+        ...(Array.isArray(runtimeProfileAdapterResultImport.recomputed_adapter_runtime_boundary_line_hashes)
+          ? runtimeProfileAdapterResultImport.recomputed_adapter_runtime_boundary_line_hashes
+          : []),
+      ]).map(normalizeSha256).filter(Boolean));
+      if (stageEventsSchema !== REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_SCHEMA_VERSION) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_adapter_stage_events_schema_invalid',
+        });
+      }
+      if (stageEventsAuthority !== REAL_ROCM_RUNTIME_ADAPTER_STAGE_EVENTS_AUTHORITY) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_adapter_stage_events_authority_invalid',
+        });
+      }
+      if (stageEventsFailedGates.length > 0) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_adapter_stage_events_invalid',
+        });
+        failures.push(...stageEventsFailedGates.map((code) => ({ code })));
+      }
+      if (
+        firstBool(
+          runtimeAdapterStageEvents.acceptedForGpuHmr,
+          runtimeAdapterStageEvents.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(runtimeAdapterStageEvents.gpuHmrSuccess, runtimeAdapterStageEvents.gpu_hmr_success) === true
+        || firstBool(
+          runtimeAdapterStageEvents.canSatisfyRuntimeProof,
+          runtimeAdapterStageEvents.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeAdapterStageEvents.canSatisfyDispatchProof,
+          runtimeAdapterStageEvents.can_satisfy_dispatch_proof,
+        ) === true
+      ) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_adapter_stage_events_claimed_authority',
+        });
+      }
+      if (stageEventsAcceptedAsSupport && !importAcceptedForStageEvents) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_adapter_stage_events_without_accepted_import',
+        });
+      }
+      if (
+        stageEventsAcceptedAsSupport
+        && (
+          stageEventsBoundaryHashes.length === 0
+          || importedBoundaryHashSet.size === 0
+          || stageEventsBoundaryHashes.some((hash) => !importedBoundaryHashSet.has(hash))
+        )
+      ) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_adapter_stage_events_import_hash_mismatch',
+        });
+      }
+    }
     const runtimeSupportClosureRaw = firstCompactObject(
       row.randomColdRuntimeSupportClosureObligation,
       row.random_cold_runtime_support_closure_obligation,
@@ -27287,6 +27412,27 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
         baseDir: path.dirname(filePath),
       },
     );
+  const importedRuntimeBoundaryLinesForStageEvents =
+    randomColdRuntimeProfileAdapterResultImport.accepted === true
+      ? [...new Set(compactStringList([
+          ...(Array.isArray(randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLines)
+            ? randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLines
+            : []),
+          ...(Array.isArray(randomColdRuntimeProfileAdapterResultImport.runtime_boundary_lines)
+            ? randomColdRuntimeProfileAdapterResultImport.runtime_boundary_lines
+            : []),
+          ...(Array.isArray(randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines)
+            ? randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines
+            : []),
+          ...(Array.isArray(randomColdRuntimeProfileAdapterResultImport.adapter_runtime_boundary_lines)
+            ? randomColdRuntimeProfileAdapterResultImport.adapter_runtime_boundary_lines
+            : []),
+        ]))]
+      : [];
+  const randomColdRuntimeAdapterStageEvents =
+    realRocmRuntimeAdapterStageEventsFacet(
+      realRocmRuntimeAdapterStageEventsFromBoundaryLines(importedRuntimeBoundaryLinesForStageEvents),
+    );
   const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
     result.runtimeSupportClosureObligation,
     result.runtime_support_closure_obligation,
@@ -27362,6 +27508,12 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdRuntimeProfileAdapterResultImport.present === true
       ? randomColdRuntimeProfileAdapterResultImport.failedGates
       : []),
+    ...(randomColdRuntimeAdapterStageEvents.present === true
+      ? randomColdRuntimeAdapterStageEvents.blockingGaps
+      : []),
+    ...(randomColdRuntimeAdapterStageEvents.present === true
+      ? randomColdRuntimeAdapterStageEvents.failedGates
+      : []),
     ...(randomColdRuntimeSupportClosureObligation.present === true
       ? randomColdRuntimeSupportClosureObligation.blockingGaps
       : []),
@@ -27408,6 +27560,7 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeProfileAdapterResultImport.proofLedgerId,
     randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryProofAdapterProofId,
     randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLineMaterializationHash,
+    randomColdRuntimeAdapterStageEvents.facetHash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
   ]);
   return finalizeRow({
@@ -27477,6 +27630,22 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     runtime_profile_adapter_result_import:
       randomColdRuntimeProfileAdapterResultImport.present === true
         ? randomColdRuntimeProfileAdapterResultImport
+        : null,
+    randomColdRuntimeAdapterStageEvents:
+      randomColdRuntimeAdapterStageEvents.present === true
+        ? randomColdRuntimeAdapterStageEvents
+        : null,
+    random_cold_runtime_adapter_stage_events:
+      randomColdRuntimeAdapterStageEvents.present === true
+        ? randomColdRuntimeAdapterStageEvents
+        : null,
+    runtimeAdapterStageEvents:
+      randomColdRuntimeAdapterStageEvents.present === true
+        ? randomColdRuntimeAdapterStageEvents
+        : null,
+    runtime_adapter_stage_events:
+      randomColdRuntimeAdapterStageEvents.present === true
+        ? randomColdRuntimeAdapterStageEvents
         : null,
     randomColdRuntimeSupportClosureObligation:
       randomColdRuntimeSupportClosureObligation.present === true

@@ -3477,9 +3477,9 @@ const fileBackedLineMaterializationHash =
 const fileBackedBoundaryLines = [
   '[gpu-runtime-boundary] artifact_transport artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa epoch=epoch:file-backed runtime_session=session:file-backed process_id=pid:1001',
   '[gpu-runtime-boundary] dispatcher_epoch epoch=epoch:file-backed artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa runtime_session=session:file-backed process_id=pid:1001',
-  '[gpu-runtime-boundary] native_runtime_dispatch dispatch_id=dispatch:file-backed epoch=epoch:file-backed artifact_id=artifact:file-backed output_target_id=output-target:file-backed runtime_session=session:file-backed process_id=pid:1001',
+  '[gpu-runtime-boundary] native_runtime_dispatch dispatch_id=dispatch:file-backed epoch=epoch:file-backed artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_id=artifact:file-backed output_target_id=output-target:file-backed runtime_session=session:file-backed process_id=pid:1001',
   '[gpu-runtime-boundary] host_identity runtime_session=session:file-backed process_id=pid:1001 device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed',
-  '[gpu-runtime-boundary] output_oracle after_dispatch_id=dispatch:file-backed output_target_id=output-target:file-backed runtime_session=session:file-backed process_id=pid:1001',
+  '[gpu-runtime-boundary] output_oracle after_dispatch_id=dispatch:file-backed output_target_id=output-target:file-backed raw_readback_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb runtime_session=session:file-backed process_id=pid:1001',
 ];
 const fileBackedLineHashes = fileBackedBoundaryLines.map(hashValue);
 const fileBackedProofPath = path.join(
@@ -3719,10 +3719,57 @@ assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryProofAdapterProofId,
   fileBackedAdapterProofId,
 );
+assert.deepEqual(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLines,
+  fileBackedBoundaryLines,
+);
+assert.deepEqual(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines,
+  fileBackedBoundaryLines,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLineHashesAccepted,
+  true,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLineHashesAccepted,
+  true,
+);
 assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.canSatisfyRuntimeProof,
   false,
 );
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.present, true);
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.accepted, true);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.acceptedAsSupportEvidence,
+  true,
+);
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.acceptedForGpuHmr, false);
+assert.equal(fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.gpuHmrSuccess, false);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.canSatisfyRuntimeProof,
+  false,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.stageResults.output_oracle.fieldChecks.readback_or_visual_artifact,
+  true,
+);
+const fileBackedAdapterImportCoverage = new Map(
+  fileBackedAdapterImportLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+const fileBackedAdapterImportRuntimeClosure =
+  fileBackedAdapterImportCoverage.get('large_arbitrary_project_runtime_closure');
+assert.equal(fileBackedAdapterImportRuntimeClosure?.acceptedForGpuHmr, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gpuHmrSuccess, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publication.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, true);
 assert.ok(fileBackedAdapterImportRow.openGaps.includes('strict_runtime_ledger_missing'));
 const forgedAdapterImportHashDir = path.join(
   tmpRoot,
@@ -3865,6 +3912,9 @@ assert.equal(forgedAdapterLineHashRow?.safety.accepted, false);
 assert.equal(forgedAdapterLineHashRow.acceptedForGpuHmr, false);
 assert.equal(forgedAdapterLineHashRow.gpuHmrSuccess, false);
 assert.equal(forgedAdapterLineHashRow.randomColdRuntimeProfileAdapterResultImport.accepted, false);
+assert.deepEqual(forgedAdapterLineHashRow.randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLines, []);
+assert.deepEqual(forgedAdapterLineHashRow.randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines, []);
+assert.equal(forgedAdapterLineHashRow.randomColdRuntimeAdapterStageEvents, null);
 assert.ok(forgedAdapterLineHashRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_adapter_result_import_runtime_boundary_line_hash_mismatch'
 ));
