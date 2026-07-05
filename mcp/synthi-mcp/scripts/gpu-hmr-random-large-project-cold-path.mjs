@@ -661,6 +661,16 @@ function assertDirectSourceRequirement({ requireDirectSource = false, directCand
   );
 }
 
+function assertConfiguredSamplePoolExplicit({
+  useConfiguredCandidatePool = false,
+  samplePool = false,
+} = {}) {
+  if (!useConfiguredCandidatePool || samplePool === true) return;
+  throw new Error(
+    'random large-project cold-path configured diagnostic candidates require --sample-pool; provide --source-url or --repo-path plus --commit for direct user-source cold intake',
+  );
+}
+
 async function loadCandidates({ candidatesJson, candidatesPath } = {}) {
   let raw = DEFAULT_CANDIDATES;
   if (candidatesJson) {
@@ -4646,6 +4656,28 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct/sample-pool mode parsing failed');
   }
+  let configuredPoolRejected = false;
+  try {
+    assertConfiguredSamplePoolExplicit({
+      useConfiguredCandidatePool: true,
+      samplePool: false,
+    });
+  } catch {
+    configuredPoolRejected = true;
+  }
+  if (
+    configuredPoolRejected !== true
+    || assertConfiguredSamplePoolExplicit({
+      useConfiguredCandidatePool: true,
+      samplePool: true,
+    }) !== undefined
+    || assertConfiguredSamplePoolExplicit({
+      useConfiguredCandidatePool: false,
+      samplePool: false,
+    }) !== undefined
+  ) {
+    throw new Error('random large-project cold-path configured sample-pool CLI guard failed');
+  }
   const rankedBuildFiles = selectBuildFilesForContent({
     files: [
       { path: 'third_party/CMakeLists.txt', object: 'vendored-cmake', byteLength: 10 },
@@ -5082,6 +5114,9 @@ async function selfCheck() {
     editId: 'gpu-artifact-edit',
     targetId: 'generic-runtime-boundary-cold-target',
     sourcePaths: ['src/kernels/generic.hip'],
+    sourceManifestHash: runtimeHashD,
+    sourceManifestHashVerified: true,
+    sourceIdentityEvidenceRefs: ['runtime-boundary:source-manifest:generic-runtime-boundary-cold-project'],
     entryPoint: 'generic_kernel',
     compileTarget: 'gfx1201',
     compiler: 'hipcc',
@@ -6054,6 +6089,11 @@ async function main() {
     candidatesJson: process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DIRECT_CANDIDATES_JSON,
     candidatesPath: args.directCandidatesPath
       ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DIRECT_CANDIDATES_PATH,
+  });
+  const useConfiguredCandidatePool = !directCandidate && directCandidates.length === 0;
+  assertConfiguredSamplePoolExplicit({
+    useConfiguredCandidatePool,
+    samplePool: samplePoolModeRequested(args),
   });
   assertDirectSourceRequirement({
     requireDirectSource,
