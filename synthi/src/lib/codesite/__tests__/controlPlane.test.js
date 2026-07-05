@@ -2842,6 +2842,50 @@ describe('CodeSite control plane transaction validation', () => {
     expect(result.decision.staleReads).toEqual([]);
   });
 
+  it('allows declared write-set changes while preserving repo-wide raw drift detection', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-repo-wide-write-set-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.mkdir(path.join(root, 'synthi', 'prisma'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    await fs.writeFile(path.join(root, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+      excludePaths: ['synthi/prisma/schema.prisma'],
+    });
+    const transaction = {
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['packages/schemas/auth.ts']),
+      observedReadSetJson: JSON.stringify([]),
+      semanticDependencyRefsJson: JSON.stringify([]),
+      writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedWriteSetJson: JSON.stringify([]),
+    };
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue(transaction);
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    await fs.writeFile(path.join(root, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\nmodel AuditEvent { id String @id }\n', 'utf8');
+
+    const allowed = await validateTransaction('acme', 'txn-1');
+
+    expect(allowed.decision.ok).toBe(true);
+    expect(allowed.decision.reasonCodes).toContain('serializable_validation_passed');
+    expect(allowed.decision.reasonCodes).not.toContain('repo_snapshot_drift_detected');
+
+    prisma.codeSiteMutationTransaction.update.mockClear();
+    await fs.writeFile(path.join(root, 'README.md'), 'raw filesystem drift outside declared write set\n', 'utf8');
+
+    const blocked = await validateTransaction('acme', 'txn-1');
+
+    expect(blocked.decision.ok).toBe(false);
+    expect(blocked.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+  });
+
   it('executes landing inspection commands and records durable radar evidence', async () => {
     const run = await createInspectionRun('acme', 'project-1', {
       executionPlanId: 'plan-1',

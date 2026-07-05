@@ -2205,6 +2205,7 @@ async function createMutationTransactionForLease(workspaceSlug, lease, body = {}
   }
   const leaseJson = parseJson(lease.leaseJson, {});
   const readSet = normalizePathList(body.readSet || body.read_set || []);
+  const writeSet = normalizePathList(body.writeSet || body.write_set || []);
   const semanticDependencyRefs = body.semanticDependencyRefs || body.semantic_dependency_refs || [];
   const isolation = normalizeTransactionIsolation(body.isolation);
   const snapshotReadSet = serializableSnapshotReadSet(
@@ -2217,6 +2218,7 @@ async function createMutationTransactionForLease(workspaceSlug, lease, body = {}
     usesSerializableIsolation({ isolation }) ? unique([...readSet, ...snapshotReadSet]) : readSet,
     {
       ...body,
+      writeSet,
       scope: usesSerializableIsolation({ isolation }) ? 'repo_wide' : body.scope,
     },
   );
@@ -2230,7 +2232,7 @@ async function createMutationTransactionForLease(workspaceSlug, lease, body = {}
       isolation,
       status: 'open',
       readSetJson: stringifyJson(readSet),
-      writeSetJson: stringifyJson(normalizePathList(body.writeSet || body.write_set || [])),
+      writeSetJson: stringifyJson(writeSet),
       observedReadSetJson: stringifyJson([]),
       observedWriteSetJson: stringifyJson([]),
       semanticDependencyRefsJson: stringifyJson(semanticDependencyRefs),
@@ -3259,14 +3261,25 @@ async function buildTransactionSnapshotEvidence(readSet, body = {}) {
   return buildReadSnapshotEvidence(readSet, {
     repoRoot: body.repoRoot || body.repo_root,
     scope: body.scope || body.snapshotScope || body.snapshot_scope,
+    excludePaths: transactionSnapshotExcludedPaths(body, readSet),
     source: 'codesite_control_plane',
   });
 }
 
 async function validateTransactionSnapshot(transaction, requiredReadSet = null) {
   const evidence = parseJson(transaction.baseSnapshotEvidenceJson, null);
-  const validation = await validateReadSnapshotEvidence(evidence);
+  const validation = await validateReadSnapshotEvidence(evidence, {
+    excludePaths: transactionSnapshotExcludedPaths(transaction, requiredReadSet),
+  });
   return enforceSerializableSnapshotCoverage(transaction, validation, requiredReadSet);
+}
+
+function transactionSnapshotExcludedPaths(source = {}, protectedReadSet = []) {
+  const protectedPaths = normalizePathList(protectedReadSet);
+  return unique([
+    ...normalizePathList(source.writeSet || source.write_set || parseJson(source.writeSetJson, [])),
+    ...normalizePathList(source.observedWriteSet || source.observed_write_set || parseJson(source.observedWriteSetJson, [])),
+  ]).filter((writePath) => !protectedPaths.some((readPath) => sourcePathsOverlap(readPath, writePath)));
 }
 
 function serializableSnapshotReadSet(transaction, readSet = [], observedReadSet = [], semanticDependencyRefs = []) {

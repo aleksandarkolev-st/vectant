@@ -27,6 +27,9 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
   const limits = normalizeLimits(options);
   const repoRoot = resolveCodeSiteRepoRoot(options);
   const scope = normalizeSnapshotScope(options.scope || options.snapshotScope || options.snapshot_scope);
+  const repoManifestExcludedPaths = scope === 'repo_wide'
+    ? normalizePathList(options.excludePaths || options.exclude_paths || options.repoManifestExcludedPaths || options.repo_manifest_excluded_paths || [])
+    : [];
   const generatedAt = new Date().toISOString();
   const baseEvidence = {
     schemaVersion: READ_SNAPSHOT_SCHEMA_VERSION,
@@ -43,6 +46,7 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
     repoManifestScannedEntries: 0,
     repoManifestTruncated: false,
     repoManifestSkippedPaths: [],
+    repoManifestExcludedPaths,
     limits,
     generatedAt,
     source: options.source || 'codesite_control_plane',
@@ -100,7 +104,7 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
     }
   }
   const repoManifest = scope === 'repo_wide'
-    ? await buildRepoManifest(repoRoot, limits)
+    ? await buildRepoManifest(repoRoot, limits, repoManifestExcludedPaths)
     : emptyRepoManifest();
 
   return finalizeEvidence({
@@ -116,6 +120,7 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
     repoManifestScannedEntries: repoManifest.repoManifestScannedEntries,
     repoManifestTruncated: repoManifest.repoManifestTruncated,
     repoManifestSkippedPaths: repoManifest.repoManifestSkippedPaths,
+    repoManifestExcludedPaths,
   });
 }
 
@@ -153,6 +158,7 @@ export async function validateReadSnapshotEvidence(evidence, options = {}) {
     ...options,
     repoRoot: options.repoRoot || options.root || expected.repoRoot,
     scope: expected.scope,
+    excludePaths: options.excludePaths || options.exclude_paths || expected.repoManifestExcludedPaths,
     maxFiles: expected.limits?.maxFiles,
     maxFileBytes: expected.limits?.maxFileBytes,
     maxScanEntries: expected.limits?.maxScanEntries,
@@ -206,6 +212,7 @@ export function normalizeReadSnapshotEvidence(input) {
     repoManifestScannedEntries: Number.isFinite(input.repoManifestScannedEntries) ? input.repoManifestScannedEntries : Number(input.repo_manifest_scanned_entries || 0),
     repoManifestTruncated: Boolean(input.repoManifestTruncated || input.repo_manifest_truncated),
     repoManifestSkippedPaths: normalizeSkippedPaths(input.repoManifestSkippedPaths || input.repo_manifest_skipped_paths || []),
+    repoManifestExcludedPaths: normalizePathList(input.repoManifestExcludedPaths || input.repo_manifest_excluded_paths || []),
     limits: normalizeLimits(input.limits || input),
     generatedAt: input.generatedAt || input.generated_at || null,
     source: input.source || 'codesite_control_plane',
@@ -225,6 +232,7 @@ export function normalizeReadSnapshotEvidence(input) {
     repoManifestFileCount: evidence.repoManifestFileCount,
     repoManifestTruncated: evidence.repoManifestTruncated,
     repoManifestSkippedPaths: evidence.repoManifestSkippedPaths,
+    repoManifestExcludedPaths: evidence.repoManifestExcludedPaths,
     source: evidence.source,
   });
   return evidence;
@@ -316,13 +324,14 @@ async function collectDirectory(repoRoot, relDir, accumulator, limits, predicate
   }
 }
 
-async function buildRepoManifest(repoRoot, limits) {
+async function buildRepoManifest(repoRoot, limits, excludedPaths = []) {
   const accumulator = {
     files: new Set(),
     missingPaths: new Set(),
     skippedPaths: [],
     truncated: false,
     scanEntries: 0,
+    excludedPaths,
   };
   await collectDirectory(repoRoot, '', accumulator, limits, () => true);
   const fileDigests = [];
@@ -354,10 +363,14 @@ function emptyRepoManifest() {
     repoManifestScannedEntries: 0,
     repoManifestTruncated: false,
     repoManifestSkippedPaths: [],
+    repoManifestExcludedPaths: [],
   };
 }
 
 function addFile(accumulator, filePath, limits) {
+  if (isRepoManifestExcluded(filePath, accumulator.excludedPaths || [])) {
+    return;
+  }
   if (accumulator.files.size >= limits.maxFiles) {
     accumulator.truncated = true;
     accumulator.skippedPaths.push({ path: filePath, reason: 'max_files_exceeded' });
@@ -410,6 +423,7 @@ function finalizeEvidence(evidence) {
     repoManifestFileCount: normalized.repoManifestFileCount,
     repoManifestTruncated: normalized.repoManifestTruncated,
     repoManifestSkippedPaths: normalized.repoManifestSkippedPaths,
+    repoManifestExcludedPaths: normalized.repoManifestExcludedPaths,
     source: normalized.source,
   });
   return normalized;
@@ -431,6 +445,14 @@ function buildSnapshotDigest(evidence) {
     repoManifestSkippedPaths: evidence.repoManifestSkippedPaths.map(({ path: skippedPath, reason, size }) => ({ path: skippedPath, reason, size: size ?? null })),
     limits: evidence.limits,
   });
+}
+
+function isRepoManifestExcluded(filePath, excludedPaths = []) {
+  return normalizePathList(excludedPaths).some((pattern) => (
+    pattern === filePath
+      || matchPathPattern(filePath, pattern)
+      || (pattern.endsWith('/**') && filePath.startsWith(pattern.slice(0, -3)))
+  ));
 }
 
 function compareSnapshotFiles(expected, current) {

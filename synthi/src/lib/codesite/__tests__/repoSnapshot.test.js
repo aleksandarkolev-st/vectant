@@ -113,6 +113,43 @@ describe('CodeSite repo read snapshots', () => {
     expect(validation.current.repoManifestScannedEntries).toBeGreaterThan(snapshot.repoManifestScannedEntries);
   });
 
+  it('excludes declared write paths from repo-wide manifest drift only', async () => {
+    const root = await tempRepo();
+    const writePath = 'api/auth/signup.ts';
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+      excludePaths: [writePath],
+    });
+
+    await fs.writeFile(path.join(root, writePath), 'export const route = "updated by transaction";\n', 'utf8');
+
+    const allowedValidation = await validateReadSnapshotEvidence(snapshot, {
+      repoRoot: root,
+      excludePaths: [writePath],
+    });
+
+    expect(snapshot.repoManifestExcludedPaths).toEqual([writePath]);
+    expect(allowedValidation).toMatchObject({
+      ok: true,
+      reasonCodes: ['repo_snapshot_stable'],
+      driftedPaths: [],
+    });
+
+    await fs.writeFile(path.join(root, 'README.md'), 'raw edit outside write set\n', 'utf8');
+
+    const blockedValidation = await validateReadSnapshotEvidence(snapshot, {
+      repoRoot: root,
+      excludePaths: [writePath],
+    });
+
+    expect(blockedValidation.ok).toBe(false);
+    expect(blockedValidation.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+  });
+
   it('marks truncated repo-wide manifests for serializable validation', async () => {
     const root = await tempRepo();
     const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
