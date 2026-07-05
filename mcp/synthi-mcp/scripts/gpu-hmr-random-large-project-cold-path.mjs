@@ -1223,8 +1223,16 @@ function classifySourceListing(files) {
     const basename = lower.split('/').pop() ?? lower;
     const ext = path.extname(lower);
     const isBuildSignal = buildFileBasenames.has(basename) || buildFileExtensions.has(ext);
-    const isGpuSourceSignal = gpuExtensions.has(ext);
     const isSourceRelevant = sourceRelevantExtensions.has(ext);
+    const isGpuPathSourceSignal = isSourceRelevant && (
+      lower.includes('/gpu/')
+      || lower.includes('/kernel/')
+      || lower.includes('/kernels/')
+      || lower.includes('/shader/')
+      || lower.includes('/shaders/')
+      || /(^|\/)(device|kernel|shader)[^/]*\.(c|cc|cpp|cxx|h|hh|hpp|hxx|ipp|inl)$/i.test(lower)
+    );
+    const isGpuSourceSignal = gpuExtensions.has(ext) || isGpuPathSourceSignal;
     const isSourceOrBuildRelevant = isSourceRelevant || isBuildSignal;
     if (isBuildSignal) {
       buildSignalCount += 1;
@@ -4883,6 +4891,14 @@ async function selfCheck() {
     }),
     '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tkernels/example.hip',
   ].join('\n')));
+  const headerHeavyGpuClassification = classifySourceListing(parseGitLsTree([
+    '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tCMakeLists.txt',
+    '100644 blob ffffffffffffffffffffffffffffffffffffffff 11\trocm/CMakeLists.txt',
+    '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tinclude/math/gpu/block_gemm.hpp',
+    '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tlibrary/src/tensor_operation_instance/gpu/device_gemm.cpp',
+    '100644 blob dddddddddddddddddddddddddddddddddddddddd 78\tinclude/math/kernel/tile_pipeline.hpp',
+    '100644 blob eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 90\tinclude/math/host/reference_gemm.hpp',
+  ].join('\n')));
   const buildDiscovery = discoverBuildMetadata({
     candidate: candidates[0],
     files: parsedListing,
@@ -4954,6 +4970,9 @@ async function selfCheck() {
     || wideSourceClassification.sourceRelevantFileCount !== 121
     || wideSourceClassification.sourceOrBuildRelevantFileCount !== 122
     || wideSourceClassification.sourceRelevantFiles.length !== 80
+    || headerHeavyGpuClassification.gpuSourceSignalCount !== 3
+    || headerHeavyGpuClassification.sourceRelevantFileCount !== 4
+    || !headerHeavyGpuClassification.backendCandidates.includes('hip_rocm')
     || buildDiscovery.acceptedAsBuildMetadataDiscovery !== true
     || !buildDiscovery.detectedBuildSystems.includes('cmake')
     || !buildDiscovery.detectedBuildSystems.includes('cargo')
