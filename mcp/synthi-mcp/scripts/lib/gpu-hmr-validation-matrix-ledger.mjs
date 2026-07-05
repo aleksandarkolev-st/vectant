@@ -74,6 +74,10 @@ const VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_semantic_probe_binding.v1';
 const VISUAL_SEMANTIC_PROBE_AUTHORITY =
   'semantic_visual_probe_binding_only_not_gpu_hmr_success';
+const SOURCE_FIRST_RUNTIME_VISUAL_PROFILE_SOURCES = new Set([
+  'agent_split_profile_runtime_visual_proof',
+  'agent_split_fixture_runtime_visual_proof',
+]);
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
 const CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES = 8192;
@@ -9817,7 +9821,7 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
   const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
   const sourceFirstProfileIdBoundToRow =
     sourceFirst.accepted === true
-    && source === 'agent_split_profile_runtime_visual_proof'
+    && SOURCE_FIRST_RUNTIME_VISUAL_PROFILE_SOURCES.has(source)
     && Boolean(profileId)
     && Boolean(rowProfileId)
     && profileId === rowProfileId

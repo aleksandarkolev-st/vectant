@@ -382,6 +382,18 @@ assert.equal(sourceFirstProfileBinding.accepted, true);
 assert.equal(sourceFirstProfileBinding.sourceFirstProfileIdBoundToRow, true);
 assert.equal(sourceFirstProfileBinding.profileIdBoundToRow, true);
 
+const fixtureSourceProfileBinding =
+  GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS.validationProfileEvidenceBindingFacet(
+    profileBindingRow,
+    {
+      ...profileBindingEvidence,
+      source: 'agent_split_fixture_runtime_visual_proof',
+    },
+  );
+assert.equal(fixtureSourceProfileBinding.accepted, true);
+assert.equal(fixtureSourceProfileBinding.sourceFirstProfileIdBoundToRow, true);
+assert.equal(fixtureSourceProfileBinding.profileIdBoundToRow, true);
+
 const retargetedProfileBinding =
   GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS.validationProfileEvidenceBindingFacet(
     {
