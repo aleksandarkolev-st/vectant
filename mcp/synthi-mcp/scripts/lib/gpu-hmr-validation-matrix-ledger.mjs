@@ -31533,6 +31533,26 @@ export function queryGpuHmrValidationMatrixLedger(ledger = {}) {
   };
 }
 
+export function recomputeGpuHmrValidationMatrixRowId(row, options = {}) {
+  const generatedAt = firstText(options.generatedAt, options.generated_at);
+  const randomColdPathFreshnessContext = {
+    generatedAt,
+    generated_at: generatedAt,
+    enforceRandomColdPathFreshness: Boolean(generatedAt),
+    enforce_random_cold_path_freshness: Boolean(generatedAt),
+  };
+  const preliminaryRow = rowWithEvaluatedSafety(row, { preserveSuppliedIdentity: true });
+  const preliminaryBroadProof = computeBroadLibraryAgnosticProof(
+    [preliminaryRow],
+    randomColdPathFreshnessContext,
+  );
+  const evaluatedRow = rowWithEvaluatedSafety(row, {
+    broadProof: preliminaryBroadProof,
+    preserveSuppliedIdentity: true,
+  });
+  return rowIdFor(evaluatedRow);
+}
+
 export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const enforceRandomColdPathFreshness =

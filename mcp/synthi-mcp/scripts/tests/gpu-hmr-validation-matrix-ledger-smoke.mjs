@@ -13,6 +13,7 @@ import {
   GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
   coldRuntimeBoundaryEventManifestTemplateFacet,
   queryGpuHmrValidationMatrixLedger,
+  recomputeGpuHmrValidationMatrixRowId,
 } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
 import {
   assessGeneratedGpuSplitGranularity,
@@ -11306,19 +11307,9 @@ function attachRandomColdTransportFallback(row, fallbackEvidence) {
 }
 
 function withQueryRecomputedRowId(row) {
-  const probe = {
-    ...JSON.parse(JSON.stringify(row)),
-    rowId: 'gpu-validation-matrix-row:sha256:0000000000000000000000000000000000000000000000000000000000000000',
-  };
-  const query = queryGpuHmrValidationMatrixLedger({
-    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
-    rows: [probe],
-  });
-  const mismatch = query.failedGates.find((gate) => gate.code === 'validation_matrix_row_id_mismatch');
-  assert.ok(mismatch?.recomputedRowId, 'expected query to expose recomputed row id for probe row');
   return {
     ...row,
-    rowId: mismatch.recomputedRowId,
+    rowId: recomputeGpuHmrValidationMatrixRowId(row),
   };
 }
 
