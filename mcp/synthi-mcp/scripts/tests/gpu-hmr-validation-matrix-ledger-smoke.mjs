@@ -7224,6 +7224,68 @@ await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof-forged-command-e
   proofId: 'oidn-preflight-proof:sha256:synthetic-output-oracle-forged-command-execution',
 });
 
+await writeJson(path.join(oidnOutputDir, 'standalone-oidn-output-oracle.json'), {
+  schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle.v1',
+  proofAuthority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+  targetId: 'standalone-oidn-output-oracle',
+  profileId: 'standalone-oidn-output-oracle',
+  backend: 'oidn_hip',
+  device: 'hip',
+  noisyInputPath: oidnNoisyPath,
+  noisyInputSha256: oidnNoisyHash,
+  denoisedOutputPath: oidnDenoisedPath,
+  denoisedOutputSha256: oidnDenoisedHash,
+  expectedOutputPath: oidnExpectedPath,
+  expectedOutputSha256: oidnDenoisedHash,
+  evidenceRefs: [
+    `standalone-oidn-output-oracle-noisy:${oidnNoisyHash}`,
+    `standalone-oidn-output-oracle-denoised:${oidnDenoisedHash}`,
+    `standalone-oidn-output-oracle-expected:${oidnDenoisedHash}`,
+  ],
+});
+
+await writeJson(path.join(oidnOutputDir, 'standalone-oidn-output-oracle-forged-hash.json'), {
+  schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle.v1',
+  proofAuthority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+  targetId: 'standalone-oidn-output-oracle-forged-hash',
+  profileId: 'standalone-oidn-output-oracle-forged-hash',
+  backend: 'oidn_hip',
+  device: 'hip',
+  noisyInputPath: oidnNoisyPath,
+  noisyInputSha256: oidnNoisyHash,
+  denoisedOutputPath: oidnDenoisedPath,
+  denoisedOutputSha256: `sha256:${'0'.repeat(64)}`,
+  expectedOutputPath: oidnExpectedPath,
+  expectedOutputSha256: oidnDenoisedHash,
+  evidenceRefs: [
+    `standalone-oidn-output-oracle-noisy:${oidnNoisyHash}`,
+    `standalone-oidn-output-oracle-denoised:sha256:${'0'.repeat(64)}`,
+    `standalone-oidn-output-oracle-expected:${oidnDenoisedHash}`,
+  ],
+});
+
+await writeJson(path.join(oidnOutputDir, 'standalone-oidn-output-oracle-forged-success.json'), {
+  schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle.v1',
+  proofAuthority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+  targetId: 'standalone-oidn-output-oracle-forged-success',
+  profileId: 'standalone-oidn-output-oracle-forged-success',
+  backend: 'oidn_hip',
+  device: 'hip',
+  noisyInputPath: oidnNoisyPath,
+  noisyInputSha256: oidnNoisyHash,
+  denoisedOutputPath: oidnDenoisedPath,
+  denoisedOutputSha256: oidnDenoisedHash,
+  expectedOutputPath: oidnExpectedPath,
+  expectedOutputSha256: oidnDenoisedHash,
+  gpuHmrSuccess: true,
+  canSatisfyRuntimeProof: true,
+  evidenceRefs: [
+    `standalone-oidn-output-oracle-noisy:${oidnNoisyHash}`,
+    `standalone-oidn-output-oracle-denoised:${oidnDenoisedHash}`,
+    `standalone-oidn-output-oracle-expected:${oidnDenoisedHash}`,
+  ],
+});
+
 const legacySchemaOnlyPreflightDir = path.join(artifactsRoot, 'legacy-schema-only-preflight');
 await writeJson(path.join(legacySchemaOnlyPreflightDir, 'schema-only-opencl-preflight.json'), {
   schema: 'synthi.gpu_hmr.opencl_preflight.v1',
@@ -16781,6 +16843,53 @@ assert.ok(forgedOidnHipOutputOracle.reasons.includes(
 ));
 assert.ok(forgedOidnHipOutputOracle.openGaps.includes('oidn_output_oracle_not_proven'));
 
+const standaloneOidnOutputOracle = ledger.rows.find((row) =>
+  row.backend === 'oidn_hip'
+  && row.targetId === 'standalone-oidn-output-oracle'
+);
+assert.equal(standaloneOidnOutputOracle?.matrixOutcome, 'refusal_proven');
+assert.equal(standaloneOidnOutputOracle.proofMode, 'oidn_output_oracle');
+assert.equal(standaloneOidnOutputOracle.acceptedForGpuHmr, false);
+assert.equal(standaloneOidnOutputOracle.gpuHmrSuccess, false);
+assert.equal(standaloneOidnOutputOracle.proofChain, 'oidn_output_oracle_support_only');
+assert.equal(standaloneOidnOutputOracle.outputOracleFacet.accepted, true);
+assert.equal(
+  standaloneOidnOutputOracle.outputOracleFacet.proofAuthority,
+  'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+);
+assert.ok(standaloneOidnOutputOracle.reasons.includes(
+  'standalone_oidn_output_oracle_does_not_prove_gpu_hmr',
+));
+assert.ok(standaloneOidnOutputOracle.openGaps.includes('matching_oidn_hip_runtime_required'));
+assert.ok(standaloneOidnOutputOracle.openGaps.includes('strict_runtime_proof_ledger_required'));
+
+const forgedStandaloneOidnOutputOracle = ledger.rows.find((row) =>
+  row.backend === 'oidn_hip'
+  && row.targetId === 'standalone-oidn-output-oracle-forged-hash'
+);
+assert.equal(forgedStandaloneOidnOutputOracle?.matrixOutcome, 'refusal_proven');
+assert.equal(forgedStandaloneOidnOutputOracle.proofMode, 'oidn_output_oracle');
+assert.equal(forgedStandaloneOidnOutputOracle.acceptedForGpuHmr, false);
+assert.equal(forgedStandaloneOidnOutputOracle.gpuHmrSuccess, false);
+assert.equal(forgedStandaloneOidnOutputOracle.proofChain, 'oidn_output_oracle_refused');
+assert.equal(forgedStandaloneOidnOutputOracle.proofChainAccepted, false);
+assert.equal(forgedStandaloneOidnOutputOracle.outputOracleFacet.accepted, false);
+assert.ok(forgedStandaloneOidnOutputOracle.reasons.includes(
+  'denoised_output:oidn_output_oracle_recomputed_hash_mismatch',
+));
+
+const forgedSuccessStandaloneOidnOutputOracle = ledger.rows.find((row) =>
+  row.backend === 'oidn_hip'
+  && row.targetId === 'standalone-oidn-output-oracle-forged-success'
+);
+assert.equal(forgedSuccessStandaloneOidnOutputOracle?.matrixOutcome, 'refusal_proven');
+assert.equal(forgedSuccessStandaloneOidnOutputOracle.acceptedForGpuHmr, false);
+assert.equal(forgedSuccessStandaloneOidnOutputOracle.gpuHmrSuccess, false);
+assert.equal(forgedSuccessStandaloneOidnOutputOracle.outputOracleFacet.accepted, false);
+assert.ok(forgedSuccessStandaloneOidnOutputOracle.reasons.includes(
+  'oidn_output_oracle_claims_gpu_hmr_success',
+));
+
 const legacySchemaOnlyPreflightLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
@@ -19210,7 +19319,17 @@ assert.equal(
 const retainedRealRocmRefusalCount = retainedRealRocmRows
   .filter((row) => row.matrixOutcome === 'refusal_proven').length;
 assert.equal(retainedRealRocmRefusalCount, 2);
-assert.equal(ledger.summary.refusalProvenRows, 5 + retainedRealRocmRefusalCount);
+const standaloneOidnOutputOracleRefusalCount = ledger.rows
+  .filter((row) =>
+    row.backend === 'oidn_hip'
+    && row.proofMode === 'oidn_output_oracle'
+    && row.matrixOutcome === 'refusal_proven'
+  ).length;
+assert.ok(standaloneOidnOutputOracleRefusalCount >= 3);
+assert.equal(
+  ledger.summary.refusalProvenRows,
+  5 + retainedRealRocmRefusalCount + standaloneOidnOutputOracleRefusalCount,
+);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
 const coverageById = new Map(ledger.summary.planCoverage.map((entry) => [entry.id, entry]));
@@ -19600,8 +19719,14 @@ assert.ok(coverageById.get('oidn_hip_output_oracle_support')?.openGaps.includes(
 assert.ok(coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
   row.targetId === 'synthetic-oidn-hip-output-oracle'
 ));
+assert.ok(coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
+  row.targetId === 'standalone-oidn-output-oracle'
+));
 assert.ok(!coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
   row.targetId === 'synthetic-oidn-hip-output-oracle-forged-file-hash'
+));
+assert.ok(!coverageById.get('oidn_hip_output_oracle_support')?.rows.some((row) =>
+  row.targetId === 'standalone-oidn-output-oracle-forged-success'
 ));
 const runtimeRefusedOidnOutputSupportQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -19721,8 +19846,9 @@ assert.equal(missingFacetOidnOutputAttemptCoverage.get('oidn_hip_output')?.statu
 assert.ok(missingFacetOidnOutputAttemptCoverage.get('oidn_hip_output')?.openGaps.includes(
   'oidn_output_oracle_attempt_required',
 ));
-assert.equal(coverageById.get('oidn_hip_output')?.status, 'missing');
-assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('oidn_hip_runtime_proof_required'));
+assert.equal(coverageById.get('oidn_hip_output')?.status, 'refused');
+assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('matching_oidn_hip_runtime_required'));
+assert.ok(coverageById.get('oidn_hip_output')?.openGaps.includes('strict_runtime_proof_ledger_required'));
 assert.equal(ledger.summary.broadLibraryAgnosticReadiness.broadRuntimeRows, 0);
 assert.equal(coverageById.get('external_engine_visual_profile')?.status, 'visual_profile_only');
 assert.ok(coverageById.get('external_engine_visual_profile')?.rows.every((row) =>

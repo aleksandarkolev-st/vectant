@@ -21292,6 +21292,7 @@ async function oidnMatrixFileEvidence(role, input = {}, context = {}) {
     file.hash,
   ));
   const declaredByteLength = finiteNumber(file.byteLength ?? file.byte_length);
+  const allowRecomputedByteLength = context.allowRecomputedByteLength === true;
   if (!declaredPath) {
     return {
       role,
@@ -21351,7 +21352,9 @@ async function oidnMatrixFileEvidence(role, input = {}, context = {}) {
     failedGates.push(`${role}:oidn_output_oracle_recomputed_hash_mismatch`);
   }
   if (!Number.isFinite(declaredByteLength) || declaredByteLength <= 0) {
-    failedGates.push(`${role}:oidn_output_oracle_file_empty`);
+    if (!allowRecomputedByteLength) {
+      failedGates.push(`${role}:oidn_output_oracle_file_empty`);
+    }
   } else if (declaredByteLength !== bytes.length) {
     failedGates.push(`${role}:oidn_output_oracle_recomputed_byte_length_mismatch`);
   }
@@ -21372,6 +21375,241 @@ async function oidnMatrixFileEvidence(role, input = {}, context = {}) {
     failedGates: uniqueFailedGates,
     failed_gates: uniqueFailedGates,
   };
+}
+
+function oidnStandaloneOutputOracleFileFromManifest(manifest = {}, role, pathKeys, shaKeys, byteLengthKeys) {
+  const declaredPath = firstText(...pathKeys.map((key) => manifest[key]));
+  const declaredSha256 = normalizeSha256(firstText(...shaKeys.map((key) => manifest[key])));
+  const declaredByteLength = finiteNumber(firstText(...byteLengthKeys.map((key) => manifest[key])));
+  if (!declaredPath && !declaredSha256) return null;
+  return compactObject({
+    role,
+    accepted: true,
+    path: declaredPath,
+    sha256: declaredSha256,
+    byteLength: Number.isFinite(declaredByteLength) ? declaredByteLength : null,
+    failedGates: [],
+  });
+}
+
+async function oidnStandaloneOutputOracleFacetInput(json = {}, filePath) {
+  let manifestSha256 = null;
+  try {
+    manifestSha256 = sha256BufferHash(await fs.readFile(filePath));
+  } catch {
+    manifestSha256 = null;
+  }
+  const manifestFiles = Array.isArray(json.files)
+    ? json.files.map((file) => ({
+      ...compactObject(file),
+      accepted: firstBool(file?.accepted) ?? true,
+      failedGates: file?.failedGates ?? file?.failed_gates ?? [],
+    }))
+    : compactObjectList([
+      oidnStandaloneOutputOracleFileFromManifest(
+        json,
+        'noisy_input',
+        [
+          'noisyInputPath',
+          'noisy_input_path',
+          'inputNoisyPath',
+          'input_noisy_path',
+          'inputPath',
+          'input_path',
+        ],
+        [
+          'noisyInputSha256',
+          'noisy_input_sha256',
+          'inputNoisySha256',
+          'input_noisy_sha256',
+          'inputSha256',
+          'input_sha256',
+        ],
+        [
+          'noisyInputByteLength',
+          'noisy_input_byte_length',
+          'inputNoisyByteLength',
+          'input_noisy_byte_length',
+          'inputByteLength',
+          'input_byte_length',
+        ],
+      ),
+      oidnStandaloneOutputOracleFileFromManifest(
+        json,
+        'denoised_output',
+        [
+          'denoisedOutputPath',
+          'denoised_output_path',
+          'outputPath',
+          'output_path',
+          'afterPath',
+          'after_path',
+        ],
+        [
+          'denoisedOutputSha256',
+          'denoised_output_sha256',
+          'outputSha256',
+          'output_sha256',
+          'afterSha256',
+          'after_sha256',
+        ],
+        [
+          'denoisedOutputByteLength',
+          'denoised_output_byte_length',
+          'outputByteLength',
+          'output_byte_length',
+          'afterByteLength',
+          'after_byte_length',
+        ],
+      ),
+      oidnStandaloneOutputOracleFileFromManifest(
+        json,
+        'expected_output',
+        [
+          'expectedOutputPath',
+          'expected_output_path',
+        ],
+        [
+          'expectedOutputSha256',
+          'expected_output_sha256',
+          'expectedOutputHash',
+          'expected_output_hash',
+        ],
+        [
+          'expectedOutputByteLength',
+          'expected_output_byte_length',
+        ],
+      ),
+    ]);
+  const manifestEvidenceRefs = compactStringList(json.evidenceRefs ?? json.evidence_refs);
+  const fileEvidenceRefs = compactStringList(manifestFiles.map((file) =>
+    file.sha256 ? `oidn-output-oracle-${firstText(file.role)}:${file.sha256}` : null
+  ));
+  return {
+    ...json,
+    schemaVersion: firstText(json.schemaVersion, json.schema_version, json.schema),
+    schema_version: firstText(json.schemaVersion, json.schema_version, json.schema),
+    proofAuthority: firstText(json.proofAuthority, json.proof_authority),
+    proof_authority: firstText(json.proofAuthority, json.proof_authority),
+    accepted: true,
+    acceptedForGpuHmr: firstBool(json.acceptedForGpuHmr, json.accepted_for_gpu_hmr) ?? false,
+    accepted_for_gpu_hmr: firstBool(json.acceptedForGpuHmr, json.accepted_for_gpu_hmr) ?? false,
+    gpuHmrSuccess: firstBool(json.gpuHmrSuccess, json.gpu_hmr_success) ?? false,
+    gpu_hmr_success: firstBool(json.gpuHmrSuccess, json.gpu_hmr_success) ?? false,
+    canSatisfyRuntimeProof:
+      firstBool(json.canSatisfyRuntimeProof, json.can_satisfy_runtime_proof) ?? false,
+    can_satisfy_runtime_proof:
+      firstBool(json.canSatisfyRuntimeProof, json.can_satisfy_runtime_proof) ?? false,
+    backend: firstText(json.backend, json.backendFamily, json.backend_family),
+    device: firstText(json.device, json.runtimeDevice, json.runtime_device),
+    manifestPath: filePath,
+    manifest_path: filePath,
+    manifestSha256: normalizeSha256(firstText(json.manifestSha256, json.manifest_sha256)) ?? manifestSha256,
+    manifest_sha256: normalizeSha256(firstText(json.manifestSha256, json.manifest_sha256)) ?? manifestSha256,
+    expectedOutputSha256: normalizeSha256(firstText(
+      json.expectedOutputSha256,
+      json.expected_output_sha256,
+      json.expectedOutputHash,
+      json.expected_output_hash,
+    )),
+    expected_output_sha256: normalizeSha256(firstText(
+      json.expectedOutputSha256,
+      json.expected_output_sha256,
+      json.expectedOutputHash,
+      json.expected_output_hash,
+    )),
+    files: manifestFiles,
+    outputDistinctFromInput: firstBool(json.outputDistinctFromInput, json.output_distinct_from_input) ?? true,
+    output_distinct_from_input: firstBool(json.outputDistinctFromInput, json.output_distinct_from_input) ?? true,
+    expectedOutputMatched: firstBool(json.expectedOutputMatched, json.expected_output_matched) ?? true,
+    expected_output_matched: firstBool(json.expectedOutputMatched, json.expected_output_matched) ?? true,
+    evidenceRefs: compactStringList([
+      ...manifestEvidenceRefs,
+      manifestSha256 ? `oidn-output-oracle-manifest:${manifestSha256}` : null,
+      ...fileEvidenceRefs,
+    ]),
+    evidence_refs: compactStringList([
+      ...manifestEvidenceRefs,
+      manifestSha256 ? `oidn-output-oracle-manifest:${manifestSha256}` : null,
+      ...fileEvidenceRefs,
+    ]),
+    failedGates: json.failedGates ?? json.failed_gates ?? [],
+    failed_gates: json.failedGates ?? json.failed_gates ?? [],
+  };
+}
+
+async function oidnStandaloneOutputOracleRow(json, filePath, context) {
+  const candidate = await oidnStandaloneOutputOracleFacetInput(json, filePath);
+  const outputOracleFacet = await oidnOutputOracleEvidenceFacet(candidate, {
+    repoRoot: context.repoRoot,
+    baseDir: path.dirname(filePath),
+    allowRecomputedByteLength: true,
+  });
+  const outputOracleAccepted = outputOracleFacet.accepted === true;
+  const outputOracleFailedGates = compactStringList(
+    (outputOracleFacet.failedGates ?? outputOracleFacet.failed_gates ?? [])
+      .map((gate) => firstText(gate?.code, gate)),
+  );
+  return finalizeRow({
+    artifactSchema: firstText(json.schemaVersion, json.schema_version, json.schema)
+      ?? 'synthi.gpu_hmr.oidn_output_oracle.v1',
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: 'oidn_hip',
+    targetId: firstText(
+      json.targetId,
+      json.target_id,
+      json.slug,
+      json.projectId,
+      json.project_id,
+      path.basename(path.dirname(filePath)),
+      path.basename(filePath, '.json'),
+    ),
+    profileId: firstText(json.profileId, json.profile_id, json.slug, 'oidn_output_oracle'),
+    proofMode: 'oidn_output_oracle',
+    evidenceKind: 'oidn_output_oracle_file_bytes',
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
+    matrixOutcome: 'refusal_proven',
+    acceptanceClass: outputOracleAccepted
+      ? 'oidn_output_oracle_support_only'
+      : 'oidn_output_oracle_refused',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    refusalProven: true,
+    proofChainAccepted: outputOracleAccepted,
+    proofChain: outputOracleAccepted
+      ? 'oidn_output_oracle_support_only'
+      : 'oidn_output_oracle_refused',
+    proofIds: proofIdsFrom(
+      json,
+      outputOracleFacet.manifestSha256,
+      outputOracleFacet.expectedOutputSha256,
+    ),
+    ledger: {
+      present: false,
+      proofId: null,
+      gpuHmrSuccess: false,
+      failedInvariants: [],
+    },
+    visual: null,
+    runMode: null,
+    cpuHmrUsed: null,
+    fullRebuildUsed: null,
+    processRestarted: null,
+    reasons: compactStringList([
+      outputOracleAccepted ? 'standalone_oidn_output_oracle_does_not_prove_gpu_hmr' : null,
+      outputOracleAccepted ? null : 'standalone_oidn_output_oracle_not_accepted',
+      ...outputOracleFailedGates,
+    ]),
+    openGaps: outputOracleAccepted
+      ? [
+          'matching_oidn_hip_runtime_required',
+          'oidn_full_runtime_hmr_ledger_not_proven',
+          'strict_runtime_proof_ledger_required',
+        ]
+      : outputOracleFailedGates,
+  });
 }
 
 async function oidnOutputOracleEvidenceFacet(input = {}, context = {}) {
@@ -27749,6 +27987,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   if (schema === RANDOM_LARGE_PROJECT_COLD_PATH_SCHEMA_VERSION) {
     return randomLargeProjectColdPathRows(json, filePath, context);
   }
+  if (schema === 'synthi.gpu_hmr.oidn_output_oracle.v1') {
+    return oidnStandaloneOutputOracleRow(json, filePath, context);
+  }
   if (
     schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1'
     || schema === 'synthi.gpu.hmr.runtime_run_mode_proof.v1'
@@ -31861,7 +32102,7 @@ function runtimePreflightCoverage({ rows, backend, id, requirement, missingGap }
 function oidnOutputOracleSupportCoverage(rows) {
   const supportRows = rows.filter((row) =>
     row.backend === 'oidn_hip'
-    && row.proofMode === 'runtime_preflight'
+    && (row.proofMode === 'runtime_preflight' || row.proofMode === 'oidn_output_oracle')
     && compactObject(row.outputOracleFacet ?? row.output_oracle_facet).accepted === true
   );
   const preflightOnlySupportRows = supportRows.filter((row) =>
@@ -31870,7 +32111,7 @@ function oidnOutputOracleSupportCoverage(rows) {
   );
   const attemptedRows = rows.filter((row) =>
     row.backend === 'oidn_hip'
-    && row.proofMode === 'runtime_preflight'
+    && (row.proofMode === 'runtime_preflight' || row.proofMode === 'oidn_output_oracle')
     && compactObject(row.outputOracleFacet ?? row.output_oracle_facet).present === true
   );
   if (supportRows.length > 0) {
