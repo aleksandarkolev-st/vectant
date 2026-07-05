@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -21,6 +22,7 @@ pub struct PortApproval {
     pub port: u16,
     pub target_host: String,
     pub preview_host: String,
+    pub preview_token_hash: String,
     pub browser_preview_allowed: bool,
     pub agent_read_allowed: bool,
     pub support_agent_read_allowed: bool,
@@ -38,12 +40,18 @@ pub struct PortApproval {
 
 impl PortApproval {
     pub fn browser_only(port: u16, process_identity: &str) -> Self {
+        Self::browser_only_with_token(port, process_identity, &generate_preview_token())
+    }
+
+    pub fn browser_only_with_token(port: u16, process_identity: &str, preview_token: &str) -> Self {
         let process_identity_hash = hash_process_identity(process_identity);
+        let preview_token_hash = hash_preview_token(preview_token);
         Self {
             session_id: "local-session".to_string(),
             port,
             target_host: "127.0.0.1".to_string(),
             preview_host: format!("br-local-p{port}.vectant-preview.dev"),
+            preview_token_hash,
             browser_preview_allowed: true,
             agent_read_allowed: false,
             support_agent_read_allowed: false,
@@ -59,6 +67,12 @@ impl PortApproval {
             process_identity_hash,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PortApprovalGrant {
+    pub approval: PortApproval,
+    pub preview_token: String,
 }
 
 #[derive(Debug, Default)]
@@ -77,10 +91,23 @@ impl PortApprovalRegistry {
         port: u16,
         process_identity: &str,
     ) -> PortApproval {
-        let mut approval = PortApproval::browser_only(port, process_identity);
+        self.approve_browser_port_grant(session_id, port, process_identity).approval
+    }
+
+    pub fn approve_browser_port_grant(
+        &mut self,
+        session_id: impl Into<String>,
+        port: u16,
+        process_identity: &str,
+    ) -> PortApprovalGrant {
+        let preview_token = generate_preview_token();
+        let mut approval = PortApproval::browser_only_with_token(port, process_identity, &preview_token);
         approval.session_id = session_id.into();
         self.approvals.insert(port, approval.clone());
-        approval
+        PortApprovalGrant {
+            approval,
+            preview_token,
+        }
     }
 
     pub fn approval_for(
@@ -125,6 +152,10 @@ pub fn port_identity_matches(approval: &PortApproval, current_process_identity: 
     approval.process_identity_hash == hash_process_identity(current_process_identity)
 }
 
+pub fn preview_token_matches(approval: &PortApproval, token: &str) -> bool {
+    !token.is_empty() && approval.preview_token_hash == hash_preview_token(token)
+}
+
 pub fn preview_path_allowed(path: &str) -> bool {
     let normalized = path.split('?').next().unwrap_or(path).to_ascii_lowercase();
     let filename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
@@ -154,9 +185,23 @@ pub fn decide_preview_request(
     target_ip: IpAddr,
     headers: &HashMap<String, String>,
 ) -> PreviewDecision {
+    decide_preview_request_with_token(approval, method, host, target_ip, headers, "")
+}
+
+pub fn decide_preview_request_with_token(
+    approval: Option<&PortApproval>,
+    method: &str,
+    host: &str,
+    target_ip: IpAddr,
+    headers: &HashMap<String, String>,
+    preview_token: &str,
+) -> PreviewDecision {
     let Some(approval) = approval else {
         return PreviewDecision::Deny("port_not_approved".to_string());
     };
+    if !preview_token_matches(approval, preview_token) {
+        return PreviewDecision::Deny("preview_token_invalid".to_string());
+    }
     if !approval.browser_preview_allowed {
         return PreviewDecision::Deny("browser_preview_not_allowed".to_string());
     }
@@ -186,9 +231,23 @@ pub fn decide_preview_request_from_header_list(
     target_ip: IpAddr,
     headers: &[(&str, &str)],
 ) -> PreviewDecision {
+    decide_preview_request_from_header_list_with_token(approval, method, host, target_ip, headers, "")
+}
+
+pub fn decide_preview_request_from_header_list_with_token(
+    approval: Option<&PortApproval>,
+    method: &str,
+    host: &str,
+    target_ip: IpAddr,
+    headers: &[(&str, &str)],
+    preview_token: &str,
+) -> PreviewDecision {
     let Some(approval) = approval else {
         return PreviewDecision::Deny("port_not_approved".to_string());
     };
+    if !preview_token_matches(approval, preview_token) {
+        return PreviewDecision::Deny("preview_token_invalid".to_string());
+    }
     if !approval.browser_preview_allowed {
         return PreviewDecision::Deny("browser_preview_not_allowed".to_string());
     }
@@ -553,4 +612,19 @@ fn hash_process_identity(process_identity: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(process_identity.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn hash_preview_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"vectant-preview-token:");
+    hasher.update(token.as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn generate_preview_token() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
 }

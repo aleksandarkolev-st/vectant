@@ -14,10 +14,12 @@ use vectant_local_support_app::pair::{
 };
 use vectant_local_support_app::preview::{
     classify_preview_redirect, decide_preview_request, decide_preview_request_from_header_list,
-    redirect_allowed, port_identity_matches, preview_path_allowed, sanitize_response_header_list,
-    sanitize_response_headers, validate_preview_response_size, PortApproval, PortApprovalRegistry,
-    PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
-    MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
+    decide_preview_request_from_header_list_with_token, decide_preview_request_with_token,
+    redirect_allowed, port_identity_matches, preview_path_allowed, preview_token_matches,
+    sanitize_response_header_list, sanitize_response_headers, validate_preview_response_size,
+    PortApproval, PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard,
+    MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST, MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST,
+    MAX_PREVIEW_RESPONSE_BYTES,
 };
 use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
@@ -39,6 +41,10 @@ fn request(path: &str) -> FileReadRequest {
         actor: "vectant_ai".to_string(),
         expires_at: "2026-07-05T12:00:00Z".to_string(),
     }
+}
+
+fn preview_token(port: u16, process_identity: &str) -> String {
+    format!("local-preview-token-{port}-{process_identity}")
 }
 
 #[test]
@@ -475,29 +481,32 @@ fn pairing_proof_binds_device_key_to_challenge() {
 
 #[test]
 fn preview_blocks_unapproved_private_redirects_and_credentials() {
-    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
     let mut headers = HashMap::new();
     headers.insert("Cookie".to_string(), "vectant_session=secret".to_string());
 
     assert_eq!(
-        decide_preview_request(
+        decide_preview_request_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             &headers,
+            &token,
         ),
         PreviewDecision::Deny("credential_header_blocked".to_string())
     );
 
     headers.clear();
     assert_eq!(
-        decide_preview_request(
+        decide_preview_request_with_token(
             Some(&approval),
             "POST",
             &approval.preview_host,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             &headers,
+            &token,
         ),
         PreviewDecision::Deny("state_changing_method_blocked".to_string())
     );
@@ -515,7 +524,8 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
 
 #[test]
 fn preview_redirect_classifier_rewrites_only_approved_loopback_targets() {
-    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
 
     assert_eq!(
         classify_preview_redirect(&approval, "/docs/index.html", "/assets/app.js"),
@@ -541,7 +551,8 @@ fn preview_redirect_classifier_rewrites_only_approved_loopback_targets() {
 
 #[test]
 fn preview_redirect_classifier_blocks_proxy_abuse_and_separates_external_navigation() {
-    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
 
     for location in [
         "http://127.0.0.1:3000/wrong-port",
@@ -575,72 +586,136 @@ fn preview_redirect_classifier_blocks_proxy_abuse_and_separates_external_navigat
 }
 
 #[test]
+fn preview_requires_short_lived_token_for_browser_requests() {
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
+    let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let headers = HashMap::new();
+    let mut registry = PortApprovalRegistry::new();
+    let grant = registry.approve_browser_port_grant("sess_123", 5174, "vite:5174");
+
+    assert!(preview_token_matches(&grant.approval, &grant.preview_token));
+    assert_ne!(grant.approval.preview_token_hash, grant.preview_token);
+    assert!(preview_token_matches(&approval, &token));
+    assert!(!preview_token_matches(&approval, "wrong-token"));
+    assert_eq!(
+        decide_preview_request(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &headers,
+        ),
+        PreviewDecision::Deny("preview_token_invalid".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[],
+        ),
+        PreviewDecision::Deny("preview_token_invalid".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &headers,
+            "wrong-token",
+        ),
+        PreviewDecision::Deny("preview_token_invalid".to_string())
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Allow
+    );
+}
+
+#[test]
 fn preview_blocks_request_smuggling_and_connection_named_headers() {
-    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
     let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Content-Length", "4"), ("Content-Length", "5")],
+            &token,
         ),
         PreviewDecision::Deny("duplicate_content_length_blocked".to_string())
     );
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Transfer-Encoding", "chunked"), ("Content-Length", "5")],
+            &token,
         ),
         PreviewDecision::Deny("ambiguous_body_length_blocked".to_string())
     );
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Connection", "Authorization")],
+            &token,
         ),
         PreviewDecision::Deny("connection_sensitive_header_blocked".to_string())
     );
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Connection", "X-Shadow-Hop"), ("X-Shadow-Hop", "secret")],
+            &token,
         ),
         PreviewDecision::Deny("connection_named_header_blocked".to_string())
     );
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("X-Forwarded-For", "10.0.0.4")],
+            &token,
         ),
         PreviewDecision::Deny("credential_header_blocked".to_string())
     );
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Sec-Fetch-Site", "same-origin")],
+            &token,
         ),
         PreviewDecision::Deny("browser_security_header_blocked".to_string())
     );
@@ -648,30 +723,33 @@ fn preview_blocks_request_smuggling_and_connection_named_headers() {
 
 #[test]
 fn preview_blocks_websockets_and_port_identity_changes() {
-    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let token = preview_token(5173, "vite:1234");
+    let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);
     let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
     assert!(port_identity_matches(&approval, "vite:1234"));
     assert!(!port_identity_matches(&approval, "admin-panel:9999"));
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Upgrade", "websocket")],
+            &token,
         ),
         PreviewDecision::Deny("websocket_blocked".to_string())
     );
 
     assert_eq!(
-        decide_preview_request_from_header_list(
+        decide_preview_request_from_header_list_with_token(
             Some(&approval),
             "GET",
             &approval.preview_host,
             target,
             &[("Sec-WebSocket-Key", "abc")],
+            &token,
         ),
         PreviewDecision::Deny("websocket_blocked".to_string())
     );
