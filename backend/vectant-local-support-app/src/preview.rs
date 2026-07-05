@@ -49,6 +49,10 @@ impl PortApproval {
     }
 }
 
+pub fn port_identity_matches(approval: &PortApproval, current_process_identity: &str) -> bool {
+    approval.process_identity_hash == hash_process_identity(current_process_identity)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewDecision {
     Allow,
@@ -131,6 +135,9 @@ pub fn validate_preview_request_headers(headers: &[(&str, &str)]) -> Option<Stri
             "cookie" | "authorization" | "proxy-authorization"
         ) {
             return Some("credential_header_blocked".to_string());
+        }
+        if lower == "upgrade" || lower.starts_with("sec-websocket-") {
+            return Some("websocket_blocked".to_string());
         }
         if lower == "content-length" {
             content_length_count += 1;

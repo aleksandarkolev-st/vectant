@@ -10,7 +10,8 @@ use vectant_local_support_app::pair::{
 };
 use vectant_local_support_app::preview::{
     decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
-    sanitize_response_header_list, sanitize_response_headers, PortApproval, PreviewDecision,
+    port_identity_matches, sanitize_response_header_list, sanitize_response_headers, PortApproval,
+    PreviewDecision,
 };
 use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
@@ -315,6 +316,37 @@ fn preview_blocks_request_smuggling_and_connection_named_headers() {
             &[("Connection", "X-Shadow-Hop"), ("X-Shadow-Hop", "secret")],
         ),
         PreviewDecision::Deny("connection_named_header_blocked".to_string())
+    );
+}
+
+#[test]
+fn preview_blocks_websockets_and_port_identity_changes() {
+    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    assert!(port_identity_matches(&approval, "vite:1234"));
+    assert!(!port_identity_matches(&approval, "admin-panel:9999"));
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Upgrade", "websocket")],
+        ),
+        PreviewDecision::Deny("websocket_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Sec-WebSocket-Key", "abc")],
+        ),
+        PreviewDecision::Deny("websocket_blocked".to_string())
     );
 }
 
