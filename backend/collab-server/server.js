@@ -723,14 +723,16 @@ function quarantineManifestEventDetails(manifest = {}) {
   };
 }
 
-async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason, codeSiteContext = null) {
-  await ensureRuntimeFilesystem({
-    workspaceSlug: slug,
-    filesystemUserId,
-    runtimeScope,
-    reason,
-    codesiteContext: codeSiteContext?.active ? codeSiteContext : null,
-  });
+async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason, codeSiteContext = null, options = {}) {
+  if (options.ensureRuntime !== false) {
+    await ensureRuntimeFilesystem({
+      workspaceSlug: slug,
+      filesystemUserId,
+      runtimeScope,
+      reason,
+      codesiteContext: codeSiteContext?.active ? codeSiteContext : null,
+    });
+  }
   const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
   const baseDir = codeSiteRuntimeQuarantineBaseDir(cwd)
     || path.join(require('os').tmpdir(), 'synthi-codesitefs-quarantine');
@@ -3141,7 +3143,9 @@ const server = http.createServer(async (req, res) => {
       effectiveUserId,
     });
     try {
-      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list', collectionCodeSiteContext);
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list', collectionCodeSiteContext, {
+        ensureRuntime: false,
+      });
       const quarantines = await listCodeSiteQuarantineManifests(storage.baseDir, slug, {
         transactionId: programRuntimeUrl.searchParams.get('transactionId') || null,
         status: programRuntimeUrl.searchParams.get('status') || null,
