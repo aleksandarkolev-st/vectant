@@ -99,7 +99,15 @@ describe("local support control plane policy", () => {
 
   it("blocks writes, command execution, repo upload, and AI preview reading in the MVP", () => {
     const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
-    for (const capability of ["workspace.file.write", "workspace.command.execute", "workspace.repo.upload"]) {
+    for (const capability of [
+      "workspace.file.write",
+      "workspace.command.execute",
+      "workspace.repo.upload",
+      "localhost.preview.response_body",
+      "localhost.preview.screenshot",
+      "browser.console.read",
+      "browser.network_summary.read",
+    ]) {
       expect(validateRequestEnvelope(envelope({ capability }), policy)).toMatchObject({
         decision: "denied",
         reason: "capability_blocked_in_mvp",
