@@ -2239,7 +2239,6 @@ async function buildContainerReadableSnapshot(readSet, hostRepoRoot, containerRo
     truncated: evidence.truncated,
     repoManifestDigest: evidence.repoManifestDigest,
     repoManifestFileCount: evidence.repoManifestFileCount,
-    repoManifestScannedEntries: evidence.repoManifestScannedEntries,
     repoManifestTruncated: evidence.repoManifestTruncated,
     repoManifestSkippedPaths: evidence.repoManifestSkippedPaths,
     limits: evidence.limits,

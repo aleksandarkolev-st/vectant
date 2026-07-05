@@ -427,7 +427,6 @@ function buildSnapshotDigest(evidence) {
     truncated: evidence.truncated,
     repoManifestDigest: evidence.repoManifestDigest,
     repoManifestFileCount: evidence.repoManifestFileCount,
-    repoManifestScannedEntries: evidence.repoManifestScannedEntries,
     repoManifestTruncated: evidence.repoManifestTruncated,
     repoManifestSkippedPaths: evidence.repoManifestSkippedPaths.map(({ path: skippedPath, reason, size }) => ({ path: skippedPath, reason, size: size ?? null })),
     limits: evidence.limits,

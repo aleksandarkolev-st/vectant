@@ -93,6 +93,26 @@ describe('CodeSite repo read snapshots', () => {
     expect(validation.repoManifestDrifted).toBe(true);
   });
 
+  it('keeps skipped evidence directories out of repo-wide content drift', async () => {
+    const root = await tempRepo();
+    const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+    });
+
+    await fs.mkdir(path.join(root, '.synthi', 'codesite', 'projects', 'proof'), { recursive: true });
+    await fs.writeFile(path.join(root, '.synthi', 'codesite', 'projects', 'proof', 'control-state.json'), '{}\n', 'utf8');
+
+    const validation = await validateReadSnapshotEvidence(snapshot, { repoRoot: root });
+
+    expect(validation).toMatchObject({
+      ok: true,
+      reasonCodes: ['repo_snapshot_stable'],
+      driftedPaths: [],
+    });
+    expect(validation.current.repoManifestScannedEntries).toBeGreaterThan(snapshot.repoManifestScannedEntries);
+  });
+
   it('marks truncated repo-wide manifests for serializable validation', async () => {
     const root = await tempRepo();
     const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
