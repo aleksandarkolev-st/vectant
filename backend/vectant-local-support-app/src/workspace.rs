@@ -91,7 +91,7 @@ impl WorkspacePolicy {
 
     pub fn read_file_for_review(&self, request: &FileReadRequest) -> FileReadResponse {
         let policy = self.decide_file(request);
-        if matches!(policy.decision, DecisionKind::Deny) {
+        if matches!(&policy.decision, DecisionKind::Deny) {
             return denied_response(request, policy);
         }
 
@@ -175,19 +175,21 @@ impl WorkspacePolicy {
 }
 
 fn denied_response(request: &FileReadRequest, decision: PolicyDecision) -> FileReadResponse {
+    let classification = decision.classification;
+    let reason = decision.reason;
     FileReadResponse {
         request_id: request.request_id.clone(),
         decision: "denied".to_string(),
         path_display: request.path.clone(),
-        classification: decision.classification,
+        classification,
         bytes_sent: 0,
         content_sha256: None,
         redactions: Vec::new(),
         scanner_version: crate::SCANNER_VERSION.to_string(),
         policy_version: crate::POLICY_VERSION.to_string(),
-        user_visible_message: Some(match decision.reason.as_str() {
+        user_visible_message: Some(match reason.as_str() {
             "blocked_secret_file_pattern" => format!("Blocked {}. This file usually contains secrets. Nothing was sent.", request.path),
-            _ => format!("Blocked {}: {}. Nothing was sent.", request.path, decision.reason),
+            _ => format!("Blocked {}: {}. Nothing was sent.", request.path, reason),
         }),
         content: None,
     }
