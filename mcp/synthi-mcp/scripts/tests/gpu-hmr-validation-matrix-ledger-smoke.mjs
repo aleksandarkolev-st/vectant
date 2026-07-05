@@ -3461,31 +3461,154 @@ assert.equal(
   hashValue('strict-accepted-bridge:event-manifest'),
 );
 assert.equal(strictAcceptedBridgeRuntimeClosure?.runtimeProfileBridgeAcceptedCount, 1);
-assert.equal(strictAcceptedBridgeRuntimeClosure.strictRuntimeProofAcceptedCount, 1);
-assert.equal(strictAcceptedBridgeRuntimeClosure.matrixRuntimeIngestionRequired, true);
+assert.equal(strictAcceptedBridgeRuntimeClosure.strictRuntimeProofAcceptedCount, 0);
+assert.equal(strictAcceptedBridgeRuntimeClosure.matrixRuntimeIngestionRequired, false);
 assert.equal(strictAcceptedBridgeRuntimeClosure.acceptedForGpuHmr, false);
 assert.equal(strictAcceptedBridgeRuntimeClosure.gpuHmrSuccess, false);
 const fileBackedAdapterImportDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-file-backed-import',
 );
-const fileBackedAdapterProofId =
-  `runtime-boundary-proof-adapter:sha256:${sha256Hex('file-backed-adapter-import:adapter-proof')}`;
-const fileBackedStrictRuntimeProofId =
-  `gpu-runtime-proof:sha256:${sha256Hex('file-backed-adapter-import:runtime-proof')}`;
-const fileBackedLedgerId =
-  `gpu-ledger-proof:sha256:${sha256Hex('file-backed-adapter-import:ledger')}`;
 const fileBackedEventManifestHash = hashValue('file-backed-adapter-import:event-manifest');
 const fileBackedLineMaterializationHash =
   hashValue('file-backed-adapter-import:line-materialization');
+const fileBackedArtifactBeforeHash = hashValue('file-backed-adapter-import:artifact-before');
+const fileBackedArtifactAfterHash =
+  'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const fileBackedRawReadbackHash =
+  'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const fileBackedEpoch = 'epoch:file-backed';
+const fileBackedDispatchId = 'dispatch:file-backed';
+const fileBackedOutputTargetId = 'output-target:file-backed';
+const fileBackedRuntimeSession = 'session:file-backed';
+const fileBackedProcessId = 'pid:1001';
 const fileBackedBoundaryLines = [
-  '[gpu-runtime-boundary] artifact_transport artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa epoch=epoch:file-backed runtime_session=session:file-backed process_id=pid:1001',
-  '[gpu-runtime-boundary] dispatcher_epoch epoch=epoch:file-backed artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa runtime_session=session:file-backed process_id=pid:1001',
-  '[gpu-runtime-boundary] native_runtime_dispatch dispatch_id=dispatch:file-backed epoch=epoch:file-backed artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_id=artifact:file-backed output_target_id=output-target:file-backed runtime_session=session:file-backed process_id=pid:1001',
-  '[gpu-runtime-boundary] host_identity runtime_session=session:file-backed process_id=pid:1001 device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed',
-  '[gpu-runtime-boundary] output_oracle after_dispatch_id=dispatch:file-backed output_target_id=output-target:file-backed raw_readback_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb runtime_session=session:file-backed process_id=pid:1001',
+  `[gpu-runtime-boundary] artifact_transport artifact_hash=${fileBackedArtifactAfterHash} epoch=${fileBackedEpoch} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
+  `[gpu-runtime-boundary] dispatcher_epoch epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
+  `[gpu-runtime-boundary] native_runtime_dispatch dispatch_id=${fileBackedDispatchId} epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} artifact_id=artifact:file-backed output_target_id=${fileBackedOutputTargetId} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
+  `[gpu-runtime-boundary] host_identity runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed`,
+  `[gpu-runtime-boundary] output_oracle after_dispatch_id=${fileBackedDispatchId} output_target_id=${fileBackedOutputTargetId} raw_readback_hash=${fileBackedRawReadbackHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
 ];
 const fileBackedLineHashes = fileBackedBoundaryLines.map(hashValue);
+const fileBackedRuntimeBoundaryEvents = [
+  {
+    kind: 'artifact_transport',
+    eventId: 'file-backed-artifact-transport',
+    artifactHash: fileBackedArtifactAfterHash,
+    processId: fileBackedProcessId,
+    runtimeSession: fileBackedRuntimeSession,
+    timestampMonotonicNs: 100,
+    evidenceRefs: ['file-backed-runtime-boundary:artifact-transport'],
+  },
+  {
+    kind: 'epoch_publication',
+    eventId: 'file-backed-epoch-publication',
+    artifactHash: fileBackedArtifactAfterHash,
+    epoch: fileBackedEpoch,
+    processId: fileBackedProcessId,
+    runtimeSession: fileBackedRuntimeSession,
+    dispatchTableHashBefore: hashValue('file-backed-dispatch-table-before'),
+    dispatchTableHashAfter: hashValue('file-backed-dispatch-table-after'),
+    timestampMonotonicNs: 200,
+    evidenceRefs: ['file-backed-runtime-boundary:epoch-publication'],
+  },
+  {
+    kind: 'synthi_gpu_launch',
+    eventId: fileBackedDispatchId,
+    dispatchId: fileBackedDispatchId,
+    artifactHash: fileBackedArtifactAfterHash,
+    epoch: fileBackedEpoch,
+    processId: fileBackedProcessId,
+    runtimeSession: fileBackedRuntimeSession,
+    stream: 'stream:file-backed',
+    dispatchTableEntry: `file_backed_kernel:${fileBackedEpoch}`,
+    timestampMonotonicNs: 300,
+    evidenceRefs: [
+      `worker-log:synthi_gpu_launch:${fileBackedRuntimeSession}:${fileBackedDispatchId}`,
+      `worker-log:launch_arg_provenance:${fileBackedRuntimeSession}:${fileBackedDispatchId}:output`,
+    ],
+  },
+  {
+    kind: 'host_identity',
+    eventId: 'file-backed-host-identity',
+    processId: fileBackedProcessId,
+    runtimeSession: fileBackedRuntimeSession,
+    deviceUuid: 'device:file-backed',
+    contextId: 'context:file-backed',
+    stream: 'stream:file-backed',
+    timestampMonotonicNs: 310,
+    evidenceRefs: [
+      'worker-log:host_identity:runner_process',
+      'worker-log:host_identity:host_state',
+      'worker-log:host_identity:stream_context',
+      `worker-log:host_identity_snapshot:${fileBackedRuntimeSession}:runner_process:1->2`,
+      `worker-log:host_identity_snapshot:${fileBackedRuntimeSession}:host_state:1->2`,
+      `worker-log:host_identity_snapshot:${fileBackedRuntimeSession}:stream_context:1->2`,
+    ],
+  },
+  {
+    kind: 'output_oracle',
+    eventId: 'file-backed-output-oracle',
+    artifactHash: fileBackedArtifactAfterHash,
+    epoch: fileBackedEpoch,
+    afterDispatchId: fileBackedDispatchId,
+    processId: fileBackedProcessId,
+    runtimeSession: fileBackedRuntimeSession,
+    outputTargetId: fileBackedOutputTargetId,
+    oracleKind: 'buffer_checksum',
+    timestampMonotonicNs: 400,
+    evidenceRefs: [`worker-log:output_oracle:${fileBackedRuntimeSession}:${fileBackedDispatchId}`],
+  },
+];
+const fileBackedComputeOracleArtifacts = buildComputeOracleArtifactsFromByteEvidence({
+  rawReadbackHash: fileBackedRawReadbackHash,
+  checksumBefore: hashValue('file-backed-checksum-before'),
+  checksumAfter: fileBackedRawReadbackHash,
+  deterministicSliceHash: hashValue('file-backed-deterministic-slice'),
+  rawReadbackByteLength: 32,
+  sliceOffset: 0,
+  sliceLength: 32,
+  timestampAfterDispatch: 400,
+  epoch: fileBackedEpoch,
+  rawReadbackHashVerified: true,
+  deterministicSliceHashVerified: true,
+  expectedOutputVerified: true,
+  expectedOutputHash: fileBackedRawReadbackHash,
+  expectedOutputChange: true,
+  evidenceRefs: ['file-backed-runtime-boundary:compute-oracle-bytes'],
+});
+const fileBackedRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
+  backend: 'hip',
+  projectId: 'generic-random-large-runtime-bridge-project',
+  editId: 'file-backed-gpu-artifact-edit',
+  targetId: 'direct-random-arbitrary-runtime-bridge-file-backed-import',
+  sourcePaths: ['src/generic/file_backed_kernel.hip'],
+  sourceManifestHash: hashValue('file-backed-source-manifest'),
+  sourceManifestHashVerified: true,
+  sourceIdentityEvidenceRefs: ['file-backed-runtime-boundary:source-manifest'],
+  entryPoint: 'file_backed_kernel',
+  compileTarget: 'gfx1201',
+  compiler: 'hipcc',
+  compilerArgsHash: hashValue('file-backed-compiler-args'),
+  artifactHashBefore: fileBackedArtifactBeforeHash,
+  artifactHashAfter: fileBackedArtifactAfterHash,
+  contractHash: hashValue('file-backed-contract'),
+  runtimeBoundaryEvents: fileBackedRuntimeBoundaryEvents,
+  computeOracleArtifacts: fileBackedComputeOracleArtifacts,
+  metricScope: 'hot_delta_1',
+  cacheState: 'compiler_cache_warm',
+});
+assert.equal(
+  fileBackedRuntimeBoundaryRunModeProof.accepted,
+  true,
+  fileBackedRuntimeBoundaryRunModeProof.failedGates.join(','),
+);
+const fileBackedAdapterProofId =
+  fileBackedRuntimeBoundaryRunModeProof.runtimeBoundaryProofAdapter.proofId;
+const fileBackedStrictRuntimeProofId =
+  fileBackedRuntimeBoundaryRunModeProof.runtimeProofArtifact.proofId;
+const fileBackedLedgerId =
+  fileBackedRuntimeBoundaryRunModeProof.proofLedger.proofId;
 const fileBackedProofPath = path.join(
   fileBackedAdapterImportDir,
   'artifacts',
@@ -3555,6 +3678,8 @@ const fileBackedProof = {
     proofId: fileBackedAdapterProofId,
     proof_id: fileBackedAdapterProofId,
   },
+  runtimeBoundaryRunModeProof: fileBackedRuntimeBoundaryRunModeProof,
+  runtime_boundary_run_mode_proof: fileBackedRuntimeBoundaryRunModeProof,
   runtimeBoundaryRunModeProofSummary: {
     accepted: true,
     strictRuntimeProofId: fileBackedStrictRuntimeProofId,
@@ -3573,38 +3698,10 @@ const fileBackedProof = {
     runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
     runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
   },
-  runtimeProofArtifact: {
-    proofId: fileBackedStrictRuntimeProofId,
-    proof_id: fileBackedStrictRuntimeProofId,
-    proofLedger: {
-      proofId: fileBackedLedgerId,
-      proof_id: fileBackedLedgerId,
-    },
-    proof_ledger: {
-      proofId: fileBackedLedgerId,
-      proof_id: fileBackedLedgerId,
-    },
-  },
-  runtime_proof_artifact: {
-    proofId: fileBackedStrictRuntimeProofId,
-    proof_id: fileBackedStrictRuntimeProofId,
-    proofLedger: {
-      proofId: fileBackedLedgerId,
-      proof_id: fileBackedLedgerId,
-    },
-    proof_ledger: {
-      proofId: fileBackedLedgerId,
-      proof_id: fileBackedLedgerId,
-    },
-  },
-  proofLedger: {
-    proofId: fileBackedLedgerId,
-    proof_id: fileBackedLedgerId,
-  },
-  proof_ledger: {
-    proofId: fileBackedLedgerId,
-    proof_id: fileBackedLedgerId,
-  },
+  runtimeProofArtifact: fileBackedRuntimeBoundaryRunModeProof.runtimeProofArtifact,
+  runtime_proof_artifact: fileBackedRuntimeBoundaryRunModeProof.runtimeProofArtifact,
+  proofLedger: fileBackedRuntimeBoundaryRunModeProof.proofLedger,
+  proof_ledger: fileBackedRuntimeBoundaryRunModeProof.proofLedger,
 };
 await writeJson(fileBackedProofPath, fileBackedProof);
 const fileBackedProofHash = jsonFileHash(fileBackedProof);
@@ -3743,6 +3840,14 @@ assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.canSatisfyRuntimeProof,
   false,
 );
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.strictRuntimeProofGateAccepted,
+  true,
+);
+assert.deepEqual(
+  fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport.strictRuntimeProofGateFailures,
+  [],
+);
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.present, true);
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.accepted, true);
 assert.equal(
@@ -3775,6 +3880,179 @@ assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transpo
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, false);
 assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, true);
 assert.ok(fileBackedAdapterImportRow.openGaps.includes('strict_runtime_ledger_missing'));
+const forgedAdapterStrictShellDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-file-backed-import-strict-shell',
+);
+const forgedAdapterStrictShellProofPath = path.join(
+  forgedAdapterStrictShellDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-boundary-adapter-proof.json',
+);
+const forgedAdapterStrictShellResultPath = path.join(
+  forgedAdapterStrictShellDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-adapter-result.json',
+);
+const forgedAdapterStrictShellProofRelPath =
+  path.relative(tmpRoot, forgedAdapterStrictShellProofPath).replace(/\\/g, '/');
+const forgedAdapterStrictShellResultRelPath =
+  path.relative(tmpRoot, forgedAdapterStrictShellResultPath).replace(/\\/g, '/');
+const forgedAdapterStrictShellProof = {
+  schemaVersion: 'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1',
+  schema_version: 'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1',
+  proofAuthority: 'runtime_profile_generic_runtime_boundary_adapter_not_success_authority',
+  proof_authority: 'runtime_profile_generic_runtime_boundary_adapter_not_success_authority',
+  accepted: true,
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: false,
+  can_satisfy_dispatch_proof: false,
+  runtimeBoundaryEventManifest: fileBackedProof.runtimeBoundaryEventManifest,
+  runtime_boundary_event_manifest: fileBackedProof.runtime_boundary_event_manifest,
+  runtimeBoundaryLineMaterialization: fileBackedProof.runtimeBoundaryLineMaterialization,
+  runtime_boundary_line_materialization: fileBackedProof.runtime_boundary_line_materialization,
+  runtimeBoundaryLines: fileBackedBoundaryLines,
+  runtime_boundary_lines: fileBackedBoundaryLines,
+  adapterRuntimeBoundaryLines: fileBackedBoundaryLines,
+  adapter_runtime_boundary_lines: fileBackedBoundaryLines,
+  runtimeBoundaryLineHashes: fileBackedLineHashes,
+  runtime_boundary_line_hashes: fileBackedLineHashes,
+  adapterRuntimeBoundaryLineHashes: fileBackedLineHashes,
+  adapter_runtime_boundary_line_hashes: fileBackedLineHashes,
+  runtimeBoundaryProofAdapter: {
+    accepted: true,
+    proofId: fileBackedAdapterProofId,
+    proof_id: fileBackedAdapterProofId,
+  },
+  runtime_boundary_proof_adapter: {
+    accepted: true,
+    proofId: fileBackedAdapterProofId,
+    proof_id: fileBackedAdapterProofId,
+  },
+  runtimeBoundaryRunModeProofSummary: {
+    accepted: true,
+    strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+    strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+    proofLedgerId: fileBackedLedgerId,
+    proof_ledger_id: fileBackedLedgerId,
+    runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+    runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+  },
+  runtime_boundary_run_mode_proof_summary: {
+    accepted: true,
+    strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+    strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+    proofLedgerId: fileBackedLedgerId,
+    proof_ledger_id: fileBackedLedgerId,
+    runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+    runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+  },
+  runtimeProofArtifact: {
+    proofId: fileBackedStrictRuntimeProofId,
+    proof_id: fileBackedStrictRuntimeProofId,
+    proofLedger: {
+      proofId: fileBackedLedgerId,
+      proof_id: fileBackedLedgerId,
+    },
+    proof_ledger: {
+      proofId: fileBackedLedgerId,
+      proof_id: fileBackedLedgerId,
+    },
+  },
+  runtime_proof_artifact: {
+    proofId: fileBackedStrictRuntimeProofId,
+    proof_id: fileBackedStrictRuntimeProofId,
+    proofLedger: {
+      proofId: fileBackedLedgerId,
+      proof_id: fileBackedLedgerId,
+    },
+    proof_ledger: {
+      proofId: fileBackedLedgerId,
+      proof_id: fileBackedLedgerId,
+    },
+  },
+  proofLedger: {
+    proofId: fileBackedLedgerId,
+    proof_id: fileBackedLedgerId,
+  },
+  proof_ledger: {
+    proofId: fileBackedLedgerId,
+    proof_id: fileBackedLedgerId,
+  },
+};
+await writeJson(forgedAdapterStrictShellProofPath, forgedAdapterStrictShellProof);
+const forgedAdapterStrictShellProofHash = jsonFileHash(forgedAdapterStrictShellProof);
+const forgedAdapterStrictShellResult = {
+  ...fileBackedAdapterResult,
+  proofPath: forgedAdapterStrictShellProofRelPath,
+  proof_path: forgedAdapterStrictShellProofRelPath,
+  proofJsonSha256: forgedAdapterStrictShellProofHash,
+  proof_json_sha256: forgedAdapterStrictShellProofHash,
+};
+await writeJson(forgedAdapterStrictShellResultPath, forgedAdapterStrictShellResult);
+const forgedAdapterStrictShellResultHash = jsonFileHash(forgedAdapterStrictShellResult);
+await writeJson(
+  path.join(forgedAdapterStrictShellDir, 'random-cold-runtime-bridge-file-backed-import-strict-shell.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import-strict-shell',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import-strict-shell.git',
+    immutableCommit: sha256Hex('runtime-bridge-file-backed-import-strict-shell:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        runtimeProfileAdapterResultPath: forgedAdapterStrictShellResultRelPath,
+        runtime_profile_adapter_result_path: forgedAdapterStrictShellResultRelPath,
+        runtimeProfileAdapterResultSha256: forgedAdapterStrictShellResultHash,
+        runtime_profile_adapter_result_sha256: forgedAdapterStrictShellResultHash,
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+        strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+        proofLedgerId: fileBackedLedgerId,
+        proof_ledger_id: fileBackedLedgerId,
+        runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+        runtime_boundary_event_manifest_sha256: fileBackedEventManifestHash,
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+        runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+        blockingGaps: [],
+        blocking_gaps: [],
+        adapterResultBlockingGaps: [],
+        adapter_result_blocking_gaps: [],
+      }),
+    },
+  }),
+);
+const forgedAdapterStrictShellLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAdapterStrictShellDir],
+  includeInvalidated: true,
+});
+const forgedAdapterStrictShellRow = forgedAdapterStrictShellLedger.rows.find(
+  (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-file-backed-import-strict-shell',
+);
+assert.equal(forgedAdapterStrictShellRow?.safety.accepted, false);
+assert.equal(forgedAdapterStrictShellRow.acceptedForGpuHmr, false);
+assert.equal(forgedAdapterStrictShellRow.gpuHmrSuccess, false);
+assert.equal(forgedAdapterStrictShellRow.randomColdRuntimeProfileAdapterResultImport.accepted, false);
+assert.equal(
+  forgedAdapterStrictShellRow.randomColdRuntimeProfileAdapterResultImport.strictRuntimeProofGateAccepted,
+  false,
+);
+assert.ok(forgedAdapterStrictShellRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_result_import_runtime_proof_artifact_not_strictly_accepted'
+));
+assert.ok(forgedAdapterStrictShellRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_result_import_strict_gate:runtime_proof_artifact_stage_results_missing'
+));
 const forgedAdapterImportHashDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-file-backed-import-hash-mismatch',

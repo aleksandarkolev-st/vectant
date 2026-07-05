@@ -4254,9 +4254,15 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     proofJson.runtimeBoundaryRunModeProofSummary
     ?? proofJson.runtime_boundary_run_mode_proof_summary,
   );
+  const runtimeBoundaryRunModeProof = compactObject(
+    proofJson.runtimeBoundaryRunModeProof
+    ?? proofJson.runtime_boundary_run_mode_proof,
+  );
   const proofLedger = compactObject(
     proofJson.proofLedger
     ?? proofJson.proof_ledger
+    ?? runtimeBoundaryRunModeProof.proofLedger
+    ?? runtimeBoundaryRunModeProof.proof_ledger
     ?? proofJson.runtimeProofArtifact?.proofLedger
     ?? proofJson.runtimeProofArtifact?.proof_ledger
     ?? proofJson.runtime_proof_artifact?.proofLedger
@@ -4264,8 +4270,18 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
   );
   const runtimeProofArtifact = compactObject(
     proofJson.runtimeProofArtifact
-    ?? proofJson.runtime_proof_artifact,
+    ?? proofJson.runtime_proof_artifact
+    ?? runtimeBoundaryRunModeProof.runtimeProofArtifact
+    ?? runtimeBoundaryRunModeProof.runtime_proof_artifact,
   );
+  const strictRuntimeProofGate = runtimeProofArtifactStrictGate(
+    Object.keys(runtimeProofArtifact).length > 0 ? runtimeProofArtifact : null,
+    { name: 'random_cold_adapter_result_import_runtime_proof_artifact' },
+  );
+  const strictRuntimeProofGateAccepted =
+    strictRuntimeProofGate.accepted === true
+    || strictRuntimeProofGate.status === 'pass';
+  const strictRuntimeProofGateFailures = compactStringList(strictRuntimeProofGate.failures);
   const runtimeBoundaryLineMaterialization = compactObject(
     adapterResult.runtimeBoundaryLineMaterialization
     ?? adapterResult.runtime_boundary_line_materialization
@@ -4281,7 +4297,9 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
   };
   const runtimeBoundaryEventManifest = compactObject(
     proofJson.runtimeBoundaryEventManifest
-    ?? proofJson.runtime_boundary_event_manifest,
+    ?? proofJson.runtime_boundary_event_manifest
+    ?? runtimeBoundaryRunModeProof.runtimeBoundaryEventManifest
+    ?? runtimeBoundaryRunModeProof.runtime_boundary_event_manifest,
   );
   const runtimeBoundaryEventManifestSha256 = normalizeSha256(firstText(
     adapterResult.runtimeBoundaryEventManifestSha256,
@@ -4299,17 +4317,24 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     adapterResult.runtimeBoundaryProofAdapterAccepted,
     adapterResult.runtime_boundary_proof_adapter_accepted,
     runtimeBoundaryProofAdapter.accepted,
+    runtimeBoundaryRunModeProof.runtimeBoundaryProofAdapter?.accepted,
+    runtimeBoundaryRunModeProof.runtime_boundary_proof_adapter?.accepted,
   ) === true;
   const runtimeBoundaryProofAdapterProofId = firstText(
     adapterResult.runtimeBoundaryProofAdapterProofId,
     adapterResult.runtime_boundary_proof_adapter_proof_id,
     runtimeBoundaryProofAdapter.proofId,
     runtimeBoundaryProofAdapter.proof_id,
+    runtimeBoundaryRunModeProof.runtimeBoundaryProofAdapter?.proofId,
+    runtimeBoundaryRunModeProof.runtimeBoundaryProofAdapter?.proof_id,
+    runtimeBoundaryRunModeProof.runtime_boundary_proof_adapter?.proofId,
+    runtimeBoundaryRunModeProof.runtime_boundary_proof_adapter?.proof_id,
   );
   const strictRuntimeProofAccepted = firstBool(
     adapterResult.strictRuntimeProofAccepted,
     adapterResult.strict_runtime_proof_accepted,
     runtimeBoundaryRunModeProofSummary.accepted,
+    runtimeBoundaryRunModeProof.accepted,
   ) === true;
   const strictRuntimeProofId = firstText(
     adapterResult.strictRuntimeProofId,
@@ -4486,6 +4511,13 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     bridgeStrictRuntimeProofAccepted && strictRuntimeProofAccepted !== true
       ? 'random_cold_adapter_result_import_strict_runtime_acceptance_mismatch'
       : null,
+    strictRuntimeProofAccepted === true && strictRuntimeProofGateAccepted !== true
+      ? 'random_cold_adapter_result_import_runtime_proof_artifact_not_strictly_accepted'
+      : null,
+    ...(strictRuntimeProofAccepted === true
+      ? strictRuntimeProofGateFailures
+        .map((code) => `random_cold_adapter_result_import_strict_gate:${code}`)
+      : []),
     bridgeStrictRuntimeProofId && bridgeStrictRuntimeProofId !== strictRuntimeProofId
       ? 'random_cold_adapter_result_import_strict_runtime_proof_id_mismatch'
       : null,
@@ -4551,6 +4583,10 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     proof_json_authority: proofAuthority ?? null,
     strictRuntimeProofAccepted,
     strict_runtime_proof_accepted: strictRuntimeProofAccepted,
+    strictRuntimeProofGateAccepted,
+    strict_runtime_proof_gate_accepted: strictRuntimeProofGateAccepted,
+    strictRuntimeProofGateFailures,
+    strict_runtime_proof_gate_failures: strictRuntimeProofGateFailures,
     strictRuntimeProofId,
     strict_runtime_proof_id: strictRuntimeProofId,
     proofLedgerId,
@@ -32891,6 +32927,12 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.runtimeProfileProofBridge
     ?? row.runtime_profile_proof_bridge
   );
+  const runtimeProfileAdapterResultImport = compactObject(
+    row.randomColdRuntimeProfileAdapterResultImport
+    ?? row.random_cold_runtime_profile_adapter_result_import
+    ?? row.runtimeProfileAdapterResultImport
+    ?? row.runtime_profile_adapter_result_import
+  );
   const runtimeSupportClosure = compactObject(
     row.randomColdRuntimeSupportClosureObligation
     ?? row.random_cold_runtime_support_closure_obligation
@@ -32926,8 +32968,18 @@ function runtimeClosureRowSignals(row = {}) {
   const runtimeProofArtifact = compactObject(row.runtimeProofArtifact ?? row.runtime_proof_artifact);
   const ledger = compactObject(row.ledger);
   const fullRuntimeAccepted = acceptedFullRuntimeRow(row);
+  const adapterImportStrictRuntimeProofAccepted =
+    runtimeProfileAdapterResultImport.accepted === true
+    && firstBool(
+      runtimeProfileAdapterResultImport.strictRuntimeProofAccepted,
+      runtimeProfileAdapterResultImport.strict_runtime_proof_accepted,
+    ) === true
+    && firstBool(
+      runtimeProfileAdapterResultImport.strictRuntimeProofGateAccepted,
+      runtimeProfileAdapterResultImport.strict_runtime_proof_gate_accepted,
+    ) === true;
   const strictRuntimeProofAccepted =
-    firstBool(runtimeBridge.strictRuntimeProofAccepted, runtimeBridge.strict_runtime_proof_accepted) === true
+    adapterImportStrictRuntimeProofAccepted
     || (
       runtimeProofArtifact.accepted === true
       && ledger.present === true
