@@ -72,6 +72,16 @@ const activity = [
   { kind: "Preview", text: "Approved browser preview for localhost:5173. AI page reading remains off.", at: "12:47:31" },
 ];
 
+const exportMetadata = {
+  exported_by: "local_support_app",
+  export_type: "scrubbed_activity_history",
+  session_id: "sess_7K9",
+  workspace_display: "vectant-demo",
+  policy_version: "2026.07.05",
+  scanner_version: "scanner-2026.07.05",
+  raw_bodies_included: false,
+};
+
 const orgRestrictions = [
   ["Browser preview", "Allowed", "good", null],
   ["Vectant AI page reading", "Blocked", "bad", "Blocked by organization"],
@@ -159,6 +169,7 @@ export default function LocalSupportTransparency() {
   const [connected, setConnected] = useState(true);
   const [reviewOpen, setReviewOpen] = useState(true);
   const [historyDeleted, setHistoryDeleted] = useState(false);
+  const [lastExport, setLastExport] = useState(null);
 
   const sessionState = useMemo(() => {
     if (!connected) return { label: "Disconnected", tone: "bad", Icon: XCircle };
@@ -167,6 +178,30 @@ export default function LocalSupportTransparency() {
   }, [connected, paused]);
 
   const SessionIcon = sessionState.Icon;
+  const visibleActivity = historyDeleted ? [] : activity;
+
+  function exportScrubbedHistory() {
+    const payload = {
+      ...exportMetadata,
+      exported_at: new Date().toISOString(),
+      events: visibleActivity.map((item) => ({
+        at: item.at,
+        class: item.kind,
+        summary: item.text,
+        user_visible: true,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vectant-local-support-history-${exportMetadata.session_id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setLastExport(`${payload.events.length} scrubbed events exported`);
+  }
 
   return (
     <main className="min-h-[100dvh] bg-[oklch(0.12_0.01_270)] text-zinc-100">
@@ -437,7 +472,7 @@ Error: module failed to resolve`}
           <TabsContent value="activity" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
             <Panel title="Activity log" description="User-facing events include denied requests, redactions, approvals, pause, disconnect, export, and delete actions.">
               <div className="space-y-3">
-                {(historyDeleted ? [] : activity).map((item) => (
+                {visibleActivity.map((item) => (
                   <div key={`${item.at}-${item.text}`} className="flex gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
                     <span className="font-mono text-xs text-zinc-500">{item.at}</span>
                     <div>
@@ -453,18 +488,44 @@ Error: module failed to resolve`}
             </Panel>
             <Panel title="Local history controls" description="Exports are scrubbed. Delete removes local activity records for the completed session.">
               <div className="grid gap-2">
-                <Button type="button" variant="outline" className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
+                  onClick={exportScrubbedHistory}
+                >
                   <Download className="size-4" aria-hidden="true" />
                   Export scrubbed history
                 </Button>
-                <Button type="button" variant="outline" className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]" onClick={() => setHistoryDeleted(false)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
+                  onClick={() => {
+                    setHistoryDeleted(false);
+                    setLastExport(null);
+                  }}
+                >
                   <RotateCcw className="size-4" aria-hidden="true" />
                   Restore demo history
                 </Button>
-                <Button type="button" variant="destructive" className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400" onClick={() => setHistoryDeleted(true)}>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
+                  onClick={() => {
+                    setHistoryDeleted(true);
+                    setLastExport(null);
+                  }}
+                >
                   <Trash2 className="size-4" aria-hidden="true" />
                   Delete local history
                 </Button>
+                {lastExport ? (
+                  <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">
+                    {lastExport}
+                  </div>
+                ) : null}
               </div>
             </Panel>
           </TabsContent>
