@@ -31737,21 +31737,89 @@ function largeRocmMlRandomColdDomainTokenMatches(value) {
   const text = String(value ?? '').trim().toLowerCase();
   if (!text) return [];
   const normalized = text.replace(/[_-]+/g, '_');
+  return largeRocmMlRandomColdDomainTokenMatchesNormalized(normalized);
+}
+
+function largeRocmMlRandomColdTokenPattern(token) {
+  return token
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/_/g, '[_-]+');
+}
+
+function largeRocmMlRandomColdTokenRegExp(token) {
+  return new RegExp(`(^|[^a-z0-9])${largeRocmMlRandomColdTokenPattern(token)}([^a-z0-9]|$)`, 'i');
+}
+
+function largeRocmMlRandomColdDomainTokenMatchesNormalized(normalized) {
   return LARGE_ROCM_ML_RANDOM_COLD_DOMAIN_TOKENS.filter((token) => {
-    const tokenPattern = token
-      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/_/g, '[_-]+');
-    return new RegExp(`(^|[^a-z0-9])${tokenPattern}([^a-z0-9]|$)`, 'i')
-      .test(normalized);
+    return largeRocmMlRandomColdTokenRegExp(token).test(normalized);
   });
 }
 
-function largeRocmMlRandomColdTextSignals(values, source) {
+function largeRocmMlRandomColdNormalizedIdentityTerm(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, '/')
+    .replace(/[_\-\s/.:]+/g, '_')
+    .replace(/(^_+|_+$)/g, '');
+  return normalized.length >= 4 ? normalized : null;
+}
+
+function largeRocmMlRandomColdIdentityTermsForRow(row = {}) {
+  const facet = compactObject(row.randomLargeProjectColdPath ?? row.random_large_project_cold_path);
+  return [...new Set(compactStringList([
+    row.targetId,
+    row.target_id,
+    row.profileId,
+    row.profile_id,
+    row.profileMode,
+    row.profile_mode,
+    row.artifactPath,
+    row.artifact_path,
+    facet.targetId,
+    facet.target_id,
+    facet.candidateId,
+    facet.candidate_id,
+    facet.profileId,
+    facet.profile_id,
+    facet.profileMode,
+    facet.profile_mode,
+    facet.artifactPath,
+    facet.artifact_path,
+  ]).map(largeRocmMlRandomColdNormalizedIdentityTerm).filter(Boolean))];
+}
+
+function largeRocmMlRandomColdMaskIdentityTerms(value, identityTerms = []) {
+  let normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, '/')
+    .replace(/[_\-\s/.:]+/g, '_');
+  for (const term of [...identityTerms].sort((a, b) => b.length - a.length)) {
+    if (!term) continue;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    normalized = normalized.replace(new RegExp(escaped, 'g'), '_');
+  }
+  return normalized;
+}
+
+function largeRocmMlRandomColdTokenDerivedOnlyFromIdentity(value, token, identityTerms = []) {
+  if (identityTerms.length === 0) return false;
+  const masked = largeRocmMlRandomColdMaskIdentityTerms(value, identityTerms);
+  return !largeRocmMlRandomColdTokenRegExp(token).test(masked);
+}
+
+function largeRocmMlRandomColdTextSignals(values, source, options = {}) {
   const signals = [];
   const seen = new Set();
+  const identityTerms = Array.isArray(options.identityTerms) ? options.identityTerms : [];
   for (const value of compactStringList(values)) {
     const tokens = largeRocmMlRandomColdDomainTokenMatches(value);
     for (const token of tokens) {
+      if (largeRocmMlRandomColdTokenDerivedOnlyFromIdentity(value, token, identityTerms)) {
+        continue;
+      }
       const key = `${source}:${token}:${value}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -31820,8 +31888,6 @@ function largeRocmMlRandomColdSemanticTextValues(summary = {}) {
         firstText(object.name),
         firstText(object.value),
         firstText(object.kind),
-        firstText(object.reason),
-        firstText(object.path),
       );
     }
   }
@@ -31833,23 +31899,28 @@ function largeRocmMlRandomColdSemanticTextValues(summary = {}) {
     'kernelFamily',
     'operator',
     'operation',
-    'target',
   ]) {
     values.push(firstText(semanticSummary[key]));
   }
   return compactStringList(values);
 }
 
-function largeRocmMlRandomColdBuildTextSignals(buildContentEvidence = {}) {
+function largeRocmMlRandomColdBuildTextSignals(buildContentEvidence = {}, options = {}) {
   const buildContent = compactObject(buildContentEvidence);
   const buildFiles = compactObjectList(buildContent.buildFiles ?? buildContent.build_files);
   const values = [];
   for (const buildFile of buildFiles) {
     values.push(firstText(buildFile.path));
     const semanticSummary = compactObject(buildFile.semanticSummary ?? buildFile.semantic_summary);
-    values.push(...largeRocmMlRandomColdSemanticTextValues(semanticSummary));
+    const authority = firstText(
+      semanticSummary.backendSignalAuthority,
+      semanticSummary.backend_signal_authority,
+    );
+    if (authority === RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY) {
+      values.push(...largeRocmMlRandomColdSemanticTextValues(semanticSummary));
+    }
   }
-  return largeRocmMlRandomColdTextSignals(values, 'verified_build_metadata');
+  return largeRocmMlRandomColdTextSignals(values, 'verified_build_metadata', options);
 }
 
 function largeRocmMlRandomColdRocmBackendSignals({
@@ -31964,11 +32035,16 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     sourceListingManifest,
     buildContentEvidence,
   });
+  const identityTerms = largeRocmMlRandomColdIdentityTermsForRow(row);
   const sourceMlSignals = largeRocmMlRandomColdTextSignals(
     largeRocmMlRandomColdListingTextValues(sourceListingManifest),
     'source_listing',
+    { identityTerms },
   );
-  const buildMlSignals = largeRocmMlRandomColdBuildTextSignals(buildContentEvidence);
+  const buildMlSignals = largeRocmMlRandomColdBuildTextSignals(
+    buildContentEvidence,
+    { identityTerms },
+  );
   const sourceIdentityHash = randomColdPathSourceIdentityHash(row);
   const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
   const sourceContentOnlyIdentityHash = randomColdPathSourceContentOnlyIdentityHash(row);
@@ -32195,6 +32271,12 @@ function largeRocmMlRandomColdSourceIntakeCoverage(rows, context = {}) {
     schema_version: LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION,
   });
 }
+
+export const GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS = Object.freeze({
+  largeRocmMlRandomColdNormalizedIdentityTerm,
+  largeRocmMlRandomColdSemanticTextValues,
+  largeRocmMlRandomColdTextSignals,
+});
 
 function randomColdInternalLocalPathReason(normalized, context = {}) {
   const normalizedForSegments = String(normalized ?? '').replace(/\\/g, '/').toLowerCase();

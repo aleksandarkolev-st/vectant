@@ -15289,6 +15289,128 @@ assert.ok(
   labelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
     .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
 );
+const broadReadinessIdentityOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) =>
+  randomColdReadinessMatrixRow({
+    targetId: `gemm-tensor-identity-only-cold-readiness-${index + 1}`,
+    sourceUrl: `https://example.invalid/identity-only-random-cold/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`identity-only-rocm-ml-cold-readiness-${index + 1}`)
+      .slice(0, 40),
+  })
+);
+const broadReadinessWithIdentityOnlyRocmMlQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessIdentityOnlyRocmMlColdRows,
+  ],
+});
+assert.equal(broadReadinessWithIdentityOnlyRocmMlQuery.accepted, true);
+assert.equal(
+  broadReadinessWithIdentityOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithIdentityOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness
+    .largeRocmMlRandomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithIdentityOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
+);
+const identityOnlyRocmMlCoverage = new Map(
+  broadReadinessWithIdentityOnlyRocmMlQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  identityOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.status,
+  'diagnostic_only',
+);
+assert.ok(
+  identityOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
+    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
+);
+const broadReadinessSemanticLabelOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) => {
+  const targetId = `semantic-label-only-cold-readiness-${index + 1}`;
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId,
+    fileCount: 1500,
+    totalKnownBytes: 15 * 1024 * 1024,
+    sourceRelevantFileCount: 1500,
+    gpuSourceSignalCount: 31,
+  });
+  return randomColdReadinessMatrixRow({
+    targetId,
+    sourceUrl: `https://example.invalid/semantic-label-only-random-cold/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`semantic-label-only-rocm-ml-cold-readiness-${index + 1}`)
+      .slice(0, 40),
+    sourceListingManifest,
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceForListing({
+      targetId,
+      sourceListingManifest,
+      semanticSummary: {
+        backendSignalAuthority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
+        backend_signal_authority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
+        backendSignals: [
+          {
+            backend: 'hip_rocm',
+            reason: 'cmake_language_enables_hip',
+          },
+        ],
+        backend_signals: [
+          {
+            backend: 'hip_rocm',
+            reason: 'cmake_language_enables_hip',
+          },
+        ],
+        mlDomainSignals: [
+          {
+            path: 'synthetic/labels/gemm-only-target-name.cc',
+            reason: 'tensor_target_label',
+          },
+        ],
+        ml_domain_signals: [
+          {
+            path: 'synthetic/labels/gemm-only-target-name.cc',
+            reason: 'tensor_target_label',
+          },
+        ],
+        target: 'hipblaslt_gemm_label_only',
+      },
+    }),
+  });
+});
+const broadReadinessWithSemanticLabelOnlyRocmMlQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessSemanticLabelOnlyRocmMlColdRows,
+  ],
+});
+assert.equal(broadReadinessWithSemanticLabelOnlyRocmMlQuery.accepted, true);
+assert.equal(
+  broadReadinessWithSemanticLabelOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithSemanticLabelOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness
+    .largeRocmMlRandomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithSemanticLabelOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
+);
+const semanticLabelOnlyRocmMlCoverage = new Map(
+  broadReadinessWithSemanticLabelOnlyRocmMlQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  semanticLabelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.status,
+  'diagnostic_only',
+);
+assert.ok(
+  semanticLabelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
+    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
+);
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);
   const evidence = randomColdBuildMetadataContentEvidenceFixture({
