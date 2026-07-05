@@ -12,7 +12,9 @@ use vectant_local_support_app::pair::{
 use vectant_local_support_app::preview::{
     decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
     port_identity_matches, preview_path_allowed, sanitize_response_header_list,
-    sanitize_response_headers, PortApproval, PreviewDecision,
+    sanitize_response_headers, validate_preview_response_size, PortApproval, PortApprovalRegistry,
+    PreviewDecision, PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
+    MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
 };
 use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
@@ -393,6 +395,28 @@ fn preview_blocks_request_smuggling_and_connection_named_headers() {
         ),
         PreviewDecision::Deny("connection_named_header_blocked".to_string())
     );
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("X-Forwarded-For", "10.0.0.4")],
+        ),
+        PreviewDecision::Deny("credential_header_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Sec-Fetch-Site", "same-origin")],
+        ),
+        PreviewDecision::Deny("browser_security_header_blocked".to_string())
+    );
 }
 
 #[test]
@@ -427,14 +451,92 @@ fn preview_blocks_websockets_and_port_identity_changes() {
 }
 
 #[test]
+fn port_approvals_are_session_scoped_revocable_and_process_bound() {
+    let mut registry = PortApprovalRegistry::new();
+    let approval = registry.approve_browser_port("sess_123", 5173, "vite:1234");
+
+    assert!(!approval.persistent);
+    assert_eq!(approval.expires_at, "session_end");
+    assert!(approval.invalidate_on_port_close);
+    assert!(approval.invalidate_on_process_change);
+    assert!(!approval.agent_read_allowed);
+    assert!(!approval.support_agent_read_allowed);
+    assert!(!approval.agent_interact_allowed);
+    assert!(!approval.send_response_body_allowed);
+    assert!(!approval.send_screenshot_allowed);
+    assert!(!approval.send_console_errors_allowed);
+
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_some());
+    assert!(registry
+        .approval_for("sess_123", 5173, "admin-panel:9999")
+        .is_none());
+    assert!(registry.approval_for("other_session", 5173, "vite:1234").is_none());
+
+    registry.revoke_port(5173);
+    assert!(registry.approval_for("sess_123", 5173, "vite:1234").is_none());
+
+    registry.approve_browser_port("sess_123", 5173, "vite:1234");
+    registry.port_closed(5173);
+    assert!(registry.approval_for("sess_123", 5173, "vite:1234").is_none());
+
+    registry.approve_browser_port("sess_123", 5173, "vite:1234");
+    registry.disconnect_session("sess_123");
+    assert!(registry.approval_for("sess_123", 5173, "vite:1234").is_none());
+}
+
+#[test]
+fn preview_traffic_guard_limits_request_rate_streams_and_response_bytes() {
+    let mut guard = PreviewTrafficGuard::new();
+    let host = "br-local-p5173.vectant-preview.dev";
+
+    for _ in 0..MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST {
+        assert!(guard.allow_request_at(host, 1_000));
+    }
+    assert!(!guard.allow_request_at(host, 1_000));
+    assert!(guard.allow_request_at(host, 1_061));
+
+    for _ in 0..MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST {
+        assert!(guard.begin_stream(host));
+    }
+    assert!(!guard.begin_stream(host));
+    guard.end_stream(host);
+    assert!(guard.begin_stream(host));
+
+    assert!(validate_preview_response_size(Some(MAX_PREVIEW_RESPONSE_BYTES), 4).is_ok());
+    assert_eq!(
+        validate_preview_response_size(Some(MAX_PREVIEW_RESPONSE_BYTES + 1), 0),
+        Err("preview_response_too_large".to_string())
+    );
+    assert_eq!(
+        validate_preview_response_size(None, MAX_PREVIEW_RESPONSE_BYTES + 1),
+        Err("preview_response_too_large".to_string())
+    );
+}
+
+#[test]
 fn response_headers_strip_cookie_and_block_service_workers() {
     let mut headers = HashMap::new();
     headers.insert("Set-Cookie".to_string(), "vectant_session=bad; Domain=.vectant.com".to_string());
+    headers.insert("Location".to_string(), "http://192.168.1.1/admin".to_string());
+    headers.insert("X-Frame-Options".to_string(), "SAMEORIGIN".to_string());
+    headers.insert("Clear-Site-Data".to_string(), "\"cookies\"".to_string());
     headers.insert("Content-Type".to_string(), "text/html".to_string());
     let sanitized = sanitize_response_headers(&headers);
 
     assert!(!sanitized.contains_key("Set-Cookie"));
+    assert!(!sanitized.contains_key("Location"));
+    assert!(!sanitized.contains_key("X-Frame-Options"));
+    assert!(!sanitized.contains_key("Clear-Site-Data"));
     assert_eq!(sanitized.get("Service-Worker-Allowed"), Some(&"none".to_string()));
+    assert_eq!(sanitized.get("Cache-Control"), Some(&"no-store".to_string()));
+    assert_eq!(sanitized.get("Referrer-Policy"), Some(&"no-referrer".to_string()));
+    assert_eq!(sanitized.get("X-Content-Type-Options"), Some(&"nosniff".to_string()));
+    assert!(sanitized
+        .get("Permissions-Policy")
+        .unwrap()
+        .contains("camera=()"));
     assert!(sanitized
         .get("Content-Security-Policy")
         .unwrap()

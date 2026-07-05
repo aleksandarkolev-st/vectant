@@ -17,6 +17,7 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortApproval {
+    pub session_id: String,
     pub port: u16,
     pub target_host: String,
     pub preview_host: String,
@@ -25,8 +26,13 @@ pub struct PortApproval {
     pub support_agent_read_allowed: bool,
     pub agent_interact_allowed: bool,
     pub send_response_body_allowed: bool,
+    pub send_screenshot_allowed: bool,
+    pub send_console_errors_allowed: bool,
     pub state_changing_methods_allowed: bool,
     pub expires_at: String,
+    pub persistent: bool,
+    pub invalidate_on_port_close: bool,
+    pub invalidate_on_process_change: bool,
     pub process_identity_hash: String,
 }
 
@@ -34,6 +40,7 @@ impl PortApproval {
     pub fn browser_only(port: u16, process_identity: &str) -> Self {
         let process_identity_hash = hash_process_identity(process_identity);
         Self {
+            session_id: "local-session".to_string(),
             port,
             target_host: "127.0.0.1".to_string(),
             preview_host: format!("br-local-p{port}.vectant-preview.dev"),
@@ -42,9 +49,74 @@ impl PortApproval {
             support_agent_read_allowed: false,
             agent_interact_allowed: false,
             send_response_body_allowed: false,
+            send_screenshot_allowed: false,
+            send_console_errors_allowed: false,
             state_changing_methods_allowed: false,
             expires_at: "session_end".to_string(),
+            persistent: false,
+            invalidate_on_port_close: true,
+            invalidate_on_process_change: true,
             process_identity_hash,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct PortApprovalRegistry {
+    approvals: HashMap<u16, PortApproval>,
+}
+
+impl PortApprovalRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn approve_browser_port(
+        &mut self,
+        session_id: impl Into<String>,
+        port: u16,
+        process_identity: &str,
+    ) -> PortApproval {
+        let mut approval = PortApproval::browser_only(port, process_identity);
+        approval.session_id = session_id.into();
+        self.approvals.insert(port, approval.clone());
+        approval
+    }
+
+    pub fn approval_for(
+        &self,
+        session_id: &str,
+        port: u16,
+        process_identity: &str,
+    ) -> Option<&PortApproval> {
+        let approval = self.approvals.get(&port)?;
+        if approval.session_id != session_id
+            || approval.persistent
+            || approval.expires_at != "session_end"
+            || (approval.invalidate_on_process_change
+                && !port_identity_matches(approval, process_identity))
+        {
+            return None;
+        }
+        Some(approval)
+    }
+
+    pub fn revoke_port(&mut self, port: u16) -> Option<PortApproval> {
+        self.approvals.remove(&port)
+    }
+
+    pub fn disconnect_session(&mut self, session_id: &str) {
+        self.approvals
+            .retain(|_, approval| approval.session_id != session_id);
+    }
+
+    pub fn port_closed(&mut self, port: u16) {
+        if self
+            .approvals
+            .get(&port)
+            .is_some_and(|approval| approval.invalidate_on_port_close)
+        {
+            self.approvals.remove(&port);
         }
     }
 }
@@ -141,12 +213,23 @@ pub fn validate_preview_request_headers(headers: &[(&str, &str)]) -> Option<Stri
         let lower = name.trim().to_ascii_lowercase();
         if matches!(
             lower.as_str(),
-            "cookie" | "authorization" | "proxy-authorization"
+            "cookie"
+                | "authorization"
+                | "proxy-authorization"
+                | "x-api-key"
+                | "x-auth-token"
+                | "x-csrf-token"
+                | "forwarded"
+                | "x-forwarded-for"
+                | "x-real-ip"
         ) {
             return Some("credential_header_blocked".to_string());
         }
         if lower == "upgrade" || lower.starts_with("sec-websocket-") {
             return Some("websocket_blocked".to_string());
+        }
+        if lower.starts_with("sec-") {
+            return Some("browser_security_header_blocked".to_string());
         }
         if lower == "content-length" {
             content_length_count += 1;
@@ -205,6 +288,18 @@ pub fn sanitize_response_header_list(headers: &[(&str, &str)]) -> HashMap<String
         let lower = name.trim().to_ascii_lowercase();
         if lower == "set-cookie"
             || lower == "content-security-policy-report-only"
+            || lower == "clear-site-data"
+            || lower == "content-security-policy"
+            || lower == "x-frame-options"
+            || lower == "cross-origin-opener-policy"
+            || lower == "cross-origin-embedder-policy"
+            || lower == "cross-origin-resource-policy"
+            || lower == "alt-svc"
+            || lower == "report-to"
+            || lower == "nel"
+            || lower == "link"
+            || lower == "location"
+            || lower == "refresh"
             || HOP_BY_HOP_HEADERS.contains(&lower.as_str())
             || connection_tokens.iter().any(|token| token == &lower)
         {
@@ -217,7 +312,74 @@ pub fn sanitize_response_header_list(headers: &[(&str, &str)]) -> HashMap<String
         "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; worker-src 'none'".to_string(),
     );
     sanitized.insert("Service-Worker-Allowed".to_string(), "none".to_string());
+    sanitized.insert("Cache-Control".to_string(), "no-store".to_string());
+    sanitized.insert("Referrer-Policy".to_string(), "no-referrer".to_string());
+    sanitized.insert("X-Content-Type-Options".to_string(), "nosniff".to_string());
+    sanitized.insert(
+        "Permissions-Policy".to_string(),
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), serial=(), hid=()".to_string(),
+    );
     sanitized
+}
+
+pub const MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST: usize = 60;
+pub const MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST: usize = 4;
+pub const MAX_PREVIEW_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub struct PreviewTrafficGuard {
+    request_seconds_by_host: HashMap<String, Vec<u64>>,
+    active_streams_by_host: HashMap<String, usize>,
+}
+
+impl PreviewTrafficGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn allow_request_at(&mut self, preview_host: &str, now_epoch_seconds: u64) -> bool {
+        let timestamps = self
+            .request_seconds_by_host
+            .entry(preview_host.to_string())
+            .or_default();
+        timestamps.retain(|timestamp| now_epoch_seconds.saturating_sub(*timestamp) < 60);
+        if timestamps.len() >= MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST {
+            return false;
+        }
+        timestamps.push(now_epoch_seconds);
+        true
+    }
+
+    pub fn begin_stream(&mut self, preview_host: &str) -> bool {
+        let active = self
+            .active_streams_by_host
+            .entry(preview_host.to_string())
+            .or_default();
+        if *active >= MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST {
+            return false;
+        }
+        *active += 1;
+        true
+    }
+
+    pub fn end_stream(&mut self, preview_host: &str) {
+        if let Some(active) = self.active_streams_by_host.get_mut(preview_host) {
+            *active = active.saturating_sub(1);
+        }
+    }
+}
+
+pub fn validate_preview_response_size(
+    declared_content_length: Option<u64>,
+    bytes_seen: u64,
+) -> Result<(), String> {
+    if declared_content_length.is_some_and(|length| length > MAX_PREVIEW_RESPONSE_BYTES) {
+        return Err("preview_response_too_large".to_string());
+    }
+    if bytes_seen > MAX_PREVIEW_RESPONSE_BYTES {
+        return Err("preview_response_too_large".to_string());
+    }
+    Ok(())
 }
 
 pub fn redirect_allowed(location: &str) -> bool {
