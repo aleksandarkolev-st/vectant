@@ -2389,7 +2389,7 @@ function trustedProofKeysPath(slug) {
   const configured = process.env.CODESITE_PROOF_TRUSTED_KEYS_PATH;
   if (configured) return path.resolve(configured);
 
-  const publicKeysJson = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON;
+  const publicKeysJson = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON');
   if (publicKeysJson) {
     const keysPath = path.join(outDir(), `trusted-proof-authorities-${safeArtifactSegment(slug)}.json`);
     const parsed = JSON.parse(publicKeysJson);
@@ -2397,7 +2397,7 @@ function trustedProofKeysPath(slug) {
     return keysPath;
   }
 
-  const publicKeyPem = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM;
+  const publicKeyPem = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM');
   const keyId = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID;
   if (publicKeyPem && keyId) {
     const keysPath = path.join(outDir(), `trusted-proof-authorities-${safeArtifactSegment(slug)}.json`);
@@ -2411,6 +2411,14 @@ function trustedProofKeysPath(slug) {
   }
 
   return null;
+}
+
+function proofAuthorityEnvValue(key) {
+  const direct = process.env[key];
+  if (direct) return direct;
+  const filePath = process.env[`${key}_FILE`];
+  if (!filePath) return undefined;
+  return fs.readFileSync(path.resolve(filePath), 'utf8');
 }
 
 async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRoot, commitSha }) {

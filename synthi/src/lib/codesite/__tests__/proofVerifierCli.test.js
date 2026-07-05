@@ -38,10 +38,14 @@ function makeBundle() {
 
 const PROOF_AUTHORITY_ENV_KEYS = [
   'SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE',
   'SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID',
   'SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE',
   'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE',
   'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE',
   'AUTH_SECRET',
   'NEXTAUTH_SECRET',
   'NODE_ENV',
@@ -361,6 +365,73 @@ describe('CodeSite proof verifier CLI', () => {
     expect(result.json.warnings).not.toContain(
       'proof signature verified with embedded public key; provide --trusted-keys for authority pinning',
     );
+  });
+
+  it('signs and verifies an Ed25519 proof from authority file inputs', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const keyId = 'codesite-proof-ed25519-file-test';
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
+    const privateKeyPath = path.join(root, 'proof-authority.private.pem');
+    const publicKeyPath = path.join(root, 'proof-authority.public.pem');
+    const publicKeysPath = path.join(root, 'trusted-proof-authorities.json');
+    fs.writeFileSync(privateKeyPath, privateKeyPem);
+    fs.writeFileSync(publicKeyPath, publicKeyPem);
+    fs.writeFileSync(publicKeysPath, JSON.stringify({
+      [keyId]: {
+        algorithm: 'ed25519',
+        publicKeyPem,
+      },
+    }, null, 2));
+
+    const bundle = withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID: keyId,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: privateKeyPath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: publicKeyPath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle());
+    const bundlePath = path.join(root, 'txn-1.ed25519-file.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath, '--require-trusted-authority', '--no-embedded-public-key'], {
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: publicKeysPath,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    });
+
+    expect(bundle.proofSignature).toMatchObject({
+      algorithm: 'ed25519',
+      keyId,
+    });
+    expect(result.status).toBe(0);
+    expect(result.json).toMatchObject({
+      ok: true,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_signature_valid',
+      ]),
+      signature: {
+        publicKeySource: 'trusted_keys_env',
+      },
+    });
+    expect(result.json.reasonCodes).not.toContain('proof_bundle_warnings_present');
   });
 
   it('fails when portable proof fields required by the schema are missing', () => {

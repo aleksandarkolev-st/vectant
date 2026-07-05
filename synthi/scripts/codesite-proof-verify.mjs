@@ -287,7 +287,7 @@ function verifyProofSignature(unsignedBundle, proofSignature, options = {}) {
   const requireTrustedAuthority = requiresTrustedProofAuthority(options);
   if (envelope.algorithm === 'hmac-sha256') {
     const secret = options.authoritySecret
-      || process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET
+      || proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET')
       || process.env.AUTH_SECRET
       || process.env.NEXTAUTH_SECRET
       || DEFAULT_PROOF_AUTHORITY_SECRET;
@@ -355,7 +355,7 @@ function resolveTrustedPublicKey(envelope, options = {}) {
   if (trusted?.publicKeyPem) return { publicKeyPem: trusted.publicKeyPem, source: trustedSource };
   if (trusted?.public_key_pem) return { publicKeyPem: trusted.public_key_pem, source: trustedSource };
   const envKeyId = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID || DEFAULT_PROOF_AUTHORITY_ID;
-  const envPublicKey = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM;
+  const envPublicKey = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM');
   if (envPublicKey && envKeyId === envelope.keyId) {
     return { publicKeyPem: envPublicKey, source: 'trusted_env_key' };
   }
@@ -367,8 +367,9 @@ function resolveTrustedPublicKey(envelope, options = {}) {
 function loadTrustedKeys(trustedKeysPath) {
   if (!trustedKeysPath) {
     try {
-      const parsed = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON
-        ? JSON.parse(process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON)
+      const publicKeysJson = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON');
+      const parsed = publicKeysJson
+        ? JSON.parse(publicKeysJson)
         : null;
       return normalizeTrustedKeys(parsed);
     } catch (_) {
@@ -490,6 +491,14 @@ function sortJson(value) {
 
 function isDigest(value) {
   return /^sha256:[a-f0-9]{64}$/i.test(String(value || ''));
+}
+
+function proofAuthorityEnvValue(key) {
+  const direct = process.env[key];
+  if (direct) return direct;
+  const filePath = process.env[`${key}_FILE`];
+  if (!filePath) return undefined;
+  return fs.readFileSync(path.resolve(filePath), 'utf8');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

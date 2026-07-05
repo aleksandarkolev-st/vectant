@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import fs from 'fs';
 import { digest } from './policy';
 import { stableJson } from './json';
 
@@ -331,11 +332,11 @@ function resolveProofAuthority(options = {}) {
   const authority = options.authority
     || envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_NAME')
     || 'CodeSite Proof Authority';
-  const privateKeyPem = options.privateKeyPem || envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM');
+  const privateKeyPem = options.privateKeyPem || proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM');
   if (privateKeyPem) {
     const privateKey = crypto.createPrivateKey(privateKeyPem);
     const publicKeyPem = options.publicKeyPem
-      || envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM')
+      || proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM')
       || crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' });
     return {
       algorithm: 'ed25519',
@@ -350,7 +351,7 @@ function resolveProofAuthority(options = {}) {
     keyId,
     authority,
     secret: options.authoritySecret
-      || envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET')
+      || proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET')
       || envValue('AUTH_SECRET')
       || envValue('NEXTAUTH_SECRET')
       || DEFAULT_PROOF_AUTHORITY_SECRET,
@@ -358,13 +359,13 @@ function resolveProofAuthority(options = {}) {
 }
 
 function resolveTrustedEd25519PublicKey(envelope, options = {}) {
-  const trustedKeys = options.trustedKeys || parseTrustedKeys(envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON'));
+  const trustedKeys = options.trustedKeys || parseTrustedKeys(proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON'));
   const trusted = trustedKeys?.[envelope.keyId];
   if (trusted?.algorithm && trusted.algorithm !== 'ed25519') return null;
   if (trusted?.publicKeyPem) return { publicKeyPem: trusted.publicKeyPem, source: 'trusted_keys' };
   if (trusted?.public_key_pem) return { publicKeyPem: trusted.public_key_pem, source: 'trusted_keys' };
   const envKeyId = envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID') || DEFAULT_PROOF_AUTHORITY_ID;
-  const envPublicKey = envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM');
+  const envPublicKey = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM');
   if (envPublicKey && envKeyId === envelope.keyId) return { publicKeyPem: envPublicKey, source: 'trusted_env_key' };
   return options.allowEmbeddedPublicKey !== false && envelope.publicKeyPem
     ? { publicKeyPem: envelope.publicKeyPem, source: 'embedded' }
@@ -401,4 +402,12 @@ function timingSafeEqualString(left, right) {
 
 function envValue(key) {
   return typeof process !== 'undefined' ? process.env?.[key] : undefined;
+}
+
+function proofAuthorityEnvValue(key) {
+  const direct = envValue(key);
+  if (direct) return direct;
+  const filePath = envValue(`${key}_FILE`);
+  if (!filePath) return undefined;
+  return fs.readFileSync(filePath, 'utf8');
 }
