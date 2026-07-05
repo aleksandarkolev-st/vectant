@@ -1,0 +1,242 @@
+{
+  "ok": true,
+  "dry_run": true,
+  "skill_id": "dojo_save_profile",
+  "requested_action": "run_prefix_validation",
+  "control_plane_source": "compatibility_registry",
+  "proof_key": null,
+  "validation": {
+    "ok": true,
+    "status": "allowed",
+    "blocked_by": [],
+    "error_codes": [],
+    "license": {
+      "skill_id": "dojo_save_profile",
+      "license_version": "1.0.0",
+      "entrustment_level": "EX"
+    }
+  },
+  "license_kernel": {
+    "ok": true,
+    "status": "allowed",
+    "validation": {
+      "ok": true,
+      "status": "allowed",
+      "blocked_by": [],
+      "error_codes": [],
+      "license": {
+        "skill_id": "dojo_save_profile",
+        "license_version": "1.0.0",
+        "entrustment_level": "EX"
+      }
+    },
+    "blocked_by": [],
+    "error_codes": [],
+    "proof_record": {
+      "tenant_id": "local-tenant-23af210391f3",
+      "workspace_id": "workflow-pipeline-profile-form-mr79no5t",
+      "capsule_id": "capsule_eb544f72-a40f-4641-8495-a4f4730dc897",
+      "skill_id": "dojo_save_profile",
+      "license_id": "license_3103ef056d7a",
+      "license_version": "1.0.0",
+      "requested_action": "run_prefix_validation",
+      "nonce": "4f6d9a2f-45ed-4ddf-a1f0-5595eeeed8a6",
+      "key_id": "dojo-key-4171243b214f",
+      "signature_algorithm": "hmac-sha256",
+      "substrate_claim": "mcp",
+      "evidence_record_ids": [
+        "evidence_001_587d74a5e748",
+        "evidence_023_d5769495b27d",
+        "evidence_028_c6ba04843a82",
+        "evidence_029_13d7216338fa",
+        "evidence_030_5a128350e3db",
+        "evidence_031_34d70a2152fd",
+        "evidence_032_76949c39cb4c",
+        "evidence_035_b8bd5f52bee9"
+      ],
+      "ledger_checkpoint_hash": "274a821b5049eb291cd4d99eb701ff076a0cbd76bf001929ad854bb20a2e99d0",
+      "issued_at": "2026-07-05T04:04:06.593Z",
+      "expires_at": "2026-07-05T04:19:06.593Z",
+      "status": "issued",
+      "issued_by": {
+        "actor_id": "workflow-pipeline-e2e:profile-form:proof-agent",
+        "actor_type": "agent"
+      },
+      "last_validated_at": "2026-07-05T04:04:06.632Z"
+    },
+    "runtime_claims": {
+      "tenant_id": "local-tenant-23af210391f3",
+      "organization_id": "local-tenant-23af210391f3",
+      "workspace_id": "workflow-pipeline-profile-form-mr79no5t",
+      "app_origin": "http://127.0.0.1:11234",
+      "requested_action": "run_prefix_validation",
+      "dry_run": true,
+      "actor_id": "workflow-pipeline-e2e:profile-form:proof-agent",
+      "actor_type": "agent",
+      "roles": [
+        "agent",
+        "dojo:artifact:export",
+        "dojo:auditor",
+        "dojo:proof:issue",
+        "dojo:runtime:create"
+      ],
+      "request_id": "workflow-pipeline-profile-form-1783224246584",
+      "correlation_id": "workflow-pipeline-profile-form"
+    }
+  },
+  "evidence_ledger_validation": null,
+  "evidence_claim_results": [],
+  "skill_bus": {
+    "ok": true,
+    "status": "allowed",
+    "dry_run": true,
+    "blocked_by": [],
+    "skill_id": "dojo_save_profile",
+    "tool_name": "synthi_app_save_profile",
+    "resolution": {
+      "ok": true,
+      "status": "resolved",
+      "blocked_by": [],
+      "skill_id": "dojo_save_profile",
+      "workflow_id": "wf_ewnndk",
+      "tool_name": "synthi_app_save_profile",
+      "tool_version": "1.0.0",
+      "resolved_tool": {
+        "kind": "private_workflow",
+        "tool_name": "synthi_app_save_profile",
+        "tool_version": "1.0.0"
+      },
+      "mcp_skill_manifest": {
+        "kind": "dojoMcpSkillManifest",
+        "schema_version": "synthi.dojo.mcpSkillManifest.v1",
+        "manifest_id": "dojo_mcp_manifest_96908bbb9bbb",
+        "skill": {
+          "skill_id": "dojo_save_profile",
+          "skill_version": "1.0.0",
+          "workflow_id": "wf_ewnndk",
+          "app_origin": "http://127.0.0.1:11234",
+          "workspace_id": "workflow-pipeline-profile-form-mr79no5t"
+        },
+        "tool": {
+          "name": "synthi_app_save_profile",
+          "version": "1.0.0",
+          "kind": "private_workflow",
+          "schema_digest": "sha256:a2edcd1e21fba0590319af5ae2f389b53c49d540e3e83fc2bd339a9e7cdb8f1d",
+          "backing_private_tool_manifest_digest": "sha256:7da6461636374181100c9db863cd33f405ae1891fa55c23a3977095d47fe3529",
+          "api_backed_mcp_tool_digest": null,
+          "direct_call_policy": "blocked_outside_dojo_dispatcher"
+        },
+        "license": {
+          "license_id": "license_3103ef056d7a",
+          "license_version": "1.0.0",
+          "entrustment_level": "EX",
+          "allowed_actions": [
+            "observe",
+            "practice_vivarium",
+            "run_prefix_validation"
+          ],
+          "gated_actions": [
+            "commit_mutation"
+          ],
+          "blocked_actions": [
+            "run_workflow",
+            "delete",
+            "payment",
+            "permission_change"
+          ]
+        },
+        "proof": {
+          "required": true,
+          "required_context_claims": [
+            "workspace_verified"
+          ],
+          "required_evidence_claims": [
+            "checkride_passed",
+            "success_assertions_defined",
+            "guardrails_active",
+            "durable_state_evidence"
+          ],
+          "required_guardrails": [
+            "guard_a1b8528fb0a0",
+            "guard_6bec45218304",
+            "guard_de81bd7053f8",
+            "guard_5619e562b631",
+            "guard_mutation_requires_isolation"
+          ]
+        },
+        "substrate_policy": {
+          "preferred_substrate": "mcp",
+          "allowed_substrates": [
+            "vision",
+            "dom",
+            "source",
+            "mcp"
+          ],
+          "per_action": [
+            {
+              "action": "run_workflow",
+              "allowed_substrates": [
+                "mcp",
+                "dom"
+              ]
+            }
+          ]
+        },
+        "issuer": "synthi-dojo-skill-bus",
+        "key_id": "dojo-mcp-manifest-dev-e34fc34ce49d",
+        "signature_algorithm": "hmac-sha256",
+        "issued_at": "2026-07-05T04:04:05.297Z",
+        "manifest_digest": "sha256:d2e0ff6c7db4d63afd58cfa745937b8a2f84639257fba8d569ce8f656b5aa0cb",
+        "signature": "hmac-sha256:91bf518194bb958e8482a0e8b5e57f8545143a757e15317ed46356017eae903d"
+      },
+      "manifest_validation": {
+        "ok": true,
+        "blocked_by": [],
+        "manifest_digest": "sha256:d2e0ff6c7db4d63afd58cfa745937b8a2f84639257fba8d569ce8f656b5aa0cb",
+        "manifest_id": "dojo_mcp_manifest_96908bbb9bbb",
+        "tool_name": "synthi_app_save_profile"
+      }
+    },
+    "validation": {
+      "ok": true,
+      "status": "allowed",
+      "blocked_by": [],
+      "error_codes": []
+    }
+  },
+  "graph_validation": {
+    "ok": true,
+    "issues": []
+  },
+  "graph_runtime_preflight": {
+    "ok": true,
+    "status": "completed",
+    "mode": "production",
+    "run_id": "workflow_pipeline_profile-form_proof_dry_1783224246651_graph_preflight",
+    "node_results": [],
+    "blocked_by": [],
+    "evidence_refs": [
+      "evidence:dojo_graph_preflight_support_action_da4e20353f20"
+    ]
+  },
+  "implementation_status": "executable",
+  "runtime_enforced": true,
+  "runtime_scope": "proof_gated_dispatch",
+  "production_runtime": false,
+  "evidence_backing": "runtime_validation",
+  "simulation_backing": "none",
+  "dojo_implementation": {
+    "implementation_status": "executable",
+    "runtime_enforced": true,
+    "runtime_scope": "proof_gated_dispatch",
+    "production_runtime": false,
+    "evidence_backing": "runtime_validation",
+    "simulation_backing": "none",
+    "summary": "Runs the proof-gated Dojo dispatch path, blocks replay through current proof records, and requires hosted runtime session authorization before production proof consumption.",
+    "maturity_blockers": [
+      "deployed_hosted_runtime_gateway_required_for_production_release",
+      "deployed_mcp_host_conformance_required",
+      "not_yet_proven_in_deployed_non_loopback_host"
+    ]
+  }
+}
