@@ -18,6 +18,7 @@ const REQUIRED_WORKFLOW_SHOTS = [
   'codesite-full-workflow-ui-coordination.png',
   'codesite-full-workflow-ui-line-inspector.png',
   'codesite-full-workflow-ui-causal-replay-handover.png',
+  'codesite-full-workflow-ui-mobile.png',
   'codesite-full-workflow-ui-causal-replay-mobile.png',
 ];
 const ACTIVE_AUTHORITY_PROOF = 'codesite-active-transaction-registry-proof.json';

@@ -553,6 +553,7 @@ function proofOutputPaths(dir, slug) {
     browserCoordinationShot: path.join(runDir, 'codesite-full-workflow-ui-coordination.png'),
     browserLineInspectorShot: path.join(runDir, 'codesite-full-workflow-ui-line-inspector.png'),
     browserHandoverShot: path.join(runDir, 'codesite-full-workflow-ui-causal-replay-handover.png'),
+    browserMobileOverviewShot: path.join(runDir, 'codesite-full-workflow-ui-mobile.png'),
     browserMobileShot: path.join(runDir, 'codesite-full-workflow-ui-causal-replay-mobile.png'),
   };
 }
@@ -584,6 +585,7 @@ async function writeLegacyProofRunningMarker(dir, { slug, runDir, runStartedAt }
     'codesite-full-workflow-ui-coordination.png',
     'codesite-full-workflow-ui-line-inspector.png',
     'codesite-full-workflow-ui-causal-replay-handover.png',
+    'codesite-full-workflow-ui-mobile.png',
     'codesite-full-workflow-ui-causal-replay-mobile.png',
   ].map((file) => fs.promises.rm(path.join(dir, file), { force: true })));
 }
@@ -825,6 +827,7 @@ async function publishValidatedProofRun({ dir, slug, runPaths, proof, latestSche
     [runPaths.browserCoordinationShot, path.join(dir, 'codesite-full-workflow-ui-coordination.png')],
     [runPaths.browserLineInspectorShot, path.join(dir, 'codesite-full-workflow-ui-line-inspector.png')],
     [runPaths.browserHandoverShot, path.join(dir, 'codesite-full-workflow-ui-causal-replay-handover.png')],
+    [runPaths.browserMobileOverviewShot, path.join(dir, 'codesite-full-workflow-ui-mobile.png')],
     [runPaths.browserMobileShot, path.join(dir, 'codesite-full-workflow-ui-causal-replay-mobile.png')],
   ];
   for (const attestation of proof.runtimeAttestations || []) {
@@ -862,6 +865,7 @@ async function publishValidatedProofRun({ dir, slug, runPaths, proof, latestSche
       runPaths.browserCoordinationShot,
       runPaths.browserLineInspectorShot,
       runPaths.browserHandoverShot,
+      runPaths.browserMobileOverviewShot,
       runPaths.browserMobileShot,
     ].map(relativeProofPath),
   };
@@ -2859,7 +2863,7 @@ async function waitForRouteReady(url, {
   throw error;
 }
 
-async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, coordinationPngPath, lineInspectorPngPath, handoverPngPath, mobilePngPath, authCookie = '' }) {
+async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, coordinationPngPath, lineInspectorPngPath, handoverPngPath, mobileOverviewPngPath, mobilePngPath, authCookie = '' }) {
   const liveUiUrl = `${baseUrl.replace(/\/+$/, '')}/workspace/${encodeURIComponent(slug)}/codesite`;
   await waitForRouteReady(liveUiUrl, {
     timeoutMs: proofTimeoutMs('CODESITE_PROOF_LIVE_UI_ROUTE_TIMEOUT_MS', DEFAULT_LIVE_UI_ROUTE_TIMEOUT_MS),
@@ -2950,10 +2954,31 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
   if (handoverPngPath) {
     await handoverPanel.screenshot({ path: handoverPngPath });
   }
+  let mobileOverviewChecks = null;
   let mobileChecks = null;
   if (mobilePngPath) {
     await page.setViewportSize({ width: 390, height: 900 });
     await installBrowserProofCaptureStyles(page);
+    const panel = page.locator('[data-testid="codesite-panel"]').first();
+    await panel.evaluate((element) => {
+      element.scrollIntoView({ block: 'start', inline: 'nearest' });
+    });
+    await page.waitForTimeout(500);
+    const mobileOverviewLayout = await page.evaluate(browserLayoutCheckScript);
+    mobileOverviewChecks = await page.evaluate(() => ({
+      panelVisible: Boolean(document.querySelector('[data-testid="codesite-panel"]')),
+      airspaceMapVisible: Boolean(document.body.textContent.includes('Airspace Map')),
+      towerFeedVisible: Boolean(document.body.textContent.includes('Tower Feed')),
+      governanceVisible: Boolean(document.body.textContent.includes('Governance Console')),
+      proofVisible: Boolean(document.body.textContent.includes('proof bundle')),
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 4,
+      scrollWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    }));
+    Object.assign(mobileOverviewChecks, mobileOverviewLayout);
+    if (mobileOverviewPngPath) {
+      await page.screenshot({ path: mobileOverviewPngPath, fullPage: true });
+    }
     await handoverPanel.evaluate((element) => {
       element.scrollIntoView({ block: 'center', inline: 'nearest' });
     });
@@ -2972,7 +2997,7 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
     await page.screenshot({ path: mobilePngPath, fullPage: true });
   }
   await browser.close();
-  return { consoleErrors, ignoredConsoleErrors, desktopChecks, mobileChecks };
+  return { consoleErrors, ignoredConsoleErrors, desktopChecks, mobileOverviewChecks, mobileChecks };
 }
 
 async function main() {
@@ -3946,6 +3971,7 @@ async function main() {
   const browserCoordinationShot = runPaths.browserCoordinationShot;
   const browserLineInspectorShot = runPaths.browserLineInspectorShot;
   const browserHandoverShot = runPaths.browserHandoverShot;
+  const browserMobileOverviewShot = runPaths.browserMobileOverviewShot;
   const browserMobileShot = runPaths.browserMobileShot;
   const blackBoxIncident = (projectAfter.project.incidents || []).find((incident) => (
     incident.category === 'black_box'
@@ -3964,6 +3990,7 @@ async function main() {
     coordinationPngPath: browserCoordinationShot,
     lineInspectorPngPath: browserLineInspectorShot,
     handoverPngPath: browserHandoverShot,
+    mobileOverviewPngPath: browserMobileOverviewShot,
     mobilePngPath: browserMobileShot,
     authCookie: actorProof.actors.owner.authCookie,
   });
@@ -3976,6 +4003,7 @@ async function main() {
       browserCoordinationShot,
       browserLineInspectorShot,
       browserHandoverShot,
+      browserMobileOverviewShot,
       browserMobileShot,
     ],
   });
@@ -4285,11 +4313,13 @@ async function main() {
       coordinationScreenshot: path.relative(repoRoot(), browserCoordinationShot),
       lineInspectorScreenshot: path.relative(repoRoot(), browserLineInspectorShot),
       handoverScreenshot: path.relative(repoRoot(), browserHandoverShot),
+      mobileOverviewScreenshot: path.relative(repoRoot(), browserMobileOverviewShot),
       mobileScreenshot: path.relative(repoRoot(), browserMobileShot),
       artifactValidation: browserArtifactValidation,
       consoleErrors: browserProof.consoleErrors,
       ignoredConsoleErrors: browserProof.ignoredConsoleErrors,
       desktopChecks: browserProof.desktopChecks,
+      mobileOverviewChecks: browserProof.mobileOverviewChecks,
       mobileChecks: browserProof.mobileChecks,
     },
     assertions: {
@@ -4527,6 +4557,7 @@ async function main() {
         && fs.existsSync(browserCoordinationShot)
         && fs.existsSync(browserLineInspectorShot)
         && fs.existsSync(browserHandoverShot)
+        && fs.existsSync(browserMobileOverviewShot)
         && fs.existsSync(browserMobileShot)
         && browserArtifactValidation.ok === true
         && browserProof.consoleErrors.length === 0
@@ -4543,6 +4574,16 @@ async function main() {
         && browserProof.desktopChecks?.touchTargetsOk
         && browserProof.desktopChecks?.devOverlayHidden
         && browserProof.desktopChecks?.lineInspectorSettled
+        && browserProof.mobileOverviewChecks?.panelVisible
+        && browserProof.mobileOverviewChecks?.airspaceMapVisible
+        && browserProof.mobileOverviewChecks?.towerFeedVisible
+        && browserProof.mobileOverviewChecks?.governanceVisible
+        && browserProof.mobileOverviewChecks?.proofVisible
+        && browserProof.mobileOverviewChecks?.noHorizontalOverflow
+        && browserProof.mobileOverviewChecks?.rectsFitViewport
+        && browserProof.mobileOverviewChecks?.touchTargetsOk
+        && browserProof.mobileOverviewChecks?.devOverlayHidden
+        && browserProof.mobileOverviewChecks?.lineInspectorSettled
         && browserProof.mobileChecks?.panelVisible
         && browserProof.mobileChecks?.codeSiteBlackBoxVisible
         && browserProof.mobileChecks?.transactionCommittedVisible
@@ -4583,6 +4624,7 @@ async function main() {
       [runPaths.browserCoordinationShot, path.join(dir, 'codesite-full-workflow-ui-coordination.png')],
       [runPaths.browserLineInspectorShot, path.join(dir, 'codesite-full-workflow-ui-line-inspector.png')],
       [runPaths.browserHandoverShot, path.join(dir, 'codesite-full-workflow-ui-causal-replay-handover.png')],
+      [runPaths.browserMobileOverviewShot, path.join(dir, 'codesite-full-workflow-ui-mobile.png')],
       [runPaths.browserMobileShot, path.join(dir, 'codesite-full-workflow-ui-causal-replay-mobile.png')],
     ];
     for (const [sourcePath, targetPath] of failureCopies) {
@@ -4605,6 +4647,7 @@ async function main() {
       runPaths.browserCoordinationShot,
       runPaths.browserLineInspectorShot,
       runPaths.browserHandoverShot,
+      runPaths.browserMobileOverviewShot,
       runPaths.browserMobileShot,
     ],
     textPaths: [
@@ -4640,6 +4683,7 @@ async function main() {
       runPaths.browserCoordinationShot,
       runPaths.browserLineInspectorShot,
       runPaths.browserHandoverShot,
+      runPaths.browserMobileOverviewShot,
       runPaths.browserMobileShot,
     ].map(relativeProofPath),
     assertionCount: Object.keys(proof.assertions || {}).length,
@@ -4680,6 +4724,7 @@ async function main() {
     browserCoordinationScreenshot: path.relative(repoRoot(), browserCoordinationShot),
     browserLineInspectorScreenshot: path.relative(repoRoot(), browserLineInspectorShot),
     browserHandoverScreenshot: path.relative(repoRoot(), browserHandoverShot),
+    browserMobileOverviewScreenshot: path.relative(repoRoot(), browserMobileOverviewShot),
     browserMobileScreenshot: path.relative(repoRoot(), browserMobileShot),
     assertions: proof.assertions,
   }, null, 2));
