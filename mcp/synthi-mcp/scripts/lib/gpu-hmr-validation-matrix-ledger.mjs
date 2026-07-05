@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
@@ -23294,6 +23295,271 @@ async function ledgerOutputOracleFacet(ledger, proofLedger, visual, repoRoot, ba
     evidence_refs: outputBinding.evidence_refs,
     failedGates,
     failed_gates: failedGates,
+  };
+}
+
+function genericOutputOracleSelfCheckTimings() {
+  return {
+    static_discovery_time: 1,
+    ai_contract_synthesis_time: 1,
+    model_availability_check_time: 1,
+    artifact_hash_time: 1,
+    adapter_generation_time: 1,
+    device_compile_wall_time: 1,
+    artifact_load_time: 1,
+    epoch_publish_time: 1,
+    dispatch_trace_time: 1,
+    runtime_probe_time: 1,
+    oracle_analysis_time: 1,
+    trigger_to_visible_time: 1,
+    screenshot_capture_time: 1,
+    dispatch_to_output_proof_time: 1,
+    total_validator_wall_time: 1,
+  };
+}
+
+function genericOutputOracleSelfCheckModel(requestMode, requestedModel) {
+  return {
+    provider: 'google_gemini',
+    requested_model: requestedModel,
+    provider_model_status: 'available',
+    provider_model_alias_resolved_to: requestedModel,
+    provider_shutdown_or_deprecation_detected: false,
+    model_availability_checked_at: '2026-07-05T00:00:00.000Z',
+    model_availability_source: 'provider_model_registry',
+    model_availability_basis: 'static_registry',
+    model_availability_check_time_ms: 1,
+    actual_model: requestedModel,
+    fallback_model: 'not_used',
+    fallback_used: false,
+    request_mode: requestMode,
+    hard_infra_failure: false,
+  };
+}
+
+function genericOutputOracleSelfCheckRecord(computeOracleArtifacts) {
+  const artifactBeforeHash = stableJsonHash({ selfCheck: 'generic-output-oracle-before' });
+  const artifactAfterHash = stableJsonHash({ selfCheck: 'generic-output-oracle-after' });
+  const epoch = 'epoch:generic-output-oracle';
+  const dispatchId = 'dispatch:generic-output-oracle';
+  const outputTargetId = 'output-target:generic-compute-buffer';
+  const processId = 'pid:generic-output-oracle-self-check';
+  const runtimeSessionId = 'runtime-session:generic-output-oracle-self-check';
+  return {
+    project_id: 'generic-output-oracle-self-check',
+    edit_id: 'generic-output-oracle-edit',
+    backend: 'hip',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'gpu_hmr',
+    },
+    contract_hash: stableJsonHash({ selfCheck: 'generic-output-oracle-contract' }),
+    artifact_before_hash: artifactBeforeHash,
+    artifact_after_hash: artifactAfterHash,
+    loader_event: {
+      id: 'loader:generic-output-oracle',
+      artifact_hash: artifactAfterHash,
+      timestamp_monotonic_ns: 100,
+      process_id: processId,
+      runtime_session_id: runtimeSessionId,
+    },
+    epoch_publish_event: {
+      id: 'epoch-publish:generic-output-oracle',
+      artifact_hash: artifactAfterHash,
+      epoch,
+      timestamp_monotonic_ns: 200,
+      process_id: processId,
+      runtime_session_id: runtimeSessionId,
+    },
+    dispatch_event: {
+      id: dispatchId,
+      artifact_hash: artifactAfterHash,
+      epoch,
+      timestamp_monotonic_ns: 300,
+      process_id: processId,
+      runtime_session_id: runtimeSessionId,
+      output_target_id: outputTargetId,
+    },
+    output_event: {
+      id: 'output:generic-output-oracle',
+      kind: 'compute_oracle',
+      artifact_hash: artifactAfterHash,
+      epoch,
+      timestamp_monotonic_ns: 400,
+      process_id: processId,
+      runtime_session_id: runtimeSessionId,
+      after_dispatch_id: dispatchId,
+      output_target_id: outputTargetId,
+      passed: true,
+      compute_oracle_artifacts: computeOracleArtifacts,
+    },
+    retirement_event: {
+      id: 'retire:generic-output-oracle',
+      epoch,
+      timestamp_monotonic_ns: 500,
+      process_id: processId,
+      proof: 'stream_event_proven',
+    },
+    process_identity: {
+      process_id: processId,
+      runtime_session_id: runtimeSessionId,
+    },
+    device_identity: {
+      backend: 'hip',
+      device_uuid: 'gpu:generic-output-oracle-self-check',
+    },
+    oracle_artifacts: {
+      compute_oracle_artifacts: computeOracleArtifacts,
+    },
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    timings: genericOutputOracleSelfCheckTimings(),
+    model_provenance: {
+      split: genericOutputOracleSelfCheckModel('split', 'gemini-3.5-flash'),
+      gpu_delta: genericOutputOracleSelfCheckModel('gpu_delta', 'gemini-3.1-flash-lite'),
+    },
+    evidence_refs: ['self-check:generic-output-oracle'],
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    firewall_evidence: {
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: processId,
+      process_id_after: processId,
+    },
+  };
+}
+
+function assertGenericOutputOracleSelfCheck(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+export async function selfCheckGenericOutputOracleLedger() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-generic-output-oracle-'));
+  const rawPath = path.join(dir, 'raw-readback.bin');
+  const schemaPath = path.join(dir, 'readback-schema.json');
+  const cardPath = path.join(dir, 'proof-card.png');
+  const rawBytes = Buffer.from([3, 5, 8, 13, 21, 34, 55, 89]);
+  const sliceBytes = rawBytes.subarray(0, 4);
+  await fs.writeFile(rawPath, rawBytes);
+  await fs.writeFile(schemaPath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu_hmr.compute_readback_schema.v1',
+    elementType: 'u8',
+    elementCount: rawBytes.length,
+  }, null, 2)}\n`);
+  await sharp({
+    create: {
+      width: 4,
+      height: 4,
+      channels: 3,
+      background: { r: 45, g: 120, b: 210 },
+    },
+  }).png().toFile(cardPath);
+
+  const computeOracleArtifacts = {
+    raw_readback_bin: rawPath,
+    readback_schema_json: schemaPath,
+    checksum_before: stableJsonHash({ checksum: 'before' }),
+    checksum_after: stableJsonHash({ checksum: 'after' }),
+    deterministic_slice: {
+      offset: 0,
+      length: sliceBytes.length,
+      hash: sha256BufferHash(sliceBytes),
+    },
+    oracle_code_hash: stableJsonHash({ oracle: 'generic-output-oracle-self-check' }),
+    rendered_card_png: cardPath,
+    producer: 'generic_output_oracle_self_check',
+    timestamp_after_dispatch: 400,
+    epoch: 'epoch:generic-output-oracle',
+    raw_readback_hash: sha256BufferHash(rawBytes),
+    raw_readback_hash_verified: true,
+    raw_readback_byte_length: rawBytes.length,
+    raw_readback_source: 'runtime_raw_readback',
+    deterministic_slice_hash: sha256BufferHash(sliceBytes),
+    deterministic_slice_hash_verified: true,
+    expected_output_verified: true,
+    output_change_expected: true,
+  };
+  const record = genericOutputOracleSelfCheckRecord(computeOracleArtifacts);
+  const proofLedger = { records: [record] };
+  const ledgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  assertGenericOutputOracleSelfCheck(
+    ledgerQuery.gpuHmrSuccess === true && ledgerQuery.failedInvariants.length === 0,
+    `generic compute ledger should pass invariants: ${JSON.stringify(ledgerQuery.failedInvariants)}`,
+  );
+  const acceptedFacet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    proofLedger,
+    {},
+    dir,
+    dir,
+  );
+  assertGenericOutputOracleSelfCheck(
+    acceptedFacet.accepted === true,
+    `generic compute output oracle should accept: ${JSON.stringify(acceptedFacet.failedGates)}`,
+  );
+  assertGenericOutputOracleSelfCheck(
+    acceptedFacet.outputBinding?.accepted === true,
+    'generic compute output oracle should bind dispatch ID and output target',
+  );
+  assertGenericOutputOracleSelfCheck(
+    acceptedFacet.compute?.accepted === true
+      && acceptedFacet.compute.rawReadbackHashVerified === true
+      && acceptedFacet.compute.deterministicSliceHashVerified === true
+      && acceptedFacet.compute.renderedCard?.decoded === true,
+    `generic compute file evidence should be verified: ${JSON.stringify(acceptedFacet.compute)}`,
+  );
+
+  const forgedArtifacts = {
+    ...computeOracleArtifacts,
+    raw_readback_hash: `sha256:${'0'.repeat(64)}`,
+  };
+  const forgedRecord = genericOutputOracleSelfCheckRecord(forgedArtifacts);
+  const forgedProofLedger = { records: [forgedRecord] };
+  const forgedLedgerQuery = queryGpuHmrLedgerInvariants(forgedProofLedger);
+  const forgedFacet = await ledgerOutputOracleFacet(
+    {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    forgedProofLedger,
+    {},
+    dir,
+    dir,
+  );
+  const forgedCodes = compactStringList([
+    ...forgedLedgerQuery.failedInvariants.map((failure) => failure.code),
+    ...forgedFacet.failedGates.map((failure) => failure.code),
+  ]);
+  assertGenericOutputOracleSelfCheck(
+    forgedFacet.accepted === false
+      && forgedCodes.includes('compute_oracle_artifacts_not_accepted')
+      && forgedCodes.includes('compute_oracle_raw_readback_hash_unverified'),
+    `forged generic compute output oracle should reject: ${forgedCodes.join(',')}`,
+  );
+
+  return {
+    ok: true,
+    schemaVersion: 'synthi.gpu_hmr.generic_output_oracle_self_check.v1',
+    acceptedFacet: {
+      kind: acceptedFacet.kind,
+      accepted: acceptedFacet.accepted,
+      outputBindingAccepted: acceptedFacet.outputBinding?.accepted === true,
+      computeAccepted: acceptedFacet.compute?.accepted === true,
+    },
+    forgedRejected: true,
+    failedGateCoverage: forgedCodes,
   };
 }
 

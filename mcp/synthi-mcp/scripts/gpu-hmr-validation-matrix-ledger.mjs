@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  selfCheckGenericOutputOracleLedger,
 } from './lib/gpu-hmr-validation-matrix-ledger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +21,7 @@ function parseArgs(argv) {
     latestPerTarget: true,
     includeInvalidated: false,
     includeUnproven: false,
+    outputOracleSelfCheck: false,
     selfCheck: false,
     roots: [],
   };
@@ -41,6 +43,8 @@ function parseArgs(argv) {
       args.roots.push(path.resolve(root));
     } else if (arg === '--self-check') {
       args.selfCheck = true;
+    } else if (arg === '--output-oracle-self-check') {
+      args.outputOracleSelfCheck = true;
     } else if (arg === '--help') {
       args.help = true;
     } else {
@@ -52,7 +56,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root DIR] [--self-check]',
+    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root DIR] [--self-check] [--output-oracle-self-check]',
     '',
     'Collects GPU HMR proof artifacts into a matrix ledger. The collector records accepted full-runtime proof, visual-profile proof, preflight-only evidence, and structured refusals separately.',
     'When --root is provided one or more times, collection is restricted to those artifact roots.',
@@ -997,6 +1001,10 @@ async function main() {
   }
   if (!['json', 'markdown', 'both'].includes(args.format)) {
     throw new Error(`Unsupported format: ${args.format}`);
+  }
+  if (args.outputOracleSelfCheck) {
+    console.log(JSON.stringify(await selfCheckGenericOutputOracleLedger(), matrixOutputJsonReplacer, 2));
+    return;
   }
   const ledger = await collectGpuHmrValidationMatrixLedger({
     repoRoot,
