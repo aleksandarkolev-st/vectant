@@ -53,6 +53,15 @@ pub fn port_identity_matches(approval: &PortApproval, current_process_identity: 
     approval.process_identity_hash == hash_process_identity(current_process_identity)
 }
 
+pub fn preview_path_allowed(path: &str) -> bool {
+    let normalized = path.split('?').next().unwrap_or(path).to_ascii_lowercase();
+    let filename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+    !matches!(
+        filename,
+        "sw.js" | "service-worker.js" | "serviceworker.js" | "worker.js"
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewDecision {
     Allow,

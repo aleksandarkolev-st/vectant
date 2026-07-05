@@ -10,8 +10,8 @@ use vectant_local_support_app::pair::{
 };
 use vectant_local_support_app::preview::{
     decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
-    port_identity_matches, sanitize_response_header_list, sanitize_response_headers, PortApproval,
-    PreviewDecision,
+    port_identity_matches, preview_path_allowed, sanitize_response_header_list,
+    sanitize_response_headers, PortApproval, PreviewDecision,
 };
 use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
@@ -366,6 +366,14 @@ fn response_headers_strip_cookie_and_block_service_workers() {
         .get("Content-Security-Policy")
         .unwrap()
         .contains("worker-src 'none'"));
+}
+
+#[test]
+fn preview_blocks_service_worker_script_paths() {
+    for path in ["/sw.js", "/service-worker.js?cache=1", "/static/serviceworker.js"] {
+        assert!(!preview_path_allowed(path), "service worker path should be blocked: {path}");
+    }
+    assert!(preview_path_allowed("/assets/app.js"));
 }
 
 #[test]
