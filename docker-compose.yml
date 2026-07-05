@@ -50,6 +50,29 @@ services:
 
   # ── Core Services ──────────────────────────────────────────────────────────
 
+  frontend-migrate:
+    build:
+      context: .
+      dockerfile: synthi/Dockerfile
+      target: builder
+      args:
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
+        NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"
+        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
+        NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
+    working_dir: /app/synthi
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   frontend:
     build:
       # npm-workspace build: root context so synthi can resolve the
@@ -80,6 +103,7 @@ services:
       # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"
@@ -106,6 +130,8 @@ services:
       # Dev Container as a real `container` program (not managed commands).
       ENABLE_CONTAINER_RUNTIME: "1"
     depends_on:
+      frontend-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       y-sweet:
