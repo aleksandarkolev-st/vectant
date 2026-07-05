@@ -271,19 +271,61 @@ fn is_sensitive_path(path: &str) -> bool {
         || normalized.starts_with(".gcp/")
         || normalized.starts_with(".azure/")
         || normalized.starts_with(".kube/")
+        || normalized.starts_with(".docker/")
+        || normalized.starts_with(".git/objects/")
+        || normalized.starts_with(".git/logs/")
+        || normalized.starts_with(".git/hooks/")
+        || normalized.starts_with("node_modules/")
+        || normalized.starts_with("vendor/")
+        || normalized.starts_with("dist/")
+        || normalized.starts_with("build/")
+        || normalized.starts_with(".next/")
+        || normalized.starts_with(".nuxt/")
+        || normalized.starts_with("coverage/")
         || normalized.contains("/.ssh/")
         || normalized.contains("/.aws/")
         || normalized.contains("/.gcp/")
         || normalized.contains("/.azure/")
         || normalized.contains("/.kube/")
+        || normalized.contains("/.docker/")
+        || normalized.contains("/.git/objects/")
+        || normalized.contains("/.git/logs/")
+        || normalized.contains("/.git/hooks/")
+        || normalized.contains("/node_modules/")
+        || normalized.contains("/vendor/")
+        || normalized.contains("/dist/")
+        || normalized.contains("/build/")
+        || normalized.contains("/.next/")
+        || normalized.contains("/.nuxt/")
+        || normalized.contains("/coverage/")
+        || normalized == ".git/config"
+        || normalized.ends_with("/.git/config")
+        || normalized == ".vscode/settings.json"
+        || normalized.ends_with("/.vscode/settings.json")
         || name == ".env"
         || name.starts_with(".env.")
         || name.ends_with(".env")
         || name.contains(".env.")
         || name.ends_with(".pem")
         || name.ends_with(".key")
+        || name.ends_with(".crt")
+        || name.ends_with(".cer")
+        || name.ends_with(".der")
         || name == "id_rsa"
         || name == "id_ed25519"
+        || name == "id_ecdsa"
+        || name == "known_hosts"
+        || name == ".npmrc"
+        || name == ".pypirc"
+        || name == ".netrc"
+        || name == ".git-credentials"
+        || name == ".ds_store"
+        || name == "thumbs.db"
+        || name.ends_with(".sqlite")
+        || name.ends_with(".db")
+        || name.ends_with(".dump")
+        || name.ends_with(".bak")
+        || name.ends_with(".sql")
         || name.ends_with(".p12")
         || name.ends_with(".pfx")
 }

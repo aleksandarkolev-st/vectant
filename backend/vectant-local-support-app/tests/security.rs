@@ -80,6 +80,49 @@ fn blocks_device_unc_named_pipe_and_drive_paths() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn blocks_symlink_escape_from_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("credentials"), "aws_access_key_id = AKIA1234567890ABCDEF\n").unwrap();
+    symlink(outside.path().join("credentials"), workspace.path().join("linked-credentials")).unwrap();
+    let policy = WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    let response = policy.read_file_for_review(&request("linked-credentials"));
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+    assert!(resolve_relative(policy.root(), "linked-credentials").is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn blocks_junction_escape_from_workspace() {
+    use std::process::Command;
+
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("credentials.txt"), "aws_access_key_id = AKIA1234567890ABCDEF\n").unwrap();
+    let link = workspace.path().join("outside-link");
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(outside.path())
+        .status()
+        .unwrap();
+    assert!(status.success(), "mklink /J should create a junction for the escape test");
+
+    let policy = WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
+    let response = policy.read_file_for_review(&request("outside-link/credentials.txt"));
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+    assert!(resolve_relative(policy.root(), "outside-link/credentials.txt").is_err());
+}
+
 #[test]
 fn redacts_secrets_before_review_payload() {
     let dir = tempdir().unwrap();
@@ -119,6 +162,68 @@ fn blocks_sensitive_filename_variants_and_cloud_credentials() {
     for path in ["production.env.backup", ".aws/credentials"] {
         let response = policy.read_file_for_review(&request(path));
         assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[test]
+fn blocks_default_ignored_and_sensitive_artifact_paths() {
+    let dir = tempdir().unwrap();
+    for path in [
+        ".docker/config.json",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        ".git-credentials",
+        ".git/config",
+        ".git/objects/aa/object",
+        ".git/logs/HEAD",
+        ".git/hooks/pre-commit",
+        ".vscode/settings.json",
+        "node_modules/pkg/index.js",
+        "dist/app.js",
+        "build/app.js",
+        ".next/server/app.js",
+        "coverage/lcov.info",
+        "data.sqlite",
+        "dump.sql",
+        "backup.bak",
+        "server.crt",
+        "known_hosts",
+        "Thumbs.db",
+    ] {
+        let full = dir.path().join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(&full, "local artifact that must not leave the machine\n").unwrap();
+    }
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in [
+        ".docker/config.json",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        ".git-credentials",
+        ".git/config",
+        ".git/objects/aa/object",
+        ".git/logs/HEAD",
+        ".git/hooks/pre-commit",
+        ".vscode/settings.json",
+        "node_modules/pkg/index.js",
+        "dist/app.js",
+        "build/app.js",
+        ".next/server/app.js",
+        "coverage/lcov.info",
+        "data.sqlite",
+        "dump.sql",
+        "backup.bak",
+        "server.crt",
+        "known_hosts",
+        "Thumbs.db",
+    ] {
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied", "{path} should be denied");
         assert_eq!(response.bytes_sent, 0);
         assert!(response.content.is_none());
     }
