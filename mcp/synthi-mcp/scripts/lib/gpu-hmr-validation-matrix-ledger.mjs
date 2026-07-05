@@ -4591,6 +4591,10 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     strict_runtime_proof_gate_accepted: strictRuntimeProofGateAccepted,
     strictRuntimeProofGateFailures,
     strict_runtime_proof_gate_failures: strictRuntimeProofGateFailures,
+    importedRuntimeProofArtifact: accepted ? runtimeProofArtifact : null,
+    imported_runtime_proof_artifact: accepted ? runtimeProofArtifact : null,
+    importedProofLedger: accepted ? proofLedger : null,
+    imported_proof_ledger: accepted ? proofLedger : null,
     strictRuntimeProofId,
     strict_runtime_proof_id: strictRuntimeProofId,
     proofLedgerId,
@@ -23690,6 +23694,17 @@ function mergeRuntimeChainRecordWithOverlay(record = {}, overlay = {}) {
   };
 }
 
+function runtimeChainComparableArtifactHash(value) {
+  const raw = firstText(value);
+  if (!raw) return null;
+  return normalizedArtifactHash(raw) ?? raw;
+}
+
+function runtimeChainComparableArtifactHashes(values) {
+  return stringEvidenceList((Array.isArray(values) ? values : [])
+    .map(runtimeChainComparableArtifactHash));
+}
+
 function runtimeChainComparableValues(record = {}) {
   const normalized = compactObject(record);
   const loaderEvent = compactObject(normalized.loaderEvent ?? normalized.loader_event);
@@ -23698,11 +23713,21 @@ function runtimeChainComparableValues(record = {}) {
   const outputEvent = compactObject(normalized.outputEvent ?? normalized.output_event);
   const processIdentity = compactObject(normalized.processIdentity ?? normalized.process_identity);
   return {
-    artifactHash: firstText(normalized.artifactAfterHash, normalized.artifact_after_hash),
-    loaderArtifactHash: firstText(loaderEvent.artifact_hash, loaderEvent.artifactHash),
-    epochArtifactHash: firstText(epochPublishEvent.artifact_hash, epochPublishEvent.artifactHash),
-    dispatchArtifactHash: firstText(dispatchEvent.artifact_hash, dispatchEvent.artifactHash),
-    outputArtifactHash: firstText(outputEvent.artifact_hash, outputEvent.artifactHash),
+    artifactHash: runtimeChainComparableArtifactHash(
+      firstText(normalized.artifactAfterHash, normalized.artifact_after_hash),
+    ),
+    loaderArtifactHash: runtimeChainComparableArtifactHash(
+      firstText(loaderEvent.artifact_hash, loaderEvent.artifactHash),
+    ),
+    epochArtifactHash: runtimeChainComparableArtifactHash(
+      firstText(epochPublishEvent.artifact_hash, epochPublishEvent.artifactHash),
+    ),
+    dispatchArtifactHash: runtimeChainComparableArtifactHash(
+      firstText(dispatchEvent.artifact_hash, dispatchEvent.artifactHash),
+    ),
+    outputArtifactHash: runtimeChainComparableArtifactHash(
+      firstText(outputEvent.artifact_hash, outputEvent.artifactHash),
+    ),
     runtimeSessionIds: compactStringList([
       eventRuntimeSessionId(loaderEvent),
       eventRuntimeSessionId(epochPublishEvent),
@@ -23875,7 +23900,7 @@ function runtimeChainBaseClosureGaps(record = {}) {
     && timestamps.epochPublish <= timestamps.dispatch
     && timestamps.dispatch <= timestamps.output
     && (timestamps.retirement === null || timestamps.output <= timestamps.retirement);
-  const requiredArtifactHashEvidence = stringEvidenceList([
+  const requiredArtifactHashEvidence = runtimeChainComparableArtifactHashes([
     artifactAfterHash,
     loaderArtifactHash,
     epochArtifactHash,
@@ -24083,7 +24108,7 @@ function realRocmRuntimeChainFacet({
     && timestamps.epochPublish <= timestamps.dispatch
     && timestamps.dispatch <= timestamps.output
     && (timestamps.retirement === null || timestamps.output <= timestamps.retirement);
-  const requiredArtifactHashEvidence = stringEvidenceList([
+  const requiredArtifactHashEvidence = runtimeChainComparableArtifactHashes([
     artifactAfterHash,
     loaderArtifactHash,
     epochArtifactHash,
@@ -28258,6 +28283,37 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       stageEvents: randomColdRuntimeAdapterStageEvents,
       appHookGate: randomColdRuntimeAppHookContractGate,
     });
+  const randomColdImportedRuntimeProofArtifact = compactObject(
+    randomColdRuntimeProfileAdapterResultImport.importedRuntimeProofArtifact
+    ?? randomColdRuntimeProfileAdapterResultImport.imported_runtime_proof_artifact,
+  );
+  const randomColdImportedProofLedger = compactObject(
+    randomColdRuntimeProfileAdapterResultImport.importedProofLedger
+    ?? randomColdRuntimeProfileAdapterResultImport.imported_proof_ledger,
+  );
+  const randomColdImportedProofLedgerQuery =
+    Object.keys(randomColdImportedProofLedger).length > 0
+      ? queryGpuHmrLedgerInvariants(randomColdImportedProofLedger)
+      : {};
+  const randomColdImportedStrictProofMaterialPresent =
+    randomColdRuntimeProfileAdapterResultImport.accepted === true
+    && (
+      Object.keys(randomColdImportedRuntimeProofArtifact).length > 0
+      || Object.keys(randomColdImportedProofLedger).length > 0
+    );
+  const randomColdRealRocmFirewall = randomColdImportedStrictProofMaterialPresent
+    ? realRocmFirewallFieldsFromEvidence({
+        runtimeProofArtifact: randomColdImportedRuntimeProofArtifact,
+        proofLedger: randomColdImportedProofLedger,
+      })
+    : null;
+  const randomColdRealRocmRuntimeChain = randomColdImportedStrictProofMaterialPresent
+    ? realRocmRuntimeChainFacet({
+        ledger: randomColdImportedProofLedgerQuery,
+        proofLedger: randomColdImportedProofLedger,
+        runtimeProfileAdapterResult: randomColdRuntimeProfileAdapterResultImport,
+      })
+    : null;
   const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
     result.runtimeSupportClosureObligation,
     result.runtime_support_closure_obligation,
@@ -28364,7 +28420,15 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
         ])
       : [],
   );
-  const proofGaps = rawProofGaps.filter((gap) => !projectedClearedOpenGaps.has(gap));
+  const sharedRuntimeProofClearedOpenGaps = new Set(compactStringList([
+    randomColdRealRocmRuntimeChain?.accepted === true
+      ? 'same_process_loader_unproven'
+      : null,
+  ]));
+  const proofGaps = rawProofGaps.filter((gap) =>
+    !projectedClearedOpenGaps.has(gap)
+    && !sharedRuntimeProofClearedOpenGaps.has(gap)
+  );
   const pending = eventType === 'cold_path_pending';
   const actualAttempt = eventType === 'cold_path_complete' && dryRun !== true;
   const matrixOutcome = pending
@@ -28529,6 +28593,12 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       randomColdRuntimeStrictImportProjection.present === true
         ? randomColdRuntimeStrictImportProjection
         : null,
+    realRocmFirewall: randomColdRealRocmFirewall,
+    real_rocm_firewall: randomColdRealRocmFirewall,
+    realRocmRuntimeChain: randomColdRealRocmRuntimeChain,
+    real_rocm_runtime_chain: randomColdRealRocmRuntimeChain,
+    runtimeChain: randomColdRealRocmRuntimeChain,
+    runtime_chain: randomColdRealRocmRuntimeChain,
     randomColdRuntimeSupportClosureObligation:
       randomColdRuntimeSupportClosureObligation.present === true
         ? randomColdRuntimeSupportClosureObligation

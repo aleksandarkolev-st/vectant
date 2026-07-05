@@ -3480,14 +3480,15 @@ const fileBackedRawReadbackHash =
 const fileBackedEpoch = 'epoch:file-backed';
 const fileBackedDispatchId = 'dispatch:file-backed';
 const fileBackedOutputTargetId = 'output-target:file-backed';
+const fileBackedDispatchTableEntryId = `file_backed_kernel:${fileBackedEpoch}`;
 const fileBackedRuntimeSession = 'session:file-backed';
 const fileBackedProcessId = 'pid:1001';
 const fileBackedBoundaryLines = [
-  `[gpu-runtime-boundary] artifact_transport artifact_hash=${fileBackedArtifactAfterHash} epoch=${fileBackedEpoch} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
-  `[gpu-runtime-boundary] dispatcher_epoch epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
-  `[gpu-runtime-boundary] native_runtime_dispatch dispatch_id=${fileBackedDispatchId} epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} artifact_id=artifact:file-backed output_target_id=${fileBackedOutputTargetId} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
-  `[gpu-runtime-boundary] host_identity runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed`,
-  `[gpu-runtime-boundary] output_oracle after_dispatch_id=${fileBackedDispatchId} output_target_id=${fileBackedOutputTargetId} raw_readback_hash=${fileBackedRawReadbackHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId}`,
+  `[gpu-runtime-boundary] artifact_transport artifact_hash=${fileBackedArtifactAfterHash} epoch=${fileBackedEpoch} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} selected_loader_transport=in_memory_code_object transport_class=in_memory memory_resident=true timestamp_monotonic_ns=100`,
+  `[gpu-runtime-boundary] dispatcher_epoch epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} timestamp_monotonic_ns=200`,
+  `[gpu-runtime-boundary] native_runtime_dispatch dispatch_id=${fileBackedDispatchId} epoch=${fileBackedEpoch} artifact_hash=${fileBackedArtifactAfterHash} output_target_id=${fileBackedOutputTargetId} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} timestamp_monotonic_ns=300`,
+  `[gpu-runtime-boundary] host_identity runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed timestamp_monotonic_ns=310`,
+  `[gpu-runtime-boundary] output_oracle after_dispatch_id=${fileBackedDispatchId} output_target_id=${fileBackedOutputTargetId} raw_readback_hash=${fileBackedRawReadbackHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} timestamp_monotonic_ns=400`,
 ];
 const fileBackedLineHashes = fileBackedBoundaryLines.map(hashValue);
 const fileBackedRuntimeBoundaryEvents = [
@@ -3497,6 +3498,9 @@ const fileBackedRuntimeBoundaryEvents = [
     artifactHash: fileBackedArtifactAfterHash,
     processId: fileBackedProcessId,
     runtimeSession: fileBackedRuntimeSession,
+    selectedLoaderTransport: 'in_memory_code_object',
+    transportClass: 'in_memory',
+    memoryResident: true,
     timestampMonotonicNs: 100,
     evidenceRefs: ['file-backed-runtime-boundary:artifact-transport'],
   },
@@ -3507,6 +3511,8 @@ const fileBackedRuntimeBoundaryEvents = [
     epoch: fileBackedEpoch,
     processId: fileBackedProcessId,
     runtimeSession: fileBackedRuntimeSession,
+    dispatchTableEntryId: fileBackedDispatchTableEntryId,
+    dispatchTableEntry: fileBackedDispatchTableEntryId,
     dispatchTableHashBefore: hashValue('file-backed-dispatch-table-before'),
     dispatchTableHashAfter: hashValue('file-backed-dispatch-table-after'),
     timestampMonotonicNs: 200,
@@ -3521,7 +3527,8 @@ const fileBackedRuntimeBoundaryEvents = [
     processId: fileBackedProcessId,
     runtimeSession: fileBackedRuntimeSession,
     stream: 'stream:file-backed',
-    dispatchTableEntry: `file_backed_kernel:${fileBackedEpoch}`,
+    dispatchTableEntryId: fileBackedDispatchTableEntryId,
+    dispatchTableEntry: fileBackedDispatchTableEntryId,
     timestampMonotonicNs: 300,
     evidenceRefs: [
       `worker-log:synthi_gpu_launch:${fileBackedRuntimeSession}:${fileBackedDispatchId}`,
@@ -3555,6 +3562,8 @@ const fileBackedRuntimeBoundaryEvents = [
     processId: fileBackedProcessId,
     runtimeSession: fileBackedRuntimeSession,
     outputTargetId: fileBackedOutputTargetId,
+    dispatchTableEntryId: fileBackedDispatchTableEntryId,
+    dispatchTableEntry: fileBackedDispatchTableEntryId,
     oracleKind: 'buffer_checksum',
     timestampMonotonicNs: 400,
     evidenceRefs: [`worker-log:output_oracle:${fileBackedRuntimeSession}:${fileBackedDispatchId}`],
@@ -3883,10 +3892,27 @@ assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.a
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.strict_runtime_ledger.accepted, true);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cpu_gpu_firewall.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cpu_gpu_firewall.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, false);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_chain.accepted, false);
+assert.equal(
+  fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_chain.accepted,
+  true,
+  stableJson(fileBackedAdapterImportRow.realRocmRuntimeChain),
+);
 assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, true);
+assert.equal(fileBackedAdapterImportRow.realRocmFirewall.accepted, true);
+assert.equal(fileBackedAdapterImportRow.realRocmFirewall.cpuHmrUsed, false);
+assert.equal(fileBackedAdapterImportRow.realRocmFirewall.fullRebuildUsed, false);
+assert.equal(fileBackedAdapterImportRow.realRocmFirewall.processRestarted, false);
+assert.equal(fileBackedAdapterImportRow.realRocmRuntimeChain.accepted, true);
+assert.equal(
+  fileBackedAdapterImportRow.realRocmRuntimeChain.artifactHash,
+  `artifact:${fileBackedArtifactAfterHash}`,
+);
+assert.equal(fileBackedAdapterImportRow.realRocmRuntimeChain.transportHash, fileBackedArtifactAfterHash);
+assert.equal(fileBackedAdapterImportRow.realRocmRuntimeChain.dispatchId, fileBackedDispatchId);
+assert.equal(fileBackedAdapterImportRow.realRocmRuntimeChain.outputTargetId, fileBackedOutputTargetId);
+assert.equal(fileBackedAdapterImportRow.realRocmRuntimeChain.adapterBoundaryOverlayLineCount > 0, true);
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.accepted, true);
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.gpuHmrSuccess, false);
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.acceptedForGpuHmr, false);
@@ -3903,7 +3929,8 @@ assert.ok(!fileBackedAdapterImportRow.openGaps.includes('epoch_publication_unpro
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('dispatch_trace_unproven'));
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('host_identity_unproven'));
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('output_oracle_unproven'));
-assert.ok(fileBackedAdapterImportRow.openGaps.includes('same_process_loader_unproven'));
+assert.ok(!fileBackedAdapterImportRow.openGaps.includes('same_process_loader_unproven'));
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, false);
 assert.ok(fileBackedAdapterImportRow.openGaps.includes('semantic_build_metadata_execution_missing'));
 const forgedAdapterStrictShellDir = path.join(
   tmpRoot,
