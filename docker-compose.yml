@@ -76,6 +76,10 @@ services:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
       NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
+      # Local-compose auth secret used by NextAuth. Production deployments must
+      # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
+      AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"

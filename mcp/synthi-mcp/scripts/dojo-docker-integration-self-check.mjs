@@ -57,6 +57,8 @@ export const DOJO_DOCKER_REQUIRED_ENDPOINTS = [
 
 export const DOJO_DOCKER_DEFAULT_COMPOSE_ENV = {
   NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "1",
+  AUTH_SECRET: "codesite-proof-local-secret",
+  NEXTAUTH_SECRET: "codesite-proof-local-secret",
   FRONTEND_HOST_PORT: "3100",
   COLLAB_HOST_PORT: "11234",
   YSWEET_HOST_PORT: "18180",
