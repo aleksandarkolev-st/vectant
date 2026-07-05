@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -31,6 +32,7 @@ const WORKFLOW_PIPELINE_SUMMARY_SCHEMA_VERSION = "synthi.dojo.workflowPipelineE2
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
@@ -1990,7 +1992,7 @@ async function ensurePlaywrightTestRunner() {
   const configPath = path.join(root, "playwright.config.mjs");
   await mkdir(root, { recursive: true });
   if (!existsSync(pkgPath)) {
-    const version = JSON.parse(await readFile(path.join(MCP_ROOT, "node_modules/playwright-core/package.json"), "utf8")).version;
+    const version = JSON.parse(await readFile(require.resolve("playwright-core/package.json"), "utf8")).version;
     await writeFile(pkgPath, JSON.stringify({
       type: "module",
       private: true,
