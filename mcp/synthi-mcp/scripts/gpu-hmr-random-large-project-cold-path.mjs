@@ -40,6 +40,10 @@ const RUNTIME_BOUNDARY_EVENT_TEMPLATE_SCHEMA =
   'synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1';
 const RUNTIME_BOUNDARY_EVENT_TEMPLATE_AUTHORITY =
   'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
+const RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_SCHEMA =
+  'synthi.gpu_hmr.cold_runtime_boundary_template_source_binding.v1';
+const RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY =
+  'runtime_boundary_template_source_binding_only_not_runtime_authority';
 const RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
@@ -2657,20 +2661,91 @@ function runtimeBoundaryEventObjectTemplate({ kind, backendCandidates, acceptabl
   };
 }
 
-function deriveRuntimeBoundaryEventManifestTemplate({ candidate, runtimeBoundaryExpectation }) {
+function deriveRuntimeBoundaryTemplateSourceBinding({
+  candidate,
+  runtimeBoundaryExpectation,
+  sourceListingHash,
+  buildMetadataContentHash,
+} = {}) {
+  const backendCandidates = uniqueSortedStrings(runtimeBoundaryExpectation?.backendCandidates ?? []);
+  const sourceExpectationHash =
+    runtimeBoundaryExpectation?.expectationHash
+    ?? runtimeBoundaryExpectation?.expectation_hash
+    ?? null;
+  const blockingGaps = uniqueSortedStrings([
+    sourceListingHash ? null : 'source_listing_hash_missing',
+    buildMetadataContentHash ? null : 'build_metadata_content_hash_missing',
+    sourceExpectationHash ? null : 'runtime_boundary_expectation_hash_missing',
+    backendCandidates.length > 0 ? null : 'backend_candidates_missing',
+  ]);
+  const binding = {
+    schemaVersion: RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_SCHEMA,
+    schema_version: RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_SCHEMA,
+    proofAuthority: RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY,
+    proof_authority: RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsTemplateSourceBinding: blockingGaps.length === 0,
+    accepted_as_template_source_binding: blockingGaps.length === 0,
+    projectId: candidate.id,
+    project_id: candidate.id,
+    sourceUrl: candidate.sourceUrl,
+    source_url: candidate.sourceUrl,
+    immutableCommit: candidate.immutableCommit,
+    immutable_commit: candidate.immutableCommit,
+    sourceListingHash: sourceListingHash ?? null,
+    source_listing_hash: sourceListingHash ?? null,
+    buildMetadataContentHash: buildMetadataContentHash ?? null,
+    build_metadata_content_hash: buildMetadataContentHash ?? null,
+    sourceExpectationHash,
+    source_expectation_hash: sourceExpectationHash,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+  return {
+    ...binding,
+    bindingHash: contentHash(stableJson(binding)),
+    binding_hash: contentHash(stableJson(binding)),
+  };
+}
+
+function deriveRuntimeBoundaryEventManifestTemplate({
+  candidate,
+  runtimeBoundaryExpectation,
+  sourceListingHash = null,
+  buildMetadataContentHash = null,
+}) {
   const backendCandidates = uniqueSortedStrings(runtimeBoundaryExpectation?.backendCandidates ?? []);
   const acceptableOracleKinds = uniqueSortedStrings(runtimeBoundaryExpectation?.acceptableOracleKinds ?? []);
   const eventObjectTemplates = REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS.map((kind) =>
     runtimeBoundaryEventObjectTemplate({ kind, backendCandidates, acceptableOracleKinds }));
+  const sourceBinding = deriveRuntimeBoundaryTemplateSourceBinding({
+    candidate,
+    runtimeBoundaryExpectation,
+    sourceListingHash,
+    buildMetadataContentHash,
+  });
   const presentKinds = new Set(eventObjectTemplates.map((entry) => entry.eventKind));
   const missingEventKinds = REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS.filter((kind) => !presentKinds.has(kind));
   const expectationAccepted =
     runtimeBoundaryExpectation?.acceptedAsRuntimeBoundaryExpectation === true;
   const blockingGaps = uniqueSortedStrings([
     ...(expectationAccepted ? [] : ['runtime_boundary_expectation_not_accepted']),
+    ...(sourceBinding.acceptedAsTemplateSourceBinding === true
+      ? []
+      : ['runtime_boundary_template_source_binding_incomplete']),
     ...(Array.isArray(runtimeBoundaryExpectation?.blockingGaps)
       ? runtimeBoundaryExpectation.blockingGaps
       : []),
+    ...(Array.isArray(sourceBinding.blockingGaps) ? sourceBinding.blockingGaps : []),
     ...missingEventKinds.map((kind) => `runtime_boundary_event_template_${kind}_missing`),
   ]);
   const accepted = blockingGaps.length === 0;
@@ -2715,8 +2790,16 @@ function deriveRuntimeBoundaryEventManifestTemplate({ candidate, runtimeBoundary
     source_url: candidate.sourceUrl,
     immutableCommit: candidate.immutableCommit,
     immutable_commit: candidate.immutableCommit,
+    sourceListingHash: sourceBinding.sourceListingHash,
+    source_listing_hash: sourceBinding.source_listing_hash,
+    buildMetadataContentHash: sourceBinding.buildMetadataContentHash,
+    build_metadata_content_hash: sourceBinding.build_metadata_content_hash,
     sourceExpectationHash: runtimeBoundaryExpectation?.expectationHash ?? null,
     source_expectation_hash: runtimeBoundaryExpectation?.expectation_hash ?? null,
+    sourceBinding,
+    source_binding: sourceBinding,
+    sourceBindingHash: sourceBinding.bindingHash,
+    source_binding_hash: sourceBinding.binding_hash,
     runtimeBoundaryEventSchema: RUNTIME_BOUNDARY_EVENT_SCHEMA,
     runtime_boundary_event_schema: RUNTIME_BOUNDARY_EVENT_SCHEMA,
     eventManifestSchema: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
@@ -3302,6 +3385,11 @@ async function buildAcceptedSourceIntakeFacet({
   const runtimeBoundaryEventManifestTemplate = deriveRuntimeBoundaryEventManifestTemplate({
     candidate,
     runtimeBoundaryExpectation,
+    sourceListingHash,
+    buildMetadataContentHash:
+      buildMetadataContentEvidence.contentEvidenceHash
+      ?? buildMetadataContentEvidence.content_evidence_hash
+      ?? null,
   });
   const blockingGaps = [];
   if (classification.buildSignalCount === 0) blockingGaps.push('build_system_metadata_not_detected');
@@ -5267,9 +5355,15 @@ async function selfCheck() {
     candidate: candidates[0],
     runtimeBoundaryExpectation: runtimeExpectation,
   });
+  const unboundRuntimeEventTemplate = deriveRuntimeBoundaryEventManifestTemplate({
+    candidate: candidates[0],
+    runtimeBoundaryExpectation: runtimeExpectation,
+  });
   const runtimeEventTemplate = deriveRuntimeBoundaryEventManifestTemplate({
     candidate: candidates[0],
     runtimeBoundaryExpectation: runtimeExpectation,
+    sourceListingHash: contentHash(stableJson(canonicalSourceListingIdentity(parsedListing))),
+    buildMetadataContentHash: contentHash('self-check-build-metadata-content'),
   });
   const noBackendRuntimeExpectation = deriveRuntimeBoundaryExpectation({
     candidate: candidates[0],
@@ -5359,7 +5453,13 @@ async function selfCheck() {
     || runtimeSupportClosure.canSatisfyRuntimeProof !== false
     || !runtimeSupportClosure.possibleOutcomes.includes('unsupported_requires_app_hook')
     || !runtimeSupportClosure.blockingGaps.includes('runtime_support_closure_requires_app_hook')
+    || unboundRuntimeEventTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate !== false
+    || !unboundRuntimeEventTemplate.blockingGaps.includes(
+      'runtime_boundary_template_source_binding_incomplete',
+    )
     || runtimeEventTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate !== true
+    || runtimeEventTemplate.sourceBinding?.acceptedAsTemplateSourceBinding !== true
+    || !runtimeEventTemplate.sourceBindingHash?.startsWith('sha256:')
     || runtimeEventTemplate.gpuHmrSuccess !== false
     || runtimeEventTemplate.canSatisfyRuntimeProof !== false
     || runtimeEventTemplate.requiredEventKinds?.length !== 5

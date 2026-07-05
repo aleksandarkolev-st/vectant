@@ -204,6 +204,10 @@ const COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_runtime_boundary_event_manifest_template.v1';
 const COLD_RUNTIME_BOUNDARY_EVENT_MANIFEST_TEMPLATE_AUTHORITY =
   'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
+const COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_runtime_boundary_template_source_binding.v1';
+const COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY =
+  'runtime_boundary_template_source_binding_only_not_runtime_authority';
 const RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_boundary_event.v1';
 const RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA_VERSION =
@@ -1147,6 +1151,108 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
     facet.eventObjectTemplates ?? facet.event_object_templates,
   );
   const manifestTemplate = compactObject(facet.manifestTemplate ?? facet.manifest_template);
+  const sourceBinding = compactObject(facet.sourceBinding ?? facet.source_binding);
+  const sourceBindingPresent = Object.keys(sourceBinding).length > 0;
+  const sourceBindingSchema = firstText(sourceBinding.schemaVersion, sourceBinding.schema_version);
+  const sourceBindingAuthority = firstText(sourceBinding.proofAuthority, sourceBinding.proof_authority);
+  const sourceBindingAccepted = firstBool(
+    sourceBinding.acceptedAsTemplateSourceBinding,
+    sourceBinding.accepted_as_template_source_binding,
+  ) === true;
+  const sourceBindingSourceListingHash = normalizeSha256(firstText(
+    sourceBinding.sourceListingHash,
+    sourceBinding.source_listing_hash,
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+  ));
+  const sourceBindingBuildMetadataContentHash = normalizeSha256(firstText(
+    sourceBinding.buildMetadataContentHash,
+    sourceBinding.build_metadata_content_hash,
+    facet.buildMetadataContentHash,
+    facet.build_metadata_content_hash,
+  ));
+  const sourceBindingExpectationHash = normalizeSha256(firstText(
+    sourceBinding.sourceExpectationHash,
+    sourceBinding.source_expectation_hash,
+    facet.sourceExpectationHash,
+    facet.source_expectation_hash,
+  ));
+  const sourceBindingBackendCandidates = compactStringList([
+    ...(Array.isArray(sourceBinding.backendCandidates) ? sourceBinding.backendCandidates : []),
+    ...(Array.isArray(sourceBinding.backend_candidates) ? sourceBinding.backend_candidates : []),
+  ]).sort();
+  const sourceBindingBlockingGaps = compactStringList([
+    ...(Array.isArray(sourceBinding.blockingGaps) ? sourceBinding.blockingGaps : []),
+    ...(Array.isArray(sourceBinding.blocking_gaps) ? sourceBinding.blocking_gaps : []),
+  ]);
+  const sourceBindingHashSeed = JSON.parse(JSON.stringify(sourceBinding));
+  delete sourceBindingHashSeed.bindingHash;
+  delete sourceBindingHashSeed.binding_hash;
+  const suppliedSourceBindingHash = normalizeSha256(firstText(
+    sourceBinding.bindingHash,
+    sourceBinding.binding_hash,
+    facet.sourceBindingHash,
+    facet.source_binding_hash,
+  ));
+  const recomputedSourceBindingHash = sourceBindingPresent
+    ? normalizeSha256(stableJsonHash(sourceBindingHashSeed))
+    : null;
+  const sourceBindingFailures = compactStringList([
+    acceptedAsTemplate === true && !sourceBindingPresent
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_missing'
+      : null,
+    sourceBindingPresent
+      && sourceBindingSchema !== COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_SCHEMA_VERSION
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_schema_invalid'
+      : null,
+    sourceBindingPresent
+      && sourceBindingAuthority !== COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_authority_invalid'
+      : null,
+    sourceBindingPresent && acceptedAsTemplate === true && sourceBindingAccepted !== true
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_not_accepted'
+      : null,
+    sourceBindingPresent && !sourceBindingSourceListingHash
+      ? 'cold_runtime_boundary_event_manifest_template_source_listing_hash_missing'
+      : null,
+    sourceBindingPresent && acceptedAsTemplate === true && !sourceBindingBuildMetadataContentHash
+      ? 'cold_runtime_boundary_event_manifest_template_build_metadata_hash_missing'
+      : null,
+    sourceBindingPresent && !sourceBindingExpectationHash
+      ? 'cold_runtime_boundary_event_manifest_template_expectation_hash_missing'
+      : null,
+    sourceBindingPresent && acceptedAsTemplate === true && sourceBindingBackendCandidates.length === 0
+      ? 'cold_runtime_boundary_event_manifest_template_backend_binding_missing'
+      : null,
+    sourceBindingPresent && acceptedAsTemplate === true && sourceBindingBlockingGaps.length > 0
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_has_blocking_gaps'
+      : null,
+    sourceBindingPresent
+      && firstBool(sourceBinding.acceptedForGpuHmr, sourceBinding.accepted_for_gpu_hmr) === true
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_claimed_gpu_hmr_acceptance'
+      : null,
+    sourceBindingPresent
+      && firstBool(sourceBinding.gpuHmrSuccess, sourceBinding.gpu_hmr_success) === true
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_claimed_gpu_hmr_success'
+      : null,
+    sourceBindingPresent
+      && firstBool(sourceBinding.canSatisfyRuntimeProof, sourceBinding.can_satisfy_runtime_proof) === true
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_claimed_runtime_authority'
+      : null,
+    sourceBindingPresent
+      && firstBool(sourceBinding.canSatisfyDispatchProof, sourceBinding.can_satisfy_dispatch_proof) === true
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_claimed_dispatch_authority'
+      : null,
+    sourceBindingPresent && !suppliedSourceBindingHash
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_hash_missing'
+      : null,
+    sourceBindingPresent
+      && suppliedSourceBindingHash
+      && recomputedSourceBindingHash
+      && suppliedSourceBindingHash !== recomputedSourceBindingHash
+      ? 'cold_runtime_boundary_event_manifest_template_source_binding_hash_mismatch'
+      : null,
+  ]);
   const manifestTemplateEvents = [
     ...(Array.isArray(manifestTemplate.runtimeBoundaryEvents)
       ? manifestTemplate.runtimeBoundaryEvents
@@ -1439,6 +1545,7 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       : null,
     ...eventTemplateFailures,
     ...manifestEventTemplateFailures,
+    ...sourceBindingFailures,
   ]);
   return {
     present,
@@ -1486,6 +1593,22 @@ export function coldRuntimeBoundaryEventManifestTemplateFacet(input = {}) {
       candidateOracleHintClaimsAcceptance === true,
     nonSourceDerivedAcceptableOracleKinds,
     non_source_derived_acceptable_oracle_kinds: nonSourceDerivedAcceptableOracleKinds,
+    sourceBinding: sourceBindingPresent ? sourceBinding : null,
+    source_binding: sourceBindingPresent ? sourceBinding : null,
+    sourceBindingAccepted,
+    source_binding_accepted: sourceBindingAccepted,
+    sourceBindingHash: recomputedSourceBindingHash,
+    source_binding_hash: recomputedSourceBindingHash,
+    suppliedSourceBindingHash,
+    supplied_source_binding_hash: suppliedSourceBindingHash,
+    sourceBindingSourceListingHash,
+    source_binding_source_listing_hash: sourceBindingSourceListingHash,
+    sourceBindingBuildMetadataContentHash,
+    source_binding_build_metadata_content_hash: sourceBindingBuildMetadataContentHash,
+    sourceBindingExpectationHash,
+    source_binding_expectation_hash: sourceBindingExpectationHash,
+    sourceBindingBackendCandidates,
+    source_binding_backend_candidates: sourceBindingBackendCandidates,
     runtimeBoundaryEventManifestTemplateInput: facet,
     runtime_boundary_event_manifest_template_input: facet,
     observedEventKinds: eventKinds,
@@ -15734,6 +15857,50 @@ function rowSafetyFailures(row, context = {}) {
         ...(Array.isArray(coldTemplate.failedGates) ? coldTemplate.failedGates : []),
         ...(Array.isArray(coldTemplate.failed_gates) ? coldTemplate.failed_gates : []),
       ]).map((code) => ({ code })));
+    }
+    if (coldTemplateDeclaredAccepted || coldTemplate.acceptedAsSupportEvidence === true) {
+      const coldSourceTreeIntake = compactObject(
+        row.coldSourceTreeIntake ?? row.cold_source_tree_intake,
+      );
+      const expectedSourceListingHash = normalizeSha256(firstText(
+        coldSourceTreeIntake.sourceListingHash,
+        coldSourceTreeIntake.source_listing_hash,
+      ));
+      const expectedBuildMetadataContentHash = normalizeSha256(firstText(
+        coldSourceTreeIntake.buildMetadataContentHash,
+        coldSourceTreeIntake.build_metadata_content_hash,
+      ));
+      if (coldTemplate.sourceBindingAccepted !== true) {
+        failures.push({
+          code: 'random_large_project_cold_template_source_binding_not_accepted',
+        });
+      }
+      if (!expectedSourceListingHash) {
+        failures.push({
+          code: 'random_large_project_cold_template_source_listing_hash_unavailable',
+        });
+      }
+      if (!expectedBuildMetadataContentHash) {
+        failures.push({
+          code: 'random_large_project_cold_template_build_metadata_hash_unavailable',
+        });
+      }
+      if (
+        expectedSourceListingHash
+        && coldTemplate.sourceBindingSourceListingHash !== expectedSourceListingHash
+      ) {
+        failures.push({
+          code: 'random_large_project_cold_template_source_listing_hash_mismatch',
+        });
+      }
+      if (
+        expectedBuildMetadataContentHash
+        && coldTemplate.sourceBindingBuildMetadataContentHash !== expectedBuildMetadataContentHash
+      ) {
+        failures.push({
+          code: 'random_large_project_cold_template_build_metadata_hash_mismatch',
+        });
+      }
     }
     if (
       firstBool(

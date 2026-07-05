@@ -129,6 +129,8 @@ function sourceIntakeFacetHashFor(value) {
 
 const COLD_RUNTIME_BOUNDARY_TEMPLATE_AUTHORITY =
   'runtime_boundary_event_manifest_template_only_not_gpu_hmr_success';
+const COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY =
+  'runtime_boundary_template_source_binding_only_not_runtime_authority';
 const COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS = [
   'artifact_transport',
   'epoch_publication',
@@ -136,6 +138,52 @@ const COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS = [
   'host_identity',
   'output_oracle',
 ];
+
+function hashedColdRuntimeBoundaryTemplateSourceBinding(overrides = {}) {
+  const {
+    bindingHash: _bindingHash,
+    binding_hash: _bindingHashSnake,
+    ...bindingOverrides
+  } = overrides;
+  const seed = {
+    schemaVersion: 'synthi.gpu_hmr.cold_runtime_boundary_template_source_binding.v1',
+    schema_version: 'synthi.gpu_hmr.cold_runtime_boundary_template_source_binding.v1',
+    proofAuthority: COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY,
+    proof_authority: COLD_RUNTIME_BOUNDARY_TEMPLATE_SOURCE_BINDING_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsTemplateSourceBinding: true,
+    accepted_as_template_source_binding: true,
+    projectId: 'random-cold-template-source-binding',
+    project_id: 'random-cold-template-source-binding',
+    sourceUrl: 'https://example.invalid/random-cold-template-source-binding.git',
+    source_url: 'https://example.invalid/random-cold-template-source-binding.git',
+    immutableCommit: '1111111111111111111111111111111111111111',
+    immutable_commit: '1111111111111111111111111111111111111111',
+    sourceListingHash: hashValue('random-cold-template-source-listing'),
+    source_listing_hash: hashValue('random-cold-template-source-listing'),
+    buildMetadataContentHash: hashValue('random-cold-template-build-metadata'),
+    build_metadata_content_hash: hashValue('random-cold-template-build-metadata'),
+    sourceExpectationHash: hashValue('random-cold-template-runtime-expectation'),
+    source_expectation_hash: hashValue('random-cold-template-runtime-expectation'),
+    backendCandidates: ['hip_rocm'],
+    backend_candidates: ['hip_rocm'],
+    blockingGaps: [],
+    blocking_gaps: [],
+    ...bindingOverrides,
+  };
+  return {
+    ...seed,
+    bindingHash: contentHashFor(seed),
+    binding_hash: contentHashFor(seed),
+  };
+}
 
 function hashedColdRuntimeBoundaryEventTemplate(kind, requiredFields) {
   const template = {
@@ -162,6 +210,21 @@ function hashedColdRuntimeBoundaryEventTemplate(kind, requiredFields) {
 }
 
 function hashedColdRuntimeBoundaryTemplateFacet(overrides = {}) {
+  const sourceBindingSpecified = Object.hasOwn(overrides, 'sourceBinding')
+    || Object.hasOwn(overrides, 'source_binding');
+  const explicitSourceBinding = Object.hasOwn(overrides, 'sourceBinding')
+    ? overrides.sourceBinding
+    : overrides.source_binding;
+  const {
+    sourceBinding: _sourceBinding,
+    source_binding: _sourceBindingSnake,
+    sourceBindingHash: _sourceBindingHash,
+    source_binding_hash: _sourceBindingHashSnake,
+    ...templateOverrides
+  } = overrides;
+  const sourceBinding = sourceBindingSpecified
+    ? explicitSourceBinding
+    : hashedColdRuntimeBoundaryTemplateSourceBinding();
   const eventObjectTemplates = [
     hashedColdRuntimeBoundaryEventTemplate('artifact_transport', [
       'runtime_session',
@@ -206,6 +269,18 @@ function hashedColdRuntimeBoundaryTemplateFacet(overrides = {}) {
     accepted_as_runtime_boundary_event_manifest_template: true,
     requiredEventKinds: COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS,
     required_event_kinds: COLD_RUNTIME_BOUNDARY_TEMPLATE_KINDS,
+    ...(sourceBinding
+      ? {
+        sourceBinding,
+        source_binding: sourceBinding,
+        sourceBindingHash: sourceBinding.bindingHash,
+        source_binding_hash: sourceBinding.binding_hash,
+        sourceListingHash: sourceBinding.sourceListingHash,
+        source_listing_hash: sourceBinding.source_listing_hash,
+        buildMetadataContentHash: sourceBinding.buildMetadataContentHash,
+        build_metadata_content_hash: sourceBinding.build_metadata_content_hash,
+      }
+      : {}),
     eventObjectTemplates,
     event_object_templates: eventObjectTemplates,
     manifestTemplate: {
@@ -242,7 +317,7 @@ function hashedColdRuntimeBoundaryTemplateFacet(overrides = {}) {
     },
     blockingGaps: [],
     blocking_gaps: [],
-    ...overrides,
+    ...templateOverrides,
   };
   return {
     ...seed,
@@ -2222,7 +2297,7 @@ function randomColdPathManifest({
   repoPath = null,
   immutableCommit = '1111111111111111111111111111111111111111',
   candidateSource = 'direct_source_url_commit',
-  template = hashedColdRuntimeBoundaryTemplateFacet(),
+  template = undefined,
   directInputEvidenceOverrides = null,
   sourceListingManifestOptions = {},
   buildMetadataSemanticSummary = null,
@@ -2266,6 +2341,81 @@ function randomColdPathManifest({
     targetId: candidateId,
     sourceListingManifest,
     semanticSummary: buildMetadataSemanticSummary,
+  });
+  const buildMetadataBackendCandidates = (buildMetadataSemanticSummary?.backendSignalAuthority
+    ?? buildMetadataSemanticSummary?.backend_signal_authority)
+    === 'build_metadata_semantic_tokens_only_not_runtime_authority'
+    ? [
+      ...(Array.isArray(buildMetadataSemanticSummary.backendSignals)
+        ? buildMetadataSemanticSummary.backendSignals
+        : []),
+      ...(Array.isArray(buildMetadataSemanticSummary.backend_signals)
+        ? buildMetadataSemanticSummary.backend_signals
+        : []),
+    ]
+      .map((signal) => signal?.backend)
+      .filter(Boolean)
+    : [];
+  const expectationBackendCandidates = [...new Set([
+    ...sourceBackendCandidates,
+    ...buildMetadataBackendCandidates,
+  ])].sort();
+  const runtimeBoundaryTemplateAccepted = expectationBackendCandidates.length > 0;
+  const runtimeBoundaryExpectation = {
+    proofAuthority: 'runtime_boundary_expectation_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_boundary_expectation_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    acceptedAsRuntimeBoundaryExpectation: runtimeBoundaryTemplateAccepted,
+    accepted_as_runtime_boundary_expectation: runtimeBoundaryTemplateAccepted,
+    expectationHash: hashValue(`${candidateId}:runtime-boundary-expectation`),
+    expectation_hash: hashValue(`${candidateId}:runtime-boundary-expectation`),
+    backendCandidates: expectationBackendCandidates,
+    backend_candidates: expectationBackendCandidates,
+    requiredBoundaryStages: [
+      'runtime_adapter_or_app_hook_contract',
+      'same_process_loader',
+      'epoch_publication',
+      'dispatch_trace',
+      'host_identity',
+      'output_oracle',
+    ],
+    required_boundary_stages: [
+      'runtime_adapter_or_app_hook_contract',
+      'same_process_loader',
+      'epoch_publication',
+      'dispatch_trace',
+      'host_identity',
+      'output_oracle',
+    ],
+  };
+  const runtimeBoundaryEventManifestTemplate = template ?? hashedColdRuntimeBoundaryTemplateFacet({
+    acceptedAsRuntimeBoundaryEventManifestTemplate: runtimeBoundaryTemplateAccepted,
+    accepted_as_runtime_boundary_event_manifest_template: runtimeBoundaryTemplateAccepted,
+    blockingGaps: runtimeBoundaryTemplateAccepted ? [] : ['runtime_backend_candidate_missing'],
+    blocking_gaps: runtimeBoundaryTemplateAccepted ? [] : ['runtime_backend_candidate_missing'],
+    sourceBinding: hashedColdRuntimeBoundaryTemplateSourceBinding({
+      projectId: candidateId,
+      project_id: candidateId,
+      sourceUrl,
+      source_url: sourceUrl,
+      immutableCommit,
+      immutable_commit: immutableCommit,
+      sourceListingHash: sourceListingManifest.sourceListingHash,
+      source_listing_hash: sourceListingManifest.sourceListingHash,
+      buildMetadataContentHash: buildMetadataContentEvidence.contentEvidenceHash,
+      build_metadata_content_hash: buildMetadataContentEvidence.contentEvidenceHash,
+      sourceExpectationHash: runtimeBoundaryExpectation.expectationHash,
+      source_expectation_hash: runtimeBoundaryExpectation.expectationHash,
+      backendCandidates: expectationBackendCandidates,
+      backend_candidates: expectationBackendCandidates,
+      acceptedAsTemplateSourceBinding: runtimeBoundaryTemplateAccepted,
+      accepted_as_template_source_binding: runtimeBoundaryTemplateAccepted,
+      blockingGaps: runtimeBoundaryTemplateAccepted ? [] : ['backend_candidates_missing'],
+      blocking_gaps: runtimeBoundaryTemplateAccepted ? [] : ['backend_candidates_missing'],
+    }),
   });
   const runtimeSupportClosureObligation = randomColdRuntimeSupportClosureFixture();
   const sourceIntakeEvidence = {
@@ -2338,46 +2488,18 @@ function randomColdPathManifest({
     build_metadata_content_accepted: true,
     buildMetadataContentEvidence,
     build_metadata_content_evidence: buildMetadataContentEvidence,
-    runtimeBoundaryExpectationAccepted: true,
-    runtime_boundary_expectation_accepted: true,
-    runtimeBoundaryExpectation: {
-      proofAuthority: 'runtime_boundary_expectation_only_not_gpu_hmr_success',
-      proof_authority: 'runtime_boundary_expectation_only_not_gpu_hmr_success',
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      acceptedAsRuntimeBoundaryExpectation: true,
-      accepted_as_runtime_boundary_expectation: true,
-      expectationHash: hashValue(`${candidateId}:runtime-boundary-expectation`),
-      expectation_hash: hashValue(`${candidateId}:runtime-boundary-expectation`),
-      backendCandidates: sourceBackendCandidates,
-      backend_candidates: sourceBackendCandidates,
-      requiredBoundaryStages: [
-        'runtime_adapter_or_app_hook_contract',
-        'same_process_loader',
-        'epoch_publication',
-        'dispatch_trace',
-        'host_identity',
-        'output_oracle',
-      ],
-      required_boundary_stages: [
-        'runtime_adapter_or_app_hook_contract',
-        'same_process_loader',
-        'epoch_publication',
-        'dispatch_trace',
-        'host_identity',
-        'output_oracle',
-      ],
-    },
+    runtimeBoundaryExpectationAccepted: runtimeBoundaryTemplateAccepted,
+    runtime_boundary_expectation_accepted: runtimeBoundaryTemplateAccepted,
+    runtimeBoundaryExpectation,
+    runtime_boundary_expectation: runtimeBoundaryExpectation,
     runtimeSupportClosureObligation,
     runtime_support_closure_obligation: runtimeSupportClosureObligation,
     runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
     runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
-    runtimeBoundaryEventManifestTemplateAccepted: true,
-    runtime_boundary_event_manifest_template_accepted: true,
-    runtimeBoundaryEventManifestTemplate: template,
-    runtime_boundary_event_manifest_template: template,
+    runtimeBoundaryEventManifestTemplateAccepted: runtimeBoundaryTemplateAccepted,
+    runtime_boundary_event_manifest_template_accepted: runtimeBoundaryTemplateAccepted,
+    runtimeBoundaryEventManifestTemplate,
+    runtime_boundary_event_manifest_template: runtimeBoundaryEventManifestTemplate,
   };
   sourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(sourceIntakeEvidence);
   sourceIntakeEvidence.facet_hash = sourceIntakeEvidence.facetHash;
@@ -2430,12 +2552,12 @@ function randomColdPathManifest({
     build_metadata_discovery_accepted: true,
     buildMetadataContentAccepted: true,
     build_metadata_content_accepted: true,
-    runtimeBoundaryExpectationAccepted: true,
-    runtime_boundary_expectation_accepted: true,
-    runtimeBoundaryEventManifestTemplateAccepted: true,
-    runtime_boundary_event_manifest_template_accepted: true,
-    runtimeBoundaryEventManifestTemplate: template,
-    runtime_boundary_event_manifest_template: template,
+    runtimeBoundaryExpectationAccepted: runtimeBoundaryTemplateAccepted,
+    runtime_boundary_expectation_accepted: runtimeBoundaryTemplateAccepted,
+    runtimeBoundaryEventManifestTemplateAccepted: runtimeBoundaryTemplateAccepted,
+    runtime_boundary_event_manifest_template_accepted: runtimeBoundaryTemplateAccepted,
+    runtimeBoundaryEventManifestTemplate,
+    runtime_boundary_event_manifest_template: runtimeBoundaryEventManifestTemplate,
     runtimeSupportClosureObligation,
     runtime_support_closure_obligation: runtimeSupportClosureObligation,
     runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
@@ -2806,11 +2928,11 @@ assert.deepEqual(
 );
 assert.equal(
   unknownBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  1,
+  0,
 );
 assert.equal(
   unknownBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceIdentityCount,
-  1,
+  0,
 );
 const buildMetadataBackendColdDir = path.join(
   tmpRoot,
@@ -2891,6 +3013,69 @@ assert.deepEqual(
 assert.equal(
   buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   1,
+);
+const mismatchedTemplateBindingColdDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-template-source-binding-mismatch',
+);
+const mismatchedTemplateBindingManifest = randomColdPathManifest({
+  candidateId: 'direct-random-arbitrary-template-source-binding-mismatch',
+  sourceUrl: 'https://example.invalid/arbitrary/template-source-binding-mismatch.git',
+  immutableCommit: sha256Hex('template-source-binding-mismatch:commit').slice(0, 40),
+});
+const mismatchedTemplateBindingResult = mismatchedTemplateBindingManifest.results[0];
+const mismatchedTemplateBindingSourceIntake =
+  mismatchedTemplateBindingResult.sourceIntakeEvidence;
+const originalTemplateForMismatch =
+  mismatchedTemplateBindingResult.runtimeBoundaryEventManifestTemplate;
+const mismatchedSourceBinding = hashedColdRuntimeBoundaryTemplateSourceBinding({
+  ...originalTemplateForMismatch.sourceBinding,
+  ...originalTemplateForMismatch.source_binding,
+  sourceListingHash: hashValue('forged-template-source-listing-hash'),
+  source_listing_hash: hashValue('forged-template-source-listing-hash'),
+});
+const mismatchedTemplateBindingTemplate = rehashColdRuntimeBoundaryTemplateFacet({
+  ...originalTemplateForMismatch,
+  sourceBinding: mismatchedSourceBinding,
+  source_binding: mismatchedSourceBinding,
+  sourceBindingHash: mismatchedSourceBinding.bindingHash,
+  source_binding_hash: mismatchedSourceBinding.binding_hash,
+  sourceListingHash: mismatchedSourceBinding.sourceListingHash,
+  source_listing_hash: mismatchedSourceBinding.source_listing_hash,
+});
+mismatchedTemplateBindingResult.runtimeBoundaryEventManifestTemplate =
+  mismatchedTemplateBindingTemplate;
+mismatchedTemplateBindingResult.runtime_boundary_event_manifest_template =
+  mismatchedTemplateBindingTemplate;
+mismatchedTemplateBindingSourceIntake.runtimeBoundaryEventManifestTemplate =
+  mismatchedTemplateBindingTemplate;
+mismatchedTemplateBindingSourceIntake.runtime_boundary_event_manifest_template =
+  mismatchedTemplateBindingTemplate;
+mismatchedTemplateBindingSourceIntake.facetHash =
+  sourceIntakeFacetHashFor(mismatchedTemplateBindingSourceIntake);
+mismatchedTemplateBindingSourceIntake.facet_hash =
+  mismatchedTemplateBindingSourceIntake.facetHash;
+await writeJson(
+  path.join(mismatchedTemplateBindingColdDir, 'random-cold-template-source-binding-mismatch.json'),
+  mismatchedTemplateBindingManifest,
+);
+const mismatchedTemplateBindingColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [mismatchedTemplateBindingColdDir],
+  includeUnproven: true,
+});
+const mismatchedTemplateBindingColdRow = mismatchedTemplateBindingColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(mismatchedTemplateBindingColdRow?.matrixOutcome, 'refusal_proven');
+assert.equal(mismatchedTemplateBindingColdRow.acceptedForGpuHmr, false);
+assert.equal(mismatchedTemplateBindingColdRow.gpuHmrSuccess, false);
+assert.equal(mismatchedTemplateBindingColdRow.safety.accepted, false);
+assert.ok(
+  mismatchedTemplateBindingColdRow.safety.failedGates.some((failure) =>
+    failure.code === 'random_large_project_cold_template_source_listing_hash_mismatch'
+  ),
 );
 const forgedBuildMetadataBackendColdDir = path.join(
   tmpRoot,
@@ -11072,6 +11257,14 @@ function randomColdReadinessMatrixRow({
       : null;
   }
   buildMetadataContentHash ??= buildMetadataContentEvidence?.contentEvidenceHash ?? null;
+  const runtimeBoundaryTemplateAccepted = Boolean(buildMetadataContentHash);
+  const runtimeExpectationHash = contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.cold_runtime_boundary_expectation.v1',
+    targetId,
+    sourceListingHash,
+    buildMetadataContentHash,
+    backendCandidates: ['vulkan', 'webgpu_wgsl'],
+  });
   const sizeSignals = inputMode
     ? {
       inputMode,
@@ -11105,7 +11298,32 @@ function randomColdReadinessMatrixRow({
     }
     : {};
   const coldRuntimeBoundaryTemplate = runtimeBoundaryEventManifestTemplate === undefined
-    ? JSON.parse(JSON.stringify(acceptedColdRuntimeBoundaryTemplate))
+    ? hashedColdRuntimeBoundaryTemplateFacet({
+      acceptedAsRuntimeBoundaryEventManifestTemplate: runtimeBoundaryTemplateAccepted,
+      accepted_as_runtime_boundary_event_manifest_template: runtimeBoundaryTemplateAccepted,
+      blockingGaps: runtimeBoundaryTemplateAccepted ? [] : ['build_metadata_content_hash_missing'],
+      blocking_gaps: runtimeBoundaryTemplateAccepted ? [] : ['build_metadata_content_hash_missing'],
+      sourceBinding: hashedColdRuntimeBoundaryTemplateSourceBinding({
+        projectId: targetId,
+        project_id: targetId,
+        sourceUrl,
+        source_url: sourceUrl,
+        immutableCommit,
+        immutable_commit: immutableCommit,
+        sourceListingHash,
+        source_listing_hash: sourceListingHash,
+        buildMetadataContentHash,
+        build_metadata_content_hash: buildMetadataContentHash,
+        sourceExpectationHash: runtimeExpectationHash,
+        source_expectation_hash: runtimeExpectationHash,
+        backendCandidates: ['vulkan', 'webgpu_wgsl'],
+        backend_candidates: ['vulkan', 'webgpu_wgsl'],
+        acceptedAsTemplateSourceBinding: runtimeBoundaryTemplateAccepted,
+        accepted_as_template_source_binding: runtimeBoundaryTemplateAccepted,
+        blockingGaps: runtimeBoundaryTemplateAccepted ? [] : ['build_metadata_content_hash_missing'],
+        blocking_gaps: runtimeBoundaryTemplateAccepted ? [] : ['build_metadata_content_hash_missing'],
+      }),
+    })
     : runtimeBoundaryEventManifestTemplate;
   const coldRuntimeBoundaryTemplateSnake = JSON.parse(
     JSON.stringify(coldRuntimeBoundaryTemplate ?? {}),
@@ -11399,8 +11617,8 @@ function randomColdReadinessMatrixRow({
     build_metadata_content_hash: buildMetadataContentHash,
     buildMetadataContentEvidence,
     build_metadata_content_evidence: buildMetadataContentEvidence,
-    runtimeBoundaryEventManifestTemplateAccepted: true,
-    runtime_boundary_event_manifest_template_accepted: true,
+    runtimeBoundaryEventManifestTemplateAccepted: runtimeBoundaryTemplateAccepted,
+    runtime_boundary_event_manifest_template_accepted: runtimeBoundaryTemplateAccepted,
     selectionAudit,
     selection_audit: selectionAudit,
     randomColdPathSelectionAudit: selectionAudit,
