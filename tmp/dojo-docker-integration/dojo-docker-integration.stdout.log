@@ -1,0 +1,664 @@
+## docker compose up
+#1 [internal] load local bake definitions
+#1 reading from stdin 5.44kB done
+#1 DONE 0.0s
+
+#2 [ai-gateway internal] load build definition from Dockerfile
+#2 DONE 0.0s
+
+#3 [y-sweet internal] load build definition from Dockerfile
+#3 transferring dockerfile: 613B 0.0s done
+#3 DONE 0.1s
+
+#4 [y-sweet internal] load metadata for ghcr.io/jamsocket/y-sweet:latest@sha256:d61ba0fa5671cc522e3f4a4c0f6cafbccbfbe66561a9ddba40041e14a22bcff0
+#4 DONE 0.0s
+
+#2 [ai-gateway internal] load build definition from Dockerfile
+#2 transferring dockerfile: 1.28kB 0.1s done
+#2 DONE 0.1s
+
+#5 [signaling-server internal] load build definition from Dockerfile
+#5 transferring dockerfile: 1.91kB 0.1s done
+#5 DONE 0.1s
+
+#6 [ai-gateway internal] load metadata for docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#6 DONE 0.0s
+
+#7 [y-sweet internal] load .dockerignore
+#7 transferring context: 2B 0.0s done
+#7 DONE 0.1s
+
+#8 [signaling-server internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3
+#8 DONE 0.0s
+
+#9 [signaling-server internal] load metadata for docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+#9 DONE 0.1s
+
+#10 [signaling-server internal] load .dockerignore
+#10 transferring context: 76B 0.1s done
+#10 DONE 0.1s
+
+#11 [mcp internal] load build definition from Dockerfile
+#11 transferring dockerfile: 1.75kB 0.2s done
+#11 DONE 0.2s
+
+#12 [y-sweet 1/1] FROM ghcr.io/jamsocket/y-sweet:latest@sha256:d61ba0fa5671cc522e3f4a4c0f6cafbccbfbe66561a9ddba40041e14a22bcff0
+#12 resolve ghcr.io/jamsocket/y-sweet:latest@sha256:d61ba0fa5671cc522e3f4a4c0f6cafbccbfbe66561a9ddba40041e14a22bcff0 0.0s done
+#12 CACHED
+
+#13 [ai-gateway internal] load .dockerignore
+#13 transferring context: 71B 0.1s done
+#13 DONE 0.1s
+
+#14 [mcp internal] load metadata for docker.io/library/node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb
+#14 DONE 0.0s
+
+#15 [ai-gateway internal] load build context
+#15 DONE 0.0s
+
+#16 [signaling-server internal] load build context
+#16 DONE 0.0s
+
+#17 [frontend internal] load build definition from Dockerfile
+#17 transferring dockerfile: 6.51kB 0.3s done
+#17 DONE 0.3s
+
+#18 [signaling-server builder 1/6] FROM docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+#18 resolve docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+#18 ...
+
+#19 [ai-gateway 1/6] FROM docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#19 resolve docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 0.1s done
+#19 DONE 0.1s
+
+#20 [worker internal] load build definition from Dockerfile
+#20 transferring dockerfile: 12.18kB 0.3s done
+#20 DONE 0.4s
+
+#18 [signaling-server builder 1/6] FROM docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+#18 resolve docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 0.1s done
+#18 DONE 0.1s
+
+#21 [signaling-server stage-1 1/4] FROM docker.io/library/debian:bookworm-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3
+#21 resolve docker.io/library/debian:bookworm-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3 0.1s done
+#21 DONE 0.1s
+
+#6 [frontend internal] load metadata for docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#6 DONE 0.2s
+
+#22 [worker internal] load metadata for docker.io/library/ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e
+#22 DONE 0.1s
+
+#9 [worker internal] load metadata for docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+#9 DONE 0.1s
+
+#23 [y-sweet] exporting to image
+#23 exporting layers done
+#23 exporting manifest sha256:095cde59af43910e9a8a6fca8c4122e7449b3fa1de1ca899e623001acf4d2165 done
+#23 exporting config sha256:bdb2aaf87b006257a7cd8fda643af225bd42f534c224401e8522c4bba409a6e2 done
+#23 exporting attestation manifest sha256:9465ca08040e2eb0d5bf247c13b7b95a1dceb14c2a21673f2e253185fabb02ab 0.1s done
+#23 exporting manifest list sha256:a5ab78b4e090e0d811ed90af09783cc4209ba175b480e48de87087479bbb581e 0.0s done
+#23 naming to docker.io/library/synthi-y-sweet:latest 0.0s done
+#23 unpacking to docker.io/library/synthi-y-sweet:latest 0.0s done
+#23 DONE 0.3s
+
+#15 [ai-gateway internal] load build context
+#15 transferring context: 101B 0.1s done
+#15 DONE 0.1s
+
+#24 [ai-engine internal] load build definition from Dockerfile
+#24 transferring dockerfile: 2.63kB 0.5s done
+#24 DONE 0.5s
+
+#25 [worker internal] load .dockerignore
+#25 ...
+
+#26 [ai-gateway 5/6] COPY server.js .
+#26 CACHED
+
+#27 [ai-gateway 3/6] COPY package.json package-lock.json ./
+#27 CACHED
+
+#28 [ai-gateway 4/6] RUN npm ci --omit=dev
+#28 CACHED
+
+#29 [ai-gateway 2/6] WORKDIR /app
+#29 CACHED
+
+#30 [ai-gateway 6/6] RUN addgroup --system --gid 1001 synthi &&     adduser --system --uid 1001 synthi
+#30 CACHED
+
+#31 [mcp internal] load .dockerignore
+#31 transferring context: 974B 0.3s done
+#31 DONE 0.4s
+
+#32 [mcp internal] load build context
+#32 DONE 0.0s
+
+#25 [worker internal] load .dockerignore
+#25 ...
+
+#19 [frontend 1/6] FROM docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#19 resolve docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 0.1s done
+#19 DONE 0.1s
+
+#16 [signaling-server internal] load build context
+#16 transferring context: 155B 0.3s done
+#16 DONE 0.3s
+
+#33 [ai-engine internal] load metadata for docker.io/library/python:3.10-slim@sha256:a3699f905b890636146817f204e73d9aa61329127b0c60e46310c44f9f0612b2
+#33 DONE 0.2s
+
+#34 [signaling-server stage-1 2/4] RUN apt-get update &&     apt-get install -y --no-install-recommends ca-certificates libssl3 &&     rm -rf /var/lib/apt/lists/*
+#34 CACHED
+
+#35 [signaling-server builder 4/6] COPY src/ src/
+#35 CACHED
+
+#36 [signaling-server builder 5/6] RUN apt-get update && apt-get install -y clang libclang-dev llvm-dev
+#36 CACHED
+
+#37 [signaling-server builder 6/6] RUN cargo build --release
+#37 CACHED
+
+#38 [signaling-server builder 2/6] WORKDIR /build
+#38 CACHED
+
+#39 [signaling-server stage-1 3/4] COPY --from=builder /build/target/release/signaling-server /usr/local/bin/signaling-server
+#39 CACHED
+
+#40 [signaling-server builder 3/6] COPY Cargo.toml Cargo.lock ./
+#40 CACHED
+
+#41 [signaling-server stage-1 4/4] RUN useradd --system --no-create-home signaling
+#41 CACHED
+
+#42 [mcp 1/9] FROM docker.io/library/node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb
+#42 resolve docker.io/library/node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb 0.2s done
+#42 DONE 0.2s
+
+#43 [collab-server internal] load build definition from Dockerfile
+#43 transferring dockerfile: 3.92kB 0.8s done
+#43 DONE 0.9s
+
+#44 [signaling-server] exporting to image
+#44 exporting layers done
+#44 exporting manifest sha256:7387868f0d7a5ddfb70ba27c3cb4a26a0735106e9585d18516e93506d7d7eb16 0.0s done
+#44 exporting config sha256:3d968682de69c989ac4cc3c3c8583cf0d2d22d5a8a2fb622564d1ea3d5b67451 0.0s done
+#44 exporting attestation manifest sha256:2b2f1dfcd7cd4da67fc23be0c81698e18d512f48202e81dbbd1fea21fc1486e6 0.1s done
+#44 exporting manifest list sha256:760035f6bd7d728a177f4ea69586d6b3627a194c5b18f44afec844e1caaa84ef
+#44 ...
+
+#45 [collab-server internal] load metadata for docker.io/library/node:20
+#45 DONE 0.2s
+
+#46 [y-sweet] resolving provenance for metadata file
+#46 DONE 0.0s
+
+#47 [ai-gateway] exporting to image
+#47 exporting layers 0.0s done
+#47 exporting manifest sha256:b677ec364c411fef5c17933a3abcab4b4828444bbe3f488dd6430cfc4065e477 0.0s done
+#47 exporting config sha256:8e3d80d4585986453fb88dbae828e27059381799c2438a7e15e2a8517af273c3 0.0s done
+#47 exporting attestation manifest sha256:d9ad21ca7b59f582580042c9b4ccb529db7d3f4a0f1463a2e7bc39dd0a4dd7e9 0.1s done
+#47 exporting manifest list sha256:50fea89568fbd0b2b901c78319852555d5f7105868cbf2a0772d676a1497505f 0.1s done
+#47 naming to docker.io/library/codesite-atc-session-ai-gateway:latest 0.0s done
+#47 unpacking to docker.io/library/codesite-atc-session-ai-gateway:latest 0.0s done
+#47 DONE 0.5s
+
+#44 [signaling-server] exporting to image
+#44 exporting manifest list sha256:760035f6bd7d728a177f4ea69586d6b3627a194c5b18f44afec844e1caaa84ef 0.0s done
+#44 naming to docker.io/library/codesite-atc-session-signaling-server:latest done
+#44 unpacking to docker.io/library/codesite-atc-session-signaling-server:latest 0.0s done
+#44 DONE 0.3s
+
+#18 [worker builder 1/6] FROM docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+#18 resolve docker.io/library/rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 0.1s done
+#18 DONE 0.1s
+
+#25 [worker internal] load .dockerignore
+#25 transferring context: 87B 0.7s done
+#25 DONE 0.7s
+
+#48 [worker stage-1  1/19] FROM docker.io/library/ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e
+#48 resolve docker.io/library/ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e
+#48 resolve docker.io/library/ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e 0.1s done
+#48 DONE 0.1s
+
+#49 [ai-gateway] resolving provenance for metadata file
+#49 DONE 0.1s
+
+#50 [signaling-server] resolving provenance for metadata file
+#50 DONE 0.0s
+
+#51 [worker internal] load build context
+#51 ...
+
+#52 [ai-engine internal] load .dockerignore
+#52 transferring context: 87B 0.7s done
+#52 DONE 0.7s
+
+#53 [ai-engine internal] load build context
+#53 DONE 0.0s
+
+#54 [ai-engine builder 1/5] FROM docker.io/library/python:3.10-slim@sha256:a3699f905b890636146817f204e73d9aa61329127b0c60e46310c44f9f0612b2
+#54 resolve docker.io/library/python:3.10-slim@sha256:a3699f905b890636146817f204e73d9aa61329127b0c60e46310c44f9f0612b2 0.1s done
+#54 DONE 0.1s
+
+#51 [worker internal] load build context
+#51 ...
+
+#55 [collab-server internal] load .dockerignore
+#55 transferring context: 102B 0.9s done
+#55 DONE 0.9s
+
+#51 [worker internal] load build context
+#51 ...
+
+#56 [collab-server builder 1/4] FROM docker.io/library/node:20@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
+#56 resolve docker.io/library/node:20@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 0.0s done
+#56 DONE 0.1s
+
+#51 [worker internal] load build context
+#51 ...
+
+#57 [collab-server internal] load build context
+#57 transferring context: 3.69kB 0.8s done
+#57 DONE 0.8s
+
+#58 [collab-server stage-1  8/10] RUN git config --system user.email "synthi@overview-synti.com" &&     git config --system user.name "Synthi Autocommit"
+#58 CACHED
+
+#59 [collab-server stage-1  6/10] COPY --chown=synthi:synthi . .
+#59 CACHED
+
+#60 [collab-server builder 3/4] COPY package.json package-lock.json ./
+#60 CACHED
+
+#61 [collab-server builder 4/4] RUN npm ci
+#61 CACHED
+
+#62 [collab-server builder 2/4] WORKDIR /app
+#62 CACHED
+
+#63 [collab-server stage-1  3/10] RUN npm install -g @anthropic-ai/claude-code
+#63 CACHED
+
+#64 [collab-server stage-1  4/10] RUN groupadd --system --gid 1001 synthi  && useradd --system --uid 1001 --gid 1001 --shell /bin/bash --create-home synthi
+#64 CACHED
+
+#65 [collab-server stage-1  5/10] COPY --from=builder /app/node_modules ./node_modules
+#65 CACHED
+
+#66 [collab-server stage-1  7/10] RUN mkdir -p /data/repos && chown -R synthi:synthi /data
+#66 CACHED
+
+#67 [collab-server stage-1  9/10] RUN apt-get update  && apt-get install -y --no-install-recommends sudo python3-venv python3-pip curl ca-certificates  && rm -rf /var/lib/apt/lists/*  && echo 'synthi ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/synthi  && chmod 0440 /etc/sudoers.d/synthi
+#67 CACHED
+
+#51 [worker internal] load build context
+#51 ...
+
+#68 [collab-server stage-1 10/10] RUN LAZYGIT_VERSION=0.44.1  && curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" -o /tmp/lazygit.tar.gz  && tar -xzf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit  && rm /tmp/lazygit.tar.gz
+#68 CACHED
+
+#51 [worker internal] load build context
+#51 ...
+
+#69 [collab-server] exporting to image
+#69 exporting layers 0.0s done
+#69 exporting manifest sha256:d1d2965b0ee83e3ca1f1254035ff38b58d842df9ae118e2a31768eb5fe240ecb done
+#69 exporting config sha256:0febc8d688941420b0bbfb228e726c9a6e9df03469294f311a42a497e81e72e4 done
+#69 exporting attestation manifest sha256:c564c1e9ed5687e5f4513f8be7d2db201ff6a2aa5c37d9160c668802d796aa69 0.0s done
+#69 exporting manifest list sha256:d8c9144b57468814f3144ffa1cb03e2ed4ee8a3b01260dedd4cb1b7251062159 0.0s done
+#69 naming to docker.io/library/codesite-atc-session-collab-server:latest done
+#69 unpacking to docker.io/library/codesite-atc-session-collab-server:latest 0.1s done
+#69 DONE 0.3s
+
+#51 [worker internal] load build context
+#51 ...
+
+#70 [collab-server] resolving provenance for metadata file
+#70 DONE 0.0s
+
+#51 [worker internal] load build context
+#51 ...
+
+#32 [mcp internal] load build context
+#32 transferring context: 45.86kB 5.7s done
+#32 DONE 5.8s
+
+#71 [mcp 3/9] COPY packages/mcp-hub /workspace/packages/mcp-hub
+#71 CACHED
+
+#72 [mcp 2/9] WORKDIR /workspace/mcp/synthi-mcp
+#72 CACHED
+
+#73 [mcp 5/9] RUN npm ci --workspaces=false
+#73 CACHED
+
+#74 [mcp 4/9] COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
+#74 CACHED
+
+#75 [mcp 6/9] COPY mcp/synthi-mcp/tsconfig.json ./
+#75 CACHED
+
+#76 [mcp 7/9] COPY mcp/synthi-mcp/src ./src
+#76 CACHED
+
+#51 [worker internal] load build context
+#51 ...
+
+#77 [mcp 8/9] COPY mcp/synthi-mcp/scripts ./scripts
+#77 DONE 0.1s
+
+#51 [worker internal] load build context
+#51 ...
+
+#78 [frontend internal] load build context
+#78 ...
+
+#51 [worker internal] load build context
+#51 transferring context: 21.59kB 9.7s done
+#51 DONE 9.8s
+
+#79 [worker builder  9/12] RUN mkdir -p src/runtime src/compiler src/hmr src/infra src/safety src/android src/bin &&     echo "fn main() {}" > src/main.rs &&     echo "fn main() {}" > src/runtime/runner_bin.rs &&     echo "" > src/lib.rs &&     if [ -n "gpu-hmr" ]; then       cargo build --release --features "gpu-hmr" 2>/dev/null || true;     else       cargo build --release 2>/dev/null || true;     fi
+#79 CACHED
+
+#80 [worker stage-1 17/19] RUN userdel -r ubuntu 2>/dev/null || true &&     useradd -m -s /bin/bash -u 1000 runner
+#80 CACHED
+
+#38 [worker builder 2/6] WORKDIR /build
+#38 CACHED
+
+#81 [worker stage-1  8/19] RUN apt-get update && apt-get install -y --no-install-recommends     clangd     && rm -rf /var/lib/apt/lists/*
+#81 CACHED
+
+#82 [worker stage-1  4/19] RUN set -eux;     arch="$(dpkg --print-architecture)";     case "$arch" in         amd64) node_arch='x64' ;;         arm64) node_arch='arm64' ;;         *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;     esac;     curl -fsSL "https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz;     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner;     rm /tmp/node.tar.xz;     npm install -g typescript typescript-language-server;     npm cache clean --force
+#82 CACHED
+
+#83 [worker stage-1  2/19] RUN apt-get update && apt-get install -y --no-install-recommends     ca-certificates     gcc-15 g++-15 clang make cmake git pkg-config     openjdk-17-jdk     python3 python3-pip     libsdl2-2.0-0 libsdl2-dev     libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev libglew-dev libomp-dev libpng-dev     curl xz-utils gnupg libxml2-16     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-15 100     && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-15 100     && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100     && ln -sf /lib/x86_64-linux-gnu/libxml2.so.16 /usr/lib/x86_64-linux-gnu/libxml2.so.2     && rm -rf /var/lib/apt/lists/*
+#83 CACHED
+
+#84 [worker stage-1  3/19] RUN set -eux;     if [ "false" = "true" ]; then       install -d -m 0755 /etc/apt/keyrings;       curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key         | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg;       echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.1 noble main"         > /etc/apt/sources.list.d/rocm.list;       printf 'Package: *\nPin: origin repo.radeon.com\nPin-Priority: 600\n'         > /etc/apt/preferences.d/rocm-pin-600;       apt-get update;       apt-get install -y --no-install-recommends rocm-hip-sdk rocminfo;       curl -fsSL "https://github.com/ROCm/librocdxg/releases/download/v1.2.0/rocdxg-roct_1.2.0_amd64.deb"         -o /tmp/rocdxg.deb;       apt-get install -y --no-install-recommends /tmp/rocdxg.deb;       rm -f /tmp/rocdxg.deb;       ldconfig;       rm -rf /var/lib/apt/lists/*;     else       echo "Skipping ROCm SDK install for host-only worker image.";     fi
+#84 CACHED
+
+#85 [worker stage-1 16/19] COPY esm-vscode-hook.mjs /usr/local/bin/esm-vscode-hook.mjs
+#85 CACHED
+
+#86 [worker stage-1  6/19] RUN apt-get update && apt-get install -y --no-install-recommends     gstreamer1.0-tools     gstreamer1.0-plugins-base     gstreamer1.0-plugins-good     gstreamer1.0-plugins-bad     gstreamer1.0-plugins-ugly     gstreamer1.0-libav     libgstreamer1.0-0     libgstreamer-plugins-base1.0-0     && rm -rf /var/lib/apt/lists/*
+#86 CACHED
+
+#87 [worker builder  4/12] COPY Cargo.toml Cargo.lock ./
+#87 CACHED
+
+#88 [worker builder  8/12] COPY vendored/ vendored/
+#88 CACHED
+
+#89 [worker builder  7/12] COPY .cargo/ .cargo/
+#89 CACHED
+
+#90 [worker builder  6/12] COPY proto/ proto/
+#90 CACHED
+
+#91 [worker stage-1 18/19] RUN mkdir -p /tmp/synthi /home/runner/.cache "/usr/local/cargo" "/usr/local/rustup" &&     chown -R runner:runner /home/runner /tmp/synthi "/usr/local/cargo" "/usr/local/rustup"
+#91 CACHED
+
+#92 [worker stage-1  7/19] RUN apt-get update && apt-get install -y --no-install-recommends     xvfb     matchbox-window-manager     x11-utils     xdotool     libx11-6 libxcb1     && rm -rf /var/lib/apt/lists/*
+#92 CACHED
+
+#93 [worker stage-1 13/19] COPY --from=builder /build/target/release/runner /usr/local/bin/runner
+#93 CACHED
+
+#94 [worker builder 11/12] COPY cpp_src/ cpp_src/
+#94 CACHED
+
+#95 [worker builder 10/12] COPY src/ src/
+#95 CACHED
+
+#96 [worker stage-1 10/19] COPY cpp_src/synthi_gpu_native_launch_observer.c /tmp/synthi_gpu_native_launch_observer.c
+#96 CACHED
+
+#97 [worker stage-1 14/19] COPY vscode-server-manager.js /usr/local/bin/vscode-server-manager.js
+#97 CACHED
+
+#98 [worker stage-1 11/19] RUN cc -shared -fPIC -O2 -Wall -Wextra     /tmp/synthi_gpu_native_launch_observer.c     -ldl     -o /usr/local/lib/synthi-gpu-native-launch-observer.so &&     rm -f /tmp/synthi_gpu_native_launch_observer.c
+#98 CACHED
+
+#99 [worker stage-1 12/19] COPY --from=builder /build/target/release/worker /usr/local/bin/worker
+#99 CACHED
+
+#100 [worker builder  3/12] RUN apt-get update && apt-get install -y --no-install-recommends     libgstreamer1.0-dev     libgstreamer-plugins-base1.0-dev     libx11-dev libxcb1-dev     libsdl2-dev     clang libclang-dev llvm-dev     protobuf-compiler libprotobuf-dev     pkg-config     cmake     && rm -rf /var/lib/apt/lists/*
+#100 CACHED
+
+#101 [worker stage-1 15/19] COPY ext-host-preload.js /usr/local/bin/ext-host-preload.js
+#101 CACHED
+
+#102 [worker stage-1  9/19] RUN rustup component add rust-analyzer
+#102 CACHED
+
+#103 [worker stage-1  5/19] RUN set -eux;     dpkg_arch="$(dpkg --print-architecture)";     case "${dpkg_arch}" in       amd64) rust_arch='x86_64-unknown-linux-gnu'; rustup_sha256='20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c' ;;       arm64) rust_arch='aarch64-unknown-linux-gnu'; rustup_sha256='e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c' ;;       *) echo "unsupported architecture: ${dpkg_arch}" >&2; exit 1 ;;     esac;     curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/1.28.2/${rust_arch}/rustup-init";     echo "${rustup_sha256}  /tmp/rustup-init" | sha256sum -c -;     chmod +x /tmp/rustup-init;     /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path;     rm -f /tmp/rustup-init
+#103 CACHED
+
+#104 [worker builder  5/12] COPY build.rs ./
+#104 CACHED
+
+#105 [worker builder 12/12] RUN touch src/main.rs src/lib.rs &&     if [ -n "gpu-hmr" ]; then       cargo build --release --features "gpu-hmr";     else       cargo build --release;     fi
+#105 CACHED
+
+#106 [worker stage-1 19/19] WORKDIR /home/runner
+#106 CACHED
+
+#107 [worker] exporting to image
+#107 exporting layers 0.0s done
+#107 exporting manifest sha256:b50b6f6b9bc00653bcdba81dc1abd82e52381945ab9494131cdf73f9ce1d2ff7 done
+#107 exporting config sha256:7c70fdd1b5c102ddb412a5edb2add45c8225139fbb062e075417497cbf4d57a8 done
+#107 exporting attestation manifest sha256:ddae27f4d9bf88037d763c9e4687436a9916c3c9dc2580b62c95bc8ef331c427 0.0s done
+#107 exporting manifest list sha256:7b549d6c72768c079f6967a8fe3819966a6b4d822811ac43b4e882b5a429b84c 0.0s done
+#107 naming to docker.io/library/codesite-atc-session-worker:latest done
+#107 unpacking to docker.io/library/codesite-atc-session-worker:latest 0.0s done
+#107 DONE 0.3s
+
+#78 [frontend internal] load build context
+#78 ...
+
+#53 [ai-engine internal] load build context
+#53 ...
+
+#108 [worker] resolving provenance for metadata file
+#108 DONE 0.0s
+
+#53 [ai-engine internal] load build context
+#53 ...
+
+#109 [mcp 9/9] RUN npm run build
+#109 0.551
+#109 0.551 > @synthi-inc/mcp-server@0.1.0 build
+#109 0.551 > tsc
+#109 0.551
+#109 ...
+
+#78 [frontend internal] load build context
+#78 ...
+
+#53 [ai-engine internal] load build context
+#53 transferring context: 41.95kB 13.4s done
+#53 DONE 13.4s
+
+#110 [ai-engine stage-1 2/7] WORKDIR /app
+#110 CACHED
+
+#111 [ai-engine builder 3/5] RUN apt-get update &&     apt-get install -y --no-install-recommends build-essential &&     rm -rf /var/lib/apt/lists/*
+#111 CACHED
+
+#112 [ai-engine stage-1 3/7] COPY --from=builder /build/wheels /tmp/wheels
+#112 CACHED
+
+#113 [ai-engine stage-1 6/7] COPY . .
+#113 CACHED
+
+#114 [ai-engine builder 4/5] COPY requirements.txt .
+#114 CACHED
+
+#115 [ai-engine builder 2/5] WORKDIR /build
+#115 CACHED
+
+#116 [ai-engine builder 5/5] RUN pip wheel --no-cache-dir --wheel-dir /build/wheels -r requirements.txt
+#116 CACHED
+
+#117 [ai-engine stage-1 5/7] RUN pip install --no-cache-dir /tmp/wheels/* && rm -rf /tmp/wheels
+#117 CACHED
+
+#118 [ai-engine stage-1 4/7] COPY --from=builder /build/requirements.txt .
+#118 CACHED
+
+#119 [ai-engine stage-1 7/7] RUN groupadd --system --gid 1001 appuser  && useradd --system --no-create-home --uid 1001 --gid 1001 appuser
+#119 CACHED
+
+#78 [frontend internal] load build context
+#78 ...
+
+#120 [ai-engine] exporting to image
+#120 exporting layers 0.0s done
+#120 exporting manifest sha256:f68f8a1d191471319a81253acf066d472d2c588fe6159480d024688ccd211ad0 done
+#120 exporting config sha256:bb9a2e059466cab64f82ebc2617217a763d14df75b52c7f51d3f7d83dad443e0 done
+#120 exporting attestation manifest sha256:9d2f832e409ecbe36d3fe20ce5c70d9ae974737cedcd1c1ef17c88cdc5aa84d3 0.0s done
+#120 exporting manifest list sha256:4fe48b12911c1ac4d0e3426596239286f3d671c9edecdd7157f3339f3d08595d 0.0s done
+#120 naming to docker.io/library/codesite-atc-session-ai-engine:latest done
+#120 unpacking to docker.io/library/codesite-atc-session-ai-engine:latest 0.0s done
+#120 DONE 0.2s
+
+#78 [frontend internal] load build context
+#78 ...
+
+#121 [ai-engine] resolving provenance for metadata file
+#121 DONE 0.0s
+
+#78 [frontend internal] load build context
+#78 transferring context: 52.21kB 19.5s
+#78 ...
+
+#109 [mcp 9/9] RUN npm run build
+#109 DONE 16.3s
+
+#78 [frontend internal] load build context
+#78 transferring context: 75.71kB 23.2s done
+#78 DONE 23.2s
+
+#122 [frontend deps 4/8] COPY package.json package-lock.json ./
+#122 CACHED
+
+#123 [frontend builder  9/11] RUN rm -f .env.production.local &&         : > .env.production.local &&         for entry in             "NEXT_PUBLIC_COLLAB_SERVER_URL=http://localhost:11234"             "NEXT_PUBLIC_YSWEET_URL=http://localhost:18180"             "NEXT_PUBLIC_COLLAB_PORT=11234"             "NEXT_PUBLIC_COMPILE_SIGNAL_URL=ws://localhost:19000"             "NEXT_PUBLIC_GATEWAY_WS_URL=ws://localhost:17071/ws"             "NEXT_PUBLIC_CODE_INTEL_URL=http://localhost:18081"             "NEXT_PUBLIC_AI_ENGINE_URL=http://localhost:18081"             "NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER="             "NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH="             "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS=1"; do             key="${entry%%=*}";             value="${entry#*=}";             if [ -n "$value" ]; then printf '%s=%s\n' "$key" "$value" >> .env.production.local; fi;         done
+#123 CACHED
+
+#124 [frontend deps 5/8] COPY synthi/package.json ./synthi/package.json
+#124 CACHED
+
+#125 [frontend builder 10/11] RUN npx prisma generate
+#125 CACHED
+
+#126 [frontend deps 3/8] RUN apk add --no-cache libc6-compat
+#126 CACHED
+
+#127 [frontend builder  6/11] COPY synthi ./synthi
+#127 CACHED
+
+#128 [frontend builder 11/11] RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
+#128 CACHED
+
+#129 [frontend builder  5/11] COPY packages/mcp-hub ./packages/mcp-hub
+#129 CACHED
+
+#130 [frontend runner 4/8] COPY --from=builder --chown=nextjs:nodejs /app/synthi/.next/standalone ./
+#130 CACHED
+
+#131 [frontend deps 7/8] COPY mcp/synthi-mcp/package.json ./mcp/synthi-mcp/package.json
+#131 CACHED
+
+#132 [frontend builder  4/11] COPY package.json package-lock.json ./
+#132 CACHED
+
+#133 [frontend runner 3/8] RUN addgroup --system --gid 1001 nodejs &&     adduser --system --uid 1001 nextjs
+#133 CACHED
+
+#134 [frontend builder  3/11] COPY --from=deps /app/node_modules ./node_modules
+#134 CACHED
+
+#135 [frontend runner 5/8] COPY --from=builder --chown=nextjs:nodejs /app/synthi/.next/static ./synthi/.next/static
+#135 CACHED
+
+#136 [frontend runner 7/8] COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+#136 CACHED
+
+#137 [frontend deps 6/8] COPY packages/mcp-hub/package.json ./packages/mcp-hub/package.json
+#137 CACHED
+
+#138 [frontend runner 6/8] COPY --from=builder /app/synthi/public ./synthi/public
+#138 CACHED
+
+#29 [frontend 2/6] WORKDIR /app
+#29 CACHED
+
+#139 [frontend builder  7/11] WORKDIR /app/synthi
+#139 CACHED
+
+#140 [frontend deps 8/8] RUN npm ci
+#140 CACHED
+
+#141 [frontend builder  8/11] RUN if [ -z "http://localhost:11234" ] ||         [ -z "ws://localhost:19000" ] ||         [ -z "ws://localhost:17071/ws" ]; then         echo "Missing required NEXT_PUBLIC_* build args for production frontend build." >&2;         echo "Set NEXT_PUBLIC_COLLAB_SERVER_URL, NEXT_PUBLIC_COMPILE_SIGNAL_URL, and NEXT_PUBLIC_GATEWAY_WS_URL." >&2;         exit 1;     fi
+#141 CACHED
+
+#142 [frontend runner 8/8] COPY --from=builder --chown=nextjs:nodejs /app/synthi/prisma ./synthi/prisma
+#142 CACHED
+
+#143 [frontend] exporting to image
+#143 exporting layers done
+#143 exporting manifest sha256:5757e7f1307c8d2425863bff212ef9e4cc78664a3895fc69baea49404d153d1d done
+#143 exporting config sha256:10a4e580a2930ace09ed399addce9239f57fad6e0f2a2313660ad0934e0b0317 done
+#143 exporting attestation manifest sha256:81c73885fa54c2bc4a624c64b4ab8249be6bc92266f94d003769370edde9dc97
+#143 exporting attestation manifest sha256:81c73885fa54c2bc4a624c64b4ab8249be6bc92266f94d003769370edde9dc97 0.0s done
+#143 exporting manifest list sha256:bc50cb78f91cefb37391c9609658230d6f3ee753c2f4bed587371a3cc542336d 0.0s done
+#143 naming to docker.io/library/codesite-atc-session-frontend:latest done
+#143 unpacking to docker.io/library/codesite-atc-session-frontend:latest 0.0s done
+#143 DONE 0.2s
+
+#144 [mcp] exporting to image
+#144 exporting layers 0.5s done
+#144 exporting manifest sha256:3197414497a762f96241c90fba46b0371218fba9616591ba12b3b3198631f439 0.0s done
+#144 exporting config sha256:81fab658b8083e8220619aafcbbfdbeca5d9886d671417bca75206cfaafa5c94 0.0s done
+#144 exporting attestation manifest sha256:c102a30583ba752fd74bc97052043ae21c60f6336c1571d0a2cb411ffd3a3d11 0.0s done
+#144 exporting manifest list sha256:cd36a217233de1dd8dab59b34e7ce530de1de4aa88df7a8c9b0f35a64ffe0df6 0.0s done
+#144 naming to docker.io/library/codesite-atc-session-mcp:latest done
+#144 unpacking to docker.io/library/codesite-atc-session-mcp:latest 0.2s done
+#144 DONE 0.9s
+
+#145 [frontend] resolving provenance for metadata file
+#145 DONE 0.1s
+
+#146 [mcp] resolving provenance for metadata file
+#146 DONE 0.0s
+
+## docker compose ps
+{"Command":"\"python run_server.py\"","CreatedAt":"2026-07-05 00:43:59 +0000 UTC","ExitCode":0,"Health":"","ID":"418e5f639b9b","Image":"codesite-atc-session-ai-engine","Labels":"com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=ai-engine,com.docker.compose.version=5.1.1,com.docker.compose.config-hash=67258d245738ca4d59806b147e250bfcecffd1696409d096242a091f289f863d,com.docker.compose.image=sha256:4fe48b12911c1ac4d0e3426596239286f3d671c9edecdd7157f3339f3d08595d,com.docker.compose.replace=ai-engine-1,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/8000/tcp=127.0.0.1:18081,desktop.docker.io/wsl-distro=Ubuntu","LocalVolumes":"1","Mounts":"codesite-atc-s…","Name":"codesite-atc-session-ai-engine-1","Names":"codesite-atc-session-ai-engine-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:18081-\u003e8000/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":8000,"PublishedPort":18081,"Protocol":"tcp"}],"RunningFor":"32 seconds ago","Service":"ai-engine","Size":"0B","State":"running","Status":"Up 11 seconds"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:44:01 +0000 UTC","ExitCode":0,"Health":"","ID":"a5351965d11d","Image":"codesite-atc-session-ai-gateway","Labels":"com.docker.compose.image=sha256:50fea89568fbd0b2b901c78319852555d5f7105868cbf2a0772d676a1497505f,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.replace=ai-gateway-1,com.docker.compose.service=ai-gateway,desktop.docker.io/ports.scheme=v2,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.config-hash=400d00c32e19def358d59a9399fd6370854dd6d1f6ddb27309afe30535904f29,com.docker.compose.container-number=1,com.docker.compose.depends_on=ai-engine:service_started:false,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.version=5.1.1,desktop.docker.io/ports/7070/tcp=127.0.0.1:17071","LocalVolumes":"0","Mounts":"","Name":"codesite-atc-session-ai-gateway-1","Names":"codesite-atc-session-ai-gateway-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:17071-\u003e7070/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":7070,"PublishedPort":17071,"Protocol":"tcp"}],"RunningFor":"30 seconds ago","Service":"ai-gateway","Size":"0B","State":"running","Status":"Up 10 seconds"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:44:08 +0000 UTC","ExitCode":0,"Health":"","ID":"8d9c42dfdad4","Image":"codesite-atc-session-collab-server","Labels":"com.docker.compose.replace=collab-server-1,desktop.docker.io/binds/1/Source=/var/run/docker.sock,desktop.docker.io/binds/1/SourceKind=dockerSocketProxied,com.docker.compose.project=codesite-atc-session,com.docker.compose.service=collab-server,desktop.docker.io/ports.scheme=v2,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.config-hash=a217078dda4abb417a60385717ae0d8da8d5ab9bf6214f2e160e2332afd25f6b,com.docker.compose.image=sha256:d8c9144b57468814f3144ffa1cb03e2ed4ee8a3b01260dedd4cb1b7251062159,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.container-number=1,com.docker.compose.depends_on=y-sweet:service_healthy:false,ai-engine:service_started:false,redis:service_healthy:false,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.version=5.1.1,desktop.docker.io/binds/1/Target=/var/run/docker.sock,desktop.docker.io/ports/1234/tcp=127.0.0.1:11234","LocalVolumes":"1","Mounts":"codesite-atc-s…,/run/desktop/m…","Name":"codesite-atc-session-collab-server-1","Names":"codesite-atc-session-collab-server-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:11234-\u003e1234/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":1234,"PublishedPort":11234,"Protocol":"tcp"}],"RunningFor":"23 seconds ago","Service":"collab-server","Size":"0B","State":"running","Status":"Up 2 seconds"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:43:59 +0000 UTC","ExitCode":0,"Health":"","ID":"2474a9255a30","Image":"coturn/coturn:4.7.0-r2@sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1","Labels":"desktop.docker.io/ports/49179/udp=127.0.0.1:49379,desktop.docker.io/ports/49180/udp=127.0.0.1:49380,desktop.docker.io/ports/49194/udp=127.0.0.1:49394,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/49164/udp=127.0.0.1:49364,desktop.docker.io/ports/49192/udp=127.0.0.1:49392,org.opencontainers.image.source=https://github.com/coturn/coturn,com.docker.compose.oneoff=False,desktop.docker.io/ports/49154/udp=127.0.0.1:49354,desktop.docker.io/ports/49169/udp=127.0.0.1:49369,desktop.docker.io/ports/49172/udp=127.0.0.1:49372,desktop.docker.io/ports/49185/udp=127.0.0.1:49385,desktop.docker.io/ports/49186/udp=127.0.0.1:49386,desktop.docker.io/ports/49165/udp=127.0.0.1:49365,com.docker.compose.container-number=1,desktop.docker.io/ports/49153/udp=127.0.0.1:49353,desktop.docker.io/ports/49168/udp=127.0.0.1:49368,desktop.docker.io/ports/49190/udp=127.0.0.1:49390,desktop.docker.io/ports/49196/udp=127.0.0.1:49396,desktop.docker.io/ports/49200/udp=127.0.0.1:49400,desktop.docker.io/ports/3478/tcp=127.0.0.1:13478,desktop.docker.io/ports/49157/udp=127.0.0.1:49357,desktop.docker.io/ports/49166/udp=127.0.0.1:49366,desktop.docker.io/ports/49167/udp=127.0.0.1:49367,desktop.docker.io/ports/49193/udp=127.0.0.1:49393,desktop.docker.io/ports/49197/udp=127.0.0.1:49397,com.docker.compose.version=5.1.1,desktop.docker.io/ports/49177/udp=127.0.0.1:49377,desktop.docker.io/ports/49183/udp=127.0.0.1:49383,desktop.docker.io/ports/49195/udp=127.0.0.1:49395,desktop.docker.io/ports/49170/udp=127.0.0.1:49370,desktop.docker.io/ports/49189/udp=127.0.0.1:49389,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,desktop.docker.io/ports/49155/udp=127.0.0.1:49355,desktop.docker.io/ports/49156/udp=127.0.0.1:49356,desktop.docker.io/ports/49161/udp=127.0.0.1:49361,desktop.docker.io/ports/49178/udp=127.0.0.1:49378,desktop.docker.io/ports/49198/udp=127.0.0.1:49398,com.docker.compose.config-hash=0d8f145979cfdd24c54c1d11b017b753fb575c617b461f80aea219aef2d47bf5,desktop.docker.io/ports/49162/udp=127.0.0.1:49362,desktop.docker.io/ports/49163/udp=127.0.0.1:49363,desktop.docker.io/ports/49171/udp=127.0.0.1:49371,com.docker.compose.depends_on=,com.docker.compose.image=sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1,com.docker.compose.replace=coturn-1,desktop.docker.io/ports/49175/udp=127.0.0.1:49375,desktop.docker.io/ports/49191/udp=127.0.0.1:49391,desktop.docker.io/ports/49160/udp=127.0.0.1:49360,org.opencontainers.image.revision=242467faba87b434fa901841ec72c4fe3da79d5d,org.opencontainers.image.version=4.7.0-r2,desktop.docker.io/ports/3478/udp=127.0.0.1:13478,com.docker.compose.service=coturn,desktop.docker.io/ports/49173/udp=127.0.0.1:49373,desktop.docker.io/ports/49174/udp=127.0.0.1:49374,com.docker.compose.project=codesite-atc-session,desktop.docker.io/ports/49176/udp=127.0.0.1:49376,desktop.docker.io/ports/49184/udp=127.0.0.1:49384,desktop.docker.io/ports/49182/udp=127.0.0.1:49382,desktop.docker.io/ports/49187/udp=127.0.0.1:49387,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,desktop.docker.io/ports/49199/udp=127.0.0.1:49399,desktop.docker.io/ports/49181/udp=127.0.0.1:49381,desktop.docker.io/ports/49188/udp=127.0.0.1:49388,desktop.docker.io/ports/49152/udp=127.0.0.1:49352,desktop.docker.io/ports/49158/udp=127.0.0.1:49358,desktop.docker.io/ports/49159/udp=127.0.0.1:49359","LocalVolumes":"1","Mounts":"bd7de0da9b6533…","Name":"codesite-atc-session-coturn-1","Names":"codesite-atc-session-coturn-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:13478-\u003e3478/tcp, 127.0.0.1:13478-\u003e3478/udp, 127.0.0.1:49352-\u003e49152/udp, 127.0.0.1:49353-\u003e49153/udp, 127.0.0.1:49354-\u003e49154/udp, 127.0.0.1:49355-\u003e49155/udp, 127.0.0.1:49356-\u003e49156/udp, 127.0.0.1:49357-\u003e49157/udp, 127.0.0.1:49358-\u003e49158/udp, 127.0.0.1:49359-\u003e49159/udp, 127.0.0.1:49360-\u003e49160/udp, 127.0.0.1:49361-\u003e49161/udp, 127.0.0.1:49362-\u003e49162/udp, 127.0.0.1:49363-\u003e49163/udp, 127.0.0.1:49364-\u003e49164/udp, 127.0.0.1:49365-\u003e49165/udp, 127.0.0.1:49366-\u003e49166/udp, 127.0.0.1:49367-\u003e49167/udp, 127.0.0.1:49368-\u003e49168/udp, 127.0.0.1:49369-\u003e49169/udp, 127.0.0.1:49370-\u003e49170/udp, 127.0.0.1:49371-\u003e49171/udp, 127.0.0.1:49372-\u003e49172/udp, 127.0.0.1:49373-\u003e49173/udp, 127.0.0.1:49374-\u003e49174/udp, 127.0.0.1:49375-\u003e49175/udp, 127.0.0.1:49376-\u003e49176/udp, 127.0.0.1:49377-\u003e49177/udp, 127.0.0.1:49378-\u003e49178/udp, 127.0.0.1:49379-\u003e49179/udp, 127.0.0.1:49380-\u003e49180/udp, 127.0.0.1:49381-\u003e49181/udp, 127.0.0.1:49382-\u003e49182/udp, 127.0.0.1:49383-\u003e49183/udp, 127.0.0.1:49384-\u003e49184/udp, 127.0.0.1:49385-\u003e49185/udp, 127.0.0.1:49386-\u003e49186/udp, 127.0.0.1:49387-\u003e49187/udp, 127.0.0.1:49388-\u003e49188/udp, 127.0.0.1:49389-\u003e49189/udp, 127.0.0.1:49390-\u003e49190/udp, 127.0.0.1:49391-\u003e49191/udp, 127.0.0.1:49392-\u003e49192/udp, 127.0.0.1:49393-\u003e49193/udp, 127.0.0.1:49394-\u003e49194/udp, 127.0.0.1:49395-\u003e49195/udp, 127.0.0.1:49396-\u003e49196/udp, 127.0.0.1:49397-\u003e49197/udp, 127.0.0.1:49398-\u003e49198/udp, 127.0.0.1:49399-\u003e49199/udp, 127.0.0.1:49400-\u003e49200/udp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":3478,"PublishedPort":13478,"Protocol":"tcp"},{"URL":"127.0.0.1","TargetPort":3478,"PublishedPort":13478,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49152,"PublishedPort":49352,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49153,"PublishedPort":49353,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49154,"PublishedPort":49354,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49155,"PublishedPort":49355,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49156,"PublishedPort":49356,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49157,"PublishedPort":49357,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49158,"PublishedPort":49358,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49159,"PublishedPort":49359,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49160,"PublishedPort":49360,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49161,"PublishedPort":49361,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49162,"PublishedPort":49362,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49163,"PublishedPort":49363,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49164,"PublishedPort":49364,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49165,"PublishedPort":49365,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49166,"PublishedPort":49366,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49167,"PublishedPort":49367,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49168,"PublishedPort":49368,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49169,"PublishedPort":49369,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49170,"PublishedPort":49370,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49171,"PublishedPort":49371,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49172,"PublishedPort":49372,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49173,"PublishedPort":49373,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49174,"PublishedPort":49374,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49175,"PublishedPort":49375,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49176,"PublishedPort":49376,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49177,"PublishedPort":49377,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49178,"PublishedPort":49378,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49179,"PublishedPort":49379,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49180,"PublishedPort":49380,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49181,"PublishedPort":49381,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49182,"PublishedPort":49382,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49183,"PublishedPort":49383,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49184,"PublishedPort":49384,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49185,"PublishedPort":49385,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49186,"PublishedPort":49386,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49187,"PublishedPort":49387,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49188,"PublishedPort":49388,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49189,"PublishedPort":49389,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49190,"PublishedPort":49390,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49191,"PublishedPort":49391,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49192,"PublishedPort":49392,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49193,"PublishedPort":49393,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49194,"PublishedPort":49394,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49195,"PublishedPort":49395,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49196,"PublishedPort":49396,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49197,"PublishedPort":49397,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49198,"PublishedPort":49398,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49199,"PublishedPort":49399,"Protocol":"udp"},{"URL":"127.0.0.1","TargetPort":49200,"PublishedPort":49400,"Protocol":"udp"}],"RunningFor":"32 seconds ago","Service":"coturn","Size":"0B","State":"running","Status":"Up 10 seconds"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:44:07 +0000 UTC","ExitCode":0,"Health":"","ID":"af68bf64e9ef","Image":"codesite-atc-session-frontend","Labels":"desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/3000/tcp=127.0.0.1:3100,com.docker.compose.config-hash=0cbdee7717367b518b710ca3031a441187f785cfbc7d3bed43c3e4fed43c3f54,com.docker.compose.depends_on=y-sweet:service_healthy:false,ai-engine:service_started:false,postgres:service_healthy:false,com.docker.compose.image=sha256:bc50cb78f91cefb37391c9609658230d6f3ee753c2f4bed587371a3cc542336d,com.docker.compose.project=codesite-atc-session,com.docker.compose.replace=frontend-1,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=frontend,com.docker.compose.version=5.1.1","LocalVolumes":"0","Mounts":"","Name":"codesite-atc-session-frontend-1","Names":"codesite-atc-session-frontend-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:3100-\u003e3000/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":3000,"PublishedPort":3100,"Protocol":"tcp"}],"RunningFor":"24 seconds ago","Service":"frontend","Size":"0B","State":"running","Status":"Up 2 seconds"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:44:17 +0000 UTC","ExitCode":0,"Health":"","ID":"99e7f25bc818","Image":"codesite-atc-session-mcp","Labels":"com.docker.compose.depends_on=worker:service_started:false,signaling-server:service_started:false,com.docker.compose.image=sha256:cd36a217233de1dd8dab59b34e7ce530de1de4aa88df7a8c9b0f35a64ffe0df6,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=mcp,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.replace=mcp-1,com.docker.compose.version=5.1.1,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/9464/tcp=127.0.0.1:19464,com.docker.compose.config-hash=b06710dbdb6cba4fbf4c27d9ddf04bf75348dfd40be0c9ebbcf4387d4d1fc1bc","LocalVolumes":"0","Mounts":"","Name":"codesite-atc-session-mcp-1","Names":"codesite-atc-session-mcp-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:19464-\u003e9464/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":9464,"PublishedPort":19464,"Protocol":"tcp"}],"RunningFor":"14 seconds ago","Service":"mcp","Size":"0B","State":"running","Status":"Up Less than a second"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:43:59 +0000 UTC","ExitCode":0,"Health":"healthy","ID":"bc5ae6efd54a","Image":"postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229","Labels":"com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.image=sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=postgres,desktop.docker.io/ports.scheme=v2,com.docker.compose.config-hash=0d89cd408ac8becce9799eb77ef9f4edd9fbd2cb5ed945c154d57819f875809e,com.docker.compose.oneoff=False,com.docker.compose.replace=postgres-1,com.docker.compose.version=5.1.1,desktop.docker.io/ports/5432/tcp=127.0.0.1:15432,desktop.docker.io/wsl-distro=Ubuntu","LocalVolumes":"1","Mounts":"codesite-atc-s…","Name":"codesite-atc-session-postgres-1","Names":"codesite-atc-session-postgres-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:15432-\u003e5432/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":5432,"PublishedPort":15432,"Protocol":"tcp"}],"RunningFor":"32 seconds ago","Service":"postgres","Size":"0B","State":"running","Status":"Up 11 seconds (healthy)"}
+{"Command":"\"docker-entrypoint.s…\"","CreatedAt":"2026-07-05 00:43:59 +0000 UTC","ExitCode":0,"Health":"healthy","ID":"8510d9e5a0f1","Image":"redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99","Labels":"com.docker.compose.service=redis,desktop.docker.io/ports.scheme=v2,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.version=5.1.1,desktop.docker.io/ports/6379/tcp=127.0.0.1:16379,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.config-hash=e436edfefec5e8572c3454b25dc28a643dcfffa91fdea4648cb6e94097dccdb4,com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.image=sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.replace=redis-1","LocalVolumes":"1","Mounts":"e8f230c5955d56…","Name":"codesite-atc-session-redis-1","Names":"codesite-atc-session-redis-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:16379-\u003e6379/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":6379,"PublishedPort":16379,"Protocol":"tcp"}],"RunningFor":"32 seconds ago","Service":"redis","Size":"0B","State":"running","Status":"Up 11 seconds (healthy)"}
+{"Command":"\"signaling-server\"","CreatedAt":"2026-07-05 00:44:13 +0000 UTC","ExitCode":0,"Health":"","ID":"c551749a152e","Image":"codesite-atc-session-signaling-server","Labels":"com.docker.compose.config-hash=79b66dfa5734db0f20edb1e1d7f04e0a7907e63922f0efa506475f8ac5680ba5,com.docker.compose.container-number=1,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.version=5.1.1,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/9000/tcp=127.0.0.1:19000,com.docker.compose.depends_on=redis:service_healthy:false,collab-server:service_started:false,com.docker.compose.image=sha256:760035f6bd7d728a177f4ea69586d6b3627a194c5b18f44afec844e1caaa84ef,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.replace=signaling-server-1,com.docker.compose.service=signaling-server,desktop.docker.io/wsl-distro=Ubuntu","LocalVolumes":"0","Mounts":"","Name":"codesite-atc-session-signaling-server-1","Names":"codesite-atc-session-signaling-server-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:19000-\u003e9000/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":9000,"PublishedPort":19000,"Protocol":"tcp"}],"RunningFor":"18 seconds ago","Service":"signaling-server","Size":"0B","State":"running","Status":"Up 1 second"}
+{"Command":"\"worker\"","CreatedAt":"2026-07-05 00:44:17 +0000 UTC","ExitCode":0,"Health":"","ID":"d483d3780ae7","Image":"codesite-atc-session-worker","Labels":"com.docker.compose.image=sha256:7b549d6c72768c079f6967a8fe3819966a6b4d822811ac43b4e882b5a429b84c,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.service=worker,com.docker.compose.version=5.1.1,desktop.docker.io/ports.scheme=v2,com.docker.compose.config-hash=45692940f014418e4f41b32d43a178eafdeea8e591c0b0c464327a445d8c8e16,com.docker.compose.depends_on=signaling-server:service_started:false,collab-server:service_started:false,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,org.opencontainers.image.version=25.10,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.replace=worker-1,desktop.docker.io/wsl-distro=Ubuntu,org.opencontainers.image.ref.name=ubuntu","LocalVolumes":"1","Mounts":"codesite-atc-s…","Name":"codesite-atc-session-worker-1","Names":"codesite-atc-session-worker-1","Networks":"codesite-atc-session_default","Ports":"","Project":"codesite-atc-session","Publishers":[],"RunningFor":"14 seconds ago","Service":"worker","Size":"0B","State":"running","Status":"Up 1 second"}
+{"Command":"\"y-sweet serve /data…\"","CreatedAt":"2026-07-05 00:43:59 +0000 UTC","ExitCode":0,"Health":"healthy","ID":"116a5cd895ec","Image":"synthi-y-sweet","Labels":"org.opencontainers.image.description=A realtime CRDT-based document store, backed by S3.,org.opencontainers.image.title=y-sweet,org.opencontainers.image.url=https://github.com/jamsocket/y-sweet,org.opencontainers.image.version=latest,desktop.docker.io/wsl-distro=Ubuntu,org.opencontainers.image.created=2025-12-04T19:28:53.471Z,com.docker.compose.depends_on=,com.docker.compose.image=sha256:a5ab78b4e090e0d811ed90af09783cc4209ba175b480e48de87087479bbb581e,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.replace=y-sweet-1,com.docker.compose.version=5.1.1,org.opencontainers.image.revision=4f1909b2c3390ced54d32b82a673f4f7ee8ac780,com.docker.compose.config-hash=33ec240e9ee18bfd335a168bf3060229c5a2848beb7b1b4f007d214376a86e46,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.service=y-sweet,org.opencontainers.image.licenses=NOASSERTION,org.opencontainers.image.source=https://github.com/jamsocket/y-sweet,desktop.docker.io/ports/8080/tcp=127.0.0.1:18180,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,desktop.docker.io/ports.scheme=v2","LocalVolumes":"1","Mounts":"codesite-atc-s…","Name":"codesite-atc-session-y-sweet-1","Names":"codesite-atc-session-y-sweet-1","Networks":"codesite-atc-session_default","Ports":"127.0.0.1:18180-\u003e8080/tcp","Project":"codesite-atc-session","Publishers":[{"URL":"127.0.0.1","TargetPort":8080,"PublishedPort":18180,"Protocol":"tcp"}],"RunningFor":"32 seconds ago","Service":"y-sweet","Size":"0B","State":"running","Status":"Up 11 seconds (healthy)"}
+
+## docker compose config --services
+ai-engine
+redis
+y-sweet
+collab-server
+signaling-server
+worker
+mcp
+ai-gateway
+coturn
+postgres
+frontend

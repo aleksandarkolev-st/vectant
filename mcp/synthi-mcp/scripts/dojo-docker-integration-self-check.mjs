@@ -18,6 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+const DOJO_DOCKER_ENDPOINT_RETRY_INTERVAL_MS = 500;
 
 export const DOJO_DOCKER_REQUIRED_SERVICES = [
   "frontend",
@@ -265,6 +266,7 @@ export function buildDojoDockerIntegrationEvidenceManifest({
       status: check.status,
       ok: check.ok,
       duration_ms: check.duration_ms,
+      attempts: check.attempts,
       error: check.error,
     })),
     endpoint_count: endpointChecks.length,
@@ -381,6 +383,41 @@ function buildDockerIntegrationBudgetEvaluation({
 async function checkEndpoint({ endpoint, env, timeoutMs }) {
   const url = String(env[endpoint.env] || endpoint.default_url);
   const started = performance.now();
+  const deadline = started + timeoutMs;
+  let attempts = 0;
+  let lastResult = null;
+
+  while (performance.now() <= deadline) {
+    attempts += 1;
+    const remainingMs = Math.max(1, deadline - performance.now());
+    lastResult = await checkEndpointOnce({
+      id: endpoint.id,
+      url,
+      expectedStatus: endpoint.expected_status,
+      timeoutMs: remainingMs,
+    });
+    if (lastResult.ok) break;
+
+    const sleepMs = Math.min(DOJO_DOCKER_ENDPOINT_RETRY_INTERVAL_MS, Math.max(0, deadline - performance.now()));
+    if (sleepMs <= 0) break;
+    await sleep(sleepMs);
+  }
+
+  const durationMs = performance.now() - started;
+  return {
+    id: endpoint.id,
+    url,
+    expected_status: endpoint.expected_status,
+    status: lastResult?.status ?? null,
+    ok: Boolean(lastResult?.ok),
+    duration_ms: Number(durationMs.toFixed(3)),
+    attempts,
+    error: lastResult ? lastResult.error : "endpoint check did not run",
+  };
+}
+
+async function checkEndpointOnce({ id, url, expectedStatus, timeoutMs }) {
+  const started = performance.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -390,20 +427,20 @@ async function checkEndpoint({ endpoint, env, timeoutMs }) {
     });
     const durationMs = performance.now() - started;
     return {
-      id: endpoint.id,
+      id,
       url,
-      expected_status: endpoint.expected_status,
+      expected_status: expectedStatus,
       status: response.status,
-      ok: response.status === endpoint.expected_status,
+      ok: response.status === expectedStatus,
       duration_ms: Number(durationMs.toFixed(3)),
       error: null,
     };
   } catch (err) {
     const durationMs = performance.now() - started;
     return {
-      id: endpoint.id,
+      id,
       url,
-      expected_status: endpoint.expected_status,
+      expected_status: expectedStatus,
       status: null,
       ok: false,
       duration_ms: Number(durationMs.toFixed(3)),
@@ -412,6 +449,10 @@ async function checkEndpoint({ endpoint, env, timeoutMs }) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function spawnDocker(args, { timeoutMs, env }) {
