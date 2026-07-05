@@ -232,22 +232,18 @@ export function verifyProofSignatureEnvelope(unsignedBundle, proofSignature, opt
 }
 
 function verifyHmacSignature(signingPayload, envelope, options = {}) {
-  const secret = options.authoritySecret
-    || envValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET')
-    || envValue('AUTH_SECRET')
-    || envValue('NEXTAUTH_SECRET')
-    || DEFAULT_PROOF_AUTHORITY_SECRET;
-  if (options.requireTrustedAuthority && secret === DEFAULT_PROOF_AUTHORITY_SECRET) {
+  const hmac = resolveHmacProofAuthoritySecret(options);
+  if (options.requireTrustedAuthority && !hmac.trustedForProofAuthority) {
     return {
       ok: false,
       reasonCodes: ['proof_bundle_signature_trusted_authority_required'],
-      warnings: ['proof_bundle_signature_default_development_secret_rejected'],
+      warnings: [`proof_bundle_signature_untrusted_${hmac.source}_rejected`],
       keyId: envelope.keyId,
       algorithm: envelope.algorithm,
     };
   }
   const expected = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha256', hmac.secret)
     .update(signingPayload)
     .digest('base64url');
   const observed = parseSignatureValue(envelope.signature, 'hmac-sha256', envelope.keyId);
@@ -255,7 +251,7 @@ function verifyHmacSignature(signingPayload, envelope, options = {}) {
   return {
     ok,
     reasonCodes: ok ? ['proof_bundle_signature_valid'] : ['proof_bundle_signature_invalid'],
-    warnings: secret === DEFAULT_PROOF_AUTHORITY_SECRET ? ['proof_bundle_signature_default_development_secret'] : [],
+    warnings: hmac.source === 'default' ? ['proof_bundle_signature_default_development_secret'] : [],
     keyId: envelope.keyId,
     algorithm: envelope.algorithm,
   };
@@ -346,16 +342,35 @@ function resolveProofAuthority(options = {}) {
       publicKeyPem,
     };
   }
+  const hmac = resolveHmacProofAuthoritySecret(options);
+  if (requiresTrustedProofAuthority(options) && !hmac.trustedForProofAuthority) {
+    throw new Error('trusted CodeSite proof authority requires an Ed25519 key or explicit SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET');
+  }
   return {
     algorithm: 'hmac-sha256',
     keyId,
     authority,
-    secret: options.authoritySecret
-      || proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET')
-      || envValue('AUTH_SECRET')
-      || envValue('NEXTAUTH_SECRET')
-      || DEFAULT_PROOF_AUTHORITY_SECRET,
+    secret: hmac.secret,
   };
+}
+
+function resolveHmacProofAuthoritySecret(options = {}) {
+  if (options.authoritySecret) {
+    return { secret: options.authoritySecret, source: 'options.authoritySecret', trustedForProofAuthority: true };
+  }
+  const proofSecret = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET');
+  if (proofSecret) {
+    return { secret: proofSecret, source: 'SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET', trustedForProofAuthority: true };
+  }
+  const authSecret = envValue('AUTH_SECRET');
+  if (authSecret) {
+    return { secret: authSecret, source: 'AUTH_SECRET', trustedForProofAuthority: false };
+  }
+  const nextAuthSecret = envValue('NEXTAUTH_SECRET');
+  if (nextAuthSecret) {
+    return { secret: nextAuthSecret, source: 'NEXTAUTH_SECRET', trustedForProofAuthority: false };
+  }
+  return { secret: DEFAULT_PROOF_AUTHORITY_SECRET, source: 'default', trustedForProofAuthority: false };
 }
 
 function resolveTrustedEd25519PublicKey(envelope, options = {}) {

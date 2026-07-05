@@ -286,26 +286,22 @@ function verifyProofSignature(unsignedBundle, proofSignature, options = {}) {
   let publicKeySource = null;
   const requireTrustedAuthority = requiresTrustedProofAuthority(options);
   if (envelope.algorithm === 'hmac-sha256') {
-    const secret = options.authoritySecret
-      || proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET')
-      || process.env.AUTH_SECRET
-      || process.env.NEXTAUTH_SECRET
-      || DEFAULT_PROOF_AUTHORITY_SECRET;
-    if (requireTrustedAuthority && secret === DEFAULT_PROOF_AUTHORITY_SECRET) {
-      errors.push('trusted proof authority is required; development fallback secret rejected');
+    const hmac = resolveHmacProofAuthoritySecret(options);
+    if (requireTrustedAuthority && !hmac.trustedForProofAuthority) {
+      errors.push(`trusted proof authority is required; ${hmac.source} is not an explicit proof authority`);
       return {
         checked: true,
         ok: false,
         reasonCodes: ['proof_bundle_signature_trusted_authority_required'],
         errors,
-        warnings: ['proof signature development fallback secret rejected'],
+        warnings: [`proof signature untrusted ${hmac.source} rejected`],
         keyId: envelope.keyId,
         algorithm: envelope.algorithm,
       };
     }
-    const expected = crypto.createHmac('sha256', secret).update(signingPayload).digest('base64url');
+    const expected = crypto.createHmac('sha256', hmac.secret).update(signingPayload).digest('base64url');
     ok = timingSafeEqualString(parseSignatureValue(envelope.signature, 'hmac-sha256', envelope.keyId), expected);
-    if (secret === DEFAULT_PROOF_AUTHORITY_SECRET) {
+    if (hmac.source === 'development fallback secret') {
       warnings.push('proof signature verified with development fallback secret');
     }
   } else if (envelope.algorithm === 'ed25519') {
@@ -386,6 +382,43 @@ function requiresTrustedProofAuthority(options = {}) {
   if (['1', 'true', 'yes', 'required'].includes(envValue)) return true;
   if (['0', 'false', 'no', 'off'].includes(envValue)) return false;
   return process.env.NODE_ENV === 'production';
+}
+
+function resolveHmacProofAuthoritySecret(options = {}) {
+  if (options.authoritySecret) {
+    return {
+      secret: options.authoritySecret,
+      source: '--authority-secret',
+      trustedForProofAuthority: true,
+    };
+  }
+  const proofSecret = proofAuthorityEnvValue('SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET');
+  if (proofSecret) {
+    return {
+      secret: proofSecret,
+      source: 'SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET',
+      trustedForProofAuthority: true,
+    };
+  }
+  if (process.env.AUTH_SECRET) {
+    return {
+      secret: process.env.AUTH_SECRET,
+      source: 'AUTH_SECRET',
+      trustedForProofAuthority: false,
+    };
+  }
+  if (process.env.NEXTAUTH_SECRET) {
+    return {
+      secret: process.env.NEXTAUTH_SECRET,
+      source: 'NEXTAUTH_SECRET',
+      trustedForProofAuthority: false,
+    };
+  }
+  return {
+    secret: DEFAULT_PROOF_AUTHORITY_SECRET,
+    source: 'development fallback secret',
+    trustedForProofAuthority: false,
+  };
 }
 
 function normalizeTrustedKeys(parsed) {

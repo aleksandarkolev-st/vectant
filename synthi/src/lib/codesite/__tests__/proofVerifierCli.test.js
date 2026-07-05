@@ -46,6 +46,7 @@ const PROOF_AUTHORITY_ENV_KEYS = [
   'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE',
   'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON',
   'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE',
+  'SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY',
   'AUTH_SECRET',
   'NEXTAUTH_SECRET',
   'NODE_ENV',
@@ -310,6 +311,70 @@ describe('CodeSite proof verifier CLI', () => {
       ]),
       errors: expect.arrayContaining([
         expect.stringContaining('trusted proof authority is required'),
+      ]),
+    });
+  });
+
+  it('refuses to sign a trusted proof bundle with application auth secret fallback', () => {
+    expect(() => withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY: '1',
+      AUTH_SECRET: 'app-session-secret',
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle())).toThrow(/trusted CodeSite proof authority requires/);
+  });
+
+  it('rejects application auth secret fallback when verifier requires a trusted authority', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const bundle = withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY: null,
+      AUTH_SECRET: 'app-session-secret',
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle());
+    const bundlePath = path.join(root, 'txn-1.auth-secret-hmac.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath, '--require-trusted-authority'], {
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      AUTH_SECRET: 'app-session-secret',
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_signature_trusted_authority_required',
+        'proof_bundle_verification_failed',
+      ]),
+      errors: expect.arrayContaining([
+        expect.stringContaining('AUTH_SECRET is not an explicit proof authority'),
       ]),
     });
   });
