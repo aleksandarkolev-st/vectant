@@ -145,7 +145,7 @@ async function main() {
   const assertions = [];
 
   assert(managerSource.includes('CODESITE_WORKSPACE_PREP_REQUIRES_ISOLATION'), 'workspace prep manager has active CodeSite isolation error', assertions);
-  assert(/assertWorkspacePrepAllowed\(options\)[\s\S]{0,180}const state = getState/.test(managerSource), 'workspace prep guard runs before state planning and repo acquisition', assertions);
+  assert(/assertWorkspacePrepAllowed\(slug,\s*userId,\s*options\)[\s\S]{0,220}const state = getState/.test(managerSource), 'workspace prep guard runs before state planning and repo acquisition', assertions);
   assert(serverSource.includes('canAutoPrepare && !codeSiteContext.active'), 'files-meta background prep is disabled for active CodeSite', assertions);
   assert(serverSource.includes('codesiteContext: prepCodeSiteContext'), 'explicit prepare route passes CodeSite context to manager', assertions);
   assert(testSource.includes('acquire: async') && testSource.includes('assert.deepEqual(calls, [])'), 'regression test verifies no repoCache acquire under active CodeSite', assertions);

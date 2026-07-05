@@ -18,6 +18,90 @@ const ADAPTERS = [
   ['handover', /^handover:packet:sha256:/],
 ];
 
+const RADAR_TRAFFIC_MISSIONS = [
+  {
+    callsign: 'SCHEMA-01',
+    domain: 'schema',
+    mission: 'Stabilize shared contract before downstream signup work',
+    route: ['packages/schemas/auth/**', 'openapi/auth.yaml'],
+    requestedTools: ['file_write', 'npm_test'],
+  },
+  {
+    callsign: 'API-02',
+    domain: 'backend',
+    mission: 'Implement dependent signup endpoint',
+    route: ['packages/schemas/auth/**', 'api/auth/**'],
+    requestedTools: ['file_write', 'npm_test'],
+  },
+  {
+    callsign: 'UI-03',
+    domain: 'frontend',
+    mission: 'Wire signup form to the new contract',
+    route: ['components/auth/**', 'packages/schemas/auth/**'],
+    requestedTools: ['file_write', 'npm_test', 'playwright'],
+  },
+];
+
+function radarTrafficProjectPayload() {
+  return {
+    title: 'Radar adapter proof',
+    request: 'Run every mature radar adapter against a safe proof workspace with schema-first multi-agent traffic',
+    autoWorkflow: true,
+    autoWorkflowOperations: true,
+    strategy: 'airspace_survey_first',
+    zonePolicy: {
+      zones: [
+        {
+          zoneKey: 'schema',
+          label: 'Schema runway',
+          class: 'B',
+          paths: ['packages/schemas/auth/**', 'openapi/**'],
+          rules: ['api_contract_radar_required'],
+          risk: 'high',
+        },
+        {
+          zoneKey: 'api',
+          label: 'API approach',
+          class: 'B',
+          paths: ['api/auth/**'],
+          rules: ['api_contract_radar_required'],
+          risk: 'high',
+        },
+        {
+          zoneKey: 'ui',
+          label: 'UI approach',
+          class: 'C',
+          paths: ['components/auth/**'],
+          rules: ['landing_inspection_required'],
+          risk: 'medium',
+        },
+      ],
+      semanticGraph: {
+        sourceDigest: 'codesite-radar-adapter-proof-traffic-v1',
+        generatedClients: ['components/auth/generated/auth-client.ts'],
+        importEdges: [
+          {
+            from: 'api/auth/signup.ts',
+            imports: ['packages/schemas/auth/signup.ts', 'openapi/auth.yaml'],
+          },
+          {
+            from: 'components/auth/SignupForm.tsx',
+            imports: ['packages/schemas/auth/signup.ts', 'api/auth/signup.ts'],
+          },
+        ],
+        testOwnership: [
+          {
+            testPath: 'tests/auth/signup.contract.test.ts',
+            covers: ['packages/schemas/auth/**', 'api/auth/**', 'components/auth/**'],
+          },
+        ],
+      },
+      noFlyZones: ['secrets/**', '.env*'],
+    },
+    missions: RADAR_TRAFFIC_MISSIONS,
+  };
+}
+
 function repoRoot() {
   return path.basename(process.cwd()) === 'synthi'
     ? path.dirname(process.cwd())
@@ -135,20 +219,11 @@ async function main() {
 
   const project = (await api('/projects', {
     method: 'POST',
-    body: JSON.stringify({
-      title: 'Radar adapter proof',
-      request: 'Run every mature radar adapter against a safe proof workspace',
-      zonePolicy: {
-        zones: [
-          { zoneKey: 'ui', label: 'UI', class: 'C', paths: ['components/**'], rules: ['landing_inspection_required'] },
-          { zoneKey: 'api', label: 'API', class: 'B', paths: ['api/**'], rules: ['api_contract_radar_required'] },
-        ],
-      },
-    }),
+    body: JSON.stringify(radarTrafficProjectPayload()),
   })).project;
   const commands = ADAPTERS.map(([adapter]) => ({
     adapter,
-    command: process.execPath,
+    command: 'node',
     args: ['-e', `console.log("${adapter} radar adapter proof")`],
     timeoutMs: 5000,
   }));
@@ -156,11 +231,17 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       displayCallsign: 'RADAR-STACK-01',
-      changedPaths: ['components/auth/SignupForm.tsx', 'api/auth/signup.ts'],
+      changedPaths: ['components/auth/SignupForm.tsx', 'api/auth/signup.ts', 'packages/schemas/auth/signup.ts'],
       execute: true,
       commands,
     }),
   })).inspectionRun;
+  const hydratedProject = (await api(`/projects/${encodeURIComponent(project.id)}`)).project;
+  const controlState = await api(`/projects/${encodeURIComponent(project.id)}/control-state`);
+  const collisionForecast = await api(`/projects/${encodeURIComponent(project.id)}/collision-predict`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 
   const adapterRows = ADAPTERS.map(([adapter, evidencePattern]) => {
     const signal = inspectionRun.inspectionSignals.find((item) => item.key === adapter);
@@ -177,6 +258,10 @@ async function main() {
     everyAdapterProducedSignal: adapterRows.every((row) => row.status === 'passed'),
     everyAdapterProducedDurableEvidence: adapterRows.every((row) => row.evidenceRef),
     everyAdapterRecordedReasonCodes: adapterRows.every((row) => row.reasonCodes.includes(`${row.adapter}_adapter_executed`)),
+    seededMultiAgentTraffic: (controlState.activeFlights || []).length >= 3,
+    seededHoldingPattern: (controlState.activeFlights || []).some((flight) => String(flight.status).toLowerCase() === 'holding'),
+    seededCollisionRisk: (collisionForecast.risks || []).length >= 1,
+    seededLandingQueue: (hydratedProject.inspectionRuns || []).length >= 1,
   };
   for (const [key, value] of Object.entries(assertions)) {
     assertProof(value === true, `assertion failed: ${key}`);
@@ -186,7 +271,27 @@ async function main() {
     generatedAt: new Date().toISOString(),
     baseUrl,
     slug,
-    project: { id: project.id, title: project.title },
+    project: { id: project.id, title: project.title, route: `/workspace/${encodeURIComponent(slug)}/codesite` },
+    schemaProject: {
+      id: hydratedProject.id,
+      title: hydratedProject.title,
+      route: `/workspace/${encodeURIComponent(slug)}/codesite`,
+      activeFlights: (controlState.activeFlights || []).map((flight) => ({
+        callsign: flight.displayCallsign,
+        status: flight.status,
+        route: flight.route,
+      })),
+      activeMutationLeases: (controlState.activeMutationLeases || []).map((lease) => ({
+        callsign: lease.displayCallsign,
+        status: lease.status,
+        allowedPaths: lease.lease?.allowedPaths || [],
+      })),
+      collisionForecast: {
+        riskLevel: collisionForecast.riskLevel,
+        risks: collisionForecast.risks || [],
+        runwayOccupancy: collisionForecast.runwayOccupancy || [],
+      },
+    },
     inspectionRun,
     adapterRows,
     assertions,

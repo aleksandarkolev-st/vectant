@@ -1,12 +1,12 @@
 {
   "schemaVersion": "synthi.codesite.metricsProof.v2",
   "status": "validated",
-  "generatedAt": "2026-07-04T14:25:18.182Z",
+  "generatedAt": "2026-07-05T08:00:45.905Z",
   "ok": true,
   "git": {
-    "head": "505daf0870ea7f1444036f22769efaacd39e72b1",
+    "head": "2f8c76abaef8ebcf0b7d3ec379df7dd0e45cfcce",
     "branch": "codex/codesite-atc-full-from-dev-20260630",
-    "statusShort": "M synthi/scripts/codesite-release-gate.mjs"
+    "statusShort": "M synthi/scripts/codesite-radar-adapter-proof.mjs\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n M tmp/codesite-dojo-proof/run-actual-git-commit-proof.mjs\n M tmp/codesite-dojo-proof/run-black-box-completeness-proof.mjs\n M tmp/codesite-dojo-proof/run-governance-mcp-lifecycle-proof.mjs\n M tmp/codesite-dojo-proof/run-line-provenance-diff-proof.mjs\n M tmp/codesite-dojo-proof/run-mature-metrics-proof.mjs\n M tmp/codesite-dojo-proof/run-proof-bundle-git-context-proof.mjs\n M tmp/codesite-dojo-proof/run-radar-ui-proof.mjs\n M tmp/codesite-dojo-proof/run-repo-state-identity-proof.mjs\n M tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs\n M tmp/codesite-dojo-proof/run-workspace-prep-codesite-proof.mjs\n?? .synthi/codesite/"
   },
   "thresholds": {
     "proofBundlesVerifiedOutsideUi": 1,
@@ -21,7 +21,7 @@
       "name": "docker metrics engine emitted CodeSite metrics JSON",
       "ok": true,
       "details": {
-        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs",
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs",
         "exitCode": 0
       }
     },
@@ -125,7 +125,7 @@
       "name": "dockerMetricsEngine command exited successfully",
       "ok": true,
       "details": {
-        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs",
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs",
         "summary": {
           "runner": "command",
           "tests": 0,
@@ -139,7 +139,7 @@
       "name": "dockerMetricsSuite command exited successfully",
       "ok": true,
       "details": {
-        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js",
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js",
         "summary": {
           "runner": "vitest",
           "pass": 6,
@@ -154,7 +154,7 @@
   "commands": [
     {
       "name": "dockerMetricsEngine",
-      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vite-node -- /repo/tmp/codesite-dojo-proof/.codesite-metrics-engine-runner.mjs",
       "cwd": ".",
       "exitCode": 0,
       "signal": null,
@@ -164,10 +164,9 @@
         "pass": 1,
         "fail": 0
       },
-      "stdout": "{\"schemaVersion\":\"synthi.codesite.metrics.v1\",\"projectId\":\"metrics-mature-project\",\"workspaceSlug\":\"codesite-mature-metrics-proof\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"status\":\"measured\",\"sections\":{\"atc\":[{\"key\":\"collisionsPredicted\",\"label\":\"Collisions predicted\",\"unit\":\"count\",\"value\":3,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"risk-schema\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"collisionsAvoided\",\"label\":\"Collisions avoided\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\",\"shadow-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"nearMissesReplayed\",\"label\":\"Near-misses replayed\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"noFlyViolationsBlocked\",\"label\":\"No-fly violations blocked\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\",\"decision-nofly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"flightsReroutedByTower\",\"label\":\"Flights rerouted by tower\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"flightsHeldBeforeSharedZoneConflict\",\"label\":\"Flights held before shared-zone conflict\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"landingsPassedFirstTry\",\"label\":\"Landings passed first try\",\"unit\":\"count\",\"value\":0,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"goAroundRate\",\"label\":\"Go-around rate\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"groundStopEvents\",\"label\":\"Ground-stop events\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"ground-stop-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"averageTimeToClearanceMs\",\"label\":\"Average time to clearance\",\"unit\":\"duration_ms\",\"value\":300000,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"lease-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"samples\":1}},{\"key\":\"averageTimeInHoldingMs\",\"label\":\"Average time in holding\",\"unit\":\"duration_ms\",\"value\":15913970,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"plan-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"samples\":1}}],\"transaction\":[{\"key\":\"staleReadsDetected\",\"label\":\"Stale reads detected\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"transaction-validated-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"assumptionInvalidationsBeforeWrite\",\"label\":\"Assumption invalidations before write\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"assumption-contract\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"serializableTransactionAbortRate\",\"label\":\"Serializable transaction abort rate\",\"unit\":\"ratio\",\"value\":0.5,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"txn-abort\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":2}},{\"key\":\"shadowMergeSimulatorAccuracy\",\"label\":\"Shadow merge simulator accuracy\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"codeSiteFsBlockedWrites\",\"label\":\"CodeSiteFS blocked writes\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"illegalWritesQuarantined\",\"label\":\"Illegal writes quarantined\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"write-quarantine-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"proofBundlesVerifiedOutsideUi\",\"label\":\"Proof bundles verified outside UI\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"black-box-verified-1\",\"proof-bundle-verified-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"lineProvenanceCoverage\",\"label\":\"Lines with causal provenance coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"line-schema\",\"line:evidence:schema\",\"line-auth\",\"line:evidence:auth\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":2,\"denominator\":2}}],\"quality\":[{\"key\":\"mergeConflictsAvoided\",\"label\":\"Merge conflicts avoided\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"contractDriftIncidents\",\"label\":\"Contract drift incidents\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"migrationRollbackCoverage\",\"label\":\"Migration rollback coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:3\",\"migration:rollback-plan\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"securityFindingsBeforeMerge\",\"label\":\"Security findings before merge\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:2\",\"security:finding-before-merge\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"testsRedAtLanding\",\"label\":\"Tests red at landing\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:1\",\"test:red-before-landing\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"postMergeRollbackRate\",\"label\":\"Post-merge rollback rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":0,\"denominator\":1}}],\"trust\":[{\"key\":\"percentageWritesWithValidClearance\",\"label\":\"Writes with valid clearance\",\"unit\":\"ratio\",\"value\":0.3333,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-attempt-1\",\"write-allowed-1\",\"write:evidence:schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":3}},{\"key\":\"blackBoxCompletenessScore\",\"label\":\"Black-box completeness score\",\"unit\":\"ratio\",\"value\":0.855,\"sampleSize\":6,\"status\":\"measured\",\"evidenceRefs\":[\"incident-black-box\",\"sha256:replay\",\"incident:black-box\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1.71,\"denominator\":2}},{\"key\":\"humanReviewTimeSavedMs\",\"label\":\"Human review time saved\",\"unit\":\"duration_ms\",\"value\":210000,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"document-review:review-1\",\"document-review:evidence\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"samples\":1,\"baselineReviewTimeMs\":300000,\"reviewTimeMs\":90000,\"reviewOverrunMs\":0}},{\"key\":\"pilotLicenseViolationRate\",\"label\":\"Pilot license violation rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":0,\"denominator\":2}},{\"key\":\"repeatedNearMissesConvertedToAirspaceRules\",\"label\":\"Repeated near-misses converted to airspace rules\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"delta-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"}]},\"summary\":{\"collisionsPredicted\":3,\"collisionsAvoided\":2,\"nearMissesReplayed\":1,\"noFlyViolationsBlocked\":1,\"flightsReroutedByTower\":0,\"flightsHeldBeforeSharedZoneConflict\":1,\"landingsPassedFirstTry\":0,\"goAroundRate\":1,\"groundStopEvents\":1,\"averageTimeToClearanceMs\":300000,\"averageTimeInHoldingMs\":15913970,\"staleReadsDetected\":1,\"assumptionInvalidationsBeforeWrite\":1,\"serializableTransactionAbortRate\":0.5,\"shadowMergeSimulatorAccuracy\":1,\"codeSiteFsBlockedWrites\":1,\"illegalWritesQuarantined\":1,\"proofBundlesVerifiedOutsideUi\":2,\"lineProvenanceCoverage\":1,\"mergeConflictsAvoided\":1,\"contractDriftIncidents\":0,\"migrationRollbackCoverage\":1,\"securityFindingsBeforeMerge\":1,\"testsRedAtLanding\":1,\"postMergeRollbackRate\":0,\"percentageWritesWithValidClearance\":0.3333,\"blackBoxCompletenessScore\":0.855,\"humanReviewTimeSavedMs\":210000,\"pilotLicenseViolationRate\":0,\"repeatedNearMissesConvertedToAirspaceRules\":1},\"evidence\":{\"eventTypeCounts\":{\"write_attempted\":1,\"write_allowed\":1,\"write_denied\":1,\"write_quarantined\":1,\"transaction_validated\":1,\"black_box_closed\":1,\"proof_bundle_verified\":1,\"tower_instruction\":1,\"ground_stop\":1},\"transactionStatusCounts\":{\"committed\":1,\"aborted\":1},\"leaseStatusCounts\":{\"active\":1},\"inspectionStatusCounts\":{\"passed\":1},\"policyDecisionCounts\":{\"hold\":1,\"block\":1},\"pilotLicenseStatusCounts\":{\"active\":1},\"reasonCodeCounts\":{\"entered_no_fly_zone\":2,\"stale_read_detected\":1,\"mayday_ground_stop\":1,\"collision_avoidance_hold\":1,\"schema_first_leader_clearance\":1,\"serializable_validation_passed\":1,\"semantic_collision_mitigated\":1,\"document_approved\":1,\"pilot_license_health_active\":1},\"dataSources\":{\"events\":9,\"policyDecisions\":2,\"transactions\":2,\"mutationLeases\":1,\"inspectionRuns\":1,\"incidents\":2,\"proofBundles\":1,\"lineProvenance\":2,\"counterfactualRuns\":1,\"documentReviews\":1,\"assumptions\":1,\"pilotLicenseHealth\":1}}}\n",
+      "stdout": "{\"schemaVersion\":\"synthi.codesite.metrics.v1\",\"projectId\":\"metrics-mature-project\",\"workspaceSlug\":\"codesite-mature-metrics-proof\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"status\":\"measured\",\"sections\":{\"atc\":[{\"key\":\"collisionsPredicted\",\"label\":\"Collisions predicted\",\"unit\":\"count\",\"value\":3,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"risk-schema\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"collisionsAvoided\",\"label\":\"Collisions avoided\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\",\"shadow-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"nearMissesReplayed\",\"label\":\"Near-misses replayed\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"noFlyViolationsBlocked\",\"label\":\"No-fly violations blocked\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\",\"decision-nofly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"flightsReroutedByTower\",\"label\":\"Flights rerouted by tower\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"flightsHeldBeforeSharedZoneConflict\",\"label\":\"Flights held before shared-zone conflict\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"landingsPassedFirstTry\",\"label\":\"Landings passed first try\",\"unit\":\"count\",\"value\":0,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"goAroundRate\",\"label\":\"Go-around rate\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"groundStopEvents\",\"label\":\"Ground-stop events\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"ground-stop-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"averageTimeToClearanceMs\",\"label\":\"Average time to clearance\",\"unit\":\"duration_ms\",\"value\":300000,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"lease-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"samples\":1}},{\"key\":\"averageTimeInHoldingMs\",\"label\":\"Average time in holding\",\"unit\":\"duration_ms\",\"value\":79179925,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"plan-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"samples\":1}}],\"transaction\":[{\"key\":\"staleReadsDetected\",\"label\":\"Stale reads detected\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"transaction-validated-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"assumptionInvalidationsBeforeWrite\",\"label\":\"Assumption invalidations before write\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"assumption-contract\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"serializableTransactionAbortRate\",\"label\":\"Serializable transaction abort rate\",\"unit\":\"ratio\",\"value\":0.5,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"txn-abort\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":2}},{\"key\":\"shadowMergeSimulatorAccuracy\",\"label\":\"Shadow merge simulator accuracy\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"codeSiteFsBlockedWrites\",\"label\":\"CodeSiteFS blocked writes\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"illegalWritesQuarantined\",\"label\":\"Illegal writes quarantined\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"write-quarantine-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"proofBundlesVerifiedOutsideUi\",\"label\":\"Proof bundles verified outside UI\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"black-box-verified-1\",\"proof-bundle-verified-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"lineProvenanceCoverage\",\"label\":\"Lines with causal provenance coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"line-schema\",\"line:evidence:schema\",\"line-auth\",\"line:evidence:auth\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":2,\"denominator\":2}}],\"quality\":[{\"key\":\"mergeConflictsAvoided\",\"label\":\"Merge conflicts avoided\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"contractDriftIncidents\",\"label\":\"Contract drift incidents\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"migrationRollbackCoverage\",\"label\":\"Migration rollback coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:3\",\"migration:rollback-plan\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"securityFindingsBeforeMerge\",\"label\":\"Security findings before merge\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:2\",\"security:finding-before-merge\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"testsRedAtLanding\",\"label\":\"Tests red at landing\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:1\",\"test:red-before-landing\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"postMergeRollbackRate\",\"label\":\"Post-merge rollback rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":0,\"denominator\":1}}],\"trust\":[{\"key\":\"percentageWritesWithValidClearance\",\"label\":\"Writes with valid clearance\",\"unit\":\"ratio\",\"value\":0.3333,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-attempt-1\",\"write-allowed-1\",\"write:evidence:schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":3}},{\"key\":\"blackBoxCompletenessScore\",\"label\":\"Black-box completeness score\",\"unit\":\"ratio\",\"value\":0.855,\"sampleSize\":6,\"status\":\"measured\",\"evidenceRefs\":[\"incident-black-box\",\"sha256:replay\",\"incident:black-box\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1.71,\"denominator\":2}},{\"key\":\"humanReviewTimeSavedMs\",\"label\":\"Human review time saved\",\"unit\":\"duration_ms\",\"value\":210000,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"document-review:review-1\",\"document-review:evidence\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"samples\":1,\"baselineReviewTimeMs\":300000,\"reviewTimeMs\":90000,\"reviewOverrunMs\":0}},{\"key\":\"pilotLicenseViolationRate\",\"label\":\"Pilot license violation rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":0,\"denominator\":2}},{\"key\":\"repeatedNearMissesConvertedToAirspaceRules\",\"label\":\"Repeated near-misses converted to airspace rules\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"delta-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"}]},\"summary\":{\"collisionsPredicted\":3,\"collisionsAvoided\":2,\"nearMissesReplayed\":1,\"noFlyViolationsBlocked\":1,\"flightsReroutedByTower\":0,\"flightsHeldBeforeSharedZoneConflict\":1,\"landingsPassedFirstTry\":0,\"goAroundRate\":1,\"groundStopEvents\":1,\"averageTimeToClearanceMs\":300000,\"averageTimeInHoldingMs\":79179925,\"staleReadsDetected\":1,\"assumptionInvalidationsBeforeWrite\":1,\"serializableTransactionAbortRate\":0.5,\"shadowMergeSimulatorAccuracy\":1,\"codeSiteFsBlockedWrites\":1,\"illegalWritesQuarantined\":1,\"proofBundlesVerifiedOutsideUi\":2,\"lineProvenanceCoverage\":1,\"mergeConflictsAvoided\":1,\"contractDriftIncidents\":0,\"migrationRollbackCoverage\":1,\"securityFindingsBeforeMerge\":1,\"testsRedAtLanding\":1,\"postMergeRollbackRate\":0,\"percentageWritesWithValidClearance\":0.3333,\"blackBoxCompletenessScore\":0.855,\"humanReviewTimeSavedMs\":210000,\"pilotLicenseViolationRate\":0,\"repeatedNearMissesConvertedToAirspaceRules\":1},\"evidence\":{\"eventTypeCounts\":{\"write_attempted\":1,\"write_allowed\":1,\"write_denied\":1,\"write_quarantined\":1,\"transaction_validated\":1,\"black_box_closed\":1,\"proof_bundle_verified\":1,\"tower_instruction\":1,\"ground_stop\":1},\"transactionStatusCounts\":{\"committed\":1,\"aborted\":1},\"leaseStatusCounts\":{\"active\":1},\"inspectionStatusCounts\":{\"passed\":1},\"policyDecisionCounts\":{\"hold\":1,\"block\":1},\"pilotLicenseStatusCounts\":{\"active\":1},\"reasonCodeCounts\":{\"entered_no_fly_zone\":2,\"stale_read_detected\":1,\"mayday_ground_stop\":1,\"collision_avoidance_hold\":1,\"schema_first_leader_clearance\":1,\"serializable_validation_passed\":1,\"semantic_collision_mitigated\":1,\"document_approved\":1,\"pilot_license_health_active\":1},\"dataSources\":{\"events\":9,\"policyDecisions\":2,\"transactions\":2,\"mutationLeases\":1,\"inspectionRuns\":1,\"incidents\":2,\"proofBundles\":1,\"lineProvenance\":2,\"counterfactualRuns\":1,\"documentReviews\":1,\"assumptions\":1,\"pilotLicenseHealth\":1}}}\n",
       "outputTail": [
-        "{\"schemaVersion\":\"synthi.codesite.metrics.v1\",\"projectId\":\"metrics-mature-project\",\"workspaceSlug\":\"codesite-mature-metrics-proof\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"status\":\"measured\",\"sections\":{\"atc\":[{\"key\":\"collisionsPredicted\",\"label\":\"Collisions predicted\",\"unit\":\"count\",\"value\":3,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"risk-schema\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"collisionsAvoided\",\"label\":\"Collisions avoided\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\",\"shadow-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"nearMissesReplayed\",\"label\":\"Near-misses replayed\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"noFlyViolationsBlocked\",\"label\":\"No-fly violations blocked\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\",\"decision-nofly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"flightsReroutedByTower\",\"label\":\"Flights rerouted by tower\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"flightsHeldBeforeSharedZoneConflict\",\"label\":\"Flights held before shared-zone conflict\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"landingsPassedFirstTry\",\"label\":\"Landings passed first try\",\"unit\":\"count\",\"value\":0,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"goAroundRate\",\"label\":\"Go-around rate\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"groundStopEvents\",\"label\":\"Ground-stop events\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"ground-stop-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"averageTimeToClearanceMs\",\"label\":\"Average time to clearance\",\"unit\":\"duration_ms\",\"value\":300000,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"lease-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"samples\":1}},{\"key\":\"averageTimeInHoldingMs\",\"label\":\"Average time in holding\",\"unit\":\"duration_ms\",\"value\":15913970,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"plan-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"samples\":1}}],\"transaction\":[{\"key\":\"staleReadsDetected\",\"label\":\"Stale reads detected\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"transaction-validated-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"assumptionInvalidationsBeforeWrite\",\"label\":\"Assumption invalidations before write\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"assumption-contract\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"serializableTransactionAbortRate\",\"label\":\"Serializable transaction abort rate\",\"unit\":\"ratio\",\"value\":0.5,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"txn-abort\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":2}},{\"key\":\"shadowMergeSimulatorAccuracy\",\"label\":\"Shadow merge simulator accuracy\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"codeSiteFsBlockedWrites\",\"label\":\"CodeSiteFS blocked writes\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"illegalWritesQuarantined\",\"label\":\"Illegal writes quarantined\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"write-quarantine-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"proofBundlesVerifiedOutsideUi\",\"label\":\"Proof bundles verified outside UI\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"black-box-verified-1\",\"proof-bundle-verified-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"lineProvenanceCoverage\",\"label\":\"Lines with causal provenance coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"line-schema\",\"line:evidence:schema\",\"line-auth\",\"line:evidence:auth\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":2,\"denominator\":2}}],\"quality\":[{\"key\":\"mergeConflictsAvoided\",\"label\":\"Merge conflicts avoided\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"contractDriftIncidents\",\"label\":\"Contract drift incidents\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"migrationRollbackCoverage\",\"label\":\"Migration rollback coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:3\",\"migration:rollback-plan\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"securityFindingsBeforeMerge\",\"label\":\"Security findings before merge\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:2\",\"security:finding-before-merge\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"testsRedAtLanding\",\"label\":\"Tests red at landing\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:1\",\"test:red-before-landing\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"},{\"key\":\"postMergeRollbackRate\",\"label\":\"Post-merge rollback rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":0,\"denominator\":1}}],\"trust\":[{\"key\":\"percentageWritesWithValidClearance\",\"label\":\"Writes with valid clearance\",\"unit\":\"ratio\",\"value\":0.3333,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-attempt-1\",\"write-allowed-1\",\"write:evidence:schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1,\"denominator\":3}},{\"key\":\"blackBoxCompletenessScore\",\"label\":\"Black-box completeness score\",\"unit\":\"ratio\",\"value\":0.855,\"sampleSize\":6,\"status\":\"measured\",\"evidenceRefs\":[\"incident-black-box\",\"sha256:replay\",\"incident:black-box\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":1.71,\"denominator\":2}},{\"key\":\"humanReviewTimeSavedMs\",\"label\":\"Human review time saved\",\"unit\":\"duration_ms\",\"value\":210000,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"document-review:review-1\",\"document-review:evidence\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"samples\":1,\"baselineReviewTimeMs\":300000,\"reviewTimeMs\":90000,\"reviewOverrunMs\":0}},{\"key\":\"pilotLicenseViolationRate\",\"label\":\"Pilot license violation rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\",\"detail\":{\"numerator\":0,\"denominator\":2}},{\"key\":\"repeatedNearMissesConvertedToAirspaceRules\",\"label\":\"Repeated near-misses converted to airspace rules\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"delta-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-04T14:25:13.970Z\"}]},\"summary\":{\"collisionsPredicted\":3,\"collisionsAvoided\":2,\"nearMissesReplayed\":1,\"noFlyViolationsBlocked\":1,\"flightsReroutedByTower\":0,\"flightsHeldBeforeSharedZoneConflict\":1,\"landingsPassedFirstTry\":0,\"goAroundRate\":1,\"groundStopEvents\":1,\"averageTimeToClearanceMs\":300000,\"averageTimeInHoldingMs\":15913970,\"staleReadsDetected\":1,\"assumptionInvalidationsBeforeWrite\":1,\"serializableTransactionAbortRate\":0.5,\"shadowMergeSimulatorAccuracy\":1,\"codeSiteFsBlockedWrites\":1,\"illegalWritesQuarantined\":1,\"proofBundlesVerifiedOutsideUi\":2,\"lineProvenanceCoverage\":1,\"mergeConflictsAvoided\":1,\"contractDriftIncidents\":0,\"migrationRollbackCoverage\":1,\"securityFindingsBeforeMerge\":1,\"testsRedAtLanding\":1,\"postMergeRollbackRate\":0,\"percentageWritesWithValidClearance\":0.3333,\"blackBoxCompletenessScore\":0.855,\"humanReviewTimeSavedMs\":210000,\"pilotLicenseViolationRate\":0,\"repeatedNearMissesConvertedToAirspaceRules\":1},\"evidence\":{\"eventTypeCounts\":{\"write_attempted\":1,\"write_allowed\":1,\"write_denied\":1,\"write_quarantined\":1,\"transaction_validated\":1,\"black_box_closed\":1,\"proof_bundle_verified\":1,\"tower_instruction\":1,\"ground_stop\":1},\"transactionStatusCounts\":{\"committed\":1,\"aborted\":1},\"leaseStatusCounts\":{\"active\":1},\"inspectionStatusCounts\":{\"passed\":1},\"policyDecisionCounts\":{\"hold\":1,\"block\":1},\"pilotLicenseStatusCounts\":{\"active\":1},\"reasonCodeCounts\":{\"entered_no_fly_zone\":2,\"stale_read_detected\":1,\"mayday_ground_stop\":1,\"collision_avoidance_hold\":1,\"schema_first_leader_clearance\":1,\"serializable_validation_passed\":1,\"semantic_collision_mitigated\":1,\"document_approved\":1,\"pilot_license_health_active\":1},\"dataSources\":{\"events\":9,\"policyDecisions\":2,\"transactions\":2,\"mutationLeases\":1,\"inspectionRuns\":1,\"incidents\":2,\"proofBundles\":1,\"lineProvenance\":2,\"counterfactualRuns\":1,\"documentReviews\":1,\"assumptions\":1,\"pilotLicenseHealth\":1}}}",
-        "npm warn exec The following package was not found and will be installed: vite-node@6.0.0",
+        "{\"schemaVersion\":\"synthi.codesite.metrics.v1\",\"projectId\":\"metrics-mature-project\",\"workspaceSlug\":\"codesite-mature-metrics-proof\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"status\":\"measured\",\"sections\":{\"atc\":[{\"key\":\"collisionsPredicted\",\"label\":\"Collisions predicted\",\"unit\":\"count\",\"value\":3,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"risk-schema\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"collisionsAvoided\",\"label\":\"Collisions avoided\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\",\"shadow-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"nearMissesReplayed\",\"label\":\"Near-misses replayed\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"noFlyViolationsBlocked\",\"label\":\"No-fly violations blocked\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\",\"decision-nofly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"flightsReroutedByTower\",\"label\":\"Flights rerouted by tower\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"flightsHeldBeforeSharedZoneConflict\",\"label\":\"Flights held before shared-zone conflict\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"landingsPassedFirstTry\",\"label\":\"Landings passed first try\",\"unit\":\"count\",\"value\":0,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"goAroundRate\",\"label\":\"Go-around rate\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"groundStopEvents\",\"label\":\"Ground-stop events\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"ground-stop-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"averageTimeToClearanceMs\",\"label\":\"Average time to clearance\",\"unit\":\"duration_ms\",\"value\":300000,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"lease-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"samples\":1}},{\"key\":\"averageTimeInHoldingMs\",\"label\":\"Average time in holding\",\"unit\":\"duration_ms\",\"value\":79179925,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"plan-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"samples\":1}}],\"transaction\":[{\"key\":\"staleReadsDetected\",\"label\":\"Stale reads detected\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"transaction-validated-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"assumptionInvalidationsBeforeWrite\",\"label\":\"Assumption invalidations before write\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"assumption-contract\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"serializableTransactionAbortRate\",\"label\":\"Serializable transaction abort rate\",\"unit\":\"ratio\",\"value\":0.5,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"txn-abort\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":2}},{\"key\":\"shadowMergeSimulatorAccuracy\",\"label\":\"Shadow merge simulator accuracy\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"codeSiteFsBlockedWrites\",\"label\":\"CodeSiteFS blocked writes\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"illegalWritesQuarantined\",\"label\":\"Illegal writes quarantined\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"write-quarantine-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"proofBundlesVerifiedOutsideUi\",\"label\":\"Proof bundles verified outside UI\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"black-box-verified-1\",\"proof-bundle-verified-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"lineProvenanceCoverage\",\"label\":\"Lines with causal provenance coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"line-schema\",\"line:evidence:schema\",\"line-auth\",\"line:evidence:auth\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":2,\"denominator\":2}}],\"quality\":[{\"key\":\"mergeConflictsAvoided\",\"label\":\"Merge conflicts avoided\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"contractDriftIncidents\",\"label\":\"Contract drift incidents\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"migrationRollbackCoverage\",\"label\":\"Migration rollback coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:3\",\"migration:rollback-plan\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"securityFindingsBeforeMerge\",\"label\":\"Security findings before merge\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:2\",\"security:finding-before-merge\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"testsRedAtLanding\",\"label\":\"Tests red at landing\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:1\",\"test:red-before-landing\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"},{\"key\":\"postMergeRollbackRate\",\"label\":\"Post-merge rollback rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":0,\"denominator\":1}}],\"trust\":[{\"key\":\"percentageWritesWithValidClearance\",\"label\":\"Writes with valid clearance\",\"unit\":\"ratio\",\"value\":0.3333,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-attempt-1\",\"write-allowed-1\",\"write:evidence:schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1,\"denominator\":3}},{\"key\":\"blackBoxCompletenessScore\",\"label\":\"Black-box completeness score\",\"unit\":\"ratio\",\"value\":0.855,\"sampleSize\":6,\"status\":\"measured\",\"evidenceRefs\":[\"incident-black-box\",\"sha256:replay\",\"incident:black-box\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":1.71,\"denominator\":2}},{\"key\":\"humanReviewTimeSavedMs\",\"label\":\"Human review time saved\",\"unit\":\"duration_ms\",\"value\":210000,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"document-review:review-1\",\"document-review:evidence\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"samples\":1,\"baselineReviewTimeMs\":300000,\"reviewTimeMs\":90000,\"reviewOverrunMs\":0}},{\"key\":\"pilotLicenseViolationRate\",\"label\":\"Pilot license violation rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\",\"detail\":{\"numerator\":0,\"denominator\":2}},{\"key\":\"repeatedNearMissesConvertedToAirspaceRules\",\"label\":\"Repeated near-misses converted to airspace rules\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"delta-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-05T07:59:39.925Z\"}]},\"summary\":{\"collisionsPredicted\":3,\"collisionsAvoided\":2,\"nearMissesReplayed\":1,\"noFlyViolationsBlocked\":1,\"flightsReroutedByTower\":0,\"flightsHeldBeforeSharedZoneConflict\":1,\"landingsPassedFirstTry\":0,\"goAroundRate\":1,\"groundStopEvents\":1,\"averageTimeToClearanceMs\":300000,\"averageTimeInHoldingMs\":79179925,\"staleReadsDetected\":1,\"assumptionInvalidationsBeforeWrite\":1,\"serializableTransactionAbortRate\":0.5,\"shadowMergeSimulatorAccuracy\":1,\"codeSiteFsBlockedWrites\":1,\"illegalWritesQuarantined\":1,\"proofBundlesVerifiedOutsideUi\":2,\"lineProvenanceCoverage\":1,\"mergeConflictsAvoided\":1,\"contractDriftIncidents\":0,\"migrationRollbackCoverage\":1,\"securityFindingsBeforeMerge\":1,\"testsRedAtLanding\":1,\"postMergeRollbackRate\":0,\"percentageWritesWithValidClearance\":0.3333,\"blackBoxCompletenessScore\":0.855,\"humanReviewTimeSavedMs\":210000,\"pilotLicenseViolationRate\":0,\"repeatedNearMissesConvertedToAirspaceRules\":1},\"evidence\":{\"eventTypeCounts\":{\"write_attempted\":1,\"write_allowed\":1,\"write_denied\":1,\"write_quarantined\":1,\"transaction_validated\":1,\"black_box_closed\":1,\"proof_bundle_verified\":1,\"tower_instruction\":1,\"ground_stop\":1},\"transactionStatusCounts\":{\"committed\":1,\"aborted\":1},\"leaseStatusCounts\":{\"active\":1},\"inspectionStatusCounts\":{\"passed\":1},\"policyDecisionCounts\":{\"hold\":1,\"block\":1},\"pilotLicenseStatusCounts\":{\"active\":1},\"reasonCodeCounts\":{\"entered_no_fly_zone\":2,\"stale_read_detected\":1,\"mayday_ground_stop\":1,\"collision_avoidance_hold\":1,\"schema_first_leader_clearance\":1,\"serializable_validation_passed\":1,\"semantic_collision_mitigated\":1,\"document_approved\":1,\"pilot_license_health_active\":1},\"dataSources\":{\"events\":9,\"policyDecisions\":2,\"transactions\":2,\"mutationLeases\":1,\"inspectionRuns\":1,\"incidents\":2,\"proofBundles\":1,\"lineProvenance\":2,\"counterfactualRuns\":1,\"documentReviews\":1,\"assumptions\":1,\"pilotLicenseHealth\":1}}}",
         "npm notice",
         "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
         "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
@@ -177,7 +176,7 @@
     },
     {
       "name": "dockerMetricsSuite",
-      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc npm exec vitest -- run src/lib/codesite/__tests__/metrics.test.js",
       "cwd": ".",
       "exitCode": 0,
       "signal": null,
@@ -188,19 +187,40 @@
         "tests": 6,
         "fail": 0
       },
-      "stdout": "\n\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m\n\n \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/metrics.test.js \u001b[2m(\u001b[22m\u001b[2m6 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 15\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m6 passed\u001b[39m\u001b[22m\u001b[90m (6)\u001b[39m\n\u001b[2m   Start at \u001b[22m 14:25:16\n\u001b[2m   Duration \u001b[22m 1.48s\u001b[2m (transform 451ms, setup 0ms, import 541ms, tests 15ms, environment 719ms)\u001b[22m\n\n",
+      "stdout": "\n RUN  v2.1.9 /repo/synthi\n\n ✓ src/lib/codesite/__tests__/metrics.test.js (6 tests) 10ms\n\n Test Files  1 passed (1)\n      Tests  6 passed (6)\n   Start at  07:59:44\n   Duration  44.40s (transform 153ms, setup 0ms, collect 231ms, tests 10ms, environment 40.85s, prepare 2.22s)\n\n",
       "outputTail": [
-        " RUN  v4.1.9 /repo/synthi",
-        " ✓ src/lib/codesite/__tests__/metrics.test.js (6 tests) 15ms",
+        " RUN  v2.1.9 /repo/synthi",
+        " ✓ src/lib/codesite/__tests__/metrics.test.js (6 tests) 10ms",
         " Test Files  1 passed (1)",
         "      Tests  6 passed (6)",
-        "   Start at  14:25:16",
-        "   Duration  1.48s (transform 451ms, setup 0ms, import 541ms, tests 15ms, environment 719ms)",
+        "   Start at  07:59:44",
+        "   Duration  44.40s (transform 153ms, setup 0ms, collect 231ms, tests 10ms, environment 40.85s, prepare 2.22s)",
         "npm notice",
         "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
         "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
         "npm notice To update run: npm install -g npm@11.18.0",
         "npm notice"
+      ]
+    },
+    {
+      "name": "proofSuiteGenerator:metrics",
+      "command": "node tmp/codesite-dojo-proof/run-mature-metrics-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-metrics-proof.json\",",
+        "  \"htmlPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-metrics-proof.html\",",
+        "  \"pngPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-metrics-proof.png\"",
+        "}"
       ]
     }
   ],
@@ -208,7 +228,7 @@
     "schemaVersion": "synthi.codesite.metrics.v1",
     "projectId": "metrics-mature-project",
     "workspaceSlug": "codesite-mature-metrics-proof",
-    "generatedAt": "2026-07-04T14:25:13.970Z",
+    "generatedAt": "2026-07-05T07:59:39.925Z",
     "status": "measured",
     "sections": {
       "atc": [
@@ -226,7 +246,7 @@
             "incident:near-miss"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "collisionsAvoided",
@@ -240,7 +260,7 @@
             "shadow-1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "nearMissesReplayed",
@@ -255,7 +275,7 @@
             "incident:near-miss"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "noFlyViolationsBlocked",
@@ -270,7 +290,7 @@
             "decision-nofly"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "flightsReroutedByTower",
@@ -281,7 +301,7 @@
           "status": "measured",
           "evidenceRefs": [],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "flightsHeldBeforeSharedZoneConflict",
@@ -294,7 +314,7 @@
             "decision-hold"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "landingsPassedFirstTry",
@@ -308,7 +328,7 @@
             "inspection:passed"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "goAroundRate",
@@ -322,7 +342,7 @@
             "inspection:passed"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 1,
             "denominator": 1
@@ -339,7 +359,7 @@
             "ground-stop-1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "averageTimeToClearanceMs",
@@ -352,7 +372,7 @@
             "lease-schema"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "samples": 1
           }
@@ -361,14 +381,14 @@
           "key": "averageTimeInHoldingMs",
           "label": "Average time in holding",
           "unit": "duration_ms",
-          "value": 15913970,
+          "value": 79179925,
           "sampleSize": 1,
           "status": "measured",
           "evidenceRefs": [
             "plan-schema"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "samples": 1
           }
@@ -386,7 +406,7 @@
             "transaction-validated-1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "assumptionInvalidationsBeforeWrite",
@@ -399,7 +419,7 @@
             "assumption-contract"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "serializableTransactionAbortRate",
@@ -412,7 +432,7 @@
             "txn-abort"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 1,
             "denominator": 2
@@ -430,7 +450,7 @@
             "shadow:job:1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 1,
             "denominator": 1
@@ -448,7 +468,7 @@
             "codesitefs:block:no-fly"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "illegalWritesQuarantined",
@@ -461,7 +481,7 @@
             "write-quarantine-1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "proofBundlesVerifiedOutsideUi",
@@ -475,7 +495,7 @@
             "proof-bundle-verified-1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "lineProvenanceCoverage",
@@ -491,7 +511,7 @@
             "line:evidence:auth"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 2,
             "denominator": 2
@@ -511,7 +531,7 @@
             "shadow:job:1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "contractDriftIncidents",
@@ -522,7 +542,7 @@
           "status": "measured",
           "evidenceRefs": [],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "migrationRollbackCoverage",
@@ -536,7 +556,7 @@
             "migration:rollback-plan"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 1,
             "denominator": 1
@@ -554,7 +574,7 @@
             "security:finding-before-merge"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "testsRedAtLanding",
@@ -568,7 +588,7 @@
             "test:red-before-landing"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         },
         {
           "key": "postMergeRollbackRate",
@@ -579,7 +599,7 @@
           "status": "measured",
           "evidenceRefs": [],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 0,
             "denominator": 1
@@ -600,7 +620,7 @@
             "write:evidence:schema"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 1,
             "denominator": 3
@@ -622,7 +642,7 @@
             "incident:near-miss"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 1.71,
             "denominator": 2
@@ -640,7 +660,7 @@
             "document-review:evidence"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "samples": 1,
             "baselineReviewTimeMs": 300000,
@@ -657,7 +677,7 @@
           "status": "measured",
           "evidenceRefs": [],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z",
+          "generatedAt": "2026-07-05T07:59:39.925Z",
           "detail": {
             "numerator": 0,
             "denominator": 2
@@ -674,7 +694,7 @@
             "delta-1"
           ],
           "source": "codesite_control_plane",
-          "generatedAt": "2026-07-04T14:25:13.970Z"
+          "generatedAt": "2026-07-05T07:59:39.925Z"
         }
       ]
     },
@@ -689,7 +709,7 @@
       "goAroundRate": 1,
       "groundStopEvents": 1,
       "averageTimeToClearanceMs": 300000,
-      "averageTimeInHoldingMs": 15913970,
+      "averageTimeInHoldingMs": 79179925,
       "staleReadsDetected": 1,
       "assumptionInvalidationsBeforeWrite": 1,
       "serializableTransactionAbortRate": 0.5,
@@ -765,5 +785,10 @@
         "pilotLicenseHealth": 1
       }
     }
+  },
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-05T08:00:45.905Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-metrics-proof.json"
   }
 }

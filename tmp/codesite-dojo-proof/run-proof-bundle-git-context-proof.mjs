@@ -102,6 +102,51 @@ function releaseGateFailures(releaseGate) {
   return Array.isArray(releaseGate.json?.failures) ? releaseGate.json.failures : [];
 }
 
+function listFiles(root) {
+  if (!fs.existsSync(root)) return [];
+  const entries = fs.readdirSync(root, { withFileTypes: true });
+  return entries.flatMap((entry) => {
+    const entryPath = path.join(root, entry.name);
+    return entry.isDirectory() ? listFiles(entryPath) : [entryPath];
+  });
+}
+
+function latestWorkflowProofBundle() {
+  const proofPath = path.join(proofRoot, 'codesite-full-workflow-proof.json');
+  const proof = JSON.parse(fs.readFileSync(proofPath, 'utf8'));
+  const slug = proof.slug || proof.workspaceSlug || proof.run?.slug;
+  const artifactsRoot = path.join(proofRoot, 'app-artifacts', slug || '');
+  const bundlePath = listFiles(artifactsRoot).find((file) => file.endsWith('.proof.json'));
+  if (!bundlePath) {
+    throw new Error(`no proof bundle found under ${path.relative(repoRoot, artifactsRoot)}`);
+  }
+  return { proofPath, slug, artifactsRoot, bundlePath };
+}
+
+function writeStaleTrailers(bundlePath) {
+  const bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf8'));
+  const negativeRoot = path.join(proofRoot, '.proof-bundle-negative');
+  fs.rmSync(negativeRoot, { recursive: true, force: true });
+  fs.mkdirSync(negativeRoot, { recursive: true });
+  const trailersPath = path.join(negativeRoot, 'stale.trailers.txt');
+  fs.writeFileSync(trailersPath, [
+    `CodeSite-Project: ${bundle.projectId || 'stale-project'}`,
+    `CodeSite-Flight: ${bundle.displayCallsign || 'STALE-00'}`,
+    `CodeSite-Clearance: ${bundle.mutationLeaseId || 'stale-lease'}`,
+    `CodeSite-Landing: ${bundle.landingStatus || 'landed'}`,
+    `CodeSite-Transaction: ${bundle.transactionId || 'stale-transaction'}`,
+    `CodeSite-Lease: ${bundle.mutationLeaseId || 'stale-lease'}`,
+    `CodeSite-Read-Set: ${bundle.readSetDigest || 'sha256:stale-read'}`,
+    `CodeSite-Write-Set: ${bundle.writeSetDigest || 'sha256:stale-write'}`,
+    `CodeSite-Black-Box: ${bundle.incidentReplayDigest || bundle.bundleDigest || bundle.portableDigest || 'sha256:stale-black-box'}`,
+    'CodeSite-Proof-Digest: sha256:stale-sidecar-digest',
+    'CodeSite-Proof-Authority: stale-sidecar-authority',
+    'CodeSite-Proof-Signature: stale-sidecar-signature',
+    '',
+  ].join('\n'));
+  return trailersPath;
+}
+
 function renderHtml(proof) {
   const assertionRows = proof.assertions.map((item) => (
     `<tr><td class="${item.ok ? 'ok' : 'fail'}">${item.ok ? 'PASS' : 'FAIL'}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(JSON.stringify(item.details || {}))}</td></tr>`
@@ -221,10 +266,6 @@ async function main() {
       '--rm',
       '-v',
       `${repoRoot}:/repo`,
-      '-v',
-      'codesite-node-modules-root:/repo/node_modules',
-      '-v',
-      'codesite-node-modules-synthi:/repo/synthi/node_modules',
       '-w',
       '/repo/synthi',
       '-e',
@@ -244,24 +285,39 @@ async function main() {
     });
   }
 
-  const releaseGate = run(process.execPath, ['synthi/scripts/codesite-release-gate.mjs'], { name: 'freshReleaseGateNegativeCheck' });
-  const proofBundles = releaseGateProofBundleCheck(releaseGate);
-  const failures = releaseGateFailures(releaseGate);
-  const staleSidecarRejected = releaseGate.exitCode !== 0
-    && proofBundles?.ok === false
-    && failures.some((failure) => String(failure).includes('CodeSite-Proof-Digest mismatch'))
-    && failures.some((failure) => String(failure).includes('CodeSite-Proof-Signature mismatch'));
+  const workflowBundle = latestWorkflowProofBundle();
+  const staleTrailersPath = writeStaleTrailers(workflowBundle.bundlePath);
+  const staleSidecarCheck = run(process.execPath, [
+    'synthi/scripts/codesite-proof-verify.mjs',
+    '--bundle',
+    workflowBundle.bundlePath,
+    '--trailers',
+    staleTrailersPath,
+    '--require-trailers',
+  ], { name: 'staleSidecarVerifierNegativeCheck' });
+  const staleSidecarErrors = staleSidecarCheck.json?.errors || [];
+  const staleSidecarRejected = staleSidecarCheck.exitCode !== 0
+    && staleSidecarErrors.some((failure) => String(failure).includes('CodeSite-Proof-Digest mismatch'))
+    && staleSidecarErrors.some((failure) => String(failure).includes('CodeSite-Proof-Signature mismatch'));
   negativeChecks.push({
     name: 'stale sidecar proof cannot satisfy actual git commit gate',
     ok: staleSidecarRejected,
     details: {
-      releaseGateExitCode: releaseGate.exitCode,
-      proofBundles,
-      matchingFailures: failures
+      verifierExitCode: staleSidecarCheck.exitCode,
+      bundlePath: path.relative(repoRoot, workflowBundle.bundlePath),
+      staleTrailersPath: path.relative(repoRoot, staleTrailersPath),
+      matchingFailures: staleSidecarErrors
         .filter((failure) => String(failure).includes('CodeSite-Proof-Digest mismatch') || String(failure).includes('CodeSite-Proof-Signature mismatch'))
         .slice(0, 2),
     },
   });
+  const proofBundles = {
+    isolatedNegativeCheck: {
+      bundlePath: path.relative(repoRoot, workflowBundle.bundlePath),
+      staleTrailersPath: path.relative(repoRoot, staleTrailersPath),
+      verifierExitCode: staleSidecarCheck.exitCode,
+    },
+  };
 
   const proof = {
     schemaVersion: 'synthi.codesite.proofBundleGitContextProof.v1',

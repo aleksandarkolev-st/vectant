@@ -1,20 +1,132 @@
 {
-  "generatedAt": "2026-07-01T06:26:31.831Z",
-  "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-radar-adapter-proof-1782887114713",
+  "generatedAt": "2026-07-05T07:59:08.263Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-radar-adapter-proof-1783238321975",
   "project": {
-    "id": "cmr1ozuak0000ob5b2zda03xd",
-    "title": "Radar adapter proof"
+    "id": "cmr7i21j300gbmz019dzn6a4y",
+    "title": "Radar adapter proof",
+    "route": "/workspace/codesite-radar-adapter-proof-1783238321975/codesite"
+  },
+  "schemaProject": {
+    "id": "cmr7i21j300gbmz019dzn6a4y",
+    "title": "Radar adapter proof",
+    "route": "/workspace/codesite-radar-adapter-proof-1783238321975/codesite",
+    "activeFlights": [
+      {
+        "callsign": "SCHEMA-01",
+        "status": "preflight",
+        "route": [
+          "packages/schemas/auth/**",
+          "openapi/auth.yaml"
+        ]
+      },
+      {
+        "callsign": "API-02",
+        "status": "holding",
+        "route": [
+          "packages/schemas/auth/**",
+          "api/auth/**"
+        ]
+      },
+      {
+        "callsign": "UI-03",
+        "status": "holding",
+        "route": [
+          "components/auth/**",
+          "packages/schemas/auth/**"
+        ]
+      }
+    ],
+    "activeMutationLeases": [],
+    "collisionForecast": {
+      "riskLevel": "high",
+      "risks": [
+        {
+          "risk": "contract_collision",
+          "severity": "high",
+          "aircraft": [
+            "API-02",
+            "SCHEMA-01"
+          ],
+          "conflictZone": "packages/schemas/auth/**",
+          "overlaps": [
+            [
+              "packages/schemas/auth/**",
+              "packages/schemas/auth/**"
+            ]
+          ],
+          "recommendedResolution": {
+            "action": "schema_first",
+            "steps": [
+              "Put SCHEMA-01 in holding",
+              "Put API-02 in holding",
+              "Issue schema clearance first",
+              "Reissue downstream clearances after contract landing"
+            ]
+          }
+        },
+        {
+          "risk": "contract_collision",
+          "severity": "high",
+          "aircraft": [
+            "SCHEMA-01",
+            "UI-03"
+          ],
+          "conflictZone": "packages/schemas/auth/**",
+          "overlaps": [
+            [
+              "packages/schemas/auth/**",
+              "packages/schemas/auth/**"
+            ]
+          ],
+          "recommendedResolution": {
+            "action": "schema_first",
+            "steps": [
+              "Put SCHEMA-01 in holding",
+              "Put UI-03 in holding",
+              "Issue schema clearance first",
+              "Reissue downstream clearances after contract landing"
+            ]
+          }
+        },
+        {
+          "risk": "contract_collision",
+          "severity": "high",
+          "aircraft": [
+            "API-02",
+            "UI-03"
+          ],
+          "conflictZone": "packages/schemas/auth/**",
+          "overlaps": [
+            [
+              "packages/schemas/auth/**",
+              "packages/schemas/auth/**"
+            ]
+          ],
+          "recommendedResolution": {
+            "action": "schema_first",
+            "steps": [
+              "Put API-02 in holding",
+              "Put UI-03 in holding",
+              "Issue schema clearance first",
+              "Reissue downstream clearances after contract landing"
+            ]
+          }
+        }
+      ],
+      "runwayOccupancy": []
+    }
   },
   "inspectionRun": {
-    "id": "cmr1ozwn8001sob5bcjtvz2p9",
-    "projectId": "cmr1ozuak0000ob5b2zda03xd",
+    "id": "cmr7i2ebv00htmz01mxt2w45w",
+    "projectId": "cmr7i21j300gbmz019dzn6a4y",
     "executionPlanId": null,
     "displayCallsign": "RADAR-STACK-01",
     "status": "completed",
     "changedPaths": [
       "components/auth/SignupForm.tsx",
-      "api/auth/signup.ts"
+      "api/auth/signup.ts",
+      "packages/schemas/auth/signup.ts"
     ],
     "inspectionSignals": [
       {
@@ -26,7 +138,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"clearance radar adapter proof\")"
@@ -37,21 +149,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 80,
+        "durationMs": 42,
         "stdoutTail": "clearance radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+        "evidenceDigest": "sha256:7094652438204c7c7ae2552f345d6d51cd3e9bdb9a0be25bd3ff11487c9abe57",
         "evidenceRefs": [
-          "clearance:run:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
-          "artifact:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7"
+          "clearance:run:sha256:7094652438204c7c7ae2552f345d6d51cd3e9bdb9a0be25bd3ff11487c9abe57",
+          "artifact:sha256:7094652438204c7c7ae2552f345d6d51cd3e9bdb9a0be25bd3ff11487c9abe57"
         ],
         "reasonCodes": [
           "clearance_radar_passed",
           "clearance_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:27.597Z",
-        "completedAt": "2026-07-01T06:26:27.677Z"
+        "startedAt": "2026-07-05T07:59:03.493Z",
+        "completedAt": "2026-07-05T07:59:03.535Z"
       },
       {
         "key": "type",
@@ -62,7 +174,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"type radar adapter proof\")"
@@ -73,21 +185,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 67,
+        "durationMs": 41,
         "stdoutTail": "type radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+        "evidenceDigest": "sha256:741ad6ad24ea50fb0b588753e9be1f18ad9cdc8a7ad51d067c4533f6ef70a012",
         "evidenceRefs": [
-          "typecheck:run:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
-          "artifact:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222"
+          "typecheck:run:sha256:741ad6ad24ea50fb0b588753e9be1f18ad9cdc8a7ad51d067c4533f6ef70a012",
+          "artifact:sha256:741ad6ad24ea50fb0b588753e9be1f18ad9cdc8a7ad51d067c4533f6ef70a012"
         ],
         "reasonCodes": [
           "type_radar_passed",
           "type_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:27.677Z",
-        "completedAt": "2026-07-01T06:26:27.744Z"
+        "startedAt": "2026-07-05T07:59:03.535Z",
+        "completedAt": "2026-07-05T07:59:03.576Z"
       },
       {
         "key": "tests",
@@ -98,7 +210,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"tests radar adapter proof\")"
@@ -109,21 +221,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 70,
+        "durationMs": 40,
         "stdoutTail": "tests radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+        "evidenceDigest": "sha256:05876993c1a8dc69f37a5002fb7e4aea2c94e4dd47a3d7a526fef846791a3d4c",
         "evidenceRefs": [
-          "test:run:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
-          "artifact:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2"
+          "test:run:sha256:05876993c1a8dc69f37a5002fb7e4aea2c94e4dd47a3d7a526fef846791a3d4c",
+          "artifact:sha256:05876993c1a8dc69f37a5002fb7e4aea2c94e4dd47a3d7a526fef846791a3d4c"
         ],
         "reasonCodes": [
           "tests_radar_passed",
           "tests_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:27.744Z",
-        "completedAt": "2026-07-01T06:26:27.814Z"
+        "startedAt": "2026-07-05T07:59:03.576Z",
+        "completedAt": "2026-07-05T07:59:03.616Z"
       },
       {
         "key": "api_contract",
@@ -134,7 +246,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"api_contract radar adapter proof\")"
@@ -145,21 +257,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 65,
+        "durationMs": 58,
         "stdoutTail": "api_contract radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+        "evidenceDigest": "sha256:e0679b68db8dee62e56480315a85252c044103c4620c8834402ece81ed7dda72",
         "evidenceRefs": [
-          "api-contract:run:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
-          "artifact:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4"
+          "api-contract:run:sha256:e0679b68db8dee62e56480315a85252c044103c4620c8834402ece81ed7dda72",
+          "artifact:sha256:e0679b68db8dee62e56480315a85252c044103c4620c8834402ece81ed7dda72"
         ],
         "reasonCodes": [
           "api_contract_radar_passed",
           "api_contract_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:27.814Z",
-        "completedAt": "2026-07-01T06:26:27.879Z"
+        "startedAt": "2026-07-05T07:59:03.617Z",
+        "completedAt": "2026-07-05T07:59:03.675Z"
       },
       {
         "key": "security",
@@ -170,7 +282,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"security radar adapter proof\")"
@@ -181,21 +293,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 82,
+        "durationMs": 43,
         "stdoutTail": "security radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+        "evidenceDigest": "sha256:1e0552ef12d300a5de80dfc656599d15a2d559c3020cda67ea9688693cfa3988",
         "evidenceRefs": [
-          "security:scan:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
-          "artifact:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a"
+          "security:scan:sha256:1e0552ef12d300a5de80dfc656599d15a2d559c3020cda67ea9688693cfa3988",
+          "artifact:sha256:1e0552ef12d300a5de80dfc656599d15a2d559c3020cda67ea9688693cfa3988"
         ],
         "reasonCodes": [
           "security_radar_passed",
           "security_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:27.879Z",
-        "completedAt": "2026-07-01T06:26:27.961Z"
+        "startedAt": "2026-07-05T07:59:03.675Z",
+        "completedAt": "2026-07-05T07:59:03.718Z"
       },
       {
         "key": "migration",
@@ -206,7 +318,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"migration radar adapter proof\")"
@@ -217,21 +329,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 73,
+        "durationMs": 42,
         "stdoutTail": "migration radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+        "evidenceDigest": "sha256:9107919522f1c011e1005da03b187fb639e16bf05848a208d82b03b56c1eb82c",
         "evidenceRefs": [
-          "migration:plan:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
-          "artifact:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2"
+          "migration:plan:sha256:9107919522f1c011e1005da03b187fb639e16bf05848a208d82b03b56c1eb82c",
+          "artifact:sha256:9107919522f1c011e1005da03b187fb639e16bf05848a208d82b03b56c1eb82c"
         ],
         "reasonCodes": [
           "migration_radar_passed",
           "migration_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:27.961Z",
-        "completedAt": "2026-07-01T06:26:28.034Z"
+        "startedAt": "2026-07-05T07:59:03.718Z",
+        "completedAt": "2026-07-05T07:59:03.760Z"
       },
       {
         "key": "ui",
@@ -242,7 +354,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"ui radar adapter proof\")"
@@ -253,21 +365,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 80,
+        "durationMs": 41,
         "stdoutTail": "ui radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+        "evidenceDigest": "sha256:3993c5fdaa3c83373dff9d62acb3743e34fa3ad2b27591d404f5387f8b0b9151",
         "evidenceRefs": [
-          "ui:screenshot:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
-          "artifact:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84"
+          "ui:screenshot:sha256:3993c5fdaa3c83373dff9d62acb3743e34fa3ad2b27591d404f5387f8b0b9151",
+          "artifact:sha256:3993c5fdaa3c83373dff9d62acb3743e34fa3ad2b27591d404f5387f8b0b9151"
         ],
         "reasonCodes": [
           "ui_radar_passed",
           "ui_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:28.038Z",
-        "completedAt": "2026-07-01T06:26:28.118Z"
+        "startedAt": "2026-07-05T07:59:03.760Z",
+        "completedAt": "2026-07-05T07:59:03.801Z"
       },
       {
         "key": "accessibility",
@@ -278,7 +390,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"accessibility radar adapter proof\")"
@@ -289,21 +401,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 69,
+        "durationMs": 42,
         "stdoutTail": "accessibility radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+        "evidenceDigest": "sha256:16c385b52121b1e48389a6c4596433c320a1f26ebedfd41ebef8d4b970637706",
         "evidenceRefs": [
-          "accessibility:audit:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
-          "artifact:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62"
+          "accessibility:audit:sha256:16c385b52121b1e48389a6c4596433c320a1f26ebedfd41ebef8d4b970637706",
+          "artifact:sha256:16c385b52121b1e48389a6c4596433c320a1f26ebedfd41ebef8d4b970637706"
         ],
         "reasonCodes": [
           "accessibility_radar_passed",
           "accessibility_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:28.118Z",
-        "completedAt": "2026-07-01T06:26:28.187Z"
+        "startedAt": "2026-07-05T07:59:03.801Z",
+        "completedAt": "2026-07-05T07:59:03.843Z"
       },
       {
         "key": "runtime",
@@ -314,7 +426,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"runtime radar adapter proof\")"
@@ -325,21 +437,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 72,
+        "durationMs": 40,
         "stdoutTail": "runtime radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+        "evidenceDigest": "sha256:4396651a056952f0a4cd9dd0866d6fc774df302adb7c1d720ee697903a8b742f",
         "evidenceRefs": [
-          "runtime:event:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
-          "artifact:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5"
+          "runtime:event:sha256:4396651a056952f0a4cd9dd0866d6fc774df302adb7c1d720ee697903a8b742f",
+          "artifact:sha256:4396651a056952f0a4cd9dd0866d6fc774df302adb7c1d720ee697903a8b742f"
         ],
         "reasonCodes": [
           "runtime_radar_passed",
           "runtime_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:28.187Z",
-        "completedAt": "2026-07-01T06:26:28.259Z"
+        "startedAt": "2026-07-05T07:59:03.843Z",
+        "completedAt": "2026-07-05T07:59:03.883Z"
       },
       {
         "key": "performance",
@@ -350,7 +462,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"performance radar adapter proof\")"
@@ -361,21 +473,21 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 110,
+        "durationMs": 40,
         "stdoutTail": "performance radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+        "evidenceDigest": "sha256:43d3c283f8788a189046b85ffb4efd2633b08441ba85affbf766846ec6c6396d",
         "evidenceRefs": [
-          "performance:budget:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
-          "artifact:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8"
+          "performance:budget:sha256:43d3c283f8788a189046b85ffb4efd2633b08441ba85affbf766846ec6c6396d",
+          "artifact:sha256:43d3c283f8788a189046b85ffb4efd2633b08441ba85affbf766846ec6c6396d"
         ],
         "reasonCodes": [
           "performance_radar_passed",
           "performance_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:28.260Z",
-        "completedAt": "2026-07-01T06:26:28.370Z"
+        "startedAt": "2026-07-05T07:59:03.883Z",
+        "completedAt": "2026-07-05T07:59:03.923Z"
       },
       {
         "key": "handover",
@@ -386,7 +498,7 @@
         },
         "status": "passed",
         "command": {
-          "executable": "/usr/local/bin/node",
+          "executable": "node",
           "args": [
             "-e",
             "console.log(\"handover radar adapter proof\")"
@@ -397,55 +509,55 @@
         "exitCode": 0,
         "signal": null,
         "timedOut": false,
-        "durationMs": 69,
+        "durationMs": 37,
         "stdoutTail": "handover radar adapter proof\n",
         "stderrTail": "",
-        "evidenceDigest": "sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
+        "evidenceDigest": "sha256:701a7a1a6d81ff6049881fa5066ddc5020af0276d2f0804fd3dc9451677e86ec",
         "evidenceRefs": [
-          "handover:packet:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
-          "artifact:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5"
+          "handover:packet:sha256:701a7a1a6d81ff6049881fa5066ddc5020af0276d2f0804fd3dc9451677e86ec",
+          "artifact:sha256:701a7a1a6d81ff6049881fa5066ddc5020af0276d2f0804fd3dc9451677e86ec"
         ],
         "reasonCodes": [
           "handover_radar_passed",
           "handover_adapter_executed"
         ],
         "source": "codesite_inspection_executor",
-        "startedAt": "2026-07-01T06:26:28.370Z",
-        "completedAt": "2026-07-01T06:26:28.439Z"
+        "startedAt": "2026-07-05T07:59:03.923Z",
+        "completedAt": "2026-07-05T07:59:03.960Z"
       }
     ],
     "evidenceRefs": [
-      "clearance:run:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
-      "artifact:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
-      "typecheck:run:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
-      "artifact:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
-      "test:run:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
-      "artifact:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
-      "api-contract:run:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
-      "artifact:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
-      "security:scan:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
-      "artifact:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
-      "migration:plan:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
-      "artifact:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
-      "ui:screenshot:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
-      "artifact:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
-      "accessibility:audit:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
-      "artifact:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
-      "runtime:event:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
-      "artifact:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
-      "performance:budget:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
-      "artifact:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
-      "handover:packet:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
-      "artifact:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5"
+      "clearance:run:sha256:7094652438204c7c7ae2552f345d6d51cd3e9bdb9a0be25bd3ff11487c9abe57",
+      "artifact:sha256:7094652438204c7c7ae2552f345d6d51cd3e9bdb9a0be25bd3ff11487c9abe57",
+      "typecheck:run:sha256:741ad6ad24ea50fb0b588753e9be1f18ad9cdc8a7ad51d067c4533f6ef70a012",
+      "artifact:sha256:741ad6ad24ea50fb0b588753e9be1f18ad9cdc8a7ad51d067c4533f6ef70a012",
+      "test:run:sha256:05876993c1a8dc69f37a5002fb7e4aea2c94e4dd47a3d7a526fef846791a3d4c",
+      "artifact:sha256:05876993c1a8dc69f37a5002fb7e4aea2c94e4dd47a3d7a526fef846791a3d4c",
+      "api-contract:run:sha256:e0679b68db8dee62e56480315a85252c044103c4620c8834402ece81ed7dda72",
+      "artifact:sha256:e0679b68db8dee62e56480315a85252c044103c4620c8834402ece81ed7dda72",
+      "security:scan:sha256:1e0552ef12d300a5de80dfc656599d15a2d559c3020cda67ea9688693cfa3988",
+      "artifact:sha256:1e0552ef12d300a5de80dfc656599d15a2d559c3020cda67ea9688693cfa3988",
+      "migration:plan:sha256:9107919522f1c011e1005da03b187fb639e16bf05848a208d82b03b56c1eb82c",
+      "artifact:sha256:9107919522f1c011e1005da03b187fb639e16bf05848a208d82b03b56c1eb82c",
+      "ui:screenshot:sha256:3993c5fdaa3c83373dff9d62acb3743e34fa3ad2b27591d404f5387f8b0b9151",
+      "artifact:sha256:3993c5fdaa3c83373dff9d62acb3743e34fa3ad2b27591d404f5387f8b0b9151",
+      "accessibility:audit:sha256:16c385b52121b1e48389a6c4596433c320a1f26ebedfd41ebef8d4b970637706",
+      "artifact:sha256:16c385b52121b1e48389a6c4596433c320a1f26ebedfd41ebef8d4b970637706",
+      "runtime:event:sha256:4396651a056952f0a4cd9dd0866d6fc774df302adb7c1d720ee697903a8b742f",
+      "artifact:sha256:4396651a056952f0a4cd9dd0866d6fc774df302adb7c1d720ee697903a8b742f",
+      "performance:budget:sha256:43d3c283f8788a189046b85ffb4efd2633b08441ba85affbf766846ec6c6396d",
+      "artifact:sha256:43d3c283f8788a189046b85ffb4efd2633b08441ba85affbf766846ec6c6396d",
+      "handover:packet:sha256:701a7a1a6d81ff6049881fa5066ddc5020af0276d2f0804fd3dc9451677e86ec",
+      "artifact:sha256:701a7a1a6d81ff6049881fa5066ddc5020af0276d2f0804fd3dc9451677e86ec"
     ],
-    "requestedAt": "2026-07-01T06:26:25.412Z",
-    "completedAt": "2026-07-01T06:26:28.440Z"
+    "requestedAt": "2026-07-05T07:59:01.387Z",
+    "completedAt": "2026-07-05T07:59:03.960Z"
   },
   "adapterRows": [
     {
       "adapter": "clearance",
       "status": "passed",
-      "evidenceRef": "clearance:run:sha256:63bdaa7e5cb7484c847b1012eecb852887987ab1b352ec16e5728d681abd84d7",
+      "evidenceRef": "clearance:run:sha256:7094652438204c7c7ae2552f345d6d51cd3e9bdb9a0be25bd3ff11487c9abe57",
       "reasonCodes": [
         "clearance_radar_passed",
         "clearance_adapter_executed"
@@ -454,7 +566,7 @@
     {
       "adapter": "type",
       "status": "passed",
-      "evidenceRef": "typecheck:run:sha256:f7dfcfae337c69ee8bf568ae085f72f768396191f4babb782d92a1dee53d1222",
+      "evidenceRef": "typecheck:run:sha256:741ad6ad24ea50fb0b588753e9be1f18ad9cdc8a7ad51d067c4533f6ef70a012",
       "reasonCodes": [
         "type_radar_passed",
         "type_adapter_executed"
@@ -463,7 +575,7 @@
     {
       "adapter": "tests",
       "status": "passed",
-      "evidenceRef": "test:run:sha256:04e2b7771d3247cb6d0778280e98a182dee227ae98be2e49f3462792407834a2",
+      "evidenceRef": "test:run:sha256:05876993c1a8dc69f37a5002fb7e4aea2c94e4dd47a3d7a526fef846791a3d4c",
       "reasonCodes": [
         "tests_radar_passed",
         "tests_adapter_executed"
@@ -472,7 +584,7 @@
     {
       "adapter": "api_contract",
       "status": "passed",
-      "evidenceRef": "api-contract:run:sha256:b7397275f5c627ca02c2f92a9afc30294e2c0d6a1acacea3b258fd51ce7161e4",
+      "evidenceRef": "api-contract:run:sha256:e0679b68db8dee62e56480315a85252c044103c4620c8834402ece81ed7dda72",
       "reasonCodes": [
         "api_contract_radar_passed",
         "api_contract_adapter_executed"
@@ -481,7 +593,7 @@
     {
       "adapter": "security",
       "status": "passed",
-      "evidenceRef": "security:scan:sha256:4747e1c8f8e0126b0e4e17d999472d95b0b9d2a65a68831d770bfdca8fbe7e5a",
+      "evidenceRef": "security:scan:sha256:1e0552ef12d300a5de80dfc656599d15a2d559c3020cda67ea9688693cfa3988",
       "reasonCodes": [
         "security_radar_passed",
         "security_adapter_executed"
@@ -490,7 +602,7 @@
     {
       "adapter": "migration",
       "status": "passed",
-      "evidenceRef": "migration:plan:sha256:96c2d283e27e9b5bed18ea434a0e2cc8cd4ae99e0c8d40cdfb7d77d9742a3fa2",
+      "evidenceRef": "migration:plan:sha256:9107919522f1c011e1005da03b187fb639e16bf05848a208d82b03b56c1eb82c",
       "reasonCodes": [
         "migration_radar_passed",
         "migration_adapter_executed"
@@ -499,7 +611,7 @@
     {
       "adapter": "ui",
       "status": "passed",
-      "evidenceRef": "ui:screenshot:sha256:f4e6431cf3f851e44185c3942d7593d8650dcda8ce25ba98ac92f6592d464f84",
+      "evidenceRef": "ui:screenshot:sha256:3993c5fdaa3c83373dff9d62acb3743e34fa3ad2b27591d404f5387f8b0b9151",
       "reasonCodes": [
         "ui_radar_passed",
         "ui_adapter_executed"
@@ -508,7 +620,7 @@
     {
       "adapter": "accessibility",
       "status": "passed",
-      "evidenceRef": "accessibility:audit:sha256:d7ef3222d2b40324477fff71aa2a6241469144d9f5c2a3a82c9e25dbf2593d62",
+      "evidenceRef": "accessibility:audit:sha256:16c385b52121b1e48389a6c4596433c320a1f26ebedfd41ebef8d4b970637706",
       "reasonCodes": [
         "accessibility_radar_passed",
         "accessibility_adapter_executed"
@@ -517,7 +629,7 @@
     {
       "adapter": "runtime",
       "status": "passed",
-      "evidenceRef": "runtime:event:sha256:77e9e1c80de1f7f7bd2fc2bf0639e26caf3b3eda197f1feaf27139991a1caef5",
+      "evidenceRef": "runtime:event:sha256:4396651a056952f0a4cd9dd0866d6fc774df302adb7c1d720ee697903a8b742f",
       "reasonCodes": [
         "runtime_radar_passed",
         "runtime_adapter_executed"
@@ -526,7 +638,7 @@
     {
       "adapter": "performance",
       "status": "passed",
-      "evidenceRef": "performance:budget:sha256:6b467b983a4d83554aba909fb30ea756229b7a1560c1fddf52fd05ef657934e8",
+      "evidenceRef": "performance:budget:sha256:43d3c283f8788a189046b85ffb4efd2633b08441ba85affbf766846ec6c6396d",
       "reasonCodes": [
         "performance_radar_passed",
         "performance_adapter_executed"
@@ -535,7 +647,7 @@
     {
       "adapter": "handover",
       "status": "passed",
-      "evidenceRef": "handover:packet:sha256:7fef61f88b01b4654c55406536c0b7f230d5bfb71c023adad3d126e49dacc5a5",
+      "evidenceRef": "handover:packet:sha256:701a7a1a6d81ff6049881fa5066ddc5020af0276d2f0804fd3dc9451677e86ec",
       "reasonCodes": [
         "handover_radar_passed",
         "handover_adapter_executed"
@@ -546,6 +658,55 @@
     "inspectionCompleted": true,
     "everyAdapterProducedSignal": true,
     "everyAdapterProducedDurableEvidence": true,
-    "everyAdapterRecordedReasonCodes": true
-  }
+    "everyAdapterRecordedReasonCodes": true,
+    "seededMultiAgentTraffic": true,
+    "seededHoldingPattern": true,
+    "seededCollisionRisk": true,
+    "seededLandingQueue": true
+  },
+  "status": "validated",
+  "git": {
+    "head": "2f8c76abaef8ebcf0b7d3ec379df7dd0e45cfcce",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M synthi/scripts/codesite-radar-adapter-proof.mjs\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n M tmp/codesite-dojo-proof/run-actual-git-commit-proof.mjs\n M tmp/codesite-dojo-proof/run-black-box-completeness-proof.mjs\n M tmp/codesite-dojo-proof/run-governance-mcp-lifecycle-proof.mjs\n M tmp/codesite-dojo-proof/run-line-provenance-diff-proof.mjs\n M tmp/codesite-dojo-proof/run-mature-metrics-proof.mjs\n M tmp/codesite-dojo-proof/run-proof-bundle-git-context-proof.mjs\n M tmp/codesite-dojo-proof/run-radar-ui-proof.mjs\n M tmp/codesite-dojo-proof/run-repo-state-identity-proof.mjs\n M tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs\n M tmp/codesite-dojo-proof/run-workspace-prep-codesite-proof.mjs\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:radarAdapter",
+      "command": "node synthi/scripts/codesite-radar-adapter-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\",",
+        "  \"htmlPath\": \"tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\",",
+        "  \"pngPath\": \"tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\",",
+        "  \"assertions\": {",
+        "    \"inspectionCompleted\": true,",
+        "    \"everyAdapterProducedSignal\": true,",
+        "    \"everyAdapterProducedDurableEvidence\": true,",
+        "    \"everyAdapterRecordedReasonCodes\": true,",
+        "    \"seededMultiAgentTraffic\": true,",
+        "    \"seededHoldingPattern\": true,",
+        "    \"seededCollisionRisk\": true,",
+        "    \"seededLandingQueue\": true",
+        "  }",
+        "}"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-05T07:59:08.263Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json"
+  },
+  "ok": true
 }
