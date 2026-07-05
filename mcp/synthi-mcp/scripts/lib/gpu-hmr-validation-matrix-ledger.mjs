@@ -5095,10 +5095,12 @@ function randomColdRuntimeStrictImportProjectionFacet({
   adapterResultImport = {},
   stageEvents = {},
   appHookGate = {},
+  outputOracleFacet = {},
 } = {}) {
   const adapterImport = compactObject(adapterResultImport);
   const stages = compactObject(stageEvents);
   const hookGate = compactObject(appHookGate);
+  const outputOracle = compactObject(outputOracleFacet);
   const present =
     adapterImport.present === true
     || stages.present === true;
@@ -5186,6 +5188,10 @@ function randomColdRuntimeStrictImportProjectionFacet({
     hookGate.accepted === true
     && hookGate.proven === true
     && appHookFailedGaps.length === 0;
+  const outputOracleAccepted =
+    outputOracle.accepted === true
+    && compactStringList((outputOracle.failedGates ?? outputOracle.failed_gates ?? [])
+      .map((failure) => failure?.code ?? failure)).length === 0;
   const stageGateAccepted = (stageName) =>
     strictImportAccepted
     && stageEventsAccepted
@@ -5197,7 +5203,7 @@ function randomColdRuntimeStrictImportProjectionFacet({
     epoch_publication: stageGateAccepted('epoch_publication'),
     dispatch_trace: stageGateAccepted('dispatch_trace'),
     host_identity: stageGateAccepted('host_identity'),
-    output_or_visual_oracle: stageGateAccepted('output_oracle'),
+    output_or_visual_oracle: stageGateAccepted('output_oracle') && outputOracleAccepted,
     cpu_gpu_firewall: false,
     same_process_runtime_oracle: false,
     runtime_chain: false,
@@ -5219,6 +5225,7 @@ function randomColdRuntimeStrictImportProjectionFacet({
     strictImportAccepted ? null : 'random_cold_strict_import_projection_import_not_strictly_accepted',
     stageEventsAccepted ? null : 'random_cold_strict_import_projection_stage_events_not_accepted',
     appHookAccepted ? null : 'random_cold_strict_import_projection_app_hook_contract_not_accepted',
+    outputOracleAccepted ? null : 'random_cold_strict_import_projection_output_oracle_artifacts_not_accepted',
     ...missingProjectedGates.map((gate) => `random_cold_strict_import_projection_${gate}_not_projected`),
   ]);
   const accepted = failedGates.length === 0;
@@ -5246,6 +5253,8 @@ function randomColdRuntimeStrictImportProjectionFacet({
     proofJsonSha256: adapterImport.proofJsonSha256 ?? adapterImport.proof_json_sha256,
     strictRuntimeProofId: adapterImport.strictRuntimeProofId ?? adapterImport.strict_runtime_proof_id,
     stageEventsFacetHash: stages.facetHash ?? stages.facet_hash,
+    outputOracleFacetKind: outputOracle.kind ?? null,
+    outputOracleFacetAccepted: outputOracleAccepted,
     projectedGateAccepted,
     failedGates,
   });
@@ -5294,6 +5303,10 @@ function randomColdRuntimeStrictImportProjectionFacet({
       ?? null,
     stageEventsFacetHash: stages.facetHash ?? stages.facet_hash ?? null,
     stage_events_facet_hash: stages.facetHash ?? stages.facet_hash ?? null,
+    outputOracleFacetAccepted: outputOracleAccepted,
+    output_oracle_facet_accepted: outputOracleAccepted,
+    outputOracleFacetKind: outputOracle.kind ?? null,
+    output_oracle_facet_kind: outputOracle.kind ?? null,
     facetHash,
     facet_hash: facetHash,
     failedGates,
@@ -28778,12 +28791,6 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     realRocmAppHookContract: randomColdRuntimeAppHookContract,
     realRocmRuntimeAdapterStageEvents: randomColdRuntimeAdapterStageEvents,
   });
-  const randomColdRuntimeStrictImportProjection =
-    randomColdRuntimeStrictImportProjectionFacet({
-      adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
-      stageEvents: randomColdRuntimeAdapterStageEvents,
-      appHookGate: randomColdRuntimeAppHookContractGate,
-    });
   const randomColdImportedRuntimeProofArtifact = compactObject(
     randomColdRuntimeProfileAdapterResultImport.importedRuntimeProofArtifact
     ?? randomColdRuntimeProfileAdapterResultImport.imported_runtime_proof_artifact,
@@ -28815,6 +28822,32 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
         runtimeProfileAdapterResult: randomColdRuntimeProfileAdapterResultImport,
       })
     : null;
+  const randomColdImportedOutputOracleFacet = randomColdImportedStrictProofMaterialPresent
+    ? await ledgerOutputOracleFacet(
+        {
+          present: true,
+          source: 'recomputed_ledger',
+          ...randomColdImportedProofLedgerQuery,
+        },
+        randomColdImportedProofLedger,
+        {},
+        context.repoRoot,
+        path.dirname(filePath),
+        { runtimeChain: randomColdRealRocmRuntimeChain },
+      )
+    : {
+        accepted: false,
+        kind: 'missing',
+        failedGates: [{ code: 'random_cold_imported_output_oracle_material_missing' }],
+        failed_gates: [{ code: 'random_cold_imported_output_oracle_material_missing' }],
+      };
+  const randomColdRuntimeStrictImportProjection =
+    randomColdRuntimeStrictImportProjectionFacet({
+      adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
+      stageEvents: randomColdRuntimeAdapterStageEvents,
+      appHookGate: randomColdRuntimeAppHookContractGate,
+      outputOracleFacet: randomColdImportedOutputOracleFacet,
+    });
   const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
     result.runtimeSupportClosureObligation,
     result.runtime_support_closure_obligation,
@@ -28901,6 +28934,10 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       : []),
     ...(randomColdRuntimeAdapterStageEvents.present === true
       ? randomColdRuntimeAdapterStageEvents.failedGates
+      : []),
+    ...(randomColdImportedOutputOracleFacet
+      ? compactStringList((randomColdImportedOutputOracleFacet.failedGates ?? [])
+        .map((failure) => failure.code ?? failure))
       : []),
     ...(randomColdRuntimeSupportClosureObligation.present === true
       ? randomColdRuntimeSupportClosureObligation.blockingGaps
@@ -29123,6 +29160,10 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       randomColdRuntimeStrictImportProjection.present === true
         ? randomColdRuntimeStrictImportProjection
         : null,
+    randomColdImportedOutputOracleFacet: randomColdImportedOutputOracleFacet ?? null,
+    random_cold_imported_output_oracle_facet: randomColdImportedOutputOracleFacet ?? null,
+    outputOracleFacet: randomColdImportedOutputOracleFacet ?? null,
+    output_oracle_facet: randomColdImportedOutputOracleFacet ?? null,
     realRocmFirewall: randomColdRealRocmFirewall,
     real_rocm_firewall: randomColdRealRocmFirewall,
     realRocmRuntimeChain: randomColdRealRocmRuntimeChain,
