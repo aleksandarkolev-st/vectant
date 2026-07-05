@@ -11,11 +11,21 @@ import {
   runtimeProfileToHiprtWarmEnv,
 } from './lib/gpu-hmr-runtime-profile.mjs';
 import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  buildRuntimeBoundaryProofAdapter,
+  buildRuntimeBoundaryRunModeProof,
+} from './lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const PROFILE_DIR = path.resolve(REPO_ROOT, 'mcp/synthi-mcp/scripts/profiles');
+const RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA =
+  'synthi.gpu_hmr.runtime_boundary_event_manifest.v1';
+const RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA =
+  'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1';
+const RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_AUTHORITY =
+  'runtime_profile_generic_runtime_boundary_adapter_not_success_authority';
 
 const ADAPTERS = new Map([
   ['hiprt-path-tracer', {
@@ -92,7 +102,51 @@ function firstBool(...values) {
   return null;
 }
 
+function objectOrNull(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function firstObject(...values) {
+  for (const value of values) {
+    const object = objectOrNull(value);
+    if (object) return object;
+  }
+  return null;
+}
+
+function firstArray(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function firstStringArray(...values) {
+  return firstArray(...values)
+    .map((value) => compactString(value))
+    .filter(Boolean);
+}
+
+function claimsGpuHmrAuthority(value) {
+  const object = objectOrNull(value) ?? {};
+  return firstBool(object.acceptedForGpuHmr, object.accepted_for_gpu_hmr) === true
+    || firstBool(object.gpuHmrSuccess, object.gpu_hmr_success) === true
+    || firstBool(object.canSatisfyRuntimeProof, object.can_satisfy_runtime_proof) === true
+    || firstBool(object.canSatisfyDispatchProof, object.can_satisfy_dispatch_proof) === true;
+}
+
 function adapterForProfile(profile) {
+  if (
+    profile.adapter.proofRunner === 'runtime-boundary-proof-adapter'
+    || profile.adapter.runnerKind === 'runtime-boundary-proof-adapter'
+  ) {
+    return {
+      runner: path.resolve(__dirname, 'lib/gpu-hmr-runtime-boundary-proof-adapter.mjs'),
+      runnerKind: 'runtime-boundary-proof-adapter',
+      runnerArgs: [],
+      envKind: 'generic-profile',
+    };
+  }
   const adapter = ADAPTERS.get(profile.adapter.family);
   if (adapter) return adapter;
   if (profile.adapter.runnerPath) {
@@ -200,6 +254,24 @@ function resolveResultPath(rawPath) {
   return resolved;
 }
 
+function resolveRuntimeBoundaryManifestPath(rawPath) {
+  const raw = compactString(rawPath);
+  if (!raw) return { path: null, relativePath: null, error: null };
+  const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(REPO_ROOT, raw);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    return {
+      path: null,
+      relativePath: null,
+      error: `runtime boundary event manifest path must stay inside the repo: ${rawPath}`,
+    };
+  }
+  return {
+    path: resolved,
+    relativePath: path.relative(REPO_ROOT, resolved).replace(/\\/g, '/'),
+    error: null,
+  };
+}
+
 function resolveProofPath(rawPath) {
   const raw = compactString(rawPath);
   if (!raw) return null;
@@ -257,6 +329,292 @@ async function readJsonIfPresent(filePath) {
       error: err?.message ?? String(err),
     };
   }
+}
+
+function runtimeBoundaryEventsFromManifest(object = {}) {
+  const source = objectOrNull(object) ?? {};
+  return [
+    ...firstArray(source.runtimeBoundaryEvents),
+    ...firstArray(source.runtime_boundary_events),
+    ...firstArray(source.adapterRuntimeBoundaryEvents),
+    ...firstArray(source.adapter_runtime_boundary_events),
+    ...firstArray(source.events),
+  ];
+}
+
+async function readRuntimeBoundaryEventManifest(profile) {
+  const inlineEvents = firstArray(profile.adapter.runtimeBoundaryEvents);
+  if (inlineEvents.length > 0) {
+    const failedGates = [
+      claimsGpuHmrAuthority(profile.adapter) ? 'runtime_boundary_profile_adapter_claims_gpu_hmr_authority' : null,
+      inlineEvents.some((event) => claimsGpuHmrAuthority(event))
+        ? 'runtime_boundary_event_manifest_event_claims_gpu_hmr_authority'
+        : null,
+    ].filter(Boolean);
+    return {
+      present: true,
+      accepted: failedGates.length === 0,
+      source: 'profile_inline_runtime_boundary_events',
+      manifestPath: null,
+      manifest_path: null,
+      manifestSha256: `sha256:${sha256Text(stableJson(inlineEvents))}`,
+      manifest_sha256: `sha256:${sha256Text(stableJson(inlineEvents))}`,
+      manifestByteLength: Buffer.byteLength(stableJson(inlineEvents), 'utf8'),
+      manifest_byte_length: Buffer.byteLength(stableJson(inlineEvents), 'utf8'),
+      manifestSchemaVersion: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+      manifest_schema_version: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+      events: inlineEvents,
+      metadata: profile.adapter.runtimeBoundaryAppHook ?? {},
+      failedGates,
+      failed_gates: failedGates,
+    };
+  }
+
+  const resolved = resolveRuntimeBoundaryManifestPath(profile.adapter.runtimeBoundaryEventManifestPath);
+  if (resolved.error) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'profile_runtime_boundary_event_manifest_path',
+      manifestPath: null,
+      manifest_path: null,
+      manifestSha256: null,
+      manifest_sha256: null,
+      manifestByteLength: 0,
+      manifest_byte_length: 0,
+      manifestSchemaVersion: null,
+      manifest_schema_version: null,
+      events: [],
+      metadata: {},
+      failedGates: ['runtime_boundary_event_manifest_path_outside_repo'],
+      failed_gates: ['runtime_boundary_event_manifest_path_outside_repo'],
+      readError: resolved.error,
+      read_error: resolved.error,
+    };
+  }
+  if (!resolved.path) {
+    return {
+      present: false,
+      accepted: false,
+      source: 'none',
+      manifestPath: null,
+      manifest_path: null,
+      manifestSha256: null,
+      manifest_sha256: null,
+      manifestByteLength: 0,
+      manifest_byte_length: 0,
+      manifestSchemaVersion: null,
+      manifest_schema_version: null,
+      events: [],
+      metadata: {},
+      failedGates: ['runtime_boundary_event_manifest_missing'],
+      failed_gates: ['runtime_boundary_event_manifest_missing'],
+      readError: null,
+      read_error: null,
+    };
+  }
+
+  try {
+    const text = await fs.readFile(resolved.path, 'utf8');
+    const manifest = JSON.parse(text);
+    const manifestObject = objectOrNull(manifest);
+    const schemaVersion = firstString(
+      manifestObject?.schemaVersion,
+      manifestObject?.schema_version,
+      manifestObject?.schema,
+    );
+    const events = runtimeBoundaryEventsFromManifest(manifestObject);
+    const failedGates = [
+      manifestObject ? null : 'runtime_boundary_event_manifest_not_object',
+      schemaVersion === RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA
+        ? null
+        : 'runtime_boundary_event_manifest_schema_unsupported',
+      claimsGpuHmrAuthority(manifestObject)
+        ? 'runtime_boundary_event_manifest_claims_gpu_hmr_authority'
+        : null,
+      events.length > 0 ? null : 'runtime_boundary_event_manifest_events_missing',
+      events.some((event) => claimsGpuHmrAuthority(event))
+        ? 'runtime_boundary_event_manifest_event_claims_gpu_hmr_authority'
+        : null,
+    ].filter(Boolean);
+    return {
+      present: true,
+      accepted: failedGates.length === 0,
+      source: 'profile_runtime_boundary_event_manifest_path',
+      manifestPath: resolved.relativePath,
+      manifest_path: resolved.relativePath,
+      manifestSha256: `sha256:${sha256Text(text)}`,
+      manifest_sha256: `sha256:${sha256Text(text)}`,
+      manifestByteLength: Buffer.byteLength(text, 'utf8'),
+      manifest_byte_length: Buffer.byteLength(text, 'utf8'),
+      manifestSchemaVersion: schemaVersion,
+      manifest_schema_version: schemaVersion,
+      events,
+      metadata: manifestObject ?? {},
+      failedGates,
+      failed_gates: failedGates,
+      readError: null,
+      read_error: null,
+    };
+  } catch (error) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'profile_runtime_boundary_event_manifest_path',
+      manifestPath: resolved.relativePath,
+      manifest_path: resolved.relativePath,
+      manifestSha256: null,
+      manifest_sha256: null,
+      manifestByteLength: 0,
+      manifest_byte_length: 0,
+      manifestSchemaVersion: null,
+      manifest_schema_version: null,
+      events: [],
+      metadata: {},
+      failedGates: ['runtime_boundary_event_manifest_unreadable'],
+      failed_gates: ['runtime_boundary_event_manifest_unreadable'],
+      readError: error?.message ?? String(error),
+      read_error: error?.message ?? String(error),
+    };
+  }
+}
+
+function runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest) {
+  const metadata = objectOrNull(manifest.metadata) ?? {};
+  const adapterInput = firstObject(
+    manifest.runtimeBoundaryAdapterInput,
+    manifest.runtime_boundary_adapter_input,
+    manifest.adapterInput,
+    manifest.adapter_input,
+    metadata.runtimeBoundaryAdapterInput,
+    metadata.runtime_boundary_adapter_input,
+    metadata.adapterInput,
+    metadata.adapter_input,
+  ) ?? {};
+  const source = {
+    ...metadata,
+    ...manifest,
+    ...adapterInput,
+  };
+  return {
+    backend: firstString(
+      source.backend,
+      source.gpuBackend,
+      source.gpu_backend,
+      profile.runtime.backend.orochiApi,
+      'hip',
+    ),
+    projectId: firstString(source.projectId, source.project_id, source.workspaceSlug, source.workspace_slug, profile.id),
+    editId: firstString(source.editId, source.edit_id, source.sourceEditId, source.source_edit_id),
+    targetId: firstString(source.targetId, source.target_id, source.validationTargetId, source.validation_target_id, profile.runtime.targetName),
+    sourcePaths: firstStringArray(source.sourcePaths, source.source_paths, [profile.source.file]),
+    entryPoint: firstString(
+      source.entryPoint,
+      source.entry_point,
+      source.kernelName,
+      source.kernel_name,
+      profile.runtime.reload.kernelSymbol,
+    ),
+    compileTarget: firstString(source.compileTarget, source.compile_target, source.gpuArch, source.gpu_arch),
+    compiler: firstString(source.compiler),
+    compilerArgsHash: firstString(source.compilerArgsHash, source.compiler_args_hash),
+    artifactHashBefore: firstString(source.artifactHashBefore, source.artifact_hash_before),
+    artifactHashAfter: firstString(source.artifactHashAfter, source.artifact_hash_after),
+    contractHash: firstString(source.contractHash, source.contract_hash),
+    runtimeBoundaryEvents: manifest.events,
+    runtime_boundary_events: manifest.events,
+    computeOracleArtifacts: firstObject(source.computeOracleArtifacts, source.compute_oracle_artifacts),
+    compute_oracle_artifacts: firstObject(source.computeOracleArtifacts, source.compute_oracle_artifacts),
+    computeOracleByteEvidence: firstObject(source.computeOracleByteEvidence, source.compute_oracle_byte_evidence),
+    compute_oracle_byte_evidence: firstObject(source.computeOracleByteEvidence, source.compute_oracle_byte_evidence),
+    visualOracleArtifacts: firstObject(source.visualOracleArtifacts, source.visual_oracle_artifacts),
+    visual_oracle_artifacts: firstObject(source.visualOracleArtifacts, source.visual_oracle_artifacts),
+    visualEvidenceArtifacts: firstArray(source.visualEvidenceArtifacts, source.visual_evidence_artifacts),
+    visual_evidence_artifacts: firstArray(source.visualEvidenceArtifacts, source.visual_evidence_artifacts),
+    deterministicVisualMode: firstObject(
+      source.deterministicVisualMode,
+      source.deterministic_visual_mode,
+      profile.deterministicVisualMode,
+    ),
+    deterministic_visual_mode: firstObject(
+      source.deterministicVisualMode,
+      source.deterministic_visual_mode,
+      profile.deterministicVisualMode,
+    ),
+    metricScope: firstString(source.metricScope, source.metric_scope, profile.runMode.metricScope),
+    metric_scope: firstString(source.metricScope, source.metric_scope, profile.runMode.metricScope),
+    cacheState: firstString(source.cacheState, source.cache_state, profile.runMode.cacheState),
+    cache_state: firstString(source.cacheState, source.cache_state, profile.runMode.cacheState),
+    timings: firstObject(source.timings),
+    modelProvenance: firstObject(source.modelProvenance, source.model_provenance),
+  };
+}
+
+async function runRuntimeBoundaryProofAdapterProfile(profile, { resultPath = null } = {}) {
+  const manifest = await readRuntimeBoundaryEventManifest(profile);
+  const adapterInput = runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest);
+  const adapterProof = buildRuntimeBoundaryProofAdapter(adapterInput);
+  const runModeProof = buildRuntimeBoundaryRunModeProof(adapterInput);
+  const accepted = manifest.accepted === true && adapterProof.accepted === true;
+  const failedGates = [
+    ...firstArray(manifest.failedGates, manifest.failed_gates),
+    ...firstArray(adapterProof.failedGates, adapterProof.failed_gates),
+  ];
+  const proof = {
+    schemaVersion: RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA,
+    schema_version: RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA,
+    proofAuthority: RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_AUTHORITY,
+    proof_authority: RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_AUTHORITY,
+    accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: accepted,
+    can_satisfy_runtime_proof: accepted,
+    profileId: profile.id,
+    profile_id: profile.id,
+    adapterFamily: profile.adapter.family,
+    adapter_family: profile.adapter.family,
+    proofRunner: profile.adapter.proofRunner,
+    proof_runner: profile.adapter.proofRunner,
+    runtimeBoundaryEventManifest: manifest,
+    runtime_boundary_event_manifest: manifest,
+    runtimeBoundaryAdapterInputEvidence: adapterProof.inputEvidence ?? null,
+    runtime_boundary_adapter_input_evidence: adapterProof.input_evidence ?? null,
+    runtimeBoundaryProofAdapter: adapterProof,
+    runtime_boundary_proof_adapter: adapterProof,
+    runtimeBoundaryRunModeProof: runModeProof,
+    runtime_boundary_run_mode_proof: runModeProof,
+    runtimeProofArtifact: accepted ? adapterProof.runtimeProofArtifact : null,
+    runtime_proof_artifact: accepted ? adapterProof.runtime_proof_artifact : null,
+    proofLedger: accepted
+      ? (adapterProof.runtimeProofArtifact?.proofLedger ?? adapterProof.runtimeProofArtifact?.proof_ledger ?? null)
+      : null,
+    proof_ledger: accepted
+      ? (adapterProof.runtimeProofArtifact?.proofLedger ?? adapterProof.runtimeProofArtifact?.proof_ledger ?? null)
+      : null,
+    failedGates: [...new Set(failedGates)],
+    failed_gates: [...new Set(failedGates)],
+  };
+  const proofHash = `sha256:${sha256Text(stableJson(proof))}`;
+  proof.proofHash = proofHash;
+  proof.proof_hash = proofHash;
+
+  const baseDir = resultPath
+    ? path.dirname(resultPath)
+    : path.join(REPO_ROOT, 'mcp/synthi-mcp/.gpu-hmr-test-logs/runtime-profile-results');
+  await fs.mkdir(baseDir, { recursive: true });
+  const proofPath = path.join(baseDir, `${profile.id}-runtime-boundary-adapter-proof.json`);
+  await fs.writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
+  return {
+    exitCode: 0,
+    signal: null,
+    stdout: `proof_path=${proofPath}\n`,
+    stderr: '',
+    proof,
+    proofPath,
+  };
 }
 
 function summarizeProofArtifact(proof) {
@@ -416,6 +774,36 @@ async function writeRuntimeProfileAdapterResult({
     proof_json_byte_length: proofRead.byteLength ?? 0,
     proofReadError: proofRead.error,
     proof_read_error: proofRead.error,
+    runtimeBoundaryEventManifestPath:
+      proofRead.value?.runtimeBoundaryEventManifest?.manifestPath
+      ?? proofRead.value?.runtime_boundary_event_manifest?.manifest_path
+      ?? null,
+    runtime_boundary_event_manifest_path:
+      proofRead.value?.runtimeBoundaryEventManifest?.manifestPath
+      ?? proofRead.value?.runtime_boundary_event_manifest?.manifest_path
+      ?? null,
+    runtimeBoundaryEventManifestSha256:
+      proofRead.value?.runtimeBoundaryEventManifest?.manifestSha256
+      ?? proofRead.value?.runtime_boundary_event_manifest?.manifest_sha256
+      ?? null,
+    runtime_boundary_event_manifest_sha256:
+      proofRead.value?.runtimeBoundaryEventManifest?.manifestSha256
+      ?? proofRead.value?.runtime_boundary_event_manifest?.manifest_sha256
+      ?? null,
+    runtimeBoundaryProofAdapterAccepted:
+      proofRead.value?.runtimeBoundaryProofAdapter?.accepted === true
+      || proofRead.value?.runtime_boundary_proof_adapter?.accepted === true,
+    runtime_boundary_proof_adapter_accepted:
+      proofRead.value?.runtimeBoundaryProofAdapter?.accepted === true
+      || proofRead.value?.runtime_boundary_proof_adapter?.accepted === true,
+    runtimeBoundaryProofAdapterProofId:
+      proofRead.value?.runtimeBoundaryProofAdapter?.proofId
+      ?? proofRead.value?.runtime_boundary_proof_adapter?.proof_id
+      ?? null,
+    runtime_boundary_proof_adapter_proof_id:
+      proofRead.value?.runtimeBoundaryProofAdapter?.proofId
+      ?? proofRead.value?.runtime_boundary_proof_adapter?.proof_id
+      ?? null,
     ...proofSummary,
     strictRuntimeProofAccepted,
     strict_runtime_proof_accepted: strictRuntimeProofAccepted,
@@ -591,6 +979,236 @@ async function selfCheck() {
     finishedAt: resultSmokeFinishedAt,
     spawnResult: resultSmokeSpawn,
   });
+  const runtimeBoundaryDir = path.join(
+    REPO_ROOT,
+    'mcp/synthi-mcp/.gpu-hmr-test-logs/runtime-profile-self-check',
+    `runtime-boundary-${Date.now()}`,
+  );
+  await fs.mkdir(runtimeBoundaryDir, { recursive: true });
+  const hashA = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const hashB = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const hashC = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+  const hashD = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+  const hashE = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const runtimeBoundaryEvents = [
+    {
+      kind: 'artifact_transport',
+      eventId: 'load-1',
+      artifactHash: hashB,
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      timestampMonotonicNs: 100,
+      evidenceRefs: ['runtime-boundary:artifact-transport'],
+    },
+    {
+      kind: 'epoch_publication',
+      eventId: 'publish-1',
+      artifactHash: hashB,
+      epoch: 'epoch-7',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      timestampMonotonicNs: 200,
+      dispatchTableHashBefore: hashD,
+      dispatchTableHashAfter: hashE,
+      evidenceRefs: ['runtime-boundary:epoch-publication'],
+    },
+    {
+      kind: 'synthi_gpu_launch',
+      eventId: 'dispatch-1',
+      artifactHash: hashB,
+      epoch: 'epoch-7',
+      dispatchId: 'dispatch-1',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      stream: 'stream-1',
+      dispatchTableEntry: 'generic_kernel:epoch-7',
+      timestampMonotonicNs: 300,
+      evidenceRefs: [
+        'worker-log:synthi_gpu_launch:runtime-session-1:dispatch-1',
+        'worker-log:launch_arg_provenance:runtime-session-1:dispatch-1:output',
+      ],
+    },
+    {
+      kind: 'host_identity',
+      eventId: 'host-1',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      deviceUuid: 'device-1',
+      contextId: 'ctx-1',
+      stream: 'stream-1',
+      timestampMonotonicNs: 310,
+      evidenceRefs: [
+        'worker-log:host_identity:runner_process',
+        'worker-log:host_identity:host_state',
+        'worker-log:host_identity:stream_context',
+        'worker-log:host_identity_snapshot:runtime-session-1:runner_process:1->2',
+        'worker-log:host_identity_snapshot:runtime-session-1:host_state:1->2',
+        'worker-log:host_identity_snapshot:runtime-session-1:stream_context:1->2',
+      ],
+    },
+    {
+      kind: 'output_oracle',
+      eventId: 'output-1',
+      artifactHash: hashB,
+      epoch: 'epoch-7',
+      afterDispatchId: 'dispatch-1',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      outputTargetId: 'allocation-1',
+      oracleKind: 'buffer_checksum',
+      timestampMonotonicNs: 400,
+      evidenceRefs: ['worker-log:output_oracle:runtime-session-1:dispatch-1'],
+    },
+  ];
+  const runtimeBoundaryManifestPath = path.join(runtimeBoundaryDir, 'runtime-boundary-events.json');
+  await fs.writeFile(runtimeBoundaryManifestPath, `${JSON.stringify({
+    schemaVersion: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+    proofAuthority: 'runtime_boundary_event_manifest_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    backend: 'hip',
+    projectId: 'generic-runtime-boundary-project',
+    editId: 'gpu-artifact-edit',
+    targetId: 'generic-runtime-boundary-target',
+    sourcePaths: ['src/kernels/generic.hip'],
+    entryPoint: 'generic_kernel',
+    compileTarget: 'gfx1201',
+    compiler: 'hipcc',
+    compilerArgsHash: hashC,
+    artifactHashBefore: hashA,
+    artifactHashAfter: hashB,
+    contractHash: hashC,
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    runtimeBoundaryEvents,
+    computeOracleArtifacts: {
+      raw_readback_bin: 'runtime-boundary://raw-readback',
+      readback_schema_json: 'runtime-boundary://readback-schema',
+      checksum_before: hashA,
+      checksum_after: hashB,
+      expected_output_change: true,
+      expected_output_verified: true,
+      expected_output_hash: hashB,
+      deterministic_slice: {
+        offset: 0,
+        length: 64,
+        format: 'bytes',
+        hash: hashC,
+      },
+      raw_readback_hash: hashB,
+      raw_readback_hash_verified: true,
+      raw_readback_byte_length: 128,
+      raw_readback_source: 'runtime_raw_readback',
+      deterministic_slice_hash: hashC,
+      deterministic_slice_hash_verified: true,
+      raw_readback_verification: {
+        hash_verified: true,
+        byte_length: 128,
+        deterministic_slice_hash: hashC,
+        deterministic_slice_hash_verified: true,
+        expected_output_verified: true,
+        slice_bounds_verified: true,
+      },
+      oracle_code_hash: hashC,
+      rendered_card_png: 'runtime-boundary://compute-proof-card.png',
+      producer: 'runtime_boundary_profile_self_check',
+      timestamp_after_dispatch: 400,
+      epoch: 'epoch-7',
+      evidenceRefs: ['compute-oracle:raw-readback-bytes'],
+    },
+  }, null, 2)}\n`);
+  const runtimeBoundaryProfile = normalizeRuntimeProofProfile({
+    ...baseProfile,
+    id: 'generic-runtime-boundary-adapter-smoke',
+    adapter: {
+      family: 'generic-runtime-boundary-adapter-smoke',
+      proofRunner: 'runtime-boundary-proof-adapter',
+      runtimeBoundaryEventManifestPath: path.relative(REPO_ROOT, runtimeBoundaryManifestPath).replace(/\\/g, '/'),
+    },
+    runtime: {
+      ...baseProfile.runtime,
+      targetName: 'generic-runtime-boundary-target',
+      requiredKernels: ['generic_kernel'],
+      reload: {
+        kernelName: 'generic_kernel',
+        kernelSymbol: 'generic_kernel',
+      },
+    },
+    source: {
+      file: 'src/kernels/generic.hip',
+      before: 'return 1;',
+      after: 'return 2;',
+    },
+  });
+  const runtimeBoundaryAdapter = adapterForProfile(runtimeBoundaryProfile);
+  const runtimeBoundaryResultPath = path.join(runtimeBoundaryDir, 'runtime-boundary-result.json');
+  const runtimeBoundaryStartedAt = new Date().toISOString();
+  const runtimeBoundarySpawn = await runRuntimeBoundaryProofAdapterProfile(
+    runtimeBoundaryProfile,
+    { resultPath: runtimeBoundaryResultPath },
+  );
+  const runtimeBoundaryFinishedAt = new Date().toISOString();
+  const runtimeBoundaryResult = await writeRuntimeProfileAdapterResult({
+    profile: runtimeBoundaryProfile,
+    adapter: runtimeBoundaryAdapter,
+    resultPath: runtimeBoundaryResultPath,
+    startedAt: runtimeBoundaryStartedAt,
+    finishedAt: runtimeBoundaryFinishedAt,
+    spawnResult: runtimeBoundarySpawn,
+  });
+  checks.push({
+    name: 'generic-runtime-boundary-profile-adapter-accepts-strict-proof',
+    ok:
+      runtimeBoundaryAdapter.runnerKind === 'runtime-boundary-proof-adapter'
+      && runtimeBoundaryResult.strictRuntimeProofAccepted === true
+      && runtimeBoundaryResult.proofLedgerId
+      && runtimeBoundaryResult.runtimeBoundaryProofAdapterAccepted === true
+      && runtimeBoundaryResult.acceptedForGpuHmr === false
+      && runtimeBoundaryResult.canSatisfyRuntimeProof === false
+      && runtimeBoundaryResult.gpuHmrSuccess === false
+      && runtimeBoundaryResult.blockingGaps.length === 0,
+    resultPath: path.relative(REPO_ROOT, runtimeBoundaryResultPath).replace(/\\/g, '/'),
+  });
+  const forgedManifestPath = path.join(runtimeBoundaryDir, 'runtime-boundary-events-forged.json');
+  await fs.writeFile(forgedManifestPath, `${JSON.stringify({
+    schemaVersion: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+    proofAuthority: 'runtime_boundary_event_manifest_only_not_gpu_hmr_success',
+    gpuHmrSuccess: true,
+    runtimeBoundaryEvents,
+  }, null, 2)}\n`);
+  const forgedBoundaryProfile = normalizeRuntimeProofProfile({
+    ...runtimeBoundaryProfile,
+    id: 'generic-runtime-boundary-adapter-forged',
+    adapter: {
+      family: 'generic-runtime-boundary-adapter-forged',
+      proofRunner: 'runtime-boundary-proof-adapter',
+      runtimeBoundaryEventManifestPath: path.relative(REPO_ROOT, forgedManifestPath).replace(/\\/g, '/'),
+    },
+  });
+  const forgedBoundaryResultPath = path.join(runtimeBoundaryDir, 'runtime-boundary-forged-result.json');
+  const forgedBoundarySpawn = await runRuntimeBoundaryProofAdapterProfile(
+    forgedBoundaryProfile,
+    { resultPath: forgedBoundaryResultPath },
+  );
+  const forgedBoundaryResult = await writeRuntimeProfileAdapterResult({
+    profile: forgedBoundaryProfile,
+    adapter: adapterForProfile(forgedBoundaryProfile),
+    resultPath: forgedBoundaryResultPath,
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    spawnResult: forgedBoundarySpawn,
+  });
+  checks.push({
+    name: 'generic-runtime-boundary-profile-adapter-rejects-forged-manifest-authority',
+    ok:
+      forgedBoundaryResult.strictRuntimeProofAccepted === false
+      && forgedBoundaryResult.runtimeBoundaryProofAdapterAccepted === false
+      && forgedBoundaryResult.acceptedForGpuHmr === false
+      && forgedBoundaryResult.gpuHmrSuccess === false
+      && forgedBoundaryResult.blockingGaps.includes('runtime_profile_adapter_strict_runtime_proof_artifact_missing'),
+    resultPath: path.relative(REPO_ROOT, forgedBoundaryResultPath).replace(/\\/g, '/'),
+  });
   checks.push({
     name: 'profile-declared-adapter-result-contract',
     ok:
@@ -702,7 +1320,9 @@ async function main() {
 
   const startedAt = new Date().toISOString();
   let spawnResult;
-  if (adapter.runnerKind === 'node-script') {
+  if (adapter.runnerKind === 'runtime-boundary-proof-adapter') {
+    spawnResult = await runRuntimeBoundaryProofAdapterProfile(profile, { resultPath });
+  } else if (adapter.runnerKind === 'node-script') {
     spawnResult = await spawnNodeScript(adapter.runner, env, adapter.runnerArgs ?? []);
   } else if (adapter.runnerKind === 'process') {
     spawnResult = await spawnProcess(adapter.runner, adapter.runnerArgs ?? [], env);

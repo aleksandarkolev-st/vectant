@@ -3551,6 +3551,21 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     adapterResult?.proofLedgerId
     ?? adapterResult?.proof_ledger_id
     ?? null;
+  const runtimeBoundaryEventManifestPath =
+    adapterResult?.runtimeBoundaryEventManifestPath
+    ?? adapterResult?.runtime_boundary_event_manifest_path
+    ?? null;
+  const runtimeBoundaryEventManifestSha256 =
+    adapterResult?.runtimeBoundaryEventManifestSha256
+    ?? adapterResult?.runtime_boundary_event_manifest_sha256
+    ?? null;
+  const runtimeBoundaryProofAdapterAccepted =
+    adapterResult?.runtimeBoundaryProofAdapterAccepted === true
+    || adapterResult?.runtime_boundary_proof_adapter_accepted === true;
+  const runtimeBoundaryProofAdapterProofId =
+    adapterResult?.runtimeBoundaryProofAdapterProofId
+    ?? adapterResult?.runtime_boundary_proof_adapter_proof_id
+    ?? null;
   const authorityClaims = [];
   if (claimsGpuHmrAuthority(candidate)) authorityClaims.push('candidate_claimed_gpu_hmr_authority');
   if (claimsGpuHmrAuthority(adapterResult)) {
@@ -3586,6 +3601,10 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     runtimeProofProfileSchemaAccepted,
     runtimeProofProfileSha256: profileRead.textSha256,
     runtimeProfileAdapterResultSha256: adapterResultRead.textSha256,
+    runtimeBoundaryEventManifestPath,
+    runtimeBoundaryEventManifestSha256,
+    runtimeBoundaryProofAdapterAccepted,
+    runtimeBoundaryProofAdapterProofId,
     strictRuntimeProofAccepted,
     strictRuntimeProofId,
     proofLedgerId,
@@ -3655,6 +3674,14 @@ async function runRuntimeProfileProofBridge(candidate, { runnerTimeoutMs }) {
     runtime_profile_adapter_result_byte_length: adapterResultRead.byteLength,
     runtimeProfileAdapterResultReadError: adapterResultRead.error,
     runtime_profile_adapter_result_read_error: adapterResultRead.error,
+    runtimeBoundaryEventManifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventManifestPath,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    runtimeBoundaryProofAdapterAccepted,
+    runtime_boundary_proof_adapter_accepted: runtimeBoundaryProofAdapterAccepted,
+    runtimeBoundaryProofAdapterProofId,
+    runtime_boundary_proof_adapter_proof_id: runtimeBoundaryProofAdapterProofId,
     strictRuntimeProofAccepted,
     strict_runtime_proof_accepted: strictRuntimeProofAccepted,
     strictRuntimeProofId,
@@ -4582,6 +4609,206 @@ async function selfCheck() {
     || unsupportedRuntimeBridgeFacet?.blockingGaps?.includes('runtime_profile_proof_runner_failed')
   ) {
     throw new Error('random large-project cold-path unsupported runtime profile bridge self-check failed');
+  }
+  const runtimeBoundaryBridgeDir = path.join(
+    LOG_DIR,
+    'self-check-runtime-boundary-profile',
+    String(Date.now()),
+  );
+  await mkdir(runtimeBoundaryBridgeDir, { recursive: true });
+  const runtimeHashA = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const runtimeHashB = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const runtimeHashC = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+  const runtimeHashD = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+  const runtimeHashE = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const genericBoundaryEvents = [
+    {
+      kind: 'artifact_transport',
+      eventId: 'load-1',
+      artifactHash: runtimeHashB,
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      timestampMonotonicNs: 100,
+      evidenceRefs: ['runtime-boundary:artifact-transport'],
+    },
+    {
+      kind: 'epoch_publication',
+      eventId: 'publish-1',
+      artifactHash: runtimeHashB,
+      epoch: 'epoch-7',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      timestampMonotonicNs: 200,
+      dispatchTableHashBefore: runtimeHashD,
+      dispatchTableHashAfter: runtimeHashE,
+      evidenceRefs: ['runtime-boundary:epoch-publication'],
+    },
+    {
+      kind: 'synthi_gpu_launch',
+      eventId: 'dispatch-1',
+      artifactHash: runtimeHashB,
+      epoch: 'epoch-7',
+      dispatchId: 'dispatch-1',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      stream: 'stream-1',
+      dispatchTableEntry: 'generic_kernel:epoch-7',
+      timestampMonotonicNs: 300,
+      evidenceRefs: [
+        'worker-log:synthi_gpu_launch:runtime-session-1:dispatch-1',
+        'worker-log:launch_arg_provenance:runtime-session-1:dispatch-1:output',
+      ],
+    },
+    {
+      kind: 'host_identity',
+      eventId: 'host-1',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      deviceUuid: 'device-1',
+      contextId: 'ctx-1',
+      stream: 'stream-1',
+      timestampMonotonicNs: 310,
+      evidenceRefs: [
+        'worker-log:host_identity:runner_process',
+        'worker-log:host_identity:host_state',
+        'worker-log:host_identity:stream_context',
+        'worker-log:host_identity_snapshot:runtime-session-1:runner_process:1->2',
+        'worker-log:host_identity_snapshot:runtime-session-1:host_state:1->2',
+        'worker-log:host_identity_snapshot:runtime-session-1:stream_context:1->2',
+      ],
+    },
+    {
+      kind: 'output_oracle',
+      eventId: 'output-1',
+      artifactHash: runtimeHashB,
+      epoch: 'epoch-7',
+      afterDispatchId: 'dispatch-1',
+      processId: 'pid-1',
+      runtimeSession: 'runtime-session-1',
+      outputTargetId: 'allocation-1',
+      oracleKind: 'buffer_checksum',
+      timestampMonotonicNs: 400,
+      evidenceRefs: ['worker-log:output_oracle:runtime-session-1:dispatch-1'],
+    },
+  ];
+  const genericBoundaryManifest = path.join(runtimeBoundaryBridgeDir, 'runtime-boundary-events.json');
+  await writeFile(genericBoundaryManifest, `${JSON.stringify({
+    schemaVersion: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
+    proofAuthority: 'runtime_boundary_event_manifest_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    backend: 'hip',
+    projectId: 'generic-runtime-boundary-cold-project',
+    editId: 'gpu-artifact-edit',
+    targetId: 'generic-runtime-boundary-cold-target',
+    sourcePaths: ['src/kernels/generic.hip'],
+    entryPoint: 'generic_kernel',
+    compileTarget: 'gfx1201',
+    compiler: 'hipcc',
+    compilerArgsHash: runtimeHashC,
+    artifactHashBefore: runtimeHashA,
+    artifactHashAfter: runtimeHashB,
+    contractHash: runtimeHashC,
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    runtimeBoundaryEvents: genericBoundaryEvents,
+    computeOracleArtifacts: {
+      raw_readback_bin: 'runtime-boundary://raw-readback',
+      readback_schema_json: 'runtime-boundary://readback-schema',
+      checksum_before: runtimeHashA,
+      checksum_after: runtimeHashB,
+      expected_output_change: true,
+      expected_output_verified: true,
+      expected_output_hash: runtimeHashB,
+      deterministic_slice: {
+        offset: 0,
+        length: 64,
+        format: 'bytes',
+        hash: runtimeHashC,
+      },
+      raw_readback_hash: runtimeHashB,
+      raw_readback_hash_verified: true,
+      raw_readback_byte_length: 128,
+      raw_readback_source: 'runtime_raw_readback',
+      deterministic_slice_hash: runtimeHashC,
+      deterministic_slice_hash_verified: true,
+      raw_readback_verification: {
+        hash_verified: true,
+        byte_length: 128,
+        deterministic_slice_hash: runtimeHashC,
+        deterministic_slice_hash_verified: true,
+        expected_output_verified: true,
+        slice_bounds_verified: true,
+      },
+      oracle_code_hash: runtimeHashC,
+      rendered_card_png: 'runtime-boundary://compute-proof-card.png',
+      producer: 'random_cold_runtime_boundary_profile_self_check',
+      timestamp_after_dispatch: 400,
+      epoch: 'epoch-7',
+      evidenceRefs: ['compute-oracle:raw-readback-bytes'],
+    },
+  }, null, 2)}\n`);
+  const genericRuntimeBoundaryProfile = path.join(runtimeBoundaryBridgeDir, 'runtime-boundary-profile.json');
+  await writeFile(genericRuntimeBoundaryProfile, `${JSON.stringify({
+    schemaVersion: GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
+    id: 'random-cold-generic-runtime-boundary-profile',
+    adapter: {
+      family: 'generic-runtime-boundary-adapter',
+      proofRunner: 'runtime-boundary-proof-adapter',
+      runtimeBoundaryEventManifestPath:
+        repoRelativePath(genericBoundaryManifest),
+    },
+    runtime: {
+      targetName: 'generic-runtime-boundary-cold-target',
+      requiredKernels: ['generic_kernel'],
+      reload: {
+        kernelName: 'generic_kernel',
+        kernelSymbol: 'generic_kernel',
+      },
+    },
+    source: {
+      file: 'src/kernels/generic.hip',
+      before: 'return 1;',
+      after: 'return 2;',
+    },
+  }, null, 2)}\n`);
+  const genericRuntimeBoundaryCandidate = cleanCandidate({
+    id: 'direct-runtime-boundary-generic-large',
+    backendFamily: 'unknown_gpu_project',
+    runtimeProofProfilePath: repoRelativePath(genericRuntimeBoundaryProfile),
+    sourceUrl: 'https://example.invalid/direct-runtime-boundary-generic.git',
+    immutableCommit: 'abababababababababababababababababababab',
+  });
+  const genericRuntimeBoundaryResult = await runSelectedCandidate(
+    genericRuntimeBoundaryCandidate,
+    {
+      dryRun: false,
+      timeoutMs: 1,
+      runnerTimeoutMs: 60000,
+      sourceIntake: false,
+      sourceIntakeTimeoutMs: 1,
+    },
+  );
+  if (
+    genericRuntimeBoundaryResult.status !== 'unprofiled_arbitrary_project_cold_intake_runtime_profile_bridged_refused'
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridgeAccepted !== true
+    || genericRuntimeBoundaryResult.runtimeProfileStrictRuntimeProofAccepted !== true
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.strictRuntimeProofId === null
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.proofLedgerId === null
+    || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryProofAdapterAccepted !== true
+    || !genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryEventManifestSha256?.startsWith('sha256:')
+    || genericRuntimeBoundaryResult.blockingGaps?.includes('same_process_loader_unproven')
+    || genericRuntimeBoundaryResult.blockingGaps?.includes('epoch_publication_unproven')
+    || genericRuntimeBoundaryResult.blockingGaps?.includes('dispatch_trace_unproven')
+    || genericRuntimeBoundaryResult.blockingGaps?.includes('host_identity_unproven')
+    || genericRuntimeBoundaryResult.blockingGaps?.includes('output_oracle_unproven')
+    || !genericRuntimeBoundaryResult.blockingGaps?.includes('cold_path_runtime_profile_proof_requires_matrix_ingestion')
+    || genericRuntimeBoundaryResult.acceptedForGpuHmr !== false
+    || genericRuntimeBoundaryResult.gpuHmrSuccess !== false
+    || genericRuntimeBoundaryResult.canSatisfyRuntimeProof !== false
+  ) {
+    throw new Error('random large-project cold-path generic runtime-boundary bridge self-check failed');
   }
   const spoofedDirectPool = await loadCandidates({
     candidatesJson: JSON.stringify([
