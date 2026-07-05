@@ -2889,7 +2889,10 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
     await lineInspector.screenshot({ path: lineInspectorPngPath });
   }
   const handoverPanel = page.locator('[data-testid="codesite-causal-replay-handover"]').first();
-  await handoverPanel.scrollIntoViewIfNeeded();
+  await page.setViewportSize({ width: 1440, height: 1800 });
+  await handoverPanel.evaluate((element) => {
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+  });
   await page.waitForTimeout(500);
   const desktopLayout = await page.evaluate(browserLayoutCheckScript);
   const desktopChecks = await page.evaluate(() => ({
@@ -2913,7 +2916,9 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
   if (mobilePngPath) {
     await page.setViewportSize({ width: 390, height: 900 });
     await installBrowserProofCaptureStyles(page);
-    await handoverPanel.scrollIntoViewIfNeeded();
+    await handoverPanel.evaluate((element) => {
+      element.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
     await page.waitForTimeout(500);
     const mobileLayout = await page.evaluate(browserLayoutCheckScript);
     mobileChecks = await page.evaluate(() => ({

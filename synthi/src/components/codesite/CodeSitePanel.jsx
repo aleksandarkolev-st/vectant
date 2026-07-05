@@ -1231,7 +1231,7 @@ function Pill({ children, tone = "idle", className = "", testId }) {
   return (
     <span
       data-testid={testId}
-      className={`inline-flex min-h-6 max-w-full items-center gap-1 rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
+      className={`inline-flex min-h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 74%, var(--text-primary) 12%)",
@@ -3112,6 +3112,33 @@ function QuarantineReviewPanel({
           selected.lifecycle?.appliedAt,
       }
     : {};
+  const totalQueuedPaths = rows.reduce(
+    (total, record) =>
+      total +
+      Math.max(asArray(record.changes).length, asArray(record.paths).length),
+    0,
+  );
+  const queueStatusCounts = Object.entries(
+    countBy(
+      rows.map((record) =>
+        quarantineDisplayStatus(
+          record,
+          record.quarantineId === selected?.quarantineId
+            ? reviewState
+            : undefined,
+        ),
+      ),
+    ),
+  );
+  const queueCallsigns = uniqueValues(
+    rows.map((record) => compact(record.displayCallsign, "codesitefs")),
+  );
+  const quarantineRailStats = [
+    ["Manifests", rows.length],
+    ["Paths", totalQueuedPaths],
+    ["Selected", selectedPaths.length],
+    ["Remaining", selectedRemainingPaths.length],
+  ];
 
   if (!rows.length) {
     return fetchError ? (
@@ -3136,58 +3163,128 @@ function QuarantineReviewPanel({
       data-testid="codesite-quarantine-review"
       className="grid min-w-0 gap-3 xl:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]"
     >
-      <div
-        className="min-w-0 overflow-hidden rounded border"
-        style={{ borderColor: "var(--border-subtle)" }}
-      >
-        {rows.map((record) => {
-          const active = selected?.quarantineId === record.quarantineId;
-          const displayStatus = active
-            ? quarantineDisplayStatus(record, reviewState)
-            : quarantineDisplayStatus(record);
-          return (
-            <button
-              key={record.quarantineId}
-              type="button"
-              data-testid="codesite-quarantine-row"
-              aria-pressed={active}
-              onClick={() => onSelect(record)}
-              className="block w-full border-t px-3 py-2 text-left text-xs first:border-t-0"
-              style={{
-                borderColor: "var(--border-subtle)",
-                background: active
-                  ? "color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))"
-                  : "var(--bg-surface)",
-                color: "var(--text-primary)",
-              }}
-            >
-              <div className="flex min-w-0 items-center justify-between gap-2">
-                <code
-                  className="min-w-0 truncate text-[10px]"
-                  title={record.quarantineId}
+      <div className="grid min-w-0 content-start gap-2">
+        <div
+          className="min-w-0 overflow-hidden rounded border"
+          style={{ borderColor: "var(--border-subtle)" }}
+        >
+          {rows.map((record) => {
+            const active = selected?.quarantineId === record.quarantineId;
+            const displayStatus = active
+              ? quarantineDisplayStatus(record, reviewState)
+              : quarantineDisplayStatus(record);
+            return (
+              <button
+                key={record.quarantineId}
+                type="button"
+                data-testid="codesite-quarantine-row"
+                aria-pressed={active}
+                onClick={() => onSelect(record)}
+                className="block w-full border-t px-3 py-2 text-left text-xs first:border-t-0"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: active
+                    ? "color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))"
+                    : "var(--bg-surface)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <code
+                    className="min-w-0 truncate text-[10px]"
+                    title={record.quarantineId}
+                  >
+                    {record.quarantineId}
+                  </code>
+                  <Pill tone={displayStatus}>{displayStatus}</Pill>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  <Pill>{compact(record.displayCallsign, "codesitefs")}</Pill>
+                  <Pill>
+                    {asArray(record.changes).length ||
+                      asArray(record.paths).length}{" "}
+                    paths
+                  </Pill>
+                </div>
+                <div className="mt-1">
+                  <PathList
+                    paths={record.paths}
+                    empty="no paths"
+                    maxVisible={2}
+                  />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div
+          className="rounded border px-3 py-2 text-xs"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+            background:
+              "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 86%, var(--bg-editor) 14%))",
+          }}
+        >
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="font-semibold">Review queue</span>
+            <Pill tone={selectedRemainingPaths.length ? "holding" : "active"}>
+              {selectedRemainingPaths.length ? "actionable" : "clear"}
+            </Pill>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {quarantineRailStats.map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded-md border px-2 py-1"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: "var(--bg-editor)",
+                }}
+              >
+                <div
+                  className="text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
                 >
-                  {record.quarantineId}
-                </code>
-                <Pill tone={displayStatus}>{displayStatus}</Pill>
+                  {label}
+                </div>
+                <div className="font-mono text-sm font-semibold">{value}</div>
               </div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <Pill>{compact(record.displayCallsign, "codesitefs")}</Pill>
-                <Pill>
-                  {asArray(record.changes).length ||
-                    asArray(record.paths).length}{" "}
-                  paths
-                </Pill>
-              </div>
-              <div className="mt-1">
-                <PathList
-                  paths={record.paths}
-                  empty="no paths"
-                  maxVisible={2}
-                />
-              </div>
-            </button>
-          );
-        })}
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {queueStatusCounts.map(([status, count]) => (
+              <Pill key={status} tone={status}>
+                {status} {count}
+              </Pill>
+            ))}
+          </div>
+        </div>
+
+        <div
+          className="rounded border px-3 py-2 text-xs"
+          style={{
+            borderColor: "var(--border-subtle)",
+            background: "var(--bg-surface)",
+          }}
+        >
+          <div className="font-semibold">Runtime boundary</div>
+          <div
+            className="mt-1 leading-5"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Raw writes stay outside the source tree until replay validates the
+            selected manifest paths.
+          </div>
+          <div className="mt-2">
+            <PathList
+              paths={queueCallsigns}
+              empty="no active filesystem actors"
+              maxVisible={4}
+            />
+          </div>
+        </div>
       </div>
 
       <div
@@ -5935,7 +6032,7 @@ function AirspaceMap({
                   <div
                     key={zone.zoneKey || zone.id || index}
                     data-testid="codesite-airspace-lane"
-                    className="grid min-h-[46px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-[0.8fr_1.35fr_0.9fr]"
+                    className="grid min-h-[66px] gap-2 rounded-md border px-2 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-[minmax(96px,0.72fr)_minmax(0,1.4fr)_minmax(108px,0.68fr)] sm:items-start"
                     style={{
                       borderColor: hasRisk
                         ? "color-mix(in srgb, #ff5757 36%, var(--border-subtle))"
@@ -5945,7 +6042,7 @@ function AirspaceMap({
                         : "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 82%, var(--bg-surface) 18%))",
                     }}
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 self-start">
                       <div className="break-words text-[11px] font-semibold leading-tight">
                         {zoneName(zone, index)}
                       </div>
@@ -5956,10 +6053,10 @@ function AirspaceMap({
                         Class {zoneClass(zone)}
                       </div>
                     </div>
-                    <div className="col-span-2 col-start-1 row-start-2 min-w-0 sm:col-span-1 sm:col-start-auto sm:row-start-auto">
+                    <div className="min-w-0 self-start">
                       <PathList paths={zonePaths(zone)} empty="route pending" />
                     </div>
-                    <div className="col-start-2 row-start-1 flex min-w-0 justify-end gap-1 sm:col-auto sm:row-auto">
+                    <div className="flex min-w-0 flex-wrap gap-1 self-start sm:justify-end">
                       {relatedFlights.length ? (
                         <>
                           {visibleRelatedFlights.map((flight, flightIndex) => (
@@ -5971,7 +6068,9 @@ function AirspaceMap({
                               }
                               tone={flight.status}
                               className={
-                                hasRisk ? "motion-safe:animate-pulse" : ""
+                                hasRisk
+                                  ? "max-w-[86px] motion-safe:animate-pulse"
+                                  : "max-w-[86px]"
                               }
                             >
                               {compact(flight.displayCallsign, "agent")}
