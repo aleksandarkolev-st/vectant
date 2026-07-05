@@ -23,6 +23,10 @@ const contentSecurityPolicy = buildContentSecurityPolicy(
   process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
     || (process.env.NODE_ENV !== 'production' ? 'http://localhost:1234' : ''),
 );
+const localSupportContentSecurityPolicy = contentSecurityPolicy.replace(
+  /frame-ancestors [^;]+;?/,
+  "frame-ancestors 'none';",
+);
 
 /** @type {import('next').NextConfig} */
 const nextConfig = { eslint: { ignoreDuringBuilds: true },
@@ -66,6 +70,20 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
     return config;
   },
   async headers() {
+    const localSupportHeaders = [
+      {
+        key: 'Content-Security-Policy',
+        value: localSupportContentSecurityPolicy,
+      },
+      {
+        key: 'X-Frame-Options',
+        value: 'DENY',
+      },
+      {
+        key: 'Permissions-Policy',
+        value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), clipboard-read=(), clipboard-write=(), fullscreen=()',
+      },
+    ];
     return [
       {
         source: '/(.*)',
@@ -103,6 +121,14 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
             value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), browsing-topics=()',
           },
         ],
+      },
+      {
+        source: '/local-support',
+        headers: localSupportHeaders,
+      },
+      {
+        source: '/api/local-support/:path*',
+        headers: localSupportHeaders,
       },
     ];
   },
