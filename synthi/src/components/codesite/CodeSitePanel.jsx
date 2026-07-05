@@ -3139,6 +3139,23 @@ function QuarantineReviewPanel({
     ["Selected", selectedPaths.length],
     ["Remaining", selectedRemainingPaths.length],
   ];
+  const selectedChangeKinds = Object.entries(
+    countBy(
+      (changes.length
+        ? changes
+        : asArray(selected?.paths).map((path) => ({ path }))
+      ).map((change) => compact(change.kind || change.change_kind, "modified")),
+    ),
+  );
+  const selectedTraceSteps = [
+    ["Captured", selectedLifecycle.capturedAt],
+    ["Reviewed", selectedLifecycle.reviewedAt],
+    ["Replayed", selectedLifecycle.replayedAt],
+    ["Applied", selectedLifecycle.appliedAt],
+  ];
+  const selectedTracePaths = selectedRemainingPaths.length
+    ? selectedRemainingPaths
+    : selectedPaths;
 
   if (!rows.length) {
     return fetchError ? (
@@ -3163,7 +3180,7 @@ function QuarantineReviewPanel({
       data-testid="codesite-quarantine-review"
       className="grid min-w-0 gap-3 xl:grid-cols-[minmax(220px,0.78fr)_minmax(0,1.22fr)]"
     >
-      <div className="grid min-w-0 content-start gap-2">
+      <div className="grid min-w-0 gap-2 xl:min-h-full xl:grid-rows-[auto_auto_auto_minmax(180px,1fr)]">
         <div
           className="min-w-0 overflow-hidden rounded border"
           style={{ borderColor: "var(--border-subtle)" }}
@@ -3282,6 +3299,78 @@ function QuarantineReviewPanel({
               paths={queueCallsigns}
               empty="no active filesystem actors"
               maxVisible={4}
+            />
+          </div>
+        </div>
+
+        <div
+          data-testid="codesite-quarantine-rail-trace"
+          className="flex min-h-44 flex-col rounded border px-3 py-2 text-xs"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+            background:
+              "radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--accent-primary) 12%, transparent), transparent 44%), var(--bg-surface)",
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold">Containment trace</span>
+            <Pill tone={selectedStatus}>{selectedStatus}</Pill>
+          </div>
+          <div className="mt-2 grid gap-1.5">
+            {selectedTraceSteps.map(([label, value], index) => (
+              <div
+                key={label}
+                className="grid grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-2"
+              >
+                <span
+                  className="h-2.5 w-2.5 rounded-full border"
+                  style={{
+                    borderColor: value
+                      ? "color-mix(in srgb, #4ade80 72%, var(--border-subtle))"
+                      : "var(--border-subtle)",
+                    background: value
+                      ? "color-mix(in srgb, #4ade80 34%, transparent)"
+                      : "var(--bg-editor)",
+                    boxShadow:
+                      value && index === selectedTraceSteps.length - 1
+                        ? "0 0 0 4px color-mix(in srgb, #4ade80 12%, transparent)"
+                        : "none",
+                  }}
+                />
+                <div className="min-w-0">
+                  <div style={{ color: "var(--text-muted)" }}>{label}</div>
+                  <div
+                    className="truncate font-mono text-[10px]"
+                    title={value || ""}
+                  >
+                    {formatTime(value) || "pending"}
+                  </div>
+                </div>
+                <Pill tone={value ? "active" : "holding"}>
+                  {value ? "logged" : "wait"}
+                </Pill>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1">
+            {selectedChangeKinds.map(([kind, count]) => (
+              <Pill key={kind}>
+                {kind} {count}
+              </Pill>
+            ))}
+          </div>
+          <div className="mt-auto pt-3">
+            <div
+              className="mb-1 text-[10px] uppercase tracking-[0.14em]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Review path scope
+            </div>
+            <PathList
+              paths={selectedTracePaths}
+              empty="no selected paths"
+              maxVisible={3}
             />
           </div>
         </div>
