@@ -3644,22 +3644,6 @@ const derivedRuntimeProfileContract = randomColdDerivedRuntimeProfileContractFix
   runtimeProofProfileSha256: derivedRuntimeProfileHash,
   runtimeBoundaryEventManifestSha256: derivedRuntimeProfileEventManifestHash,
 });
-const derivedRuntimeProfileBridge = randomColdRuntimeProfileProofBridgeFixture({
-  runtimeProofProfilePath: derivedRuntimeProfilePath,
-  runtime_proof_profile_path: derivedRuntimeProfilePath,
-  runtimeProofProfileMode: 'derived_from_cold_intake_contract',
-  runtime_proof_profile_mode: 'derived_from_cold_intake_contract',
-  runtimeProofProfileSha256: derivedRuntimeProfileHash,
-  runtime_proof_profile_sha256: derivedRuntimeProfileHash,
-  runtimeBoundaryEventManifestPath: derivedRuntimeProfileEventManifestPath,
-  runtime_boundary_event_manifest_path: derivedRuntimeProfileEventManifestPath,
-  runtimeBoundaryEventManifestSha256: derivedRuntimeProfileEventManifestHash,
-  runtime_boundary_event_manifest_sha256: derivedRuntimeProfileEventManifestHash,
-  blockingGaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
-  blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_not_accepted'],
-  adapterResultBlockingGaps: ['runtime_profile_adapter_strict_runtime_proof_artifact_missing'],
-  adapter_result_blocking_gaps: ['runtime_profile_adapter_strict_runtime_proof_artifact_missing'],
-});
 Object.assign(derivedRuntimeProfileResult, {
   status: 'unprofiled_arbitrary_project_cold_intake_runtime_profile_bridged_refused',
   profileMode: 'derived_from_cold_intake_contract',
@@ -3670,8 +3654,6 @@ Object.assign(derivedRuntimeProfileResult, {
   derived_runtime_profile_contract: derivedRuntimeProfileContract,
   derivedRuntimeProfileContractAccepted: true,
   derived_runtime_profile_contract_accepted: true,
-  runtimeProfileProofBridge: derivedRuntimeProfileBridge,
-  runtime_profile_proof_bridge: derivedRuntimeProfileBridge,
   blockingGaps: [
     'runtime_profile_adapter_strict_runtime_proof_not_accepted',
     'runtime_support_closure_requires_strict_runtime_proof',
@@ -3726,18 +3708,14 @@ assert.equal(
   derivedRuntimeProfileContractRow.derivedRuntimeProfileContract.facetHash,
   derivedRuntimeProfileContractRow.derivedRuntimeProfileContract.recomputedFacetHash,
 );
-assert.equal(
-  derivedRuntimeProfileContractRow.runtimeProfileProofBridge.runtimeProofProfileMode,
-  'derived_from_cold_intake_contract',
-);
-assert.equal(derivedRuntimeProfileContractRow.runtimeProfileProofBridge.accepted, true);
+assert.equal(derivedRuntimeProfileContractRow.runtimeProfileProofBridge, null);
 assert.ok(!derivedRuntimeProfileContractRow.openGaps.includes('runtime_profile_contract_missing'));
 assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('same_process_loader_unproven'));
 assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('dispatch_trace_unproven'));
 assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('output_oracle_unproven'));
 assert.ok(derivedRuntimeProfileContractRow.openGaps.includes('strict_runtime_ledger_missing'));
 assert.equal(derivedRuntimeProfileContractClosure?.derivedRuntimeProfileContractAcceptedCount, 1);
-assert.equal(derivedRuntimeProfileContractClosure.runtimeProfileBridgeAcceptedCount, 1);
+assert.equal(derivedRuntimeProfileContractClosure.runtimeProfileBridgeAcceptedCount, 0);
 assert.ok(derivedRuntimeProfileContractClosure.openGaps.includes(
   'large_arbitrary_project_runtime_adapter_or_app_hook_contract_required',
 ));

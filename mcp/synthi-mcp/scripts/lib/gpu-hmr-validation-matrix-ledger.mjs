@@ -4229,6 +4229,9 @@ function randomColdDerivedRuntimeProfileContractFacet(
     facet.runtimeBoundaryEventManifestSha256,
     facet.runtime_boundary_event_manifest_sha256,
   ));
+  const candidateId = firstText(facet.candidateId, facet.candidate_id);
+  const sourceUrl = firstText(facet.sourceUrl, facet.source_url);
+  const immutableCommit = firstText(facet.immutableCommit, facet.immutable_commit);
   const sourceListingHash = normalizeSha256(firstText(
     facet.sourceListingHash,
     facet.source_listing_hash,
@@ -4343,9 +4346,9 @@ function randomColdDerivedRuntimeProfileContractFacet(
   }
   const recomputedFacetHash = stableJsonHash({
     schemaVersion: RANDOM_COLD_DERIVED_RUNTIME_PROFILE_CONTRACT_SCHEMA_VERSION,
-    candidateId: firstText(facet.candidateId, facet.candidate_id),
-    sourceUrl: firstText(facet.sourceUrl, facet.source_url),
-    immutableCommit: firstText(facet.immutableCommit, facet.immutable_commit),
+    candidateId,
+    sourceUrl,
+    immutableCommit,
     accepted: acceptedFlag,
     profileHash: runtimeProofProfileSha256,
     eventManifestHash: runtimeBoundaryEventManifestSha256,
@@ -4537,6 +4540,12 @@ function randomColdDerivedRuntimeProfileContractFacet(
     can_satisfy_runtime_proof: false,
     canSatisfyDispatchProof: false,
     can_satisfy_dispatch_proof: false,
+    candidateId,
+    candidate_id: candidateId,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
     runtimeProofProfileMode,
     runtime_proof_profile_mode: runtimeProofProfileMode,
     runtimeProofProfilePath,
@@ -4598,8 +4607,27 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     runtimeProfileBridge.runtimeProfileAdapterResultPath,
     runtimeProfileBridge.runtime_profile_adapter_result_path,
   );
-  const bridgePresent = runtimeProfileBridge.present === true || Boolean(adapterResultPath);
-  if (!bridgePresent) {
+  const resolvedRepoRoot = path.resolve(repoRoot ?? process.cwd());
+  const resolvedBaseDir = path.resolve(baseDir ?? resolvedRepoRoot);
+  const expectedAdapterResultHash = normalizeSha256(firstText(
+    runtimeProfileBridge.runtimeProfileAdapterResultSha256,
+    runtimeProfileBridge.runtime_profile_adapter_result_sha256,
+  ));
+  const bridgeAccepted =
+    runtimeProfileBridge.accepted === true
+    && (
+      runtimeProfileBridge.acceptedAsSupportEvidence === true
+      || runtimeProfileBridge.accepted_as_support_evidence === true
+    )
+    && (
+      runtimeProfileBridge.acceptedAsRuntimeProfileProofBridge === true
+      || runtimeProfileBridge.accepted_as_runtime_profile_proof_bridge === true
+    );
+  const adapterResultDeclared = Boolean(adapterResultPath || expectedAdapterResultHash);
+  const bridgePresent = runtimeProfileBridge.present === true
+    || adapterResultDeclared
+    || bridgeAccepted;
+  if (!bridgePresent || (!bridgeAccepted && !adapterResultDeclared)) {
     return {
       present: false,
       accepted: false,
@@ -4617,22 +4645,6 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
       failed_gates: [],
     };
   }
-  const resolvedRepoRoot = path.resolve(repoRoot ?? process.cwd());
-  const resolvedBaseDir = path.resolve(baseDir ?? resolvedRepoRoot);
-  const expectedAdapterResultHash = normalizeSha256(firstText(
-    runtimeProfileBridge.runtimeProfileAdapterResultSha256,
-    runtimeProfileBridge.runtime_profile_adapter_result_sha256,
-  ));
-  const bridgeAccepted =
-    runtimeProfileBridge.accepted === true
-    && (
-      runtimeProfileBridge.acceptedAsSupportEvidence === true
-      || runtimeProfileBridge.accepted_as_support_evidence === true
-    )
-    && (
-      runtimeProfileBridge.acceptedAsRuntimeProfileProofBridge === true
-      || runtimeProfileBridge.accepted_as_runtime_profile_proof_bridge === true
-    );
   const adapterResultResolvedPath =
     adapterResultPath ? resolveEvidencePath(adapterResultPath, resolvedRepoRoot, resolvedBaseDir) : null;
   const adapterResultArtifact = adapterResultResolvedPath
