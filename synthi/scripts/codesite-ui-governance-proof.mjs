@@ -4,11 +4,13 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import zlib from 'node:zlib';
 import { chromium } from 'playwright';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const moduleRequire = createRequire(import.meta.url);
 const SLUG = 'codesite-ui-proof';
 const PROJECT_ID = 'proj-ui-governance';
 const RUN_ID = `codesite-ui-governance-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
@@ -256,10 +258,17 @@ async function waitForReady(url, timeoutMs = 180000) {
 }
 
 function startDevServer(port) {
-  const child = spawn('npx', ['next', 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: path.join(REPO_ROOT, 'synthi'),
+  const synthiRoot = path.join(REPO_ROOT, 'synthi');
+  const nextCli = process.env.CODESITE_UI_PROOF_NEXT_CLI ||
+    moduleRequire.resolve('next/dist/bin/next', { paths: [synthiRoot, REPO_ROOT] });
+  const child = spawn(process.execPath, [nextCli, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
+    cwd: synthiRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' },
+    env: {
+      ...process.env,
+      NODE_ENV: 'development',
+      NEXT_TELEMETRY_DISABLED: '1',
+    },
     detached: process.platform !== 'win32',
   });
   let logs = '';
@@ -521,6 +530,7 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     'codesite-panel',
     'codesite-operator-cockpit',
     'codesite-mission-control-header',
+    'codesite-tower-now',
     'codesite-responsive-proof-target',
     'codesite-operator-airspace-pane',
     'codesite-operator-tower-pane',
