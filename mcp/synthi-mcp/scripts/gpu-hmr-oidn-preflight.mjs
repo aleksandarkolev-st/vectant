@@ -352,7 +352,9 @@ async function buildOidnOutputOracleEvidence(manifestPath) {
   const schema = firstText(manifest.schemaVersion, manifest.schema_version, manifest.schema);
   if (schema !== OIDN_OUTPUT_ORACLE_SCHEMA) failedGates.push('oidn_output_oracle_schema_mismatch');
   const authority = firstText(manifest.proofAuthority, manifest.proof_authority);
-  if (authority && authority !== OIDN_OUTPUT_ORACLE_AUTHORITY) {
+  if (!authority) {
+    failedGates.push('oidn_output_oracle_authority_missing');
+  } else if (authority !== OIDN_OUTPUT_ORACLE_AUTHORITY) {
     failedGates.push('oidn_output_oracle_authority_mismatch');
   }
   if (authorityClaimsSuccess(manifest)) failedGates.push('oidn_output_oracle_claims_gpu_hmr_success');
@@ -992,7 +994,9 @@ function workerOutputOracleManifestStaticGates(manifest) {
     failedGates.push('oidn_worker_output_oracle_schema_mismatch');
   }
   const authority = firstText(manifest.proofAuthority, manifest.proof_authority);
-  if (authority && authority !== OIDN_OUTPUT_ORACLE_AUTHORITY) {
+  if (!authority) {
+    failedGates.push('oidn_worker_output_oracle_authority_missing');
+  } else if (authority !== OIDN_OUTPUT_ORACLE_AUTHORITY) {
     failedGates.push('oidn_worker_output_oracle_authority_mismatch');
   }
   return failedGates;
@@ -1736,6 +1740,24 @@ async function runOutputOracleSelfCheck() {
     `forged expected hash gate missing: ${forgedGates.join(',')}`,
   );
 
+  const missingAuthorityPath = path.join(dir, 'missing-authority.json');
+  await writeFile(missingAuthorityPath, JSON.stringify({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    backend: 'oidn_hip',
+    device: 'hip',
+    noisyInputPath: noisyPath,
+    denoisedOutputPath: denoisedPath,
+    expectedOutputPath: expectedPath,
+    expectedOutputSha256: denoisedHash,
+  }, null, 2));
+  const missingAuthority = await buildOidnOutputOracleEvidence(missingAuthorityPath);
+  const missingAuthorityGates = missingAuthority.failedGates.map((gate) => gate.code);
+  assert(missingAuthority.accepted === false, 'authority-free OIDN output oracle should reject');
+  assert(
+    missingAuthorityGates.includes('oidn_output_oracle_authority_missing'),
+    `missing authority gate absent: ${missingAuthorityGates.join(',')}`,
+  );
+
   const noisyHash = normalizeSha256(sha256Buffer(await readFile(noisyPath)));
   const copiedManifest = copiedOutputOracleManifest(
     {
@@ -1778,6 +1800,13 @@ async function runOutputOracleSelfCheck() {
   assert(
     staticGates.includes('oidn_worker_output_oracle_manifest_claims_gpu_hmr_success'),
     `worker success-claim gate missing: ${staticGates.join(',')}`,
+  );
+  const missingWorkerAuthorityGates = workerOutputOracleManifestStaticGates({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+  });
+  assert(
+    missingWorkerAuthorityGates.includes('oidn_worker_output_oracle_authority_missing'),
+    `worker authority missing gate absent: ${missingWorkerAuthorityGates.join(',')}`,
   );
   assert(isPosixPathInside('/tmp/oidn/oracle/noisy.bin', '/tmp/oidn'), 'worker POSIX root check should accept child paths');
   assert(!isPosixPathInside('/tmp/oidn-other/noisy.bin', '/tmp/oidn'), 'worker POSIX root check should reject prefix escapes');
@@ -2018,6 +2047,9 @@ async function runRuntimeBoundaryBridgeSelfCheck() {
 
 if (args.has('--self-check')) {
   await runSelfCheck();
+} else if (args.has('--output-oracle-self-check')) {
+  await runOutputOracleSelfCheck();
+  console.log('[ok] OIDN output-oracle self-check passed');
 } else if (args.has('--runtime-boundary-self-check')) {
   await runRuntimeBoundaryBridgeSelfCheck();
 } else {
