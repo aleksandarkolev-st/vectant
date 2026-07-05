@@ -1763,6 +1763,55 @@ async function runOutputOracleSelfCheck() {
   assert(accepted.acceptedForGpuHmr === false, 'OIDN output oracle cannot claim GPU HMR acceptance');
   assert(accepted.gpuHmrSuccess === false, 'OIDN output oracle cannot claim GPU HMR success');
 
+  const retainedDir = path.join(CFG.outputDir, 'oidn-output-oracle-self-check');
+  await mkdir(retainedDir, { recursive: true });
+  const retainedNoisyPath = path.join(retainedDir, 'noisy.bin');
+  const retainedDenoisedPath = path.join(retainedDir, 'denoised.bin');
+  const retainedExpectedPath = path.join(retainedDir, 'expected.bin');
+  const retainedNoisyBytes = Buffer.from([0, 1, 2, 3, 4, 5]);
+  const retainedDenoisedBytes = Buffer.from([0, 2, 4, 6, 8, 10]);
+  const retainedExpectedBytes = Buffer.from([0, 2, 4, 6, 8, 10]);
+  await writeFile(retainedNoisyPath, retainedNoisyBytes);
+  await writeFile(retainedDenoisedPath, retainedDenoisedBytes);
+  await writeFile(retainedExpectedPath, retainedExpectedBytes);
+  const retainedNoisyHash = normalizeSha256(sha256Buffer(retainedNoisyBytes));
+  const retainedDenoisedHash = normalizeSha256(sha256Buffer(retainedDenoisedBytes));
+  const retainedExpectedHash = normalizeSha256(sha256Buffer(retainedExpectedBytes));
+  const retainedManifestPath = path.join(retainedDir, 'oracle.json');
+  await writeFile(retainedManifestPath, JSON.stringify({
+    schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
+    proofAuthority: OIDN_OUTPUT_ORACLE_AUTHORITY,
+    targetId: 'oidn-output-oracle-self-check',
+    profileId: 'oidn-output-oracle-self-check',
+    backend: 'oidn_hip',
+    device: 'hip',
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    noisyInputPath: retainedNoisyPath,
+    noisyInputSha256: retainedNoisyHash,
+    noisyInputByteLength: retainedNoisyBytes.length,
+    denoisedOutputPath: retainedDenoisedPath,
+    denoisedOutputSha256: retainedDenoisedHash,
+    denoisedOutputByteLength: retainedDenoisedBytes.length,
+    expectedOutputPath: retainedExpectedPath,
+    expectedOutputSha256: retainedExpectedHash,
+    expectedOutputByteLength: retainedExpectedBytes.length,
+    outputDistinctFromInput: true,
+    expectedOutputMatched: true,
+    evidenceRefs: [
+      `oidn-output-oracle-noisy:${retainedNoisyHash}`,
+      `oidn-output-oracle-denoised:${retainedDenoisedHash}`,
+      `oidn-output-oracle-expected:${retainedExpectedHash}`,
+    ],
+  }, null, 2));
+  const retainedAccepted = await buildOidnOutputOracleEvidence(retainedManifestPath);
+  assert(
+    retainedAccepted.accepted === true,
+    `retained OIDN output oracle should accept: ${JSON.stringify(retainedAccepted.failedGates)}`,
+  );
+  assert(retainedAccepted.acceptedForGpuHmr === false, 'retained OIDN oracle cannot claim GPU HMR');
+
   const forgedPath = path.join(dir, 'forged.json');
   await writeFile(forgedPath, JSON.stringify({
     schemaVersion: OIDN_OUTPUT_ORACLE_SCHEMA,
