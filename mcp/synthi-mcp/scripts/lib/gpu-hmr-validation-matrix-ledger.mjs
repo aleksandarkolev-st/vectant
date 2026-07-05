@@ -68,6 +68,8 @@ const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
 const CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES = 8192;
 const classifiedJsonArtifactCache = new Map();
+const ASYNC_VISUAL_METRICS_CACHE_MAX_ENTRIES = 4096;
+const asyncVisualMetricsCache = new Map();
 const SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES = [
   'direct_source_url_commit',
   'direct_local_git_repo_path',
@@ -4879,6 +4881,76 @@ function visualWorkerInputForImage(image = {}) {
   };
 }
 
+function visualWorkerImageCacheIdentity(image = {}, workerInput = {}) {
+  return compactObject({
+    role: firstText(image.role, image.imageRole, image.image_role),
+    sha256: normalizeSha256(firstText(image.sha256, image.contentHash, image.content_hash)),
+    expectedHash: normalizeSha256(firstText(image.expectedHash, image.expected_hash)),
+    hashMatches: image.hashMatches === true || image.hash_matches === true,
+    artifactCasContentHash: normalizeSha256(firstText(
+      image.artifactCasContentHash,
+      image.artifact_cas_content_hash,
+    )),
+    artifactCasManifestHash: normalizeSha256(firstText(
+      image.artifactCasManifestHash,
+      image.artifact_cas_manifest_hash,
+    )),
+    artifactCasResolvedPath: firstText(
+      image.artifactCasResolvedPath,
+      image.artifact_cas_resolved_path,
+    )
+      ? path.resolve(firstText(image.artifactCasResolvedPath, image.artifact_cas_resolved_path))
+      : null,
+    absolutePath: firstText(image.absolutePath, image.absolute_path, image.path)
+      ? path.resolve(firstText(image.absolutePath, image.absolute_path, image.path))
+      : null,
+    sizeBytes: finiteNumber(image.sizeBytes ?? image.size_bytes),
+    width: finiteNumber(image.width),
+    height: finiteNumber(image.height),
+    transportMode: workerInput.transportMode ?? null,
+    workerInput: workerInput.input ?? null,
+  });
+}
+
+function asyncVisualMetricsCacheKey({
+  before,
+  after,
+  beforeInput,
+  afterInput,
+  request,
+  workerOptions,
+}) {
+  return stableJsonHash({
+    schemaVersion: 'synthi.gpu_hmr.matrix_async_visual_metrics_cache_key.v1',
+    before: visualWorkerImageCacheIdentity(before, beforeInput),
+    after: visualWorkerImageCacheIdentity(after, afterInput),
+    request: compactObject(request),
+    workerOptions: {
+      allowedRoots: Array.isArray(workerOptions.allowedRoots)
+        ? [...workerOptions.allowedRoots].map((root) => path.resolve(root)).sort()
+        : [],
+      timeoutMs: finiteNumber(workerOptions.timeoutMs),
+      diagnosticDelayMs: finiteNumber(workerOptions.diagnosticDelayMs),
+    },
+  });
+}
+
+function cachedAsyncVisualMetrics(cacheKey) {
+  const cached = asyncVisualMetricsCache.get(cacheKey);
+  if (!cached) return null;
+  asyncVisualMetricsCache.delete(cacheKey);
+  asyncVisualMetricsCache.set(cacheKey, cached);
+  return cloneJsonLike(cached);
+}
+
+function rememberAsyncVisualMetrics(cacheKey, metrics) {
+  if (asyncVisualMetricsCache.size >= ASYNC_VISUAL_METRICS_CACHE_MAX_ENTRIES) {
+    const firstKey = asyncVisualMetricsCache.keys().next().value;
+    if (firstKey) asyncVisualMetricsCache.delete(firstKey);
+  }
+  asyncVisualMetricsCache.set(cacheKey, cloneJsonLike(metrics));
+}
+
 function visualWorkerTimeoutMs() {
   const value = Number(process.env.SYNTHI_GPU_HMR_VISUAL_WORKER_TIMEOUT_MS ?? 30000);
   return Number.isSafeInteger(value) && value > 0 ? value : 30000;
@@ -5216,31 +5288,46 @@ async function asyncVisualMetricsForPair(before, after, request = {}) {
   const beforeInput = visualWorkerInputForImage(before);
   const afterInput = visualWorkerInputForImage(after);
   if (!beforeInput || !afterInput) return null;
+  const proofRequest = {
+    before: beforeInput.input,
+    after: afterInput.input,
+    includeAlpha: true,
+    tileSize: 128,
+    ...request,
+  };
+  const workerOptions = {
+    allowedRoots: visualWorkerAllowedRootsForImages([before, after]),
+    timeoutMs: visualWorkerTimeoutMs(),
+    diagnosticDelayMs: visualWorkerDiagnosticDelayMs(),
+  };
+  const cacheKey = asyncVisualMetricsCacheKey({
+    before,
+    after,
+    beforeInput,
+    afterInput,
+    request: proofRequest,
+    workerOptions,
+  });
+  const cached = cachedAsyncVisualMetrics(cacheKey);
+  if (cached) return cached;
+  const withTransport = (metrics) => ({
+    ...metrics,
+    requestedInputTransport: {
+      before: beforeInput.transportMode,
+      after: afterInput.transportMode,
+    },
+    requested_input_transport: {
+      before: beforeInput.transportMode,
+      after: afterInput.transportMode,
+    },
+  });
   try {
-    const proof = await computeAsyncVisualProof({
-      before: beforeInput.input,
-      after: afterInput.input,
-      includeAlpha: true,
-      tileSize: 128,
-      ...request,
-    }, {
-      allowedRoots: visualWorkerAllowedRootsForImages([before, after]),
-      timeoutMs: visualWorkerTimeoutMs(),
-      diagnosticDelayMs: visualWorkerDiagnosticDelayMs(),
-    });
-    return {
-      ...summarizeAsyncVisualProof(proof),
-      requestedInputTransport: {
-        before: beforeInput.transportMode,
-        after: afterInput.transportMode,
-      },
-      requested_input_transport: {
-        before: beforeInput.transportMode,
-        after: afterInput.transportMode,
-      },
-    };
+    const proof = await computeAsyncVisualProof(proofRequest, workerOptions);
+    const metrics = withTransport(summarizeAsyncVisualProof(proof));
+    rememberAsyncVisualMetrics(cacheKey, metrics);
+    return cloneJsonLike(metrics);
   } catch (error) {
-    return summarizeAsyncVisualProof({
+    const metrics = withTransport(summarizeAsyncVisualProof({
       schemaVersion: GPU_HMR_ASYNC_VISUAL_PROOF_WORKER_SCHEMA_VERSION,
       eventType: 'proof_ready',
       accepted: false,
@@ -5263,7 +5350,9 @@ async function asyncVisualMetricsForPair(before, after, request = {}) {
       reasons: ['async_visual_metrics_worker_failed'],
       gaps: ['async_visual_metrics_worker_failed'],
       details: { message: error?.message ? String(error.message) : String(error) },
-    });
+    }));
+    rememberAsyncVisualMetrics(cacheKey, metrics);
+    return cloneJsonLike(metrics);
   }
 }
 
