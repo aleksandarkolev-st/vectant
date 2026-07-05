@@ -3217,7 +3217,7 @@ const mismatchedTemplateBindingColdLedger = await collectGpuHmrValidationMatrixL
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [mismatchedTemplateBindingColdDir],
-  includeUnproven: true,
+  includeInvalidated: true,
 });
 const mismatchedTemplateBindingColdRow = mismatchedTemplateBindingColdLedger.rows.find(
   (row) => row.proofMode === 'random_large_project_cold_path',
@@ -4843,7 +4843,7 @@ const unresolvedBorrowedCandidateLedger = await collectGpuHmrValidationMatrixLed
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [unresolvedBorrowedCandidatePathDir],
-  includeUnproven: true,
+  includeInvalidated: true,
 });
 const unresolvedBorrowedCandidateRow = unresolvedBorrowedCandidateLedger.rows.find(
   (row) => row.proofMode === 'random_large_project_cold_path',
@@ -5304,7 +5304,7 @@ const forgedRandomColdLedger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
   roots: [forgedRandomColdPathDir],
-  includeUnproven: true,
+  includeInvalidated: true,
 });
 const forgedRandomColdRow = forgedRandomColdLedger.rows.find(
   (row) => row.proofMode === 'random_large_project_cold_path',
@@ -24391,7 +24391,7 @@ const acceptedComputeSafetyLedger = buildGpuHmrValidationMatrixLedger([
     missingDependencyProbe,
     missing_dependency_probe: missingDependencyProbe,
   },
-], { includeUnproven: true, latestPerTarget: false });
+], { includeInvalidated: true, includeUnproven: true, latestPerTarget: false });
 assert.equal(acceptedComputeSafetyLedger.rows.length, 1);
 assert.equal(acceptedComputeSafetyLedger.rows[0].matrixOutcome, 'unproven');
 assert.equal(acceptedComputeSafetyLedger.rows[0].acceptedForGpuHmr, false);
@@ -24411,7 +24411,7 @@ const acceptedComputeExternalHeaderSafetyLedger = buildGpuHmrValidationMatrixLed
     externalHeaderPrerequisites: forgedExternalHeaderPrerequisites,
     external_header_prerequisites: forgedExternalHeaderPrerequisites,
   },
-], { includeUnproven: true, latestPerTarget: false });
+], { includeInvalidated: true, includeUnproven: true, latestPerTarget: false });
 assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows.length, 1);
 assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].matrixOutcome, 'unproven');
 assert.equal(acceptedComputeExternalHeaderSafetyLedger.rows[0].acceptedForGpuHmr, false);
@@ -28187,6 +28187,7 @@ const forgedOperationalEvidenceLedger = await collectGpuHmrValidationMatrixLedge
   mcpRoot,
   roots: [forgedOperationalEvidenceRocmDir],
   generatedAt: '2026-06-29T00:00:02.2645Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const forgedOperationalEvidenceRow = forgedOperationalEvidenceLedger.rows.find(
@@ -28262,6 +28263,7 @@ const validOperationalTimeoutSourceLedger = await collectGpuHmrValidationMatrixL
   mcpRoot,
   roots: [validOperationalTimeoutSourceDir],
   generatedAt: '2026-06-30T00:00:02.2646Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const validOperationalTimeoutSourceRow =
@@ -28352,6 +28354,7 @@ const validEmergencyRetainedCheckpointLedger = await collectGpuHmrValidationMatr
   mcpRoot,
   roots: [validEmergencyRetainedCheckpointDir],
   generatedAt: '2026-07-04T00:00:02.2648Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const validEmergencyRetainedCheckpointRow =
@@ -28421,6 +28424,7 @@ const forgedEmergencyRetainedCheckpointLedger = await collectGpuHmrValidationMat
   mcpRoot,
   roots: [forgedEmergencyRetainedCheckpointDir],
   generatedAt: '2026-07-04T00:00:02.2649Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const forgedEmergencyRetainedCheckpointRow =
@@ -28488,6 +28492,7 @@ const forgedOperationalTimeoutSourceLedger = await collectGpuHmrValidationMatrix
   mcpRoot,
   roots: [forgedOperationalTimeoutSourceDir],
   generatedAt: '2026-06-30T00:00:02.2647Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const forgedOperationalTimeoutSourceRow =

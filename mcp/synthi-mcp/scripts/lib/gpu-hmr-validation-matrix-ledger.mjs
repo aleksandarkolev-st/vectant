@@ -34732,8 +34732,7 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     mcpRoot: options.mcpRoot,
     mcp_root: options.mcpRoot,
   };
-  const includeSafetyInvalidatedRows =
-    options.includeInvalidated === true || options.includeUnproven === true;
+  const includeSafetyInvalidatedRows = options.includeInvalidated === true;
   const preliminaryRows = rows.map((row) => rowWithEvaluatedSafety(row));
   const preliminarySelectedRows = options.latestPerTarget === false
     ? preliminaryRows
