@@ -703,6 +703,7 @@ function validateMatureProofSuiteRun({ root, proofRoot, failures }) {
     results: 0,
     currentHead: null,
     proofHead: null,
+    artifactOnlyPostProofChanges: null,
     ok: false,
   };
   if (!run) return summary;
@@ -735,7 +736,21 @@ function validateMatureProofSuiteRun({ root, proofRoot, failures }) {
       const currentHead = git(root, ['rev-parse', 'HEAD']);
       summary.currentHead = currentHead;
       if (proofHead !== currentHead) {
-        failures.push(`${relative(root, runPath)} git.head ${proofHead} must match current HEAD ${currentHead}`);
+        const mergeBase = git(root, ['merge-base', proofHead, currentHead]);
+        const changedPaths = git(root, ['diff', '--name-only', `${proofHead}..${currentHead}`])
+          .split(/\r?\n/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const disallowedPostProofChanges = changedPaths.filter((filePath) => !pathMatchesAnyPrefix(filePath, allowedPostProofPrefixes));
+        summary.artifactOnlyPostProofChanges = disallowedPostProofChanges.length === 0;
+        if (mergeBase !== proofHead) {
+          failures.push(`${relative(root, runPath)} git.head ${proofHead} is not an ancestor of current HEAD ${currentHead}`);
+        }
+        if (disallowedPostProofChanges.length > 0) {
+          failures.push(`${relative(root, runPath)} non-artifact changes occurred after suite head ${proofHead}: ${disallowedPostProofChanges.slice(0, 24).join(', ')}`);
+        }
+      } else {
+        summary.artifactOnlyPostProofChanges = true;
       }
     } catch (error) {
       const unavailableWorktree = unavailableExternalGitDir(root);
@@ -1653,6 +1668,11 @@ function cleanTextArtifact(value) {
 function relative(root, filePath) {
   return path.relative(root, path.resolve(filePath)).split(path.sep).join('/');
 }
+
+export {
+  REQUIRED_MATURE_PROOFS,
+  validateMatureProofSuiteRun,
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
