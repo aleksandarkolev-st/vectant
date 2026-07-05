@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   evaluatePolicyPrecedence,
   readLocalSupportPolicy,
+  signRequestEnvelope,
   summarizeSecurityEvent,
   validateRequestEnvelope,
+  verifyRequestEnvelopeSignature,
 } from "./controlPlane";
 
 const future = () => new Date(Date.now() + 60_000).toISOString();
@@ -201,6 +203,34 @@ describe("local support control plane policy", () => {
       decision: "allowed_after_local_checks",
       reason: "all_policy_layers_allowed",
       blocked_layer: null,
+      bytes_sent: 0,
+    });
+  });
+
+  it("signs request envelopes canonically and detects tampering", () => {
+    const secret = "test-envelope-secret";
+    const body = envelope({ capability: "workspace.log.read" });
+    const reordered = {
+      app_version: body.app_version,
+      expires_at: body.expires_at,
+      actor: body.actor,
+      capability: body.capability,
+      workspace_id: body.workspace_id,
+      session_id: body.session_id,
+      request_id: body.request_id,
+    };
+    const signature = signRequestEnvelope(body, secret);
+
+    expect(signature).toBe(signRequestEnvelope(reordered, secret));
+    expect(verifyRequestEnvelopeSignature({ ...body, signature }, secret)).toMatchObject({
+      decision: "verified",
+      reason: "request_envelope_signature_valid",
+    });
+    expect(
+      verifyRequestEnvelopeSignature({ ...body, capability: "workspace.metadata.read", signature }, secret),
+    ).toMatchObject({
+      decision: "denied",
+      reason: "request_envelope_signature_invalid",
       bytes_sent: 0,
     });
   });

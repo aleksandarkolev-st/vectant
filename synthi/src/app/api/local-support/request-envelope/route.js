@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
-import { readLocalSupportPolicy, validateRequestEnvelope } from "@/lib/local-support/controlPlane";
+import {
+  readLocalSupportPolicy,
+  validateRequestEnvelope,
+  verifyRequestEnvelopeSignature,
+} from "@/lib/local-support/controlPlane";
 
 export const runtime = "nodejs";
 
@@ -18,7 +22,18 @@ export async function POST(req) {
   }
 
   const body = bodyResult.value;
-  const decision = validateRequestEnvelope(body, readLocalSupportPolicy());
+  const policy = readLocalSupportPolicy();
+  if (policy.enabled) {
+    const signatureDecision = verifyRequestEnvelopeSignature(
+      body,
+      process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET,
+    );
+    if (signatureDecision.decision === "denied") {
+      return NextResponse.json(signatureDecision, { status: 403 });
+    }
+  }
+
+  const decision = validateRequestEnvelope(body, policy);
   const status = decision.decision === "denied" ? 403 : 200;
   return NextResponse.json(decision, { status });
 }

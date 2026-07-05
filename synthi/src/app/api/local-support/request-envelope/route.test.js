@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { signRequestEnvelope } from "@/lib/local-support/controlPlane";
+
 import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
@@ -45,11 +47,20 @@ function envelope(overrides = {}) {
   };
 }
 
+function signedEnvelope(overrides = {}, secret = "test-envelope-secret") {
+  const body = envelope(overrides);
+  return {
+    ...body,
+    signature: signRequestEnvelope(body, secret),
+  };
+}
+
 describe("local support request-envelope route", () => {
   it("denies cross-origin browser calls before policy evaluation", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
 
-    const response = await POST(request(envelope(), { headers: { origin: "https://evil.example" } }));
+    const response = await POST(request(signedEnvelope(), { headers: { origin: "https://evil.example" } }));
     const json = await response.json();
 
     expect(response.status).toBe(403);
@@ -76,8 +87,9 @@ describe("local support request-envelope route", () => {
 
   it("approval-gates allowed MVP reads without sending bytes", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
 
-    const response = await POST(request(envelope({ capability: "workspace.log.read" })));
+    const response = await POST(request(signedEnvelope({ capability: "workspace.log.read" })));
     const json = await response.json();
 
     expect(response.status).toBe(200);
@@ -88,8 +100,49 @@ describe("local support request-envelope route", () => {
     });
   });
 
+  it("denies unsigned or tampered request envelopes before approval", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const unsigned = await POST(request(envelope({ capability: "workspace.log.read" })));
+    expect(unsigned.status).toBe(403);
+    await expect(unsigned.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "request_envelope_signature_missing",
+      bytes_sent: 0,
+    });
+
+    const signed = signedEnvelope({ capability: "workspace.log.read" });
+    const tampered = { ...signed, target: ".env", capability: "workspace.metadata.read" };
+    const response = await POST(request(tampered));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "request_envelope_signature_invalid",
+      bytes_sent: 0,
+    });
+  });
+
+  it("fails closed when envelope signing is not configured for enabled support", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    delete process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET;
+
+    const response = await POST(request(envelope({ capability: "workspace.log.read" })));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "request_envelope_signing_unconfigured",
+      bytes_sent: 0,
+    });
+  });
+
   it("denies oversized request envelopes before policy evaluation", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
 
     const response = await POST(rawRequest(JSON.stringify({ padding: "x".repeat(70 * 1024) })));
     const json = await response.json();

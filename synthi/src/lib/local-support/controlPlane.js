@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 export const LOCAL_SUPPORT_PROTOCOL = "local-support-mvp.1";
 export const DEFAULT_MIN_APP_VERSION = "0.1.0";
 export const POLICY_VERSION = "2026.07.05";
@@ -131,6 +133,38 @@ export function evaluatePolicyPrecedence(layers = {}) {
   };
 }
 
+export function signRequestEnvelope(envelope, secret) {
+  if (!secret || typeof secret !== "string") {
+    throw new Error("request envelope signing secret is required");
+  }
+  return `sha256=${createHmac("sha256", secret).update(canonicalizeEnvelope(envelope)).digest("hex")}`;
+}
+
+export function verifyRequestEnvelopeSignature(envelope, secret) {
+  if (!secret || typeof secret !== "string") {
+    return deny("request_envelope_signing_unconfigured", "Request envelope signing is not configured.");
+  }
+  const signature = typeof envelope?.signature === "string" ? envelope.signature : "";
+  if (!signature.startsWith("sha256=")) {
+    return deny("request_envelope_signature_missing", "Request envelope signature is required.");
+  }
+
+  const expected = signRequestEnvelope(envelope, secret);
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+    return deny("request_envelope_signature_invalid", "Request envelope signature did not match.");
+  }
+
+  return {
+    decision: "verified",
+    reason: "request_envelope_signature_valid",
+    policy_version: POLICY_VERSION,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+  };
+}
+
 export function compareSemverLike(left, right) {
   const parse = (value) => String(value || "0")
     .split(".")
@@ -260,6 +294,26 @@ function normalizePolicyLayer(value) {
     };
   }
   return { decision: "allow" };
+}
+
+function canonicalizeEnvelope(value) {
+  return JSON.stringify(canonicalValue(value, new Set(["signature"])));
+}
+
+function canonicalValue(value, excludedKeys = new Set()) {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalValue(item, excludedKeys));
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value)
+      .filter((key) => !excludedKeys.has(key))
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = canonicalValue(value[key], excludedKeys);
+        return acc;
+      }, {});
+  }
+  return value;
 }
 
 function severityForEvent(eventType, count) {
