@@ -844,22 +844,24 @@ describe('CodeSitePanel', () => {
       container.querySelector('[data-testid="codesite-quarantine-replay-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
-    expect(h.replayCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', {
+    expect(h.replayCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
       transactionId: 'txn-1',
       mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
       paths: ['docs/review.md'],
-    });
+    }));
     expect(container.querySelector('[data-testid="codesite-quarantine-replay-result"]').textContent).toContain('docs/review.md');
     expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(false);
     await act(async () => {
       container.querySelector('[data-testid="codesite-quarantine-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
-    expect(h.applyCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', {
+    expect(h.applyCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
       transactionId: 'txn-1',
       mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
       paths: ['docs/review.md'],
-    });
+    }));
     expect(container.querySelector('[data-testid="codesite-quarantine-apply-result"]').textContent).toContain('docs/review.md');
     expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('partially_applied');
     expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('2 pending');

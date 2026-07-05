@@ -1,18 +1,19 @@
 {
-  "generatedAt": "2026-07-01T04:01:24.721Z",
-  "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-shadow-simulator-proof-1782878456107",
+  "generatedAt": "2026-07-05T15:59:25.637Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-shadow-simulator-proof-1783267103356",
   "schemaProject": {
-    "id": "cmr1jsvji003cob4t0o4saswv",
+    "id": "cmr7z7ft4001tro01kokn9tw8",
     "title": "Tower simulator schema coordination proof",
-    "route": "/workspace/codesite-shadow-simulator-proof-1782878456107/codesite"
+    "route": "/workspace/codesite-shadow-simulator-proof-1783267103356/codesite"
   },
   "migrationProject": {
-    "id": "cmr1jstb6002hob4thw3ntgio",
+    "id": "cmr7z6x2a0004ro01wda3143j",
     "title": "Tower simulator migration runway proof"
   },
   "schemaSimulation": {
     "selected": "schema-first",
+    "appliedPolicyDeltas": [],
     "reason": {
       "reasonCodes": [
         "schema_airspace_first",
@@ -39,9 +40,39 @@
         "migrationLocks": 0,
         "packageExports": 1,
         "priorIncidents": 1,
+        "learnedPolicyDeltas": 0,
         "activeLeaseLocks": 0,
         "inspectionRuns": 1,
         "signalStrength": "strong"
+      },
+      "learnedPolicyDeltaRefs": [],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:de6faafcc0a3bee6bc259c2bc95710cada8ac614b242f3adb696f29877a70300",
+          "codesite:shadow-universe:schema-first:sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50e",
+          "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf",
+          "codesite:shadow-universe:backend-first:sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6e",
+          "codesite:shadow-universe:single-fullstack-agent:sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bf",
+          "codesite:shadow-universe:test-first:sha256:93309ddd92903ea44ef5efa0b0cf2dc10423ca3310dcfc116da72352bb0869be",
+          "codesite:shadow-runner-input:sha256:5e670d45fb4c90712e0e88f460609434aef2fdc3765c78766d892a978d667d10",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:b515efb2f6bace7267ae6e771e69ae1b083afc75539f9d13b6f2b64252232253",
+          "codesite:shadow-runner-output:sha256:b515efb2f6bace7267ae6e771e69ae1b083afc75539f9d13b6f2b64252232253",
+          "codesite:shadow-runner-result:sha256:6b4c870d0da3247589ba3448e6716ac399c302552bd4ce3a674a2a4f4d93fc48"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
       }
     },
     "universes": [
@@ -62,14 +93,18 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "schema_airspace_first",
           "downstream_assumptions_refresh_after_contract",
           "semantic_collision_mitigated",
           "prior_incidents_weighted",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 3,
           "highRiskCount": 3,
@@ -83,10 +118,26 @@
           "migrationLocks": 0,
           "packageExports": 1,
           "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 1,
           "signalStrength": "strong"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50e",
+            "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50e"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50e",
+          "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+        ]
       },
       {
         "strategy": "backend-first",
@@ -105,13 +156,17 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "backend_route_before_ui",
           "api_surface_stabilized_before_frontend",
           "prior_incidents_weighted",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 3,
           "highRiskCount": 3,
@@ -125,10 +180,26 @@
           "migrationLocks": 0,
           "packageExports": 1,
           "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 1,
           "signalStrength": "strong"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:backend-first:sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687",
+            "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:backend-first:sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687",
+          "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+        ]
       },
       {
         "strategy": "frontend-backend-parallel",
@@ -147,13 +218,17 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "parallelism_crosses_contract_airspace",
           "requires_extra_assumption_refresh",
           "prior_incidents_weighted",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 3,
           "highRiskCount": 3,
@@ -167,10 +242,26 @@
           "migrationLocks": 0,
           "packageExports": 1,
           "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 1,
           "signalStrength": "strong"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6e",
+            "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6e"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6e",
+          "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+        ]
       },
       {
         "strategy": "single-fullstack-agent",
@@ -189,14 +280,18 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "single_writer_reduces_merge_collision",
           "higher_serial_inspection_cost",
           "semantic_collision_mitigated",
           "prior_incidents_weighted",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 3,
           "highRiskCount": 3,
@@ -210,10 +305,26 @@
           "migrationLocks": 0,
           "packageExports": 1,
           "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 1,
           "signalStrength": "strong"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:single-fullstack-agent:sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bf",
+            "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bf"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:single-fullstack-agent:sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bf",
+          "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+        ]
       },
       {
         "strategy": "test-first",
@@ -232,14 +343,18 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "test_ownership_before_landing",
           "inspection_radar_runs_before_mutation",
           "semantic_collision_mitigated",
           "prior_incidents_weighted",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 3,
           "highRiskCount": 3,
@@ -253,31 +368,81 @@
           "migrationLocks": 0,
           "packageExports": 1,
           "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 1,
           "signalStrength": "strong"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:93309ddd92903ea44ef5efa0b0cf2dc10423ca3310dcfc116da72352bb0869be",
+            "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:93309ddd92903ea44ef5efa0b0cf2dc10423ca3310dcfc116da72352bb0869be"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:93309ddd92903ea44ef5efa0b0cf2dc10423ca3310dcfc116da72352bb0869be",
+          "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf"
+        ]
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:60de62251f4d5ba7c59c9c72fdc35296a8094f9d67b26928a214ce544b4ae006",
-    "baseSnapshot": "repo@sha256:732a495dd09fd6e80b7392ed907f6ded4fa54cedf602efd5274c937f1c967a79",
+    "shadowJobRef": "codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf",
+    "baseSnapshot": "repo@sha256:7d0a4b9ef8649aea74b8d4142cce8a673fdf468c0db92f08f85d7abde12a0133",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:dbfa2215f592bf52c818e504d3bdca544a82e8e011e8fe2ad135fd54374952f0",
+      "codesite:repo-policy:sha256:5bf0f671b533064d556d20e651fb4c102ce1d7427d750410b694b10a2b94870b",
       "codesite:collision-forecast:sha256:f238e08619061365c77200a9e09d2f97e42c40f65050f99d020b7c7a91f6943c",
-      "codesite:incident:cmr1jsxjk004job4tueihxvtz",
-      "codesite:inspection:cmr1jsywp004pob4te8zsxvan"
+      "codesite:incident:cmr7z7u2c003gro01393f9k4l",
+      "codesite:inspection:cmr7z7xrn003mro01aeliik4w",
+      "codesite:shadow-runner:sha256:de6faafcc0a3bee6bc259c2bc95710cada8ac614b242f3adb696f29877a70300",
+      "codesite:shadow-universe:schema-first:sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50e",
+      "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf",
+      "codesite:shadow-universe:backend-first:sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6e",
+      "codesite:shadow-universe:single-fullstack-agent:sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bf",
+      "codesite:shadow-universe:test-first:sha256:93309ddd92903ea44ef5efa0b0cf2dc10423ca3310dcfc116da72352bb0869be",
+      "codesite:shadow-runner-input:sha256:5e670d45fb4c90712e0e88f460609434aef2fdc3765c78766d892a978d667d10",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:b515efb2f6bace7267ae6e771e69ae1b083afc75539f9d13b6f2b64252232253",
+      "codesite:shadow-runner-output:sha256:b515efb2f6bace7267ae6e771e69ae1b083afc75539f9d13b6f2b64252232253",
+      "codesite:shadow-runner-result:sha256:6b4c870d0da3247589ba3448e6716ac399c302552bd4ce3a674a2a4f4d93fc48",
+      "codesite:shadow-runner:sha256:876b70f145f3ae3f5693eb07b00119971c14044f218f7e1e3b52550d308870b9"
     ],
     "policyDeltaCandidates": [
       {
         "rule": "incident_weighted_preflight_hold",
         "affectedIncidents": [
-          "cmr1jsxjk004job4tueihxvtz"
+          "cmr7z7u2c003gro01393f9k4l"
         ],
         "expectedRiskReduction": 0.16,
         "confidence": 0.68
       }
     ],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:de6faafcc0a3bee6bc259c2bc95710cada8ac614b242f3adb696f29877a70300",
+        "codesite:shadow-universe:schema-first:sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50e",
+        "codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf",
+        "codesite:shadow-universe:backend-first:sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6e",
+        "codesite:shadow-universe:single-fullstack-agent:sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bf",
+        "codesite:shadow-universe:test-first:sha256:93309ddd92903ea44ef5efa0b0cf2dc10423ca3310dcfc116da72352bb0869be",
+        "codesite:shadow-runner-input:sha256:5e670d45fb4c90712e0e88f460609434aef2fdc3765c78766d892a978d667d10",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:b515efb2f6bace7267ae6e771e69ae1b083afc75539f9d13b6f2b64252232253",
+        "codesite:shadow-runner-output:sha256:b515efb2f6bace7267ae6e771e69ae1b083afc75539f9d13b6f2b64252232253",
+        "codesite:shadow-runner-result:sha256:6b4c870d0da3247589ba3448e6716ac399c302552bd4ce3a674a2a4f4d93fc48"
+      ],
+      "universeCount": 5,
+      "digest": "sha256:876b70f145f3ae3f5693eb07b00119971c14044f218f7e1e3b52550d308870b9"
+    },
     "repoSignals": {
       "signalStrength": "strong",
       "planCount": 3,
@@ -295,12 +460,14 @@
       "migrationLocks": 0,
       "packageExports": 1,
       "priorIncidents": 1,
+      "learnedPolicyDeltas": 0,
       "activeLeaseLocks": 0,
       "inspectionRuns": 1
     }
   },
   "migrationSimulation": {
     "selected": "single-fullstack-agent",
+    "appliedPolicyDeltas": [],
     "reason": {
       "reasonCodes": [
         "single_writer_reduces_merge_collision",
@@ -325,9 +492,39 @@
         "migrationLocks": 1,
         "packageExports": 0,
         "priorIncidents": 0,
+        "learnedPolicyDeltas": 0,
         "activeLeaseLocks": 0,
         "inspectionRuns": 0,
         "signalStrength": "simulated"
+      },
+      "learnedPolicyDeltaRefs": [],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:261c347b5a8fa60ac6b39a4df9dbc2176f461af5d1f506304ea3c9e45ed6cbf0",
+          "codesite:shadow-universe:schema-first:sha256:695ab2f1586265ee22f111a7eccfaa75ea469c0c8a530285c5c42ba6181d0554",
+          "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa",
+          "codesite:shadow-universe:backend-first:sha256:f005ef69cb6588c60a00b860d8e5372637f9f432bc4dd1e5a8afa7a09a586132",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:064f59ae22cf1d38c9e9837beedde601f0800767b86c7eb944b50c44d3d73a3c",
+          "codesite:shadow-universe:single-fullstack-agent:sha256:7b6796043b6e24ff1d01049c3a8de9f0d090441497e1ec537ffc4c175ab0c77a",
+          "codesite:shadow-universe:test-first:sha256:9409b405e365a616386f2ff3ac9142889bb2c90050644867f9371e4822ae6080",
+          "codesite:shadow-runner-input:sha256:6ca313f2de3408ebd1c74f73716d8558a009adb38638e345be7c5fcd0a76d894",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:46559c459c7f7e48b2f984c54a80bf896cb9be8f30c4648f9193cad63b3831f8",
+          "codesite:shadow-runner-output:sha256:46559c459c7f7e48b2f984c54a80bf896cb9be8f30c4648f9193cad63b3831f8",
+          "codesite:shadow-runner-result:sha256:4f93f005413ff786400f6a4343b7efa9996a70a8ca6205cee8888c8c13ae19c8"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
       }
     },
     "universes": [
@@ -348,11 +545,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "schema_airspace_first",
           "downstream_assumptions_refresh_after_contract",
-          "migration_lock_weighted"
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 1,
           "highRiskCount": 1,
@@ -366,10 +567,26 @@
           "migrationLocks": 1,
           "packageExports": 0,
           "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "simulated"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:695ab2f1586265ee22f111a7eccfaa75ea469c0c8a530285c5c42ba6181d0554",
+            "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:695ab2f1586265ee22f111a7eccfaa75ea469c0c8a530285c5c42ba6181d0554"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:695ab2f1586265ee22f111a7eccfaa75ea469c0c8a530285c5c42ba6181d0554",
+          "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+        ]
       },
       {
         "strategy": "backend-first",
@@ -388,11 +605,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "backend_route_before_ui",
           "api_surface_stabilized_before_frontend",
-          "migration_lock_weighted"
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 1,
           "highRiskCount": 1,
@@ -406,10 +627,26 @@
           "migrationLocks": 1,
           "packageExports": 0,
           "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "simulated"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:backend-first:sha256:f005ef69cb6588c60a00b860d8e5372637f9f432bc4dd1e5a8afa7a09a586132",
+            "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:f005ef69cb6588c60a00b860d8e5372637f9f432bc4dd1e5a8afa7a09a586132"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:backend-first:sha256:f005ef69cb6588c60a00b860d8e5372637f9f432bc4dd1e5a8afa7a09a586132",
+          "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+        ]
       },
       {
         "strategy": "frontend-backend-parallel",
@@ -428,11 +665,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "parallelism_crosses_contract_airspace",
           "requires_extra_assumption_refresh",
-          "migration_lock_weighted"
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 1,
           "highRiskCount": 1,
@@ -446,10 +687,26 @@
           "migrationLocks": 1,
           "packageExports": 0,
           "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "simulated"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:064f59ae22cf1d38c9e9837beedde601f0800767b86c7eb944b50c44d3d73a3c",
+            "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:064f59ae22cf1d38c9e9837beedde601f0800767b86c7eb944b50c44d3d73a3c"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:064f59ae22cf1d38c9e9837beedde601f0800767b86c7eb944b50c44d3d73a3c",
+          "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+        ]
       },
       {
         "strategy": "single-fullstack-agent",
@@ -468,12 +725,16 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "single_writer_reduces_merge_collision",
           "single_migration_runway_lock",
           "migration_collision_mitigated",
-          "migration_lock_weighted"
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 1,
           "highRiskCount": 1,
@@ -487,10 +748,26 @@
           "migrationLocks": 1,
           "packageExports": 0,
           "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "simulated"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:single-fullstack-agent:sha256:7b6796043b6e24ff1d01049c3a8de9f0d090441497e1ec537ffc4c175ab0c77a",
+            "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:7b6796043b6e24ff1d01049c3a8de9f0d090441497e1ec537ffc4c175ab0c77a"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:single-fullstack-agent:sha256:7b6796043b6e24ff1d01049c3a8de9f0d090441497e1ec537ffc4c175ab0c77a",
+          "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+        ]
       },
       {
         "strategy": "test-first",
@@ -509,12 +786,16 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "test_ownership_before_landing",
           "inspection_radar_runs_before_mutation",
           "migration_collision_mitigated",
-          "migration_lock_weighted"
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
+        "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
           "forecastRiskCount": 1,
           "highRiskCount": 1,
@@ -528,18 +809,47 @@
           "migrationLocks": 1,
           "packageExports": 0,
           "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "simulated"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:9409b405e365a616386f2ff3ac9142889bb2c90050644867f9371e4822ae6080",
+            "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:9409b405e365a616386f2ff3ac9142889bb2c90050644867f9371e4822ae6080"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:9409b405e365a616386f2ff3ac9142889bb2c90050644867f9371e4822ae6080",
+          "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa"
+        ]
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:5051975e2e3ea6f72442a5b0b5193e076498cbd31e604f67a862e938b80081a5",
-    "baseSnapshot": "repo@sha256:3b26e47579da25e2177311166f21650f926a8e3da36269853ac3025f1c29d0c0",
+    "shadowJobRef": "codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa",
+    "baseSnapshot": "repo@sha256:d070235ef87e19f2d057db1926d1a79e1b613e3ddd21cede1962577b1d08c0ba",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:001c16ac5ca2ca61260e617f80911550f39d018f96ebbe4da01ba681492b82a3",
-      "codesite:collision-forecast:sha256:a7827ceb27787ed8b6bc879362c4b472ab454d2656a0fa486ddea3fb1f208914"
+      "codesite:repo-policy:sha256:76bcec9407c3ffcdc52f875d1824fd197e702ecb313101d258e989e6b4c8b69f",
+      "codesite:collision-forecast:sha256:a7827ceb27787ed8b6bc879362c4b472ab454d2656a0fa486ddea3fb1f208914",
+      "codesite:shadow-runner:sha256:261c347b5a8fa60ac6b39a4df9dbc2176f461af5d1f506304ea3c9e45ed6cbf0",
+      "codesite:shadow-universe:schema-first:sha256:695ab2f1586265ee22f111a7eccfaa75ea469c0c8a530285c5c42ba6181d0554",
+      "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa",
+      "codesite:shadow-universe:backend-first:sha256:f005ef69cb6588c60a00b860d8e5372637f9f432bc4dd1e5a8afa7a09a586132",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:064f59ae22cf1d38c9e9837beedde601f0800767b86c7eb944b50c44d3d73a3c",
+      "codesite:shadow-universe:single-fullstack-agent:sha256:7b6796043b6e24ff1d01049c3a8de9f0d090441497e1ec537ffc4c175ab0c77a",
+      "codesite:shadow-universe:test-first:sha256:9409b405e365a616386f2ff3ac9142889bb2c90050644867f9371e4822ae6080",
+      "codesite:shadow-runner-input:sha256:6ca313f2de3408ebd1c74f73716d8558a009adb38638e345be7c5fcd0a76d894",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:46559c459c7f7e48b2f984c54a80bf896cb9be8f30c4648f9193cad63b3831f8",
+      "codesite:shadow-runner-output:sha256:46559c459c7f7e48b2f984c54a80bf896cb9be8f30c4648f9193cad63b3831f8",
+      "codesite:shadow-runner-result:sha256:4f93f005413ff786400f6a4343b7efa9996a70a8ca6205cee8888c8c13ae19c8",
+      "codesite:shadow-runner:sha256:23efbc5ce9414b6a8fb19a199a814836bd275090140c14fe70a75548777c4540"
     ],
     "policyDeltaCandidates": [
       {
@@ -560,6 +870,27 @@
         "confidence": 0.82
       }
     ],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:261c347b5a8fa60ac6b39a4df9dbc2176f461af5d1f506304ea3c9e45ed6cbf0",
+        "codesite:shadow-universe:schema-first:sha256:695ab2f1586265ee22f111a7eccfaa75ea469c0c8a530285c5c42ba6181d0554",
+        "codesite:shadow-job:codesite-shadow:sha256:662226846ce9a1cb425cee725988538aa8296ea5e5e03c236fd6eb8035b8a0aa",
+        "codesite:shadow-universe:backend-first:sha256:f005ef69cb6588c60a00b860d8e5372637f9f432bc4dd1e5a8afa7a09a586132",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:064f59ae22cf1d38c9e9837beedde601f0800767b86c7eb944b50c44d3d73a3c",
+        "codesite:shadow-universe:single-fullstack-agent:sha256:7b6796043b6e24ff1d01049c3a8de9f0d090441497e1ec537ffc4c175ab0c77a",
+        "codesite:shadow-universe:test-first:sha256:9409b405e365a616386f2ff3ac9142889bb2c90050644867f9371e4822ae6080",
+        "codesite:shadow-runner-input:sha256:6ca313f2de3408ebd1c74f73716d8558a009adb38638e345be7c5fcd0a76d894",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:46559c459c7f7e48b2f984c54a80bf896cb9be8f30c4648f9193cad63b3831f8",
+        "codesite:shadow-runner-output:sha256:46559c459c7f7e48b2f984c54a80bf896cb9be8f30c4648f9193cad63b3831f8",
+        "codesite:shadow-runner-result:sha256:4f93f005413ff786400f6a4343b7efa9996a70a8ca6205cee8888c8c13ae19c8"
+      ],
+      "universeCount": 5,
+      "digest": "sha256:23efbc5ce9414b6a8fb19a199a814836bd275090140c14fe70a75548777c4540"
+    },
     "repoSignals": {
       "signalStrength": "simulated",
       "planCount": 2,
@@ -577,6 +908,7 @@
       "migrationLocks": 1,
       "packageExports": 0,
       "priorIncidents": 0,
+      "learnedPolicyDeltas": 0,
       "activeLeaseLocks": 0,
       "inspectionRuns": 0
     }
@@ -590,10 +922,13 @@
       "flight_plan_filed",
       "transponder_update",
       "flight_plan_filed",
+      "clearance_requested",
+      "holding_pattern",
       "tower_instruction",
       "near_miss",
       "policy_delta_proposed",
       "landing_requested",
+      "policy_delta_proposed",
       "shadow_run",
       "arbiter_verdict"
     ]
@@ -612,10 +947,10 @@
           "viewportWidth": 1440,
           "documentScrollWidth": 1440,
           "panelRect": {
-            "x": 12,
-            "y": 581,
-            "width": 1416,
-            "height": 917.9375
+            "x": 16,
+            "y": 990.984375,
+            "width": 1408,
+            "height": 1646.921875
           },
           "selectedVisible": true,
           "hasParallelUniverse": true,
@@ -638,10 +973,10 @@
           "viewportWidth": 390,
           "documentScrollWidth": 390,
           "panelRect": {
-            "x": 12,
-            "y": 500.265625,
-            "width": 366,
-            "height": 2283.71875
+            "x": 16,
+            "y": 795.234375,
+            "width": 358,
+            "height": 4351.375
           },
           "selectedVisible": true,
           "hasParallelUniverse": true,

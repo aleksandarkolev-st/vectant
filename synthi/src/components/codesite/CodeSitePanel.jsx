@@ -101,6 +101,22 @@ function formatMetricValue(metric) {
   return String(metric.value);
 }
 
+function clampRatio(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function formatCompactNumber(value, fallback = "0") {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  if (Math.abs(numeric) >= 1000) return Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(numeric);
+  return String(Math.round(numeric * 10) / 10);
+}
+
 function metricTone(metric) {
   if (!metric || metric.status === "not_instrumented") return "pending";
   const value = Number(metric.value);
@@ -112,6 +128,278 @@ function metricTone(metric) {
   )
     return value > 0 ? "holding" : "active";
   return value > 0 ? "active" : "idle";
+}
+
+function metricProgress(metric) {
+  if (!metric || metric.value == null) return 0;
+  const value = Number(metric.value);
+  if (!Number.isFinite(value)) return 0;
+  if (metric.unit === "ratio") return clampRatio(value);
+  if (metric.unit === "duration_ms") return clampRatio(value / 300000);
+  return clampRatio(Math.log10(Math.max(1, value) + 1) / 2);
+}
+
+function metricTargetLabel(metric = {}) {
+  const explicit =
+    metric.targetLabel ||
+    metric.thresholdLabel ||
+    metric.slo ||
+    metric.target ||
+    metric.threshold;
+  if (explicit) return `target ${explicit}`;
+  if (metric.key === "lineProvenanceCoverage") return "target 100% traced";
+  if (metric.key === "blackBoxCompletenessScore") return "release >=75%";
+  if (metric.key === "percentageWritesWithValidClearance")
+    return "target 100% cleared";
+  if (metric.key === "shadowMergeSimulatorAccuracy") return "target 100%";
+  if (
+    /blocked|violation|abort|goAround|rollback|drift|red/i.test(
+      metric.key || "",
+    )
+  )
+    return "target 0";
+  return metric.unit === "ratio" ? "tracked as ratio" : "tracked by evidence";
+}
+
+function metricAttentionScore(metric = {}) {
+  if (metric.status === "not_instrumented") return 100;
+  const value = Number(metric.value);
+  const key = String(metric.key || "");
+  if (!Number.isFinite(value)) return 20;
+  if (/blocked|violation|abort|goAround|rollback|drift|red/i.test(key)) {
+    return value > 0 ? 80 + Math.min(15, value) : 8;
+  }
+  if (/Coverage|Completeness|Accuracy|Clearance/i.test(key)) {
+    return Math.round((1 - clampRatio(value, 1)) * 70);
+  }
+  return value > 0 ? 24 : 6;
+}
+
+function metricSectionEntries(sections = {}) {
+  return Object.entries(sections)
+    .map(([title, rows]) => ({
+      title,
+      rows: asArray(rows),
+    }))
+    .filter((section) => section.rows.length);
+}
+
+function universeHealthScore(universe = {}) {
+  const data = universe || {};
+  const risk = clampRatio(data.predictedCollisionRisk);
+  const confidence = clampRatio(data.confidence, 0.5);
+  const stalePenalty = Math.min(0.28, (Number(data.staleAssumptions) || 0) * 0.07);
+  const inspectionPenalty = Math.min(0.18, (Number(data.inspectionCost) || 0) / 100);
+  const unresolvedPenalty = Math.min(
+    0.24,
+    asArray(data.unresolvedRisks).length * 0.08,
+  );
+  return clampRatio(confidence * 0.42 + (1 - risk) * 0.5 - stalePenalty - inspectionPenalty - unresolvedPenalty);
+}
+
+function eventDisplayType(event = {}) {
+  return compact(event.eventType || event.type, "event").replaceAll("_", ".");
+}
+
+function eventPathLabel(event = {}) {
+  return compact(
+    event.path ||
+      event.details?.path ||
+      event.details?.route ||
+      event.details?.transactionId ||
+      event.displayCallsign,
+    "",
+  );
+}
+
+function countBy(values) {
+  return asArray(values).reduce((counts, value) => {
+    const key = compact(value, "unknown");
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function transactionIdentity(transaction = {}) {
+  return transaction.id || transaction.transactionId || transaction.txnId || null;
+}
+
+function mergeTransactionSources(activeTransactions, mutationTransactions) {
+  const byId = new globalThis.Map();
+  for (const transaction of [
+    ...asArray(mutationTransactions),
+    ...asArray(activeTransactions),
+  ]) {
+    const id = transactionIdentity(transaction);
+    if (!id) continue;
+    byId.set(id, {
+      ...(byId.get(id) || {}),
+      ...transaction,
+      id,
+      live: asArray(activeTransactions).some(
+        (active) => transactionIdentity(active) === id,
+      ),
+    });
+  }
+  return [...byId.values()].sort((left, right) => {
+    const leftTime = Date.parse(left.closedAt || left.openedAt || 0);
+    const rightTime = Date.parse(right.closedAt || right.openedAt || 0);
+    return rightTime - leftTime;
+  });
+}
+
+function transactionProofBundle(transaction, proofBundles) {
+  const id = transactionIdentity(transaction);
+  return (
+    asArray(proofBundles).find((bundle) => {
+      const trailers = bundle?.trailers || {};
+      return (
+        bundle?.transactionId === id ||
+        bundle?.transaction?.id === id ||
+        trailers["CodeSite-Transaction"] === id ||
+        bundle?.bundleDigest === transaction?.proofBundleDigest ||
+        bundle?.id === transaction?.proofBundleId
+      );
+    }) || null
+  );
+}
+
+function transactionEvents(transaction, events) {
+  const id = transactionIdentity(transaction);
+  if (!id) return [];
+  return asArray(events).filter(
+    (event) =>
+      event?.transactionId === id ||
+      event?.details?.transactionId === id ||
+      event?.details?.transaction_id === id ||
+      event?.actorId === id,
+  );
+}
+
+function transactionReason(transaction = {}, events = []) {
+  const status = String(transaction.status || "").toLowerCase();
+  const decision = transaction.commitDecision || {};
+  const statusEvents = asArray(events).filter((event) => {
+    const type = String(event?.eventType || event?.type || "").toLowerCase();
+    if (status === "aborted") return /abort|invalid|stale|blocked/.test(type);
+    if (status === "committed") return /commit|validated|landed|black_box/.test(type);
+    if (status === "validated") return /validated|read|write/.test(type);
+    return true;
+  });
+  const eventReason = (statusEvents.length ? statusEvents : asArray(events))
+    .map(
+      (event) =>
+        event?.details?.reason ||
+        event?.details?.reasonCode ||
+        event?.details?.error ||
+        event?.details?.message,
+    )
+    .find(Boolean);
+  return (
+    decision.reason ||
+    decision.reasonCode ||
+    decision.status ||
+    eventReason ||
+    (status === "aborted"
+      ? "serializable_validation_rejected"
+      : status === "committed"
+        ? "serializable_validation_passed"
+        : status === "validated"
+          ? "read_write_sets_validated"
+          : "validation evidence current")
+  );
+}
+
+function transactionTowerAction(transaction = {}, events = []) {
+  const status = String(transaction.status || "").toLowerCase();
+  const reason = transactionReason(transaction, events);
+  if (status === "aborted" || /invalid|stale|changed|mismatch/i.test(reason)) {
+    return "rebase and revalidate assumptions";
+  }
+  if (["blocked", "quarantined"].includes(status)) {
+    return "pause writes and review quarantine";
+  }
+  if (["open", "validated"].includes(status)) {
+    return "observe read set until landing";
+  }
+  if (status === "committed") return "proof bundle closed";
+  return "hold for tower review";
+}
+
+function transactionDigestLabel(value) {
+  const text = compact(value, "missing");
+  if (text.length <= 32) return text;
+  return `${text.slice(0, 18)}...${text.slice(-10)}`;
+}
+
+function invalidatedAssumptionRows({
+  assumptions,
+  towerUniverses,
+  activeFlights,
+  activeLeases,
+  events,
+}) {
+  const invalidated = asArray(assumptions)
+    .filter((assumption) =>
+      /invalid|stale|expired/i.test(String(assumption?.status || "")),
+    )
+    .map((assumption) => ({
+      id: assumption.id || assumption.assumptionKey,
+      assumption: assumption.assumptionKey || assumption.id,
+      invalidatedBy: assumption.invalidatedBy || "schema refresh",
+      affected: uniqueValues([
+        assumption.displayCallsign,
+        ...asArray(assumption.usedBy),
+      ]),
+      dependsOn: asArray(assumption.dependsOn).map(
+        (dependency) =>
+          dependency?.ref ||
+          dependency?.path ||
+          dependency?.version ||
+          compact(dependency, ""),
+      ),
+      staleCount: 1,
+      evidenceRefs: asArray(assumption.evidenceRefs),
+      source: "assumption",
+    }));
+  if (invalidated.length) return invalidated;
+
+  const holdingFlights = asArray(activeFlights)
+    .filter((flight) => /hold|blocked|stale/i.test(String(flight?.status || "")))
+    .map((flight) => flight.displayCallsign || flight.id);
+  const leaseCallsigns = asArray(activeLeases).map(
+    (lease) => lease.displayCallsign || lease.agentSessionId,
+  );
+  const invalidationEvents = asArray(events).filter((event) =>
+    /assumption.*invalid|invalid.*assumption|stale/i.test(
+      `${event?.eventType || ""} ${event?.details?.reason || ""}`,
+    ),
+  );
+
+  return asArray(towerUniverses)
+    .filter((universe) => Number(universe?.staleAssumptions) > 0)
+    .map((universe) => ({
+      id: `simulated-${universe.strategy}`,
+      assumption: `${universe.staleAssumptions} stale assumptions`,
+      invalidatedBy:
+        asArray(universe.reasonCodes).find((code) =>
+          /schema|contract|assumption/i.test(code),
+        ) || "counterfactual route simulation",
+      affected: uniqueValues([
+        ...holdingFlights,
+        ...leaseCallsigns,
+        universe.strategy,
+      ]).slice(0, 6),
+      dependsOn: asArray(universe.reasonCodes).filter((code) =>
+        /schema|contract|assumption|parallel|backend|frontend/i.test(code),
+      ),
+      staleCount: Number(universe.staleAssumptions) || 0,
+      evidenceRefs: uniqueValues([
+        ...asArray(universe.evidenceRefs),
+        ...invalidationEvents.flatMap((event) => asArray(event.evidenceRefs)),
+      ]),
+      source: "simulation",
+    }));
 }
 
 function parseLineRange(lineAnchor) {
@@ -387,6 +675,7 @@ function findGovernanceEntityRow(attributeName, entityId) {
 
 function towerInstructionText(event = {}) {
   const details = event.details || {};
+  const eventType = String(event.eventType || "");
   return compact(
     details.towerInstruction ||
       details.instruction ||
@@ -396,9 +685,36 @@ function towerInstructionText(event = {}) {
       details.reasonCode ||
       details.reasonCodes?.[0] ||
       event.message ||
-      event.eventType,
+      TOWER_EVENT_LABELS[eventType] ||
+      eventDisplayType(event),
     "tower event",
   );
+}
+
+const TOWER_EVENT_LABELS = {
+  flight_plan_filed: "Flight plan filed",
+  clearance_issued: "Clearance issued",
+  write_attempted: "Write attempted",
+  write_allowed: "Write cleared",
+  write_denied: "Write blocked by CodeSiteFS",
+  write_quarantined: "Write quarantined for review",
+  transaction_opened: "Transaction opened",
+  transaction_validated: "Transaction validated",
+  transaction_committed: "Transaction landed",
+  transaction_aborted: "Transaction aborted",
+  proof_bundle_verified: "Proof bundle verified",
+  black_box_closed: "Black box closed",
+  tower_instruction: "Tower instruction",
+  route_deviation: "Route deviation filed",
+  ground_stop: "Ground stop issued",
+  mayday_resumed: "Ground stop resumed",
+  quarantine_reviewed: "Quarantine reviewed",
+  quarantine_replayed: "Quarantine replayed",
+  quarantine_applied: "Quarantine applied",
+};
+
+function towerEventKind(event = {}) {
+  return TOWER_EVENT_LABELS[event.eventType] || eventDisplayType(event);
 }
 
 function hasEntries(value) {
@@ -1420,6 +1736,210 @@ function MetricsGroup({ title, rows }) {
   );
 }
 
+function SignalBar({ value, tone = "active", label = "" }) {
+  const width = `${Math.round(clampRatio(value) * 100)}%`;
+  return (
+    <div
+      className="h-1.5 overflow-hidden rounded-full"
+      aria-label={label}
+      style={{
+        background:
+          "color-mix(in srgb, var(--border-subtle) 70%, transparent)",
+      }}
+    >
+      <div
+        className="h-full rounded-full"
+        style={{
+          width,
+          minWidth: value > 0 ? "12%" : "0",
+          background:
+            indicatorTone(tone).background || "var(--accent-primary)",
+        }}
+      />
+    </div>
+  );
+}
+
+function MetricScorecard({ metric }) {
+  const tone = metricTone(metric);
+  const evidenceCount =
+    asArray(metric?.evidenceRefs).length || metric?.sampleSize || 0;
+  return (
+    <div
+      data-testid={`codesite-slo-${metric?.key || "metric"}`}
+      className="grid min-h-[118px] content-between rounded-md border px-3 py-2.5 text-xs"
+      style={{
+        borderColor:
+          "color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)",
+        background:
+          "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 84%, var(--bg-editor) 16%))",
+      }}
+    >
+      <div className="min-w-0">
+        <div className="flex items-start justify-between gap-2">
+          <div
+            className="min-w-0 break-words text-[11px] font-semibold leading-4"
+            title={metric?.label}
+          >
+            {metric?.label || "Metric"}
+          </div>
+          <Pill tone={tone}>{toneLabel(tone)}</Pill>
+        </div>
+        <div
+          className="mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xl font-semibold leading-none tabular-nums sm:text-2xl"
+          title={formatMetricValue(metric)}
+          style={{ color: "var(--text-primary)" }}
+        >
+          {formatMetricValue(metric)}
+        </div>
+      </div>
+      <div className="mt-3 grid gap-1.5">
+        <SignalBar
+          value={metricProgress(metric)}
+          tone={tone}
+          label={`${metric?.label || "metric"} progress`}
+        />
+        <div
+          className="flex min-w-0 items-center justify-between gap-2 text-[10px]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <span className="min-w-0 truncate">{metricTargetLabel(metric)}</span>
+          <span className="shrink-0 font-mono tabular-nums">
+            {evidenceCount} refs
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SuccessMetricsDeck({ sections, summary }) {
+  const sectionEntries = metricSectionEntries(sections);
+  const allMetrics = sectionEntries.flatMap((section) => section.rows);
+  const watchlist = allMetrics
+    .slice()
+    .sort((left, right) => metricAttentionScore(right) - metricAttentionScore(left))
+    .slice(0, 6);
+  const releaseCards = [
+    {
+      label: "Collisions avoided",
+      value: compact(summary.collisionsAvoided, "0"),
+      tone: summary.collisionsAvoided ? "active" : "idle",
+      target: "tower prevented overlap",
+    },
+    {
+      label: "Blocked writes",
+      value: compact(summary.codeSiteFsBlockedWrites, "0"),
+      tone: summary.codeSiteFsBlockedWrites ? "holding" : "idle",
+      target: "pre-write guard evidence",
+    },
+    {
+      label: "Line coverage",
+      value: formatPercent(summary.lineProvenanceCoverage || 0),
+      tone: summary.lineProvenanceCoverage ? "active" : "pending",
+      target: "target 100% traced",
+    },
+    {
+      label: "Black box",
+      value:
+        summary.blackBoxCompletenessScore == null
+          ? "n/a"
+          : formatPercent(summary.blackBoxCompletenessScore),
+      tone: summary.blackBoxCompletenessScore ? "active" : "pending",
+      target: "release >=75%",
+    },
+  ];
+
+  return (
+    <div
+      data-testid="codesite-success-metrics"
+      className="grid min-w-0 gap-4"
+    >
+      <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+        <div
+          className="rounded-lg border p-3"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--border-subtle) 70%, var(--accent-primary) 30%)",
+            background:
+              "linear-gradient(135deg, color-mix(in srgb, var(--bg-surface) 92%, var(--accent-primary) 7%), var(--bg-editor))",
+          }}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Release SLO posture</div>
+              <div
+                className="mt-1 max-w-[62ch] text-xs leading-5"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Measured outcomes tied to CodeSite artifacts, not screen-only
+                claims.
+              </div>
+            </div>
+            <Pill tone={watchlist.some((metric) => metricAttentionScore(metric) >= 80) ? "holding" : "active"}>
+              {allMetrics.length} signals
+            </Pill>
+          </div>
+          <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-2">
+            {releaseCards.map((card) => (
+              <div
+                key={card.label}
+                className="rounded-md border px-3 py-2"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: "var(--bg-surface)",
+                }}
+              >
+                <div
+                  className="text-[10px] font-medium"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {card.label}
+                </div>
+                <div className="mt-1 flex items-end justify-between gap-2">
+                  <div className="font-mono text-xl font-semibold tabular-nums">
+                    {card.value}
+                  </div>
+                  <span
+                    className="mb-1 h-2 w-2 rounded-full"
+                    style={indicatorTone(card.tone)}
+                  />
+                </div>
+                <div
+                  className="mt-1 truncate text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                  title={card.target}
+                >
+                  {card.target}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {watchlist.map((metric) => (
+            <MetricScorecard key={metric.key || metric.label} metric={metric} />
+          ))}
+        </div>
+      </div>
+      <div className="grid min-w-0 gap-4 lg:grid-cols-4">
+        {sectionEntries.map((section) => (
+          <div
+            key={section.title}
+            className="min-w-0 rounded-lg border px-3 py-2"
+            style={{
+              borderColor: "var(--border-subtle)",
+              background: "var(--bg-surface)",
+            }}
+          >
+            <MetricsGroup title={section.title} rows={section.rows} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RunwayOccupancyBoard({ runways }) {
   const rows = asArray(runways);
   if (!rows.length) return <EmptyLine>No occupied runways</EmptyLine>;
@@ -1504,6 +2024,701 @@ function RunwayOccupancyBoard({ runways }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function TowerSimulatorDeck({
+  towerSimulation,
+  latestSimulation,
+  towerUniverses,
+  selectedUniverse,
+  assumptions,
+  activeFlights,
+  activeLeases,
+  events,
+  simulationRun,
+  onRun,
+  disabled,
+}) {
+  const reduceMotion = useReducedMotion();
+  const selectedSignals = Object.entries(selectedUniverse?.sourceSignals || {})
+    .map(([key, value]) => `${key}:${value}`)
+    .filter((item) => !item.endsWith(":0"));
+  const evidenceRefs = uniqueValues([
+    ...asArray(towerSimulation?.evidenceRefs),
+    ...asArray(latestSimulation?.run?.evidenceRefs),
+    towerSimulation?.shadowJobRef,
+    latestSimulation?.run?.shadowJobRef,
+  ]);
+  const selectedHealth = universeHealthScore(selectedUniverse);
+
+  return (
+    <div data-testid="codesite-tower-simulator" className="grid min-w-0 gap-3">
+      <div
+        className="grid gap-3 rounded-lg border p-3 lg:grid-cols-[minmax(0,0.9fr)_auto]"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 70%, var(--accent-primary) 30%)",
+          background:
+            "linear-gradient(135deg, color-mix(in srgb, var(--bg-surface) 92%, var(--accent-primary) 8%), var(--bg-editor))",
+        }}
+      >
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Pill tone={selectedUniverse?.result || simulationRun.status}>
+              {compact(
+                towerSimulation?.selected,
+                simulationRun.status === "running" ? "running" : "not run",
+              )}
+            </Pill>
+            <Pill tone={selectedHealth >= 0.65 ? "active" : "holding"}>
+              health {formatPercent(selectedHealth)}
+            </Pill>
+            {towerUniverses.length ? (
+              <Pill>{towerUniverses.length} universes</Pill>
+            ) : null}
+          </div>
+          <div className="mt-2 text-sm font-semibold">
+            Counterfactual route board
+          </div>
+          <div
+            className="mt-1 max-w-[70ch] text-xs leading-5"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Compares policy-safe routes before landing, using stale
+            assumptions, inspection cost, unresolved risks, and proof refs.
+          </div>
+        </div>
+        <IconButton
+          title="Run Tower simulation"
+          onClick={onRun}
+          disabled={disabled}
+          testId="codesite-run-tower-simulator"
+        >
+          <Radar className="h-3.5 w-3.5" />
+          Simulate
+        </IconButton>
+      </div>
+      {simulationRun.error ? (
+        <div
+          className="rounded border px-2 py-1 text-[11px]"
+          style={{
+            borderColor:
+              "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+            color: "var(--text-primary)",
+          }}
+        >
+          {simulationRun.error}
+        </div>
+      ) : null}
+      {towerUniverses.length === 0 ? (
+        <EmptyLine>No simulator run recorded</EmptyLine>
+      ) : (
+        <>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
+            <Metric
+              label="Selected"
+              value={compact(towerSimulation?.selected, "none")}
+              tone={selectedUniverse?.result || "idle"}
+              testId="codesite-tower-selected"
+            />
+            <Metric
+              label="Collision"
+              value={formatPercent(selectedUniverse?.predictedCollisionRisk)}
+              tone={selectedUniverse?.result || "idle"}
+            />
+            <Metric
+              label="Inspect"
+              value={selectedUniverse?.inspectionCost ?? 0}
+            />
+            <Metric
+              label="Confidence"
+              value={formatPercent(selectedUniverse?.confidence)}
+            />
+          </div>
+          <AssumptionInvalidatorPanel
+            assumptions={assumptions}
+            towerUniverses={towerUniverses}
+            activeFlights={activeFlights}
+            activeLeases={activeLeases}
+            events={events}
+          />
+          <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)]">
+            <div className="grid min-w-0 gap-2">
+              {towerUniverses.map((universe, index) => {
+                const selected =
+                  universe.strategy === towerSimulation?.selected;
+                const health = universeHealthScore(universe);
+                return (
+                  <motion.div
+                    key={
+                      universe.strategy ||
+                      universe.id ||
+                      `tower-universe-${index}`
+                    }
+                    data-testid="codesite-tower-universe"
+                    className="rounded-lg border px-3 py-2 text-xs"
+                    initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{
+                      duration: reduceMotion ? 0 : 0.2,
+                      delay: reduceMotion ? 0 : index * 0.03,
+                      ease: MOTION_EASE,
+                    }}
+                    style={{
+                      borderColor: selected
+                        ? "color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))"
+                        : "var(--border-subtle)",
+                      background: selected
+                        ? "color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))"
+                        : "var(--bg-surface)",
+                    }}
+                  >
+                    <div className="grid gap-3 sm:grid-cols-[minmax(128px,1fr)_minmax(0,1.4fr)_minmax(118px,0.65fr)] sm:items-center">
+                      <div className="min-w-0">
+                        <div className="break-words font-medium leading-tight">
+                          {compact(universe.strategy, "strategy")}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <Pill tone={universe.result}>
+                            {compact(universe.result, "review")}
+                          </Pill>
+                          {selected ? <Pill tone="active">selected</Pill> : null}
+                        </div>
+                      </div>
+                      <div className="grid min-w-0 gap-1">
+                        <SignalBar
+                          value={health}
+                          tone={health >= 0.65 ? "active" : "holding"}
+                          label={`${compact(universe.strategy, "strategy")} health`}
+                        />
+                        <div
+                          className="grid gap-1 text-[11px] sm:grid-cols-3"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          <span>
+                            Risk{" "}
+                            <strong className="font-mono tabular-nums">
+                              {formatPercent(universe.predictedCollisionRisk)}
+                            </strong>
+                          </span>
+                          <span>
+                            Stale{" "}
+                            <strong className="font-mono tabular-nums">
+                              {universe.staleAssumptions ?? 0}
+                            </strong>
+                          </span>
+                          <span>
+                            Cost{" "}
+                            <strong className="font-mono tabular-nums">
+                              {universe.inspectionCost ?? 0}
+                            </strong>
+                          </span>
+                        </div>
+                      </div>
+                      <div className="justify-self-start sm:justify-self-end">
+                        <Pill
+                          tone={
+                            universe.unresolvedRisks?.length
+                              ? "holding"
+                              : "active"
+                          }
+                        >
+                          {asArray(universe.unresolvedRisks).length} unresolved
+                        </Pill>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <div
+                          className="text-[11px]"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          Tower actions
+                        </div>
+                        <PathList
+                          paths={universe.requiredTowerActions || []}
+                          empty="none"
+                          maxVisible={6}
+                        />
+                      </div>
+                      <div>
+                        <div
+                          className="text-[11px]"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          Reason codes
+                        </div>
+                        <PathList
+                          paths={universe.reasonCodes || []}
+                          empty="none"
+                          maxVisible={6}
+                        />
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+            <div className="grid min-w-0 content-start gap-2">
+              <div
+                className="rounded-lg border px-3 py-2 text-xs"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: "var(--bg-surface)",
+                }}
+              >
+                <div
+                  className="mb-1 text-[11px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Signals used
+                </div>
+                <PathList
+                  paths={selectedSignals}
+                  empty="no source signals"
+                  maxVisible={10}
+                />
+              </div>
+              <div
+                className="rounded-lg border px-3 py-2 text-xs"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: "var(--bg-surface)",
+                }}
+              >
+                <div
+                  className="mb-1 text-[11px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Evidence
+                </div>
+                <PathList paths={evidenceRefs} empty="none" maxVisible={10} />
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AssumptionInvalidatorPanel({
+  assumptions,
+  towerUniverses,
+  activeFlights,
+  activeLeases,
+  events,
+}) {
+  const rows = invalidatedAssumptionRows({
+    assumptions,
+    towerUniverses,
+    activeFlights,
+    activeLeases,
+    events,
+  });
+  if (!rows.length) {
+    return (
+      <div
+        data-testid="codesite-assumption-invalidator"
+        className="rounded-lg border px-3 py-2 text-xs"
+        style={{
+          borderColor: "var(--border-subtle)",
+          background: "var(--bg-surface)",
+        }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-semibold">Assumption invalidator</span>
+          <Pill tone="active">clear</Pill>
+        </div>
+        <div className="mt-1" style={{ color: "var(--text-muted)" }}>
+          No stale assumptions are currently holding writes.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="codesite-assumption-invalidator"
+      className="grid min-w-0 gap-2 rounded-lg border p-3 text-xs"
+      style={{
+        borderColor:
+          "color-mix(in srgb, #fbbf24 34%, var(--border-subtle))",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, #fbbf24 8%, var(--bg-surface)), var(--bg-editor))",
+      }}
+    >
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-semibold">Assumption invalidator</div>
+          <div className="mt-1" style={{ color: "var(--text-muted)" }}>
+            Stale reasoning is grounded before writes continue.
+          </div>
+        </div>
+        <Pill tone="holding">
+          {rows.reduce((sum, row) => sum + (row.staleCount || 1), 0)} paused
+        </Pill>
+      </div>
+      <div className="grid gap-2 xl:grid-cols-2">
+        {rows.slice(0, 4).map((row, index) => (
+          <div
+            key={row.id || `assumption-${index}`}
+            className="rounded-md border px-2 py-2"
+            style={{
+              borderColor: "var(--border-subtle)",
+              background: "var(--bg-surface)",
+            }}
+          >
+            <div className="flex min-w-0 items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="break-words font-medium leading-tight">
+                  {compact(row.assumption, "stale assumption")}
+                </div>
+                <div
+                  className="mt-1 break-words font-mono text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  invalidated by {compact(row.invalidatedBy, "tower")}
+                </div>
+              </div>
+              <Pill tone="holding">writes paused</Pill>
+            </div>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div className="min-w-0">
+                <div
+                  className="text-[10px] font-semibold uppercase tracking-normal"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Affected
+                </div>
+                <PathList paths={row.affected} empty="session pending" />
+              </div>
+              <div className="min-w-0">
+                <div
+                  className="text-[10px] font-semibold uppercase tracking-normal"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Depends on
+                </div>
+                <PathList paths={row.dependsOn} empty="dependency pending" />
+              </div>
+            </div>
+            <div className="mt-2">
+              <PathList
+                paths={row.evidenceRefs}
+                empty="evidence recorded in simulator"
+                maxVisible={4}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+      {rows.length > 4 ? (
+        <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          Showing 4 of {rows.length} invalidation groups; export retains the
+          full assumption ledger.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SerializableIsolationDeck({
+  activeTransactions,
+  mutationTransactions,
+  proofBundles,
+  events,
+}) {
+  const transactions = mergeTransactionSources(
+    activeTransactions,
+    mutationTransactions,
+  );
+  const visibleTransactions = transactions.slice(0, 8);
+  const hiddenTransactions = transactions.length - visibleTransactions.length;
+  const recentBundles = asArray(proofBundles).slice(-3).reverse();
+
+  if (!transactions.length && !recentBundles.length) {
+    return <EmptyLine>No serializable transactions recorded</EmptyLine>;
+  }
+
+  return (
+    <div data-testid="codesite-serializable-isolation" className="grid gap-3">
+      <div
+        className="grid gap-2 rounded-lg border px-3 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto]"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 74%, var(--accent-primary) 26%)",
+          background:
+            "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 86%, var(--bg-editor) 14%))",
+        }}
+      >
+        <div className="min-w-0">
+          <div className="font-semibold">Serializable isolation report</div>
+          <div
+            className="mt-1 max-w-[76ch] leading-5"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Database-style mutation validation with base snapshot, declared
+            reads, observed reads, writes, result, reason, and tower action.
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1 sm:justify-end">
+          <Pill>{transactions.length} txns</Pill>
+          {hiddenTransactions > 0 ? (
+            <Pill tone="holding">+{hiddenTransactions} archived</Pill>
+          ) : null}
+        </div>
+      </div>
+      {visibleTransactions.map((transaction, index) => {
+        const rowEvents = transactionEvents(transaction, events);
+        const proofBundle = transactionProofBundle(transaction, proofBundles);
+        const declaredReads = asArray(transaction.readSet);
+        const observedReads = asArray(transaction.observedReadSet);
+        const writes = asArray(
+          transaction.writeSet?.length
+            ? transaction.writeSet
+            : transaction.observedWriteSet,
+        );
+        const result = compact(transaction.status, "pending");
+        const reason = transactionReason(transaction, rowEvents);
+        const towerAction = transactionTowerAction(transaction, rowEvents);
+        return (
+          <div
+            key={transaction.id || `transaction-${index}`}
+            className="rounded-lg border p-3 text-xs"
+            style={{
+              borderColor:
+                result === "aborted"
+                  ? "color-mix(in srgb, #ff5757 42%, var(--border-subtle))"
+                  : "var(--border-subtle)",
+              background: "var(--bg-surface)",
+            }}
+          >
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate font-mono text-[11px]">
+                  {compact(transaction.id, "transaction")}
+                </div>
+                <div
+                  className="mt-0.5 text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {transaction.live ? "live" : "recorded"} / opened{" "}
+                  {formatTime(transaction.openedAt) || "pending"}
+                </div>
+              </div>
+              <div className="flex flex-wrap justify-end gap-1">
+                <Pill tone={transaction.isolation || "pending"}>
+                  {compact(transaction.isolation, "isolation")}
+                </Pill>
+                <Pill tone={transaction.status}>{result}</Pill>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <div className="min-w-0 rounded-md border px-2 py-1.5" style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-editor)",
+              }}>
+                <div
+                  className="text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Base snapshot
+                </div>
+                <div
+                  className="truncate font-mono text-[10px]"
+                  title={transaction.baseSnapshot || ""}
+                >
+                  {transactionDigestLabel(transaction.baseSnapshot)}
+                </div>
+              </div>
+              <div className="rounded-md border px-2 py-1.5" style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-editor)",
+              }}>
+                <div
+                  className="text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Declared read set
+                </div>
+                <div className="font-mono text-lg font-semibold leading-none">
+                  {declaredReads.length}
+                </div>
+              </div>
+              <div className="rounded-md border px-2 py-1.5" style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-editor)",
+              }}>
+                <div
+                  className="text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Observed read set
+                </div>
+                <div className="font-mono text-lg font-semibold leading-none">
+                  {observedReads.length}
+                </div>
+              </div>
+              <div className="rounded-md border px-2 py-1.5" style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-editor)",
+              }}>
+                <div
+                  className="text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Write set
+                </div>
+                <div className="font-mono text-lg font-semibold leading-none">
+                  {writes.length}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
+              <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                <div className="min-w-0">
+                  <div
+                    className="text-[10px] font-semibold uppercase tracking-normal"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Reads
+                  </div>
+                  <PathList
+                    paths={uniqueValues([...declaredReads, ...observedReads])}
+                    empty="read set pending"
+                    maxVisible={4}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <div
+                    className="text-[10px] font-semibold uppercase tracking-normal"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Writes
+                  </div>
+                  <PathList
+                    paths={writes}
+                    empty="write set pending"
+                    maxVisible={4}
+                  />
+                </div>
+              </div>
+              <div
+                className="min-w-0 rounded-md border px-2 py-2"
+                style={{
+                  borderColor: "var(--border-subtle)",
+                  background: "var(--bg-editor)",
+                }}
+              >
+                <div
+                  className="text-[10px] font-semibold uppercase tracking-normal"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Result
+                </div>
+                <div className="mt-1 break-words">
+                  Reason:{" "}
+                  <span className="font-mono text-[10px]">{reason}</span>
+                </div>
+                <div className="mt-1 break-words">
+                  Tower action:{" "}
+                  <span className="font-mono text-[10px]">{towerAction}</span>
+                </div>
+                <div className="mt-2">
+                  <PathList
+                    paths={uniqueValues([
+                      transaction.proofBundleDigest,
+                      proofBundle?.id,
+                      proofBundle?.bundleDigest,
+                      ...asArray(proofBundle?.evidenceRefs),
+                    ])}
+                    empty="proof pending"
+                    maxVisible={4}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {recentBundles.length ? (
+        <div className="grid gap-2">
+          {recentBundles.map((bundle, index) => (
+            <div
+              key={bundle.id || `proof-bundle-${index}`}
+              className="rounded-md border px-3 py-2 text-xs"
+              style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-mono text-[11px]">
+                    {bundle.id}
+                  </div>
+                  <div
+                    className="text-[10px]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    proof bundle
+                  </div>
+                </div>
+                <div
+                  className="min-w-0 truncate font-mono text-[11px]"
+                  title={bundle.bundleDigest || bundle.readSetDigest}
+                >
+                  {bundle.bundleDigest || bundle.readSetDigest}
+                </div>
+                <div className="justify-self-end">
+                  <CheckCircle2
+                    className="h-4 w-4"
+                    style={{
+                      color:
+                        "color-mix(in srgb, #4ade80 70%, var(--text-primary))",
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                <PathList
+                  paths={bundle.evidenceRefs || []}
+                  empty="no evidence refs"
+                />
+                <PathList
+                  paths={Object.entries(bundle.trailers || {}).map(
+                    ([key, value]) => `${key}: ${value}`,
+                  )}
+                  empty="no trailers"
+                  maxVisible={10}
+                />
+              </div>
+              {bundle.repoState ? (
+                <div className="mt-1">
+                  <PathList
+                    paths={[
+                      bundle.repoState.evidenceDigest &&
+                        `repo-state:${bundle.repoState.evidenceDigest}`,
+                      bundle.repoState.gitHead &&
+                        `git-head:${bundle.repoState.gitHead}`,
+                      bundle.repoState.worktreeDiffDigest &&
+                        `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
+                      ...asArray(bundle.repoState.writeFileDigests).map(
+                        (file) => `${file.path}:${file.digest || "missing"}`,
+                      ),
+                    ].filter(Boolean)}
+                    empty="no repo-state evidence"
+                    maxVisible={6}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2638,7 +3853,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
                     className="ml-1 text-[10px]"
                     style={{ color: "var(--text-muted)" }}
                   >
-                    {compact(event.eventType, "tower_event")}
+                    {towerEventKind(event)}
                   </span>
                 </span>
                 <Pill tone={event.eventType}>
@@ -3742,6 +4957,642 @@ function replayCompletenessTone(completeness) {
   return "blocked";
 }
 
+function CausalReplayDeck({ handovers }) {
+  const rows = asArray(handovers);
+  if (!rows.length) return <EmptyLine>No black-box handover closed yet</EmptyLine>;
+  const visibleRows = rows.slice(0, 3);
+  const hiddenRows = rows.length - visibleRows.length;
+
+  return (
+    <div
+      data-testid="codesite-causal-replay-handover"
+      className="grid min-w-0 gap-3"
+    >
+      <div
+        className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
+        style={{
+          borderColor: "var(--border-subtle)",
+          background: "var(--bg-surface)",
+        }}
+      >
+        <span className="font-semibold">Replay coverage queue</span>
+        <div className="flex flex-wrap gap-1">
+          <Pill>{rows.length} handovers</Pill>
+          {hiddenRows > 0 ? (
+            <Pill tone="holding">+{hiddenRows} archived</Pill>
+          ) : null}
+        </div>
+      </div>
+      {visibleRows.map((handover, index) => {
+        const score = Number(handover.completeness?.score);
+        const eventTypes = handover.causalEvents
+          .map((event) => event.type)
+          .filter(Boolean);
+        const latestEvents = handover.causalEvents.slice(-8);
+        const hiddenEvents = handover.causalEvents.length - latestEvents.length;
+        const tone = replayCompletenessTone(handover.completeness);
+        const coverageTypes =
+          handover.completeness?.presentEventTypes || eventTypes;
+        const missingTypes = handover.completeness?.missingEventTypes || [];
+        return (
+          <div
+            key={
+              handover.incident.id ||
+              handover.transactionId ||
+              `handover-${index}`
+            }
+            className="rounded-lg border p-3 text-xs"
+            style={{
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 74%, var(--accent-primary) 26%)",
+              background:
+                "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 84%, var(--bg-editor) 16%))",
+            }}
+          >
+            <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(260px,0.55fr)]">
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="min-w-0 truncate font-medium">
+                    {compact(handover.transactionId, handover.incident.category)}
+                  </span>
+                  <Pill tone={handover.incident.severity}>
+                    {handover.incident.severity}
+                  </Pill>
+                  <Pill tone={tone}>
+                    {Number.isFinite(score) ? formatPercent(score) : "pending"}
+                  </Pill>
+                </div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  {[
+                    ["Replay digest", handover.incident.replayDigest],
+                    ["Proof bundle", handover.proofBundle?.id],
+                    ["CodeSite-Black-Box", handover.codeSiteBlackBox],
+                  ].map(([label, value]) => (
+                    <div key={label} className="min-w-0 rounded-md border px-2 py-1.5" style={{
+                      borderColor: "var(--border-subtle)",
+                      background: "var(--bg-editor)",
+                    }}>
+                      <div
+                        className="text-[10px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        {label}
+                      </div>
+                      <div
+                        className="break-all font-mono text-[10px]"
+                        title={value || "missing"}
+                      >
+                        {compact(value, "missing")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+                  <div className="min-w-0 rounded-md border px-2 py-2" style={{
+                    borderColor: "var(--border-subtle)",
+                    background: "var(--bg-editor)",
+                  }}>
+                    <div
+                      className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      Coverage
+                    </div>
+                    <PathList
+                      paths={coverageTypes}
+                      empty="no present event types"
+                      maxVisible={8}
+                    />
+                    <div className="mt-1">
+                      <PathList
+                        paths={missingTypes}
+                        empty="no missing event types"
+                        maxVisible={8}
+                      />
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      Causal timeline
+                    </div>
+                    {latestEvents.length === 0 ? (
+                      <EmptyLine>No replay events indexed</EmptyLine>
+                    ) : (
+                      <div className="space-y-1">
+                        {latestEvents.map((event, eventIndex) => (
+                          <div
+                            key={`${handover.incident.id}-${event.eventId || eventIndex}`}
+                            className="grid min-h-8 grid-cols-[42px_minmax(0,1fr)_minmax(86px,auto)] items-center gap-2 rounded-md border px-2 py-1"
+                            style={{
+                              borderColor: "var(--border-subtle)",
+                              background: "var(--bg-editor)",
+                            }}
+                          >
+                            <span
+                              className="font-mono text-[10px]"
+                              style={{ color: "var(--text-muted)" }}
+                            >
+                              {event.logicalTime || eventIndex + 1}
+                            </span>
+                            <span className="min-w-0 truncate">
+                              {compact(event.type, "event")}
+                            </span>
+                            <span
+                              className="min-w-0 truncate text-right font-mono text-[10px]"
+                              style={{ color: "var(--text-muted)" }}
+                            >
+                              {compact(
+                                event.path || event.displayCallsign,
+                                "",
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                        {hiddenEvents > 0 ? (
+                          <div
+                            className="rounded-md border px-2 py-1 text-[10px]"
+                            style={{
+                              borderColor: "var(--border-subtle)",
+                              background: "var(--bg-editor)",
+                              color: "var(--text-muted)",
+                            }}
+                          >
+                            Showing latest 8 of {handover.causalEvents.length}{" "}
+                            replay events; export retains full timeline.
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="min-w-0 rounded-md border px-3 py-2" style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-editor)",
+              }}>
+                <div
+                  className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Export refs
+                </div>
+                <PathList
+                  paths={handover.exportPaths}
+                  empty="no export refs"
+                  maxVisible={7}
+                />
+                <div className="mt-3">
+                  <SignalBar
+                    value={Number.isFinite(score) ? score : 0}
+                    tone={tone}
+                    label="Replay completeness"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BlackBoxFlightRecorder({ events }) {
+  const rows = asArray(events);
+  if (!rows.length) return <EmptyLine>No events recorded</EmptyLine>;
+  const typeCounts = Object.entries(
+    countBy(rows.map((event) => eventDisplayType(event))),
+  )
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 6);
+  const actors = Object.keys(
+    countBy(rows.map((event) => event.displayCallsign || event.actorType)),
+  );
+
+  return (
+    <div data-testid="codesite-black-box-recorder" className="grid gap-3">
+      <div
+        className="grid gap-2 rounded-lg border px-3 py-2 text-xs lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+          background: "var(--bg-surface)",
+        }}
+      >
+        <div className="min-w-0">
+          <div className="font-semibold">Flight recorder stream</div>
+          <div
+            className="mt-1 max-w-[65ch] leading-5"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Ordered event evidence with actor, logical time, path, and payload
+            preview for black-box replay.
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1 lg:justify-end">
+          <Pill>{rows.length} events</Pill>
+          <Pill>{actors.length} actors</Pill>
+        </div>
+      </div>
+      <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(220px,0.35fr)]">
+        <div className="space-y-1">
+          {rows.map((event, index) => (
+            <div
+              key={
+                event.id ||
+                event.eventId ||
+                `${event.eventType || "event"}-${index}`
+              }
+              className="rounded-md border px-2 py-1.5 text-xs"
+              style={{
+                borderColor: "var(--border-subtle)",
+                background: index % 2 ? "var(--bg-surface)" : "var(--bg-editor)",
+              }}
+            >
+              <div className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_minmax(88px,auto)] items-center gap-2">
+                <span
+                  className="font-mono text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {formatTime(event.createdAt)}
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate">{eventDisplayType(event)}</div>
+                  <div
+                    className="truncate font-mono text-[10px]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {eventPathLabel(event)}
+                  </div>
+                </div>
+                <span
+                  className="max-w-[110px] truncate text-right text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {event.displayCallsign || event.actorType || ""}
+                </span>
+              </div>
+              {hasEntries(event.details) || asArray(event.evidenceRefs).length ? (
+                <div className="mt-1">
+                  <JsonPreview
+                    value={{
+                      eventId: event.id,
+                      logicalTime: event.logicalTime,
+                      details: event.details || {},
+                      evidenceRefs: event.evidenceRefs || [],
+                    }}
+                    maxLines={10}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <div className="grid min-w-0 content-start gap-2">
+          {typeCounts.map(([type, count]) => (
+            <div
+              key={type}
+              className="rounded-md border px-2 py-1.5 text-xs"
+              style={{
+                borderColor: "var(--border-subtle)",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate">{type}</span>
+                <span className="font-mono tabular-nums">
+                  {formatCompactNumber(count)}
+                </span>
+              </div>
+              <div className="mt-1">
+                <SignalBar
+                  value={count / rows.length}
+                  tone={count > 1 ? "holding" : "active"}
+                  label={`${type} event share`}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LineProvenanceDeck({
+  rows,
+  selectedLineRow,
+  selectedLineTransaction,
+  selectedLineLease,
+  selectedLineProof,
+  selectedLineEvidenceRefs,
+  selectedLineInspectionRefs,
+  selectedLineDojoRefs,
+  lineInspector,
+  onInspectLine,
+}) {
+  const provenanceRows = asArray(rows);
+  if (!provenanceRows.length) {
+    return <EmptyLine>No line provenance indexed</EmptyLine>;
+  }
+  const visibleRows = provenanceRows.slice(-10).reverse();
+  const hiddenRows = provenanceRows.length - visibleRows.length;
+  const fileCount = new Set(provenanceRows.map((row) => row.filePath).filter(Boolean)).size;
+  const transactionCount = new Set(
+    provenanceRows.map((row) => row.transactionId).filter(Boolean),
+  ).size;
+  const evidenceCount = uniqueValues(
+    provenanceRows.flatMap((row) => asArray(row.evidenceRefs)),
+  ).length;
+  const sourceContext =
+    selectedLineRow?.diffHunk ||
+    selectedLineRow?.diffSnippet ||
+    selectedLineRow?.sourceSnippet ||
+    selectedLineRow?.promptSummary;
+  const causalSteps = selectedLineRow
+    ? [
+        {
+          label: "Clearance",
+          value: `${compact(
+            selectedLineLease?.displayCallsign || selectedLineRow.displayCallsign,
+            "agent",
+          )} / ${compact(
+            selectedLineLease?.id || selectedLineTransaction?.mutationLeaseId,
+            "lease",
+          )}`,
+          tone: selectedLineLease ? "active" : "pending",
+        },
+        {
+          label: "Transaction",
+          value: compact(selectedLineRow.transactionId, "transaction"),
+          tone: selectedLineTransaction?.status || "active",
+        },
+        {
+          label: "Proof",
+          value: compact(
+            selectedLineProof?.bundleDigest || selectedLineRow.proofBundleId,
+            "none",
+          ),
+          tone: selectedLineProof ? "active" : "pending",
+        },
+        {
+          label: "Evidence",
+          value: `${selectedLineEvidenceRefs.length} refs`,
+          tone: selectedLineEvidenceRefs.length ? "active" : "pending",
+        },
+        {
+          label: "Inspection",
+          value: `${selectedLineInspectionRefs.length} refs`,
+          tone: selectedLineInspectionRefs.length ? "active" : "holding",
+        },
+      ]
+    : [];
+
+  return (
+    <div
+      data-testid="codesite-line-provenance-deck"
+      className="grid min-w-0 gap-3"
+    >
+      <div
+        className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 80%, var(--accent-primary) 20%)",
+          background: "var(--bg-surface)",
+        }}
+      >
+        <span className="font-semibold">Line provenance ledger</span>
+        <div className="flex flex-wrap gap-1">
+          <Pill>{provenanceRows.length} rows</Pill>
+          {hiddenRows > 0 ? (
+            <Pill tone="holding">+{hiddenRows} archived</Pill>
+          ) : null}
+        </div>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
+        <Metric label="Files" value={fileCount} />
+        <Metric label="Transactions" value={transactionCount} />
+        <Metric label="Evidence refs" value={evidenceCount} />
+        <Metric
+          label="Selected"
+          value={selectedLineRow ? lineRangeLabel(selectedLineRow) : "none"}
+          tone={selectedLineRow ? "active" : "idle"}
+        />
+      </div>
+      <div className="grid min-w-0 gap-3 overflow-hidden xl:grid-cols-[minmax(0,0.95fr)_minmax(300px,0.8fr)]">
+        <div className="min-w-0 space-y-1">
+          {visibleRows.map((row, index) => {
+            const selected =
+              lineProvenanceKey(row) === lineProvenanceKey(selectedLineRow);
+            return (
+              <button
+                key={
+                  lineProvenanceKey(row) ||
+                  `${row.filePath || "line"}-${index}`
+                }
+                type="button"
+                data-testid="codesite-line-provenance-row"
+                aria-pressed={selected}
+                onClick={() => onInspectLine(row)}
+                className="block w-full min-w-0 overflow-hidden rounded-md border px-2.5 py-2 text-left text-xs transition-colors"
+                style={{
+                  borderColor: selected
+                    ? "color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))"
+                    : "var(--border-subtle)",
+                  background: selected
+                    ? "color-mix(in srgb, var(--accent-primary) 14%, var(--bg-surface))"
+                    : "var(--bg-surface)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-1.5">
+                  <code
+                    className="min-w-0 flex-1 basis-[11rem] break-all text-[10px] leading-4 whitespace-normal"
+                    title={row.filePath}
+                  >
+                    {row.filePath}
+                  </code>
+                  <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
+                    <Pill>{lineRangeLabel(row)}</Pill>
+                    <Pill className="max-w-[8rem] truncate">
+                      {compact(row.displayCallsign, "agent")}
+                    </Pill>
+                  </div>
+                </div>
+                <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                  <PathList
+                    paths={[row.reasonRef, row.proofBundleId].filter(Boolean)}
+                    empty="no reason"
+                  />
+                  <PathList
+                    paths={asArray(row.evidenceRefs)}
+                    empty="no evidence refs"
+                    maxVisible={5}
+                  />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div
+          data-testid="codesite-line-inspector"
+          className="min-h-[220px] min-w-0 overflow-hidden rounded-lg border p-3 text-xs"
+          style={{
+            borderColor:
+              "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+            background:
+              "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 86%, var(--bg-editor) 14%))",
+          }}
+        >
+          {!selectedLineRow ? (
+            <EmptyLine>Select a changed line</EmptyLine>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="break-words font-medium leading-tight">
+                    {lineRangeLabel(selectedLineRow)} causal trace
+                  </div>
+                  <code
+                    className="mt-0.5 block break-all text-[10px] leading-4 whitespace-normal"
+                    title={selectedLineRow.filePath}
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {selectedLineRow.filePath}
+                  </code>
+                </div>
+                <Pill
+                  testId="codesite-line-inspector-status"
+                  tone={
+                    lineInspector.status === "error"
+                      ? "failed"
+                      : lineInspector.status === "loading"
+                        ? "running"
+                        : "active"
+                  }
+                >
+                  {lineInspector.status === "loading" &&
+                  lineInspector.rows.length === 0
+                    ? "loading"
+                    : `${lineInspector.rows.length || 1} rows`}
+                </Pill>
+              </div>
+              <div className="grid gap-1.5">
+                {causalSteps.map((step) => (
+                  <div
+                    key={step.label}
+                    className="grid min-h-8 grid-cols-[86px_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-1"
+                    style={{
+                      borderColor: "var(--border-subtle)",
+                      background: "var(--bg-editor)",
+                    }}
+                  >
+                    <span style={{ color: "var(--text-muted)" }}>
+                      {step.label}
+                    </span>
+                    <code
+                      className="min-w-0 break-all whitespace-normal"
+                      title={step.value}
+                    >
+                      {step.value}
+                    </code>
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={indicatorTone(step.tone)}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="grid gap-2 text-[11px]">
+                <div>
+                  <div style={{ color: "var(--text-muted)" }}>Reason</div>
+                  <code
+                    className="break-all whitespace-normal"
+                    title={selectedLineRow.reasonRef}
+                  >
+                    {compact(selectedLineRow.reasonRef, "none")}
+                  </code>
+                </div>
+                <div>
+                  <div style={{ color: "var(--text-muted)" }}>
+                    Evidence refs
+                  </div>
+                  <PathList
+                    paths={selectedLineEvidenceRefs}
+                    empty="none"
+                    maxVisible={8}
+                  />
+                </div>
+                <div>
+                  <div style={{ color: "var(--text-muted)" }}>
+                    Inspection/test approvals
+                  </div>
+                  <PathList
+                    paths={selectedLineInspectionRefs}
+                    empty="none"
+                    maxVisible={8}
+                  />
+                </div>
+                <div>
+                  <div style={{ color: "var(--text-muted)" }}>
+                    Dojo/source refs
+                  </div>
+                  <PathList
+                    paths={selectedLineDojoRefs}
+                    empty="none"
+                    maxVisible={8}
+                  />
+                </div>
+                <div>
+                  <div style={{ color: "var(--text-muted)" }}>
+                    Process ancestry
+                  </div>
+                  <PathList
+                    paths={asArray(selectedLineRow.processAncestry)}
+                    empty="none"
+                    maxVisible={8}
+                  />
+                </div>
+                {sourceContext ? (
+                  <div>
+                    <div style={{ color: "var(--text-muted)" }}>
+                      Source context
+                    </div>
+                    <pre
+                      className="mt-1 max-h-36 overflow-auto rounded-md border px-2 py-1 text-[11px] leading-5 whitespace-pre-wrap"
+                      style={{
+                        borderColor: "var(--border-subtle)",
+                        background: "var(--bg-editor)",
+                      }}
+                    >
+                      {sourceContext}
+                    </pre>
+                  </div>
+                ) : null}
+                {lineInspector.error ? (
+                  <div
+                    className="rounded border px-2 py-1 text-[11px]"
+                    style={{
+                      borderColor:
+                        "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    {lineInspector.error}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AirspaceMap({
   zones,
   noFlyZones,
@@ -3761,8 +5612,10 @@ function AirspaceMap({
           paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4),
         },
       ];
-  const visibleFlights = flights.slice(0, 5);
-  const visibleRisks = risks.slice(0, 4);
+  const visibleFlights = flights.slice(0, condensed ? 8 : 12);
+  const visibleRisks = risks.slice(0, condensed ? 6 : 8);
+  const flightOverflow = Math.max(0, flights.length - visibleFlights.length);
+  const riskOverflow = Math.max(0, risks.length - visibleRisks.length);
   const replayEvents = replayTailFromNewestFirst(events);
   const replayPoints = replayEvents.map((event, index) =>
     eventPoint(event, index, replayEvents.length),
@@ -3771,6 +5624,26 @@ function AirspaceMap({
     .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
     .join(" ");
   const landingRuns = asArray(inspections).slice(-4).reverse();
+  const priorityFlights = flights
+    .slice()
+    .sort((left, right) => {
+      const leftRisk = risks.some((risk) => riskTouchesFlight(risk, left))
+        ? 2
+        : ["holding", "blocked", "preflight"].includes(
+              String(left.status || "").toLowerCase(),
+            )
+          ? 1
+          : 0;
+      const rightRisk = risks.some((risk) => riskTouchesFlight(risk, right))
+        ? 2
+        : ["holding", "blocked", "preflight"].includes(
+              String(right.status || "").toLowerCase(),
+            )
+          ? 1
+          : 0;
+      return rightRisk - leftRisk;
+    })
+    .slice(0, condensed ? 4 : 6);
 
   return (
     <div className="space-y-2">
@@ -3797,8 +5670,8 @@ function AirspaceMap({
           <div
             className={
               condensed
-                ? "relative min-h-[244px] overflow-hidden rounded-lg border"
-                : "relative min-h-[280px] overflow-hidden rounded-lg border"
+                ? "relative min-h-[272px] overflow-hidden rounded-lg border"
+                : "relative min-h-[340px] overflow-hidden rounded-lg border"
             }
             style={{
               borderColor:
@@ -4035,8 +5908,14 @@ function AirspaceMap({
                 color: "var(--text-muted)",
               }}
             >
-              <span>{visibleFlights.length} flights tracked</span>
-              <span>{visibleRisks.length || "no"} active risk cones</span>
+              <span>
+                {visibleFlights.length} flights tracked
+                {flightOverflow ? ` (+${flightOverflow})` : ""}
+              </span>
+              <span>
+                {visibleRisks.length || "no"} active risk cones
+                {riskOverflow ? ` (+${riskOverflow})` : ""}
+              </span>
             </div>
           </div>
 
@@ -4154,6 +6033,68 @@ function AirspaceMap({
                 ))
               ) : (
                 <div style={{ color: "var(--text-muted)" }}>No landings</div>
+              )}
+            </div>
+            <div
+              className="rounded-lg border px-3 py-2 text-xs"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 84%, var(--bg-surface) 16%))",
+              }}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Priority traffic</span>
+                <Pill
+                  tone={
+                    priorityFlights.some((flight) =>
+                      risks.some((risk) => riskTouchesFlight(risk, flight)),
+                    )
+                      ? "holding"
+                      : "active"
+                  }
+                >
+                  {priorityFlights.length}
+                </Pill>
+              </div>
+              {priorityFlights.length ? (
+                <div className="space-y-1">
+                  {priorityFlights.map((flight, flightIndex) => {
+                    const hasRisk = risks.some((risk) =>
+                      riskTouchesFlight(risk, flight),
+                    );
+                    return (
+                      <div
+                        key={
+                          flight.id ||
+                          flight.displayCallsign ||
+                          `priority-${flightIndex}`
+                        }
+                        className="grid grid-cols-[minmax(0,0.74fr)_minmax(0,1fr)_auto] items-center gap-2"
+                      >
+                        <span className="min-w-0 truncate font-medium">
+                          {compact(flight.displayCallsign, "agent")}
+                        </span>
+                        <span
+                          className="min-w-0 truncate font-mono text-[10px]"
+                          style={{ color: "var(--text-muted)" }}
+                          title={asArray(flight.route).join(", ")}
+                        >
+                          {asArray(flight.route).slice(0, 2).join(", ") ||
+                            compact(flight.domain, "route")}
+                        </span>
+                        <Pill tone={hasRisk ? "holding" : flight.status}>
+                          {hasRisk ? "risk" : compact(flight.status, "active")}
+                        </Pill>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ color: "var(--text-muted)" }}>
+                  No active traffic
+                </div>
               )}
             </div>
           </div>
@@ -4673,6 +6614,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const filesystemBoundaryProofs = asArray(
     controlState?.filesystemBoundaryProofs,
   );
+  const mutationTransactions = asArray(currentProject?.mutationTxns);
+  const assumptions = asArray(currentProject?.assumptions);
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
   const incidents = asArray(currentProject?.incidents);
@@ -4690,7 +6633,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const events = uniqueByEvent([
     ...streamEvents,
     ...asArray(radarState.events).slice().reverse(),
-  ]).slice(0, 12);
+  ]).slice(0, 24);
   const allEvents = asArray(radarState.events);
   const quarantineRecords = useMemo(
     () =>
@@ -4732,7 +6675,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       activeTransactions.find(
         (txn) => txn.id === selectedLineRow.transactionId,
       ) ||
-      asArray(currentProject?.mutationTxns).find(
+      mutationTransactions.find(
         (txn) => txn.id === selectedLineRow.transactionId,
       ) ||
       null
@@ -5041,8 +6984,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
       { key: "radar", label: "Radar" },
       { key: "tower", label: "Tower" },
       { key: "governance", label: "Governance" },
-      { key: "evidence", label: "Evidence" },
+      { key: "evidence", label: "Metrics" },
+      { key: "simulator", label: "Simulator" },
+      { key: "quarantine", label: "Quarantine" },
       { key: "replay", label: "Replay" },
+      { key: "lineage", label: "Lineage" },
+      { key: "runway", label: "Runway" },
     ],
     [],
   );
@@ -5564,74 +7511,10 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 }
               >
                 {metrics ? (
-                  <div
-                    data-testid="codesite-success-metrics"
-                    className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]"
-                  >
-                    <div className="grid min-w-0 gap-4 sm:grid-cols-2">
-                      <MetricsGroup title="ATC" rows={metricSections.atc} />
-                      <MetricsGroup
-                        title="Transaction"
-                        rows={metricSections.transaction}
-                      />
-                    </div>
-                    <div className="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-1">
-                      <MetricsGroup
-                        title="Quality"
-                        rows={metricSections.quality}
-                      />
-                      <MetricsGroup title="Trust" rows={metricSections.trust} />
-                    </div>
-                    <div className="min-w-0 lg:col-span-2">
-                      <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
-                        <Metric
-                          label="Avoided"
-                          value={compact(metricSummary.collisionsAvoided, "0")}
-                          tone={
-                            metricSummary.collisionsAvoided ? "active" : "idle"
-                          }
-                        />
-                        <Metric
-                          label="Blocked"
-                          value={compact(
-                            metricSummary.codeSiteFsBlockedWrites,
-                            "0",
-                          )}
-                          tone={
-                            metricSummary.codeSiteFsBlockedWrites
-                              ? "holding"
-                              : "idle"
-                          }
-                        />
-                        <Metric
-                          label="Line coverage"
-                          value={formatPercent(
-                            metricSummary.lineProvenanceCoverage || 0,
-                          )}
-                          tone={
-                            metricSummary.lineProvenanceCoverage
-                              ? "active"
-                              : "pending"
-                          }
-                        />
-                        <Metric
-                          label="Black box"
-                          value={
-                            metricSummary.blackBoxCompletenessScore == null
-                              ? "n/a"
-                              : formatPercent(
-                                  metricSummary.blackBoxCompletenessScore,
-                                )
-                          }
-                          tone={
-                            metricSummary.blackBoxCompletenessScore
-                              ? "active"
-                              : "pending"
-                          }
-                        />
-                      </div>
-                    </div>
-                  </div>
+                  <SuccessMetricsDeck
+                    sections={metricSections}
+                    summary={metricSummary}
+                  />
                 ) : (
                   <EmptyLine>No success metrics exported yet</EmptyLine>
                 )}
@@ -5640,6 +7523,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <Section
                 title="Runway Occupancy"
                 icon={Route}
+                sectionKey="runway"
                 right={
                   <Pill tone={runwayOccupancy.length ? "holding" : "active"}>
                     {runwayOccupancy.length}
@@ -5696,6 +7580,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <Section
                 title="Quarantine Review"
                 icon={FileSearch}
+                sectionKey="quarantine"
                 right={
                   <Pill
                     tone={
@@ -5771,6 +7656,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <Section
                 title="Tower Simulator"
                 icon={Activity}
+                sectionKey="simulator"
                 right={
                   <Pill tone={selectedUniverse?.result || simulationRun.status}>
                     {compact(
@@ -5782,235 +7668,19 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   </Pill>
                 }
               >
-                <div
-                  data-testid="codesite-tower-simulator"
-                  className="space-y-2"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div
-                      className="min-w-0 text-xs"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      Compare route strategies against repo policy, inspection
-                      evidence, incidents, and active clearances.
-                    </div>
-                    <IconButton
-                      title="Run Tower simulation"
-                      onClick={handleRunTowerSimulation}
-                      disabled={
-                        !radarState.selectedProjectId || loading || acting
-                      }
-                      testId="codesite-run-tower-simulator"
-                    >
-                      <Radar className="h-3.5 w-3.5" />
-                      Simulate
-                    </IconButton>
-                  </div>
-                  {simulationRun.error ? (
-                    <div
-                      className="rounded border px-2 py-1 text-[11px]"
-                      style={{
-                        borderColor:
-                          "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
-                        color: "var(--text-primary)",
-                      }}
-                    >
-                      {simulationRun.error}
-                    </div>
-                  ) : null}
-                  {towerUniverses.length === 0 ? (
-                    <EmptyLine>No simulator run recorded</EmptyLine>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-[repeat(auto-fit,minmax(112px,1fr))] gap-2">
-                        <Metric
-                          label="Selected"
-                          value={compact(towerSimulation?.selected, "none")}
-                          tone={selectedUniverse?.result || "idle"}
-                          testId="codesite-tower-selected"
-                        />
-                        <Metric
-                          label="Collision"
-                          value={formatPercent(
-                            selectedUniverse?.predictedCollisionRisk,
-                          )}
-                          tone={selectedUniverse?.result || "idle"}
-                        />
-                        <Metric
-                          label="Inspect"
-                          value={selectedUniverse?.inspectionCost ?? 0}
-                        />
-                        <Metric
-                          label="Confidence"
-                          value={formatPercent(selectedUniverse?.confidence)}
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        {towerUniverses.map((universe, index) => {
-                          const selected =
-                            universe.strategy === towerSimulation?.selected;
-                          return (
-                            <div
-                              key={
-                                universe.strategy ||
-                                universe.id ||
-                                `tower-universe-${index}`
-                              }
-                              data-testid="codesite-tower-universe"
-                              className="rounded border px-3 py-2 text-xs"
-                              style={{
-                                borderColor: selected
-                                  ? "color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))"
-                                  : "var(--border-subtle)",
-                                background: selected
-                                  ? "color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface))"
-                                  : "var(--bg-surface)",
-                              }}
-                            >
-                              <div className="grid gap-2 sm:grid-cols-[minmax(128px,1fr)_minmax(0,2fr)_auto] sm:items-center">
-                                <div className="min-w-0">
-                                  <div className="break-words font-medium leading-tight">
-                                    {compact(universe.strategy, "strategy")}
-                                  </div>
-                                  <div className="mt-1 flex flex-wrap gap-1">
-                                    <Pill tone={universe.result}>
-                                      {compact(universe.result, "review")}
-                                    </Pill>
-                                    {selected ? (
-                                      <Pill tone="active">selected</Pill>
-                                    ) : null}
-                                  </div>
-                                </div>
-                                <div className="grid min-w-0 gap-1 text-[11px] sm:grid-cols-3">
-                                  <div>
-                                    <span
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      Risk{" "}
-                                    </span>
-                                    <span className="font-mono tabular-nums">
-                                      {formatPercent(
-                                        universe.predictedCollisionRisk,
-                                      )}
-                                    </span>
-                                  </div>
-                                  <div>
-                                    <span
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      Stale{" "}
-                                    </span>
-                                    <span className="font-mono tabular-nums">
-                                      {universe.staleAssumptions ?? 0}
-                                    </span>
-                                  </div>
-                                  <div>
-                                    <span
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      Cost{" "}
-                                    </span>
-                                    <span className="font-mono tabular-nums">
-                                      {universe.inspectionCost ?? 0}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="justify-self-start sm:justify-self-end">
-                                  <Pill
-                                    tone={
-                                      universe.unresolvedRisks?.length
-                                        ? "holding"
-                                        : "active"
-                                    }
-                                  >
-                                    {asArray(universe.unresolvedRisks).length}{" "}
-                                    unresolved
-                                  </Pill>
-                                </div>
-                              </div>
-                              <div className="mt-2 grid gap-1 sm:grid-cols-2">
-                                <div>
-                                  <div
-                                    className="text-[11px]"
-                                    style={{ color: "var(--text-muted)" }}
-                                  >
-                                    Tower actions
-                                  </div>
-                                  <PathList
-                                    paths={universe.requiredTowerActions || []}
-                                    empty="none"
-                                    maxVisible={6}
-                                  />
-                                </div>
-                                <div>
-                                  <div
-                                    className="text-[11px]"
-                                    style={{ color: "var(--text-muted)" }}
-                                  >
-                                    Reason codes
-                                  </div>
-                                  <PathList
-                                    paths={universe.reasonCodes || []}
-                                    empty="none"
-                                    maxVisible={6}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <div
-                          className="rounded border px-3 py-2 text-xs"
-                          style={{
-                            borderColor: "var(--border-subtle)",
-                            background: "var(--bg-surface)",
-                          }}
-                        >
-                          <div
-                            className="mb-1 text-[11px]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            Signals used
-                          </div>
-                          <PathList
-                            paths={Object.entries(
-                              selectedUniverse?.sourceSignals || {},
-                            )
-                              .map(([key, value]) => `${key}:${value}`)
-                              .filter((item) => !item.endsWith(":0"))}
-                            empty="no source signals"
-                            maxVisible={10}
-                          />
-                        </div>
-                        <div
-                          className="rounded border px-3 py-2 text-xs"
-                          style={{
-                            borderColor: "var(--border-subtle)",
-                            background: "var(--bg-surface)",
-                          }}
-                        >
-                          <div
-                            className="mb-1 text-[11px]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            Evidence
-                          </div>
-                          <PathList
-                            paths={
-                              towerSimulation?.evidenceRefs ||
-                              latestSimulation.run?.evidenceRefs ||
-                              []
-                            }
-                            empty="none"
-                            maxVisible={10}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <TowerSimulatorDeck
+                  towerSimulation={towerSimulation}
+                  latestSimulation={latestSimulation}
+                  towerUniverses={towerUniverses}
+                  selectedUniverse={selectedUniverse}
+                  assumptions={assumptions}
+                  activeFlights={activeFlights}
+                  activeLeases={activeLeases}
+                  events={allEvents}
+                  simulationRun={simulationRun}
+                  onRun={handleRunTowerSimulation}
+                  disabled={!radarState.selectedProjectId || loading || acting}
+                />
               </Section>
 
               <Section
@@ -6123,121 +7793,19 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <Section
                 title="Transactions And Proof"
                 icon={GitCommit}
-                right={<Pill>{proofBundles.length}</Pill>}
+                right={
+                  <Pill>
+                    {mergeTransactionSources(activeTransactions, mutationTransactions).length}/
+                    {proofBundles.length}
+                  </Pill>
+                }
               >
-                {activeTransactions.length === 0 &&
-                proofBundles.length === 0 ? (
-                  <EmptyLine>No open transactions</EmptyLine>
-                ) : (
-                  <div>
-                    {activeTransactions.map((transaction, index) => (
-                      <Row key={transaction.id || `transaction-${index}`}>
-                        <div className="min-w-0">
-                          <div className="truncate font-mono text-[11px]">
-                            {transaction.id}
-                          </div>
-                          <div
-                            className="text-[10px]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            {formatTime(transaction.openedAt)}
-                          </div>
-                        </div>
-                        <div className="min-w-0">
-                          <PathList
-                            paths={
-                              transaction.writeSet ||
-                              transaction.observedWriteSet ||
-                              []
-                            }
-                            empty="no writes"
-                          />
-                        </div>
-                        <div className="justify-self-end">
-                          <Pill tone={transaction.status}>
-                            {transaction.status}
-                          </Pill>
-                        </div>
-                      </Row>
-                    ))}
-                    {proofBundles
-                      .slice(-3)
-                      .reverse()
-                      .map((bundle, index) => (
-                        <div
-                          key={bundle.id || `proof-bundle-${index}`}
-                          className="border-t py-2 first:border-t-0"
-                          style={{ borderColor: "var(--border-subtle)" }}
-                        >
-                          <div className="grid min-h-10 grid-cols-[minmax(76px,0.9fr)_minmax(0,1.5fr)_minmax(72px,0.8fr)] items-center gap-2 text-xs">
-                            <div className="min-w-0">
-                              <div className="truncate font-mono text-[11px]">
-                                {bundle.id}
-                              </div>
-                              <div
-                                className="text-[10px]"
-                                style={{ color: "var(--text-muted)" }}
-                              >
-                                proof
-                              </div>
-                            </div>
-                            <div
-                              className="min-w-0 truncate font-mono text-[11px]"
-                              title={
-                                bundle.bundleDigest || bundle.readSetDigest
-                              }
-                            >
-                              {bundle.bundleDigest || bundle.readSetDigest}
-                            </div>
-                            <div className="justify-self-end">
-                              <CheckCircle2
-                                className="h-4 w-4"
-                                style={{
-                                  color:
-                                    "color-mix(in srgb, #4ade80 70%, var(--text-primary))",
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                            <PathList
-                              paths={bundle.evidenceRefs || []}
-                              empty="no evidence refs"
-                            />
-                            <PathList
-                              paths={Object.entries(bundle.trailers || {}).map(
-                                ([key, value]) => `${key}: ${value}`,
-                              )}
-                              empty="no trailers"
-                              maxVisible={10}
-                            />
-                          </div>
-                          {bundle.repoState ? (
-                            <div className="mt-1">
-                              <PathList
-                                paths={[
-                                  bundle.repoState.evidenceDigest &&
-                                    `repo-state:${bundle.repoState.evidenceDigest}`,
-                                  bundle.repoState.gitHead &&
-                                    `git-head:${bundle.repoState.gitHead}`,
-                                  bundle.repoState.worktreeDiffDigest &&
-                                    `worktree-diff:${bundle.repoState.worktreeDiffDigest}`,
-                                  ...asArray(
-                                    bundle.repoState.writeFileDigests,
-                                  ).map(
-                                    (file) =>
-                                      `${file.path}:${file.digest || "missing"}`,
-                                  ),
-                                ].filter(Boolean)}
-                                empty="no repo-state evidence"
-                                maxVisible={6}
-                              />
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
-                  </div>
-                )}
+                <SerializableIsolationDeck
+                  activeTransactions={activeTransactions}
+                  mutationTransactions={mutationTransactions}
+                  proofBundles={proofBundles}
+                  events={allEvents}
+                />
               </Section>
 
               <Section
@@ -6371,205 +7939,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   </Pill>
                 }
               >
-                <div
-                  data-testid="codesite-causal-replay-handover"
-                  className="min-w-0"
-                >
-                  {replayHandovers.length === 0 ? (
-                    <EmptyLine>No black-box handover closed yet</EmptyLine>
-                  ) : (
-                    <div className="space-y-2">
-                      {replayHandovers.slice(0, 2).map((handover, index) => {
-                        const score = Number(handover.completeness?.score);
-                        const eventTypes = handover.causalEvents
-                          .map((event) => event.type)
-                          .filter(Boolean);
-                        const latestEvents = handover.causalEvents.slice(-6);
-                        return (
-                          <div
-                            key={
-                              handover.incident.id ||
-                              handover.transactionId ||
-                              `handover-${index}`
-                            }
-                            className="rounded border px-3 py-2 text-xs"
-                            style={{
-                              borderColor: "var(--border-subtle)",
-                              background: "var(--bg-surface)",
-                            }}
-                          >
-                            <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                              <div className="min-w-0">
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <span className="min-w-0 truncate font-medium">
-                                    {compact(
-                                      handover.transactionId,
-                                      handover.incident.category,
-                                    )}
-                                  </span>
-                                  <Pill tone={handover.incident.severity}>
-                                    {handover.incident.severity}
-                                  </Pill>
-                                  <Pill
-                                    tone={replayCompletenessTone(
-                                      handover.completeness,
-                                    )}
-                                  >
-                                    {Number.isFinite(score)
-                                      ? formatPercent(score)
-                                      : "pending"}
-                                  </Pill>
-                                </div>
-                                <div className="mt-1 grid min-w-0 gap-1 sm:grid-cols-3">
-                                  <div className="min-w-0">
-                                    <div
-                                      className="text-[10px]"
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      Replay digest
-                                    </div>
-                                    <div
-                                      className="break-all font-mono text-[10px]"
-                                      title={
-                                        handover.incident.replayDigest ||
-                                        "missing"
-                                      }
-                                    >
-                                      {compact(
-                                        handover.incident.replayDigest,
-                                        "missing",
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div
-                                      className="text-[10px]"
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      Proof bundle
-                                    </div>
-                                    <div
-                                      className="break-all font-mono text-[10px]"
-                                      title={handover.proofBundle?.id || "none"}
-                                    >
-                                      {compact(
-                                        handover.proofBundle?.id,
-                                        "none",
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div
-                                      className="text-[10px]"
-                                      style={{ color: "var(--text-muted)" }}
-                                    >
-                                      CodeSite-Black-Box
-                                    </div>
-                                    <div
-                                      className="break-all font-mono text-[10px]"
-                                      title={
-                                        handover.codeSiteBlackBox || "missing"
-                                      }
-                                    >
-                                      {compact(
-                                        handover.codeSiteBlackBox,
-                                        "missing",
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="min-w-0 md:w-44">
-                                <div
-                                  className="text-[10px]"
-                                  style={{ color: "var(--text-muted)" }}
-                                >
-                                  Export refs
-                                </div>
-                                <PathList
-                                  paths={handover.exportPaths}
-                                  empty="no export refs"
-                                  maxVisible={4}
-                                />
-                              </div>
-                            </div>
-                            <div className="mt-2 grid min-w-0 gap-2 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-                              <div className="min-w-0 space-y-1">
-                                <div
-                                  className="text-[10px] uppercase tracking-normal"
-                                  style={{ color: "var(--text-muted)" }}
-                                >
-                                  Coverage
-                                </div>
-                                <PathList
-                                  paths={
-                                    handover.completeness?.presentEventTypes ||
-                                    eventTypes
-                                  }
-                                  empty="no present event types"
-                                  maxVisible={6}
-                                />
-                                <PathList
-                                  paths={
-                                    handover.completeness?.missingEventTypes ||
-                                    []
-                                  }
-                                  empty="no missing event types"
-                                  maxVisible={6}
-                                />
-                              </div>
-                              <div className="min-w-0">
-                                <div
-                                  className="mb-1 text-[10px] uppercase tracking-normal"
-                                  style={{ color: "var(--text-muted)" }}
-                                >
-                                  Causal timeline
-                                </div>
-                                {latestEvents.length === 0 ? (
-                                  <EmptyLine>
-                                    No replay events indexed
-                                  </EmptyLine>
-                                ) : (
-                                  <div className="space-y-1">
-                                    {latestEvents.map((event, index) => (
-                                      <div
-                                        key={`${handover.incident.id}-${event.eventId || index}`}
-                                        className="grid min-h-7 grid-cols-[40px_minmax(0,1fr)_minmax(72px,auto)] items-center gap-2 rounded border px-2 py-1"
-                                        style={{
-                                          borderColor: "var(--border-subtle)",
-                                          background: "var(--bg-editor)",
-                                        }}
-                                      >
-                                        <span
-                                          className="font-mono text-[10px]"
-                                          style={{ color: "var(--text-muted)" }}
-                                        >
-                                          {event.logicalTime || index + 1}
-                                        </span>
-                                        <span className="min-w-0 truncate">
-                                          {compact(event.type, "event")}
-                                        </span>
-                                        <span
-                                          className="min-w-0 truncate text-right font-mono text-[10px]"
-                                          style={{ color: "var(--text-muted)" }}
-                                        >
-                                          {compact(
-                                            event.path || event.displayCallsign,
-                                            "",
-                                          )}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <CausalReplayDeck handovers={replayHandovers} />
               </Section>
 
               <Section
@@ -6641,58 +8011,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 icon={ScrollText}
                 right={<Pill>{events.length}</Pill>}
               >
-                {events.length === 0 ? (
-                  <EmptyLine>No events recorded</EmptyLine>
-                ) : (
-                  <div className="space-y-1">
-                    {events.map((event, index) => (
-                      <div
-                        key={
-                          event.id ||
-                          event.eventId ||
-                          `${event.eventType || "event"}-${index}`
-                        }
-                        className="rounded border px-2 py-1.5 text-xs"
-                        style={{
-                          borderColor: "var(--border-subtle)",
-                          background: "var(--bg-surface)",
-                        }}
-                      >
-                        <div className="grid min-h-9 grid-cols-[52px_minmax(0,1fr)_auto] items-center gap-2">
-                          <span
-                            className="font-mono text-[10px]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            {formatTime(event.createdAt)}
-                          </span>
-                          <span className="min-w-0 truncate">
-                            {event.eventType}
-                          </span>
-                          <span
-                            className="max-w-[96px] truncate text-[10px]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            {event.displayCallsign || event.actorType || ""}
-                          </span>
-                        </div>
-                        {hasEntries(event.details) ||
-                        asArray(event.evidenceRefs).length ? (
-                          <div className="mt-1">
-                            <JsonPreview
-                              value={{
-                                eventId: event.id,
-                                logicalTime: event.logicalTime,
-                                details: event.details || {},
-                                evidenceRefs: event.evidenceRefs || [],
-                              }}
-                              maxLines={12}
-                            />
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <BlackBoxFlightRecorder events={events} />
               </Section>
 
               <Section
@@ -6871,268 +8190,21 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <Section
                 title="Line Provenance"
                 icon={FileSearch}
+                sectionKey="lineage"
                 right={<Pill>{lineProvenance.length}</Pill>}
               >
-                {lineProvenance.length === 0 ? (
-                  <EmptyLine>No line provenance indexed</EmptyLine>
-                ) : (
-                  <div className="grid min-w-0 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)]">
-                    <div className="min-w-0 space-y-1">
-                      {lineProvenance
-                        .slice(-8)
-                        .reverse()
-                        .map((row, index) => {
-                          const selected =
-                            lineProvenanceKey(row) ===
-                            lineProvenanceKey(selectedLineRow);
-                          return (
-                            <button
-                              key={
-                                lineProvenanceKey(row) ||
-                                `${row.filePath || "line"}-${index}`
-                              }
-                              type="button"
-                              data-testid="codesite-line-provenance-row"
-                              aria-pressed={selected}
-                              onClick={() => handleInspectLine(row)}
-                              className="block w-full min-w-0 overflow-hidden rounded border px-2 py-1.5 text-left text-xs transition-colors"
-                              style={{
-                                borderColor: selected
-                                  ? "color-mix(in srgb, var(--accent-primary) 52%, var(--border-subtle))"
-                                  : "var(--border-subtle)",
-                                background: selected
-                                  ? "color-mix(in srgb, var(--accent-primary) 14%, var(--bg-surface))"
-                                  : "var(--bg-surface)",
-                                color: "var(--text-primary)",
-                              }}
-                            >
-                              <div className="flex flex-wrap items-start justify-between gap-1.5">
-                                <code
-                                  className="min-w-0 flex-1 basis-[11rem] break-all text-[10px] leading-4 whitespace-normal"
-                                  title={row.filePath}
-                                >
-                                  {row.filePath}
-                                </code>
-                                <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
-                                  <Pill>{lineRangeLabel(row)}</Pill>
-                                  <Pill className="max-w-[8rem] truncate">
-                                    {compact(row.displayCallsign, "agent")}
-                                  </Pill>
-                                </div>
-                              </div>
-                              <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                                <PathList
-                                  paths={[
-                                    row.reasonRef,
-                                    row.proofBundleId,
-                                  ].filter(Boolean)}
-                                  empty="no reason"
-                                />
-                                <PathList
-                                  paths={asArray(row.evidenceRefs)}
-                                  empty="no evidence refs"
-                                  maxVisible={5}
-                                />
-                              </div>
-                            </button>
-                          );
-                        })}
-                    </div>
-                    <div
-                      data-testid="codesite-line-inspector"
-                      className="min-h-[168px] min-w-0 overflow-hidden rounded border p-2 text-xs"
-                      style={{
-                        borderColor: "var(--border-subtle)",
-                        background: "var(--bg-surface)",
-                      }}
-                    >
-                      {!selectedLineRow ? (
-                        <EmptyLine>Select a changed line</EmptyLine>
-                      ) : (
-                        <div className="space-y-2">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="break-words font-medium leading-tight">
-                                {lineRangeLabel(selectedLineRow)} causal trace
-                              </div>
-                              <code
-                                className="mt-0.5 block break-all text-[10px] leading-4 whitespace-normal"
-                                title={selectedLineRow.filePath}
-                                style={{ color: "var(--text-muted)" }}
-                              >
-                                {selectedLineRow.filePath}
-                              </code>
-                            </div>
-                            <Pill
-                              testId="codesite-line-inspector-status"
-                              tone={
-                                lineInspector.status === "error"
-                                  ? "failed"
-                                  : lineInspector.status === "loading"
-                                    ? "running"
-                                    : "active"
-                              }
-                            >
-                              {lineInspector.status === "loading" &&
-                              lineInspector.rows.length === 0
-                                ? "loading"
-                                : `${lineInspector.rows.length || 1} rows`}
-                            </Pill>
-                          </div>
-                          <div className="grid gap-1 text-[11px]">
-                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
-                              <span style={{ color: "var(--text-muted)" }}>
-                                Transaction
-                              </span>
-                              <code
-                                className="break-all whitespace-normal"
-                                title={selectedLineRow.transactionId}
-                              >
-                                {compact(selectedLineRow.transactionId)}
-                              </code>
-                            </div>
-                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
-                              <span style={{ color: "var(--text-muted)" }}>
-                                Clearance
-                              </span>
-                              <code
-                                className="break-all whitespace-normal"
-                                title={
-                                  selectedLineLease?.id ||
-                                  selectedLineTransaction?.mutationLeaseId
-                                }
-                              >
-                                {compact(
-                                  selectedLineLease?.displayCallsign ||
-                                    selectedLineRow.displayCallsign,
-                                  "agent",
-                                )}{" "}
-                                /{" "}
-                                {compact(
-                                  selectedLineLease?.id ||
-                                    selectedLineTransaction?.mutationLeaseId,
-                                  "lease",
-                                )}
-                              </code>
-                            </div>
-                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
-                              <span style={{ color: "var(--text-muted)" }}>
-                                Reason
-                              </span>
-                              <code
-                                className="break-all whitespace-normal"
-                                title={selectedLineRow.reasonRef}
-                              >
-                                {compact(selectedLineRow.reasonRef, "none")}
-                              </code>
-                            </div>
-                            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">
-                              <span style={{ color: "var(--text-muted)" }}>
-                                Proof
-                              </span>
-                              <code
-                                className="break-all whitespace-normal"
-                                title={
-                                  selectedLineProof?.bundleDigest ||
-                                  selectedLineRow.proofBundleId
-                                }
-                              >
-                                {compact(
-                                  selectedLineProof?.bundleDigest ||
-                                    selectedLineRow.proofBundleId,
-                                  "none",
-                                )}
-                              </code>
-                            </div>
-                          </div>
-                          <div>
-                            <div
-                              className="text-[11px]"
-                              style={{ color: "var(--text-muted)" }}
-                            >
-                              Evidence refs
-                            </div>
-                            <PathList
-                              paths={selectedLineEvidenceRefs}
-                              empty="none"
-                              maxVisible={8}
-                            />
-                          </div>
-                          <div>
-                            <div
-                              className="text-[11px]"
-                              style={{ color: "var(--text-muted)" }}
-                            >
-                              Inspection/test approvals
-                            </div>
-                            <PathList
-                              paths={selectedLineInspectionRefs}
-                              empty="none"
-                              maxVisible={8}
-                            />
-                          </div>
-                          <div>
-                            <div
-                              className="text-[11px]"
-                              style={{ color: "var(--text-muted)" }}
-                            >
-                              Dojo/source refs
-                            </div>
-                            <PathList
-                              paths={selectedLineDojoRefs}
-                              empty="none"
-                              maxVisible={8}
-                            />
-                          </div>
-                          <div>
-                            <div
-                              className="text-[11px]"
-                              style={{ color: "var(--text-muted)" }}
-                            >
-                              Process ancestry
-                            </div>
-                            <PathList
-                              paths={asArray(selectedLineRow.processAncestry)}
-                              empty="none"
-                              maxVisible={8}
-                            />
-                          </div>
-                          {selectedLineRow.promptSummary ? (
-                            <div>
-                              <div
-                                className="text-[11px]"
-                                style={{ color: "var(--text-muted)" }}
-                              >
-                                Prompt/process
-                              </div>
-                              <div
-                                className="mt-1 rounded border px-2 py-1 text-[11px]"
-                                style={{
-                                  borderColor: "var(--border-subtle)",
-                                  background: "var(--bg-editor)",
-                                }}
-                              >
-                                {selectedLineRow.promptSummary}
-                              </div>
-                            </div>
-                          ) : null}
-                          {lineInspector.error ? (
-                            <div
-                              className="rounded border px-2 py-1 text-[11px]"
-                              style={{
-                                borderColor:
-                                  "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
-                                color: "var(--text-primary)",
-                              }}
-                            >
-                              {lineInspector.error}
-                            </div>
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                <LineProvenanceDeck
+                  rows={lineProvenance}
+                  selectedLineRow={selectedLineRow}
+                  selectedLineTransaction={selectedLineTransaction}
+                  selectedLineLease={selectedLineLease}
+                  selectedLineProof={selectedLineProof}
+                  selectedLineEvidenceRefs={selectedLineEvidenceRefs}
+                  selectedLineInspectionRefs={selectedLineInspectionRefs}
+                  selectedLineDojoRefs={selectedLineDojoRefs}
+                  lineInspector={lineInspector}
+                  onInspectLine={handleInspectLine}
+                />
               </Section>
 
               <Section
