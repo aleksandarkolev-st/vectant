@@ -3,7 +3,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
 use tempfile::tempdir;
-use vectant_local_support_app::audit::{AuditClass, AuditLog};
+use vectant_local_support_app::audit::{AuditClass, AuditLog, ConsentReceipt};
 use vectant_local_support_app::http::{RateLimiter, MAX_JSON_BODY_BYTES};
 use vectant_local_support_app::pair::{
     verify_pairing_proof, DeviceIdentity, PairingError, PairingSession,
@@ -12,6 +12,7 @@ use vectant_local_support_app::preview::{
     decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
     sanitize_response_header_list, sanitize_response_headers, PortApproval, PreviewDecision,
 };
+use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::{SessionError, SessionGuard};
 use vectant_local_support_app::workspace::{FileReadRequest, WorkspacePolicy};
@@ -361,4 +362,42 @@ fn audit_log_scrubs_secret_material() {
     let event = &log.events()[0];
     assert!(event.summary.contains("[REDACTED:authorization_header]"));
     assert!(!event.summary.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert!(event.event_hash.starts_with("sha256:"));
+    assert!(log.export_incident_bundle(30).verify_hash_chain());
+}
+
+#[test]
+fn audit_export_contains_consent_receipts_and_detects_tampering() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.record_consent(ConsentReceipt {
+        approval_id: "appr_123".to_string(),
+        request_id: "req_log".to_string(),
+        session_id: "sess_123".to_string(),
+        actor: "support_agent".to_string(),
+        capability: "workspace.log.read".to_string(),
+        target_display: "dev-server.log".to_string(),
+        classification: Classification::L3,
+        content_sha256: Some("sha256:content".to_string()),
+        scope: "once".to_string(),
+        granted_at: chrono::Utc::now(),
+        expires_at: "session_end".to_string(),
+        policy_version: "2026.07.05".to_string(),
+        scanner_version: "scanner-2026.07.05".to_string(),
+    });
+    log.append(
+        AuditClass::Denied,
+        Some("req_env".to_string()),
+        "Blocked .env. Nothing was sent.",
+        true,
+    );
+
+    let export = log.export_incident_bundle(30);
+    assert!(export.verify_hash_chain());
+    assert!(!export.raw_bodies_included);
+    assert_eq!(export.consent_receipts.len(), 1);
+    assert_eq!(export.consent_receipts[0].approval_id, "appr_123");
+
+    let mut tampered = export.clone();
+    tampered.events[0].summary = "Consent silently changed".to_string();
+    assert!(!tampered.verify_hash_chain());
 }
