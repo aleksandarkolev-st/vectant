@@ -19229,6 +19229,61 @@ assert.ok(retargetedSourceFirstReplayQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_row_target_bound_to_ledger_record'
 ));
 
+const prefixedProfileSourceFirstAliasRow = JSON.parse(JSON.stringify(acceptedFlow));
+prefixedProfileSourceFirstAliasRow.targetId = 'flow-source-first-prefixed-profile-alias';
+prefixedProfileSourceFirstAliasRow.target_id = 'flow-source-first-prefixed-profile-alias';
+prefixedProfileSourceFirstAliasRow.profileId = 'flow:source-first-prefixed-profile-alias';
+prefixedProfileSourceFirstAliasRow.profile_id = 'flow:source-first-prefixed-profile-alias';
+prefixedProfileSourceFirstAliasRow.sourceFirstIngestion = sourceFirstIngestionEvidenceFor({
+  targetId: 'flow-source-first-prefixed-profile-alias',
+});
+prefixedProfileSourceFirstAliasRow.source_first_ingestion =
+  prefixedProfileSourceFirstAliasRow.sourceFirstIngestion;
+prefixedProfileSourceFirstAliasRow.validationProfileEvidence = {
+  ...(prefixedProfileSourceFirstAliasRow.validationProfileEvidence ?? {}),
+  accepted: true,
+  profileId: 'flow',
+  profile_id: 'flow',
+  evidenceRefs: [
+    ...new Set([
+      ...(
+        prefixedProfileSourceFirstAliasRow.validationProfileEvidence?.evidenceRefs
+          ?? prefixedProfileSourceFirstAliasRow.validationProfileEvidence?.evidence_refs
+          ?? []
+      ).map((value) => String(value ?? '').trim()).filter(Boolean),
+      'flow-source-first-prefixed-profile-alias',
+    ]),
+  ],
+  proofIds: [
+    ...new Set([
+      ...(
+        prefixedProfileSourceFirstAliasRow.validationProfileEvidence?.proofIds
+          ?? prefixedProfileSourceFirstAliasRow.validationProfileEvidence?.proof_ids
+          ?? []
+      ).map((value) => String(value ?? '').trim()).filter(Boolean),
+      prefixedProfileSourceFirstAliasRow.ledger?.proofId,
+      prefixedProfileSourceFirstAliasRow.runtimeProofArtifact?.proofId,
+    ].filter(Boolean)),
+  ],
+};
+prefixedProfileSourceFirstAliasRow.validationProfileEvidence.evidence_refs =
+  prefixedProfileSourceFirstAliasRow.validationProfileEvidence.evidenceRefs;
+prefixedProfileSourceFirstAliasRow.validationProfileEvidence.proof_ids =
+  prefixedProfileSourceFirstAliasRow.validationProfileEvidence.proofIds;
+prefixedProfileSourceFirstAliasRow.validation_profile_evidence =
+  prefixedProfileSourceFirstAliasRow.validationProfileEvidence;
+delete prefixedProfileSourceFirstAliasRow.fullRuntimeRowIdentityBinding;
+delete prefixedProfileSourceFirstAliasRow.full_runtime_row_identity_binding;
+const prefixedProfileSourceFirstAliasQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [withQueryRecomputedRowId(prefixedProfileSourceFirstAliasRow)],
+});
+assert.equal(prefixedProfileSourceFirstAliasQuery.accepted, false);
+assert.equal(prefixedProfileSourceFirstAliasQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(prefixedProfileSourceFirstAliasQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_requires_row_target_bound_to_ledger_record'
+));
+
 const editIdRetargetedRuntimeReplayRow = JSON.parse(JSON.stringify(acceptedFlow));
 editIdRetargetedRuntimeReplayRow.targetId = editIdRetargetedRuntimeReplayRow.ledger.record.editId;
 editIdRetargetedRuntimeReplayRow.target_id = editIdRetargetedRuntimeReplayRow.ledger.record.editId;

@@ -8212,9 +8212,7 @@ function fullRuntimeRowIdentityBindingFacet(row = {}) {
   const validationProfileProfileBoundToRow =
     !validationProfileId
     || !rowProfileId
-    || validationProfileId === rowProfileId
-    || rowProfileId.startsWith(`${validationProfileId}:`)
-    || rowProfileId.includes(`:${validationProfileId}:`);
+    || validationProfileId === rowProfileId;
   const sourceFirstAliasBoundToLedger =
     sourceFirstTargetBoundToRow
     && validationProfile.accepted === true
