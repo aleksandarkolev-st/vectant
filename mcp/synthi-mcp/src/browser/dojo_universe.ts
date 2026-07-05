@@ -21,6 +21,7 @@ import {
   buildDojoEvidenceRetentionPlan,
   type DojoEvidenceRetentionPlan,
 } from "../dojo/evidence/retention.js";
+import { buildDojoEvidenceLedgerRecord } from "../dojo/evidence/ledger_record.js";
 import {
   buildDojoGovernanceServiceView,
   type DojoGovernanceScheduledJobItem,
@@ -567,7 +568,7 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
   let previous: string | null = null;
   const records = refs.map((item, index) => {
     const recordId = `evidence_${String(index + 1).padStart(3, "0")}_${hash(`${skill.skill_id}:${item.kind}:${item.ref}`)}`;
-    const digest = hash(JSON.stringify({ recordId, item, previous }));
+    const digest = sha256(JSON.stringify({ recordId, item, previous }));
     const retentionClass = retentionClassForEvidenceKind(item.kind);
     const record = {
       record_id: recordId,
@@ -584,29 +585,28 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
     return record;
   });
   const tenantId = tenantIdForEvidenceLedgerReport(skill);
-  const retentionRecords = records.map((record): DojoEvidenceLedgerRecord => ({
-    schema_version: "synthi.dojo.evidenceRecord.v1",
-    record_id: record.record_id,
-    tenant_id: tenantId,
-    workspace_id: skill.workspace_id,
-    skill_id: skill.skill_id,
-    run_id: skill.workflow_id,
-    kind: record.kind,
-    artifact_uri: record.ref,
-    artifact_sha256: record.hash,
-    redaction_manifest_sha256: null,
-    claim_ids: evidenceClaimIdsForEvidenceKind(record.kind, skill),
-    previous_hash: record.previous_hash ?? "0".repeat(64),
-    record_hash: record.hash,
-    ledger_head_hash: record.hash,
-    signer_key_id: null,
-    signature: null,
-    created_at: record.created_at,
-    created_by: "dojo-evidence-ledger-report",
-    retention_class: record.retention_class,
-    legal_hold: record.legal_hold,
-    source_refs: [record.ref],
-  }));
+  let previousEvidenceRecordHash: string | undefined;
+  const retentionRecords = records.map((record): DojoEvidenceLedgerRecord => {
+    const evidenceRecord = buildDojoEvidenceLedgerRecord({
+      record_id: record.record_id,
+      tenant_id: tenantId,
+      workspace_id: skill.workspace_id,
+      skill_id: skill.skill_id,
+      run_id: skill.workflow_id,
+      kind: record.kind,
+      artifact_uri: record.ref,
+      artifact_sha256: record.hash,
+      claim_ids: evidenceClaimIdsForEvidenceKind(record.kind, skill),
+      ...(previousEvidenceRecordHash ? { previous_hash: previousEvidenceRecordHash } : {}),
+      created_at: record.created_at,
+      created_by: "dojo-evidence-ledger-report",
+      retention_class: record.retention_class,
+      legal_hold: record.legal_hold,
+      source_refs: [record.ref],
+    });
+    previousEvidenceRecordHash = evidenceRecord.record_hash;
+    return evidenceRecord;
+  });
   return {
     schema_version: "synthi.dojo.evidenceLedger.v1",
     ledger_id: `ledger_${hash(`${skill.skill_id}:${records.at(-1)?.hash ?? "empty"}`)}`,
@@ -633,7 +633,7 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
     }),
     evidence_ledger_records: retentionRecords,
     records,
-    head_hash: records.at(-1)?.hash ?? hash("empty"),
+    head_hash: retentionRecords.at(-1)?.ledger_head_hash ?? sha256("empty"),
   };
 }
 
@@ -654,9 +654,21 @@ function evidenceClaimIdsForEvidenceKind(
   kind: DojoEvidenceLedger["records"][number]["kind"],
   skill: DojoSkill
 ): string[] {
-  if (kind === "checkride") return ["checkride_passed"];
+  if (kind === "trace") return ["workspace_verified"];
+  if (kind === "checkride") {
+    return [
+      "workspace_verified",
+      "checkride_passed",
+      "success_assertions_defined",
+      "durable_state_evidence",
+    ].filter((claim) => skill.permission_license.proof_requirements.required_evidence_claims.includes(claim) ||
+      skill.permission_license.proof_requirements.required_context_claims.includes(claim));
+  }
   if (kind === "guardrail") return ["guardrails_active"];
-  if (kind === "license" || kind === "proof") return [...skill.permission_license.proof_requirements.required_evidence_claims];
+  if (kind === "artifact") {
+    return ["success_assertions_defined", "durable_state_evidence"]
+      .filter((claim) => skill.permission_license.proof_requirements.required_evidence_claims.includes(claim));
+  }
   return [];
 }
 
@@ -1085,4 +1097,8 @@ function slug(value: string): string {
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
