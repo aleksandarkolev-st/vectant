@@ -2182,6 +2182,11 @@ async function writeRuntimeBoundaryAttestations(dir, { slug, project, transactio
 }
 
 async function buildContainerReadableSnapshot(readSet, hostRepoRoot, containerRoot) {
+  const limits = {
+    maxFiles: 512,
+    maxFileBytes: 2 * 1024 * 1024,
+    maxScanEntries: 15000,
+  };
   const fileDigests = await Promise.all(readSet.map(async (filePath) => {
     const absolutePath = path.join(hostRepoRoot, filePath);
     const content = await fs.promises.readFile(absolutePath);
@@ -2193,45 +2198,165 @@ async function buildContainerReadableSnapshot(readSet, hostRepoRoot, containerRo
       digest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
     };
   }));
+  const repoManifest = await buildProofRepoManifest(hostRepoRoot, limits);
   const evidence = {
     schemaVersion: 'synthi.codesite.readSnapshotEvidence.v1',
     status: 'recorded',
+    scope: 'repo_wide',
     readSet,
     repoRoot: containerRoot,
     fileDigests,
     missingPaths: [],
     skippedPaths: [],
     truncated: false,
-    limits: {
-      maxFiles: 512,
-      maxFileBytes: 2 * 1024 * 1024,
-      maxScanEntries: 15000,
-    },
+    repoManifestDigest: repoManifest.repoManifestDigest,
+    repoManifestFileCount: repoManifest.repoManifestFileCount,
+    repoManifestScannedEntries: repoManifest.repoManifestScannedEntries,
+    repoManifestTruncated: repoManifest.repoManifestTruncated,
+    repoManifestSkippedPaths: repoManifest.repoManifestSkippedPaths,
+    limits,
     generatedAt: new Date().toISOString(),
     source: 'codesite-full-workflow-proof',
   };
   evidence.snapshotDigest = digest({
     schemaVersion: evidence.schemaVersion,
     status: evidence.status,
+    scope: evidence.scope,
     readSet: evidence.readSet,
     fileDigests: evidence.fileDigests,
     missingPaths: evidence.missingPaths,
     skippedPaths: evidence.skippedPaths,
     truncated: evidence.truncated,
+    repoManifestDigest: evidence.repoManifestDigest,
+    repoManifestFileCount: evidence.repoManifestFileCount,
+    repoManifestScannedEntries: evidence.repoManifestScannedEntries,
+    repoManifestTruncated: evidence.repoManifestTruncated,
+    repoManifestSkippedPaths: evidence.repoManifestSkippedPaths,
     limits: evidence.limits,
   });
   evidence.evidenceDigest = digest({
     schemaVersion: evidence.schemaVersion,
     status: evidence.status,
+    scope: evidence.scope,
     readSet: evidence.readSet,
     snapshotDigest: evidence.snapshotDigest,
     fileCount: evidence.fileDigests.length,
     missingPaths: evidence.missingPaths,
     skippedPaths: evidence.skippedPaths,
     truncated: evidence.truncated,
+    repoManifestDigest: evidence.repoManifestDigest,
+    repoManifestFileCount: evidence.repoManifestFileCount,
+    repoManifestTruncated: evidence.repoManifestTruncated,
+    repoManifestSkippedPaths: evidence.repoManifestSkippedPaths,
     source: evidence.source,
   });
   return evidence;
+}
+
+const PROOF_SNAPSHOT_SKIP_DIRS = new Set([
+  '.git',
+  '.next',
+  '.turbo',
+  '.cache',
+  '.synthi',
+  'coverage',
+  'dist',
+  'build',
+  'node_modules',
+]);
+
+async function buildProofRepoManifest(hostRepoRoot, limits) {
+  const accumulator = {
+    files: new Set(),
+    skippedPaths: [],
+    truncated: false,
+    scanEntries: 0,
+  };
+  await collectProofRepoFiles(hostRepoRoot, '', accumulator, limits);
+  const fileDigests = [];
+  for (const filePath of [...accumulator.files].sort()) {
+    const result = await proofRepoFileDigest(hostRepoRoot, filePath, limits);
+    if (result.skipped) accumulator.skippedPaths.push(result.skipped);
+    else fileDigests.push(result.file);
+  }
+  const repoManifestSkippedPaths = accumulator.skippedPaths.sort(compareProofPathEntries);
+  return {
+    repoManifestDigest: digest({
+      schemaVersion: 'synthi.codesite.readSnapshotEvidence.v1',
+      scope: 'repo_wide',
+      fileDigests,
+      skippedPaths: repoManifestSkippedPaths,
+      truncated: accumulator.truncated,
+      limits,
+    }),
+    repoManifestFileCount: fileDigests.length,
+    repoManifestScannedEntries: accumulator.scanEntries,
+    repoManifestTruncated: accumulator.truncated,
+    repoManifestSkippedPaths,
+  };
+}
+
+async function collectProofRepoFiles(hostRepoRoot, relDir, accumulator, limits) {
+  if (accumulator.files.size >= limits.maxFiles || accumulator.scanEntries >= limits.maxScanEntries) {
+    accumulator.truncated = true;
+    return;
+  }
+  const absoluteDir = path.resolve(hostRepoRoot, relDir || '');
+  let entries;
+  try {
+    entries = await fs.promises.readdir(absoluteDir, { withFileTypes: true });
+  } catch (error) {
+    accumulator.skippedPaths.push({ path: relDir || '.', reason: 'read_dir_failed', error: error?.message || String(error) });
+    return;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    if (accumulator.files.size >= limits.maxFiles || accumulator.scanEntries >= limits.maxScanEntries) {
+      accumulator.truncated = true;
+      return;
+    }
+    const rel = path.posix.normalize(path.posix.join(relDir || '', entry.name));
+    if (!rel || rel === '.') continue;
+    accumulator.scanEntries += 1;
+    if (entry.isDirectory()) {
+      if (!PROOF_SNAPSHOT_SKIP_DIRS.has(entry.name)) await collectProofRepoFiles(hostRepoRoot, rel, accumulator, limits);
+    } else if (entry.isFile()) {
+      accumulator.files.add(rel);
+    } else if (entry.isSymbolicLink()) {
+      accumulator.skippedPaths.push({ path: rel, reason: 'symlink_skipped' });
+    }
+  }
+}
+
+async function proofRepoFileDigest(hostRepoRoot, filePath, limits) {
+  const absolutePath = path.resolve(hostRepoRoot, filePath);
+  const relative = path.relative(hostRepoRoot, absolutePath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return { skipped: { path: filePath, reason: 'path_escape' } };
+  let stat;
+  try {
+    stat = await fs.promises.stat(absolutePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { file: { path: filePath, exists: false, size: null, digest: null } };
+    }
+    return { skipped: { path: filePath, reason: 'stat_failed', error: error?.message || String(error) } };
+  }
+  if (!stat.isFile()) return { skipped: { path: filePath, reason: 'not_a_file' } };
+  if (stat.size > limits.maxFileBytes) return { skipped: { path: filePath, reason: 'file_too_large', size: stat.size } };
+  const content = await fs.promises.readFile(absolutePath);
+  return {
+    file: {
+      path: filePath,
+      exists: true,
+      size: stat.size,
+      digest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+    },
+  };
+}
+
+function compareProofPathEntries(left, right) {
+  return String(left?.path || '').localeCompare(String(right?.path || ''))
+    || String(left?.reason || '').localeCompare(String(right?.reason || ''));
 }
 
 function proofAppArtifactRoot(slug) {
