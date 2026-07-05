@@ -293,7 +293,10 @@ services:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
       args:
-        WORKER_CARGO_FEATURES: "gpu-hmr"
+        # The base compose stack must run on ordinary local/CI hosts. GPU
+        # toolchains and devices are enabled by the AMD/NVIDIA overlays.
+        WORKER_CARGO_FEATURES: "${WORKER_CARGO_FEATURES:-gpu-hmr}"
+        INSTALL_ROCM: "${INSTALL_ROCM:-false}"
     # If the worker process dies (e.g. an unhandled panic, or an X11 IO
     # handler trip during reset tear-down) we want the container to come
     # back up automatically, the same way every other service in this
@@ -323,17 +326,12 @@ services:
       # buffer log lines are visible during this debugging session.
       SYNTHI_WORKER_VERBOSE: "1"
       SYNTHI_VSCODE_VERBOSE: "1"
-      # Build-time gpu-hmr enables the Rust modules; this runtime flag keeps
-      # the local stack explicit for harnesses and diagnostics.
-      SYNTHI_GPU_HMR: "1"
-      # Docker Desktop / WSL2 ROCm path. ROCDXG tells the HSA runtime to use
-      # the /dev/dxg device exposed by Windows instead of native /dev/kfd.
-      HSA_ENABLE_DXG_DETECTION: "1"
-    devices:
-      - "/dev/dxg:/dev/dxg"
+      # GPU overlays opt into device-backed HMR. The base stack stays host-only
+      # so Docker health/proof gates do not depend on /dev/dxg or nvidia-smi.
+      SYNTHI_GPU_HMR: "${SYNTHI_GPU_HMR:-0}"
+      HSA_ENABLE_DXG_DETECTION: "${HSA_ENABLE_DXG_DETECTION:-}"
     volumes:
       - collab-data:/data:ro
-      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
     cap_drop:
       - ALL
     security_opt:
