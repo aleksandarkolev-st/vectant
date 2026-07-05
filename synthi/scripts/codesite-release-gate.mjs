@@ -174,7 +174,7 @@ async function main(argv) {
 
   verifySha(root, proofPath, publication?.proofSha256 || latest?.proofSha256, failures);
   if (publication?.publicationSha256) verifySha(root, publicationPath, publication.publicationSha256, failures);
-  const proofGitProvenanceSummary = validateProofGitProvenance({ root, proof, failures });
+  const proofGitProvenanceSummary = validateProofGitProvenance({ root, proofRoot, proof, failures });
   checks.push({ name: 'proofGitProvenance', ...proofGitProvenanceSummary });
 
   const visualArtifacts = [
@@ -724,7 +724,7 @@ function validateMatureProofSuiteRun({ root, proofRoot, failures }) {
   summary.proofHead = proofHead || null;
   if (!proofHead) failures.push(`${relative(root, runPath)} missing git.head`);
   const dirtyPaths = parseGitStatusPaths(run?.git?.statusShort || '');
-  const allowedPostProofPrefixes = [ensureTrailingSlash(relative(root, proofRoot))];
+  const allowedPostProofPrefixes = codeSiteArtifactPrefixes(root, proofRoot);
   const nonArtifactDirtyPaths = dirtyPaths.filter((filePath) => !pathMatchesAnyPrefix(filePath, allowedPostProofPrefixes));
   if (nonArtifactDirtyPaths.length > 0) {
     failures.push(`${relative(root, runPath)} recorded dirty non-artifact paths during suite run: ${nonArtifactDirtyPaths.slice(0, 12).join(', ')}`);
@@ -844,9 +844,7 @@ function validateMatureProofArtifact({ root, proofRoot, spec, failures }) {
 function validateMatureProofFreshness({ root, proofRoot, proofPath, proof, failures }) {
   const proofHead = proofGitHead(proof);
   const recordedStatus = proofGitStatusShort(proof);
-  const allowedPostProofPrefixes = [
-    ensureTrailingSlash(relative(root, proofRoot)),
-  ];
+  const allowedPostProofPrefixes = codeSiteArtifactPrefixes(root, proofRoot);
   const summary = {
     proofHead: proofHead || null,
     currentHead: null,
@@ -947,6 +945,13 @@ function parseGitStatusPaths(statusShort) {
 function ensureTrailingSlash(value) {
   const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
   return normalized ? `${normalized}/` : '';
+}
+
+function codeSiteArtifactPrefixes(root, proofRoot) {
+  return [
+    ensureTrailingSlash(relative(root, proofRoot)),
+    '.synthi/codesite/',
+  ];
 }
 
 function pathMatchesAnyPrefix(filePath, prefixes) {
@@ -1303,7 +1308,7 @@ function resolveTrustedKeysPath(root, proofRoot, slug, failures) {
   return candidates[0] || path.join(proofRoot, `trusted-proof-authorities-${slug}.json`);
 }
 
-function validateProofGitProvenance({ root, proof, failures }) {
+function validateProofGitProvenance({ root, proofRoot = path.join(root, DEFAULT_PROOF_ROOT), proof, failures }) {
   const proofHead = String(proof?.run?.gitHead || '').trim();
   const proofScript = String(proof?.run?.proofScript || '').trim();
   if (!proofHead) {
@@ -1339,9 +1344,7 @@ function validateProofGitProvenance({ root, proof, failures }) {
   if (mergeBase !== proofHead) {
     failures.push(`workflow proof gitHead ${proofHead} is not an ancestor of current HEAD ${currentHead}`);
   }
-  const allowedPostProofPrefixes = [
-    'tmp/codesite-dojo-proof/',
-  ];
+  const allowedPostProofPrefixes = codeSiteArtifactPrefixes(root, proofRoot);
   const disallowedPostProofChanges = changedPaths.filter((filePath) => (
     !allowedPostProofPrefixes.some((prefix) => filePath.startsWith(prefix))
   ));
