@@ -104,6 +104,82 @@ function missingPrivateWorkflowArgs(manifest, args) {
     .filter((name) => typeof args[name] !== "string");
 }
 
+function toolError(payload) {
+  return payload?.result?.error || payload?.error || payload?.parsed?.error || "";
+}
+
+function privateToolRequiresDojoProof(payload) {
+  return toolError(payload) === "dojo_proof_capsule_required";
+}
+
+function dojoProofToolBody(payload) {
+  return payload?.result && typeof payload.result === "object" && !Array.isArray(payload.result)
+    ? payload.result
+    : payload;
+}
+
+function dojoProofAllowedStatus(payload) {
+  const body = dojoProofToolBody(payload);
+  const validation = body?.validation && typeof body.validation === "object" ? body.validation : null;
+  const license = body?.license_kernel && typeof body.license_kernel === "object" ? body.license_kernel : null;
+  const ok = body?.ok === true &&
+    (!validation || validation.ok === true) &&
+    (!license || (license.ok === true && (!license.status || license.status === "allowed")));
+  return {
+    ok,
+    status: validation?.status ?? license?.status ?? body?.status ?? (ok ? "allowed" : "missing"),
+    error: validation?.error ?? license?.validation?.error ?? body?.error ?? toolError(payload),
+    blockedBy: validation?.blocked_by ?? license?.blocked_by ?? body?.blocked_by ?? [],
+  };
+}
+
+function publishedSkillFromPublishResult(publishResult) {
+  return publishResult?.skill ?? publishResult?.dojo_skill ?? null;
+}
+
+function publishedSkillId(publishResult, privateManifest) {
+  const skill = publishedSkillFromPublishResult(publishResult);
+  return skill?.skill_id ?? publishResult?.skill_id ?? publishResult?.dojo_skill?.skill_id ?? privateManifest?.dojo?.skill_id ?? "";
+}
+
+function publishedWorkflowId(publishResult, privateManifest, contract) {
+  const skill = publishedSkillFromPublishResult(publishResult);
+  return skill?.workflow_id ?? publishResult?.workflow_id ?? privateManifest?.workflow_id ?? contract?.workflowId ?? "";
+}
+
+function publishedWorkspaceId(publishResult, fallbackWorkspaceId) {
+  const skill = publishedSkillFromPublishResult(publishResult);
+  return skill?.workspace_id
+    ?? skill?.mcp_skill_manifest?.skill?.workspace_id
+    ?? publishResult?.workspace_id
+    ?? fallbackWorkspaceId;
+}
+
+function dojoProofActorScope({ testCase, publishResult, privateManifest, contract, workspaceId, tenantId }) {
+  const scopedWorkspaceId = publishedWorkspaceId(publishResult, workspaceId);
+  const scopedTenantId = tenantId
+    ?? publishedSkillFromPublishResult(publishResult)?.tenant_id
+    ?? publishResult?.tenant_id
+    ?? undefined;
+  return {
+    skill_id: publishedSkillId(publishResult, privateManifest),
+    workflow_id: publishedWorkflowId(publishResult, privateManifest, contract),
+    ...(scopedTenantId ? { tenant_id: scopedTenantId, organization_id: scopedTenantId } : {}),
+    workspace_id: scopedWorkspaceId,
+    actor_id: `${CFG.userId}:${testCase.id}:proof-agent`,
+    actor_type: "agent",
+    roles: [
+      "agent",
+      "dojo:artifact:export",
+      "dojo:auditor",
+      "dojo:proof:issue",
+      "dojo:runtime:create",
+    ],
+    request_id: `workflow-pipeline-${testCase.id}-${Date.now()}`,
+    correlation_id: `workflow-pipeline-${testCase.id}`,
+  };
+}
+
 function workflowParameterEnvName(value) {
   return String(value)
     .trim()
@@ -707,26 +783,53 @@ async function runCase({ testCase, container, context, runner }) {
       const privateToolCall = typeof publishedToolName === "string"
         ? await workflowBridgeTool(publishedToolName, privateToolArgs)
         : { ok: false, error: "missing_published_tool_name" };
-      record(
-        testCase.id,
-        "call discovered private MCP tool",
-        privateToolCall.ok === true &&
-          privateToolCall.result?.private_tool?.tool_name === publishedToolName &&
-          privateToolCall.result?.private_tool?.run_mode === privateToolRunMode,
-        privateToolCall.ok === true
-          ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${privateToolCall.result?.replay?.steps_run ?? 0}`
-          : `error=${privateToolCall.result?.error || privateToolCall.error || "unknown"}`
-      );
       await writeJson(caseDir, "private-tool-call.json", privateToolCall.result ?? privateToolCall);
-      await verifyFreshMcpPrivateTool({
-        caseDir,
-        testCase,
-        publishedToolName,
-        privateManifest,
-        privateToolArgs,
-        privateToolRunMode,
-        previewUrl,
-      });
+      if (privateToolRequiresDojoProof(privateToolCall)) {
+        record(
+          testCase.id,
+          "direct private MCP tool requires Dojo proof",
+          true,
+          `tool=${publishedToolName} required=synthi_dojo_run_with_proof_capsule`
+        );
+        await runDojoProofCapsulePrefixValidation({
+          caseDir,
+          testCase,
+          publishResult: publishBody.result,
+          privateManifest,
+          contract,
+          workspaceId: slug,
+          previewUrl,
+        });
+        await verifyFreshMcpPrivateTool({
+          caseDir,
+          testCase,
+          publishedToolName,
+          privateManifest,
+          privateToolArgs,
+          privateToolRunMode,
+          previewUrl,
+        });
+      } else {
+        record(
+          testCase.id,
+          "call discovered private MCP tool",
+          privateToolCall.ok === true &&
+            privateToolCall.result?.private_tool?.tool_name === publishedToolName &&
+            privateToolCall.result?.private_tool?.run_mode === privateToolRunMode,
+          privateToolCall.ok === true
+            ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${privateToolCall.result?.replay?.steps_run ?? 0}`
+            : `error=${privateToolCall.result?.error || privateToolCall.error || "unknown"}`
+        );
+        await verifyFreshMcpPrivateTool({
+          caseDir,
+          testCase,
+          publishedToolName,
+          privateManifest,
+          privateToolArgs,
+          privateToolRunMode,
+          previewUrl,
+        });
+      }
     } else {
       const allowParameterGate = testCase.allowPrivateToolParameterGate === true;
       record(
@@ -1125,6 +1228,236 @@ async function runLiveWorkflowReplay({ caseId, workflowId, mode, parameters = {}
   }
 }
 
+async function runDojoProofCapsulePrefixValidation({
+  caseDir,
+  testCase,
+  publishResult,
+  privateManifest,
+  contract,
+  workspaceId,
+  previewUrl,
+}) {
+  const exportArgs = dojoProofActorScope({
+    testCase,
+    publishResult,
+    privateManifest,
+    contract,
+    workspaceId,
+  });
+  const artifactExport = await workflowBridgeTool("synthi_dojo_export_artifacts", exportArgs);
+  await writeJson(caseDir, "dojo-artifact-export.json", artifactExport.result ?? artifactExport);
+  record(
+    testCase.id,
+    "export Dojo artifacts for proof",
+    artifactExport.ok === true && Number(artifactExport.result?.artifact_count || 0) > 0,
+    artifactExport.ok === true
+      ? `artifacts=${artifactExport.result?.artifact_count ?? 0}`
+      : `error=${toolError(artifactExport) || "unknown"}`
+  );
+
+  const proofLedger = proofLedgerFromArtifactExport(artifactExport.result);
+  await writeJson(caseDir, "dojo-proof-evidence-ledger.json", proofLedger);
+  record(
+    testCase.id,
+    "extract proof evidence ledger",
+    proofLedger.records.length > 0 && typeof proofLedger.ledger_checkpoint_hash === "string",
+    proofLedger.records.length
+      ? `records=${proofLedger.records.length} checkpoint=${proofLedger.ledger_checkpoint_hash || "missing"}`
+      : "records=0"
+  );
+
+  const tenantId = proofLedger.records.find((record) => typeof record?.tenant_id === "string")?.tenant_id;
+  const proofScope = dojoProofActorScope({
+    testCase,
+    publishResult,
+    privateManifest,
+    contract,
+    workspaceId,
+    tenantId,
+  });
+  const proofToolArgs = { workspace_id: proofScope.workspace_id };
+  const issueArgs = {
+    ...proofScope,
+    requested_action: "run_prefix_validation",
+    context_claims: { workspace_verified: true },
+    evidence_ledger_records: proofLedger.records,
+    require_verified_evidence: true,
+    substrate_claim: "mcp",
+  };
+  const issue = await workflowBridgeTool("synthi_dojo_issue_proof_capsule", issueArgs);
+  await writeJson(caseDir, "dojo-proof-capsule-issue.json", issue.result ?? issue);
+  const proofCapsule = issue.result?.proof_capsule;
+  const issueStatus = dojoProofAllowedStatus(issue);
+  record(
+    testCase.id,
+    "issue Dojo proof capsule",
+    issue.ok === true && Boolean(proofCapsule?.capsule_id) && issueStatus.ok,
+    issue.ok === true
+      ? `capsule=${proofCapsule?.capsule_id || "missing"} status=${issueStatus.status}`
+      : `error=${toolError(issue) || "unknown"}`
+  );
+
+  const validate = await workflowBridgeTool("synthi_dojo_validate_proof_capsule", {
+    ...proofScope,
+    requested_action: "run_prefix_validation",
+    proof_capsule: proofCapsule,
+    tool_args: proofToolArgs,
+  });
+  await writeJson(caseDir, "dojo-proof-capsule-validate.json", validate.result ?? validate);
+  const validateStatus = dojoProofAllowedStatus(validate);
+  record(
+    testCase.id,
+    "validate Dojo proof capsule",
+    validate.ok === true && validateStatus.ok,
+    validate.ok === true
+      ? `status=${validateStatus.status}`
+      : `error=${toolError(validate) || "unknown"}`
+  );
+
+  const dryRun = await workflowBridgeTool("synthi_dojo_run_with_proof_capsule", {
+    ...proofScope,
+    requested_action: "run_prefix_validation",
+    proof_capsule: proofCapsule,
+    tool_args: proofToolArgs,
+    dry_run: true,
+    run_id: `workflow_pipeline_${testCase.id}_proof_dry_${Date.now()}`,
+  });
+  await writeJson(caseDir, "dojo-proof-capsule-dry-run.json", dryRun.result ?? dryRun);
+  record(
+    testCase.id,
+    "dry-run Dojo proof capsule",
+    dryRun.ok === true && dryRun.result?.dry_run === true,
+    dryRun.ok === true
+      ? `status=${dryRun.result?.validation?.status || "missing"}`
+      : `error=${toolError(dryRun) || "unknown"}`
+  );
+
+  const runId = `workflow_pipeline_${testCase.id}_proof_run_${Date.now()}`;
+  const runtimeSession = await createDojoHostedRuntimeSessionForProof({
+    testCase,
+    proofScope,
+    previewUrl,
+    runId,
+  });
+  await writeJson(caseDir, "dojo-proof-runtime-session.json", runtimeSession.result ?? runtimeSession);
+
+  const proofRun = await workflowBridgeTool("synthi_dojo_run_with_proof_capsule", {
+    ...proofScope,
+    requested_action: "run_prefix_validation",
+    proof_capsule: proofCapsule,
+    tool_args: proofToolArgs,
+    run_id: runId,
+    runtime_action_url: previewUrl,
+    ...(runtimeSession.ok === true ? {
+      runtime_session_id: runtimeSession.result?.runtime_session?.session_id,
+      runtime_credential_id: runtimeSession.result?.credentials?.credential_id,
+      runtime_credential_secret: runtimeSession.result?.credentials?.credential_secret,
+    } : {}),
+  });
+  await writeJson(caseDir, "dojo-proof-capsule-run.json", proofRun.result ?? proofRun);
+  record(
+    testCase.id,
+    "run Dojo proof capsule",
+    proofRun.ok === true &&
+      proofRun.result?.requested_action === "run_prefix_validation" &&
+      proofRun.result?.proof_capsule_id === proofCapsule?.capsule_id,
+    proofRun.ok === true
+      ? `capsule=${proofRun.result?.proof_capsule_id || "missing"} backing=${proofRun.result?.backing_tool || "missing"}`
+      : `error=${toolError(proofRun) || "unknown"}`
+  );
+
+  return { artifactExport, proofLedger, issue, validate, dryRun, runtimeSession, proofRun };
+}
+
+async function createDojoHostedRuntimeSessionForProof({ testCase, proofScope, previewUrl, runId }) {
+  const origin = originForUrl(previewUrl);
+  if (!origin) return { ok: false, error: "invalid_preview_origin" };
+  return await workflowBridgeTool("synthi_dojo_create_hosted_runtime_session", {
+    ...proofScope,
+    run_id: runId,
+    workspace_url: previewUrl,
+    origin_allowlist: [origin],
+    ttl_ms: Math.max(CFG.timeoutMs, 60_000),
+    credential_ttl_ms: Math.max(CFG.timeoutMs, 60_000),
+    local_network_allowed: true,
+    redact_screenshots: true,
+    request_id: `workflow-pipeline-${testCase.id}-runtime-${Date.now()}`,
+  }).catch((err) => ({
+    ok: false,
+    error: err instanceof Error ? err.message : String(err),
+  }));
+}
+
+function proofLedgerFromArtifactExport(exportResult) {
+  const artifacts = Array.isArray(exportResult?.artifacts) ? exportResult.artifacts : [];
+  for (const artifact of artifacts) {
+    const artifactPath = String(artifact?.path || "");
+    if (!/ledger\.json$/i.test(artifactPath) && !/evidence-ledger\.json$/i.test(artifactPath)) continue;
+    const content = parseArtifactJson(artifact?.content);
+    const records = proofEvidenceRecordsFromLedger(content);
+    if (records.length === 0) continue;
+    const ledgerCheckpointHash = content?.ledger_checkpoint_hash
+      ?? content?.ledger_head_hash
+      ?? content?.head_hash
+      ?? records.at(-1)?.ledger_head_hash
+      ?? records.at(-1)?.record_hash;
+    return {
+      artifact_path: artifactPath,
+      ledger_id: content?.ledger_id ?? null,
+      ledger_checkpoint_hash: ledgerCheckpointHash,
+      records,
+    };
+  }
+  return { artifact_path: null, ledger_id: null, ledger_checkpoint_hash: null, records: [] };
+}
+
+function proofEvidenceRecordsFromLedger(content) {
+  const candidateLists = [
+    content?.evidence_ledger_records,
+    content?.ledger_records,
+    content?.proof_records,
+    content?.retention_plan?.records,
+    content?.records,
+    Array.isArray(content) ? content : null,
+  ];
+  for (const candidate of candidateLists) {
+    if (!Array.isArray(candidate)) continue;
+    const records = candidate.filter(isProofEvidenceLedgerRecord);
+    if (records.length > 0) return records;
+  }
+  return [];
+}
+
+function isProofEvidenceLedgerRecord(record) {
+  return record &&
+    typeof record === "object" &&
+    typeof record.record_id === "string" &&
+    typeof record.tenant_id === "string" &&
+    typeof record.workspace_id === "string" &&
+    typeof record.skill_id === "string" &&
+    typeof record.record_hash === "string" &&
+    typeof record.ledger_head_hash === "string" &&
+    Array.isArray(record.claim_ids);
+}
+
+function parseArtifactJson(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function originForUrl(value) {
+  try {
+    return new URL(String(value)).origin;
+  } catch {
+    return "";
+  }
+}
+
 async function workflowBridgeTool(tool, args) {
   return await httpJson("POST", `${CFG.bridgeUrl}/browser-workflows/tool`, {
     tool,
@@ -1260,17 +1593,26 @@ async function verifyFreshMcpPrivateTool({
     const expectedSteps = privateToolRunMode === "prefixOnly" ? 0 : Math.max(1, Math.min(testCase.minSteps ?? 1, privateManifest?.steps?.length ?? 1));
     const stepsRun = Number(call.parsed?.replay?.steps_run ?? 0);
     transcript.steps.push({ name: "call", ok: toolCallOk(call), result: call.parsed });
-    record(
-      testCase.id,
-      "fresh MCP call discovered private tool",
-      toolCallOk(call) &&
-        call.parsed?.private_tool?.tool_name === publishedToolName &&
-        call.parsed?.private_tool?.run_mode === privateToolRunMode &&
-        stepsRun >= expectedSteps,
-      toolCallOk(call)
-        ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${stepsRun}`
-        : `error=${call.parsed?.error || "unknown"}`
-    );
+    if (privateToolRequiresDojoProof(call)) {
+      record(
+        testCase.id,
+        "fresh MCP direct private tool requires Dojo proof",
+        true,
+        `tool=${publishedToolName} required=synthi_dojo_run_with_proof_capsule`
+      );
+    } else {
+      record(
+        testCase.id,
+        "fresh MCP call discovered private tool",
+        toolCallOk(call) &&
+          call.parsed?.private_tool?.tool_name === publishedToolName &&
+          call.parsed?.private_tool?.run_mode === privateToolRunMode &&
+          stepsRun >= expectedSteps,
+        toolCallOk(call)
+          ? `tool=${publishedToolName} mode=${privateToolRunMode} steps=${stepsRun}`
+          : `error=${call.parsed?.error || "unknown"}`
+      );
+    }
   } catch (err) {
     transcript.error = err instanceof Error ? err.message : String(err);
     throw err;
@@ -1744,15 +2086,26 @@ async function clickWorkflowOverlay(page, action, expectedUrl = "", options = {}
       return false;
     }
   }, { timeout: CFG.timeoutMs }).catch((err) => ({ __workflowHarnessError: err }));
+  const actionResponseState = { settled: false, body: null };
+  void actionResponsePromise.then(async (actionResponse) => {
+    if (actionResponse?.__workflowHarnessError) {
+      actionResponseState.body = {
+        error: actionResponse.__workflowHarnessError instanceof Error
+          ? actionResponse.__workflowHarnessError.message
+          : String(actionResponse.__workflowHarnessError),
+      };
+    } else if (actionResponse) {
+      actionResponseState.body = await actionResponse.json().catch((err) => ({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+    actionResponseState.settled = true;
+  }).catch((err) => {
+    actionResponseState.body = { error: err instanceof Error ? err.message : String(err) };
+    actionResponseState.settled = true;
+  });
   await button.click();
   try {
-    const actionResponse = await actionResponsePromise;
-    let actionBody = null;
-    if (actionResponse?.__workflowHarnessError) {
-      actionBody = { error: actionResponse.__workflowHarnessError instanceof Error ? actionResponse.__workflowHarnessError.message : String(actionResponse.__workflowHarnessError) };
-    } else if (actionResponse) {
-      actionBody = await actionResponse.json().catch((err) => ({ error: err instanceof Error ? err.message : String(err) }));
-    }
     const deadline = Date.now() + CFG.timeoutMs;
     while (Date.now() < deadline) {
       const state = await workflowOverlayState(page);
@@ -1762,7 +2115,7 @@ async function clickWorkflowOverlay(page, action, expectedUrl = "", options = {}
       await sleep(250);
     }
     const actionEvents = await page.evaluate(() => window.__synthiWorkflowActionEvents || []).catch(() => []);
-    throw new Error(`overlay ${action} did not settle; action body=${JSON.stringify(actionBody)} state=${JSON.stringify(await workflowOverlayState(page))}; workflow events=${JSON.stringify(events)} action events=${JSON.stringify(actionEvents)}`);
+    throw new Error(`overlay ${action} did not settle; action body=${JSON.stringify(actionResponseState.body)} state=${JSON.stringify(await workflowOverlayState(page))}; workflow events=${JSON.stringify(events)} action events=${JSON.stringify(actionEvents)}`);
   } finally {
     page.off("request", onRequest);
     page.off("response", onResponse);
