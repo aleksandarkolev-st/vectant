@@ -66,6 +66,97 @@ fn redacts_secrets_before_review_payload() {
 }
 
 #[test]
+fn blocks_sensitive_filename_variants_and_cloud_credentials() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".aws")).unwrap();
+    fs::write(
+        dir.path().join("production.env.backup"),
+        "DATABASE_URL=postgres://u:p@localhost/db\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join(".aws").join("credentials"),
+        "aws_access_key_id = AKIA1234567890ABCDEF\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in ["production.env.backup", ".aws/credentials"] {
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[test]
+fn blocks_archive_binary_and_huge_files() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("bundle.zip"), b"PK\x03\x04").unwrap();
+    fs::write(dir.path().join("image.bin"), b"hello\0secret").unwrap();
+    fs::write(dir.path().join("huge.log"), vec![b'a'; 262_145]).unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in ["bundle.zip", "image.bin", "huge.log"] {
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
+}
+
+#[test]
+fn scanner_redacts_required_secret_fixtures() {
+    let scanner = SecretScanner::default();
+    let content = [
+        "GitHub=ghp_abcdefghijklmnopqrstuvwxyz123456",
+        "OpenAI=sk-abcdefghijklmnopqrstuvwxyz123456",
+        "Jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue",
+        "AWS=AKIA1234567890ABCDEF",
+        "-----BEGIN PRIVATE KEY-----",
+        "Database=postgres://user:pass@localhost/db",
+        "Cookie: session_id=super-secret-cookie",
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        "NPM=npm_abcdefghijklmnopqrstuvwxyz",
+        r#"{ "type": "service_account", "project_id": "demo" }"#,
+    ]
+    .join("\n");
+
+    let report = scanner.scan(&content);
+    let kinds: Vec<_> = report.findings.iter().map(|finding| finding.kind.as_str()).collect();
+    for expected in [
+        "github_token",
+        "openai_api_key",
+        "jwt",
+        "aws_access_key",
+        "private_key",
+        "database_url",
+        "cookie",
+        "authorization_header",
+        "npm_token",
+        "firebase_service_account",
+    ] {
+        assert!(kinds.contains(&expected), "missing scanner fixture {expected}");
+    }
+
+    let redacted = scanner.redact(&content, &report);
+    for raw in [
+        "ghp_abcdefghijklmnopqrstuvwxyz123456",
+        "sk-abcdefghijklmnopqrstuvwxyz123456",
+        "eyJhbGciOiJIUzI1NiJ9",
+        "AKIA1234567890ABCDEF",
+        "-----BEGIN PRIVATE KEY-----",
+        "postgres://user:pass@localhost/db",
+        "super-secret-cookie",
+        "abcdefghijklmnopqrstuvwxyz",
+        "npm_abcdefghijklmnopqrstuvwxyz",
+        r#""type": "service_account""#,
+    ] {
+        assert!(!redacted.contains(raw), "raw scanner fixture leaked: {raw}");
+    }
+}
+
+#[test]
 fn session_rejects_bad_token_replay_and_pause() {
     let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
     let token = session.token_for_pairing_response().to_string();
