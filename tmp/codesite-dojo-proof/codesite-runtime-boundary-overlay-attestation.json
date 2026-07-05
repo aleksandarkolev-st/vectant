@@ -2,12 +2,12 @@
   "schemaVersion": "synthi.codesite.runtimeBoundaryAttestation.v1",
   "proofId": "codesite.runtime.quarantine-overlay.current",
   "title": "Active CodeSite managed runtime surfaces require quarantine overlay",
-  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay13",
-  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
-  "transactionId": "cmr5n8ta300yspm0zf8blsf5p",
-  "mutationLeaseId": "cmr5n8q0i00xspm0zc16y3e69",
+  "workspaceSlug": "codesite-mature-full-proof-20260704-current-head-1",
+  "projectId": "cmr6nqeqe000dtb0yu7g2wnp8",
+  "transactionId": "cmr6ns3700034tb0y3veppa74",
+  "mutationLeaseId": "cmr6nr3xw0024tb0yag8fri57",
   "displayCallsign": "SCHEMA-01",
-  "generatedAt": "2026-07-04T00:48:38.393Z",
+  "generatedAt": "2026-07-04T17:52:53.576Z",
   "currentWorkflowRun": true,
   "assertions": {
     "containerTerminalUsesQuarantineRuntime": true,
@@ -23,10 +23,10 @@
     "programRuntimePodWithOverlayMode": "overlay-runtime",
     "rawShellOverlay": {
       "scenario": "unmanaged-terminal-write-through-quarantine-overlay",
-      "executable": "/home/dev/.npm/_npx/ebaba8b9e55fd0a9/node_modules/node/bin/node",
+      "executable": "/home/dev/.npm/_npx/52027bd8fc0022aa/node_modules/node/bin/node",
       "command": "node -e fs.writeFileSync(path, content)",
       "attemptedPath": "synthi/prisma/schema.prisma",
-      "cwd": "tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260703-overlay13/cmr5n8ta300yspm0zf8blsf5p/qtn-cmr5n8ta300yspm0zf8blsf5p-1783126117844-b4016a50",
+      "cwd": "tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260704-current-head-1/cmr6ns3700034tb0y3veppa74/qtn-cmr6ns3700034tb0y3veppa74-1783187572883-89d90c8b",
       "stdout": "",
       "stderr": "",
       "realRepoUnchangedBeforeFinalize": true,
@@ -44,5 +44,5 @@
       "overlayOnlyMutationObserved": true
     }
   },
-  "attestationDigest": "sha256:7d9056456e9b061600501afe3633a0b5f31eb0d4f886bc501a669dc61d653ee8"
+  "attestationDigest": "sha256:0e46b9924a2f3a9bfadd6c980c661bedfe29be5cef98c48edb2d168337968fea"
 }

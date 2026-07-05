@@ -1,15 +1,15 @@
 {
   "schemaVersion": "synthi.codesite.runtimeMountBoundaryProof.v1",
   "status": "validated",
-  "generatedAt": "2026-07-02T22:34:30.516Z",
-  "slug": "codesite-runtime-mount-boundary-20260702bb",
+  "generatedAt": "2026-07-05T00:46:54.645Z",
+  "slug": "codesite-runtime-mount-boundary-1783212413638",
   "workspaces": {
-    "sourceRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/runtime-mount-boundary/codesite-runtime-mount-boundary-20260702bb/source",
-    "overlayRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/runtime-mount-boundary/codesite-runtime-mount-boundary-20260702bb/overlay"
+    "sourceRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/runtime-mount-boundary/codesite-runtime-mount-boundary-1783212413638/source",
+    "overlayRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/runtime-mount-boundary/codesite-runtime-mount-boundary-1783212413638/overlay"
   },
   "docker": {
     "image": "mcr.microsoft.com/playwright:v1.61.1-noble",
-    "containerName": "codesite-mount-proof-9ec94245948f",
+    "containerName": "codesite-mount-proof-5fdfc3065d70",
     "exitCode": 0,
     "stdout": "BASE_WRITE_STATUS=1\nBASE_MOUNT_FLAGS=ro,noatime,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6\nWORKSPACE_MOUNT_FLAGS=rw,noatime,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6\nBASE_WRITE_STDERR_BEGIN\nbash: line 5: /codesite-base/src/schema.prisma: Read-only file system\n\nBASE_WRITE_STDERR_END\nBASE_CONTENT_BEGIN\nmodel RuntimeBoundary {\n  id String @id\n  state String @default(\"base\")\n}\nBASE_CONTENT_END\nOVERLAY_CONTENT_BEGIN\noverlay mutation from uninstrumented docker shell\nOVERLAY_CONTENT_END\n",
     "stderr": "",
@@ -18,9 +18,9 @@
     "workspaceMountFlags": "rw,noatime,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6"
   },
   "productContract": {
-    "readonlyRuntimeName": "workspace-runtime-codesite-runtime-mount-boundary-20260702",
-    "quarantineRuntimeName": "workspace-runtime-codesite-runtime-mount-boundar-codesite-c242bda024",
-    "quarantineVolumeSubpath": "codesite-runtime-mount-boundary-20260702bb/overlay",
+    "readonlyRuntimeName": "workspace-runtime-codesite-runtime-mount-boundary-17832124",
+    "quarantineRuntimeName": "workspace-runtime-codesite-runtime-mount-boundar-codesite-d261e926ad",
+    "quarantineVolumeSubpath": "codesite-runtime-mount-boundary-1783212413638/overlay",
     "runtimeModes": {
       "base": "read-only mount",
       "activeCodeSite": "writable quarantine overlay mounted at /workspace"
