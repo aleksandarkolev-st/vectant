@@ -21957,6 +21957,249 @@ function oidnOutputOracleCommandExecutionFacet(input = {}) {
   };
 }
 
+function oidnRuntimeBoundaryBridgeFacet(input = {}, { outputOracleFacet = {} } = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  if (!present) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge_matrix_facet.v1',
+      schema_version: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge_matrix_facet.v1',
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [{ code: 'oidn_runtime_boundary_bridge_missing' }],
+      failed_gates: [{ code: 'oidn_runtime_boundary_bridge_missing' }],
+    };
+  }
+  const schema = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const authority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedFlag = firstBool(facet.accepted) === true;
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const rawCanSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const manifest = compactObject(facet.manifest);
+  const runtimeBoundaryRunModeProof = compactObject(
+    facet.runtimeBoundaryRunModeProof
+    ?? facet.runtime_boundary_run_mode_proof,
+  );
+  const runtimeBoundaryProofAdapter = compactObject(
+    runtimeBoundaryRunModeProof.runtimeBoundaryProofAdapter
+    ?? runtimeBoundaryRunModeProof.runtime_boundary_proof_adapter,
+  );
+  const runtimeProofArtifact = compactObject(
+    runtimeBoundaryRunModeProof.runtimeProofArtifact
+    ?? runtimeBoundaryRunModeProof.runtime_proof_artifact,
+  );
+  const proofLedger = compactObject(
+    runtimeBoundaryRunModeProof.proofLedger
+    ?? runtimeBoundaryRunModeProof.proof_ledger
+    ?? runtimeProofArtifact.proofLedger
+    ?? runtimeProofArtifact.proof_ledger,
+  );
+  const proofLedgerQuery = compactObject(
+    runtimeBoundaryRunModeProof.proofLedgerQuery
+    ?? runtimeBoundaryRunModeProof.proof_ledger_query
+    ?? runtimeProofArtifact.proofLedgerQuery
+    ?? runtimeProofArtifact.proof_ledger_query
+    ?? proofLedger.query,
+  );
+  const runtimeProofArtifactStrictGateResult = runtimeProofArtifactStrictGate(
+    Object.keys(runtimeProofArtifact).length > 0 ? runtimeProofArtifact : null,
+    { name: 'oidn_runtime_boundary_bridge_runtime_proof_artifact' },
+  );
+  const runtimeProofArtifactStrictFailures = compactStringList(
+    runtimeProofArtifactStrictGateResult.failures,
+  );
+  const manifestSha256 = normalizeSha256(firstText(
+    manifest.manifestSha256,
+    manifest.manifest_sha256,
+  ));
+  const manifestSchema = firstText(
+    manifest.manifestSchemaVersion,
+    manifest.manifest_schema_version,
+    manifest.schemaVersion,
+    manifest.schema_version,
+    manifest.schema,
+  );
+  const manifestAuthority = firstText(
+    manifest.manifestProofAuthority,
+    manifest.manifest_proof_authority,
+    manifest.proofAuthority,
+    manifest.proof_authority,
+  );
+  const manifestEvents = [
+    ...(Array.isArray(manifest.events) ? manifest.events : []),
+    ...(Array.isArray(manifest.runtimeBoundaryEvents) ? manifest.runtimeBoundaryEvents : []),
+    ...(Array.isArray(manifest.runtime_boundary_events) ? manifest.runtime_boundary_events : []),
+  ];
+  const runModeSchema = firstText(
+    runtimeBoundaryRunModeProof.schemaVersion,
+    runtimeBoundaryRunModeProof.schema_version,
+    runtimeBoundaryRunModeProof.schema,
+  );
+  const runModeAuthority = firstText(
+    runtimeBoundaryRunModeProof.proofAuthority,
+    runtimeBoundaryRunModeProof.proof_authority,
+  );
+  const runModeProofId = firstText(
+    runtimeBoundaryRunModeProof.proofId,
+    runtimeBoundaryRunModeProof.proof_id,
+  );
+  const adapterProofId = firstText(
+    runtimeBoundaryProofAdapter.proofId,
+    runtimeBoundaryProofAdapter.proof_id,
+  );
+  const strictRuntimeProofId = firstText(
+    runtimeProofArtifact.proofId,
+    runtimeProofArtifact.proof_id,
+  );
+  const proofLedgerId = firstText(proofLedger.proofId, proofLedger.proof_id);
+  const ledgerFailedInvariants = compactStringList(
+    proofLedgerQuery.failedInvariants ?? proofLedgerQuery.failed_invariants,
+  );
+  const nestedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+    ...(Array.isArray(runtimeBoundaryRunModeProof.failedGates)
+      ? runtimeBoundaryRunModeProof.failedGates
+      : []),
+    ...(Array.isArray(runtimeBoundaryRunModeProof.failed_gates)
+      ? runtimeBoundaryRunModeProof.failed_gates
+      : []),
+  ].map((gate) => firstText(gate?.code, gate)));
+  const failedGates = compactStringList([
+    ...nestedFailedGates,
+    schema === 'synthi.gpu_hmr.oidn_runtime_boundary_bridge.v1'
+      ? null
+      : 'oidn_runtime_boundary_bridge_schema_mismatch',
+    authority === 'oidn_output_oracle_to_generic_runtime_boundary_adapter_not_success_authority'
+      ? null
+      : 'oidn_runtime_boundary_bridge_authority_mismatch',
+    acceptedForGpuHmr === true ? 'oidn_runtime_boundary_bridge_claims_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess === true ? 'oidn_runtime_boundary_bridge_claims_gpu_hmr_success' : null,
+    canSatisfyDispatchProof === true ? 'oidn_runtime_boundary_bridge_claims_dispatch_authority' : null,
+    acceptedFlag && compactObject(outputOracleFacet).accepted !== true
+      ? 'oidn_runtime_boundary_bridge_output_oracle_not_accepted'
+      : null,
+    acceptedFlag && manifest.accepted !== true
+      ? 'oidn_runtime_boundary_bridge_manifest_not_accepted'
+      : null,
+    acceptedFlag && !isSha256(manifestSha256)
+      ? 'oidn_runtime_boundary_bridge_manifest_hash_missing'
+      : null,
+    acceptedFlag && manifestSchema !== 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1'
+      ? 'oidn_runtime_boundary_bridge_manifest_schema_unsupported'
+      : null,
+    acceptedFlag && manifestAuthority !== 'runtime_boundary_event_manifest_only_not_gpu_hmr_success'
+      ? 'oidn_runtime_boundary_bridge_manifest_authority_mismatch'
+      : null,
+    acceptedFlag && manifestEvents.length === 0
+      ? 'oidn_runtime_boundary_bridge_manifest_events_missing'
+      : null,
+    acceptedFlag && runModeSchema !== 'synthi.gpu.hmr.runtime_run_mode_proof.v1'
+      ? 'oidn_runtime_boundary_bridge_run_mode_schema_mismatch'
+      : null,
+    acceptedFlag && runModeAuthority !== 'strict_runtime_boundary_adapter_output_not_declaration'
+      ? 'oidn_runtime_boundary_bridge_run_mode_authority_mismatch'
+      : null,
+    acceptedFlag && firstBool(runtimeBoundaryRunModeProof.accepted) !== true
+      ? 'oidn_runtime_boundary_bridge_run_mode_not_accepted'
+      : null,
+    acceptedFlag && !/^runtime-run-mode-proof:sha256:[a-f0-9]{64}$/i.test(runModeProofId ?? '')
+      ? 'oidn_runtime_boundary_bridge_run_mode_proof_id_missing'
+      : null,
+    acceptedFlag && firstBool(runtimeBoundaryProofAdapter.accepted) !== true
+      ? 'oidn_runtime_boundary_bridge_adapter_not_accepted'
+      : null,
+    acceptedFlag && !/^runtime-boundary-proof-adapter:sha256:[a-f0-9]{64}$/i.test(adapterProofId ?? '')
+      ? 'oidn_runtime_boundary_bridge_adapter_proof_id_missing'
+      : null,
+    acceptedFlag && !/^gpu-runtime-proof:sha256:[a-f0-9]{64}$/i.test(strictRuntimeProofId ?? '')
+      ? 'oidn_runtime_boundary_bridge_strict_runtime_proof_id_missing'
+      : null,
+    acceptedFlag && !/^gpu-ledger-proof:sha256:[a-f0-9]{64}$/i.test(proofLedgerId ?? '')
+      ? 'oidn_runtime_boundary_bridge_proof_ledger_id_missing'
+      : null,
+    acceptedFlag && firstBool(runtimeProofArtifact.gpuHmrSuccess, runtimeProofArtifact.gpu_hmr_success) !== true
+      ? 'oidn_runtime_boundary_bridge_runtime_artifact_not_successful'
+      : null,
+    acceptedFlag && firstBool(runtimeProofArtifact.fullRuntimeProven, runtimeProofArtifact.full_runtime_proven) !== true
+      ? 'oidn_runtime_boundary_bridge_runtime_artifact_not_full_runtime'
+      : null,
+    acceptedFlag && runtimeProofArtifactStrictGateResult.accepted !== true
+      ? 'oidn_runtime_boundary_bridge_runtime_proof_artifact_not_strictly_accepted'
+      : null,
+    ...(acceptedFlag
+      ? runtimeProofArtifactStrictFailures
+        .map((code) => `oidn_runtime_boundary_bridge_strict_gate:${code}`)
+      : []),
+    acceptedFlag && ledgerFailedInvariants.length > 0
+      ? 'oidn_runtime_boundary_bridge_ledger_invariants_failed'
+      : null,
+  ]);
+  const accepted = acceptedFlag && failedGates.length === 0;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge_matrix_facet.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge_matrix_facet.v1',
+    present: true,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    proofAuthority: authority || null,
+    proof_authority: authority || null,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    rawCanSatisfyRuntimeProof: rawCanSatisfyRuntimeProof === true,
+    raw_can_satisfy_runtime_proof: rawCanSatisfyRuntimeProof === true,
+    manifestSha256: manifestSha256 || null,
+    manifest_sha256: manifestSha256 || null,
+    manifestSchemaVersion: manifestSchema || null,
+    manifest_schema_version: manifestSchema || null,
+    manifestProofAuthority: manifestAuthority || null,
+    manifest_proof_authority: manifestAuthority || null,
+    manifestEventCount: manifestEvents.length,
+    manifest_event_count: manifestEvents.length,
+    runtimeRunModeProofId: runModeProofId || null,
+    runtime_run_mode_proof_id: runModeProofId || null,
+    runtimeBoundaryProofAdapterProofId: adapterProofId || null,
+    runtime_boundary_proof_adapter_proof_id: adapterProofId || null,
+    strictRuntimeProofId: strictRuntimeProofId || null,
+    strict_runtime_proof_id: strictRuntimeProofId || null,
+    strictRuntimeProofGateAccepted: runtimeProofArtifactStrictGateResult.accepted === true,
+    strict_runtime_proof_gate_accepted: runtimeProofArtifactStrictGateResult.accepted === true,
+    strictRuntimeProofGateFailures: runtimeProofArtifactStrictFailures,
+    strict_runtime_proof_gate_failures: runtimeProofArtifactStrictFailures,
+    proofLedgerId: proofLedgerId || null,
+    proof_ledger_id: proofLedgerId || null,
+    ledgerFailedInvariants,
+    ledger_failed_invariants: ledgerFailedInvariants,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
 async function preflightRow(json, filePath, context) {
   const schema = firstText(json.schema, json.schemaVersion) ?? 'unknown';
   const backendEvidence = preflightBackendEvidenceFacet(json);
@@ -21984,6 +22227,12 @@ async function preflightRow(json, filePath, context) {
   const oidnOutputOracleCommandExecution = backend === 'oidn_hip'
     ? oidnOutputOracleCommandExecutionFacet(
       json.outputOracleCommandExecution ?? json.output_oracle_command_execution,
+    )
+    : null;
+  const oidnRuntimeBoundaryBridge = backend === 'oidn_hip'
+    ? oidnRuntimeBoundaryBridgeFacet(
+      json.runtimeBoundaryBridge ?? json.runtime_boundary_bridge,
+      { outputOracleFacet: oidnOutputOracleFacet },
     )
     : null;
   const proofAccepted = backend === 'oidn_hip'
@@ -22044,6 +22293,10 @@ async function preflightRow(json, filePath, context) {
       ?? compactObject(json.outputOracleCommandExecution ?? json.output_oracle_command_execution),
     output_oracle_command_execution_facet: oidnOutputOracleCommandExecution
       ?? compactObject(json.outputOracleCommandExecution ?? json.output_oracle_command_execution),
+    runtimeBoundaryBridgeFacet: oidnRuntimeBoundaryBridge
+      ?? compactObject(json.runtimeBoundaryBridge ?? json.runtime_boundary_bridge),
+    runtime_boundary_bridge_facet: oidnRuntimeBoundaryBridge
+      ?? compactObject(json.runtimeBoundaryBridge ?? json.runtime_boundary_bridge),
     matrixOutcome,
     acceptanceClass: matrixOutcome,
     acceptedForGpuHmr: false,
@@ -22087,9 +22340,15 @@ async function preflightRow(json, filePath, context) {
       ...(backend === 'oidn_hip' && oidnOutputOracleCommandExecution?.present === true
         ? (oidnOutputOracleCommandExecution.failedGates ?? []).map((gate) => gate.code)
         : []),
+      ...(backend === 'oidn_hip' && oidnRuntimeBoundaryBridge?.present === true
+        ? (oidnRuntimeBoundaryBridge.failedGates ?? []).map((gate) => gate.code)
+        : []),
       ...unsupportedReasons,
       acceptance.reason,
       preflightOutputProofOnly ? 'preflight_output_oracle_does_not_prove_gpu_hmr' : null,
+      backend === 'oidn_hip' && oidnRuntimeBoundaryBridge?.accepted === true
+        ? 'oidn_runtime_boundary_bridge_support_only_not_gpu_hmr_acceptance'
+        : null,
     ]),
     openGaps: matrixOutcome === 'preflight_only'
       ? (

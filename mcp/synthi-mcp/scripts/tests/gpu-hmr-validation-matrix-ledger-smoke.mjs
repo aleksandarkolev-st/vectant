@@ -40,6 +40,10 @@ import {
   writeArtifactToCas,
 } from '../lib/gpu-hmr-artifact-cas.mjs';
 import {
+  buildComputeOracleArtifactsFromByteEvidence,
+  buildRuntimeBoundaryRunModeProof,
+} from '../lib/gpu-hmr-runtime-boundary-proof-adapter.mjs';
+import {
   buildValidationRuntimeProofArtifact,
   computeOracleArtifactsFromFiles,
   visualEvidenceArtifactsFromVisualOracleArtifacts,
@@ -6819,6 +6823,152 @@ const oidnOutputOracleCommandExecution = {
     'oidn-output-oracle-command-manifest:/worker/oidn/oracle.json',
   ],
 };
+const oidnRuntimeBridgeManifestHash = hashValue('oidn-runtime-boundary-manifest');
+const oidnRuntimeBridgeArtifactBeforeHash = hashValue('oidn-runtime-boundary-artifact-before');
+const oidnRuntimeBridgeArtifactAfterHash = hashValue('oidn-runtime-boundary-artifact-after');
+const oidnRuntimeBridgeEpoch = 'epoch:oidn-runtime-boundary:2';
+const oidnRuntimeBridgeDispatchId = 'dispatch:oidn-runtime-boundary:1';
+const oidnRuntimeBridgeProcessId = 'pid:oidn-runtime-boundary';
+const oidnRuntimeBridgeSession = 'session:oidn-runtime-boundary';
+const oidnRuntimeBoundaryEvents = [
+  {
+    kind: 'artifact_transport',
+    eventId: 'oidn-artifact-transport',
+    artifactHash: oidnRuntimeBridgeArtifactAfterHash,
+    processId: oidnRuntimeBridgeProcessId,
+    runtimeSession: oidnRuntimeBridgeSession,
+    timestampMonotonicNs: 100,
+    evidenceRefs: ['oidn-runtime-boundary:artifact-transport'],
+  },
+  {
+    kind: 'epoch_publication',
+    eventId: 'oidn-epoch-publication',
+    artifactHash: oidnRuntimeBridgeArtifactAfterHash,
+    epoch: oidnRuntimeBridgeEpoch,
+    processId: oidnRuntimeBridgeProcessId,
+    runtimeSession: oidnRuntimeBridgeSession,
+    dispatchTableHashBefore: hashValue('oidn-runtime-boundary-dispatch-table-before'),
+    dispatchTableHashAfter: hashValue('oidn-runtime-boundary-dispatch-table-after'),
+    timestampMonotonicNs: 200,
+    evidenceRefs: ['oidn-runtime-boundary:epoch-publication'],
+  },
+  {
+    kind: 'synthi_gpu_launch',
+    eventId: oidnRuntimeBridgeDispatchId,
+    dispatchId: oidnRuntimeBridgeDispatchId,
+    artifactHash: oidnRuntimeBridgeArtifactAfterHash,
+    epoch: oidnRuntimeBridgeEpoch,
+    processId: oidnRuntimeBridgeProcessId,
+    runtimeSession: oidnRuntimeBridgeSession,
+    stream: 'stream:oidn-runtime-boundary',
+    dispatchTableEntry: `oidn_generic_denoise:${oidnRuntimeBridgeEpoch}`,
+    timestampMonotonicNs: 300,
+    evidenceRefs: [
+      `worker-log:synthi_gpu_launch:${oidnRuntimeBridgeSession}:${oidnRuntimeBridgeDispatchId}`,
+      `worker-log:launch_arg_provenance:${oidnRuntimeBridgeSession}:${oidnRuntimeBridgeDispatchId}:output`,
+    ],
+  },
+  {
+    kind: 'host_identity',
+    eventId: 'oidn-host-identity',
+    processId: oidnRuntimeBridgeProcessId,
+    runtimeSession: oidnRuntimeBridgeSession,
+    deviceUuid: 'device:oidn-runtime-boundary',
+    contextId: 'context:oidn-runtime-boundary',
+    stream: 'stream:oidn-runtime-boundary',
+    timestampMonotonicNs: 310,
+    evidenceRefs: [
+      'worker-log:host_identity:runner_process',
+      'worker-log:host_identity:host_state',
+      'worker-log:host_identity:stream_context',
+      `worker-log:host_identity_snapshot:${oidnRuntimeBridgeSession}:runner_process:1->2`,
+      `worker-log:host_identity_snapshot:${oidnRuntimeBridgeSession}:host_state:1->2`,
+      `worker-log:host_identity_snapshot:${oidnRuntimeBridgeSession}:stream_context:1->2`,
+    ],
+  },
+  {
+    kind: 'output_oracle',
+    eventId: 'oidn-output-oracle',
+    artifactHash: oidnRuntimeBridgeArtifactAfterHash,
+    epoch: oidnRuntimeBridgeEpoch,
+    afterDispatchId: oidnRuntimeBridgeDispatchId,
+    processId: oidnRuntimeBridgeProcessId,
+    runtimeSession: oidnRuntimeBridgeSession,
+    outputTargetId: 'oidn-denoised-output',
+    oracleKind: 'buffer_checksum',
+    timestampMonotonicNs: 400,
+    evidenceRefs: [`worker-log:output_oracle:${oidnRuntimeBridgeSession}:${oidnRuntimeBridgeDispatchId}`],
+  },
+];
+const oidnRuntimeBridgeComputeOracleArtifacts = buildComputeOracleArtifactsFromByteEvidence({
+  rawReadbackHash: oidnDenoisedHash,
+  checksumBefore: oidnNoisyHash,
+  checksumAfter: oidnDenoisedHash,
+  deterministicSliceHash: hashValue('oidn-runtime-boundary-deterministic-slice'),
+  rawReadbackByteLength: oidnDenoisedBytes.length,
+  sliceOffset: 0,
+  sliceLength: oidnDenoisedBytes.length,
+  timestampAfterDispatch: 400,
+  epoch: oidnRuntimeBridgeEpoch,
+  rawReadbackHashVerified: true,
+  deterministicSliceHashVerified: true,
+  expectedOutputVerified: true,
+  expectedOutputHash: oidnDenoisedHash,
+  expectedOutputChange: true,
+  evidenceRefs: ['oidn-runtime-boundary:compute-oracle-bytes'],
+});
+const oidnRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
+  backend: 'hip',
+  projectId: 'generic-oidn-runtime-boundary-project',
+  editId: 'oidn-gpu-artifact-edit',
+  targetId: 'synthetic-oidn-hip-output-oracle',
+  sourcePaths: ['src/oidn/generic_denoise_kernel.hip'],
+  sourceManifestHash: hashValue('oidn-runtime-boundary-source-manifest'),
+  sourceManifestHashVerified: true,
+  sourceIdentityEvidenceRefs: ['oidn-runtime-boundary:source-manifest'],
+  entryPoint: 'oidn_generic_denoise',
+  compileTarget: 'gfx1201',
+  compiler: 'hipcc',
+  compilerArgsHash: hashValue('oidn-runtime-boundary-compiler-args'),
+  artifactHashBefore: oidnRuntimeBridgeArtifactBeforeHash,
+  artifactHashAfter: oidnRuntimeBridgeArtifactAfterHash,
+  contractHash: hashValue('oidn-runtime-boundary-contract'),
+  runtimeBoundaryEvents: oidnRuntimeBoundaryEvents,
+  computeOracleArtifacts: oidnRuntimeBridgeComputeOracleArtifacts,
+  metricScope: 'hot_delta_1',
+  cacheState: 'compiler_cache_warm',
+});
+assert.equal(
+  oidnRuntimeBoundaryRunModeProof.accepted,
+  true,
+  oidnRuntimeBoundaryRunModeProof.failedGates.join(','),
+);
+const oidnRuntimeBridgeRunModeProofId = oidnRuntimeBoundaryRunModeProof.proofId;
+const oidnRuntimeBridgeAdapterProofId =
+  oidnRuntimeBoundaryRunModeProof.runtimeBoundaryProofAdapter.proofId;
+const oidnRuntimeBridgeStrictProofId = oidnRuntimeBoundaryRunModeProof.runtimeProofArtifact.proofId;
+const oidnRuntimeBridgeLedgerId = oidnRuntimeBoundaryRunModeProof.proofLedger.proofId;
+const oidnRuntimeBoundaryBridge = {
+  schemaVersion: 'synthi.gpu_hmr.oidn_runtime_boundary_bridge.v1',
+  proofAuthority: 'oidn_output_oracle_to_generic_runtime_boundary_adapter_not_success_authority',
+  accepted: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  canSatisfyRuntimeProof: true,
+  canSatisfyDispatchProof: false,
+  manifest: {
+    present: true,
+    accepted: true,
+    manifestPath: 'synthetic/oidn-runtime-boundary-events.json',
+    manifestSchemaVersion: 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+    manifestProofAuthority: 'runtime_boundary_event_manifest_only_not_gpu_hmr_success',
+    manifestSha256: oidnRuntimeBridgeManifestHash,
+    events: oidnRuntimeBoundaryEvents,
+    failedGates: [],
+  },
+  runtimeBoundaryRunModeProof: oidnRuntimeBoundaryRunModeProof,
+  failedGates: [],
+};
 await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof.json'), {
   schema: 'synthi.gpu_hmr.oidn_preflight.v1',
   slug: 'synthetic-oidn-hip-output-oracle',
@@ -6897,6 +7047,7 @@ await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof.json'), {
   },
   workerOutputOracleTransport: oidnWorkerOutputTransport,
   outputOracleCommandExecution: oidnOutputOracleCommandExecution,
+  runtimeBoundaryBridge: oidnRuntimeBoundaryBridge,
   classification: {
     oidnHipRuntimePreflightAccepted: true,
     oidnHipOutputProofAccepted: true,
@@ -7200,6 +7351,11 @@ await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof-forged-command-e
     gpuHmrSuccess: true,
     canSatisfyRuntimeProof: true,
   },
+  runtimeBoundaryBridge: {
+    ...oidnRuntimeBoundaryBridge,
+    gpuHmrSuccess: true,
+    canSatisfyDispatchProof: true,
+  },
   classification: {
     oidnHipRuntimePreflightAccepted: true,
     oidnHipOutputProofAccepted: true,
@@ -7222,6 +7378,145 @@ await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof-forged-command-e
     noSymlinkApplied: true,
   },
   proofId: 'oidn-preflight-proof:sha256:synthetic-output-oracle-forged-command-execution',
+});
+
+await writeJson(path.join(oidnOutputDir, 'oidn-hip-output-proof-serialized-bridge-spoof.json'), {
+  schema: 'synthi.gpu_hmr.oidn_preflight.v1',
+  slug: 'synthetic-oidn-hip-output-oracle-serialized-bridge-spoof',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    backendFamily: {
+      value: 'oidn_hip',
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'oidn_hip',
+      backendFamily: 'oidn_hip',
+      probe: 'oidn_hip_device_preflight',
+      toolFound: true,
+      hipDeviceLibraryFound: true,
+      hipTestCount: 2,
+      cpuDiagnosticCount: 2,
+      noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
+      evidenceRefs: [oidnHipPreflightEvidenceRef],
+    },
+    evidenceRefs: [oidnHipPreflightEvidenceRef],
+  },
+  outputOracle: {
+    schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle.v1',
+    proofAuthority: 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    backend: 'oidn_hip',
+    device: 'hip',
+    manifestPath: oidnOutputManifestPath,
+    manifestSha256: oidnOutputManifestHash,
+    expectedOutputSha256: oidnDenoisedHash,
+    files: [
+      {
+        role: 'noisy_input',
+        path: oidnNoisyPath,
+        byteLength: oidnNoisyBytes.length,
+        sha256: oidnNoisyHash,
+        accepted: true,
+        failedGates: [],
+      },
+      {
+        role: 'denoised_output',
+        path: oidnDenoisedPath,
+        byteLength: oidnDenoisedBytes.length,
+        sha256: oidnDenoisedHash,
+        accepted: true,
+        failedGates: [],
+      },
+      {
+        role: 'expected_output',
+        path: oidnExpectedPath,
+        byteLength: oidnDenoisedBytes.length,
+        sha256: oidnDenoisedHash,
+        accepted: true,
+        failedGates: [],
+      },
+    ],
+    outputDistinctFromInput: true,
+    expectedOutputMatched: true,
+    evidenceRefs: [
+      `oidn-output-oracle-manifest:${oidnOutputManifestHash}`,
+      `oidn-output-oracle-noisy:${oidnNoisyHash}`,
+      `oidn-output-oracle-denoised:${oidnDenoisedHash}`,
+      `oidn-output-oracle-expected:${oidnDenoisedHash}`,
+    ],
+    failedGates: [],
+  },
+  workerOutputOracleTransport: oidnWorkerOutputTransport,
+  outputOracleCommandExecution: oidnOutputOracleCommandExecution,
+  runtimeBoundaryBridge: {
+    ...oidnRuntimeBoundaryBridge,
+    runtimeBoundaryRunModeProof: {
+      schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+      proofAuthority: 'strict_runtime_boundary_adapter_output_not_declaration',
+      accepted: true,
+      proofId: oidnRuntimeBridgeRunModeProofId,
+      gpuHmrSuccess: true,
+      fullRuntimeProven: true,
+      runtimeBoundaryProofAdapter: {
+        accepted: true,
+        proofId: oidnRuntimeBridgeAdapterProofId,
+      },
+      runtimeProofArtifact: {
+        proofId: oidnRuntimeBridgeStrictProofId,
+        gpuHmrSuccess: true,
+        fullRuntimeProven: true,
+        proofLedger: {
+          proofId: oidnRuntimeBridgeLedgerId,
+        },
+        proofLedgerQuery: {
+          accepted: true,
+          gpuHmrSuccess: true,
+          failedInvariants: [],
+        },
+      },
+      proofLedger: {
+        proofId: oidnRuntimeBridgeLedgerId,
+      },
+      proofLedgerQuery: {
+        accepted: true,
+        gpuHmrSuccess: true,
+        failedInvariants: [],
+      },
+      failedGates: [],
+    },
+  },
+  classification: {
+    oidnHipRuntimePreflightAccepted: true,
+    oidnHipOutputProofAccepted: true,
+    oidnHipOutputOracleProven: true,
+    resultState: 'oidn-hip-output-oracle-accepted-preflight-only',
+    unsupportedReasons: [],
+    outputProofGaps: [],
+    openGaps: ['oidn_full_runtime_hmr_ledger_not_proven'],
+  },
+  acceptance: {
+    acceptedForOidnHipRuntimePreflight: true,
+    acceptedForHipOutputProof: true,
+    acceptedForOidnHipOutputProof: true,
+    outputOracleProven: true,
+    gpuHmrSuccess: false,
+    reason: 'preflight_output_oracle_only_full_runtime_hmr_ledger_still_required',
+    openGaps: ['oidn_full_runtime_hmr_ledger_not_proven'],
+    noShimApplied: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  proofId: 'oidn-preflight-proof:sha256:synthetic-output-oracle-serialized-bridge-spoof',
 });
 
 await writeJson(path.join(oidnOutputDir, 'standalone-oidn-output-oracle.json'), {
@@ -16796,6 +17091,40 @@ assert.equal(
   'oidn_output_oracle_command_execution_only_not_gpu_hmr_success',
 );
 assert.equal(oidnHipOutputOracle.outputOracleCommandExecutionFacet.commandHash, oidnOutputOracleCommandHash);
+assert.equal(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.accepted, true);
+assert.equal(
+  oidnHipOutputOracle.runtimeBoundaryBridgeFacet.proofAuthority,
+  'oidn_output_oracle_to_generic_runtime_boundary_adapter_not_success_authority',
+);
+assert.equal(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.acceptedForGpuHmr, false);
+assert.equal(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.gpuHmrSuccess, false);
+assert.equal(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.canSatisfyRuntimeProof, false);
+assert.equal(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.rawCanSatisfyRuntimeProof, true);
+assert.equal(
+  oidnHipOutputOracle.runtimeBoundaryBridgeFacet.runtimeRunModeProofId,
+  oidnRuntimeBridgeRunModeProofId,
+);
+assert.equal(
+  oidnHipOutputOracle.runtimeBoundaryBridgeFacet.strictRuntimeProofId,
+  oidnRuntimeBridgeStrictProofId,
+);
+assert.equal(
+  oidnHipOutputOracle.runtimeBoundaryBridgeFacet.manifestSchemaVersion,
+  'synthi.gpu_hmr.runtime_boundary_event_manifest.v1',
+);
+assert.equal(
+  oidnHipOutputOracle.runtimeBoundaryBridgeFacet.manifestProofAuthority,
+  'runtime_boundary_event_manifest_only_not_gpu_hmr_success',
+);
+assert.equal(
+  oidnHipOutputOracle.runtimeBoundaryBridgeFacet.proofLedgerId,
+  oidnRuntimeBridgeLedgerId,
+);
+assert.equal(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.strictRuntimeProofGateAccepted, true);
+assert.deepEqual(oidnHipOutputOracle.runtimeBoundaryBridgeFacet.strictRuntimeProofGateFailures, []);
+assert.ok(oidnHipOutputOracle.reasons.includes(
+  'oidn_runtime_boundary_bridge_support_only_not_gpu_hmr_acceptance',
+));
 assert.ok(oidnHipOutputOracle.reasons.includes('preflight_output_oracle_does_not_prove_gpu_hmr'));
 assert.ok(oidnHipOutputOracle.openGaps.includes('oidn_full_runtime_hmr_ledger_not_proven'));
 assert.ok(oidnHipOutputOracle.openGaps.includes('strict_runtime_proof_ledger_required'));
@@ -16824,10 +17153,35 @@ assert.equal(forgedOidnCommandExecution.gpuHmrSuccess, false);
 assert.equal(forgedOidnCommandExecution.outputOracleFacet.accepted, true);
 assert.equal(forgedOidnCommandExecution.workerOutputOracleTransportFacet.accepted, true);
 assert.equal(forgedOidnCommandExecution.outputOracleCommandExecutionFacet.accepted, false);
+assert.equal(forgedOidnCommandExecution.runtimeBoundaryBridgeFacet.accepted, false);
 assert.ok(forgedOidnCommandExecution.reasons.includes(
   'oidn_output_oracle_command_execution_claims_gpu_hmr_success',
 ));
+assert.ok(forgedOidnCommandExecution.reasons.includes(
+  'oidn_runtime_boundary_bridge_claims_gpu_hmr_success',
+));
+assert.ok(forgedOidnCommandExecution.reasons.includes(
+  'oidn_runtime_boundary_bridge_claims_dispatch_authority',
+));
 assert.ok(forgedOidnCommandExecution.openGaps.includes('strict_runtime_proof_ledger_required'));
+
+const serializedSpoofOidnBridge = ledger.rows.find((row) =>
+  row.backend === 'oidn_hip'
+  && row.targetId === 'synthetic-oidn-hip-output-oracle-serialized-bridge-spoof'
+);
+assert.equal(serializedSpoofOidnBridge?.matrixOutcome, 'preflight_only');
+assert.equal(serializedSpoofOidnBridge.acceptedForGpuHmr, false);
+assert.equal(serializedSpoofOidnBridge.gpuHmrSuccess, false);
+assert.equal(serializedSpoofOidnBridge.outputOracleFacet.accepted, true);
+assert.equal(serializedSpoofOidnBridge.runtimeBoundaryBridgeFacet.accepted, false);
+assert.equal(serializedSpoofOidnBridge.runtimeBoundaryBridgeFacet.strictRuntimeProofGateAccepted, false);
+assert.ok(serializedSpoofOidnBridge.reasons.includes(
+  'oidn_runtime_boundary_bridge_runtime_proof_artifact_not_strictly_accepted',
+));
+assert.ok(serializedSpoofOidnBridge.reasons.includes(
+  'oidn_runtime_boundary_bridge_strict_gate:runtime_proof_artifact_stage_results_missing',
+));
+assert.ok(serializedSpoofOidnBridge.openGaps.includes('strict_runtime_proof_ledger_required'));
 
 const forgedOidnHipOutputOracle = ledger.rows.find((row) =>
   row.backend === 'oidn_hip'
