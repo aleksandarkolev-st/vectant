@@ -64,7 +64,34 @@ jobs:
         run: npm ci
 
       - name: Run focused policy tests
-        run: npm run test --workspace synthi -- src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/policy/route.test.js
+        run: npm run test --workspace synthi -- src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/policy/route.test.js src/app/api/local-support/security-event/route.test.js
 
       - name: Build web app
         run: npm run build --workspace synthi
+
+  supply-chain:
+    name: Supply chain checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: local-support-sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-support-sbom
+          path: local-support-sbom.cdx.json
