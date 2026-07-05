@@ -25,6 +25,7 @@ describe("local support policy route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_ORG_DISABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION = "0.4.0";
     process.env.VECTANT_LOCAL_SUPPORT_DISABLED_REASON = "Emergency disable active.";
+    process.env.VECTANT_LOCAL_SUPPORT_NO_RETENTION = "true";
 
     const response = await GET();
     const json = await response.json();
@@ -39,5 +40,7 @@ describe("local support policy route", () => {
     });
     expect(json.emergency_controls.org_disabled).toBe(true);
     expect(json.emergency_controls.agent_access_disabled).toBe(true);
+    expect(json.retention.no_retention).toBe(true);
+    expect(json.retention.cloud_security_event_days).toBe(0);
   });
 });

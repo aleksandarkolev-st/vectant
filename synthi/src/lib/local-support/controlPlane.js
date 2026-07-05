@@ -42,6 +42,10 @@ export function readLocalSupportPolicy(env = process.env) {
   const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED === "true";
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
   const vulnerableVersions = parseCsv(env.VECTANT_LOCAL_SUPPORT_VULNERABLE_VERSIONS);
+  const noRetention = env.VECTANT_LOCAL_SUPPORT_NO_RETENTION === "true";
+  const retentionDays = noRetention
+    ? 0
+    : clampNumber(env.VECTANT_LOCAL_SUPPORT_RETENTION_DAYS, 1, 90, 30);
 
   return {
     enabled: globalEnabled && !orgKillSwitch && !pairingDisabled,
@@ -53,6 +57,13 @@ export function readLocalSupportPolicy(env = process.env) {
     vulnerable_versions: vulnerableVersions,
     policy_version: POLICY_VERSION,
     protocol_version: LOCAL_SUPPORT_PROTOCOL,
+    retention: {
+      no_retention: noRetention,
+      local_activity_days: retentionDays,
+      cloud_security_event_days: retentionDays,
+      raw_bodies_allowed: false,
+      export_available: true,
+    },
     emergency_controls: {
       feature_disabled: !globalEnabled,
       org_disabled: orgKillSwitch,
@@ -162,7 +173,7 @@ export function summarizeSecurityEvent(input, policy = readLocalSupportPolicy())
     count,
     policy_version: policy.policy_version,
     raw_body_included: false,
-    retention_days: 30,
+    retention_days: policy.retention?.cloud_security_event_days ?? 30,
     session_id: scrubTelemetryValue(event.session_id || ""),
     request_id: scrubTelemetryValue(event.request_id || ""),
     target_display: target,
@@ -186,6 +197,12 @@ function parseCsv(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function clampNumber(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(Math.trunc(parsed), max));
 }
 
 function severityForEvent(eventType, count) {

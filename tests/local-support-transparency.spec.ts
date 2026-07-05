@@ -13,6 +13,8 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Your organization allows browser preview")).toBeVisible();
     await expect(page.getByText("Vectant AI page reading")).toBeVisible();
     await expect(page.getByText("Blocked by organization").first()).toBeVisible();
+    await expect(page.getByText("Activity retention")).toBeVisible();
+    await expect(page.getByText("30 days, raw bodies never stored")).toBeVisible();
     await expect(page.getByText("Workspace selection")).toBeVisible();
     await expect(page.getByText("Installation is not consent.")).toBeVisible();
 

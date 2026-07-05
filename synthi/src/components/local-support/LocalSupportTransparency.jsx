@@ -89,6 +89,7 @@ const orgRestrictions = [
   ["Support agent page reading", "Blocked", "bad", "Blocked by organization"],
   ["Fast Support", "Disabled", "bad", "Disabled for MVP"],
   ["Minimum app version", "Required", "warn", "0.1.0 required"],
+  ["Activity retention", "Limited", "warn", "30 days, raw bodies never stored"],
 ];
 
 const setupChecklist = [

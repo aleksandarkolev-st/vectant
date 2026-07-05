@@ -67,6 +67,36 @@ describe("local support control plane policy", () => {
     });
   });
 
+  it("exposes retention controls and no-retention mode", () => {
+    const retained = readLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+      VECTANT_LOCAL_SUPPORT_RETENTION_DAYS: "120",
+    });
+    expect(retained.retention).toMatchObject({
+      no_retention: false,
+      local_activity_days: 90,
+      cloud_security_event_days: 90,
+      raw_bodies_allowed: false,
+    });
+
+    const noRetention = readLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+      VECTANT_LOCAL_SUPPORT_NO_RETENTION: "true",
+    });
+    expect(noRetention.retention).toMatchObject({
+      no_retention: true,
+      local_activity_days: 0,
+      cloud_security_event_days: 0,
+    });
+    expect(
+      summarizeSecurityEvent({ event_type: "bad_origin", target: "https://evil.example" }, noRetention),
+    ).toMatchObject({
+      decision: "recorded",
+      retention_days: 0,
+      raw_body_included: false,
+    });
+  });
+
   it("blocks writes, command execution, repo upload, and AI preview reading in the MVP", () => {
     const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
     for (const capability of ["workspace.file.write", "workspace.command.execute", "workspace.repo.upload"]) {
