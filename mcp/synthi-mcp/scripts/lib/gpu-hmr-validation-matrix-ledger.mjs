@@ -3907,8 +3907,8 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
   const acceptedAsBridge = firstBool(
     facet.acceptedAsRuntimeProfileProofBridge,
     facet.accepted_as_runtime_profile_proof_bridge,
-    facet.accepted,
   ) === true;
+  const looseAcceptedFlag = firstBool(facet.accepted) === true;
   const runtimeProofProfileSha256 = normalizeSha256(firstText(
     facet.runtimeProofProfileSha256,
     facet.runtime_proof_profile_sha256,
@@ -4016,6 +4016,9 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     authorityClaims.length === 0
       ? null
       : 'random_cold_runtime_profile_bridge_authority_claim_present',
+    looseAcceptedFlag && acceptedAsBridge !== true
+      ? 'random_cold_runtime_profile_bridge_loose_accept_flag_ignored'
+      : null,
     acceptedAsBridge && runnerAttempted !== true
       ? 'random_cold_runtime_profile_bridge_accepted_without_runner_attempt'
       : null,
@@ -4044,7 +4047,7 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
       ? 'random_cold_runtime_profile_bridge_facet_hash_invalid'
       : null,
   ]);
-  const accepted = failedGates.length === 0;
+  const accepted = acceptedAsBridge && failedGates.length === 0;
   return {
     present: true,
     schemaVersion,
@@ -31656,8 +31659,11 @@ function runtimeClosureRowSignals(row = {}) {
   const runtimeProfileBridgeAccepted =
     runtimeProfileBridgePresent
     && (
-      runtimeBridge.accepted === true
-      || runtimeBridge.acceptedAsRuntimeProfileProofBridge === true
+      runtimeBridge.acceptedAsSupportEvidence === true
+      || runtimeBridge.accepted_as_support_evidence === true
+    )
+    && (
+      runtimeBridge.acceptedAsRuntimeProfileProofBridge === true
       || runtimeBridge.accepted_as_runtime_profile_proof_bridge === true
     );
   const runtimeClosureAttempted =

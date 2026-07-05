@@ -3272,6 +3272,67 @@ assert.ok(hiddenAuthorityBridgeRow.safety.failedGates.some((gate) =>
 assert.ok(hiddenAuthorityBridgeRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_runtime_profile_bridge_claimed_runtime_authority'
 ));
+const looseAcceptedBridgeDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-loose-accepted',
+);
+await writeJson(
+  path.join(looseAcceptedBridgeDir, 'random-cold-runtime-bridge-loose-accepted.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-loose-accepted',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-loose-accepted.git',
+    immutableCommit: sha256Hex('runtime-bridge-loose-accepted:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        accepted: true,
+        acceptedAsRuntimeProfileProofBridge: false,
+        accepted_as_runtime_profile_proof_bridge: false,
+        runnerAttempted: false,
+        runner_attempted: false,
+        runtimeProfileAdapterResultPresent: false,
+        runtime_profile_adapter_result_present: false,
+        blockingGaps: [
+          'runtime_profile_path_unreadable',
+          'runtime_profile_adapter_result_missing',
+        ],
+        blocking_gaps: [
+          'runtime_profile_path_unreadable',
+          'runtime_profile_adapter_result_missing',
+        ],
+      }),
+    },
+  }),
+);
+const looseAcceptedBridgeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [looseAcceptedBridgeDir],
+  includeInvalidated: true,
+});
+const looseAcceptedBridgeRow = looseAcceptedBridgeLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+const looseAcceptedBridgeCoverage = new Map(
+  looseAcceptedBridgeLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(looseAcceptedBridgeRow?.safety.accepted, false);
+assert.equal(looseAcceptedBridgeRow.acceptedForGpuHmr, false);
+assert.equal(looseAcceptedBridgeRow.gpuHmrSuccess, false);
+assert.equal(looseAcceptedBridgeRow.randomColdRuntimeProfileProofBridge.accepted, false);
+assert.equal(
+  looseAcceptedBridgeRow.randomColdRuntimeProfileProofBridge.acceptedAsRuntimeProfileProofBridge,
+  false,
+);
+assert.ok(looseAcceptedBridgeRow.randomColdRuntimeProfileProofBridge.failedGates
+  .includes('random_cold_runtime_profile_bridge_loose_accept_flag_ignored'));
+assert.ok(looseAcceptedBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_runtime_profile_bridge_invalid'
+));
+assert.equal(
+  looseAcceptedBridgeCoverage.get('large_arbitrary_project_runtime_closure')
+    ?.runtimeProfileBridgeAcceptedCount,
+  0,
+);
 const malformedHashBridgeDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-malformed-hashes',
