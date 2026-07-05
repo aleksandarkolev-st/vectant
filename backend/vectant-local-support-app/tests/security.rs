@@ -19,7 +19,7 @@ use vectant_local_support_app::session::{SessionError, SessionGuard};
 use vectant_local_support_app::update::{
     signed_test_manifest, verify_update_manifest, UpdateError,
 };
-use vectant_local_support_app::workspace::{FileReadRequest, WorkspacePolicy};
+use vectant_local_support_app::workspace::{resolve_relative, FileReadRequest, WorkspacePolicy};
 
 fn request(path: &str) -> FileReadRequest {
     FileReadRequest {
@@ -50,6 +50,28 @@ fn blocks_traversal_and_secret_files() {
     assert_eq!(env.decision, "denied");
     assert_eq!(env.bytes_sent, 0);
     assert!(env.content.is_none());
+}
+
+#[test]
+fn blocks_device_unc_named_pipe_and_drive_paths() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    for path in [
+        r"\\server\share\secrets.txt",
+        r"\\?\C:\Users\alex\.ssh\id_ed25519",
+        r"\\.\pipe\vectant",
+        r"\??\C:\Windows\win.ini",
+        r"C:\Users\alex\.aws\credentials",
+        "C:relative-drive-path.txt",
+    ] {
+        assert!(resolve_relative(policy.root(), path).is_err(), "path should be blocked: {path}");
+        let response = policy.read_file_for_review(&request(path));
+        assert_eq!(response.decision, "denied");
+        assert_eq!(response.bytes_sent, 0);
+        assert!(response.content.is_none());
+    }
 }
 
 #[test]

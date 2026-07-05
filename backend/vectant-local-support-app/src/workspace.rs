@@ -219,6 +219,9 @@ pub fn resolve_relative(root: &Path, requested_path: &str) -> Result<PathBuf> {
     if requested_path.contains('\0') {
         return Err(anyhow!("nul byte blocked"));
     }
+    if has_forbidden_path_prefix(requested_path) {
+        return Err(anyhow!("device or network path blocked"));
+    }
     let path = Path::new(requested_path);
     if path.is_absolute() {
         return Err(anyhow!("absolute path blocked"));
@@ -235,6 +238,19 @@ pub fn resolve_relative(root: &Path, requested_path: &str) -> Result<PathBuf> {
         return Err(anyhow!("canonical target escaped workspace"));
     }
     Ok(canonical)
+}
+
+fn has_forbidden_path_prefix(requested_path: &str) -> bool {
+    let normalized = requested_path.replace('/', "\\").to_ascii_lowercase();
+    normalized.starts_with("\\\\")
+        || normalized.starts_with("\\??\\")
+        || normalized.starts_with("\\\\.\\")
+        || normalized.starts_with("\\\\?\\")
+        || normalized.starts_with("\\\\.\\pipe\\")
+        || normalized
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
 }
 
 fn is_within(root: &Path, target: &Path) -> bool {
