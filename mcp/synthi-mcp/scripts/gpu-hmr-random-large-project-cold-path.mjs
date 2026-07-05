@@ -63,6 +63,43 @@ const REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS = Object.freeze([
   'host_identity',
   'output_oracle',
 ]);
+
+const RUNTIME_BOUNDARY_ADAPTER_INPUT_REQUIRED_FIELDS = Object.freeze([
+  'projectId',
+  'editId',
+  'targetId',
+  'backend',
+  'sourcePaths',
+  'sourceManifestHash',
+  'sourceManifestHashVerified',
+  'sourceIdentityEvidenceRefs',
+  'entryPoint',
+  'compileTarget',
+  'compiler',
+  'compilerArgsHash',
+  'artifactHashBefore',
+  'artifactHashAfter',
+  'contractHash',
+  'runtimeBoundaryEvents',
+]);
+
+const RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES = Object.freeze({
+  projectId: ['project_id'],
+  editId: ['edit_id', 'sourceEditId', 'source_edit_id'],
+  targetId: ['target_id', 'validationTargetId', 'validation_target_id'],
+  backend: ['gpuBackend', 'gpu_backend'],
+  sourcePaths: ['source_paths'],
+  sourceManifestHash: ['source_manifest_hash', 'sourceTreeManifestHash', 'source_tree_manifest_hash', 'sourceIdentityHash', 'source_identity_hash'],
+  sourceManifestHashVerified: ['source_manifest_hash_verified', 'sourceTreeManifestHashVerified', 'source_tree_manifest_hash_verified', 'sourceIdentityHashVerified', 'source_identity_hash_verified'],
+  sourceIdentityEvidenceRefs: ['source_identity_evidence_refs', 'sourceManifestEvidenceRefs', 'source_manifest_evidence_refs'],
+  entryPoint: ['entry_point', 'kernelName', 'kernel_name'],
+  compileTarget: ['compile_target', 'gpuArch', 'gpu_arch'],
+  compilerArgsHash: ['compiler_args_hash'],
+  artifactHashBefore: ['artifact_hash_before'],
+  artifactHashAfter: ['artifact_hash_after'],
+  contractHash: ['contract_hash'],
+  runtimeBoundaryEvents: ['runtime_boundary_events', 'adapterRuntimeBoundaryEvents', 'adapter_runtime_boundary_events', 'events'],
+});
 const BUILD_METADATA_CONTENT_MAX_FILES = 12;
 const BUILD_METADATA_CONTENT_MAX_BYTES = 128 * 1024;
 
@@ -2776,6 +2813,12 @@ function deriveRuntimeBoundaryEventManifestTemplate({
       'populate_runtimeBoundaryEvents_with_observed_target_process_events_only',
     runtime_boundary_events_placeholder:
       'populate_runtimeBoundaryEvents_with_observed_target_process_events_only',
+    adapterInputRequiredFields: RUNTIME_BOUNDARY_ADAPTER_INPUT_REQUIRED_FIELDS,
+    adapter_input_required_fields: RUNTIME_BOUNDARY_ADAPTER_INPUT_REQUIRED_FIELDS,
+    adapterInputFieldAliases: RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES,
+    adapter_input_field_aliases: RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES,
+    oracleArtifactRequirements: runtimeBoundaryOracleAlternatives(acceptableOracleKinds),
+    oracle_artifact_requirements: runtimeBoundaryOracleAlternatives(acceptableOracleKinds),
     eventObjectTemplates,
     event_object_templates: eventObjectTemplates,
   };
@@ -2816,6 +2859,12 @@ function deriveRuntimeBoundaryEventManifestTemplate({
     event_manifest_schema: RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA,
     requiredEventKinds: REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS,
     required_event_kinds: REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS,
+    adapterInputRequiredFields: RUNTIME_BOUNDARY_ADAPTER_INPUT_REQUIRED_FIELDS,
+    adapter_input_required_fields: RUNTIME_BOUNDARY_ADAPTER_INPUT_REQUIRED_FIELDS,
+    adapterInputFieldAliases: RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES,
+    adapter_input_field_aliases: RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES,
+    oracleArtifactRequirements: runtimeBoundaryOracleAlternatives(acceptableOracleKinds),
+    oracle_artifact_requirements: runtimeBoundaryOracleAlternatives(acceptableOracleKinds),
     backendCandidates,
     backend_candidates: backendCandidates,
     acceptableOracleKinds,
@@ -5500,6 +5549,14 @@ async function selfCheck() {
     || runtimeEventTemplate.requiredEventKinds?.length !== 5
     || runtimeEventTemplate.eventObjectTemplates?.length !== 5
     || !runtimeEventTemplate.requiredEventKinds.includes('output_oracle')
+    || !runtimeEventTemplate.adapterInputRequiredFields?.includes('sourceManifestHash')
+    || !runtimeEventTemplate.adapterInputRequiredFields?.includes('sourceManifestHashVerified')
+    || !runtimeEventTemplate.adapterInputRequiredFields?.includes('sourceIdentityEvidenceRefs')
+    || !runtimeEventTemplate.adapterInputRequiredFields?.includes('runtimeBoundaryEvents')
+    || !runtimeEventTemplate.adapterInputFieldAliases?.runtimeBoundaryEvents?.includes('events')
+    || !runtimeEventTemplate.manifestTemplate?.adapterInputRequiredFields?.includes('artifactHashAfter')
+    || !runtimeEventTemplate.manifestTemplate?.adapterInputFieldAliases?.sourceManifestHash?.includes('source_identity_hash')
+    || !runtimeEventTemplate.manifestTemplate?.oracleArtifactRequirements?.some((entry) => entry.mode === 'compute_readback')
     || !outputOracleTemplate?.requiredFields?.includes('after_dispatch_id')
     || !outputOracleTemplate?.oracleFieldAlternatives?.some((entry) => entry.mode === 'compute_readback')
     || runtimeEventTemplate.manifestTemplate?.runtimeBoundaryEvents !== undefined
@@ -5822,6 +5879,14 @@ async function selfCheck() {
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.gpuHmrSuccess !== false
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.canSatisfyRuntimeProof !== false
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.requiredEventKinds?.includes('dispatch_trace')
+    || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.adapterInputRequiredFields
+      ?.includes('sourceManifestHash')
+    || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.adapterInputRequiredFields
+      ?.includes('runtimeBoundaryEvents')
+    || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.manifestTemplate
+      ?.adapterInputRequiredFields?.includes('contractHash')
+    || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.manifestTemplate
+      ?.oracleArtifactRequirements?.some((entry) => entry.mode === 'compute_readback')
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.eventObjectTemplates
       ?.some((entry) => entry.eventKind === 'artifact_transport' && entry.backendSpecificFields?.includes('hsaco_hash'))
     || !localResult.sourceIntakeEvidence?.backendCandidates?.includes('hip_rocm')
