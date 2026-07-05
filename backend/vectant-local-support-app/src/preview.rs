@@ -4,6 +4,17 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortApproval {
     pub port: u16,
@@ -66,26 +77,124 @@ pub fn decide_preview_request(
     if !approval.state_changing_methods_allowed && !matches!(method, "GET" | "HEAD" | "OPTIONS") {
         return PreviewDecision::Deny("state_changing_method_blocked".to_string());
     }
-    if headers.keys().any(|name| {
-        let lower = name.to_ascii_lowercase();
-        lower == "cookie" || lower == "authorization" || lower == "proxy-authorization"
-    }) {
-        return PreviewDecision::Deny("credential_header_blocked".to_string());
+    let header_list = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    if let Some(reason) = validate_preview_request_headers(&header_list) {
+        return PreviewDecision::Deny(reason);
     }
     PreviewDecision::Allow
 }
 
-pub fn sanitize_response_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
-    let mut sanitized = HashMap::new();
+pub fn decide_preview_request_from_header_list(
+    approval: Option<&PortApproval>,
+    method: &str,
+    host: &str,
+    target_ip: IpAddr,
+    headers: &[(&str, &str)],
+) -> PreviewDecision {
+    let Some(approval) = approval else {
+        return PreviewDecision::Deny("port_not_approved".to_string());
+    };
+    if !approval.browser_preview_allowed {
+        return PreviewDecision::Deny("browser_preview_not_allowed".to_string());
+    }
+    if host != approval.preview_host {
+        return PreviewDecision::Deny("preview_host_mismatch".to_string());
+    }
+    if !target_ip.is_loopback() {
+        return PreviewDecision::Deny("target_not_loopback".to_string());
+    }
+    if !approval.state_changing_methods_allowed && !matches!(method, "GET" | "HEAD" | "OPTIONS") {
+        return PreviewDecision::Deny("state_changing_method_blocked".to_string());
+    }
+    if let Some(reason) = validate_preview_request_headers(headers) {
+        return PreviewDecision::Deny(reason);
+    }
+    PreviewDecision::Allow
+}
+
+pub fn validate_preview_request_headers(headers: &[(&str, &str)]) -> Option<String> {
+    let mut content_length_count = 0usize;
+    let mut has_transfer_encoding = false;
+    let mut connection_tokens = Vec::new();
+    let names = headers
+        .iter()
+        .map(|(name, _)| name.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
     for (name, value) in headers {
-        let lower = name.to_ascii_lowercase();
+        let lower = name.trim().to_ascii_lowercase();
         if matches!(
             lower.as_str(),
-            "set-cookie" | "connection" | "transfer-encoding" | "content-security-policy-report-only"
+            "cookie" | "authorization" | "proxy-authorization"
         ) {
+            return Some("credential_header_blocked".to_string());
+        }
+        if lower == "content-length" {
+            content_length_count += 1;
+        }
+        if lower == "transfer-encoding" {
+            has_transfer_encoding = true;
+        }
+        if lower == "connection" {
+            connection_tokens.extend(parse_connection_tokens(value));
+        }
+    }
+
+    if content_length_count > 1 {
+        return Some("duplicate_content_length_blocked".to_string());
+    }
+    if has_transfer_encoding && content_length_count > 0 {
+        return Some("ambiguous_body_length_blocked".to_string());
+    }
+    if connection_tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "cookie" | "authorization" | "proxy-authorization" | "set-cookie"
+        )
+    }) {
+        return Some("connection_sensitive_header_blocked".to_string());
+    }
+    if connection_tokens
+        .iter()
+        .any(|token| names.iter().any(|name| name == token))
+    {
+        return Some("connection_named_header_blocked".to_string());
+    }
+    None
+}
+
+pub fn sanitize_response_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    let header_list = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    sanitize_response_header_list(&header_list)
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+pub fn sanitize_response_header_list(headers: &[(&str, &str)]) -> HashMap<String, String> {
+    let mut sanitized = HashMap::new();
+    let connection_tokens = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        .flat_map(|(_, value)| parse_connection_tokens(value))
+        .collect::<Vec<_>>();
+
+    for (name, value) in headers {
+        let lower = name.trim().to_ascii_lowercase();
+        if lower == "set-cookie"
+            || lower == "content-security-policy-report-only"
+            || HOP_BY_HOP_HEADERS.contains(&lower.as_str())
+            || connection_tokens.iter().any(|token| token == &lower)
+        {
             continue;
         }
-        sanitized.insert(name.clone(), value.clone());
+        sanitized.insert(name.to_string(), value.to_string());
     }
     sanitized.insert(
         "Content-Security-Policy".to_string(),
@@ -122,10 +231,10 @@ fn url_parse(location: &str) -> Result<ParsedUrl, ()> {
     let authority = rest.split('/').next().ok_or(())?;
     let has_userinfo = authority.contains('@');
     let host_part = authority.rsplit('@').next().ok_or(())?;
-    let host = host_part.split(':').next().ok_or(())?;
+    let host = parse_host_without_port(host_part)?;
     let host_ip = match host {
         "localhost" => Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-        "::1" | "[::1]" => Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+        "::1" => Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
         value => value.parse::<IpAddr>().ok(),
     };
     Ok(ParsedUrl {
@@ -133,6 +242,22 @@ fn url_parse(location: &str) -> Result<ParsedUrl, ()> {
         host_ip,
         has_userinfo,
     })
+}
+
+fn parse_host_without_port(authority_host: &str) -> Result<&str, ()> {
+    if let Some(rest) = authority_host.strip_prefix('[') {
+        let end = rest.find(']').ok_or(())?;
+        return Ok(&rest[..end]);
+    }
+    Ok(authority_host.split(':').next().ok_or(())?)
+}
+
+fn parse_connection_tokens(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect()
 }
 
 fn hash_process_identity(process_identity: &str) -> String {

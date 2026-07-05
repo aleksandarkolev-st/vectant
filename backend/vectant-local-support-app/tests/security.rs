@@ -6,7 +6,8 @@ use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog};
 use vectant_local_support_app::pair::{PairingError, PairingSession};
 use vectant_local_support_app::preview::{
-    decide_preview_request, redirect_allowed, sanitize_response_headers, PortApproval, PreviewDecision,
+    decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
+    sanitize_response_header_list, sanitize_response_headers, PortApproval, PreviewDecision,
 };
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::{SessionError, SessionGuard};
@@ -122,6 +123,57 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
     assert!(!redirect_allowed("http://192.168.1.1/admin"));
     assert!(!redirect_allowed("file:///etc/passwd"));
     assert!(redirect_allowed("http://127.0.0.1:5173/ok"));
+    assert!(redirect_allowed("http://[::1]:5173/ok"));
+}
+
+#[test]
+fn preview_blocks_request_smuggling_and_connection_named_headers() {
+    let approval = PortApproval::browser_only(5173, "vite:1234");
+    let target = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Content-Length", "4"), ("Content-Length", "5")],
+        ),
+        PreviewDecision::Deny("duplicate_content_length_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Transfer-Encoding", "chunked"), ("Content-Length", "5")],
+        ),
+        PreviewDecision::Deny("ambiguous_body_length_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Connection", "Authorization")],
+        ),
+        PreviewDecision::Deny("connection_sensitive_header_blocked".to_string())
+    );
+
+    assert_eq!(
+        decide_preview_request_from_header_list(
+            Some(&approval),
+            "GET",
+            &approval.preview_host,
+            target,
+            &[("Connection", "X-Shadow-Hop"), ("X-Shadow-Hop", "secret")],
+        ),
+        PreviewDecision::Deny("connection_named_header_blocked".to_string())
+    );
 }
 
 #[test]
@@ -137,6 +189,23 @@ fn response_headers_strip_cookie_and_block_service_workers() {
         .get("Content-Security-Policy")
         .unwrap()
         .contains("worker-src 'none'"));
+}
+
+#[test]
+fn response_headers_strip_hop_by_hop_and_connection_named_headers() {
+    let sanitized = sanitize_response_header_list(&[
+        ("Connection", "X-Internal-Trace, Keep-Alive"),
+        ("X-Internal-Trace", "secret"),
+        ("Keep-Alive", "timeout=5"),
+        ("Transfer-Encoding", "chunked"),
+        ("Content-Type", "text/html"),
+    ]);
+
+    assert!(!sanitized.contains_key("Connection"));
+    assert!(!sanitized.contains_key("X-Internal-Trace"));
+    assert!(!sanitized.contains_key("Keep-Alive"));
+    assert!(!sanitized.contains_key("Transfer-Encoding"));
+    assert_eq!(sanitized.get("Content-Type"), Some(&"text/html".to_string()));
 }
 
 #[test]
