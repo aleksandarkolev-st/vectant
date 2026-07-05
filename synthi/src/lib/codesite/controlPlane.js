@@ -9595,7 +9595,7 @@ function learnedRuleText(candidate = {}) {
 function learnedPolicyDeltaApplies(delta, signals) {
   const surface = learnedPolicySurface(signals);
   const affectedZoneKey = String(delta.affectedZoneKey || '').toLowerCase();
-  if (affectedZoneKey && !surface.some((entry) => entry.includes(affectedZoneKey))) return false;
+  if (affectedZoneKey && !surface.some((entry) => learnedSurfaceEntryMatches(entry, affectedZoneKey))) return false;
   const conditions = asArray(delta.triggerConditions);
   if (!conditions.length) return true;
   return conditions.every((condition) => learnedTriggerMatches(condition, surface));
@@ -9604,7 +9604,7 @@ function learnedPolicyDeltaApplies(delta, signals) {
 function learnedTriggerMatches(condition, surface) {
   if (typeof condition === 'string') {
     const value = condition.toLowerCase();
-    return surface.some((entry) => entry.includes(value) || pathPatternsOverlap(entry, value));
+    return surface.some((entry) => learnedSurfaceEntryMatches(entry, value));
   }
   if (!condition || typeof condition !== 'object') return true;
   const values = [
@@ -9619,7 +9619,31 @@ function learnedTriggerMatches(condition, surface) {
     condition.package_name,
   ].flatMap((value) => asArray(value)).map((value) => String(value || '').toLowerCase()).filter(Boolean);
   if (!values.length) return true;
-  return values.every((value) => surface.some((entry) => entry.includes(value) || pathPatternsOverlap(entry, value)));
+  return values.every((value) => surface.some((entry) => learnedSurfaceEntryMatches(entry, value)));
+}
+
+function learnedSurfaceEntryMatches(entry, expected) {
+  const entryText = String(entry || '').toLowerCase();
+  const expectedText = String(expected || '').toLowerCase();
+  if (!entryText || !expectedText) return false;
+  if (entryText.includes(expectedText) || pathPatternsOverlap(entryText, expectedText)) return true;
+  const entryAliases = learnedSurfaceAliases(entryText);
+  const expectedAliases = learnedSurfaceAliases(expectedText);
+  return entryAliases.some((alias) => expectedAliases.includes(alias));
+}
+
+function learnedSurfaceAliases(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\/\s*/g, '-')
+    .replace(/[_\s]+/g, '-');
+  const aliases = new Set([normalized]);
+  if (/(semantic|contract|schema|openapi|prisma).*(collision|conflict|drift)|(collision|conflict|drift).*(semantic|contract|schema|openapi|prisma)/.test(normalized)) {
+    aliases.add('semantic-collision');
+    aliases.add('contract-collision');
+  }
+  return [...aliases].filter(Boolean);
 }
 
 function learnedPolicySurface(signals) {

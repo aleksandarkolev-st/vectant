@@ -6386,6 +6386,110 @@ describe('CodeSite control plane transaction validation', () => {
     expect(schemaUniverse.reasonCodes).not.toContain('learned_policy_delta_preferred_strategy');
   });
 
+  it('applies semantic collision policy deltas to matching contract-collision schema forecasts', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema runway', class: 'B', paths: ['synthi/prisma/**'], rules: ['contract_radar_required'] },
+        { zoneKey: 'api', label: 'Auth API', class: 'C', paths: ['synthi/src/app/api/auth/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: ['synthi/prisma/schema.prisma', 'synthi/src/app/api/auth/route.ts'],
+        importEdges: [{ from: 'synthi/src/app/api/auth/route.ts', imports: ['synthi/prisma/schema.prisma'] }],
+        testOwnership: [],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@synthi/db', root: 'synthi/prisma', exports: ['synthi/prisma/schema.prisma'] }],
+        generatedClients: [],
+      },
+    };
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Learned schema policy',
+      request: 'Coordinate schema and auth API',
+      status: 'active',
+      zonePolicyJson: JSON.stringify(zonePolicy),
+      controlPlanJson: JSON.stringify({}),
+      executionPlans: [
+        {
+          id: 'plan-schema',
+          projectId: 'project-1',
+          agentSessionId: 'agent-schema',
+          displayCallsign: 'SCHEMA-01',
+          mission: 'Change Prisma contract',
+          domain: 'schema',
+          status: 'preflight',
+          routeJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+        {
+          id: 'plan-api',
+          projectId: 'project-1',
+          agentSessionId: 'agent-api',
+          displayCallsign: 'API-02',
+          mission: 'Update auth API',
+          domain: 'backend',
+          status: 'preflight',
+          routeJson: JSON.stringify(['synthi/src/app/api/auth/route.ts']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+      ],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([
+      {
+        id: 'delta-schema-semantic-risk',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify(['near-miss-schema-1']),
+        affectedZoneKey: 'synthi/prisma/schema.prisma',
+        ruleCandidateJson: JSON.stringify({
+          rule: 'schema_first_policy_reduced_rework',
+          preferredStrategies: ['schema-first'],
+          avoidStrategies: ['frontend-backend-parallel'],
+          requiredTowerActions: ['issue_schema_clearance_before_dependents'],
+        }),
+        triggerConditionsJson: JSON.stringify([{ path: 'synthi/prisma/schema.prisma' }, { risk: 'semantic_collision' }]),
+        expectedRiskReduction: 0.4,
+        confidence: 0.92,
+        promotionState: 'active',
+        replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-schema']),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+      },
+    ]);
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-schema-learned',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema_first', 'frontend_backend_parallel'],
+    });
+
+    expect(result.selected).toBe('schema-first');
+    expect(result.appliedPolicyDeltas).toEqual(['delta-schema-semantic-risk']);
+    expect(result.evidenceRefs).toContain('codesite:policy-delta:delta-schema-semantic-risk');
+    const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
+    expect(schemaUniverse.learnedPolicyDeltaRefs).toEqual(['delta-schema-semantic-risk']);
+    expect(schemaUniverse.reasonCodes).toEqual(expect.arrayContaining([
+      'counterfactual_policy_delta_applied',
+      'learned_policy_delta_preferred_strategy',
+    ]));
+  });
+
   it('surfaces Regret Memory policy hints in public collision prediction', async () => {
     const zonePolicy = {
       zones: [
