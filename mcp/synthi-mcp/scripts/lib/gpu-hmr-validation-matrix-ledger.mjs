@@ -9445,6 +9445,14 @@ function normalizedVisualSemanticProbe(probe = {}, index = 0) {
   };
 }
 
+function compactVisualSemanticBindingObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) =>
+    item !== undefined
+    && item !== null
+    && !(Array.isArray(item) && item.length === 0)
+  ));
+}
+
 function visualSemanticProbeBindingPayload({
   schemaVersion,
   proofAuthority,
@@ -9455,7 +9463,7 @@ function visualSemanticProbeBindingPayload({
   deterministicVisualModeHash,
   probes,
 }) {
-  return compactObject({
+  return compactVisualSemanticBindingObject({
     schemaVersion,
     schema_version: schemaVersion,
     proofAuthority,
@@ -9470,7 +9478,7 @@ function visualSemanticProbeBindingPayload({
     visual_scene_manifest_hash: visualSceneManifestHash,
     deterministicVisualModeHash,
     deterministic_visual_mode_hash: deterministicVisualModeHash,
-    probes: probes.map((probe) => compactObject({
+    probes: probes.map((probe) => compactVisualSemanticBindingObject({
       probeId: probe.probeId,
       probe_id: probe.probe_id,
       probeClass: probe.probeClass,

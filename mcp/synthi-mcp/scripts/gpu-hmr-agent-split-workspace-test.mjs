@@ -6161,6 +6161,11 @@ async function selfCheckSemanticVisualProbeEvidence() {
       || !/^sha256:[a-f0-9]{64}$/.test(semantic.bindingHash ?? '')
       || !Array.isArray(semantic.probes)
       || semantic.probes.length !== 2
+      || !semantic.probes.every((probe) =>
+        probe.accepted === true
+        && probe.acceptedAsSemanticProbe === true
+        && probe.accepted_as_semantic_probe === true
+      )
     ) {
       throw new Error(`semantic visual probe self-check failed: ${JSON.stringify(semantic)}`);
     }
@@ -7597,6 +7602,12 @@ async function semanticVisualProbeEvidenceFromDelta(visualDelta) {
     probes,
   });
   const bindingHash = `sha256:${sha256Hex(stableJson(bindingPayload))}`;
+  const emittedProbes = bindingPayload.probes.map((probe) => ({
+    ...probe,
+    accepted: true,
+    acceptedAsSemanticProbe: true,
+    accepted_as_semantic_probe: true,
+  }));
   const evidenceRefs = [...new Set([
     beforeImageHash,
     afterImageHash,
@@ -7611,6 +7622,7 @@ async function semanticVisualProbeEvidenceFromDelta(visualDelta) {
   ].filter(Boolean))];
   return {
     ...bindingPayload,
+    probes: emittedProbes,
     accepted: true,
     acceptedAsSemanticVisualProbeEvidence: true,
     accepted_as_semantic_visual_probe_evidence: true,
