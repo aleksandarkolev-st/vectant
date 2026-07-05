@@ -1271,7 +1271,7 @@ function codexAgentOutputSchema() {
     properties: {
       callsign: { type: 'string' },
       providerSessionRef: { type: 'string' },
-      role: { type: 'string' },
+      role: { type: 'string', enum: ['schema', 'backend', 'inspection'] },
       inspectedPaths: { type: 'array', minItems: 1, items: { type: 'string' } },
       commandsRun: { type: 'array', minItems: 1, items: { type: 'string' } },
       workflowActions: {
@@ -1320,7 +1320,7 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, acto
     backend: [
       `Read the CodeSite projection at ${projectionPath}; it contains your held dependent API flight, RFI inbox item, change-order response, stale assumption, and aborted API transaction.`,
       `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, inbox read, inbox acknowledgement, change-order filing, and stale transaction abort.`,
-      'Confirm API-02 has a distinct providerSessionRef from SCHEMA-01 and TEST-03 in the projection and prompt.',
+      'Confirm API-02 has a distinct providerSessionRef from SCHEMA-01 and TEST-03 from the projection already read and the listed dependency check; do not run an extra provider-session command.',
       `You may inspect ${planPath}, ${proofScriptPath}, and ${projectionPath} only as supporting context.`,
     ],
     inspection: [
@@ -1350,13 +1350,13 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, acto
     'Perform these role-specific checks:',
     ...(roleChecks[spec.domain] || roleChecks.inspection).map((check) => `- ${check}`),
     '',
-    'Run these exact actor commands in order, then any listed npm command:',
+    'Run only these exact actor commands in order. Do not run any additional command after the last listed command:',
     ...actorCommands.map((command) => `- ${command}`),
     '',
     'Your workflowActions array must summarize the action receipts created by the commands above. Use these required action contracts:',
     ...actionContract.map((entry) => `- ${entry.kind} via ${entry.action}`),
     '',
-    'Return only JSON matching the provided schema. The callsign and providerSessionRef fields must exactly match the values above.',
+    `Return only JSON matching the provided schema immediately after the last listed command. The role field must be "${spec.domain}". The callsign and providerSessionRef fields must exactly match the values above.`,
   ].join('\n');
 }
 
@@ -1934,8 +1934,8 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
 }
 
 function normalizeCodexAgentTimeoutMs() {
-  const requested = Number(process.env.CODESITE_PROOF_CODEX_AGENT_TIMEOUT_MS || 240000);
-  return Number.isFinite(requested) && requested > 0 ? Math.min(requested, 900000) : 240000;
+  const requested = Number(process.env.CODESITE_PROOF_CODEX_AGENT_TIMEOUT_MS || 600000);
+  return Number.isFinite(requested) && requested > 0 ? Math.min(requested, 900000) : 600000;
 }
 
 async function prepareProofRepo({ dir, slug, changedPath, readPath }) {
