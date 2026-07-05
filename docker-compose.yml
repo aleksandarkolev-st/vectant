@@ -99,6 +99,9 @@ services:
       # Read-only workspace mirror for server-side CodeSite snapshot validation.
       # Runtime mutation surfaces still use managed overlays/quarantine paths.
       - .:/workspace:ro
+      # Writable CodeSite artifact projection root. Release proofs verify these
+      # files from tmp/codesite-dojo-proof/app-artifacts/<workspace-slug>/...
+      - ./tmp/codesite-dojo-proof/app-artifacts:/codesite-app-artifacts
     environment:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
@@ -108,6 +111,7 @@ services:
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
       DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
+      SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"
