@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { readLocalSupportPolicy, summarizeSecurityEvent, validateRequestEnvelope } from "./controlPlane";
+import {
+  evaluatePolicyPrecedence,
+  readLocalSupportPolicy,
+  summarizeSecurityEvent,
+  validateRequestEnvelope,
+} from "./controlPlane";
 
 const future = () => new Date(Date.now() + 60_000).toISOString();
 
@@ -131,6 +136,71 @@ describe("local support control plane policy", () => {
     expect(validateRequestEnvelope(envelope({ capability: "workspace.log.read" }), policy)).toMatchObject({
       decision: "approval_required",
       local_enforcement_required: true,
+      bytes_sent: 0,
+    });
+  });
+
+  it("enforces policy precedence above item-specific approval", () => {
+    expect(
+      evaluatePolicyPrecedence({
+        emergency_remote_kill_switch: { decision: "denied", reason: "Emergency disable active." },
+        item_specific_approval: "approved",
+        final_scanner_redactor_decision: "allow",
+      }),
+    ).toMatchObject({
+      decision: "denied",
+      reason: "blocked_by_emergency_remote_kill_switch",
+      blocked_layer: "emergency_remote_kill_switch",
+      bytes_sent: 0,
+    });
+
+    expect(
+      evaluatePolicyPrecedence({
+        enterprise_org_policy: { decision: "denied", reason: "Port preview disabled by organization." },
+        item_specific_approval: "approved",
+        final_scanner_redactor_decision: "allow",
+      }),
+    ).toMatchObject({
+      decision: "denied",
+      reason: "blocked_by_enterprise_org_policy",
+      blocked_layer: "enterprise_org_policy",
+    });
+
+    expect(
+      evaluatePolicyPrecedence({
+        workspace_policy: { decision: "denied", reason: ".ssh remains blocked." },
+        item_specific_approval: "approved",
+        final_scanner_redactor_decision: "allow",
+      }),
+    ).toMatchObject({
+      decision: "denied",
+      reason: "blocked_by_workspace_policy",
+      blocked_layer: "workspace_policy",
+    });
+  });
+
+  it("requires final scanner approval even after user approval", () => {
+    expect(
+      evaluatePolicyPrecedence({
+        item_specific_approval: "approved",
+        final_scanner_redactor_decision: { decision: "denied", reason: "Scanner failed closed." },
+      }),
+    ).toMatchObject({
+      decision: "denied",
+      reason: "blocked_by_final_scanner_redactor_decision",
+      blocked_layer: "final_scanner_redactor_decision",
+      bytes_sent: 0,
+    });
+
+    expect(
+      evaluatePolicyPrecedence({
+        item_specific_approval: "approved",
+        final_scanner_redactor_decision: "allow",
+      }),
+    ).toMatchObject({
+      decision: "allowed_after_local_checks",
+      reason: "all_policy_layers_allowed",
+      blocked_layer: null,
       bytes_sent: 0,
     });
   });

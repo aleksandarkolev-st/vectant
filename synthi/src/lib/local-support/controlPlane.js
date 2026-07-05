@@ -35,6 +35,17 @@ const SECURITY_EVENT_TYPES = new Set([
   "suspicious_support_request",
 ]);
 
+export const POLICY_PRECEDENCE = [
+  "hardcoded_safety_baseline",
+  "emergency_remote_kill_switch",
+  "enterprise_org_policy",
+  "workspace_policy",
+  "user_global_setting",
+  "current_session_mode",
+  "item_specific_approval",
+  "final_scanner_redactor_decision",
+];
+
 export function readLocalSupportPolicy(env = process.env) {
   const globalEnabled = env.VECTANT_LOCAL_SUPPORT_ENABLED === "true";
   const orgKillSwitch = env.VECTANT_LOCAL_SUPPORT_ORG_DISABLED === "true";
@@ -91,6 +102,32 @@ export function readLocalSupportPolicy(env = process.env) {
       repo_upload: false,
     },
     allowed_capabilities: [...MVP_ALLOWED_CAPABILITIES],
+  };
+}
+
+export function evaluatePolicyPrecedence(layers = {}) {
+  for (const layerName of POLICY_PRECEDENCE) {
+    const layer = normalizePolicyLayer(layers[layerName]);
+    if (layer.decision === "denied") {
+      return {
+        ...deny(`blocked_by_${layerName}`, layer.message || "A higher-priority policy layer blocked this request."),
+        blocked_layer: layerName,
+        precedence: POLICY_PRECEDENCE,
+      };
+    }
+  }
+
+  const itemApproval = normalizePolicyLayer(layers.item_specific_approval);
+  const finalScan = normalizePolicyLayer(layers.final_scanner_redactor_decision);
+  const approved = itemApproval.decision === "approved" && finalScan.decision === "allow";
+  return {
+    decision: approved ? "allowed_after_local_checks" : "approval_required",
+    reason: approved ? "all_policy_layers_allowed" : "item_approval_or_scanner_review_required",
+    policy_version: POLICY_VERSION,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+    blocked_layer: null,
+    precedence: POLICY_PRECEDENCE,
   };
 }
 
@@ -207,6 +244,22 @@ function clampNumber(value, min, max, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(Math.trunc(parsed), max));
+}
+
+function normalizePolicyLayer(value) {
+  if (value === true || value === "allow" || value === "approved") {
+    return { decision: value === "approved" ? "approved" : "allow" };
+  }
+  if (value === false || value === "deny" || value === "denied") {
+    return { decision: "denied" };
+  }
+  if (value && typeof value === "object") {
+    return {
+      decision: value.decision || (value.allowed === false ? "denied" : "allow"),
+      message: value.message || value.reason || null,
+    };
+  }
+  return { decision: "allow" };
 }
 
 function severityForEvent(eventType, count) {
