@@ -9813,11 +9813,23 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     && Boolean(profileId)
     && Boolean(rowProfileId)
     && profileId === rowProfileId;
+  const sourceFirstTargetId = firstText(sourceFirst.targetId, sourceFirst.target_id);
+  const rowTargetId = firstText(row.targetId, row.target_id, row.projectId, row.project_id);
+  const sourceFirstProfileIdBoundToRow =
+    sourceFirst.accepted === true
+    && source === 'agent_split_profile_runtime_visual_proof'
+    && Boolean(profileId)
+    && Boolean(rowProfileId)
+    && profileId === rowProfileId
+    && Boolean(sourceFirstTargetId)
+    && Boolean(rowTargetId)
+    && sourceFirstTargetId === rowTargetId;
   const profileIdBoundToRow =
     Boolean(profileId)
     && (
       rowRuntimeIdentities.some((identity) => identity === profileId)
       || directSourceProfileIdBoundToRow
+      || sourceFirstProfileIdBoundToRow
     );
   const evidenceRefsBound = evidenceRefs.filter((ref) =>
     evidenceRefSet.has(ref)
@@ -9877,6 +9889,8 @@ function validationProfileEvidenceBindingFacet(row = {}, supplied = {}) {
     profile_id_bound_to_row: profileIdBoundToRow,
     directSourceProfileIdBoundToRow,
     direct_source_profile_id_bound_to_row: directSourceProfileIdBoundToRow,
+    sourceFirstProfileIdBoundToRow,
+    source_first_profile_id_bound_to_row: sourceFirstProfileIdBoundToRow,
     proofIdsBoundToRow,
     proof_ids_bound_to_row: proofIdsBoundToRow,
     evidenceRefsBoundToRow,
@@ -32284,6 +32298,7 @@ export const GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS = Object.freeze({
   largeRocmMlRandomColdNormalizedIdentityTerm,
   largeRocmMlRandomColdSemanticTextValues,
   largeRocmMlRandomColdTextSignals,
+  validationProfileEvidenceBindingFacet,
 });
 
 function randomColdInternalLocalPathReason(normalized, context = {}) {

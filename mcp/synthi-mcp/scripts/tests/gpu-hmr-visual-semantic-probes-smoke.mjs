@@ -5,6 +5,7 @@ import {
   buildGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
   GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+  GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS,
 } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
 
 function sha256Hex(value) {
@@ -328,5 +329,73 @@ const filteredForgedLedger = buildGpuHmrValidationMatrixLedger([forgedRow], {
 });
 assert.equal(filteredForgedLedger.rows.length, 0);
 assert.equal(filteredForgedLedger.summary.acceptedFullRuntimeGpuHmrRows, 0);
+
+const profileBindingRow = {
+  targetId: 'generated-gpu-split:source-first-alias',
+  profileId: 'arbitrary-source-first-visual-profile',
+  proofIds: [
+    'gpu-ledger-proof:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'gpu-runtime-proof:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  ],
+  ledger: {
+    proofId: 'gpu-ledger-proof:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    record: {
+      projectId: 'workspace-project-123',
+      proofId: 'gpu-ledger-proof:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    },
+  },
+  runtimeProofArtifact: {
+    proofId: 'gpu-runtime-proof:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  },
+  sourceFirstIngestion: {
+    accepted: true,
+    targetId: 'generated-gpu-split:source-first-alias',
+  },
+};
+const profileBindingEvidence = {
+  profileId: 'arbitrary-source-first-visual-profile',
+  source: 'agent_split_profile_runtime_visual_proof',
+  proofIds: profileBindingRow.proofIds,
+  profileHash: hashValue('profile-binding-profile'),
+  sourceContentHash: hashValue('profile-binding-source'),
+  deterministicVisualModeHash: hashValue('profile-binding-mode'),
+  visualProofHash: hashValue('profile-binding-visual-proof'),
+  visualSceneManifestHash: hashValue('profile-binding-scene'),
+  evidenceRefs: [
+    ...profileBindingRow.proofIds,
+    'generated-gpu-split:source-first-alias',
+    hashValue('profile-binding-profile'),
+    hashValue('profile-binding-source'),
+    hashValue('profile-binding-mode'),
+    hashValue('profile-binding-visual-proof'),
+    hashValue('profile-binding-scene'),
+  ],
+};
+profileBindingRow.evidenceRefs = profileBindingEvidence.evidenceRefs;
+profileBindingRow.evidence_refs = profileBindingEvidence.evidenceRefs;
+const sourceFirstProfileBinding =
+  GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS.validationProfileEvidenceBindingFacet(
+    profileBindingRow,
+    profileBindingEvidence,
+  );
+assert.equal(sourceFirstProfileBinding.accepted, true);
+assert.equal(sourceFirstProfileBinding.sourceFirstProfileIdBoundToRow, true);
+assert.equal(sourceFirstProfileBinding.profileIdBoundToRow, true);
+
+const retargetedProfileBinding =
+  GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS.validationProfileEvidenceBindingFacet(
+    {
+      ...profileBindingRow,
+      sourceFirstIngestion: {
+        accepted: true,
+        targetId: 'generated-gpu-split:other-alias',
+      },
+    },
+    profileBindingEvidence,
+  );
+assert.equal(retargetedProfileBinding.accepted, false);
+assert.ok(retargetedProfileBinding.failedGates.includes(
+  'validation_profile_id_not_bound_to_runtime_identity',
+));
 
 console.log('gpu-hmr visual semantic probes smoke ok');
