@@ -600,6 +600,32 @@ async function buildOidnRuntimeBoundaryRunModeProof({ outputOracle, classificati
     outputOracle,
     runtimeBoundaryOutputEvent(manifest.events),
   );
+  const sourcePaths = Array.isArray(metadata.sourcePaths)
+    ? metadata.sourcePaths
+    : Array.isArray(metadata.source_paths)
+      ? metadata.source_paths
+      : [];
+  const sourceManifestHash = firstText(
+    metadata.sourceManifestHash,
+    metadata.source_manifest_hash,
+    metadata.sourceTreeManifestHash,
+    metadata.source_tree_manifest_hash,
+    metadata.sourceIdentityHash,
+    metadata.source_identity_hash,
+  );
+  const sourceManifestHashVerified =
+    metadata.sourceManifestHashVerified === true
+    || metadata.source_manifest_hash_verified === true
+    || metadata.sourceTreeManifestHashVerified === true
+    || metadata.source_tree_manifest_hash_verified === true
+    || metadata.sourceIdentityHashVerified === true
+    || metadata.source_identity_hash_verified === true;
+  const sourceIdentityEvidenceRefs = [
+    ...(Array.isArray(metadata.sourceIdentityEvidenceRefs) ? metadata.sourceIdentityEvidenceRefs : []),
+    ...(Array.isArray(metadata.source_identity_evidence_refs) ? metadata.source_identity_evidence_refs : []),
+    ...(Array.isArray(metadata.sourceManifestEvidenceRefs) ? metadata.sourceManifestEvidenceRefs : []),
+    ...(Array.isArray(metadata.source_manifest_evidence_refs) ? metadata.source_manifest_evidence_refs : []),
+  ].filter(Boolean);
   const failedGates = [
     ...manifest.failedGates,
     outputOracle?.accepted === true ? null : 'oidn_output_oracle_not_accepted_for_runtime_boundary',
@@ -614,11 +640,13 @@ async function buildOidnRuntimeBoundaryRunModeProof({ outputOracle, classificati
       projectId: firstText(metadata.projectId, metadata.project_id, metadata.workspaceSlug, metadata.workspace_slug),
       editId: firstText(metadata.editId, metadata.edit_id, metadata.sourceEditId, metadata.source_edit_id),
       targetId: firstText(metadata.targetId, metadata.target_id, metadata.validationTargetId, metadata.validation_target_id),
-      sourcePaths: Array.isArray(metadata.sourcePaths)
-        ? metadata.sourcePaths
-        : Array.isArray(metadata.source_paths)
-          ? metadata.source_paths
-          : [],
+      sourcePaths,
+      sourceManifestHash,
+      source_manifest_hash: sourceManifestHash,
+      sourceManifestHashVerified,
+      source_manifest_hash_verified: sourceManifestHashVerified,
+      sourceIdentityEvidenceRefs,
+      source_identity_evidence_refs: sourceIdentityEvidenceRefs,
       entryPoint: firstText(metadata.entryPoint, metadata.entry_point, metadata.kernelName, metadata.kernel_name),
       compileTarget: firstText(metadata.compileTarget, metadata.compile_target, metadata.gpuArch, metadata.gpu_arch),
       compiler: firstText(metadata.compiler),
@@ -1864,6 +1892,9 @@ async function runRuntimeBoundaryBridgeSelfCheck() {
     editId: 'oidn-gpu-artifact-edit',
     targetId: 'oidn-runtime-boundary-target',
     sourcePaths: ['runtime-boundary://oidn-device-source'],
+    sourceManifestHash: syntheticHash('oidn-runtime-boundary-source-manifest'),
+    sourceManifestHashVerified: true,
+    sourceIdentityEvidenceRefs: ['runtime-boundary:oidn:source-manifest'],
     entryPoint: 'oidn_hip_denoise_kernel',
     compileTarget: 'gfx1201',
     compiler: 'hipcc',

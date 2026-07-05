@@ -236,6 +236,9 @@ function adapterInput(overrides = {}) {
     editId: 'gpu-artifact-edit',
     targetId: 'generic-runtime-boundary-target',
     sourcePaths: ['src/kernels/generic.hip'],
+    sourceManifestHash: HASH_D,
+    sourceManifestHashVerified: true,
+    sourceIdentityEvidenceRefs: ['source-manifest:generic-runtime-boundary-project'],
     entryPoint: 'generic_kernel',
     compileTarget: 'gfx1201',
     compiler: 'hipcc',
@@ -490,6 +493,42 @@ assert.equal(missingSourceIdentity.runtimeProofArtifact, null);
 assert.ok(
   missingSourceIdentity.failedGates.includes('runtime_boundary_source_paths_missing'),
   missingSourceIdentity.failedGates.join(','),
+);
+
+const missingSourceManifestHash = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  sourceManifestHash: null,
+  source_manifest_hash: null,
+});
+assert.equal(missingSourceManifestHash.accepted, false);
+assert.equal(missingSourceManifestHash.runtimeProofArtifact, null);
+assert.ok(
+  missingSourceManifestHash.failedGates.includes('runtime_boundary_source_manifest_hash_missing'),
+  missingSourceManifestHash.failedGates.join(','),
+);
+
+const unverifiedSourceManifestHash = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  sourceManifestHashVerified: false,
+  source_manifest_hash_verified: false,
+});
+assert.equal(unverifiedSourceManifestHash.accepted, false);
+assert.equal(unverifiedSourceManifestHash.runtimeProofArtifact, null);
+assert.ok(
+  unverifiedSourceManifestHash.failedGates.includes('runtime_boundary_source_manifest_hash_unverified'),
+  unverifiedSourceManifestHash.failedGates.join(','),
+);
+
+const missingSourceIdentityEvidenceRefs = buildRuntimeBoundaryProofAdapter({
+  ...adapterInput(),
+  sourceIdentityEvidenceRefs: [],
+  source_identity_evidence_refs: [],
+});
+assert.equal(missingSourceIdentityEvidenceRefs.accepted, false);
+assert.equal(missingSourceIdentityEvidenceRefs.runtimeProofArtifact, null);
+assert.ok(
+  missingSourceIdentityEvidenceRefs.failedGates.includes('runtime_boundary_source_identity_evidence_refs_missing'),
+  missingSourceIdentityEvidenceRefs.failedGates.join(','),
 );
 
 const missingEventEvidenceRefs = buildRuntimeBoundaryProofAdapter({

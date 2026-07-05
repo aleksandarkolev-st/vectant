@@ -1163,6 +1163,26 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
   const compileTarget = firstText(input.compileTarget, input.compile_target, input.gpuArch, input.gpu_arch);
   const compiler = firstText(input.compiler);
   const compilerArgsHash = normalizeSha256(firstText(input.compilerArgsHash, input.compiler_args_hash));
+  const sourceManifestHash = normalizeSha256(firstText(
+    input.sourceManifestHash,
+    input.source_manifest_hash,
+    input.sourceTreeManifestHash,
+    input.source_tree_manifest_hash,
+    input.sourceIdentityHash,
+    input.source_identity_hash,
+  ));
+  const sourceManifestHashVerified = firstBool(
+    input.sourceManifestHashVerified,
+    input.source_manifest_hash_verified,
+    input.sourceTreeManifestHashVerified,
+    input.source_tree_manifest_hash_verified,
+    input.sourceIdentityHashVerified,
+    input.source_identity_hash_verified,
+  ) === true;
+  const sourceIdentityEvidenceRefs = compactStringList([
+    ...(input.sourceIdentityEvidenceRefs ?? input.source_identity_evidence_refs ?? []),
+    ...(input.sourceManifestEvidenceRefs ?? input.source_manifest_evidence_refs ?? []),
+  ]);
   const artifactHashBefore = normalizeSha256(firstText(input.artifactHashBefore, input.artifact_hash_before));
   const artifactHashAfter = normalizeSha256(firstText(input.artifactHashAfter, input.artifact_hash_after));
   const contractHash = normalizeSha256(firstText(input.contractHash, input.contract_hash));
@@ -1192,6 +1212,13 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
     targetId ? null : 'runtime_boundary_target_id_missing',
     backend ? null : 'runtime_boundary_backend_missing',
     sourcePaths.length > 0 ? null : 'runtime_boundary_source_paths_missing',
+    sourceManifestHash ? null : 'runtime_boundary_source_manifest_hash_missing',
+    sourceManifestHash && sourceManifestHashVerified
+      ? null
+      : 'runtime_boundary_source_manifest_hash_unverified',
+    sourceIdentityEvidenceRefs.length > 0
+      ? null
+      : 'runtime_boundary_source_identity_evidence_refs_missing',
     entryPoint ? null : 'runtime_boundary_entry_point_missing',
     compileTarget ? null : 'runtime_boundary_compile_target_missing',
     compiler ? null : 'runtime_boundary_compiler_missing',
@@ -1216,6 +1243,12 @@ export function buildRuntimeBoundaryInputEvidence(input = {}) {
     gpu_hmr_success: false,
     sourcePaths,
     source_paths: sourcePaths,
+    sourceManifestHash,
+    source_manifest_hash: sourceManifestHash,
+    sourceManifestHashVerified,
+    source_manifest_hash_verified: sourceManifestHashVerified,
+    sourceIdentityEvidenceRefs,
+    source_identity_evidence_refs: sourceIdentityEvidenceRefs,
     entryPoint,
     entry_point: entryPoint,
     compileTarget,
@@ -1376,6 +1409,22 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     dispatch?.dispatchTableEntry?.split(':')[0],
   );
   const sourcePaths = compactStringList(input.sourcePaths ?? input.source_paths);
+  const sourceManifestHash = normalizeSha256(firstText(
+    input.sourceManifestHash,
+    input.source_manifest_hash,
+    input.sourceTreeManifestHash,
+    input.source_tree_manifest_hash,
+    input.sourceIdentityHash,
+    input.source_identity_hash,
+  ));
+  const sourceIdentityEvidenceRefs = compactStringList([
+    ...(input.sourceIdentityEvidenceRefs ?? input.source_identity_evidence_refs ?? []),
+    ...(input.sourceManifestEvidenceRefs ?? input.source_manifest_evidence_refs ?? []),
+  ]);
+  const sourceDependencyClosureHash = sha256Stable({
+    sourcePaths,
+    sourceManifestHash,
+  });
   const compileTarget = firstText(input.compileTarget, input.compile_target, input.gpuArch, input.gpu_arch);
   const compiler = firstText(input.compiler);
   const compilerArgsHash = normalizeSha256(firstText(input.compilerArgsHash, input.compiler_args_hash));
@@ -1404,7 +1453,13 @@ function buildBoundaryProofComponents(input, stageEvidence) {
     sourceProofProven: true,
     compileEvidenceRefs: compileRefs,
     symbolEvidenceRefs: symbolRefs,
-    evidenceRefs: compactStringList([...compileRefs, ...symbolRefs]),
+    sourceManifestHash,
+    source_manifest_hash: sourceManifestHash,
+    sourceManifestEvidenceRefs: sourceIdentityEvidenceRefs,
+    source_manifest_evidence_refs: sourceIdentityEvidenceRefs,
+    sourceIdentityEvidenceRefs,
+    source_identity_evidence_refs: sourceIdentityEvidenceRefs,
+    evidenceRefs: compactStringList([...compileRefs, ...symbolRefs, ...sourceIdentityEvidenceRefs]),
     proofArtifactPaths: [firstText(input.sourceProofArtifactPath, input.source_proof_artifact_path) ?? 'runtime-boundary://source-proof.json'],
     artifactId: artifactAfterId,
     selectedArtifactId: artifactAfterId,
@@ -1490,7 +1545,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         capsuleId: `capsule:${sha256Stable({ artifactAfterId, dispatchId }).slice('sha256:'.length).padEnd(64, '0').slice(0, 64)}`,
         fissionIslandId: 'runtime-boundary-device-island',
         abiMembraneHash: contractHash,
-        dependencyClosureHash: sha256Stable(sourcePaths),
+        dependencyClosureHash: sourceDependencyClosureHash,
         proofHash: sha256Stable(boundaryRefs),
         changedSymbols: [entryPoint],
         functionHandleIds: [`function:${entryPoint}`],
@@ -1518,7 +1573,7 @@ function buildBoundaryProofComponents(input, stageEvidence) {
         capsuleId: `capsule:${sha256Stable({ artifactAfterId, dispatchId }).slice('sha256:'.length).padEnd(64, '0').slice(0, 64)}`,
         fissionIslandId: 'runtime-boundary-device-island',
         abiMembraneHash: contractHash,
-        dependencyClosureHash: sha256Stable(sourcePaths),
+        dependencyClosureHash: sourceDependencyClosureHash,
         proofHash: sha256Stable(boundaryRefs),
         changedSymbols: [entryPoint],
         functionHandleIds: [`function:${entryPoint}`],

@@ -495,6 +495,28 @@ function runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest) {
     ...manifest,
     ...adapterInput,
   };
+  const sourcePaths = firstStringArray(source.sourcePaths, source.source_paths, [profile.source.file]);
+  const sourceManifestHash = firstString(
+    source.sourceManifestHash,
+    source.source_manifest_hash,
+    source.sourceTreeManifestHash,
+    source.source_tree_manifest_hash,
+    source.sourceIdentityHash,
+    source.source_identity_hash,
+  );
+  const sourceManifestHashVerified =
+    source.sourceManifestHashVerified === true
+    || source.source_manifest_hash_verified === true
+    || source.sourceTreeManifestHashVerified === true
+    || source.source_tree_manifest_hash_verified === true
+    || source.sourceIdentityHashVerified === true
+    || source.source_identity_hash_verified === true;
+  const sourceIdentityEvidenceRefs = firstStringArray(
+    source.sourceIdentityEvidenceRefs,
+    source.source_identity_evidence_refs,
+    source.sourceManifestEvidenceRefs,
+    source.source_manifest_evidence_refs,
+  );
   return {
     backend: firstString(
       source.backend,
@@ -506,7 +528,13 @@ function runtimeBoundaryAdapterInputFromProfileAndManifest(profile, manifest) {
     projectId: firstString(source.projectId, source.project_id, source.workspaceSlug, source.workspace_slug, profile.id),
     editId: firstString(source.editId, source.edit_id, source.sourceEditId, source.source_edit_id),
     targetId: firstString(source.targetId, source.target_id, source.validationTargetId, source.validation_target_id, profile.runtime.targetName),
-    sourcePaths: firstStringArray(source.sourcePaths, source.source_paths, [profile.source.file]),
+    sourcePaths,
+    sourceManifestHash,
+    source_manifest_hash: sourceManifestHash,
+    sourceManifestHashVerified,
+    source_manifest_hash_verified: sourceManifestHashVerified,
+    sourceIdentityEvidenceRefs,
+    source_identity_evidence_refs: sourceIdentityEvidenceRefs,
     entryPoint: firstString(
       source.entryPoint,
       source.entry_point,
@@ -1140,6 +1168,9 @@ async function selfCheck() {
     editId: 'gpu-artifact-edit',
     targetId: 'generic-runtime-boundary-target',
     sourcePaths: ['src/kernels/generic.hip'],
+    sourceManifestHash: hashD,
+    sourceManifestHashVerified: true,
+    sourceIdentityEvidenceRefs: ['runtime-boundary:source-manifest:generic-runtime-boundary-project'],
     entryPoint: 'generic_kernel',
     compileTarget: 'gfx1201',
     compiler: 'hipcc',
