@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "synthi.codesite.repoPolicyCompilerOutput.v1",
+  "compiler": {
+    "compilerVersion": "2026-07-01.1",
+    "repoRoot": null,
+    "maxFiles": null,
+    "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+    "policyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+    "compiledAt": "2026-07-05T02:42:54.431Z",
+    "fileCount": 0,
+    "truncated": false,
+    "source": "codesite_full_workflow_fixture",
+    "error": null
+  },
+  "policyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+  "policySources": {
+    "defaults": 4,
+    "repoSignals": 0,
+    "custom": 1,
+    "codeowners": 0,
+    "openapi": 0,
+    "prismaSchemas": 0,
+    "prismaMigrations": 0,
+    "packageExports": 0,
+    "importEdges": 0,
+    "testOwnership": 0,
+    "deployment": 0,
+    "pastIncidents": 0,
+    "secretPatterns": 6
+  },
+  "semanticGraph": {
+    "files": [],
+    "importEdges": [],
+    "testOwnership": [],
+    "packageExports": [],
+    "generatedClients": [],
+    "migrationLocks": [],
+    "deploymentConfig": [],
+    "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1"
+  }
+}

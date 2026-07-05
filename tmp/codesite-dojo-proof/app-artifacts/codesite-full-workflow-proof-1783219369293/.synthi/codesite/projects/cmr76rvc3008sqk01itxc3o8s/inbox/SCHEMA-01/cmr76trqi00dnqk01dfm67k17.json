@@ -1,0 +1,63 @@
+{
+  "id": "cmr76tu3z00dpqk016015sdcl",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+  "recipientUserId": "cmr76rv7e008jqk01igpdj00w",
+  "eventId": "cmr76trqi00dnqk01dfm67k17",
+  "documentId": "cmr76trqd00dlqk011lwlhv5g",
+  "kind": "change_order",
+  "requiresResponse": false,
+  "status": "acknowledged",
+  "redactedPayload": {
+    "documentId": "cmr76trqd00dlqk011lwlhv5g",
+    "eventId": "cmr76trqi00dnqk01dfm67k17",
+    "kind": "change_order",
+    "title": "API flight accepts schema-first hold",
+    "body": {
+      "answerToDocumentId": "cmr76tm7e00ddqk01ic8pff9a",
+      "decision": "accepted",
+      "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+      "routing": {
+        "fromSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "toSessionIds": [
+          "cmr76rypy009lqk017lm2gi9u"
+        ],
+        "projectRefs": {
+          "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+          "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+          "transactionId": "cmr76sqte00blqk01jga6jnj3",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "contractRefs": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "inspectionRunId": null,
+          "incidentId": null
+        }
+      }
+    },
+    "redaction": {
+      "policyApplied": true,
+      "recipientSessionId": "cmr76rypy009lqk017lm2gi9u"
+    },
+    "delivery": {
+      "modes": [
+        "durable_inbox",
+        "sse_stream",
+        "mcp_poll",
+        "repo_local_projection"
+      ],
+      "targets": [],
+      "adapterStatus": "not_configured",
+      "recipient": {
+        "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+        "provider": "codex",
+        "runtime": "tmp-codex-cli",
+        "providerSessionRef": "codex-proof-schema-20260705T0050"
+      }
+    }
+  },
+  "createdAt": "2026-07-05T02:44:26.160Z",
+  "acknowledgedAt": "2026-07-05T02:44:28.892Z"
+}

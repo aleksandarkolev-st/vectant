@@ -1,0 +1,59 @@
+{
+  "id": "cmr76t9bm00ctqk01nm3hvu3q",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "schema_contract_first_before_api_parallelism",
+    "preferredStrategies": [
+      "schema-first"
+    ],
+    "avoidStrategies": [
+      "frontend-backend-parallel"
+    ],
+    "affectedRoutes": [
+      "synthi/prisma/schema.prisma",
+      "synthi/src/app/api/auth/**"
+    ],
+    "requiredTowerActions": [
+      "refresh_downstream_assumptions",
+      "hold_dependent_api_until_schema_lands"
+    ],
+    "expectedRiskReduction": 0.31,
+    "confidence": 0.84,
+    "promotion": {
+      "reviewedBy": "cmr76ruwz008fqk01jq43g2e1",
+      "targetState": "active",
+      "validationStatus": "validated",
+      "replayRefs": [
+        "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z",
+        "shadow:job:shadow:codesite-full-workflow-proof-1783219369293:counterfactual-choice",
+        "codesite:shadow:full-workflow-counterfactual"
+      ],
+      "evidenceRefs": [
+        "codesite:counterfactual-policy-validation:full-workflow",
+        "codesite:shadow:codesite-full-workflow-proof-1783219369293:counterfactual-choice"
+      ],
+      "reasonCodes": [],
+      "promotedAt": "2026-07-05T02:44:04.058Z"
+    }
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/schema.prisma"
+    },
+    {
+      "path": "synthi/src/app/api/auth/**"
+    }
+  ],
+  "expectedRiskReduction": 0.31,
+  "confidence": 0.84,
+  "promotionState": "active",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z",
+    "shadow:job:shadow:codesite-full-workflow-proof-1783219369293:counterfactual-choice",
+    "codesite:shadow:full-workflow-counterfactual"
+  ],
+  "createdAt": "2026-07-05T02:43:59.219Z",
+  "promotedAt": "2026-07-05T02:44:04.058Z"
+}

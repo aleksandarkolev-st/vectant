@@ -1,0 +1,215 @@
+{
+  "id": "cmr76u2jm00dxqk013fcdp17q",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+  "displayCallsign": "SCHEMA-01",
+  "decision": "block",
+  "reasonCodes": [
+    "outside_clearance_route"
+  ],
+  "inputDigest": "sha256:b64235ca9bcab3a7423e7298a405027423d40c6df42da63e2bbc3c84242581b8",
+  "decisionBody": {
+    "path": "secrets/prod.env",
+    "zone": {
+      "zoneKey": "unclassified",
+      "label": "Unclassified repo airspace",
+      "class": "C",
+      "risk": "medium",
+      "rules": [
+        "auto_clearance_allowed",
+        "landing_inspection_required"
+      ],
+      "path": "secrets/prod.env"
+    },
+    "codesiteFsEvent": {
+      "type": "write_denied",
+      "transaction_id": "cmr76sqte00blqk01jga6jnj3",
+      "mutation_lease_id": "cmr76s97i00alqk01mvljd1m6",
+      "display_callsign": "SCHEMA-01",
+      "workspace_slug": "codesite-full-workflow-proof-1783219369293",
+      "actor_user_id": null,
+      "effective_user_id": null,
+      "path": "secrets/prod.env",
+      "tool": "file_write",
+      "wall_time": "2026-07-05T02:44:34.191Z",
+      "evidence_refs": [
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "details": {
+        "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+        "reason_codes": [
+          "outside_clearance_route"
+        ],
+        "process_ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "node",
+          "sh",
+          "npm-run-codesite-proof-full-workflow",
+          "codex",
+          "init"
+        ],
+        "process_ancestry_sources": {
+          "caller_supplied": [
+            "mcp:synthi_codesite_apply_patch",
+            "codex:tmp-proof-session"
+          ],
+          "os_procfs": [
+            "node",
+            "sh",
+            "npm-run-codesite-proof-full-workflow",
+            "codex",
+            "init"
+          ]
+        },
+        "os_process_ancestry": {
+          "schemaVersion": "synthi.codesite.processAncestry.v1",
+          "source": "linux_procfs",
+          "sourcePath": "/proc",
+          "platform": "linux",
+          "wsl": true,
+          "available": true,
+          "complete": true,
+          "direction": "process_to_root",
+          "collectorPid": 119758,
+          "requestedPid": 119758,
+          "capturedAt": "2026-07-05T02:44:34.189Z",
+          "labels": [
+            "node",
+            "sh",
+            "npm-run-codesite-proof-full-workflow",
+            "codex",
+            "init"
+          ],
+          "nodes": [
+            {
+              "pid": 119758,
+              "ppid": 119757,
+              "comm": "node",
+              "state": "R",
+              "argv0Basename": "node",
+              "argvCount": 2,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 1411970,
+              "cmdlineDigest": "sha256:731cfd963e9d0fc2425f96611f7ce4c4c3254cf1868013878c9b6b9590def73c",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "node"
+            },
+            {
+              "pid": 119757,
+              "ppid": 119736,
+              "comm": "sh",
+              "state": "S",
+              "argv0Basename": "sh",
+              "argvCount": 3,
+              "exeBasename": "dash",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 1411968,
+              "cmdlineDigest": "sha256:ac027f6eccab303e41ee0836930574ff462b8ca8338cfe36e10e541d01b7c316",
+              "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+              "label": "sh"
+            },
+            {
+              "pid": 119736,
+              "ppid": 684,
+              "comm": "npm-run-codesit",
+              "state": "S",
+              "argv0Basename": "npm-run-codesite-proof-full-workflow",
+              "argvCount": 1,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 1411915,
+              "cmdlineDigest": "sha256:e9055bb56655464f81bd420f306d146adbe3f9ea1e90a9b625278ec04bba818e",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "npm-run-codesite-proof-full-workflow"
+            },
+            {
+              "pid": 684,
+              "ppid": 683,
+              "comm": "codex",
+              "state": "S",
+              "argv0Basename": "codex",
+              "argvCount": 3,
+              "exeBasename": "codex",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 1815,
+              "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+              "exePathDigest": "sha256:30b3392d5989f13146f24b5499e1583fb821cd950981cfde4ca4390364c3b809",
+              "label": "codex"
+            },
+            {
+              "pid": 683,
+              "ppid": 682,
+              "comm": "Relay-684",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 1810,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 682,
+              "ppid": 2,
+              "comm": "SessionLeader",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 1810,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 2,
+              "ppid": 1,
+              "comm": "init-systemd-Ub",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 728,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 1,
+              "ppid": 0,
+              "comm": "systemd",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 723,
+              "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+              "exePathDigest": null,
+              "label": "init"
+            }
+          ],
+          "unavailableReason": null,
+          "digest": "sha256:93b064b0b4fb6ac3e44dbdb8faa500d62066264d8c6c4a592d3cf065efb5a60f"
+        },
+        "operation": "raw-terminal-write"
+      }
+    },
+    "towerInstruction": "Write denied for secrets/prod.env. File change order or request a new clearance."
+  },
+  "createdAt": "2026-07-05T02:44:37.090Z"
+}
