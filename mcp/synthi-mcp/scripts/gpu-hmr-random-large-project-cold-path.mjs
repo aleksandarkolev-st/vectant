@@ -30,6 +30,8 @@ const BUILD_METADATA_DISCOVERY_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_disc
 const BUILD_METADATA_DISCOVERY_AUTHORITY = 'build_metadata_discovery_only_not_gpu_hmr_success';
 const BUILD_METADATA_CONTENT_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const BUILD_METADATA_CONTENT_AUTHORITY = 'build_metadata_content_bytes_only_not_gpu_hmr_success';
+const BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
+  'build_metadata_semantic_tokens_only_not_runtime_authority';
 const RUNTIME_BOUNDARY_EXPECTATION_SCHEMA = 'synthi.gpu_hmr.cold_runtime_boundary_expectation.v1';
 const RUNTIME_BOUNDARY_EXPECTATION_AUTHORITY = 'runtime_boundary_expectation_only_not_gpu_hmr_success';
 const RUNTIME_BOUNDARY_EVENT_SCHEMA = 'synthi.gpu_hmr.runtime_boundary_event.v1';
@@ -1411,6 +1413,8 @@ function buildMetadataBackendCandidates(contentEvidence = {}) {
   const signals = [];
   for (const buildFile of buildFiles) {
     const summary = buildFile.semanticSummary ?? buildFile.semantic_summary ?? {};
+    const authority = summary.backendSignalAuthority ?? summary.backend_signal_authority;
+    if (authority !== BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY) continue;
     const fileSignals = Array.isArray(summary.backendSignals)
       ? summary.backendSignals
       : Array.isArray(summary.backend_signals)
@@ -1489,9 +1493,9 @@ function summarizeBuildMetadataContent(pathName, text) {
     backendSignals,
     backend_signals: backendSignals,
     backendSignalAuthority:
-      'build_metadata_semantic_tokens_only_not_runtime_authority',
+      BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY,
     backend_signal_authority:
-      'build_metadata_semantic_tokens_only_not_runtime_authority',
+      BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY,
   };
   if (family === 'cmake') {
     const projectMatch = String(text).match(/\bproject\s*\(\s*([A-Za-z0-9_.+-]+)/i);

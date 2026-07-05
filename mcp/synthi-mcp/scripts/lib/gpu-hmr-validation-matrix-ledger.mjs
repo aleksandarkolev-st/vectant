@@ -265,6 +265,8 @@ const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
   'build_metadata_content_bytes_only_not_gpu_hmr_success';
+const RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
+  'build_metadata_semantic_tokens_only_not_runtime_authority';
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
@@ -1588,6 +1590,8 @@ function randomColdBuildMetadataBackendSignalsFromContentEvidence(buildContentEv
   const signals = [];
   for (const buildFile of buildFiles) {
     const summary = compactObject(buildFile.semanticSummary ?? buildFile.semantic_summary);
+    const authority = firstText(summary.backendSignalAuthority, summary.backend_signal_authority);
+    if (authority !== RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY) continue;
     const fileSignals = compactObjectList(summary.backendSignals ?? summary.backend_signals);
     for (const signal of fileSignals) {
       const backend = firstText(signal.backend);

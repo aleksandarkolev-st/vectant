@@ -2892,6 +2892,62 @@ assert.equal(
   buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   1,
 );
+const forgedBuildMetadataBackendColdDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-forged-build-metadata-backend-source',
+);
+await writeJson(
+  path.join(forgedBuildMetadataBackendColdDir, 'random-cold-forged-build-metadata-backend-source.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-forged-build-metadata-backend',
+    sourceUrl: 'https://example.invalid/arbitrary/forged-build-metadata-backend.git',
+    immutableCommit: sha256Hex('forged-build-metadata-backend:commit').slice(0, 40),
+    sourceListingManifestOptions: {
+      gpuSourceSignalCount: 0,
+      sourceRelevantFileCount: 73,
+    },
+    buildMetadataSemanticSummary: {
+      family: 'cmake',
+      nonEmptyLineCount: 6,
+      non_empty_line_count: 6,
+      backendSignalCandidates: ['hip_rocm'],
+      backend_signal_candidates: ['hip_rocm'],
+      backendSignals: [
+        {
+          backend: 'hip_rocm',
+          reason: 'rocm_hip_build_metadata_token',
+        },
+      ],
+      backend_signals: [
+        {
+          backend: 'hip_rocm',
+          reason: 'rocm_hip_build_metadata_token',
+        },
+      ],
+    },
+  }),
+);
+const forgedBuildMetadataBackendColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedBuildMetadataBackendColdDir],
+  includeUnproven: true,
+});
+const forgedBuildMetadataBackendColdRow = forgedBuildMetadataBackendColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedBuildMetadataBackendColdRow?.matrixOutcome, 'refusal_proven');
+assert.equal(forgedBuildMetadataBackendColdRow.acceptedForGpuHmr, false);
+assert.equal(forgedBuildMetadataBackendColdRow.gpuHmrSuccess, false);
+assert.equal(forgedBuildMetadataBackendColdRow.backend, 'unknown');
+assert.deepEqual(
+  forgedBuildMetadataBackendColdRow.randomColdBackendEvidence.buildMetadataDerivedBackendCandidates,
+  [],
+);
+assert.deepEqual(
+  forgedBuildMetadataBackendColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
+  [],
+);
 
 const externalLocalColdDir = path.join(
   tmpRoot,
