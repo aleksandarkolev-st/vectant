@@ -3921,6 +3921,22 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     facet.runtimeProfileAdapterResultPath,
     facet.runtime_profile_adapter_result_path,
   );
+  const runtimeBoundaryEventManifestPath = firstText(
+    facet.runtimeBoundaryEventManifestPath,
+    facet.runtime_boundary_event_manifest_path,
+  );
+  const runtimeBoundaryEventManifestSha256 = normalizeSha256(firstText(
+    facet.runtimeBoundaryEventManifestSha256,
+    facet.runtime_boundary_event_manifest_sha256,
+  ));
+  const runtimeBoundaryProofAdapterAccepted = firstBool(
+    facet.runtimeBoundaryProofAdapterAccepted,
+    facet.runtime_boundary_proof_adapter_accepted,
+  ) === true;
+  const runtimeBoundaryProofAdapterProofId = firstText(
+    facet.runtimeBoundaryProofAdapterProofId,
+    facet.runtime_boundary_proof_adapter_proof_id,
+  );
   const facetHash = normalizeSha256(firstText(facet.facetHash, facet.facet_hash));
   const strictRuntimeProofAccepted = firstBool(
     facet.strictRuntimeProofAccepted,
@@ -3966,6 +3982,10 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
       || runtimeProofProfileSha256
       || adapterResultSha256
       || adapterResultPath
+      || runtimeBoundaryEventManifestPath
+      || runtimeBoundaryEventManifestSha256
+      || runtimeBoundaryProofAdapterAccepted
+      || runtimeBoundaryProofAdapterProofId
       || facetHash
       || blockingGaps.length
       || adapterResultBlockingGaps.length
@@ -4040,6 +4060,26 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     acceptedAsBridge && !adapterResultPath
       ? 'random_cold_runtime_profile_bridge_adapter_result_path_missing'
       : null,
+    acceptedAsBridge && runtimeBoundaryEventManifestSha256 && !isSha256(runtimeBoundaryEventManifestSha256)
+      ? 'random_cold_runtime_profile_bridge_event_manifest_hash_invalid'
+      : null,
+    runtimeBoundaryProofAdapterAccepted && acceptedAsBridge !== true
+      ? 'random_cold_runtime_profile_bridge_adapter_proof_without_bridge_acceptance'
+      : null,
+    runtimeBoundaryProofAdapterAccepted && !runtimeBoundaryProofAdapterProofId
+      ? 'random_cold_runtime_profile_bridge_adapter_proof_id_missing'
+      : null,
+    runtimeBoundaryProofAdapterAccepted
+      && runtimeBoundaryProofAdapterProofId
+      && !/^runtime-boundary-proof-adapter:sha256:[a-f0-9]{64}$/i.test(runtimeBoundaryProofAdapterProofId)
+      ? 'random_cold_runtime_profile_bridge_adapter_proof_id_invalid'
+      : null,
+    strictRuntimeProofAccepted && runtimeBoundaryProofAdapterAccepted !== true
+      ? 'random_cold_runtime_profile_bridge_strict_proof_without_adapter_proof'
+      : null,
+    strictRuntimeProofAccepted && !runtimeBoundaryEventManifestSha256
+      ? 'random_cold_runtime_profile_bridge_strict_proof_event_manifest_hash_missing'
+      : null,
     acceptedAsBridge && !facetHash
       ? 'random_cold_runtime_profile_bridge_facet_hash_missing'
       : null,
@@ -4081,6 +4121,14 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     runtime_profile_adapter_result_path: adapterResultPath,
     runtimeProfileAdapterResultSha256: adapterResultSha256,
     runtime_profile_adapter_result_sha256: adapterResultSha256,
+    runtimeBoundaryEventManifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventManifestPath,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    runtimeBoundaryProofAdapterAccepted: runtimeBoundaryProofAdapterAccepted === true,
+    runtime_boundary_proof_adapter_accepted: runtimeBoundaryProofAdapterAccepted === true,
+    runtimeBoundaryProofAdapterProofId: runtimeBoundaryProofAdapterProofId ?? null,
+    runtime_boundary_proof_adapter_proof_id: runtimeBoundaryProofAdapterProofId ?? null,
     strictRuntimeProofAccepted,
     strict_runtime_proof_accepted: strictRuntimeProofAccepted,
     strictRuntimeProofId,

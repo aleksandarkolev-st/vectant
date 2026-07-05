@@ -3349,6 +3349,12 @@ await writeJson(
         runtime_proof_profile_sha256: 'not-a-sha256-profile',
         runtimeProfileAdapterResultSha256: 'not-a-sha256-adapter-result',
         runtime_profile_adapter_result_sha256: 'not-a-sha256-adapter-result',
+        runtimeBoundaryEventManifestSha256: 'not-a-sha256-event-manifest',
+        runtime_boundary_event_manifest_sha256: 'not-a-sha256-event-manifest',
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId: 'runtime-boundary-proof-adapter:not-a-sha256',
+        runtime_boundary_proof_adapter_proof_id: 'runtime-boundary-proof-adapter:not-a-sha256',
         facetHash: 'not-a-sha256-facet',
         facet_hash: 'not-a-sha256-facet',
       }),
@@ -3374,6 +3380,12 @@ assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_runtime_profile_bridge_adapter_result_hash_invalid'
 ));
 assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_event_manifest_hash_invalid'
+));
+assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_profile_bridge_adapter_proof_id_invalid'
+));
+assert.ok(malformedHashBridgeRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_runtime_profile_bridge_facet_hash_invalid'
 ));
 const strictAcceptedBridgeDir = path.join(
@@ -3394,6 +3406,16 @@ await writeJson(
         strict_runtime_proof_id: 'gpu-runtime-proof:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         proofLedgerId: 'gpu-ledger-proof:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         proof_ledger_id: 'gpu-ledger-proof:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        runtimeBoundaryEventManifestPath: 'artifacts/arbitrary/runtime-boundary-events.json',
+        runtime_boundary_event_manifest_path: 'artifacts/arbitrary/runtime-boundary-events.json',
+        runtimeBoundaryEventManifestSha256: hashValue('strict-accepted-bridge:event-manifest'),
+        runtime_boundary_event_manifest_sha256: hashValue('strict-accepted-bridge:event-manifest'),
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId:
+          `runtime-boundary-proof-adapter:sha256:${sha256Hex('strict-accepted-bridge:adapter-proof')}`,
+        runtime_boundary_proof_adapter_proof_id:
+          `runtime-boundary-proof-adapter:sha256:${sha256Hex('strict-accepted-bridge:adapter-proof')}`,
         blockingGaps: [],
         blocking_gaps: [],
         adapterResultBlockingGaps: [],
@@ -3418,6 +3440,18 @@ const strictAcceptedBridgeRow = strictAcceptedBridgeLedger.rows.find(
 );
 assert.equal(strictAcceptedBridgeRow?.acceptedForGpuHmr, false);
 assert.equal(strictAcceptedBridgeRow.gpuHmrSuccess, false);
+assert.equal(
+  strictAcceptedBridgeRow.randomColdRuntimeProfileProofBridge.runtimeBoundaryProofAdapterAccepted,
+  true,
+);
+assert.equal(
+  strictAcceptedBridgeRow.randomColdRuntimeProfileProofBridge.runtimeBoundaryProofAdapterProofId,
+  `runtime-boundary-proof-adapter:sha256:${sha256Hex('strict-accepted-bridge:adapter-proof')}`,
+);
+assert.equal(
+  strictAcceptedBridgeRow.randomColdRuntimeProfileProofBridge.runtimeBoundaryEventManifestSha256,
+  hashValue('strict-accepted-bridge:event-manifest'),
+);
 assert.equal(strictAcceptedBridgeRuntimeClosure?.runtimeProfileBridgeAcceptedCount, 1);
 assert.equal(strictAcceptedBridgeRuntimeClosure.strictRuntimeProofAcceptedCount, 1);
 assert.equal(strictAcceptedBridgeRuntimeClosure.matrixRuntimeIngestionRequired, true);
