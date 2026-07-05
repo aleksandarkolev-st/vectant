@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod http;
 pub mod ipc;
+pub mod lifecycle;
 pub mod pair;
 pub mod policy;
 pub mod preview;

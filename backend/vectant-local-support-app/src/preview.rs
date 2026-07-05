@@ -367,6 +367,18 @@ impl PreviewTrafficGuard {
             *active = active.saturating_sub(1);
         }
     }
+
+    pub fn active_stream_count(&self, preview_host: &str) -> usize {
+        self.active_streams_by_host
+            .get(preview_host)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn clear_all(&mut self) {
+        self.request_seconds_by_host.clear();
+        self.active_streams_by_host.clear();
+    }
 }
 
 pub fn validate_preview_response_size(

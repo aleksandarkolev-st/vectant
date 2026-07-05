@@ -6,6 +6,9 @@ use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, ConsentReceipt};
 use vectant_local_support_app::http::{RateLimiter, MAX_JSON_BODY_BYTES};
 use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
+use vectant_local_support_app::lifecycle::{
+    disconnect_cleanup, uninstall_cleanup, PendingApprovalQueue,
+};
 use vectant_local_support_app::pair::{
     verify_pairing_proof, DeviceIdentity, PairingError, PairingSession,
 };
@@ -234,6 +237,60 @@ fn session_control_can_resume_from_paused_state() {
     assert!(session.validate_control(&token, "req_disconnect").is_ok());
     session.disconnect();
     assert_eq!(session.validate_control(&token, "req_after_disconnect"), Err(SessionError::Expired));
+}
+
+#[test]
+fn disconnect_cleanup_revokes_tokens_streams_and_pending_approvals() {
+    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let token = session.token_for_pairing_response().to_string();
+    let session_id = session.session_id().to_string();
+    let mut registry = PortApprovalRegistry::new();
+    let approval = registry.approve_browser_port(&session_id, 5173, "vite:1234");
+    let mut traffic = PreviewTrafficGuard::new();
+    let mut pending = PendingApprovalQueue::new();
+
+    pending.push("appr_file_1");
+    assert!(traffic.begin_stream(&approval.preview_host));
+    assert_eq!(traffic.active_stream_count(&approval.preview_host), 1);
+    assert!(registry.approval_for(&session_id, 5173, "vite:1234").is_some());
+
+    let report = disconnect_cleanup(&mut session, &mut registry, &mut traffic, &mut pending);
+
+    assert_eq!(pending.len(), 0);
+    assert_eq!(traffic.active_stream_count(&approval.preview_host), 0);
+    assert!(registry.approval_for(&session_id, 5173, "vite:1234").is_none());
+    assert_eq!(
+        session.validate_control(&token, "req_after_cleanup"),
+        Err(SessionError::Expired)
+    );
+    assert!(report.cloud_token_revoked);
+    assert!(report.local_token_revoked);
+    assert!(report.preview_tokens_revoked);
+    assert!(report.agent_tokens_revoked);
+    assert!(report.preview_streams_stopped);
+    assert!(report.pending_approvals_cleared);
+    assert!(report.session_disconnected);
+    assert!(!report.hidden_daemon_running);
+}
+
+#[test]
+fn uninstall_cleanup_leaves_no_hidden_daemon_state() {
+    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let session_id = session.session_id().to_string();
+    let mut registry = PortApprovalRegistry::new();
+    let approval = registry.approve_browser_port(&session_id, 3000, "next:3000");
+    let mut traffic = PreviewTrafficGuard::new();
+    let mut pending = PendingApprovalQueue::new();
+
+    pending.push("appr_port_1");
+    assert!(traffic.begin_stream(&approval.preview_host));
+
+    let report = uninstall_cleanup(&mut session, &mut registry, &mut traffic, &mut pending);
+
+    assert_eq!(pending.len(), 0);
+    assert_eq!(traffic.active_stream_count(&approval.preview_host), 0);
+    assert!(registry.approval_for(&session_id, 3000, "next:3000").is_none());
+    assert!(!report.hidden_daemon_running);
 }
 
 #[test]

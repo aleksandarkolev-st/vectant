@@ -49,6 +49,10 @@ impl SessionGuard {
         &self.token
     }
 
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn state(&self) -> SessionState {
         SessionState {
             session_id: self.session_id.clone(),
