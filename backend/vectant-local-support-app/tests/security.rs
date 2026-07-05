@@ -5,7 +5,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog};
 use vectant_local_support_app::http::{RateLimiter, MAX_JSON_BODY_BYTES};
-use vectant_local_support_app::pair::{PairingError, PairingSession};
+use vectant_local_support_app::pair::{
+    verify_pairing_proof, DeviceIdentity, PairingError, PairingSession,
+};
 use vectant_local_support_app::preview::{
     decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
     sanitize_response_header_list, sanitize_response_headers, PortApproval, PreviewDecision,
@@ -196,6 +198,22 @@ fn pairing_requires_matching_fingerprint_and_rate_limits() {
         let _ = limited.verify("bad", "bad");
     }
     assert_eq!(limited.verify("bad", "bad"), Err(PairingError::RateLimited));
+}
+
+#[test]
+fn pairing_proof_binds_device_key_to_challenge() {
+    let device = DeviceIdentity::generate();
+    let proof = device.sign_pairing_challenge("pair_123", "nonce_123", "browser_123", "user_123");
+
+    assert!(verify_pairing_proof(&proof).is_ok());
+
+    let mut tampered = proof.clone();
+    tampered.browser_session_id = "browser_456".to_string();
+    assert_eq!(verify_pairing_proof(&tampered), Err(PairingError::BadSignature));
+
+    let mut wrong_user = proof;
+    wrong_user.requested_user_id = "user_456".to_string();
+    assert_eq!(verify_pairing_proof(&wrong_user), Err(PairingError::BadSignature));
 }
 
 #[test]
