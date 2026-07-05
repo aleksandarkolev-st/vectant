@@ -1083,7 +1083,7 @@ function validateProofCommands({ root, proofPath, proof, requiredCommands, docke
   let dockerCommands = 0;
 
   for (const command of commandList) {
-    if (command?.ok === false || (command?.exitCode !== undefined && Number(command.exitCode) !== 0)) {
+    if (commandFailedForProof(command)) {
       failures.push(`${relative(root, proofPath)} command failed: ${command?.name || command?.command || '<unnamed>'}`);
     }
     if (isDockerCommand(command)) dockerCommands += 1;
@@ -1129,6 +1129,26 @@ function commandPassed(command) {
   if (command.ok === false) return false;
   if (command.exitCode !== undefined && Number(command.exitCode) !== 0) return false;
   return !hasBadTestCounters(command.summary) && !hasBadTestCounters(command.tap) && !hasBadTestCounters(command.testSummary);
+}
+
+function commandFailedForProof(command) {
+  if (!command || typeof command !== 'object') return false;
+  if (command.ok === false) return true;
+  if (command.exitCode === undefined) return false;
+  if (Number(command.exitCode) === 0) return false;
+  return !isExpectedShadowNearMiss(command);
+}
+
+function isExpectedShadowNearMiss(command) {
+  const evidenceRefs = Array.isArray(command?.evidenceRefs) ? command.evidenceRefs : [];
+  return command?.command === 'codesite-shadow-runner:evaluate-risk-budget'
+    && command?.executionMode === 'risk_budget_evaluation'
+    && command?.status === 'near_miss'
+    && Number(command?.exitCode) === 20
+    && typeof command?.outputDigest === 'string'
+    && command.outputDigest.startsWith('sha256:')
+    && evidenceRefs.some((ref) => String(ref).startsWith('codesite:shadow-universe:'))
+    && evidenceRefs.some((ref) => String(ref).startsWith('codesite:shadow-job:'));
 }
 
 function validateProofQualityCounters({ root, proofPath, proof, failures }) {
