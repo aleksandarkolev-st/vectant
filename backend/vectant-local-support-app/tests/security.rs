@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, ConsentReceipt};
 use vectant_local_support_app::http::{RateLimiter, MAX_JSON_BODY_BYTES};
+use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
 use vectant_local_support_app::pair::{
     verify_pairing_proof, DeviceIdentity, PairingError, PairingSession,
 };
@@ -231,6 +232,35 @@ fn session_control_can_resume_from_paused_state() {
     assert!(session.validate_control(&token, "req_disconnect").is_ok());
     session.disconnect();
     assert_eq!(session.validate_control(&token, "req_after_disconnect"), Err(SessionError::Expired));
+}
+
+#[test]
+fn desktop_ipc_allows_only_narrow_commands() {
+    let allowed = decide_ipc_request(&IpcRequest {
+        command: "session.pause".to_string(),
+        request_id: "req_pause".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed.decision, "allow");
+
+    for command in [
+        "fs.readFile",
+        "workspace.writeFile",
+        "shell.exec",
+        "openPath",
+        "clipboard.read",
+        "screen.capture",
+        "accessibility.enable",
+        "keychain.read",
+    ] {
+        let denied = decide_ipc_request(&IpcRequest {
+            command: command.to_string(),
+            request_id: format!("req_{command}"),
+            session_id: "sess_123".to_string(),
+        });
+        assert_eq!(denied.decision, "deny");
+        assert_eq!(denied.user_visible, true);
+    }
 }
 
 #[test]
