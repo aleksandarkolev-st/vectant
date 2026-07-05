@@ -140,6 +140,13 @@ pub enum PreviewDecision {
     Deny(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewRedirectDecision {
+    RewriteToPreview(String),
+    ExternalNavigation(String),
+    Block(String),
+}
+
 pub fn decide_preview_request(
     approval: Option<&PortApproval>,
     method: &str,
@@ -410,36 +417,128 @@ pub fn redirect_allowed(location: &str) -> bool {
     }
 }
 
+pub fn classify_preview_redirect(
+    approval: &PortApproval,
+    current_preview_path: &str,
+    location: &str,
+) -> PreviewRedirectDecision {
+    let location = location.trim();
+    if location.is_empty() || location.contains('\0') {
+        return PreviewRedirectDecision::Block("invalid_redirect".to_string());
+    }
+    if location.starts_with('/') {
+        return PreviewRedirectDecision::RewriteToPreview(location.to_string());
+    }
+    if !location.contains("://") {
+        if location.contains(':') {
+            return PreviewRedirectDecision::Block("custom_scheme_blocked".to_string());
+        }
+        return PreviewRedirectDecision::RewriteToPreview(resolve_relative_redirect_path(
+            current_preview_path,
+            location,
+        ));
+    }
+
+    let Ok(url) = url_parse(location) else {
+        return PreviewRedirectDecision::Block("invalid_redirect".to_string());
+    };
+    if url.has_userinfo {
+        return PreviewRedirectDecision::Block("userinfo_blocked".to_string());
+    }
+    if !matches!(url.scheme.as_str(), "http" | "https") {
+        return PreviewRedirectDecision::Block("custom_scheme_blocked".to_string());
+    }
+    if let Some(ip) = url.host_ip {
+        if ip.is_loopback() && url.port == Some(approval.port) {
+            return PreviewRedirectDecision::RewriteToPreview(url.path_and_query);
+        }
+        return PreviewRedirectDecision::Block("redirect_target_not_approved".to_string());
+    }
+    if url.scheme == "https" {
+        return PreviewRedirectDecision::ExternalNavigation(location.to_string());
+    }
+    PreviewRedirectDecision::Block("redirect_target_not_loopback".to_string())
+}
+
 struct ParsedUrl {
     scheme: String,
     host_ip: Option<IpAddr>,
+    port: Option<u16>,
     has_userinfo: bool,
+    path_and_query: String,
 }
 
 fn url_parse(location: &str) -> Result<ParsedUrl, ()> {
     let (scheme, rest) = location.split_once("://").ok_or(())?;
-    let authority = rest.split('/').next().ok_or(())?;
+    let (authority, path_and_query) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, "/"),
+    };
     let has_userinfo = authority.contains('@');
     let host_part = authority.rsplit('@').next().ok_or(())?;
-    let host = parse_host_without_port(host_part)?;
+    let (host, port) = parse_host_and_port(host_part)?;
+    if host_has_forbidden_numeric_form(host) {
+        return Err(());
+    }
+    let host_lower = host.to_ascii_lowercase();
     let host_ip = match host {
-        "localhost" => Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        _ if host_lower == "localhost" => Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         "::1" => Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
         value => value.parse::<IpAddr>().ok(),
     };
     Ok(ParsedUrl {
         scheme: scheme.to_ascii_lowercase(),
         host_ip,
+        port,
         has_userinfo,
+        path_and_query: path_and_query.to_string(),
     })
 }
 
-fn parse_host_without_port(authority_host: &str) -> Result<&str, ()> {
+fn parse_host_and_port(authority_host: &str) -> Result<(&str, Option<u16>), ()> {
     if let Some(rest) = authority_host.strip_prefix('[') {
         let end = rest.find(']').ok_or(())?;
-        return Ok(&rest[..end]);
+        let remainder = &rest[end + 1..];
+        let port = parse_optional_port(remainder)?;
+        return Ok((&rest[..end], port));
     }
-    Ok(authority_host.split(':').next().ok_or(())?)
+    let mut parts = authority_host.split(':');
+    let host = parts.next().ok_or(())?;
+    let port = match parts.next() {
+        Some(value) => Some(value.parse::<u16>().map_err(|_| ())?),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return Err(());
+    }
+    Ok((host, port))
+}
+
+fn parse_optional_port(remainder: &str) -> Result<Option<u16>, ()> {
+    if remainder.is_empty() {
+        return Ok(None);
+    }
+    let value = remainder.strip_prefix(':').ok_or(())?;
+    Ok(Some(value.parse::<u16>().map_err(|_| ())?))
+}
+
+fn host_has_forbidden_numeric_form(host: &str) -> bool {
+    let lower = host.to_ascii_lowercase();
+    lower.starts_with("0x")
+        || lower.split('.').any(|part| part.starts_with("0x"))
+        || lower
+            .split('.')
+            .any(|part| part.len() > 1 && part.starts_with('0') && part.chars().all(|ch| ch.is_ascii_digit()))
+        || (lower.chars().all(|ch| ch.is_ascii_digit()) && lower.len() > 3)
+}
+
+fn resolve_relative_redirect_path(current_preview_path: &str, location: &str) -> String {
+    let base = current_preview_path.split('?').next().unwrap_or("/");
+    let directory = match base.rfind('/') {
+        Some(0) | None => "/",
+        Some(index) => &base[..=index],
+    };
+    format!("{directory}{location}")
 }
 
 fn parse_connection_tokens(value: &str) -> Vec<String> {

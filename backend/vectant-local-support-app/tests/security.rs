@@ -13,10 +13,10 @@ use vectant_local_support_app::pair::{
     verify_pairing_proof, DeviceIdentity, PairingError, PairingSession,
 };
 use vectant_local_support_app::preview::{
-    decide_preview_request, decide_preview_request_from_header_list, redirect_allowed,
-    port_identity_matches, preview_path_allowed, sanitize_response_header_list,
+    classify_preview_redirect, decide_preview_request, decide_preview_request_from_header_list,
+    redirect_allowed, port_identity_matches, preview_path_allowed, sanitize_response_header_list,
     sanitize_response_headers, validate_preview_response_size, PortApproval, PortApprovalRegistry,
-    PreviewDecision, PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
+    PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
     MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
 };
 use vectant_local_support_app::policy::Classification;
@@ -504,9 +504,74 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
 
     assert!(!redirect_allowed("http://169.254.169.254/latest/meta-data/"));
     assert!(!redirect_allowed("http://192.168.1.1/admin"));
+    assert!(!redirect_allowed("http://2130706433/admin"));
+    assert!(!redirect_allowed("http://0x7f.0.0.1/admin"));
+    assert!(!redirect_allowed("http://0177.0.0.1/admin"));
+    assert!(!redirect_allowed("http://user:pass@127.0.0.1:5173/secret"));
     assert!(!redirect_allowed("file:///etc/passwd"));
     assert!(redirect_allowed("http://127.0.0.1:5173/ok"));
     assert!(redirect_allowed("http://[::1]:5173/ok"));
+}
+
+#[test]
+fn preview_redirect_classifier_rewrites_only_approved_loopback_targets() {
+    let approval = PortApproval::browser_only(5173, "vite:1234");
+
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "/assets/app.js"),
+        PreviewRedirectDecision::RewriteToPreview("/assets/app.js".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "next.html"),
+        PreviewRedirectDecision::RewriteToPreview("/docs/next.html".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "http://127.0.0.1:5173/ok?x=1"),
+        PreviewRedirectDecision::RewriteToPreview("/ok?x=1".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "http://localhost:5173/ok"),
+        PreviewRedirectDecision::RewriteToPreview("/ok".to_string())
+    );
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "http://[::1]:5173/ok"),
+        PreviewRedirectDecision::RewriteToPreview("/ok".to_string())
+    );
+}
+
+#[test]
+fn preview_redirect_classifier_blocks_proxy_abuse_and_separates_external_navigation() {
+    let approval = PortApproval::browser_only(5173, "vite:1234");
+
+    for location in [
+        "http://127.0.0.1:3000/wrong-port",
+        "https://127.0.0.1:3000/wrong-port",
+        "http://192.168.1.1/admin",
+        "https://192.168.1.1/admin",
+        "http://10.0.0.5/",
+        "https://10.0.0.5/",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://169.254.169.254/latest/meta-data/",
+        "http://2130706433/admin",
+        "http://0x7f.0.0.1/admin",
+        "http://0177.0.0.1/admin",
+        "file:///etc/passwd",
+        "mailto:security@example.com",
+        "http://user:pass@127.0.0.1:5173/secret",
+    ] {
+        assert!(
+            matches!(
+                classify_preview_redirect(&approval, "/docs/index.html", location),
+                PreviewRedirectDecision::Block(_)
+            ),
+            "{location} should be blocked"
+        );
+    }
+
+    assert_eq!(
+        classify_preview_redirect(&approval, "/docs/index.html", "https://example.com/docs"),
+        PreviewRedirectDecision::ExternalNavigation("https://example.com/docs".to_string())
+    );
 }
 
 #[test]
