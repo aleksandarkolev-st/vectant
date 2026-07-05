@@ -2,6 +2,7 @@
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 const REQUIRED_FIELDS = [
@@ -32,6 +33,7 @@ function main(argv) {
     trailersPath: args.trailersPath,
     requireTrailers: args.requireTrailers,
     repoPath: args.repoPath,
+    gitBundlePath: args.gitBundlePath,
     commitSha: args.commitSha,
     requireGitCommit: args.requireGitCommit,
     authoritySecret: args.authoritySecret,
@@ -135,6 +137,7 @@ export function verifyProofBundleFile(bundlePath, options = {}) {
 function verifyTrailers(bundle, options) {
   const trailersPath = options.trailersPath ? path.resolve(options.trailersPath) : null;
   const repoPath = options.repoPath ? path.resolve(options.repoPath) : null;
+  const gitBundlePath = options.gitBundlePath ? path.resolve(options.gitBundlePath) : null;
   const commitSha = normalizeCommitSha(options.commitSha || options.commit || bundle.commitSha);
   const errors = [];
   const warnings = [];
@@ -142,26 +145,29 @@ function verifyTrailers(bundle, options) {
   let trailerText = null;
   let gitCommit = null;
 
-  if (repoPath && commitSha) {
+  if ((repoPath || gitBundlePath) && commitSha) {
     try {
-      const commitMessage = gitOutput(repoPath, ['show', '-s', '--format=%B', commitSha]);
-      const resolvedCommitSha = gitOutput(repoPath, ['rev-parse', '--verify', `${commitSha}^{commit}`]);
-      const treeSha = gitOutput(repoPath, ['show', '-s', '--format=%T', resolvedCommitSha]);
+      const loadedCommit = repoPath
+        ? loadGitCommitFromRepo(repoPath, commitSha)
+        : loadGitCommitFromBundle(gitBundlePath, commitSha);
+      const { commitMessage, resolvedCommitSha, treeSha, source } = loadedCommit;
       trailerText = commitMessage;
       gitCommit = {
-        repoPath,
+        repoPath: source.repoPath || null,
+        gitBundlePath: source.gitBundlePath || null,
         requestedCommitSha: commitSha,
         commitSha: resolvedCommitSha,
         treeSha,
         messageDigest: digest(commitMessage),
       };
       reasonCodes.push('proof_git_commit_loaded');
+      if (source.gitBundlePath) reasonCodes.push('proof_git_bundle_loaded');
     } catch (error) {
       errors.push(`git commit unreadable: ${error?.message || String(error)}`);
       return { checked: false, errors, warnings, trailersPath, gitCommit, reasonCodes };
     }
   } else if (options.requireGitCommit) {
-    errors.push('git commit verification is required but --repo and --commit were not both provided');
+    errors.push('git commit verification is required but neither --repo/--commit nor --git-bundle/--commit was provided');
     return { checked: false, errors, warnings, trailersPath, gitCommit, reasonCodes };
   } else if (trailersPath) {
     try {
@@ -205,6 +211,40 @@ function verifyTrailers(bundle, options) {
     if (gitCommit) reasonCodes.push('proof_git_commit_trailers_match');
   }
   return { checked: true, errors, warnings, trailersPath, gitCommit, reasonCodes };
+}
+
+function loadGitCommitFromRepo(repoPath, commitSha) {
+  const commitMessage = gitOutput(repoPath, ['show', '-s', '--format=%B', commitSha]);
+  const resolvedCommitSha = gitOutput(repoPath, ['rev-parse', '--verify', `${commitSha}^{commit}`]);
+  const treeSha = gitOutput(repoPath, ['show', '-s', '--format=%T', resolvedCommitSha]);
+  return {
+    commitMessage,
+    resolvedCommitSha,
+    treeSha,
+    source: { repoPath },
+  };
+}
+
+function loadGitCommitFromBundle(gitBundlePath, commitSha) {
+  if (!gitBundlePath || !fs.existsSync(gitBundlePath)) {
+    throw new Error(`git bundle missing: ${gitBundlePath || '<missing>'}`);
+  }
+  const tempRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-bundle-'));
+  try {
+    gitOutput(tempRepo, ['init', '--quiet']);
+    gitOutput(tempRepo, ['fetch', '--quiet', gitBundlePath, 'HEAD']);
+    const commitMessage = gitOutput(tempRepo, ['show', '-s', '--format=%B', commitSha]);
+    const resolvedCommitSha = gitOutput(tempRepo, ['rev-parse', '--verify', `${commitSha}^{commit}`]);
+    const treeSha = gitOutput(tempRepo, ['show', '-s', '--format=%T', resolvedCommitSha]);
+    return {
+      commitMessage,
+      resolvedCommitSha,
+      treeSha,
+      source: { repoPath: tempRepo, gitBundlePath },
+    };
+  } finally {
+    fs.rmSync(tempRepo, { recursive: true, force: true });
+  }
 }
 
 function gitOutput(repoPath, args) {
@@ -470,6 +510,8 @@ function parseArgs(argv) {
       args.requireTrailers = true;
     } else if (arg === '--repo') {
       args.repoPath = argv[++index];
+    } else if (arg === '--git-bundle') {
+      args.gitBundlePath = argv[++index];
     } else if (arg === '--commit') {
       args.commitSha = argv[++index];
     } else if (arg === '--require-git-commit') {
@@ -494,7 +536,7 @@ function parseArgs(argv) {
 function printUsage(code) {
   const stream = code === 0 ? process.stdout : process.stderr;
   stream.write([
-    'Usage: node scripts/codesite-proof-verify.mjs --bundle <proof.json> [--trailers <trailers.txt>] [--repo <repo> --commit <sha> --require-git-commit] [--require-trailers] [--trusted-keys keys.json] [--require-trusted-authority]',
+    'Usage: node scripts/codesite-proof-verify.mjs --bundle <proof.json> [--trailers <trailers.txt>] [--repo <repo> --commit <sha> --require-git-commit] [--git-bundle <bundle> --commit <sha> --require-git-commit] [--require-trailers] [--trusted-keys keys.json] [--require-trusted-authority]',
     '',
     'Verifies a portable CodeSite proof bundle outside the UI and emits JSON.',
     '',

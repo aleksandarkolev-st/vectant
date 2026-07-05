@@ -2078,6 +2078,37 @@ async function gitCommitEvidence(proofRepo) {
   };
 }
 
+async function createProofRepoGitBundle({ dir, slug, proofRepo, commitSha }) {
+  const bundleDir = path.join(dir, 'codesite-full-workflow-git-bundles', safeArtifactSegment(slug));
+  await fs.promises.mkdir(bundleDir, { recursive: true });
+  const bundlePath = path.join(bundleDir, 'proof-bundle.git.bundle');
+  const manifestPath = path.join(bundleDir, 'proof-bundle-git-manifest.json');
+  await fs.promises.rm(bundlePath, { force: true });
+  await run('git', ['bundle', 'create', bundlePath, 'HEAD'], { cwd: proofRepo.hostRoot, env: proofRepo.gitEnv });
+  const listHeads = await run('git', ['bundle', 'list-heads', bundlePath], { cwd: proofRepo.hostRoot, env: proofRepo.gitEnv });
+  const manifest = {
+    schemaVersion: 'synthi.codesite.proofRepoGitBundle.v1',
+    slug,
+    generatedAt: new Date().toISOString(),
+    path: relativeProofPath(bundlePath),
+    sha256: await fileSha256(bundlePath),
+    commitSha,
+    sourceRepo: relativeProofPath(proofRepo.hostRoot),
+    refs: listHeads.stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  };
+  await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return {
+    ...manifest,
+    absolutePath: bundlePath,
+    manifestPath: relativeProofPath(manifestPath),
+    manifestSha256: await fileSha256(manifestPath),
+  };
+}
+
 function proofShadowExecutionPlan(proofRepo, changedPath) {
   return {
     schemaVersion: 'synthi.codesite.shadowExecutionPlan.v1',
@@ -2457,7 +2488,7 @@ function resolveProofAuthorityFilePath(filePath) {
     : path.resolve(repoRoot(), filePath);
 }
 
-async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRoot, commitSha }) {
+async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRoot, gitBundlePath, commitSha }) {
   const bundleRel = exportPaths.find((item) => item.endsWith(`/proof-bundles/${proofBundle.id}.proof.json`));
   const trailersRel = exportPaths.find((item) => item.endsWith(`/proof-bundles/${proofBundle.id}.trailers.txt`));
   if (!bundleRel || !trailersRel) {
@@ -2495,7 +2526,12 @@ async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRo
     '--trailers',
     trailersPath,
     '--require-trailers',
-    ...(gitRepoRoot && commitSha ? ['--repo', gitRepoRoot, '--commit', commitSha, '--require-git-commit'] : []),
+    ...(gitBundlePath && commitSha
+      ? ['--git-bundle', gitBundlePath, '--commit', commitSha, '--require-git-commit']
+      : []),
+    ...(!gitBundlePath && gitRepoRoot && commitSha
+      ? ['--repo', gitRepoRoot, '--commit', commitSha, '--require-git-commit']
+      : []),
     ...(trustedKeysPath ? ['--trusted-keys', trustedKeysPath] : []),
     '--require-trusted-authority',
   ], { cwd: path.join(repoRoot(), 'synthi'), env: verifierEnv }).then(
@@ -2506,6 +2542,7 @@ async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRo
       artifactRoot,
       bundlePath,
       trailersPath,
+      gitBundlePath: gitBundlePath || null,
       trustedKeysPath,
       trustedHmacProofAuthority,
     }),
@@ -2517,6 +2554,7 @@ async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRo
       artifactRoot,
       bundlePath,
       trailersPath,
+      gitBundlePath: gitBundlePath || null,
       trustedKeysPath,
       trustedHmacProofAuthority,
     }),
@@ -3863,11 +3901,18 @@ async function main() {
     typeof file === 'string' ? file : file.relativePath || file.path
   )).filter(Boolean);
   const eventTypes = events.events.map((event) => event.eventType);
+  const proofRepoGitBundle = await createProofRepoGitBundle({
+    dir,
+    slug,
+    proofRepo,
+    commitSha: proofBundle.commitSha,
+  });
   const verifier = await runVerifier({
     proofBundle,
     exportPaths,
     slug,
     repoRoot: proofRepo.hostRoot,
+    gitBundlePath: proofRepoGitBundle.absolutePath,
     commitSha: proofBundle.commitSha,
   });
   const counterfactualRunRef = `codesite:counterfactual-run:${counterfactualResponse.counterfactualRun.id}`;
@@ -4120,6 +4165,14 @@ async function main() {
       landingCommit,
       trailerCommit,
       proofBundleCommitSha: proofBundle.commitSha,
+      proofRepoGitBundle: {
+        path: proofRepoGitBundle.path,
+        sha256: proofRepoGitBundle.sha256,
+        manifestPath: proofRepoGitBundle.manifestPath,
+        manifestSha256: proofRepoGitBundle.manifestSha256,
+        refs: proofRepoGitBundle.refs,
+        commitSha: proofRepoGitBundle.commitSha,
+      },
       trailerTreeMatchesLandingTree: landingCommit.tree === trailerCommit.tree,
       trailersPresent: commitMessageContainsTrailers(trailerCommit.message, proofBundle.trailers),
     },
@@ -4466,6 +4519,7 @@ async function main() {
       exportedProofVerifies: verifier.ok === true
         && verifier.json?.ok === true
         && verifier.json?.reasonCodes?.includes('proof_bundle_signature_valid')
+        && verifier.json?.reasonCodes?.includes('proof_git_bundle_loaded')
         && verifier.json?.reasonCodes?.includes('proof_commit_trailers_match')
         && verifier.json?.reasonCodes?.includes('proof_git_commit_trailers_match'),
       browserUiCaptured: fs.existsSync(browserShot)
@@ -4556,6 +4610,8 @@ async function main() {
     textPaths: [
       runPaths.jsonPath,
       runPaths.htmlPath,
+      proofRepoGitBundle.absolutePath,
+      path.join(repoRoot(), proofRepoGitBundle.manifestPath),
       ...runtimeAttestations.map((attestation) => path.join(repoRoot(), attestation.path)),
     ],
   });

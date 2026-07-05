@@ -1275,6 +1275,7 @@ function verifyProofBundles({ root, proofRoot, slug, proof, trustedKeysPath, fai
       trailersPath,
       requireTrailers: true,
       repoPath: gitContext?.repoPath || null,
+      gitBundlePath: gitContext?.gitBundlePath || null,
       commitSha: gitContext?.commitSha || null,
       requireGitCommit: true,
       trustedKeysPath,
@@ -1283,6 +1284,8 @@ function verifyProofBundles({ root, proofRoot, slug, proof, trustedKeysPath, fai
     });
     if (!result.ok) {
       failures.push(`${relative(root, bundlePath)} failed trusted proof verification: ${result.errors.join('; ')}`);
+    } else if (!result.reasonCodes?.includes('proof_git_bundle_loaded')) {
+      failures.push(`${relative(root, bundlePath)} proof verification did not load commit trailers from portable Git bundle`);
     } else if (!result.reasonCodes?.includes('proof_git_commit_trailers_match')) {
       failures.push(`${relative(root, bundlePath)} proof verification did not load matching actual git commit trailers`);
     } else {
@@ -1307,11 +1310,40 @@ function resolveProofBundleGitContext({ root, proofRoot, slug, proof, bundle, bu
     failures.push(`${label} missing proof-bundle git commit provenance`);
     return null;
   }
+  const gitBundlePath = resolveProofRepoGitBundle({ root, proof, commitSha, label, failures });
+  if (gitBundlePath) return { gitBundlePath, commitSha };
   if (!fs.existsSync(repoPath)) {
     failures.push(`${label} proof-bundle git repo missing: ${relative(root, repoPath)}`);
     return null;
   }
   return { repoPath, commitSha };
+}
+
+function resolveProofRepoGitBundle({ root, proof, commitSha, label, failures }) {
+  const bundle = proof?.git?.proofRepoGitBundle || null;
+  if (!bundle?.path) {
+    failures.push(`${label} missing portable proof-repo Git bundle provenance`);
+    return null;
+  }
+  const bundlePath = path.resolve(root, bundle.path);
+  const bundleRel = path.relative(root, bundlePath);
+  if (bundleRel.startsWith('..') || path.isAbsolute(bundleRel)) {
+    failures.push(`${label} portable Git bundle path escapes repository: ${bundle.path}`);
+    return null;
+  }
+  if (!fs.existsSync(bundlePath)) {
+    failures.push(`${label} portable Git bundle missing: ${relative(root, bundlePath)}`);
+    return null;
+  }
+  if (bundle.sha256) verifySha(root, bundlePath, bundle.sha256, failures);
+  if (bundle.commitSha && bundle.commitSha !== commitSha) {
+    failures.push(`${label} portable Git bundle commit ${bundle.commitSha} does not match proof commit ${commitSha}`);
+  }
+  const refs = Array.isArray(bundle.refs) ? bundle.refs : [];
+  if (refs.length && !refs.some((ref) => ref.startsWith(commitSha))) {
+    failures.push(`${label} portable Git bundle refs do not include commit ${commitSha}`);
+  }
+  return bundlePath;
 }
 
 function proofBundleCommitSha(proof, bundle, bundlePath, bundleCount) {
