@@ -31584,10 +31584,26 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     : preliminarySafetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
   const preliminaryBroadProof =
     computeBroadLibraryAgnosticProof(preliminaryIncludedRows, randomColdPathFreshnessContext);
-  const safetyEvaluatedRows = rows.map((row) =>
+  const interimSafetyEvaluatedRows = rows.map((row) =>
     rowWithEvaluatedSafety(row, { broadProof: preliminaryBroadProof })
   );
-  const selectedRows = options.latestPerTarget === false ? safetyEvaluatedRows : selectBestRows(safetyEvaluatedRows);
+  const interimSelectedRows = options.latestPerTarget === false
+    ? interimSafetyEvaluatedRows
+    : selectBestRows(interimSafetyEvaluatedRows);
+  const interimSafetyAcceptedRows = includeSafetyInvalidatedRows
+    ? interimSelectedRows
+    : interimSelectedRows.filter((row) => row.safety?.accepted === true);
+  const interimIncludedRows = options.includeUnproven === true
+    ? interimSafetyAcceptedRows
+    : interimSafetyAcceptedRows.filter((row) => row.matrixOutcome !== 'unproven');
+  const finalBroadProof =
+    computeBroadLibraryAgnosticProof(interimIncludedRows, randomColdPathFreshnessContext);
+  const safetyEvaluatedRows = rows.map((row) =>
+    rowWithEvaluatedSafety(row, { broadProof: finalBroadProof })
+  );
+  const selectedRows = options.latestPerTarget === false
+    ? safetyEvaluatedRows
+    : selectBestRows(safetyEvaluatedRows);
   const safetyAcceptedRows = includeSafetyInvalidatedRows
     ? selectedRows
     : selectedRows.filter((row) => row.safety?.accepted === true);
@@ -31600,8 +31616,16 @@ export function buildGpuHmrValidationMatrixLedger(rows, options = {}) {
     enabled: options.includeUnproven === true,
   });
   includedRows.sort((a, b) => rowKey(a).localeCompare(rowKey(b)));
+  const querySummary = queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    generatedAt,
+    generated_at: generatedAt,
+    rows: includedRows,
+    attemptHistory,
+    attempt_history: attemptHistory,
+  }).summary;
   const summary = {
-    ...coverageSummary(includedRows, { attemptHistory, ...randomColdPathFreshnessContext }),
+    ...querySummary,
     includeInvalidated: options.includeInvalidated === true,
     omittedInvalidatedRows,
     omitted_invalidated_rows: omittedInvalidatedRows,
