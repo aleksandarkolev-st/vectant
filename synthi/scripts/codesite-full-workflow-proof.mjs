@@ -3153,6 +3153,8 @@ async function main() {
       strategies: ['schema_first', 'frontend_backend_parallel'],
       shadowJobRef: `shadow:${slug}:schema-first`,
       baseSnapshot: baseSnapshotEvidence.snapshotDigest,
+      requireExternalRunnerEvidence: true,
+      proofMaturity: 'mature',
       shadowExecutionPlan: proofShadowExecutionPlan(proofRepo, changedPath),
     }),
   });
@@ -3224,6 +3226,8 @@ async function main() {
       strategies: ['schema_first', 'frontend_backend_parallel'],
       shadowJobRef: `shadow:${slug}:learned-policy-memory`,
       baseSnapshot: baseSnapshotEvidence.snapshotDigest,
+      requireExternalRunnerEvidence: true,
+      proofMaturity: 'mature',
       shadowExecutionPlan: proofShadowExecutionPlan(proofRepo, changedPath),
     }),
   });

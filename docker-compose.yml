@@ -112,6 +112,12 @@ services:
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
       DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
       SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
+      # Mature CodeSite shadow proofs execute isolated repo-command universes.
+      # The runner reads from the read-only /workspace mirror and copies each
+      # universe to /tmp before applying patches or running checks.
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON: '["node","/workspace/synthi/scripts/codesite-shadow-runner.mjs"]'
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: "/workspace"
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS: "1"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"
