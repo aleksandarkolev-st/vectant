@@ -8,6 +8,7 @@ import {
   generateEd25519DojoProofKeyPair,
 } from '../../mcp/synthi-mcp/dist/dojo/proof/signing.js';
 import { dispatchCodeSiteTool } from '../../mcp/synthi-mcp/dist/tools/codesite.js';
+import { addAuthCookiesToBrowserContext, ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_APP_BASE_URL = 'http://127.0.0.1:3117';
 const DEFAULT_COLLAB_BASE_URL = 'http://127.0.0.1:1237';
@@ -402,10 +403,13 @@ async function captureQuarantineReviewUi({
   desktopScreenshotPath,
   mobileScreenshotPath,
   rejectedScreenshotPath,
+  authCookie,
 }) {
   await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1120 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1120 }, deviceScaleFactor: 1 });
+  await addAuthCookiesToBrowserContext(context, baseUrl, authCookie);
+  const page = await context.newPage();
   await page.addInitScript(() => {
     const nativeSetInterval = window.setInterval.bind(window);
     window.setInterval = (handler, timeout, ...args) => {
@@ -615,8 +619,10 @@ async function main() {
   const collabBaseUrl = process.env.CODESITE_PROOF_COLLAB_URL || DEFAULT_COLLAB_BASE_URL;
   const controlPlaneBaseUrl = process.env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL || DEFAULT_COLLAB_CONTROL_PLANE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const api = createApi(appBaseUrl, slug);
-  const userId = process.env.CODESITE_PROOF_USER_ID || 'codesite-dev-bypass';
+  const { api, authCookie, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
+    workspaceName: 'Quarantine review proof workspace',
+  });
+  const userId = process.env.CODESITE_PROOF_USER_ID || actor.sessionUserId;
   const targetPath = 'docs/review.md';
   const createdPath = 'docs/notes.md';
   const escapePath = 'docs/escape-link.txt';
@@ -787,6 +793,7 @@ async function main() {
     desktopScreenshotPath: path.join(outDir(), 'codesite-quarantine-review-ui-desktop-full.png'),
     mobileScreenshotPath: path.join(outDir(), 'codesite-quarantine-review-ui-mobile.png'),
     rejectedScreenshotPath: path.join(outDir(), 'codesite-quarantine-review-ui-rejected.png'),
+    authCookie,
   });
   const replay = uiProof.replay;
   const apply = uiProof.apply;

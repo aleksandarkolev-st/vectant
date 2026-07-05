@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-07-01T06:01:56.925Z",
-  "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-counterfactual-memory-proof-1782885591326",
+  "generatedAt": "2026-07-05T07:28:22.436Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-counterfactual-memory-proof-1783236475999",
   "simulationProject": {
-    "id": "cmr1o27bc0000ob4twnhfmi0g",
+    "id": "cmr7gygj7008jmz012l6cmlwr",
     "title": "Counterfactual ATC memory proof"
   },
   "simulatorDelta": {
-    "id": "cmr1o2luf000xob4t65z2yqz5",
-    "projectId": "cmr1o27bc0000ob4twnhfmi0g",
+    "id": "cmr7gynre009mmz01clnve4ta",
+    "projectId": "cmr7gygj7008jmz012l6cmlwr",
     "learnedFromIncidents": [
       "near-miss-signup-contract-001"
     ],
@@ -26,17 +26,17 @@
         "run_owned_tests_before_landing"
       ],
       "promotion": {
-        "reviewedBy": "codesite-dev-bypass",
+        "reviewedBy": "cmr7gyg9u008fmz01nhwwg71s",
         "targetState": "active",
         "validationStatus": "passed",
         "replayRefs": [
-          "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+          "shadow:job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
         ],
         "evidenceRefs": [
           "replay:evidence:counterfactual-memory-simulator"
         ],
         "reasonCodes": [],
-        "promotedAt": "2026-07-01T06:00:33.960Z"
+        "promotedAt": "2026-07-05T07:28:08.938Z"
       }
     },
     "triggerConditions": [
@@ -51,18 +51,18 @@
     "confidence": 0.95,
     "promotionState": "active",
     "replayRefs": [
-      "shadow:job:codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0"
+      "shadow:job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
     ],
-    "createdAt": "2026-07-01T06:00:31.768Z",
-    "promotedAt": "2026-07-01T06:00:33.960Z"
+    "createdAt": "2026-07-05T07:28:07.370Z",
+    "promotedAt": "2026-07-05T07:28:08.938Z"
   },
   "leaseProject": {
-    "id": "cmr1o40z00018ob4tm2dt9j8n",
+    "id": "cmr7gysbc009xmz01qqyiczem",
     "title": "Counterfactual lease gate proof"
   },
   "leaseDelta": {
-    "id": "cmr1o4b8h0037ob4tyba2h6l4",
-    "projectId": "cmr1o40z00018ob4tm2dt9j8n",
+    "id": "cmr7gyvtz00almz01yuiplh0c",
+    "projectId": "cmr7gysbc009xmz01qqyiczem",
     "learnedFromIncidents": [
       "near-miss-ui-contract-rfi-001"
     ],
@@ -77,17 +77,17 @@
         "sequence_after_contract_response"
       ],
       "promotion": {
-        "reviewedBy": "codesite-dev-bypass",
+        "reviewedBy": "cmr7gyg9u008fmz01nhwwg71s",
         "targetState": "active",
         "validationStatus": "passed",
         "replayRefs": [
-          "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+          "shadow:job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
         ],
         "evidenceRefs": [
           "replay:evidence:counterfactual-memory-lease"
         ],
         "reasonCodes": [],
-        "promotedAt": "2026-07-01T06:01:53.012Z"
+        "promotedAt": "2026-07-05T07:28:19.276Z"
       }
     },
     "triggerConditions": [
@@ -99,10 +99,10 @@
     "confidence": 0.9,
     "promotionState": "active",
     "replayRefs": [
-      "shadow:job:codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c"
+      "shadow:job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
     ],
-    "createdAt": "2026-07-01T06:01:51.329Z",
-    "promotedAt": "2026-07-01T06:01:53.012Z"
+    "createdAt": "2026-07-05T07:28:17.832Z",
+    "promotedAt": "2026-07-05T07:28:19.276Z"
   },
   "before": {
     "selected": "schema-first",
@@ -137,7 +137,33 @@
         "inspectionRuns": 0,
         "signalStrength": "moderate"
       },
-      "learnedPolicyDeltaRefs": []
+      "learnedPolicyDeltaRefs": [],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:b7d34670b6a60e6bad81f91bcc4c16f9b269c74bea95ae5258569887b194895b",
+          "codesite:shadow-universe:schema-first:sha256:aa4b8eb6176123fc08ce26ca279bf19502370764e67a6e7fe47229c0685698f8",
+          "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:974ed1def193cff0b6e413003176b6c1d4c98b6b00ef57b1b1cd7d15f5e6d809",
+          "codesite:shadow-universe:test-first:sha256:d20377f650a1480ea08a58be7d5b97ba395c8c0b90d164d5a3fc35d22ba6ab18",
+          "codesite:shadow-runner-input:sha256:8713e849ccdee8bc9327d5f686968b1ce230ad1d856f175cc0c2ea62e3ddb78c",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:2b5aee87b6783f825f30dc033bcfac6350d3e8ca16f11f6dcaa6f8832a709d9d",
+          "codesite:shadow-runner-output:sha256:2b5aee87b6783f825f30dc033bcfac6350d3e8ca16f11f6dcaa6f8832a709d9d",
+          "codesite:shadow-runner-result:sha256:8c0337137454e1a54a3275850cbe01c81722047ab98a6948a9dec9bb277164e5"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
+      }
     },
     "universes": [
       {
@@ -157,12 +183,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "schema_airspace_first",
           "downstream_assumptions_refresh_after_contract",
           "semantic_collision_mitigated",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
@@ -182,7 +211,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:aa4b8eb6176123fc08ce26ca279bf19502370764e67a6e7fe47229c0685698f8",
+            "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:aa4b8eb6176123fc08ce26ca279bf19502370764e67a6e7fe47229c0685698f8"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:aa4b8eb6176123fc08ce26ca279bf19502370764e67a6e7fe47229c0685698f8",
+          "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
+        ]
       },
       {
         "strategy": "frontend-backend-parallel",
@@ -201,11 +245,14 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "parallelism_crosses_contract_airspace",
           "requires_extra_assumption_refresh",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
         "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
@@ -225,7 +272,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:974ed1def193cff0b6e413003176b6c1d4c98b6b00ef57b1b1cd7d15f5e6d809",
+            "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:974ed1def193cff0b6e413003176b6c1d4c98b6b00ef57b1b1cd7d15f5e6d809"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:974ed1def193cff0b6e413003176b6c1d4c98b6b00ef57b1b1cd7d15f5e6d809",
+          "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
+        ]
       },
       {
         "strategy": "test-first",
@@ -244,12 +306,15 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0,
         "reasonCodes": [
           "test_ownership_before_landing",
           "inspection_radar_runs_before_mutation",
           "semantic_collision_mitigated",
           "import_graph_weighted",
-          "test_ownership_weighted"
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [],
         "sourceSignals": {
@@ -269,17 +334,62 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:d20377f650a1480ea08a58be7d5b97ba395c8c0b90d164d5a3fc35d22ba6ab18",
+            "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:d20377f650a1480ea08a58be7d5b97ba395c8c0b90d164d5a3fc35d22ba6ab18"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:d20377f650a1480ea08a58be7d5b97ba395c8c0b90d164d5a3fc35d22ba6ab18",
+          "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df"
+        ]
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:81579d5a2ad8ddf4efc620e75163743f0e8b9f11a146009f1ce1eef7c8e48ae0",
-    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
+    "shadowJobRef": "codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df",
+    "baseSnapshot": "repo@sha256:1a678001301b56de2ed874fa41bf22f1e4d08a31fb7c1631232802f4164526f2",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
-      "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa"
+      "codesite:repo-policy:sha256:254e3ba41f441e730df639c6345da7d83061453a0c6c28e395c8ee6ecc872665",
+      "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa",
+      "codesite:shadow-runner:sha256:b7d34670b6a60e6bad81f91bcc4c16f9b269c74bea95ae5258569887b194895b",
+      "codesite:shadow-universe:schema-first:sha256:aa4b8eb6176123fc08ce26ca279bf19502370764e67a6e7fe47229c0685698f8",
+      "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:974ed1def193cff0b6e413003176b6c1d4c98b6b00ef57b1b1cd7d15f5e6d809",
+      "codesite:shadow-universe:test-first:sha256:d20377f650a1480ea08a58be7d5b97ba395c8c0b90d164d5a3fc35d22ba6ab18",
+      "codesite:shadow-runner-input:sha256:8713e849ccdee8bc9327d5f686968b1ce230ad1d856f175cc0c2ea62e3ddb78c",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:2b5aee87b6783f825f30dc033bcfac6350d3e8ca16f11f6dcaa6f8832a709d9d",
+      "codesite:shadow-runner-output:sha256:2b5aee87b6783f825f30dc033bcfac6350d3e8ca16f11f6dcaa6f8832a709d9d",
+      "codesite:shadow-runner-result:sha256:8c0337137454e1a54a3275850cbe01c81722047ab98a6948a9dec9bb277164e5",
+      "codesite:shadow-runner:sha256:cf83841e31ac3eec9d36af38b2e2793532cf84f2d6419aad0f0635391780994f"
     ],
     "policyDeltaCandidates": [],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:b7d34670b6a60e6bad81f91bcc4c16f9b269c74bea95ae5258569887b194895b",
+        "codesite:shadow-universe:schema-first:sha256:aa4b8eb6176123fc08ce26ca279bf19502370764e67a6e7fe47229c0685698f8",
+        "codesite:shadow-job:codesite-shadow:sha256:dc84d0f935e5bd8aa12e37565e5ef4ad006972e84274ad5822e0477ab9a854df",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:974ed1def193cff0b6e413003176b6c1d4c98b6b00ef57b1b1cd7d15f5e6d809",
+        "codesite:shadow-universe:test-first:sha256:d20377f650a1480ea08a58be7d5b97ba395c8c0b90d164d5a3fc35d22ba6ab18",
+        "codesite:shadow-runner-input:sha256:8713e849ccdee8bc9327d5f686968b1ce230ad1d856f175cc0c2ea62e3ddb78c",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:2b5aee87b6783f825f30dc033bcfac6350d3e8ca16f11f6dcaa6f8832a709d9d",
+        "codesite:shadow-runner-output:sha256:2b5aee87b6783f825f30dc033bcfac6350d3e8ca16f11f6dcaa6f8832a709d9d",
+        "codesite:shadow-runner-result:sha256:8c0337137454e1a54a3275850cbe01c81722047ab98a6948a9dec9bb277164e5"
+      ],
+      "universeCount": 3,
+      "digest": "sha256:cf83841e31ac3eec9d36af38b2e2793532cf84f2d6419aad0f0635391780994f"
+    },
     "repoSignals": {
       "signalStrength": "moderate",
       "planCount": 2,
@@ -305,7 +415,7 @@
   "after": {
     "selected": "test-first",
     "appliedPolicyDeltas": [
-      "cmr1o2luf000xob4t65z2yqz5"
+      "cmr7gynre009mmz01clnve4ta"
     ],
     "reason": {
       "reasonCodes": [
@@ -340,8 +450,34 @@
         "signalStrength": "moderate"
       },
       "learnedPolicyDeltaRefs": [
-        "cmr1o2luf000xob4t65z2yqz5"
-      ]
+        "cmr7gynre009mmz01clnve4ta"
+      ],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:7a627dd976e08b983cd7cbe4bc32bbe05719e246e3295c33178560137609ee31",
+          "codesite:shadow-universe:schema-first:sha256:039ecb7d9a0e29a120f41aec260c7caad3e1721d8f8f31ed6d878b06614a2c16",
+          "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:371481691217ba8a21137d2a784252bb813f4666044a5382e775ad1525dc70b1",
+          "codesite:shadow-universe:test-first:sha256:05fd12b42ea5b813ca513e8c52f0539ff093f89b78eb7997d0ad4a31a2be2c63",
+          "codesite:shadow-runner-input:sha256:9d2eea6bac389b3b6e6c568498d9d84c8dd2a5a9ab462e8a9c8ce2ecda6526fa",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:ce86b68baab0552f82f5be4275ee6de7b122828ee43567162c0e821e2ccdd774",
+          "codesite:shadow-runner-output:sha256:ce86b68baab0552f82f5be4275ee6de7b122828ee43567162c0e821e2ccdd774",
+          "codesite:shadow-runner-result:sha256:a7ea67bcd96001917c12cd531eff42bdae4cdc8b96ff774c3ce1ba763f742bbb"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
+      }
     },
     "universes": [
       {
@@ -361,6 +497,7 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": -0.95,
         "reasonCodes": [
           "schema_airspace_first",
           "downstream_assumptions_refresh_after_contract",
@@ -368,10 +505,12 @@
           "import_graph_weighted",
           "test_ownership_weighted",
           "counterfactual_policy_delta_applied",
-          "learned_policy_delta_avoided_strategy"
+          "learned_policy_delta_avoided_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1o2luf000xob4t65z2yqz5"
+          "cmr7gynre009mmz01clnve4ta"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -390,7 +529,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:039ecb7d9a0e29a120f41aec260c7caad3e1721d8f8f31ed6d878b06614a2c16",
+            "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:039ecb7d9a0e29a120f41aec260c7caad3e1721d8f8f31ed6d878b06614a2c16"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:039ecb7d9a0e29a120f41aec260c7caad3e1721d8f8f31ed6d878b06614a2c16",
+          "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
+        ]
       },
       {
         "strategy": "frontend-backend-parallel",
@@ -409,16 +563,19 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": -0.95,
         "reasonCodes": [
           "parallelism_crosses_contract_airspace",
           "requires_extra_assumption_refresh",
           "import_graph_weighted",
           "test_ownership_weighted",
           "counterfactual_policy_delta_applied",
-          "learned_policy_delta_avoided_strategy"
+          "learned_policy_delta_avoided_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1o2luf000xob4t65z2yqz5"
+          "cmr7gynre009mmz01clnve4ta"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -437,7 +594,22 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:371481691217ba8a21137d2a784252bb813f4666044a5382e775ad1525dc70b1",
+            "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:371481691217ba8a21137d2a784252bb813f4666044a5382e775ad1525dc70b1"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:371481691217ba8a21137d2a784252bb813f4666044a5382e775ad1525dc70b1",
+          "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
+        ]
       },
       {
         "strategy": "test-first",
@@ -456,6 +628,7 @@
           "refresh_downstream_assumptions",
           "run_owned_tests_before_landing"
         ],
+        "counterfactualPolicyPriority": 0.95,
         "reasonCodes": [
           "test_ownership_before_landing",
           "inspection_radar_runs_before_mutation",
@@ -463,10 +636,12 @@
           "import_graph_weighted",
           "test_ownership_weighted",
           "counterfactual_policy_delta_applied",
-          "learned_policy_delta_preferred_strategy"
+          "learned_policy_delta_preferred_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
         ],
         "learnedPolicyDeltaRefs": [
-          "cmr1o2luf000xob4t65z2yqz5"
+          "cmr7gynre009mmz01clnve4ta"
         ],
         "sourceSignals": {
           "forecastRiskCount": 1,
@@ -485,18 +660,63 @@
           "activeLeaseLocks": 0,
           "inspectionRuns": 0,
           "signalStrength": "moderate"
-        }
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:05fd12b42ea5b813ca513e8c52f0539ff093f89b78eb7997d0ad4a31a2be2c63",
+            "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:05fd12b42ea5b813ca513e8c52f0539ff093f89b78eb7997d0ad4a31a2be2c63"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:05fd12b42ea5b813ca513e8c52f0539ff093f89b78eb7997d0ad4a31a2be2c63",
+          "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0"
+        ]
       }
     ],
-    "shadowJobRef": "codesite-shadow:sha256:1031b1b7442aff26767f6093a96f07ff0e468a5f03271deaf07c2430477f317c",
-    "baseSnapshot": "repo@sha256:5b9e0935475a6b601c15a86df6edd3c5e8cb7bd6c759b297960d7b7e62ec0477",
+    "shadowJobRef": "codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0",
+    "baseSnapshot": "repo@sha256:1a678001301b56de2ed874fa41bf22f1e4d08a31fb7c1631232802f4164526f2",
     "evidenceRefs": [
       "codesite:shadow_merge_simulator",
-      "codesite:repo-policy:sha256:eae67d5cd9d917359bbf15b8447d6ef9f08c40166c077a6aa1b1c9d642046252",
+      "codesite:repo-policy:sha256:254e3ba41f441e730df639c6345da7d83061453a0c6c28e395c8ee6ecc872665",
       "codesite:collision-forecast:sha256:fe1f855a5432139f7ab4f9f765e97e3616049ff5884ec2e857d4fb6f16a387fa",
-      "codesite:policy-delta:cmr1o2luf000xob4t65z2yqz5"
+      "codesite:policy-delta:cmr7gynre009mmz01clnve4ta",
+      "codesite:shadow-runner:sha256:7a627dd976e08b983cd7cbe4bc32bbe05719e246e3295c33178560137609ee31",
+      "codesite:shadow-universe:schema-first:sha256:039ecb7d9a0e29a120f41aec260c7caad3e1721d8f8f31ed6d878b06614a2c16",
+      "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:371481691217ba8a21137d2a784252bb813f4666044a5382e775ad1525dc70b1",
+      "codesite:shadow-universe:test-first:sha256:05fd12b42ea5b813ca513e8c52f0539ff093f89b78eb7997d0ad4a31a2be2c63",
+      "codesite:shadow-runner-input:sha256:9d2eea6bac389b3b6e6c568498d9d84c8dd2a5a9ab462e8a9c8ce2ecda6526fa",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:ce86b68baab0552f82f5be4275ee6de7b122828ee43567162c0e821e2ccdd774",
+      "codesite:shadow-runner-output:sha256:ce86b68baab0552f82f5be4275ee6de7b122828ee43567162c0e821e2ccdd774",
+      "codesite:shadow-runner-result:sha256:a7ea67bcd96001917c12cd531eff42bdae4cdc8b96ff774c3ce1ba763f742bbb",
+      "codesite:shadow-runner:sha256:23b0f48b011816881f50e60b1fe4af829cb22e6455cb9b13ffcd4a52d4087d63"
     ],
     "policyDeltaCandidates": [],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:7a627dd976e08b983cd7cbe4bc32bbe05719e246e3295c33178560137609ee31",
+        "codesite:shadow-universe:schema-first:sha256:039ecb7d9a0e29a120f41aec260c7caad3e1721d8f8f31ed6d878b06614a2c16",
+        "codesite:shadow-job:codesite-shadow:sha256:992785d47add53853f25a9314d619386f4809c5e1a8ae70d9300768fe0efd3d0",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:371481691217ba8a21137d2a784252bb813f4666044a5382e775ad1525dc70b1",
+        "codesite:shadow-universe:test-first:sha256:05fd12b42ea5b813ca513e8c52f0539ff093f89b78eb7997d0ad4a31a2be2c63",
+        "codesite:shadow-runner-input:sha256:9d2eea6bac389b3b6e6c568498d9d84c8dd2a5a9ab462e8a9c8ce2ecda6526fa",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:ce86b68baab0552f82f5be4275ee6de7b122828ee43567162c0e821e2ccdd774",
+        "codesite:shadow-runner-output:sha256:ce86b68baab0552f82f5be4275ee6de7b122828ee43567162c0e821e2ccdd774",
+        "codesite:shadow-runner-result:sha256:a7ea67bcd96001917c12cd531eff42bdae4cdc8b96ff774c3ce1ba763f742bbb"
+      ],
+      "universeCount": 3,
+      "digest": "sha256:23b0f48b011816881f50e60b1fe4af829cb22e6455cb9b13ffcd4a52d4087d63"
+    },
     "repoSignals": {
       "signalStrength": "moderate",
       "planCount": 2,
@@ -527,7 +747,7 @@
     ],
     "counterfactualPolicy": {
       "appliedPolicyDeltas": [
-        "cmr1o4b8h0037ob4tyba2h6l4"
+        "cmr7gyvtz00almz01yuiplh0c"
       ],
       "reasonCodes": [
         "counterfactual_policy_delta_applied",
@@ -544,17 +764,18 @@
       "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
     },
     "policyDecision": {
-      "id": "cmr1o4eb5003fob4trq1oi4d9",
-      "projectId": "cmr1o40z00018ob4tm2dt9j8n",
-      "mutationLeaseId": "cmr1o4eat003dob4tt2y24g36",
+      "id": "cmr7gyyn300avmz017op0lgtj",
+      "projectId": "cmr7gysbc009xmz01qqyiczem",
+      "mutationLeaseId": "cmr7gyymx00atmz014vzx3zop",
       "displayCallsign": "UI-GATE-01",
       "decision": "hold",
       "reasonCodes": [
         "route_inside_clearance",
+        "pilot_license_not_required_for_route",
         "counterfactual_policy_delta_applied",
         "counterfactual_policy_delta_hold"
       ],
-      "inputDigest": "sha256:88d9455b59154faa3aa262c57be2b7cecf04e3382e4a19b1a2871650422b105e",
+      "inputDigest": "sha256:89bcec81573d9256123632fda3b8128da28daf9c59398d77d6037544baa86e53",
       "decisionBody": {
         "status": "holding",
         "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx.",
@@ -587,7 +808,7 @@
           "verification": {
             "ok": false,
             "status": "blocked",
-            "checkedAt": "2026-07-01T06:01:55.071Z",
+            "checkedAt": "2026-07-05T07:28:21.434Z",
             "source": "codesite_dojo_public_verifier",
             "signatureVerified": false,
             "blockedBy": [
@@ -597,10 +818,71 @@
             "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
           }
         },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr7gytul00abmz01f1ycvvvq",
+          "projectId": "cmr7gysbc009xmz01qqyiczem",
+          "workspaceSlug": "codesite-counterfactual-memory-proof-1783236475999",
+          "agentSessionId": "cmr7gytul00abmz01f1ycvvvq",
+          "ownerUserId": "cmr7gyg9u008fmz01nhwwg71s",
+          "displayCallsign": "UI-GATE-01",
+          "status": "active",
+          "level": "Student",
+          "levelRank": 1,
+          "dojoPilotLicenseRef": null,
+          "dojoLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoDecisionDigest": null,
+          "repoScope": "codesite-counterfactual-memory-proof-1783236475999",
+          "authorizedAirspace": [],
+          "restrictedAirspace": [],
+          "requiredRadar": [],
+          "earnedBy": [],
+          "expiresAt": null,
+          "expiresOn": [],
+          "sourceDrift": {
+            "monitored": false,
+            "sourceDigest": null,
+            "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [],
+          "lifecycle": {
+            "issuedAt": "2026-07-05T07:28:15.261Z",
+            "checkedAt": "2026-07-05T07:28:21.463Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:292b7338b226520bb3a998887f4586596bde8136feabf4cd09f3e7de2f16f0ba"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": false,
+          "classes": [
+            "C"
+          ],
+          "minimumLevel": "Student",
+          "minimumLevelRank": 1
+        },
         "collisionAvoidance": null,
         "counterfactualPolicy": {
           "appliedPolicyDeltas": [
-            "cmr1o4b8h0037ob4tyba2h6l4"
+            "cmr7gyvtz00almz01yuiplh0c"
           ],
           "reasonCodes": [
             "counterfactual_policy_delta_applied",
@@ -615,9 +897,10 @@
           "status": "holding",
           "decision": "hold",
           "towerInstruction": "Hold position: learned counterfactual policy requires tower sequencing for src/components/SignupForm.tsx."
-        }
+        },
+        "governancePolicy": null
       },
-      "createdAt": "2026-07-01T06:01:55.313Z"
+      "createdAt": "2026-07-05T07:28:21.472Z"
     }
   },
   "assertions": {

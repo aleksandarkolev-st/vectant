@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-07-01T08:20:49.945Z",
-  "baseUrl": "http://127.0.0.1:3000",
-  "slug": "codesite-runway-occupancy-proof-1782893977229",
+  "generatedAt": "2026-07-05T07:29:11.996Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-runway-occupancy-proof-1783236522496",
   "project": {
-    "id": "cmr1t1zrl002zob5bkwmoh342",
+    "id": "cmr7gzgby00b2mz01e3nd2us1",
     "title": "Runway occupancy proof"
   },
   "lease": {
-    "id": "cmr1t2exy005fob5bb0qok7zl",
+    "id": "cmr7gzp3300cdmz01v7g95ags",
     "status": "active"
   },
   "transaction": {
-    "id": "cmr1t2h87005lob5bj4o4kebs",
+    "id": "cmr7gzqsk00cjmz014wqq5z2o",
     "status": "open"
   },
   "runway": {
@@ -20,7 +20,7 @@
       "services/checkout/**"
     ],
     "occupiedBy": "RUNWAY-01",
-    "mutationLeaseId": "cmr1t2exy005fob5bb0qok7zl",
+    "mutationLeaseId": "cmr7gzp3300cdmz01v7g95ags",
     "runwayClass": "C",
     "diffPaths": [
       "services/checkout/handler.ts"
@@ -34,15 +34,15 @@
     ]
   },
   "controlState": {
-    "projectId": "cmr1t1zrl002zob5bkwmoh342",
-    "workspaceSlug": "codesite-runway-occupancy-proof-1782893977229",
+    "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+    "workspaceSlug": "codesite-runway-occupancy-proof-1783236522496",
     "towerState": "active",
     "status": "active",
     "activeFlights": [
       {
-        "id": "cmr1t29gi0053ob5banuaf714",
-        "projectId": "cmr1t1zrl002zob5bkwmoh342",
-        "agentSessionId": "cmr1t21td004rob5boxv2mxc0",
+        "id": "cmr7gzjuh00bzmz01ied3iasz",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "agentSessionId": "cmr7gzgx700bhmz011v7shjh8",
         "displayCallsign": "RUNWAY-01",
         "mission": "Update checkout handler on the service runway",
         "domain": "backend",
@@ -57,13 +57,13 @@
           "npm_test"
         ],
         "estimatedDurationMs": null,
-        "filedAt": "2026-07-01T08:20:13.794Z",
+        "filedAt": "2026-07-05T07:28:48.953Z",
         "closedAt": null
       },
       {
-        "id": "cmr1t2b440057ob5bcjothtrw",
-        "projectId": "cmr1t1zrl002zob5bkwmoh342",
-        "agentSessionId": "cmr1t25we004vob5bn31ask2i",
+        "id": "cmr7gzl5h00c3mz01363zknwx",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "agentSessionId": "cmr7gzhk900bnmz01njxip0h5",
         "displayCallsign": "DOCS-02",
         "mission": "Prepare release notes outside the checkout runway",
         "domain": "docs",
@@ -77,13 +77,13 @@
           "file_write"
         ],
         "estimatedDurationMs": null,
-        "filedAt": "2026-07-01T08:20:15.940Z",
+        "filedAt": "2026-07-05T07:28:50.645Z",
         "closedAt": null
       },
       {
-        "id": "cmr1t2d5n005bob5bkb5j7tgm",
-        "projectId": "cmr1t1zrl002zob5bkwmoh342",
-        "agentSessionId": "cmr1t27le004zob5baoix1d5b",
+        "id": "cmr7gzmae00c7mz01wpcp2du1",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "agentSessionId": "cmr7gziqw00btmz01qrivff22",
         "displayCallsign": "CONFLICT-03",
         "mission": "Attempt overlapping checkout update while runway is occupied",
         "domain": "backend",
@@ -97,16 +97,16 @@
           "file_write"
         ],
         "estimatedDurationMs": null,
-        "filedAt": "2026-07-01T08:20:18.587Z",
+        "filedAt": "2026-07-05T07:28:52.118Z",
         "closedAt": null
       }
     ],
     "activeMutationLeases": [
       {
-        "id": "cmr1t2exy005fob5bb0qok7zl",
-        "projectId": "cmr1t1zrl002zob5bkwmoh342",
-        "executionPlanId": "cmr1t29gi0053ob5banuaf714",
-        "agentSessionId": "cmr1t21td004rob5boxv2mxc0",
+        "id": "cmr7gzp3300cdmz01v7g95ags",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "executionPlanId": "cmr7gzjuh00bzmz01ied3iasz",
+        "agentSessionId": "cmr7gzgx700bhmz011v7shjh8",
         "displayCallsign": "RUNWAY-01",
         "status": "active",
         "lease": {
@@ -148,7 +148,7 @@
           "dojoProofVerification": {
             "ok": false,
             "status": "blocked",
-            "checkedAt": "2026-07-01T08:20:20.764Z",
+            "checkedAt": "2026-07-05T07:28:55.722Z",
             "source": "codesite_dojo_public_verifier",
             "signatureVerified": false,
             "blockedBy": [
@@ -157,8 +157,131 @@
             ],
             "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
           },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr7gzgx700bhmz011v7shjh8",
+            "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+            "workspaceSlug": "codesite-runway-occupancy-proof-1783236522496",
+            "agentSessionId": "cmr7gzgx700bhmz011v7shjh8",
+            "ownerUserId": "cmr7gzg9000aymz01typquclz",
+            "displayCallsign": "RUNWAY-01",
+            "status": "active",
+            "level": "Student",
+            "levelRank": 1,
+            "dojoPilotLicenseRef": null,
+            "dojoLicenseRef": null,
+            "dojoProofRef": null,
+            "dojoDecisionDigest": null,
+            "repoScope": "codesite-runway-occupancy-proof-1783236522496",
+            "authorizedAirspace": [],
+            "restrictedAirspace": [],
+            "requiredRadar": [],
+            "earnedBy": [],
+            "expiresAt": null,
+            "expiresOn": [],
+            "sourceDrift": {
+              "monitored": false,
+              "sourceDigest": null,
+              "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [],
+            "lifecycle": {
+              "issuedAt": "2026-07-05T07:28:45.163Z",
+              "checkedAt": "2026-07-05T07:28:55.741Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": false,
+            "classes": [
+              "C"
+            ],
+            "minimumLevel": "Student",
+            "minimumLevelRank": 1
+          },
           "collisionAvoidance": null,
-          "counterfactualPolicy": null
+          "counterfactualPolicy": null,
+          "governancePolicy": null
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr7gzgx700bhmz011v7shjh8",
+          "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+          "workspaceSlug": "codesite-runway-occupancy-proof-1783236522496",
+          "agentSessionId": "cmr7gzgx700bhmz011v7shjh8",
+          "ownerUserId": "cmr7gzg9000aymz01typquclz",
+          "displayCallsign": "RUNWAY-01",
+          "status": "active",
+          "level": "Student",
+          "levelRank": 1,
+          "dojoPilotLicenseRef": null,
+          "dojoLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoDecisionDigest": null,
+          "repoScope": "codesite-runway-occupancy-proof-1783236522496",
+          "authorizedAirspace": [],
+          "restrictedAirspace": [],
+          "requiredRadar": [],
+          "earnedBy": [],
+          "expiresAt": null,
+          "expiresOn": [],
+          "sourceDrift": {
+            "monitored": false,
+            "sourceDigest": null,
+            "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [],
+          "lifecycle": {
+            "issuedAt": "2026-07-05T07:28:45.163Z",
+            "checkedAt": "2026-07-05T07:28:55.741Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": false,
+          "classes": [
+            "C"
+          ],
+          "minimumLevel": "Student",
+          "minimumLevelRank": 1
         },
         "dojoProofRef": null,
         "dojoLicenseRef": null,
@@ -169,21 +292,22 @@
           "executable": false,
           "productionRuntime": false
         },
-        "issuedAt": "2026-07-01T08:20:20.903Z",
+        "issuedAt": "2026-07-05T07:28:55.743Z",
         "expiresAt": null,
         "revokedAt": null
       }
     ],
     "activeTransactions": [
       {
-        "id": "cmr1t2h87005lob5bj4o4kebs",
-        "projectId": "cmr1t1zrl002zob5bkwmoh342",
-        "mutationLeaseId": "cmr1t2exy005fob5bb0qok7zl",
-        "agentSessionId": "cmr1t21td004rob5boxv2mxc0",
+        "id": "cmr7gzqsk00cjmz014wqq5z2o",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "mutationLeaseId": "cmr7gzp3300cdmz01v7g95ags",
+        "agentSessionId": "cmr7gzgx700bhmz011v7shjh8",
         "baseSnapshot": "sha256:runway-occupancy-base",
         "baseSnapshotEvidence": {
           "schemaVersion": "synthi.codesite.repoSnapshotEvidence.v1",
           "status": "stable",
+          "scope": "read_set",
           "readSet": [
             "services/checkout/handler.ts"
           ],
@@ -199,15 +323,21 @@
           "missingPaths": [],
           "skippedPaths": [],
           "truncated": false,
+          "repoManifestDigest": null,
+          "repoManifestFileCount": 0,
+          "repoManifestScannedEntries": 0,
+          "repoManifestTruncated": false,
+          "repoManifestSkippedPaths": [],
+          "repoManifestExcludedPaths": [],
           "limits": {
             "maxFiles": 512,
             "maxFileBytes": 2097152,
             "maxScanEntries": 15000
           },
-          "generatedAt": "2026-07-01T08:20:23.284Z",
+          "generatedAt": "2026-07-05T07:28:57.940Z",
           "source": "codesite_control_plane",
           "snapshotDigest": "sha256:runway-occupancy-base",
-          "evidenceDigest": "sha256:008f9df864ab49de6318ff93b0afe640ce52eecf04d0299c2168f43a2449759b"
+          "evidenceDigest": "sha256:3a8503a564f4ca75ccdda6f2db33ce2d0af4863c4fcc833efc79189a542e9add"
         },
         "isolation": "serializable",
         "status": "open",
@@ -229,7 +359,7 @@
         "assumptionRefs": [],
         "commitDecision": null,
         "proofBundleDigest": null,
-        "openedAt": "2026-07-01T08:20:23.864Z",
+        "openedAt": "2026-07-05T07:28:57.956Z",
         "closedAt": null
       }
     ],
@@ -239,9 +369,194 @@
     "blockedPaths": [
       "secrets/**"
     ],
+    "pendingQuarantines": [],
+    "pilotLicenseHealth": [
+      {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr7gziqw00btmz01qrivff22",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "workspaceSlug": "codesite-runway-occupancy-proof-1783236522496",
+        "agentSessionId": "cmr7gziqw00btmz01qrivff22",
+        "ownerUserId": "cmr7gzg9000aymz01typquclz",
+        "displayCallsign": "CONFLICT-03",
+        "status": "active",
+        "level": "Student",
+        "levelRank": 1,
+        "dojoPilotLicenseRef": null,
+        "dojoLicenseRef": null,
+        "dojoProofRef": null,
+        "dojoDecisionDigest": null,
+        "repoScope": "codesite-runway-occupancy-proof-1783236522496",
+        "authorizedAirspace": [],
+        "restrictedAirspace": [],
+        "requiredRadar": [],
+        "earnedBy": [],
+        "expiresAt": null,
+        "expiresOn": [],
+        "sourceDrift": {
+          "monitored": false,
+          "sourceDigest": null,
+          "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [],
+        "lifecycle": {
+          "issuedAt": "2026-07-05T07:28:47.528Z",
+          "checkedAt": "2026-07-05T07:29:10.282Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+        }
+      },
+      {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr7gzhk900bnmz01njxip0h5",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "workspaceSlug": "codesite-runway-occupancy-proof-1783236522496",
+        "agentSessionId": "cmr7gzhk900bnmz01njxip0h5",
+        "ownerUserId": "cmr7gzg9000aymz01typquclz",
+        "displayCallsign": "DOCS-02",
+        "status": "active",
+        "level": "Student",
+        "levelRank": 1,
+        "dojoPilotLicenseRef": null,
+        "dojoLicenseRef": null,
+        "dojoProofRef": null,
+        "dojoDecisionDigest": null,
+        "repoScope": "codesite-runway-occupancy-proof-1783236522496",
+        "authorizedAirspace": [],
+        "restrictedAirspace": [],
+        "requiredRadar": [],
+        "earnedBy": [],
+        "expiresAt": null,
+        "expiresOn": [],
+        "sourceDrift": {
+          "monitored": false,
+          "sourceDigest": null,
+          "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [],
+        "lifecycle": {
+          "issuedAt": "2026-07-05T07:28:45.993Z",
+          "checkedAt": "2026-07-05T07:29:10.281Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+        }
+      },
+      {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr7gzgx700bhmz011v7shjh8",
+        "projectId": "cmr7gzgby00b2mz01e3nd2us1",
+        "workspaceSlug": "codesite-runway-occupancy-proof-1783236522496",
+        "agentSessionId": "cmr7gzgx700bhmz011v7shjh8",
+        "ownerUserId": "cmr7gzg9000aymz01typquclz",
+        "displayCallsign": "RUNWAY-01",
+        "status": "active",
+        "level": "Student",
+        "levelRank": 1,
+        "dojoPilotLicenseRef": null,
+        "dojoLicenseRef": null,
+        "dojoProofRef": null,
+        "dojoDecisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+        "repoScope": "codesite-runway-occupancy-proof-1783236522496",
+        "authorizedAirspace": [
+          "services/checkout/**"
+        ],
+        "restrictedAirspace": [
+          "secrets/**"
+        ],
+        "requiredRadar": [
+          "api_contract"
+        ],
+        "earnedBy": [],
+        "expiresAt": null,
+        "expiresOn": [],
+        "sourceDrift": {
+          "monitored": false,
+          "sourceDigest": null,
+          "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 1,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": [
+            "codesite:runway-proof:pending-inspection"
+          ]
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [
+          "codesite:runway-proof:pending-inspection",
+          "codesite:read-snapshot:sha256:3a8503a564f4ca75ccdda6f2db33ce2d0af4863c4fcc833efc79189a542e9add",
+          "codesite:runway-proof:write-checkout",
+          "codesite:policy-decision:cmr7gzp3800cfmz01bmjdtw0m"
+        ],
+        "lifecycle": {
+          "issuedAt": "2026-07-05T07:28:45.163Z",
+          "checkedAt": "2026-07-05T07:29:10.281Z",
+          "latestLandingAt": "2026-07-05T07:29:08.276Z",
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+        }
+      }
+    ],
+    "pilotLicenseSummary": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "statusCounts": {
+        "active": 3
+      },
+      "active": 3,
+      "blocked": 0,
+      "requiredActions": []
+    },
+    "filesystemBoundaryProofs": [],
     "requiredActions": [],
-    "eventsSince": "lt:12",
-    "inboxUrl": "/api/workspace/codesite-runway-occupancy-proof-1782893977229/codesite/agent-sessions/:agentSessionId/inbox",
+    "eventsSince": "lt:14",
+    "inboxUrl": "/api/workspace/codesite-runway-occupancy-proof-1783236522496/codesite/agent-sessions/:agentSessionId/inbox",
     "collisionForecast": {
       "riskLevel": "high",
       "risks": [
@@ -310,7 +625,7 @@
             "services/checkout/**"
           ],
           "occupiedBy": "RUNWAY-01",
-          "mutationLeaseId": "cmr1t2exy005fob5bb0qok7zl",
+          "mutationLeaseId": "cmr7gzp3300cdmz01v7g95ags",
           "runwayClass": "C",
           "diffPaths": [
             "services/checkout/handler.ts"
@@ -361,7 +676,7 @@
         }
       ]
     },
-    "updatedAt": "2026-07-01T08:20:35.941Z"
+    "updatedAt": "2026-07-05T07:29:10.285Z"
   },
   "browserChecks": {
     "boardVisible": true,

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3107';
 
@@ -176,7 +177,13 @@ async function main() {
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
   const root = artifactRoot(slug);
-  const api = createApi(baseUrl, slug);
+  const { api } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Repo-local autosync proof workspace',
+    apiOptions: {
+      trackRoutes: true,
+      rejectRoute: (route) => route.includes('/artifacts/export'),
+    },
+  });
 
   const projectResponse = await api('/projects', {
     method: 'POST',

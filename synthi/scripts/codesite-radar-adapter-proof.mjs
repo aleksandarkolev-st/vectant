@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3000';
 const ADAPTERS = [
@@ -128,7 +129,9 @@ async function main() {
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
-  const api = createApi(baseUrl, slug);
+  const { api } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Radar adapter proof workspace',
+  });
 
   const project = (await api('/projects', {
     method: 'POST',

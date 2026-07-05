@@ -7,6 +7,7 @@ import {
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
 } from '../../mcp/synthi-mcp/dist/dojo/proof/signing.js';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_APP_BASE_URL = 'http://127.0.0.1:3107';
 const DEFAULT_COLLAB_BASE_URL = 'http://127.0.0.1:1234';
@@ -246,8 +247,10 @@ async function main() {
   const collabBaseUrl = process.env.CODESITE_PROOF_COLLAB_URL || DEFAULT_COLLAB_BASE_URL;
   const controlPlaneBaseUrl = process.env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL || DEFAULT_COLLAB_CONTROL_PLANE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const api = createApi(appBaseUrl, slug);
-  const userId = `codesite-proof-user-${Date.now()}`;
+  const { api, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
+    workspaceName: 'Runtime quarantine proof workspace',
+  });
+  const userId = process.env.CODESITE_PROOF_USER_ID || actor.sessionUserId;
   const targetPath = 'src/raw-terminal-target.txt';
   const newPath = 'src/quarantine-new.txt';
   const docPath = 'docs/allowed-terminal.txt';

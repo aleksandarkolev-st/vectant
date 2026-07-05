@@ -316,6 +316,15 @@ function quoteShell(value) {
   return /^[A-Za-z0-9_./:=@+-]+$/.test(text) ? text : JSON.stringify(text);
 }
 
+function isLoopbackUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['127.0.0.1', 'localhost', '::1'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function parseTestSummary(output, summaryPattern = null) {
   const nodeSummary = {};
   for (const key of ['tests', 'suites', 'pass', 'fail', 'cancelled', 'skipped', 'todo']) {
@@ -576,6 +585,11 @@ async function runSpec(root, proofRoot, spec, options) {
     CODESITE_PROOF_OUT_DIR: proofRoot,
   };
   if (options.baseUrl) env.CODESITE_PROOF_BASE_URL = options.baseUrl;
+  if (options.baseUrl) env.CODESITE_APP_URL = options.baseUrl;
+  if (!process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && options.baseUrl && isLoopbackUrl(options.baseUrl)) {
+    env.AUTH_SECRET = process.env.CODESITE_PROOF_AUTH_SECRET || 'local-compose-auth-secret';
+    env.NEXTAUTH_SECRET = env.AUTH_SECRET;
+  }
 
   const commands = [];
   if (spec.generator) {

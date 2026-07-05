@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3107';
 
@@ -195,7 +196,9 @@ async function main() {
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
   const fixtureRepo = prepareFixtureRepo(dir, slug);
-  const api = createApi(baseUrl, slug);
+  const { api } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Repo policy compiler proof workspace',
+  });
 
   const projectResponse = await api('/projects', {
     method: 'POST',

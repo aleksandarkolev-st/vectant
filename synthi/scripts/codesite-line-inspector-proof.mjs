@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
+import { addAuthCookiesToBrowserContext, ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const require = createRequire(import.meta.url);
 const { collectCodeSiteRepoState } = require('../../backend/collab-server/codesiteFs.js');
@@ -141,9 +142,11 @@ async function screenshotSummary(htmlPath, pngPath) {
   await browser.close();
 }
 
-async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath }) {
+async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath, authCookie }) {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  await addAuthCookiesToBrowserContext(context, baseUrl, authCookie);
+  const page = await context.newPage();
   const consoleErrors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
@@ -301,7 +304,9 @@ function escapeHtml(value) {
 async function main() {
   const baseUrl = process.env.CODESITE_PROOF_BASE_URL || DEFAULT_BASE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const api = createApi(baseUrl, slug);
+  const { api, authCookie } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Line inspector proof workspace',
+  });
   const dir = proofDir();
   await fs.promises.mkdir(dir, { recursive: true });
 
@@ -422,12 +427,14 @@ async function main() {
       slug,
       viewport: { name: 'desktop', width: 1440, height: 1100 },
       screenshotPath: desktopShot,
+      authCookie,
     }),
     await captureInspectorUi({
       baseUrl,
       slug,
       viewport: { name: 'mobile', width: 390, height: 980 },
       screenshotPath: mobileShot,
+      authCookie,
     }),
   ];
 

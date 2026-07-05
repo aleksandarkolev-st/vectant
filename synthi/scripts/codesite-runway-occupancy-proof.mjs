@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { addAuthCookiesToBrowserContext, ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3000';
 
@@ -193,9 +194,11 @@ async function buildWorkflow(api) {
   };
 }
 
-async function screenshotPanel(baseUrl, slug, pngPath) {
+async function screenshotPanel(baseUrl, slug, pngPath, authCookie) {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1020 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1020 }, deviceScaleFactor: 1 });
+  await addAuthCookiesToBrowserContext(context, baseUrl, authCookie);
+  const page = await context.newPage();
   const consoleErrors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
@@ -324,11 +327,13 @@ async function main() {
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
-  const api = createApi(baseUrl, slug);
+  const { api, authCookie } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Runway occupancy proof workspace',
+  });
   const workflow = await buildWorkflow(api);
   const runway = workflow.controlState.collisionForecast?.runwayOccupancy?.[0] || null;
   const panelPngPath = path.join(dir, 'codesite-runway-occupancy-panel.png');
-  const browserChecks = await screenshotPanel(baseUrl, slug, panelPngPath);
+  const browserChecks = await screenshotPanel(baseUrl, slug, panelPngPath, authCookie);
 
   const assertions = {
     runwayFromControlState: Boolean(runway),
