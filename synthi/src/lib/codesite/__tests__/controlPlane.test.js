@@ -110,6 +110,8 @@ const { prisma } = vi.hoisted(() => ({
     },
     codeSiteCounterfactualRun: {
       create: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSitePolicyDelta: {
       create: vi.fn(),
@@ -136,6 +138,7 @@ import {
   attachProofBundleCommit,
   commitTransaction,
   acknowledgeInboxItem,
+  collisionPredict,
   applyRouteRevision,
   createAgentSession,
   createCounterfactualRun,
@@ -952,6 +955,21 @@ describe('CodeSite control plane transaction validation', () => {
       return latestProofBundle;
     });
     prisma.codeSiteLineProvenance.create.mockResolvedValue({ id: 'line-created' });
+    prisma.codeSiteCounterfactualRun.findMany.mockResolvedValue([]);
+    prisma.codeSiteCounterfactualRun.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universesJson: JSON.stringify([]),
+      arbiterVerdictJson: JSON.stringify(null),
+      userChoiceJson: JSON.stringify(null),
+      laterManualEditsJson: JSON.stringify([]),
+      validityStrength: 'simulated',
+      evidenceRefsJson: JSON.stringify([]),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
     prisma.codeSitePolicyDelta.create.mockImplementation(async ({ data }) => ({
       id: 'delta-created',
       createdAt: new Date('2026-06-29T23:13:00.000Z'),
@@ -2283,6 +2301,60 @@ describe('CodeSite control plane transaction validation', () => {
       missingEventTypes: expect.arrayContaining(['shadow.run']),
     });
     expect(incident.timelineEventRefs).toEqual(expect.arrayContaining(['evt-open', 'evt-denied', 'evt-near']));
+  });
+
+  it('turns near-miss incidents into governed deltas and appends later manual rewrites to the counterfactual run', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteCounterfactualRun.findMany.mockResolvedValueOnce([{
+      id: 'cfr-signup-1',
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-signup-1',
+      laterManualEditsJson: JSON.stringify([]),
+    }]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'near_miss',
+      severity: 'high',
+      summary: 'Signup contract drift required a manual generated-client rewrite.',
+      displayCallsign: 'UI-02',
+      participants: ['UI-02', 'SCHEMA-01'],
+      affectedZones: ['packages/schemas/**', 'app/generated/**'],
+      counterfactualRunId: 'cfr-signup-1',
+      evidenceRefs: ['codesite:counterfactual-run:cfr-signup-1', 'runtime:event:signup-drift'],
+      laterManualEdits: [{
+        path: 'app/generated/auth-client.ts',
+        reason: 'manual rewrite after schema drift',
+      }],
+    });
+
+    const deltaCreate = prisma.codeSitePolicyDelta.create.mock.calls.at(-1)[0].data;
+    expect(JSON.parse(deltaCreate.learnedFromIncidentsJson)).toContain('incident-created');
+    expect(JSON.parse(deltaCreate.ruleCandidateJson)).toMatchObject({
+      rule: 'near_miss_replay_requires_airspace_rule',
+    });
+    expect(deltaCreate.promotionState).toBe('proposed');
+    expect(JSON.parse(deltaCreate.replayRefsJson)).toEqual(expect.arrayContaining([
+      'incident:incident-created',
+      'codesite:incident:incident-created',
+      'runtime:event:signup-drift',
+    ]));
+    const manualEditUpdate = prisma.codeSiteCounterfactualRun.update.mock.calls.at(-1)[0];
+    const manualEdits = JSON.parse(manualEditUpdate.data.laterManualEditsJson);
+    expect(manualEditUpdate.where).toEqual({ id: 'cfr-signup-1' });
+    expect(manualEdits[0]).toMatchObject({
+      path: 'app/generated/auth-client.ts',
+      incidentId: 'incident-created',
+      incidentSeverity: 'high',
+      policyDeltaId: 'delta-created',
+    });
+    expect(incident.policyDelta).toMatchObject({
+      id: 'delta-created',
+      promotionState: 'proposed',
+    });
+    expect(incident.incidentReplay.counterfactualManualEditLinks).toMatchObject({
+      linkedRunIds: ['cfr-signup-1'],
+      manualEditCount: 1,
+    });
   });
 
   it('does not mark a transaction stale because of its own write event', async () => {
@@ -6314,6 +6386,99 @@ describe('CodeSite control plane transaction validation', () => {
     expect(schemaUniverse.reasonCodes).not.toContain('learned_policy_delta_preferred_strategy');
   });
 
+  it('surfaces Regret Memory policy hints in public collision prediction', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: ['packages/schemas/auth.ts', 'app/signup/page.tsx'],
+        importEdges: [{ from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] }],
+        testOwnership: [],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+        generatedClients: [],
+      },
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Learned collision forecast',
+      request: 'Coordinate signup schema and UI',
+      status: 'active',
+      zonePolicyJson: JSON.stringify(zonePolicy),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+      executionPlans: [
+        {
+          id: 'plan-schema',
+          projectId: 'project-1',
+          agentSessionId: 'agent-schema',
+          displayCallsign: 'SCHEMA-01',
+          mission: 'Change signup contract',
+          domain: 'schema',
+          status: 'preflight',
+          routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+        {
+          id: 'plan-ui',
+          projectId: 'project-1',
+          agentSessionId: 'agent-ui',
+          displayCallsign: 'UI-02',
+          mission: 'Build signup UI',
+          domain: 'frontend',
+          status: 'preflight',
+          routeJson: JSON.stringify(['app/signup/page.tsx']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+      ],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    });
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([{
+      id: 'delta-schema-first',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify(['near-miss-signup-schema']),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({
+        rule: 'schema_first_policy_reduced_rework',
+        preferredStrategies: ['schema-first'],
+        requiredTowerActions: ['issue_schema_clearance_before_dependents'],
+      }),
+      triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }, { path: 'packages/schemas/**' }]),
+      expectedRiskReduction: 0.42,
+      confidence: 0.88,
+      promotionState: 'promoted',
+      replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-forecast']),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+    }]);
+
+    const forecast = await collisionPredict('acme', 'project-1');
+
+    expect(forecast.regretMemoryPolicyHints).toEqual([
+      expect.objectContaining({
+        policyDeltaId: 'delta-schema-first',
+        rule: 'schema_first_policy_reduced_rework',
+        confidence: 0.88,
+      }),
+    ]);
+    expect(forecast.risks.some((risk) =>
+      risk.regretMemoryPolicyHints?.some((hint) => hint.policyDeltaId === 'delta-schema-first'))).toBe(true);
+  });
+
   it('requires policy deltas to start proposed before promotion governance', async () => {
     prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
       id: 'project-1',
@@ -6385,6 +6550,11 @@ describe('CodeSite control plane transaction validation', () => {
       createdAt: new Date('2026-06-29T23:13:00.000Z'),
       promotedAt: null,
     });
+    prisma.codeSiteCounterfactualRun.findMany.mockResolvedValueOnce([{
+      id: 'cfr-1',
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-1',
+    }]);
 
     const result = await promotePolicyDelta('acme', 'project-1', 'delta-1', {
       targetState: 'active',
@@ -6612,6 +6782,116 @@ describe('CodeSite control plane transaction validation', () => {
         detailsJson: expect.stringContaining('schema-first'),
       }),
     }));
+  });
+
+  it('derives mature Regret Memory policy deltas from a complete counterfactual choice scene', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Counterfactual project',
+      request: 'Choose safest route',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-mature-learning',
+      projectId: 'project-1',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await createCounterfactualRun('acme', 'project-1', {
+      shadowJobRef: 'shadow-job-regret-1',
+      repoSnapshot: 'repo@sha256:complete-scene',
+      choices: [
+        {
+          universe: 'schema-first',
+          result: 'passed',
+          affectedRoutes: ['packages/schemas/auth.ts'],
+          reworkRiskReduction: 0.52,
+          staleAssumptions: 0,
+          inspectionCost: 3,
+        },
+        {
+          universe: 'frontend-backend-parallel',
+          result: 'near_miss',
+          affectedRoutes: ['app/signup/page.tsx', 'api/auth/signup.ts'],
+          unresolvedRisks: ['semantic_collision'],
+          predictedCollisionRisk: 0.78,
+          staleAssumptions: 3,
+          incidents: ['near_miss_signup_schema_drift_001', 'near_miss_profile_payload_002'],
+        },
+      ],
+      arbiterVerdict: { selected: 'schema-first', humanOverride: null },
+      humanOverride: null,
+      nearMisses: ['near_miss_signup_schema_drift_001', 'near_miss_profile_payload_002'],
+      laterManualEdits: [{
+        path: 'app/generated/auth-client.ts',
+        reason: 'manual rewrite refreshed downstream generated client after schema contract churn',
+        incidentRefs: ['near_miss_profile_payload_002'],
+      }],
+      airspaceClassFeedback: [{
+        path: 'packages/schemas/auth.ts',
+        outcome: 'too_loose',
+        reason: 'class mismatch allowed dependent work before schema stability',
+      }],
+      inspectionFindings: [{
+        path: 'api/auth/signup.ts',
+        adapter: 'api_contract',
+        caughtRealIssue: true,
+        status: 'blocked_regression',
+      }],
+      towerReroutes: [{
+        path: 'app/signup/page.tsx',
+        savedWork: 4,
+        reason: 'reroute avoided repeated UI rewrite',
+      }],
+      clearanceViolations: [{
+        path: 'app/signup/page.tsx',
+        callsign: 'UI-02',
+        violation: true,
+        reason: 'outside_clearance_write',
+      }],
+      blackBoxPatterns: [{
+        path: 'packages/schemas/auth.ts',
+        pattern: 'contract_escape_without_generated_client_refresh',
+        promoteToRule: true,
+      }],
+      validityStrength: 'executed',
+      evidenceRefs: ['shadow:job:shadow-job-regret-1', 'codesite:incident:near_miss_signup_schema_drift_001'],
+    });
+
+    expect(result.baseSnapshot).toBe('repo@sha256:complete-scene');
+    expect(result.universes).toHaveLength(2);
+    expect(result.userChoice).toBe(null);
+    const runCreate = prisma.codeSiteCounterfactualRun.create.mock.calls[0][0].data;
+    expect(JSON.parse(runCreate.arbiterVerdictJson).counterfactualLearning).toMatchObject({
+      inferredCandidateCount: 8,
+    });
+    const createdDeltas = prisma.codeSitePolicyDelta.create.mock.calls.map((call) => call[0].data);
+    const rules = createdDeltas.map((data) => JSON.parse(data.ruleCandidateJson).rule);
+    expect(rules).toEqual(expect.arrayContaining([
+      'flight_split_reduced_collision',
+      'recurring_near_miss_airspace_rule',
+      'calibrate_airspace_class_from_counterfactual_outcome',
+      'inspector_real_issue_gate',
+      'prefer_tower_reroute_that_saved_work',
+      'enforce_clearance_after_agent_violation',
+      'schema_first_policy_reduced_rework',
+      'promote_black_box_pattern_to_airspace_rule',
+    ]));
+    expect(new Set(createdDeltas.map((data) => data.promotionState))).toEqual(new Set(['proposed']));
+    expect(createdDeltas.every((data) => JSON.parse(data.triggerConditionsJson).length > 0)).toBe(true);
+    expect(createdDeltas.every((data) => data.confidence >= 0.65)).toBe(true);
+    expect(createdDeltas.some((data) =>
+      JSON.parse(data.learnedFromIncidentsJson).includes('near_miss_profile_payload_002'))).toBe(true);
+    expect(createdDeltas.some((data) =>
+      JSON.parse(data.replayRefsJson).includes('shadow:job:shadow-job-regret-1'))).toBe(true);
   });
 
   it('builds incident replay timelines from referenced events', async () => {
