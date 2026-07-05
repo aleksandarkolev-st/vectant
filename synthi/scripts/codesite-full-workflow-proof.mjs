@@ -2368,13 +2368,19 @@ function compareProofPathEntries(left, right) {
     || String(left?.reason || '').localeCompare(String(right?.reason || ''));
 }
 
+function resolveProofPath(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return path.isAbsolute(text) ? path.resolve(text) : path.resolve(repoRoot(), text);
+}
+
 function proofAppArtifactRoot(slug) {
   if (process.env.CODESITE_PROOF_APP_ARTIFACT_ROOT) {
-    return path.resolve(process.env.CODESITE_PROOF_APP_ARTIFACT_ROOT);
+    return resolveProofPath(process.env.CODESITE_PROOF_APP_ARTIFACT_ROOT);
   }
   const base = process.env.CODESITE_PROOF_APP_ARTIFACT_BASE || process.env.SYNTHI_CODESITE_ARTIFACT_ROOT;
   if (base) {
-    return path.resolve(base, safeArtifactSegment(slug), '.synthi', 'codesite');
+    return path.join(resolveProofPath(base), safeArtifactSegment(slug), '.synthi', 'codesite');
   }
   return path.join(repoRoot(), '.synthi', 'codesite');
 }
