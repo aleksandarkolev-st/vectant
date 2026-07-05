@@ -2182,7 +2182,8 @@ async function writeRuntimeBoundaryAttestations(dir, { slug, project, transactio
   return attestations;
 }
 
-async function buildContainerReadableSnapshot(readSet, hostRepoRoot, containerRoot) {
+async function buildContainerReadableSnapshot(readSet, hostRepoRoot, containerRoot, options = {}) {
+  const scope = options.scope === 'read_set' ? 'read_set' : 'repo_wide';
   const limits = {
     maxFiles: 512,
     maxFileBytes: 2 * 1024 * 1024,
@@ -2199,11 +2200,19 @@ async function buildContainerReadableSnapshot(readSet, hostRepoRoot, containerRo
       digest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
     };
   }));
-  const repoManifest = await buildProofRepoManifest(hostRepoRoot, limits);
+  const repoManifest = scope === 'repo_wide'
+    ? await buildProofRepoManifest(hostRepoRoot, limits)
+    : {
+      repoManifestDigest: null,
+      repoManifestFileCount: 0,
+      repoManifestScannedEntries: 0,
+      repoManifestTruncated: false,
+      repoManifestSkippedPaths: [],
+    };
   const evidence = {
     schemaVersion: 'synthi.codesite.readSnapshotEvidence.v1',
     status: 'recorded',
-    scope: 'repo_wide',
+    scope,
     readSet,
     repoRoot: containerRoot,
     fileDigests,
@@ -2883,7 +2892,7 @@ async function main() {
   const testApi = createApi(baseUrl, slug, { authCookie: actorProof.actors.test.authCookie });
   const api = schemaApi;
   const proofFetch = createAuthenticatedFetch(actorProof.actors.schema.authCookie);
-  const baseSnapshotEvidence = await buildContainerReadableSnapshot([readPath], proofRepo.hostRoot, proofRepo.containerRoot);
+  const undercoveredSnapshotEvidence = await buildContainerReadableSnapshot([readPath], proofRepo.hostRoot, proofRepo.containerRoot, { scope: 'read_set' });
   const dojoProof = signedDojoProof(slug);
   const proofPolicySourceDigest = digest({ slug, source: 'codesite-full-workflow-policy-source-v1' });
   const proofPolicyDigest = digest({ slug, policy: 'codesite-full-workflow-airspace-policy-v1' });
@@ -3078,20 +3087,22 @@ async function main() {
     lease,
     readPath,
     changedPath,
-    baseSnapshotEvidence,
+    baseSnapshotEvidence: undercoveredSnapshotEvidence,
   });
 
   const transactionResponse = await api(`/mutation-leases/${encodeURIComponent(lease.id)}/transactions`, {
     method: 'POST',
     body: JSON.stringify({
-      baseSnapshot: baseSnapshotEvidence.snapshotDigest,
-      baseSnapshotEvidence,
+      repoRoot: proofRepo.containerRoot,
+      snapshotScope: 'repo_wide',
       readSet: [readPath],
       writeSet: [changedPath],
       invariants: ['clearance.diff.inside_route'],
     }),
   });
   const transaction = transactionResponse.transaction;
+  const baseSnapshotEvidence = transaction.baseSnapshotEvidence;
+  assertProof(baseSnapshotEvidence?.status === 'recorded' && baseSnapshotEvidence.scope === 'repo_wide', 'server-generated repo-wide base snapshot evidence is required for schema transaction');
   const assumptionResponse = await api(`/transactions/${encodeURIComponent(transaction.id)}/assumptions`, {
     method: 'POST',
     body: JSON.stringify({
@@ -3100,7 +3111,6 @@ async function main() {
       usedBy: ['synthi/src/app/api/auth/signup.ts'],
     }),
   });
-  const apiBaseSnapshotEvidence = await buildContainerReadableSnapshot([changedPath], proofRepo.hostRoot, proofRepo.containerRoot);
   const apiLeaseResponse = await apiAgentApi(`/execution-plans/${encodeURIComponent(apiPlan.id)}/mutation-leases`, {
     method: 'POST',
     body: JSON.stringify({
@@ -3114,14 +3124,16 @@ async function main() {
   const apiTransactionResponse = await apiAgentApi(`/mutation-leases/${encodeURIComponent(apiLease.id)}/transactions`, {
     method: 'POST',
     body: JSON.stringify({
-      baseSnapshot: apiBaseSnapshotEvidence.snapshotDigest,
-      baseSnapshotEvidence: apiBaseSnapshotEvidence,
+      repoRoot: proofRepo.containerRoot,
+      snapshotScope: 'repo_wide',
       readSet: [changedPath],
       writeSet: ['synthi/src/app/api/auth/signup.ts'],
       invariants: ['schema.assumption.refresh_before_api_landing'],
     }),
   });
   const apiTransaction = apiTransactionResponse.transaction;
+  const apiBaseSnapshotEvidence = apiTransaction.baseSnapshotEvidence;
+  assertProof(apiBaseSnapshotEvidence?.status === 'recorded' && apiBaseSnapshotEvidence.scope === 'repo_wide', 'server-generated repo-wide base snapshot evidence is required for API transaction');
   const staleAssumptionResponse = await apiAgentApi(`/transactions/${encodeURIComponent(apiTransaction.id)}/assumptions`, {
     method: 'POST',
     body: JSON.stringify({
