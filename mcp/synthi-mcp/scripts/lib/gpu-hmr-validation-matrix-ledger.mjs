@@ -280,6 +280,18 @@ const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_proof_bridge.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_PROOF_BRIDGE_AUTHORITY =
   'runtime_profile_proof_bridge_observation_only_not_gpu_hmr_success';
+const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_runtime_profile_adapter_result_import.v1';
+const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY =
+  'matrix_imported_adapter_result_bytes_only_not_gpu_hmr_success';
+const RUNTIME_PROFILE_ADAPTER_RESULT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_profile_adapter_result.v1';
+const RUNTIME_PROFILE_ADAPTER_RESULT_AUTHORITY =
+  'adapter_result_manifest_not_matrix_authority';
+const RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1';
+const RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_AUTHORITY =
+  'runtime_profile_generic_runtime_boundary_adapter_not_success_authority';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_SCHEMA_VERSION =
   'synthi.real_rocm.runtime_evidence_collection.v1';
 const REAL_ROCM_RUNTIME_EVIDENCE_COLLECTION_AUTHORITY =
@@ -4141,6 +4153,8 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     runner_exit_code: finiteNumber(facet.runnerExitCode ?? facet.runner_exit_code),
     runnerTimedOut: firstBool(facet.runnerTimedOut, facet.runner_timed_out) === true,
     runner_timed_out: firstBool(facet.runnerTimedOut, facet.runner_timed_out) === true,
+    runtimeProfileAdapterResultPresent: adapterResultPresent,
+    runtime_profile_adapter_result_present: adapterResultPresent,
     adapterResultBlockingGaps,
     adapter_result_blocking_gaps: adapterResultBlockingGaps,
     blockingGaps,
@@ -4149,6 +4163,426 @@ function randomColdRuntimeProfileProofBridgeFacet(raw = {}) {
     authority_claims: authorityClaims,
     facetHash,
     facet_hash: facetHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+async function randomColdRuntimeProfileAdapterResultImportFacet(
+  bridge = {},
+  {
+    repoRoot,
+    baseDir,
+  } = {},
+) {
+  const runtimeProfileBridge = compactObject(bridge);
+  const adapterResultPath = firstText(
+    runtimeProfileBridge.runtimeProfileAdapterResultPath,
+    runtimeProfileBridge.runtime_profile_adapter_result_path,
+  );
+  const bridgePresent = runtimeProfileBridge.present === true || Boolean(adapterResultPath);
+  if (!bridgePresent) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const resolvedRepoRoot = path.resolve(repoRoot ?? process.cwd());
+  const resolvedBaseDir = path.resolve(baseDir ?? resolvedRepoRoot);
+  const expectedAdapterResultHash = normalizeSha256(firstText(
+    runtimeProfileBridge.runtimeProfileAdapterResultSha256,
+    runtimeProfileBridge.runtime_profile_adapter_result_sha256,
+  ));
+  const bridgeAccepted =
+    runtimeProfileBridge.accepted === true
+    && (
+      runtimeProfileBridge.acceptedAsSupportEvidence === true
+      || runtimeProfileBridge.accepted_as_support_evidence === true
+    )
+    && (
+      runtimeProfileBridge.acceptedAsRuntimeProfileProofBridge === true
+      || runtimeProfileBridge.accepted_as_runtime_profile_proof_bridge === true
+    );
+  const adapterResultResolvedPath =
+    adapterResultPath ? resolveEvidencePath(adapterResultPath, resolvedRepoRoot, resolvedBaseDir) : null;
+  const adapterResultArtifact = adapterResultResolvedPath
+    ? await readJsonArtifact(adapterResultResolvedPath)
+    : null;
+  const adapterResult = compactObject(adapterResultArtifact?.json);
+  const adapterResultSchema = firstText(
+    adapterResult.schemaVersion,
+    adapterResult.schema_version,
+    adapterResult.schema,
+  );
+  const adapterResultAuthority = firstText(
+    adapterResult.proofAuthority,
+    adapterResult.proof_authority,
+  );
+  const proofPath = firstText(adapterResult.proofPath, adapterResult.proof_path);
+  const proofResolvedPath = proofPath
+    ? resolveEvidencePath(
+      proofPath,
+      resolvedRepoRoot,
+      adapterResultResolvedPath ? path.dirname(adapterResultResolvedPath) : resolvedBaseDir,
+    )
+    : null;
+  const proofJsonExpectedHash = normalizeSha256(firstText(
+    adapterResult.proofJsonSha256,
+    adapterResult.proof_json_sha256,
+  ));
+  const proofArtifact = proofResolvedPath ? await readJsonArtifact(proofResolvedPath) : null;
+  const proofJson = compactObject(proofArtifact?.json);
+  const proofSchema = firstText(proofJson.schemaVersion, proofJson.schema_version, proofJson.schema);
+  const proofAuthority = firstText(proofJson.proofAuthority, proofJson.proof_authority);
+  const runtimeBoundaryProofAdapter = compactObject(
+    proofJson.runtimeBoundaryProofAdapter
+    ?? proofJson.runtime_boundary_proof_adapter,
+  );
+  const runtimeBoundaryRunModeProofSummary = compactObject(
+    proofJson.runtimeBoundaryRunModeProofSummary
+    ?? proofJson.runtime_boundary_run_mode_proof_summary,
+  );
+  const proofLedger = compactObject(
+    proofJson.proofLedger
+    ?? proofJson.proof_ledger
+    ?? proofJson.runtimeProofArtifact?.proofLedger
+    ?? proofJson.runtimeProofArtifact?.proof_ledger
+    ?? proofJson.runtime_proof_artifact?.proofLedger
+    ?? proofJson.runtime_proof_artifact?.proof_ledger,
+  );
+  const runtimeProofArtifact = compactObject(
+    proofJson.runtimeProofArtifact
+    ?? proofJson.runtime_proof_artifact,
+  );
+  const runtimeBoundaryLineMaterialization = compactObject(
+    adapterResult.runtimeBoundaryLineMaterialization
+    ?? adapterResult.runtime_boundary_line_materialization
+    ?? proofJson.runtimeBoundaryLineMaterialization
+    ?? proofJson.runtime_boundary_line_materialization,
+  );
+  const runtimeBoundaryEventManifest = compactObject(
+    proofJson.runtimeBoundaryEventManifest
+    ?? proofJson.runtime_boundary_event_manifest,
+  );
+  const runtimeBoundaryEventManifestSha256 = normalizeSha256(firstText(
+    adapterResult.runtimeBoundaryEventManifestSha256,
+    adapterResult.runtime_boundary_event_manifest_sha256,
+    runtimeBoundaryEventManifest.manifestSha256,
+    runtimeBoundaryEventManifest.manifest_sha256,
+  ));
+  const runtimeBoundaryEventManifestPath = firstText(
+    adapterResult.runtimeBoundaryEventManifestPath,
+    adapterResult.runtime_boundary_event_manifest_path,
+    runtimeBoundaryEventManifest.manifestPath,
+    runtimeBoundaryEventManifest.manifest_path,
+  );
+  const runtimeBoundaryProofAdapterAccepted = firstBool(
+    adapterResult.runtimeBoundaryProofAdapterAccepted,
+    adapterResult.runtime_boundary_proof_adapter_accepted,
+    runtimeBoundaryProofAdapter.accepted,
+  ) === true;
+  const runtimeBoundaryProofAdapterProofId = firstText(
+    adapterResult.runtimeBoundaryProofAdapterProofId,
+    adapterResult.runtime_boundary_proof_adapter_proof_id,
+    runtimeBoundaryProofAdapter.proofId,
+    runtimeBoundaryProofAdapter.proof_id,
+  );
+  const strictRuntimeProofAccepted = firstBool(
+    adapterResult.strictRuntimeProofAccepted,
+    adapterResult.strict_runtime_proof_accepted,
+    runtimeBoundaryRunModeProofSummary.accepted,
+  ) === true;
+  const strictRuntimeProofId = firstText(
+    adapterResult.strictRuntimeProofId,
+    adapterResult.strict_runtime_proof_id,
+    runtimeBoundaryRunModeProofSummary.strictRuntimeProofId,
+    runtimeBoundaryRunModeProofSummary.strict_runtime_proof_id,
+    runtimeProofArtifact.proofId,
+    runtimeProofArtifact.proof_id,
+  );
+  const proofLedgerId = firstText(
+    adapterResult.proofLedgerId,
+    adapterResult.proof_ledger_id,
+    runtimeBoundaryRunModeProofSummary.proofLedgerId,
+    runtimeBoundaryRunModeProofSummary.proof_ledger_id,
+    proofLedger.proofId,
+    proofLedger.proof_id,
+  );
+  const runtimeBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(adapterResult.runtimeBoundaryLineHashes)
+      ? adapterResult.runtimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(adapterResult.runtime_boundary_line_hashes)
+      ? adapterResult.runtime_boundary_line_hashes
+      : []),
+    ...(Array.isArray(proofJson.runtimeBoundaryLineHashes)
+      ? proofJson.runtimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(proofJson.runtime_boundary_line_hashes)
+      ? proofJson.runtime_boundary_line_hashes
+      : []),
+  ]);
+  const adapterRuntimeBoundaryLineHashes = compactStringList([
+    ...(Array.isArray(adapterResult.adapterRuntimeBoundaryLineHashes)
+      ? adapterResult.adapterRuntimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(adapterResult.adapter_runtime_boundary_line_hashes)
+      ? adapterResult.adapter_runtime_boundary_line_hashes
+      : []),
+    ...(Array.isArray(proofJson.adapterRuntimeBoundaryLineHashes)
+      ? proofJson.adapterRuntimeBoundaryLineHashes
+      : []),
+    ...(Array.isArray(proofJson.adapter_runtime_boundary_line_hashes)
+      ? proofJson.adapter_runtime_boundary_line_hashes
+      : []),
+  ]);
+  const runtimeBoundaryLineCount =
+    Math.max(
+      runtimeBoundaryLineHashes.length,
+      Array.isArray(adapterResult.runtimeBoundaryLines)
+        ? adapterResult.runtimeBoundaryLines.length
+        : 0,
+      Array.isArray(adapterResult.runtime_boundary_lines)
+        ? adapterResult.runtime_boundary_lines.length
+        : 0,
+      Array.isArray(proofJson.runtimeBoundaryLines) ? proofJson.runtimeBoundaryLines.length : 0,
+      Array.isArray(proofJson.runtime_boundary_lines) ? proofJson.runtime_boundary_lines.length : 0,
+    );
+  const adapterRuntimeBoundaryLineCount =
+    Math.max(
+      adapterRuntimeBoundaryLineHashes.length,
+      Array.isArray(adapterResult.adapterRuntimeBoundaryLines)
+        ? adapterResult.adapterRuntimeBoundaryLines.length
+        : 0,
+      Array.isArray(adapterResult.adapter_runtime_boundary_lines)
+        ? adapterResult.adapter_runtime_boundary_lines.length
+        : 0,
+      Array.isArray(proofJson.adapterRuntimeBoundaryLines)
+        ? proofJson.adapterRuntimeBoundaryLines.length
+        : 0,
+      Array.isArray(proofJson.adapter_runtime_boundary_lines)
+        ? proofJson.adapter_runtime_boundary_lines.length
+        : 0,
+    );
+  const adapterResultClaimedAuthority =
+    firstBool(adapterResult.acceptedForGpuHmr, adapterResult.accepted_for_gpu_hmr) === true
+    || firstBool(adapterResult.gpuHmrSuccess, adapterResult.gpu_hmr_success) === true
+    || firstBool(adapterResult.canSatisfyRuntimeProof, adapterResult.can_satisfy_runtime_proof) === true
+    || firstBool(adapterResult.canSatisfyDispatchProof, adapterResult.can_satisfy_dispatch_proof) === true;
+  const proofClaimedGpuHmrAuthority =
+    firstBool(proofJson.acceptedForGpuHmr, proofJson.accepted_for_gpu_hmr) === true
+    || firstBool(proofJson.gpuHmrSuccess, proofJson.gpu_hmr_success) === true
+    || firstBool(proofJson.canSatisfyDispatchProof, proofJson.can_satisfy_dispatch_proof) === true;
+  const bridgeStrictRuntimeProofAccepted = firstBool(
+    runtimeProfileBridge.strictRuntimeProofAccepted,
+    runtimeProfileBridge.strict_runtime_proof_accepted,
+  ) === true;
+  const bridgeStrictRuntimeProofId = firstText(
+    runtimeProfileBridge.strictRuntimeProofId,
+    runtimeProfileBridge.strict_runtime_proof_id,
+  );
+  const bridgeProofLedgerId = firstText(
+    runtimeProfileBridge.proofLedgerId,
+    runtimeProfileBridge.proof_ledger_id,
+  );
+  const bridgeEventManifestSha256 = normalizeSha256(firstText(
+    runtimeProfileBridge.runtimeBoundaryEventManifestSha256,
+    runtimeProfileBridge.runtime_boundary_event_manifest_sha256,
+  ));
+  const bridgeProofAdapterAccepted = firstBool(
+    runtimeProfileBridge.runtimeBoundaryProofAdapterAccepted,
+    runtimeProfileBridge.runtime_boundary_proof_adapter_accepted,
+  ) === true;
+  const bridgeProofAdapterProofId = firstText(
+    runtimeProfileBridge.runtimeBoundaryProofAdapterProofId,
+    runtimeProfileBridge.runtime_boundary_proof_adapter_proof_id,
+  );
+  const failedGates = compactStringList([
+    bridgeAccepted ? null : 'random_cold_adapter_result_import_bridge_not_accepted',
+    adapterResultPath ? null : 'random_cold_adapter_result_import_path_missing',
+    adapterResultPath && !adapterResultResolvedPath
+      ? 'random_cold_adapter_result_import_path_outside_repo'
+      : null,
+    expectedAdapterResultHash ? null : 'random_cold_adapter_result_import_expected_hash_missing',
+    expectedAdapterResultHash && !isSha256(expectedAdapterResultHash)
+      ? 'random_cold_adapter_result_import_expected_hash_invalid'
+      : null,
+    adapterResultResolvedPath && !adapterResultArtifact
+      ? 'random_cold_adapter_result_import_unreadable'
+      : null,
+    adapterResultArtifact
+      && expectedAdapterResultHash
+      && adapterResultArtifact.contentHash !== expectedAdapterResultHash
+      ? 'random_cold_adapter_result_import_hash_mismatch'
+      : null,
+    adapterResultArtifact
+      && adapterResultSchema !== RUNTIME_PROFILE_ADAPTER_RESULT_SCHEMA_VERSION
+      ? 'random_cold_adapter_result_import_schema_invalid'
+      : null,
+    adapterResultArtifact
+      && adapterResultAuthority !== RUNTIME_PROFILE_ADAPTER_RESULT_AUTHORITY
+      ? 'random_cold_adapter_result_import_authority_invalid'
+      : null,
+    adapterResultArtifact && adapterResultClaimedAuthority
+      ? 'random_cold_adapter_result_import_claimed_runtime_authority'
+      : null,
+    adapterResultArtifact && !proofPath
+      ? 'random_cold_adapter_result_import_proof_path_missing'
+      : null,
+    proofPath && !proofResolvedPath
+      ? 'random_cold_adapter_result_import_proof_path_outside_repo'
+      : null,
+    proofJsonExpectedHash ? null : 'random_cold_adapter_result_import_proof_hash_missing',
+    proofJsonExpectedHash && !isSha256(proofJsonExpectedHash)
+      ? 'random_cold_adapter_result_import_proof_hash_invalid'
+      : null,
+    proofResolvedPath && !proofArtifact
+      ? 'random_cold_adapter_result_import_proof_unreadable'
+      : null,
+    proofArtifact
+      && proofJsonExpectedHash
+      && proofArtifact.contentHash !== proofJsonExpectedHash
+      ? 'random_cold_adapter_result_import_proof_hash_mismatch'
+      : null,
+    proofArtifact
+      && proofSchema !== RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_SCHEMA_VERSION
+      ? 'random_cold_adapter_result_import_proof_schema_invalid'
+      : null,
+    proofArtifact
+      && proofAuthority !== RUNTIME_BOUNDARY_PROFILE_ADAPTER_PROOF_AUTHORITY
+      ? 'random_cold_adapter_result_import_proof_authority_invalid'
+      : null,
+    proofArtifact && proofClaimedGpuHmrAuthority
+      ? 'random_cold_adapter_result_import_proof_claimed_gpu_hmr_authority'
+      : null,
+    bridgeStrictRuntimeProofAccepted && strictRuntimeProofAccepted !== true
+      ? 'random_cold_adapter_result_import_strict_runtime_acceptance_mismatch'
+      : null,
+    bridgeStrictRuntimeProofId && bridgeStrictRuntimeProofId !== strictRuntimeProofId
+      ? 'random_cold_adapter_result_import_strict_runtime_proof_id_mismatch'
+      : null,
+    bridgeProofLedgerId && bridgeProofLedgerId !== proofLedgerId
+      ? 'random_cold_adapter_result_import_proof_ledger_id_mismatch'
+      : null,
+    bridgeEventManifestSha256
+      && bridgeEventManifestSha256 !== runtimeBoundaryEventManifestSha256
+      ? 'random_cold_adapter_result_import_event_manifest_hash_mismatch'
+      : null,
+    bridgeProofAdapterAccepted && runtimeBoundaryProofAdapterAccepted !== true
+      ? 'random_cold_adapter_result_import_adapter_proof_acceptance_mismatch'
+      : null,
+    bridgeProofAdapterProofId && bridgeProofAdapterProofId !== runtimeBoundaryProofAdapterProofId
+      ? 'random_cold_adapter_result_import_adapter_proof_id_mismatch'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    schemaVersion: RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION,
+    schema_version: RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY,
+    proof_authority: RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    adapterResultPath,
+    adapter_result_path: adapterResultPath,
+    adapterResultResolvedPath: adapterResultResolvedPath
+      ? relPath(adapterResultResolvedPath, resolvedRepoRoot)
+      : null,
+    adapter_result_resolved_path: adapterResultResolvedPath
+      ? relPath(adapterResultResolvedPath, resolvedRepoRoot)
+      : null,
+    adapterResultSha256: adapterResultArtifact?.contentHash ?? null,
+    adapter_result_sha256: adapterResultArtifact?.contentHash ?? null,
+    expectedAdapterResultSha256: expectedAdapterResultHash,
+    expected_adapter_result_sha256: expectedAdapterResultHash,
+    adapterResultSchemaVersion: adapterResultSchema ?? null,
+    adapter_result_schema_version: adapterResultSchema ?? null,
+    adapterResultProofAuthority: adapterResultAuthority ?? null,
+    adapter_result_proof_authority: adapterResultAuthority ?? null,
+    proofPath,
+    proof_path: proofPath,
+    proofResolvedPath: proofResolvedPath ? relPath(proofResolvedPath, resolvedRepoRoot) : null,
+    proof_resolved_path: proofResolvedPath ? relPath(proofResolvedPath, resolvedRepoRoot) : null,
+    proofJsonSha256: proofArtifact?.contentHash ?? null,
+    proof_json_sha256: proofArtifact?.contentHash ?? null,
+    expectedProofJsonSha256: proofJsonExpectedHash,
+    expected_proof_json_sha256: proofJsonExpectedHash,
+    proofSchemaVersion: proofSchema ?? null,
+    proof_schema_version: proofSchema ?? null,
+    proofJsonAuthority: proofAuthority ?? null,
+    proof_json_authority: proofAuthority ?? null,
+    strictRuntimeProofAccepted,
+    strict_runtime_proof_accepted: strictRuntimeProofAccepted,
+    strictRuntimeProofId,
+    strict_runtime_proof_id: strictRuntimeProofId,
+    proofLedgerId,
+    proof_ledger_id: proofLedgerId,
+    runtimeBoundaryEventManifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventManifestPath,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    runtimeBoundaryProofAdapterAccepted,
+    runtime_boundary_proof_adapter_accepted: runtimeBoundaryProofAdapterAccepted,
+    runtimeBoundaryProofAdapterProofId,
+    runtime_boundary_proof_adapter_proof_id: runtimeBoundaryProofAdapterProofId,
+    runtimeBoundaryLineMaterializationAccepted:
+      firstBool(
+        runtimeBoundaryLineMaterialization.accepted,
+        adapterResult.runtimeBoundaryLineMaterializationAccepted,
+        adapterResult.runtime_boundary_line_materialization_accepted,
+      ) === true,
+    runtime_boundary_line_materialization_accepted:
+      firstBool(
+        runtimeBoundaryLineMaterialization.accepted,
+        adapterResult.runtimeBoundaryLineMaterializationAccepted,
+        adapterResult.runtime_boundary_line_materialization_accepted,
+      ) === true,
+    runtimeBoundaryLineMaterializationHash: normalizeSha256(firstText(
+      runtimeBoundaryLineMaterialization.bindingHash,
+      runtimeBoundaryLineMaterialization.binding_hash,
+      adapterResult.runtimeBoundaryLineMaterializationHash,
+      adapterResult.runtime_boundary_line_materialization_hash,
+      proofJson.runtimeBoundaryLineMaterializationHash,
+      proofJson.runtime_boundary_line_materialization_hash,
+    )),
+    runtime_boundary_line_materialization_hash: normalizeSha256(firstText(
+      runtimeBoundaryLineMaterialization.bindingHash,
+      runtimeBoundaryLineMaterialization.binding_hash,
+      adapterResult.runtimeBoundaryLineMaterializationHash,
+      adapterResult.runtime_boundary_line_materialization_hash,
+      proofJson.runtimeBoundaryLineMaterializationHash,
+      proofJson.runtime_boundary_line_materialization_hash,
+    )),
+    runtimeBoundaryLineCount,
+    runtime_boundary_line_count: runtimeBoundaryLineCount,
+    adapterRuntimeBoundaryLineCount,
+    adapter_runtime_boundary_line_count: adapterRuntimeBoundaryLineCount,
+    runtimeBoundaryLineHashes,
+    runtime_boundary_line_hashes: runtimeBoundaryLineHashes,
+    adapterRuntimeBoundaryLineHashes,
+    adapter_runtime_boundary_line_hashes: adapterRuntimeBoundaryLineHashes,
     failedGates,
     failed_gates: failedGates,
   };
@@ -16232,6 +16666,76 @@ function rowSafetyFailures(row, context = {}) {
     ) {
       failures.push({ code: 'random_large_project_cold_runtime_profile_bridge_claimed_authority' });
     }
+    const runtimeProfileAdapterResultImport = compactObject(
+      row.randomColdRuntimeProfileAdapterResultImport
+      ?? row.random_cold_runtime_profile_adapter_result_import
+      ?? row.runtimeProfileAdapterResultImport
+      ?? row.runtime_profile_adapter_result_import,
+    );
+    const runtimeProfileAdapterResultImportPresent =
+      Object.keys(runtimeProfileAdapterResultImport).length > 0
+      || runtimeProfileAdapterResultImport.present === true;
+    if (runtimeProfileAdapterResultImportPresent) {
+      const importSchema = firstText(
+        runtimeProfileAdapterResultImport.schemaVersion,
+        runtimeProfileAdapterResultImport.schema_version,
+      );
+      const importAuthority = firstText(
+        runtimeProfileAdapterResultImport.proofAuthority,
+        runtimeProfileAdapterResultImport.proof_authority,
+      );
+      const importAccepted = firstBool(
+        runtimeProfileAdapterResultImport.accepted,
+        runtimeProfileAdapterResultImport.acceptedAsSupportEvidence,
+        runtimeProfileAdapterResultImport.accepted_as_support_evidence,
+      ) === true;
+      const importFailedGates = compactStringList([
+        ...(Array.isArray(runtimeProfileAdapterResultImport.failedGates)
+          ? runtimeProfileAdapterResultImport.failedGates
+          : []),
+        ...(Array.isArray(runtimeProfileAdapterResultImport.failed_gates)
+          ? runtimeProfileAdapterResultImport.failed_gates
+          : []),
+      ]);
+      if (importSchema !== RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_profile_adapter_result_import_schema_invalid',
+        });
+      }
+      if (importAuthority !== RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_profile_adapter_result_import_authority_invalid',
+        });
+      }
+      if (importAccepted !== true || importFailedGates.length > 0) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_profile_adapter_result_import_invalid',
+        });
+        failures.push(...importFailedGates.map((code) => ({ code })));
+      }
+      if (
+        firstBool(
+          runtimeProfileAdapterResultImport.acceptedForGpuHmr,
+          runtimeProfileAdapterResultImport.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          runtimeProfileAdapterResultImport.gpuHmrSuccess,
+          runtimeProfileAdapterResultImport.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          runtimeProfileAdapterResultImport.canSatisfyRuntimeProof,
+          runtimeProfileAdapterResultImport.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeProfileAdapterResultImport.canSatisfyDispatchProof,
+          runtimeProfileAdapterResultImport.can_satisfy_dispatch_proof,
+        ) === true
+      ) {
+        failures.push({
+          code: 'random_large_project_cold_runtime_profile_adapter_result_import_claimed_authority',
+        });
+      }
+    }
     const runtimeSupportClosureRaw = firstCompactObject(
       row.randomColdRuntimeSupportClosureObligation,
       row.random_cold_runtime_support_closure_obligation,
@@ -26690,18 +27194,18 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
   });
 }
 
-function randomLargeProjectColdPathRow(json, filePath, context) {
+async function randomLargeProjectColdPathRow(json, filePath, context) {
   const result = randomColdManifestResult(json);
   return randomLargeProjectColdPathResultRow(json, filePath, context, result);
 }
 
-function randomLargeProjectColdPathRows(json, filePath, context) {
-  return randomColdManifestResults(json).map((result) =>
+async function randomLargeProjectColdPathRows(json, filePath, context) {
+  return Promise.all(randomColdManifestResults(json).map((result) =>
     randomLargeProjectColdPathResultRow(json, filePath, context, result)
-  );
+  ));
 }
 
-function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
+async function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
   const candidate = randomColdManifestCandidate(json, result);
   const sourceIntake = firstCompactObject(
     result.sourceIntakeEvidence,
@@ -26751,6 +27255,14 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     randomLargeProjectColdPath.runtimeProfileProofBridge,
     randomLargeProjectColdPath.runtime_profile_proof_bridge,
   ));
+  const randomColdRuntimeProfileAdapterResultImport =
+    await randomColdRuntimeProfileAdapterResultImportFacet(
+      randomColdRuntimeProfileProofBridge,
+      {
+        repoRoot: context.repoRoot,
+        baseDir: path.dirname(filePath),
+      },
+    );
   const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
     result.runtimeSupportClosureObligation,
     result.runtime_support_closure_obligation,
@@ -26823,6 +27335,9 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     ...(randomColdRuntimeProfileProofBridge.present === true
       ? randomColdRuntimeProfileProofBridge.failedGates
       : []),
+    ...(randomColdRuntimeProfileAdapterResultImport.present === true
+      ? randomColdRuntimeProfileAdapterResultImport.failedGates
+      : []),
     ...(randomColdRuntimeSupportClosureObligation.present === true
       ? randomColdRuntimeSupportClosureObligation.blockingGaps
       : []),
@@ -26863,6 +27378,12 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     randomColdRuntimeProfileProofBridge.strictRuntimeProofId,
     randomColdRuntimeProfileProofBridge.proofLedgerId,
     randomColdRuntimeProfileProofBridge.facetHash,
+    randomColdRuntimeProfileAdapterResultImport.adapterResultSha256,
+    randomColdRuntimeProfileAdapterResultImport.proofJsonSha256,
+    randomColdRuntimeProfileAdapterResultImport.strictRuntimeProofId,
+    randomColdRuntimeProfileAdapterResultImport.proofLedgerId,
+    randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryProofAdapterProofId,
+    randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryLineMaterializationHash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
   ]);
   return finalizeRow({
@@ -26917,6 +27438,22 @@ function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
     runtime_profile_proof_bridge: randomColdRuntimeProfileProofBridge.present === true
       ? randomColdRuntimeProfileProofBridge
       : null,
+    randomColdRuntimeProfileAdapterResultImport:
+      randomColdRuntimeProfileAdapterResultImport.present === true
+        ? randomColdRuntimeProfileAdapterResultImport
+        : null,
+    random_cold_runtime_profile_adapter_result_import:
+      randomColdRuntimeProfileAdapterResultImport.present === true
+        ? randomColdRuntimeProfileAdapterResultImport
+        : null,
+    runtimeProfileAdapterResultImport:
+      randomColdRuntimeProfileAdapterResultImport.present === true
+        ? randomColdRuntimeProfileAdapterResultImport
+        : null,
+    runtime_profile_adapter_result_import:
+      randomColdRuntimeProfileAdapterResultImport.present === true
+        ? randomColdRuntimeProfileAdapterResultImport
+        : null,
     randomColdRuntimeSupportClosureObligation:
       randomColdRuntimeSupportClosureObligation.present === true
         ? randomColdRuntimeSupportClosureObligation
