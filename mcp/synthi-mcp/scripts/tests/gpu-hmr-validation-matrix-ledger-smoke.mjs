@@ -3776,6 +3776,101 @@ assert.equal(forgedAdapterImportHashRow.randomColdRuntimeProfileAdapterResultImp
 assert.ok(forgedAdapterImportHashRow.safety.failedGates.some((gate) =>
   gate.code === 'random_cold_adapter_result_import_hash_mismatch'
 ));
+const forgedAdapterLineHashDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-file-backed-import-line-hash',
+);
+const forgedAdapterLineHashProofPath = path.join(
+  forgedAdapterLineHashDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-boundary-adapter-proof.json',
+);
+const forgedAdapterLineHashResultPath = path.join(
+  forgedAdapterLineHashDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-adapter-result.json',
+);
+const forgedAdapterLineHashProofRelPath =
+  path.relative(tmpRoot, forgedAdapterLineHashProofPath).replace(/\\/g, '/');
+const forgedAdapterLineHashResultRelPath =
+  path.relative(tmpRoot, forgedAdapterLineHashResultPath).replace(/\\/g, '/');
+const forgedLineHashes = [
+  hashValue('forged-boundary-line-hash-0'),
+  ...fileBackedLineHashes.slice(1),
+];
+const forgedAdapterLineHashProof = JSON.parse(JSON.stringify(fileBackedProof));
+forgedAdapterLineHashProof.runtimeBoundaryLineHashes = forgedLineHashes;
+forgedAdapterLineHashProof.runtime_boundary_line_hashes = forgedLineHashes;
+forgedAdapterLineHashProof.adapterRuntimeBoundaryLineHashes = forgedLineHashes;
+forgedAdapterLineHashProof.adapter_runtime_boundary_line_hashes = forgedLineHashes;
+await writeJson(forgedAdapterLineHashProofPath, forgedAdapterLineHashProof);
+const forgedAdapterLineHashProofHash = jsonFileHash(forgedAdapterLineHashProof);
+const forgedAdapterLineHashResult = {
+  ...fileBackedAdapterResult,
+  proofPath: forgedAdapterLineHashProofRelPath,
+  proof_path: forgedAdapterLineHashProofRelPath,
+  proofJsonSha256: forgedAdapterLineHashProofHash,
+  proof_json_sha256: forgedAdapterLineHashProofHash,
+  runtimeBoundaryLineHashes: forgedLineHashes,
+  runtime_boundary_line_hashes: forgedLineHashes,
+  adapterRuntimeBoundaryLineHashes: forgedLineHashes,
+  adapter_runtime_boundary_line_hashes: forgedLineHashes,
+};
+await writeJson(forgedAdapterLineHashResultPath, forgedAdapterLineHashResult);
+const forgedAdapterLineHashResultHash = jsonFileHash(forgedAdapterLineHashResult);
+await writeJson(
+  path.join(forgedAdapterLineHashDir, 'random-cold-runtime-bridge-file-backed-import-line-hash.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import-line-hash',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import-line-hash.git',
+    immutableCommit: sha256Hex('runtime-bridge-file-backed-import-line-hash:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        runtimeProfileAdapterResultPath: forgedAdapterLineHashResultRelPath,
+        runtime_profile_adapter_result_path: forgedAdapterLineHashResultRelPath,
+        runtimeProfileAdapterResultSha256: forgedAdapterLineHashResultHash,
+        runtime_profile_adapter_result_sha256: forgedAdapterLineHashResultHash,
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+        strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+        proofLedgerId: fileBackedLedgerId,
+        proof_ledger_id: fileBackedLedgerId,
+        runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+        runtime_boundary_event_manifest_sha256: fileBackedEventManifestHash,
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+        runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+        blockingGaps: [],
+        blocking_gaps: [],
+        adapterResultBlockingGaps: [],
+        adapter_result_blocking_gaps: [],
+      }),
+    },
+  }),
+);
+const forgedAdapterLineHashLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAdapterLineHashDir],
+  includeInvalidated: true,
+});
+const forgedAdapterLineHashRow = forgedAdapterLineHashLedger.rows.find(
+  (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-file-backed-import-line-hash',
+);
+assert.equal(forgedAdapterLineHashRow?.safety.accepted, false);
+assert.equal(forgedAdapterLineHashRow.acceptedForGpuHmr, false);
+assert.equal(forgedAdapterLineHashRow.gpuHmrSuccess, false);
+assert.equal(forgedAdapterLineHashRow.randomColdRuntimeProfileAdapterResultImport.accepted, false);
+assert.ok(forgedAdapterLineHashRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_result_import_runtime_boundary_line_hash_mismatch'
+));
+assert.ok(forgedAdapterLineHashRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_adapter_result_import_adapter_boundary_line_hash_mismatch'
+));
 const forgedAdapterAuthorityDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-file-backed-import-authority',

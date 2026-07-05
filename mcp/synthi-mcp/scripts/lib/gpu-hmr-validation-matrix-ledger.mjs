@@ -4272,6 +4272,13 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     ?? proofJson.runtimeBoundaryLineMaterialization
     ?? proofJson.runtime_boundary_line_materialization,
   );
+  const firstStringEvidenceList = (...values) => {
+    for (const value of values) {
+      const list = stringEvidenceList(value);
+      if (list.length > 0) return list;
+    }
+    return [];
+  };
   const runtimeBoundaryEventManifest = compactObject(
     proofJson.runtimeBoundaryEventManifest
     ?? proofJson.runtime_boundary_event_manifest,
@@ -4320,61 +4327,59 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     proofLedger.proofId,
     proofLedger.proof_id,
   );
-  const runtimeBoundaryLineHashes = compactStringList([
-    ...(Array.isArray(adapterResult.runtimeBoundaryLineHashes)
-      ? adapterResult.runtimeBoundaryLineHashes
-      : []),
-    ...(Array.isArray(adapterResult.runtime_boundary_line_hashes)
-      ? adapterResult.runtime_boundary_line_hashes
-      : []),
-    ...(Array.isArray(proofJson.runtimeBoundaryLineHashes)
-      ? proofJson.runtimeBoundaryLineHashes
-      : []),
-    ...(Array.isArray(proofJson.runtime_boundary_line_hashes)
-      ? proofJson.runtime_boundary_line_hashes
-      : []),
-  ]);
-  const adapterRuntimeBoundaryLineHashes = compactStringList([
-    ...(Array.isArray(adapterResult.adapterRuntimeBoundaryLineHashes)
-      ? adapterResult.adapterRuntimeBoundaryLineHashes
-      : []),
-    ...(Array.isArray(adapterResult.adapter_runtime_boundary_line_hashes)
-      ? adapterResult.adapter_runtime_boundary_line_hashes
-      : []),
-    ...(Array.isArray(proofJson.adapterRuntimeBoundaryLineHashes)
-      ? proofJson.adapterRuntimeBoundaryLineHashes
-      : []),
-    ...(Array.isArray(proofJson.adapter_runtime_boundary_line_hashes)
-      ? proofJson.adapter_runtime_boundary_line_hashes
-      : []),
-  ]);
+  const runtimeBoundaryLines = firstStringEvidenceList(
+    adapterResult.runtimeBoundaryLines,
+    adapterResult.runtime_boundary_lines,
+    proofJson.runtimeBoundaryLines,
+    proofJson.runtime_boundary_lines,
+  );
+  const adapterRuntimeBoundaryLines = firstStringEvidenceList(
+    adapterResult.adapterRuntimeBoundaryLines,
+    adapterResult.adapter_runtime_boundary_lines,
+    proofJson.adapterRuntimeBoundaryLines,
+    proofJson.adapter_runtime_boundary_lines,
+  );
+  const runtimeBoundaryLineHashes = firstStringEvidenceList(
+    adapterResult.runtimeBoundaryLineHashes,
+    adapterResult.runtime_boundary_line_hashes,
+    proofJson.runtimeBoundaryLineHashes,
+    proofJson.runtime_boundary_line_hashes,
+  );
+  const adapterRuntimeBoundaryLineHashes = firstStringEvidenceList(
+    adapterResult.adapterRuntimeBoundaryLineHashes,
+    adapterResult.adapter_runtime_boundary_line_hashes,
+    proofJson.adapterRuntimeBoundaryLineHashes,
+    proofJson.adapter_runtime_boundary_line_hashes,
+  );
+  const recomputedRuntimeBoundaryLineHashes =
+    runtimeBoundaryLines.map((line) => `sha256:${sha256Hex(line)}`);
+  const recomputedAdapterRuntimeBoundaryLineHashes =
+    adapterRuntimeBoundaryLines.map((line) => `sha256:${sha256Hex(line)}`);
+  const runtimeBoundaryLineHashesAccepted =
+    runtimeBoundaryLines.length === 0
+    || (
+      runtimeBoundaryLineHashes.length === recomputedRuntimeBoundaryLineHashes.length
+      && runtimeBoundaryLineHashes.every((hash, index) =>
+        hash === recomputedRuntimeBoundaryLineHashes[index]
+      )
+    );
+  const adapterRuntimeBoundaryLineHashesAccepted =
+    adapterRuntimeBoundaryLines.length === 0
+    || (
+      adapterRuntimeBoundaryLineHashes.length === recomputedAdapterRuntimeBoundaryLineHashes.length
+      && adapterRuntimeBoundaryLineHashes.every((hash, index) =>
+        hash === recomputedAdapterRuntimeBoundaryLineHashes[index]
+      )
+    );
   const runtimeBoundaryLineCount =
     Math.max(
       runtimeBoundaryLineHashes.length,
-      Array.isArray(adapterResult.runtimeBoundaryLines)
-        ? adapterResult.runtimeBoundaryLines.length
-        : 0,
-      Array.isArray(adapterResult.runtime_boundary_lines)
-        ? adapterResult.runtime_boundary_lines.length
-        : 0,
-      Array.isArray(proofJson.runtimeBoundaryLines) ? proofJson.runtimeBoundaryLines.length : 0,
-      Array.isArray(proofJson.runtime_boundary_lines) ? proofJson.runtime_boundary_lines.length : 0,
+      runtimeBoundaryLines.length,
     );
   const adapterRuntimeBoundaryLineCount =
     Math.max(
       adapterRuntimeBoundaryLineHashes.length,
-      Array.isArray(adapterResult.adapterRuntimeBoundaryLines)
-        ? adapterResult.adapterRuntimeBoundaryLines.length
-        : 0,
-      Array.isArray(adapterResult.adapter_runtime_boundary_lines)
-        ? adapterResult.adapter_runtime_boundary_lines.length
-        : 0,
-      Array.isArray(proofJson.adapterRuntimeBoundaryLines)
-        ? proofJson.adapterRuntimeBoundaryLines.length
-        : 0,
-      Array.isArray(proofJson.adapter_runtime_boundary_lines)
-        ? proofJson.adapter_runtime_boundary_lines.length
-        : 0,
+      adapterRuntimeBoundaryLines.length,
     );
   const adapterResultClaimedAuthority =
     firstBool(adapterResult.acceptedForGpuHmr, adapterResult.accepted_for_gpu_hmr) === true
@@ -4466,6 +4471,17 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
       : null,
     proofArtifact && proofClaimedGpuHmrAuthority
       ? 'random_cold_adapter_result_import_proof_claimed_gpu_hmr_authority'
+      : null,
+    runtimeBoundaryLineHashesAccepted
+      ? null
+      : 'random_cold_adapter_result_import_runtime_boundary_line_hash_mismatch',
+    adapterRuntimeBoundaryLineHashesAccepted
+      ? null
+      : 'random_cold_adapter_result_import_adapter_boundary_line_hash_mismatch',
+    bridgeProofAdapterAccepted
+      && runtimeBoundaryLines.length === 0
+      && adapterRuntimeBoundaryLines.length === 0
+      ? 'random_cold_adapter_result_import_boundary_lines_missing'
       : null,
     bridgeStrictRuntimeProofAccepted && strictRuntimeProofAccepted !== true
       ? 'random_cold_adapter_result_import_strict_runtime_acceptance_mismatch'
@@ -4579,10 +4595,18 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     runtime_boundary_line_count: runtimeBoundaryLineCount,
     adapterRuntimeBoundaryLineCount,
     adapter_runtime_boundary_line_count: adapterRuntimeBoundaryLineCount,
+    runtimeBoundaryLineHashesAccepted,
+    runtime_boundary_line_hashes_accepted: runtimeBoundaryLineHashesAccepted,
+    adapterRuntimeBoundaryLineHashesAccepted,
+    adapter_runtime_boundary_line_hashes_accepted: adapterRuntimeBoundaryLineHashesAccepted,
     runtimeBoundaryLineHashes,
     runtime_boundary_line_hashes: runtimeBoundaryLineHashes,
     adapterRuntimeBoundaryLineHashes,
     adapter_runtime_boundary_line_hashes: adapterRuntimeBoundaryLineHashes,
+    recomputedRuntimeBoundaryLineHashes,
+    recomputed_runtime_boundary_line_hashes: recomputedRuntimeBoundaryLineHashes,
+    recomputedAdapterRuntimeBoundaryLineHashes,
+    recomputed_adapter_runtime_boundary_line_hashes: recomputedAdapterRuntimeBoundaryLineHashes,
     failedGates,
     failed_gates: failedGates,
   };
