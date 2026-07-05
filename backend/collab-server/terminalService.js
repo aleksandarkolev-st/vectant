@@ -1449,6 +1449,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     filesystemUserId,
     runtimeScope,
     reason: 'headless_terminal',
+    codesiteContext: codeSiteContext,
   });
   let cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
   const originalCwd = cwd;

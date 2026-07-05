@@ -4701,11 +4701,21 @@ export default function CodeSitePanel({ workspaceSlug }) {
       ),
     [allEvents, controlState?.pendingQuarantines, radarState.quarantines],
   );
+  const actionableQuarantineRecords = useMemo(
+    () =>
+      quarantineRecords.filter(
+        (record) =>
+          asArray(record.changes).length ||
+          asArray(record.paths).length ||
+          asArray(record.remainingPaths).length,
+      ),
+    [quarantineRecords],
+  );
   const selectedQuarantine =
-    quarantineRecords.find(
+    actionableQuarantineRecords.find(
       (record) => record.quarantineId === quarantineReview.selectedId,
     ) ||
-    quarantineRecords[0] ||
+    actionableQuarantineRecords[0] ||
     null;
   const zones = asArray(currentProject?.zonePolicy?.zones);
   const noFlyZones = asArray(
@@ -4907,6 +4917,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
           {
             transactionId: record.transactionId,
             mutationLeaseId: record.mutationLeaseId,
+            agentSessionId: record.agentSessionId,
+            displayCallsign: record.displayCallsign,
             paths,
           },
         );
@@ -4976,6 +4988,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
           {
             transactionId: record.transactionId,
             mutationLeaseId: record.mutationLeaseId,
+            agentSessionId: record.agentSessionId,
+            displayCallsign: record.displayCallsign,
             paths,
           },
         );
@@ -5683,13 +5697,17 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 title="Quarantine Review"
                 icon={FileSearch}
                 right={
-                  <Pill tone={quarantineRecords.length ? "holding" : "active"}>
-                    {quarantineRecords.length}
+                  <Pill
+                    tone={
+                      actionableQuarantineRecords.length ? "holding" : "active"
+                    }
+                  >
+                    {actionableQuarantineRecords.length}
                   </Pill>
                 }
               >
                 <QuarantineReviewPanel
-                  records={quarantineRecords}
+                  records={actionableQuarantineRecords}
                   fetchError={radarState.quarantineError}
                   selectedId={
                     selectedQuarantine?.quarantineId ||

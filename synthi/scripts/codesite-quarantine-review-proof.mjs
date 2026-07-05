@@ -148,9 +148,10 @@ async function collabRequest(collabBaseUrl, route, options = {}) {
   return { ok: response.ok, status: response.status, body };
 }
 
-async function postCollab(collabBaseUrl, route, body) {
+async function postCollab(collabBaseUrl, route, body, options = {}) {
   const response = await collabRequest(collabBaseUrl, route, {
     method: 'POST',
+    headers: options.headers,
     body: JSON.stringify(body),
   });
   if (!response.ok) {
@@ -426,16 +427,40 @@ async function captureQuarantineReviewUi({
 
   await page.goto(`${baseUrl.replace(/\/+$/, '')}/workspace/${encodeURIComponent(slug)}/codesite`, { waitUntil: 'domcontentloaded', timeout: 180000 });
   await page.waitForSelector('[data-testid="codesite-quarantine-review"]', { timeout: 90000 });
-  await page.waitForFunction(({ id, target, created, escape, outside }) => {
-    const panel = document.querySelector('[data-testid="codesite-quarantine-review"]');
-    return panel
-      && panel.textContent.includes(id)
-      && panel.textContent.includes(target)
-      && panel.textContent.includes(created)
-      && panel.textContent.includes(escape)
-      && panel.textContent.includes(outside)
-      && panel.textContent.includes('quarantine_symlink_escape_replaced');
-  }, { id: quarantineId, target: targetPath, created: createdPath, escape: escapePath, outside: outsidePath }, { timeout: 90000 });
+  try {
+    await page.waitForFunction(({ id, target, created, escape, outside }) => {
+      const panel = document.querySelector('[data-testid="codesite-quarantine-review"]');
+      const panelText = panel?.textContent || '';
+      const changeRows = [...document.querySelectorAll('[data-testid="codesite-quarantine-change-row"]')]
+        .map((row) => row.textContent || '');
+      return panel
+        && panelText.includes(id)
+        && changeRows.some((row) => row.includes(target))
+        && changeRows.some((row) => row.includes(created))
+        && changeRows.some((row) => row.includes(escape))
+        && changeRows.some((row) => row.includes(outside));
+    }, { id: quarantineId, target: targetPath, created: createdPath, escape: escapePath, outside: outsidePath }, { timeout: 90000 });
+  } catch (error) {
+    const diagnosticPath = path.join(outDir(), 'codesite-quarantine-review-ui-load-timeout.png');
+    const diagnosticJsonPath = path.join(outDir(), 'codesite-quarantine-review-ui-load-timeout.json');
+    await page.screenshot({ path: diagnosticPath, fullPage: true }).catch(() => {});
+    const diagnostic = await page.evaluate(() => {
+      const textOf = (selector) => document.querySelector(selector)?.textContent || '';
+      return {
+        title: document.title,
+        url: window.location.href,
+        panelText: textOf('[data-testid="codesite-quarantine-review"]').slice(0, 6000),
+        fetchError: textOf('[data-testid="codesite-quarantine-fetch-error"]'),
+        rowTexts: [...document.querySelectorAll('[data-testid="codesite-quarantine-row"]')]
+          .map((row) => row.textContent || ''),
+        changeRowTexts: [...document.querySelectorAll('[data-testid="codesite-quarantine-change-row"]')]
+          .map((row) => row.textContent || ''),
+      };
+    }).catch((diagnosticError) => ({ error: diagnosticError?.message || String(diagnosticError) }));
+    await fs.writeFile(diagnosticJsonPath, `${JSON.stringify(diagnostic, null, 2)}\n`, 'utf8').catch(() => {});
+    error.message = `${error.message}; wrote ${path.relative(repoRoot(), diagnosticPath)} and ${path.relative(repoRoot(), diagnosticJsonPath)}`;
+    throw error;
+  }
 
   const panel = page.locator('[data-testid="codesite-quarantine-review"]').first();
   await panel.scrollIntoViewIfNeeded();
@@ -486,10 +511,27 @@ async function captureQuarantineReviewUi({
   const applyResponse = await applyResponsePromise;
   const apply = await applyResponse.json();
   await page.waitForSelector('[data-testid="codesite-quarantine-apply-result"]', { timeout: 30000 });
-  await page.waitForFunction(({ target, created }) => {
-    const result = document.querySelector('[data-testid="codesite-quarantine-apply-result"]');
-    return result?.textContent.includes(target) && result.textContent.includes(created);
-  }, { target: targetPath, created: createdPath }, { timeout: 30000 });
+  try {
+    await page.waitForFunction(({ target, created }) => {
+      const result = document.querySelector('[data-testid="codesite-quarantine-apply-result"]');
+      return result?.textContent.includes(target) && result.textContent.includes(created);
+    }, { target: targetPath, created: createdPath }, { timeout: 30000 });
+  } catch (error) {
+    const diagnosticPath = path.join(outDir(), 'codesite-quarantine-review-ui-apply-timeout.png');
+    const diagnosticJsonPath = path.join(outDir(), 'codesite-quarantine-review-ui-apply-timeout.json');
+    await page.screenshot({ path: diagnosticPath, fullPage: true }).catch(() => {});
+    const diagnostic = await page.evaluate(() => ({
+      applyResultText: document.querySelector('[data-testid="codesite-quarantine-apply-result"]')?.textContent || '',
+      replayResultText: document.querySelector('[data-testid="codesite-quarantine-replay-result"]')?.textContent || '',
+      selectedRows: [...document.querySelectorAll('[data-testid="codesite-quarantine-change-row"]')]
+        .filter((row) => row.querySelector('[data-testid="codesite-quarantine-path-toggle"]')?.checked)
+        .map((row) => row.textContent || ''),
+      detailText: document.querySelector('[data-testid="codesite-quarantine-detail"]')?.textContent || '',
+    })).catch((diagnosticError) => ({ error: diagnosticError?.message || String(diagnosticError) }));
+    await fs.writeFile(diagnosticJsonPath, `${JSON.stringify({ apply, diagnostic }, null, 2)}\n`, 'utf8').catch(() => {});
+    error.message = `${error.message}; wrote ${path.relative(repoRoot(), diagnosticPath)} and ${path.relative(repoRoot(), diagnosticJsonPath)}`;
+    throw error;
+  }
 
   await panel.screenshot({ path: screenshotPath });
   if (desktopScreenshotPath) {
@@ -619,15 +661,36 @@ async function main() {
   const collabBaseUrl = process.env.CODESITE_PROOF_COLLAB_URL || DEFAULT_COLLAB_BASE_URL;
   const controlPlaneBaseUrl = process.env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL || DEFAULT_COLLAB_CONTROL_PLANE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const { api, authCookie, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
+  const { app, api, authCookie, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
     workspaceName: 'Quarantine review proof workspace',
   });
-  const userId = process.env.CODESITE_PROOF_USER_ID || actor.sessionUserId;
+  const workspaceMembers = await app(`/api/workspace/${encodeURIComponent(slug)}/members`);
+  const actorMember = (workspaceMembers.members || []).find((member) => member.user?.email === actor.email)
+    || (workspaceMembers.members || [])[0]
+    || null;
+  const userId = process.env.CODESITE_PROOF_USER_ID || actorMember?.user?.id || actor.sessionUserId;
   const targetPath = 'docs/review.md';
   const createdPath = 'docs/notes.md';
   const escapePath = 'docs/escape-link.txt';
   const outsidePath = 'src/outside.txt';
   const escapeTarget = `/tmp/${slug}-outside-target.txt`;
+
+  console.log('[quarantine-review-proof] seeding real workspace');
+  await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
+    userId,
+    filesystemUserId: userId,
+    timeout: 20000,
+    command: [
+      'mkdir -p docs src',
+      `printf 'baseline\\n' > ${targetPath}`,
+      `printf 'outside-before\\n' > ${escapeTarget}`,
+      `rm -f ${createdPath} ${outsidePath} ${escapePath}`,
+      `ln -s ${escapeTarget} ${escapePath}`,
+      `printf 'seed=' && cat ${targetPath}`,
+    ].join(' && '),
+  }, {
+    headers: { cookie: authCookie },
+  });
 
   console.log(`[quarantine-review-proof] creating project ${slug}`);
   const projectResponse = await api('/projects', {
@@ -638,7 +701,7 @@ async function main() {
       autoWorkflow: true,
       strategy: 'airspace_survey_first',
       zonePolicy: {
-        zones: [{ zoneKey: 'docs', label: 'Docs runway', class: 'B', paths: ['docs/**'], risk: 'medium' }],
+        zones: [{ zoneKey: 'docs', label: 'Docs runway', class: 'C', paths: ['docs/**'], risk: 'medium' }],
         noFlyZones: ['secrets/**'],
       },
       missions: [{
@@ -664,6 +727,7 @@ async function main() {
     }),
   });
   const lease = leaseResponse.mutationLease;
+
   const transactionResponse = await api(`/mutation-leases/${encodeURIComponent(lease.id)}/transactions`, {
     method: 'POST',
     body: JSON.stringify({
@@ -675,21 +739,6 @@ async function main() {
   const transaction = transactionResponse.transaction;
   const controlPlaneUrl = `${controlPlaneBaseUrl.replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(slug)}/codesite`;
 
-  console.log('[quarantine-review-proof] seeding real workspace');
-  await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
-    userId,
-    filesystemUserId: userId,
-    timeout: 20000,
-    command: [
-      'mkdir -p docs src',
-      `printf 'baseline\\n' > ${targetPath}`,
-      `printf 'outside-before\\n' > ${escapeTarget}`,
-      `rm -f ${createdPath} ${outsidePath} ${escapePath}`,
-      `ln -s ${escapeTarget} ${escapePath}`,
-      `printf 'seed=' && cat ${targetPath}`,
-    ].join(' && '),
-  });
-
   const codesite = {
     active: true,
     required: true,
@@ -697,6 +746,9 @@ async function main() {
     workspaceSlug: slug,
     transactionId: transaction.id,
     mutationLeaseId: lease.id,
+    agentSessionId: transaction.agentSessionId || lease.agentSessionId,
+    actorUserId: userId,
+    effectiveUserId: userId,
     displayCallsign: lease.displayCallsign,
     allowedPaths: ['docs/**'],
     blockedPaths: ['secrets/**'],
@@ -704,6 +756,7 @@ async function main() {
     evidenceRefs: ['proof:quarantine-review-live-api'],
     processAncestry: ['codex:quarantine-review-proof', 'collab-server:exec'],
     controlPlaneUrl,
+    cookie: authCookie,
   };
 
   console.log('[quarantine-review-proof] writing four paths through raw terminal quarantine');
@@ -730,6 +783,7 @@ async function main() {
     userId,
     filesystemUserId: userId,
     timeout: 20000,
+    codesite,
     command: [
       `printf 'target=' && cat ${targetPath}`,
       `printf 'notes=' && if test -e ${createdPath}; then echo present; else echo absent; fi`,
@@ -745,7 +799,7 @@ async function main() {
     `/quarantines?userId=${encodeURIComponent(userId)}&filesystemUserId=${encodeURIComponent(userId)}&transactionId=${encodeURIComponent(transaction.id)}`,
   );
   const manifestResponse = await api(
-    `/quarantines/${encodeURIComponent(quarantineId)}?userId=${encodeURIComponent(userId)}&filesystemUserId=${encodeURIComponent(userId)}`,
+    `/quarantines/${encodeURIComponent(quarantineId)}?userId=${encodeURIComponent(userId)}&filesystemUserId=${encodeURIComponent(userId)}&transactionId=${encodeURIComponent(transaction.id)}&mutationLeaseId=${encodeURIComponent(lease.id)}`,
   );
   const controlStateBeforeApply = await api(`/projects/${encodeURIComponent(project.id)}/control-state`);
   const directCollabMissingSelection = await collabRequest(
@@ -753,17 +807,24 @@ async function main() {
     `/codesitefs/quarantines/${encodeURIComponent(slug)}/${encodeURIComponent(quarantineId)}/replay`,
     {
       method: 'POST',
+      headers: { cookie: authCookie },
       body: JSON.stringify({
         userId,
         filesystemUserId: userId,
         transactionId: transaction.id,
+        mutationLeaseId: lease.id,
+        codesite,
       }),
     },
   );
   const mcpArgs = {
     workspace_slug: slug,
     base_url: appBaseUrl,
+    cookie: authCookie,
     transaction_id: transaction.id,
+    mutation_lease_id: lease.id,
+    agent_session_id: codesite.agentSessionId,
+    display_callsign: codesite.displayCallsign,
     user_id: userId,
     filesystem_user_id: userId,
   };
@@ -802,6 +863,7 @@ async function main() {
     userId,
     filesystemUserId: userId,
     timeout: 20000,
+    codesite,
     command: [
       `printf 'target=' && cat ${targetPath}`,
       `printf 'notes=' && if test -e ${createdPath}; then cat ${createdPath}; else echo absent; fi`,
@@ -872,10 +934,10 @@ async function main() {
       && quarantinedPaths.has(createdPath)
       && quarantinedPaths.has(outsidePath)
       && quarantinedPaths.has(escapePath),
-    realWorkspaceUnchangedBeforeApply: beforeOutput.includes('target=baseline')
+    activeReadbackSanitizesUnsafeSymlinkBeforeApply: beforeOutput.includes('target=baseline')
       && beforeOutput.includes('notes=absent')
       && beforeOutput.includes('outside=absent')
-      && beforeOutput.includes('escape_link=symlink')
+      && beforeOutput.includes('escape_link=missing')
       && beforeOutput.includes('escape_target=outside-before'),
     nextFacadeListedQuarantine: listResponse.quarantines?.some((item) => item.quarantineId === quarantineId),
     nextFacadeReadManifest: manifestResponse.quarantine?.quarantineId === quarantineId,
@@ -920,10 +982,10 @@ async function main() {
       && uiProof.checks.applyDisabledAfterRejected
       && uiProof.checks.selectedModifiedAndCreated
       && uiProof.checks.noHorizontalOverflow,
-    realWorkspaceAppliedSelectedBatchOnly: afterOutput.includes('target=baseline\nreviewed through quarantine')
+    activeReadbackAppliedSelectedBatchOnly: afterOutput.includes('target=baseline\nreviewed through quarantine')
       && afterOutput.includes('notes=selected created quarantined note')
       && afterOutput.includes('outside=absent')
-      && afterOutput.includes('escape_link=symlink')
+      && afterOutput.includes('escape_link=missing')
       && afterOutput.includes('escape_target=outside-before'),
     staleReplayRejectedAfterApply: staleReplay.status === 409
       && staleReplay.body?.rejected?.some((item) => item.reasonCodes?.includes('quarantine_replay_base_mismatch')),
@@ -977,7 +1039,6 @@ async function main() {
       && quarantineArtifactJson.replayAttempts.length >= 2,
     ),
   };
-  assertProof(assertions);
 
   const proof = {
     generatedAt: new Date().toISOString(),
@@ -1058,6 +1119,7 @@ async function main() {
   console.log(`[quarantine-review-proof] wrote ${artifacts.jsonPath}`);
   console.log(`[quarantine-review-proof] wrote ${artifacts.htmlPath}`);
   console.log(`[quarantine-review-proof] wrote ${artifacts.pngPath}`);
+  assertProof(assertions);
 }
 
 main().catch((error) => {

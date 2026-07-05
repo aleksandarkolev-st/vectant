@@ -688,7 +688,7 @@ function validateQuarantineReplayBase(change, currentBuffer, currentExists) {
   return { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent };
 }
 
-function selectedQuarantineChanges(manifest, parsed = {}) {
+function selectedQuarantinePathSet(parsed = {}) {
   const requestedPaths = new Set(arrayValue(parsed.paths || parsed.selectedPaths || parsed.selected_paths)
     .map((item) => {
       try { return normalizeRepoRelativePath(item); } catch (_) { return null; }
@@ -699,8 +699,13 @@ function selectedQuarantineChanges(manifest, parsed = {}) {
     error.code = 'MISSING_SELECTED_PATHS';
     throw error;
   }
+  return requestedPaths;
+}
+
+function selectedQuarantineChanges(manifest, parsed = {}, requestedPaths = null) {
+  const selectedPaths = requestedPaths || selectedQuarantinePathSet(parsed);
   const changes = arrayValue(manifest?.changes);
-  return changes.filter((change) => requestedPaths.has(change.path || change.quarantineEvidence?.path));
+  return changes.filter((change) => selectedPaths.has(change.path || change.quarantineEvidence?.path));
 }
 
 function quarantineManifestEventDetails(manifest = {}) {
@@ -1516,12 +1521,10 @@ function runtimeCodeSiteEnv(context, processAncestry) {
 }
 
 function codeSiteRuntimeQuarantineBaseDir(cwd) {
-  const dataVolume = process.env.WORKSPACE_DATA_VOLUME || '';
-  const dataRoot = process.env.WORKSPACE_DATA_VOLUME_ROOT || '/data';
-  if (dataVolume && cwd && path.posix.resolve(cwd).startsWith(`${path.posix.resolve(dataRoot)}/`)) {
-    return path.posix.join(path.posix.resolve(dataRoot), 'codesitefs-quarantine');
-  }
-  return undefined;
+  const dataRoot = process.env.DATA_ROOT || process.env.WORKSPACE_DATA_VOLUME_ROOT || '';
+  if (dataRoot) return path.posix.join(path.posix.resolve(dataRoot), 'codesitefs-quarantine');
+  if (cwd) return path.join(path.dirname(cwd), '.synthi', 'codesitefs-quarantine');
+  return path.join(require('os').tmpdir(), 'synthi-codesitefs-quarantine');
 }
 
 function attachCodeSiteRuntimeQuarantineFinalizer(handle, codeSiteContext, quarantine, details = {}) {
@@ -3191,6 +3194,29 @@ const server = http.createServer(async (req, res) => {
     });
     const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
     try {
+      let requestedPaths = null;
+      if (action) {
+        if (!['replay', 'apply'].includes(action) || req.method !== 'POST') {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'method_not_allowed' }));
+          return;
+        }
+        requestedPaths = selectedQuarantinePathSet(parsed);
+        if (action === 'apply' && (!codeSiteContext.active || !codeSiteContext.transactionId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: false,
+            error: 'codesite_transaction_required',
+            message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+            codesite: codeSiteMetadata,
+          }));
+          return;
+        }
+        if (action === 'apply' && requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+          writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+          return;
+        }
+      }
       const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, `codesitefs-quarantine-${action || 'get'}`, codeSiteContext);
       const quarantine = await readCodeSiteQuarantineManifest(storage.baseDir, slug, quarantineId);
       if (!action && req.method === 'GET') {
@@ -3198,27 +3224,8 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true, quarantine }));
         return;
       }
-      if (!['replay', 'apply'].includes(action) || req.method !== 'POST') {
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'method_not_allowed' }));
-        return;
-      }
-      if (action === 'apply' && (!codeSiteContext.active || !codeSiteContext.transactionId)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          ok: false,
-          error: 'codesite_transaction_required',
-          message: 'Applying a quarantine replay requires an active CodeSite transaction.',
-          codesite: codeSiteMetadata,
-        }));
-        return;
-      }
-      if (action === 'apply' && requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
-        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
-        return;
-      }
 
-      const selected = selectedQuarantineChanges(quarantine, parsed);
+      const selected = selectedQuarantineChanges(quarantine, parsed, requestedPaths);
       const manifestEventDetails = quarantineManifestEventDetails(quarantine);
       const replay = await prepareCodeSiteQuarantineReplayPlan({
         slug,
@@ -3813,6 +3820,7 @@ const server = http.createServer(async (req, res) => {
         filesystemUserId,
         runtimeScope,
         reason: 'exec_pty',
+        codesiteContext: codeSiteContext,
       });
       cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
     } catch (err) {
@@ -3824,7 +3832,10 @@ const server = http.createServer(async (req, res) => {
     let codeSiteQuarantine = null;
     if (codeSiteContext.active) {
       try {
-        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, { operation: 'exec-pty' });
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+          operation: 'exec-pty',
+          baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
+        });
         if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
       } catch (err) {
         console.error('[ExecPTY] CodeSite quarantine preparation failed:', err.message);
@@ -3982,6 +3993,7 @@ const server = http.createServer(async (req, res) => {
         filesystemUserId,
         runtimeScope,
         reason: 'exec',
+        codesiteContext: codeSiteContext,
       });
       cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
     } catch (err) {
@@ -3993,7 +4005,10 @@ const server = http.createServer(async (req, res) => {
     let codeSiteQuarantine = null;
     if (codeSiteContext.active) {
       try {
-        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, { operation: 'exec' });
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+          operation: 'exec',
+          baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
+        });
         if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
       } catch (err) {
         console.error('[Exec] CodeSite quarantine preparation failed:', err.message);

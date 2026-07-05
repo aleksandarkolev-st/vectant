@@ -576,6 +576,17 @@ async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null)
     accept: 'application/json',
     'x-codesite-control-plane-url': codeSiteApiBaseUrl(request, sourceUrl, slug),
   };
+  const queryTransactionId = sourceUrl.searchParams.get('transactionId') || sourceUrl.searchParams.get('transaction_id');
+  const queryMutationLeaseId = sourceUrl.searchParams.get('mutationLeaseId') || sourceUrl.searchParams.get('mutation_lease_id');
+  const queryAgentSessionId = sourceUrl.searchParams.get('agentSessionId') || sourceUrl.searchParams.get('agent_session_id');
+  const queryDisplayCallsign = sourceUrl.searchParams.get('displayCallsign') || sourceUrl.searchParams.get('callsign');
+  if (!action && queryTransactionId) {
+    headers['x-codesite-mode'] = 'enforce';
+    headers['x-codesite-transaction-id'] = queryTransactionId;
+  }
+  if (!action && queryMutationLeaseId) headers['x-codesite-lease-id'] = queryMutationLeaseId;
+  if (!action && queryAgentSessionId) headers['x-codesite-agent-session-id'] = queryAgentSessionId;
+  if (!action && queryDisplayCallsign) headers['x-codesite-callsign'] = queryDisplayCallsign;
   const authorization = request.headers.get('authorization');
   const cookie = request.headers.get('cookie');
   if (authorization) headers.authorization = authorization;
@@ -602,16 +613,19 @@ async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null)
     headers['content-type'] = 'application/json';
     const transactionId = body?.transactionId || body?.transaction_id;
     const mutationLeaseId = body?.mutationLeaseId || body?.mutation_lease_id;
+    const agentSessionId = body?.agentSessionId || body?.agent_session_id;
     const displayCallsign = body?.displayCallsign || body?.callsign;
     if (transactionId) {
       headers['x-codesite-mode'] = 'enforce';
       headers['x-codesite-transaction-id'] = transactionId;
     }
     if (mutationLeaseId) headers['x-codesite-lease-id'] = mutationLeaseId;
+    if (agentSessionId) headers['x-codesite-agent-session-id'] = agentSessionId;
     if (displayCallsign) headers['x-codesite-callsign'] = displayCallsign;
     nextBody = JSON.stringify({
       ...(transactionId ? { transactionId } : {}),
       ...(mutationLeaseId ? { mutationLeaseId } : {}),
+      ...(agentSessionId ? { agentSessionId } : {}),
       ...(displayCallsign ? { displayCallsign } : {}),
       ...(body?.evidenceRefs ? { evidenceRefs: body.evidenceRefs } : {}),
       ...(body?.evidence_refs ? { evidence_refs: body.evidence_refs } : {}),
@@ -628,6 +642,7 @@ async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null)
         workspaceSlug: slug,
         transactionId,
         mutationLeaseId,
+        agentSessionId,
         displayCallsign,
         controlPlaneUrl: codeSiteApiBaseUrl(request, sourceUrl, slug),
         cookie,
@@ -763,7 +778,10 @@ function codeSiteApiBaseUrl(request, url, slug) {
   if (explicit) {
     return explicit.replace('{workspace_slug}', encodeURIComponent(slug)).replace(/\/+$/, '');
   }
-  const configuredOrigin = process.env.SYNTHI_CODESITE_BASE_URL || process.env.SYNTHI_APP_URL || process.env.NEXTAUTH_URL;
+  const configuredOrigin = process.env.SYNTHI_CODESITE_BASE_URL
+    || process.env.SYNTHI_APP_INTERNAL_URL
+    || process.env.SYNTHI_APP_URL
+    || process.env.NEXTAUTH_URL;
   const requestHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
   const requestProto = request.headers.get('x-forwarded-proto') || url.protocol.replace(/:$/, '') || 'http';
   const originFromHost = requestHost ? `${requestProto}://${requestHost}` : '';

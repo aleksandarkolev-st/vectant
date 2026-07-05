@@ -89,6 +89,7 @@ const CONTROL_ARG_KEYS = new Set([
   "document_id",
   "event_id",
   "execution_plan_id",
+  "display_callsign",
   "filesystem_user_id",
   "file_path",
   "incident_id",
@@ -454,6 +455,9 @@ export const CODESITE_TOOLS = [
   codeSiteTool("synthi_codesite_review_quarantine", "List CodeSiteFS quarantine manifests, or fetch one manifest for human/agent review.", {
     quarantine_id: { type: "string" },
     transaction_id: { type: "string" },
+    agent_session_id: { type: "string" },
+    display_callsign: { type: "string" },
+    callsign: { type: "string" },
     user_id: { type: "string" },
     filesystem_user_id: { type: "string" },
     runtime_scope: { type: "string" },
@@ -463,6 +467,9 @@ export const CODESITE_TOOLS = [
     transaction_id: { type: "string" },
     selected_paths: { type: "array", items: { type: "string" } },
     paths: { type: "array", items: { type: "string" } },
+    agent_session_id: { type: "string" },
+    display_callsign: { type: "string" },
+    callsign: { type: "string" },
     user_id: { type: "string" },
     filesystem_user_id: { type: "string" },
     runtime_scope: { type: "string" },
@@ -473,6 +480,9 @@ export const CODESITE_TOOLS = [
     selected_paths: { type: "array", items: { type: "string" } },
     paths: { type: "array", items: { type: "string" } },
     mutation_lease_id: { type: "string" },
+    agent_session_id: { type: "string" },
+    display_callsign: { type: "string" },
+    callsign: { type: "string" },
     user_id: { type: "string" },
     filesystem_user_id: { type: "string" },
     runtime_scope: { type: "string" },
@@ -906,6 +916,10 @@ function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): Cod
         path: quarantineId ? `/quarantines/${encodeURIComponent(quarantineId)}` : "/quarantines",
         query: {
           ...(optionalString(args["transaction_id"]) ? { transactionId: optionalString(args["transaction_id"]) as string } : {}),
+          ...(optionalString(args["agent_session_id"]) ? { agentSessionId: optionalString(args["agent_session_id"]) as string } : {}),
+          ...(optionalString(args["display_callsign"]) || optionalString(args["callsign"])
+            ? { displayCallsign: (optionalString(args["display_callsign"]) ?? optionalString(args["callsign"])) as string }
+            : {}),
           ...(optionalString(args["status"]) ? { status: optionalString(args["status"]) as string } : {}),
           ...(optionalString(args["user_id"]) ? { userId: optionalString(args["user_id"]) as string } : {}),
           ...(optionalString(args["filesystem_user_id"]) ? { filesystemUserId: optionalString(args["filesystem_user_id"]) as string } : {}),
@@ -1135,6 +1149,8 @@ function pathOverlay(args: JsonObject): JsonObject {
 function quarantineActionOverlay(args: JsonObject): JsonObject {
   const transactionId = requiredString(args, "transaction_id");
   const mutationLeaseId = optionalString(args["mutation_lease_id"]) ?? optionalString(args["mutationLeaseId"]);
+  const agentSessionId = optionalString(args["agent_session_id"]) ?? optionalString(args["agentSessionId"]);
+  const displayCallsign = optionalString(args["display_callsign"]) ?? optionalString(args["displayCallsign"]) ?? optionalString(args["callsign"]);
   const paths = selectedPathList(args);
   if (paths.length === 0) {
     throw new Error("missing_selected_paths");
@@ -1146,6 +1162,8 @@ function quarantineActionOverlay(args: JsonObject): JsonObject {
     transactionId,
     paths,
     ...(mutationLeaseId ? { mutationLeaseId } : {}),
+    ...(agentSessionId ? { agentSessionId } : {}),
+    ...(displayCallsign ? { displayCallsign } : {}),
     ...(userId ? { userId } : {}),
     ...(filesystemUserId ? { filesystemUserId } : {}),
     ...(runtimeScope ? { runtimeScope } : {}),

@@ -136,7 +136,7 @@ async function ensureRuntimeFilesystem({
     return existing;
   }
 
-  await refreshActiveWorkspaceAuthority(slug, null);
+  await refreshActiveWorkspaceAuthority(slug, activeCodeSiteContext);
   if (codeSiteActivityRegistry.isWorkspaceActive(slug)) {
     throw activeWorkspaceRuntimeBlocked(slug, userId, reason);
   }

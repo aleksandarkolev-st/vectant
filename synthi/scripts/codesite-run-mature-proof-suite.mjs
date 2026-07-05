@@ -325,6 +325,20 @@ function isLoopbackUrl(value) {
   }
 }
 
+function discoverComposePort(root, serviceName, targetPort) {
+  try {
+    const output = execFileSync('docker', ['compose', 'port', serviceName, String(targetPort)], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const match = output.match(/(?::|^)(\d+)$/);
+    return match ? match[1] : '';
+  } catch {
+    return '';
+  }
+}
+
 function parseTestSummary(output, summaryPattern = null) {
   const nodeSummary = {};
   for (const key of ['tests', 'suites', 'pass', 'fail', 'cancelled', 'skipped', 'todo']) {
@@ -586,6 +600,16 @@ async function runSpec(root, proofRoot, spec, options) {
   };
   if (options.baseUrl) env.CODESITE_PROOF_BASE_URL = options.baseUrl;
   if (options.baseUrl) env.CODESITE_APP_URL = options.baseUrl;
+  if (options.baseUrl && isLoopbackUrl(options.baseUrl)) {
+    env.CODESITE_PROOF_APP_REPO_ROOT = process.env.CODESITE_PROOF_APP_REPO_ROOT || '/workspace';
+    env.CODESITE_PROOF_APP_ARTIFACT_HOST_ROOT = process.env.CODESITE_PROOF_APP_ARTIFACT_HOST_ROOT || path.join(proofRoot, 'app-artifacts');
+    const collabHostPort = process.env.COLLAB_HOST_PORT
+      || discoverComposePort(root, 'collab-server', 1234)
+      || '1234';
+    env.CODESITE_PROOF_COLLAB_URL = process.env.CODESITE_PROOF_COLLAB_URL || `http://127.0.0.1:${collabHostPort}`;
+    env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL = process.env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL
+      || 'http://frontend:3000';
+  }
   if (!process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && options.baseUrl && isLoopbackUrl(options.baseUrl)) {
     env.AUTH_SECRET = process.env.CODESITE_PROOF_AUTH_SECRET || 'local-compose-auth-secret';
     env.NEXTAUTH_SECRET = env.AUTH_SECRET;

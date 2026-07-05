@@ -116,7 +116,7 @@ function createApi(baseUrl, slug) {
 async function postCollab(collabBaseUrl, route, body, options = {}) {
   const response = await fetch(`${collabBaseUrl.replace(/\/+$/, '')}${route}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(options.headers || {}) },
     body: JSON.stringify(body),
   });
   const text = await response.text();
@@ -247,13 +247,32 @@ async function main() {
   const collabBaseUrl = process.env.CODESITE_PROOF_COLLAB_URL || DEFAULT_COLLAB_BASE_URL;
   const controlPlaneBaseUrl = process.env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL || DEFAULT_COLLAB_CONTROL_PLANE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const { api, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
+  const { app, api, authCookie, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
     workspaceName: 'Runtime quarantine proof workspace',
   });
-  const userId = process.env.CODESITE_PROOF_USER_ID || actor.sessionUserId;
+  const workspaceMembers = await app(`/api/workspace/${encodeURIComponent(slug)}/members`);
+  const actorMember = (workspaceMembers.members || []).find((member) => member.user?.email === actor.email)
+    || (workspaceMembers.members || [])[0]
+    || null;
+  const userId = process.env.CODESITE_PROOF_USER_ID || actorMember?.user?.id || actor.sessionUserId;
   const targetPath = 'src/raw-terminal-target.txt';
   const newPath = 'src/quarantine-new.txt';
   const docPath = 'docs/allowed-terminal.txt';
+
+  console.log('[runtime-quarantine-proof] seeding source workspace');
+  const seed = await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
+    userId,
+    filesystemUserId: userId,
+    timeout: 20000,
+    command: [
+      'mkdir -p src docs',
+      `printf 'baseline\\n' > ${targetPath}`,
+      `rm -f ${newPath} ${docPath}`,
+      `printf 'seeded=' && cat ${targetPath}`,
+    ].join(' && '),
+  }, {
+    headers: { cookie: authCookie },
+  });
 
   console.log(`[runtime-quarantine-proof] creating project ${slug}`);
   const projectResponse = await api('/projects', {
@@ -264,7 +283,7 @@ async function main() {
       autoWorkflow: true,
       strategy: 'airspace_survey_first',
       zonePolicy: {
-        zones: [{ zoneKey: 'docs', label: 'Docs runway', class: 'B', paths: ['docs/**'], risk: 'medium' }],
+        zones: [{ zoneKey: 'docs', label: 'Docs runway', class: 'C', paths: ['docs/**'], risk: 'medium' }],
         noFlyZones: ['secrets/**'],
       },
       missions: [{
@@ -304,19 +323,6 @@ async function main() {
   const transaction = transactionResponse.transaction;
   const controlPlaneUrl = `${controlPlaneBaseUrl.replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(slug)}/codesite`;
 
-  console.log('[runtime-quarantine-proof] seeding source workspace');
-  const seed = await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
-    userId,
-    filesystemUserId: userId,
-    timeout: 20000,
-    command: [
-      'mkdir -p src docs',
-      `printf 'baseline\\n' > ${targetPath}`,
-      `rm -f ${newPath} ${docPath}`,
-      `printf 'seeded=' && cat ${targetPath}`,
-    ].join(' && '),
-  });
-
   const codesite = {
     active: true,
     required: true,
@@ -324,6 +330,9 @@ async function main() {
     workspaceSlug: slug,
     transactionId: transaction.id,
     mutationLeaseId: lease.id,
+    agentSessionId: transaction.agentSessionId || lease.agentSessionId,
+    actorUserId: userId,
+    effectiveUserId: userId,
     displayCallsign: lease.displayCallsign,
     allowedPaths: ['docs/**'],
     blockedPaths: ['secrets/**'],
@@ -331,6 +340,7 @@ async function main() {
     evidenceRefs: ['proof:runtime-quarantine-live-api'],
     processAncestry: ['codex:runtime-quarantine-proof', 'collab-server:exec'],
     controlPlaneUrl,
+    cookie: authCookie,
   };
 
   console.log('[runtime-quarantine-proof] attempting raw shell writes under active CodeSite context');
@@ -352,6 +362,7 @@ async function main() {
     userId,
     filesystemUserId: userId,
     timeout: 20000,
+    codesite,
     command: [
       `printf 'target=' && cat ${targetPath}`,
       `printf 'new_path=' && if test -e ${newPath}; then echo present; else echo absent; fi`,
@@ -379,20 +390,18 @@ async function main() {
     dockerCollabExecUsed: true,
     clearanceIssued: lease.status === 'active',
     transactionOpened: Boolean(transaction.id),
-    hostExecBlockedBeforeMutation: rawWrite.status === 409
-      && rawWrite.error === 'codesite_runtime_quarantine_unavailable'
-      && rawWrite.surface === 'exec',
-    hostExecDidNotReturnQuarantine: Array.isArray(quarantine.changes) && quarantine.changes.length === 0,
-    targetPathNotQuarantinedByUnsafeHostExec: !quarantinedPaths.has(targetPath),
-    newPathNotQuarantinedByUnsafeHostExec: !quarantinedPaths.has(newPath),
-    docsPathNotQuarantinedByUnsafeHostExec: !quarantinedPaths.has(docPath),
+    matchingContextExecCompleted: rawWrite.status === 200 && rawWrite.exitCode === 0,
+    matchingContextExecReturnedQuarantine: Array.isArray(quarantine.changes) && quarantine.changes.length >= 3,
+    targetPathQuarantinedByRuntimeBoundary: quarantinedPaths.has(targetPath),
+    newPathQuarantinedByRuntimeBoundary: quarantinedPaths.has(newPath),
+    docsPathQuarantinedByRuntimeBoundary: quarantinedPaths.has(docPath),
     sourceWorkspaceUnchanged: readbackOutput.includes('target=baseline')
       && readbackOutput.includes('new_path=absent')
       && readbackOutput.includes('doc_path=absent'),
-    controlPlaneDidNotRecordUnsafeHostMutation: quarantinedEvents.length === 0,
-    controlPlaneDidNotRecordTargetPath: !eventPaths.has(targetPath),
-    controlPlaneDidNotRecordNewPath: !eventPaths.has(newPath),
-    controlPlaneDidNotRecordDocsPath: !eventPaths.has(docPath),
+    controlPlaneRecordedQuarantineEvents: quarantinedEvents.length >= 3,
+    controlPlaneRecordedTargetPath: eventPaths.has(targetPath),
+    controlPlaneRecordedNewPath: eventPaths.has(newPath),
+    controlPlaneRecordedDocsPath: eventPaths.has(docPath),
   };
   assertProof(assertions);
 

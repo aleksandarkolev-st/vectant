@@ -106,6 +106,7 @@ services:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
       NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
+      SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
       # Local-compose auth secret used by NextAuth. Production deployments must
       # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
       AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
@@ -184,6 +185,7 @@ services:
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Networking
       CORS_ORIGIN: "http://localhost:${FRONTEND_HOST_PORT:-3000}"
+      SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret
