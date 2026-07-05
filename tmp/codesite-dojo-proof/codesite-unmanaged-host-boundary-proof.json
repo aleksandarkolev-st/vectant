@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "synthi.codesite.unmanagedHostBoundaryProof.v1",
+  "ok": true,
+  "status": "validated",
+  "generatedAt": "2026-07-05T06:43:54.111Z",
+  "slug": "codesite-unmanaged-host-boundary-1783233830305",
+  "boundary": {
+    "mode": "read_only_real_tree_with_writable_transaction_overlay",
+    "claim": "Unmanaged writes target a sealed base mount and cannot mutate the real tree before CodeSite review; writable changes land only in transaction overlay/quarantine.",
+    "notSatisfiedBy": "post_write_polling_restore"
+  },
+  "workspaces": {
+    "sourceRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/source",
+    "overlayRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/overlay"
+  },
+  "summary": {
+    "baseWriteAttempts": 4,
+    "deniedBaseWrites": 4,
+    "overlayWriteAttempts": 4,
+    "allowedOverlayWrites": 4
+  },
+  "docker": {
+    "image": "node:20-bookworm",
+    "containerName": "codesite-unmanaged-boundary-21a496bc9b90",
+    "command": "docker run --rm --name codesite-unmanaged-boundary-21a496bc9b90 -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/source:/codesite-base:ro -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/overlay:/workspace --workdir /workspace node:20-bookworm node -e \"\\nconst fs = require('fs');\\nconst cp = require('child_process');\\nfunction mountFlags(target) {\\n  const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\\\\n');\\n  const row = mounts.find((line) => line.split(' ')[1] === target);\\n  return row ? row.split(' ')[3] : '';\\n}\\nfunction attempt(name, fn) {\\n  try {\\n    fn();\\n    return { name, ok: true, status: 0 };\\n  } catch (error) {\\n    return {\\n      name,\\n      ok: false,\\n      status: typeof error.status === 'number' ? error.status : 1,\\n      code: error.code || null,\\n      message: String(error.message || ''),\\n      stderr: String(error.stderr || ''),\\n    };\\n  }\\n}\\nconst attempts = [\\n  attempt('node_write_existing_base', () => fs.writeFileSync('/codesite-base/src/app.js', 'rogue node write\\\\n')),\\n  attempt('shell_redirect_existing_base', () => cp.execFileSync('bash', ['-lc', 'printf \\\"rogue shell redirect\\\\\\\\n\\\" > /codesite-base/api/auth/signup.ts'])),\\n  attempt('mkdir_base', () => fs.mkdirSync('/codesite-base/generated', { recursive: true })),\\n  attempt('append_package_base', () => fs.appendFileSync('/codesite-base/package.json', '\\\\n\\\"rogue\\\": true\\\\n')),\\n  attempt('node_write_overlay', () => fs.writeFileSync('/workspace/src/app.js', 'overlay node write\\\\n')),\\n  attempt('shell_redirect_overlay', () => cp.execFileSync('bash', ['-lc', 'printf \\\"overlay shell redirect\\\\\\\\n\\\" > /workspace/api/auth/signup.ts'])),\\n  attempt('mkdir_overlay', () => fs.mkdirSync('/workspace/generated', { recursive: true })),\\n  attempt('append_overlay_package', () => fs.appendFileSync('/workspace/package.json', '\\\\n{\\\"overlay\\\":true}\\\\n')),\\n];\\nfs.writeFileSync('/workspace/generated/overlay-only.txt', 'overlay-only artifact\\\\n');\\nconsole.log(JSON.stringify({\\n  mounts: {\\n    base: mountFlags('/codesite-base'),\\n    workspace: mountFlags('/workspace'),\\n  },\\n  attempts,\\n}, null, 2));\\n\"",
+    "exitCode": 0,
+    "stdout": "{\n  \"mounts\": {\n    \"base\": \"ro,noatime,aname=drvfs;path=C:\\\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6\",\n    \"workspace\": \"rw,noatime,aname=drvfs;path=C:\\\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6\"\n  },\n  \"attempts\": [\n    {\n      \"name\": \"node_write_existing_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": \"EROFS\",\n      \"message\": \"EROFS: read-only file system, open '/codesite-base/src/app.js'\",\n      \"stderr\": \"\"\n    },\n    {\n      \"name\": \"shell_redirect_existing_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": null,\n      \"message\": \"Command failed: bash -lc printf \\\"rogue shell redirect\\\\n\\\" > /codesite-base/api/auth/signup.ts\\nbash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\\n\",\n      \"stderr\": \"bash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\\n\"\n    },\n    {\n      \"name\": \"mkdir_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": \"ENOENT\",\n      \"message\": \"ENOENT: no such file or directory, mkdir '/codesite-base/generated'\",\n      \"stderr\": \"\"\n    },\n    {\n      \"name\": \"append_package_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": \"EROFS\",\n      \"message\": \"EROFS: read-only file system, open '/codesite-base/package.json'\",\n      \"stderr\": \"\"\n    },\n    {\n      \"name\": \"node_write_overlay\",\n      \"ok\": true,\n      \"status\": 0\n    },\n    {\n      \"name\": \"shell_redirect_overlay\",\n      \"ok\": true,\n      \"status\": 0\n    },\n    {\n      \"name\": \"mkdir_overlay\",\n      \"ok\": true,\n      \"status\": 0\n    },\n    {\n      \"name\": \"append_overlay_package\",\n      \"ok\": true,\n      \"status\": 0\n    }\n  ]\n}\n",
+    "stderr": "bash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\n",
+    "parsed": {
+      "mounts": {
+        "base": "ro,noatime,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6",
+        "workspace": "rw,noatime,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6"
+      },
+      "attempts": [
+        {
+          "name": "node_write_existing_base",
+          "ok": false,
+          "status": 1,
+          "code": "EROFS",
+          "message": "EROFS: read-only file system, open '/codesite-base/src/app.js'",
+          "stderr": ""
+        },
+        {
+          "name": "shell_redirect_existing_base",
+          "ok": false,
+          "status": 1,
+          "code": null,
+          "message": "Command failed: bash -lc printf \"rogue shell redirect\\n\" > /codesite-base/api/auth/signup.ts\nbash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\n",
+          "stderr": "bash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\n"
+        },
+        {
+          "name": "mkdir_base",
+          "ok": false,
+          "status": 1,
+          "code": "ENOENT",
+          "message": "ENOENT: no such file or directory, mkdir '/codesite-base/generated'",
+          "stderr": ""
+        },
+        {
+          "name": "append_package_base",
+          "ok": false,
+          "status": 1,
+          "code": "EROFS",
+          "message": "EROFS: read-only file system, open '/codesite-base/package.json'",
+          "stderr": ""
+        },
+        {
+          "name": "node_write_overlay",
+          "ok": true,
+          "status": 0
+        },
+        {
+          "name": "shell_redirect_overlay",
+          "ok": true,
+          "status": 0
+        },
+        {
+          "name": "mkdir_overlay",
+          "ok": true,
+          "status": 0
+        },
+        {
+          "name": "append_overlay_package",
+          "ok": true,
+          "status": 0
+        }
+      ]
+    }
+  },
+  "productRuntimeContract": {
+    "activeHostShellPolicy": "block-host",
+    "activeRuntimePolicy": "mount read-only base plus writable overlay/quarantine",
+    "readonlyRuntimeName": "workspace-runtime-codesite-unmanaged-host-boundary-1783233",
+    "activeOverlayRuntimeName": "workspace-runtime-codesite-unmanaged-host-bounda-codesite-c93a169fa7",
+    "overlayVolumeSubpath": "codesite-unmanaged-host-boundary-1783233830305/overlay"
+  },
+  "digests": {
+    "sourceBefore": {
+      "src/app.js": "sha256:09c265a42d67e3495464452d3b11de61938119fd69d008d5a6f41bb76133b658",
+      "api/auth/signup.ts": "sha256:908992c4cb51568c9e0e682e462e0fa1862c4e6711e376857298ed1d8ab9b931",
+      "package.json": "sha256:8ba813510512a14f92fb83ca7b0d9f3cac962bbd39608e200a80d4a5606294d7"
+    },
+    "sourceAfter": {
+      "src/app.js": "sha256:09c265a42d67e3495464452d3b11de61938119fd69d008d5a6f41bb76133b658",
+      "api/auth/signup.ts": "sha256:908992c4cb51568c9e0e682e462e0fa1862c4e6711e376857298ed1d8ab9b931",
+      "package.json": "sha256:8ba813510512a14f92fb83ca7b0d9f3cac962bbd39608e200a80d4a5606294d7"
+    },
+    "overlayBefore": {
+      "src/app.js": "sha256:09c265a42d67e3495464452d3b11de61938119fd69d008d5a6f41bb76133b658",
+      "api/auth/signup.ts": "sha256:908992c4cb51568c9e0e682e462e0fa1862c4e6711e376857298ed1d8ab9b931",
+      "package.json": "sha256:8ba813510512a14f92fb83ca7b0d9f3cac962bbd39608e200a80d4a5606294d7"
+    },
+    "overlayAfter": {
+      "src/app.js": "sha256:24f360a90051977eedd3c9fe9ef2a34245a2e8f136ad8b4e58de3f5dd89473a3",
+      "api/auth/signup.ts": "sha256:45eabf819e6c14f8dc99543ae1c0d8ae65149d011d22b9118526443fd2adcdc0",
+      "package.json": "sha256:0a40d9eec9c99ab4c32fa2cb2f64827198c5347a7737c957d5591292b18f9c74"
+    }
+  },
+  "assertions": {
+    "dockerProcessExecuted": true,
+    "sourceMountedReadOnly": true,
+    "overlayMountedWritable": true,
+    "everyBaseAttemptDenied": true,
+    "everyOverlayAttemptAllowed": true,
+    "sourceDigestsUnchanged": true,
+    "overlayDigestsChanged": true,
+    "sourceGeneratedDirAbsent": true,
+    "overlayGeneratedDirPresent": true,
+    "overlayOnlyArtifactPresent": true
+  },
+  "failedAssertions": [],
+  "commands": [
+    {
+      "name": "unmanagedDockerWriteProbe",
+      "command": "docker run --rm -v <source>:/codesite-base:ro -v <overlay>:/workspace node:20-bookworm node <unmanaged-write-probe>",
+      "runner": "docker",
+      "exitCode": 0,
+      "summary": {
+        "image": "node:20-bookworm",
+        "deniedBaseWrites": 4,
+        "allowedOverlayWrites": 4
+      }
+    },
+    {
+      "name": "proofSuiteGenerator:unmanagedHostBoundary",
+      "command": "node synthi/scripts/codesite-unmanaged-host-boundary-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"artifacts\": {",
+        "    \"jsonPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\",",
+        "    \"htmlPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\",",
+        "    \"pngPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\"",
+        "  },",
+        "  \"summary\": {",
+        "    \"baseWriteAttempts\": 4,",
+        "    \"deniedBaseWrites\": 4,",
+        "    \"overlayWriteAttempts\": 4,",
+        "    \"allowedOverlayWrites\": 4",
+        "  },",
+        "  \"assertions\": {",
+        "    \"dockerProcessExecuted\": true,",
+        "    \"sourceMountedReadOnly\": true,",
+        "    \"overlayMountedWritable\": true,",
+        "    \"everyBaseAttemptDenied\": true,",
+        "    \"everyOverlayAttemptAllowed\": true,",
+        "    \"sourceDigestsUnchanged\": true,",
+        "    \"overlayDigestsChanged\": true,",
+        "    \"sourceGeneratedDirAbsent\": true,",
+        "    \"overlayGeneratedDirPresent\": true,",
+        "    \"overlayOnlyArtifactPresent\": true",
+        "  }",
+        "}"
+      ]
+    }
+  ],
+  "git": {
+    "head": "b2f03aee60659a7cf8faae64b43f1db72fae307b",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M  synthi/package.json\nM  synthi/scripts/codesite-release-gate.mjs\nM  synthi/scripts/codesite-run-mature-proof-suite.mjs\nAM synthi/scripts/codesite-unmanaged-host-boundary-proof.mjs\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\nAM tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\nAM tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\nAM tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-05T06:43:54.111Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json"
+  }
+}

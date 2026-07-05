@@ -83,6 +83,13 @@ const PROOF_SPECS = [
     generator: ['node', 'scripts/codesitefs-runtime-boundary-proof.mjs'],
   },
   {
+    name: 'unmanagedHostBoundary',
+    file: 'codesite-unmanaged-host-boundary-proof.json',
+    png: 'codesite-unmanaged-host-boundary-proof.png',
+    generator: ['node', 'synthi/scripts/codesite-unmanaged-host-boundary-proof.mjs'],
+    preserveNativeVisual: true,
+  },
+  {
     name: 'quarantineReview',
     file: 'codesite-quarantine-review-proof.json',
     png: 'codesite-quarantine-review-proof.png',
@@ -591,7 +598,14 @@ async function runSpec(root, proofRoot, spec, options) {
   }
 
   const { proof, proofPath } = stampProof(root, proofRoot, spec, commands);
-  const visual = options.noScreenshot ? null : await renderVisualSummary(root, proofRoot, spec, proof);
+  const visual = options.noScreenshot
+    ? null
+    : spec.preserveNativeVisual
+      ? {
+          htmlPath: relative(root, path.join(proofRoot, spec.file.replace(/\.json$/, '.html'))),
+          pngPath: relative(root, path.join(proofRoot, spec.png)),
+        }
+      : await renderVisualSummary(root, proofRoot, spec, proof);
   return {
     name: spec.name,
     ok: proof.ok === true,

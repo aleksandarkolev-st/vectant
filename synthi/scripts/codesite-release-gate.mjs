@@ -42,6 +42,7 @@ const REQUIRED_MATURE_PROOFS = [
   { name: 'runtimeOverlay', plan: '2A.3, 25.2C', file: 'codesite-runtime-overlay-proof.json', png: 'codesite-runtime-overlay-proof.png' },
   { name: 'runtimeQuarantine', plan: '2A.3, 26.9', file: 'codesite-runtime-quarantine-proof.json', png: 'codesite-runtime-quarantine-proof.png' },
   { name: 'codesiteFsRuntimeBoundary', plan: '2A.3, 25.2C, 26.9', file: 'codesitefs-runtime-boundary-proof.json', png: 'codesitefs-runtime-boundary-proof.png' },
+  { name: 'unmanagedHostBoundary', plan: '2A.3, 25.2C', file: 'codesite-unmanaged-host-boundary-proof.json', png: 'codesite-unmanaged-host-boundary-proof.png' },
   { name: 'quarantineReview', plan: '2A.3, 26.9', file: 'codesite-quarantine-review-proof.json', png: 'codesite-quarantine-review-proof.png' },
   { name: 'proofCarryingCommit', plan: '2A.4, 25.7B, 26.4', file: 'codesite-proof-carrying-commit-proof.json', png: 'codesite-proof-carrying-commit-proof.png' },
   { name: 'actualGitCommitProof', plan: '2A.4, 25.7B, 26.4', file: 'codesite-actual-git-commit-proof.json', png: 'codesite-actual-git-commit-proof.png' },
