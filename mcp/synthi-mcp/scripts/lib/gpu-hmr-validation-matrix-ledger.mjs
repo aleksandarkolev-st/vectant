@@ -27403,7 +27403,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
-      'direct_local_source_path_outside_matrix_fixture_roots',
+      'direct_local_source_path_outside_matrix_internal_roots',
       'workspace_source_tree_provenance_accepted_when_workspace_authority',
       'workspace_source_tree_snapshot_hash_observed',
       'workspace_source_path_outside_matrix_fixture_roots',
@@ -27424,7 +27424,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
-      'direct_local_source_path_outside_matrix_fixture_roots',
+      'direct_local_source_path_outside_matrix_internal_roots',
       'workspace_source_tree_provenance_accepted_when_workspace_authority',
       'workspace_source_tree_snapshot_hash_observed',
       'workspace_source_path_outside_matrix_fixture_roots',
@@ -27465,22 +27465,18 @@ function sourceFirstVisualBroadReadinessPredicate() {
       '.gpu-hmr-test-artifacts',
       'tmp/validation-runs',
       'tmp/real-rocm',
-      'test/fixtures',
-      'tests/fixtures',
+      'context-bound test fixture roots',
       'mcp test harness roots',
       '.synthi/generated',
-      'node_modules',
     ],
     rejected_direct_local_source_roots_for_broad_readiness: [
       '.gpu-hmr-test-logs',
       '.gpu-hmr-test-artifacts',
       'tmp/validation-runs',
       'tmp/real-rocm',
-      'test/fixtures',
-      'tests/fixtures',
+      'context-bound test fixture roots',
       'mcp test harness roots',
       '.synthi/generated',
-      'node_modules',
     ],
   };
   const predicateHash = stableJsonHash(predicate);
@@ -27851,7 +27847,6 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
         ? sourceListingManifest.backend_candidates
         : []),
     ]);
-    const sourceDerivedBackendObserved = sourceDerivedBackendCandidates.length > 0;
     const sourceListingManifestAccepted =
       sourceListingManifest.acceptedAsSourceListingEvidence === true
       && sourceListingManifest.recomputedSourceListingHash === sourceListingManifest.sourceListingHash
@@ -27860,6 +27855,16 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     const fileCount = sourceListingManifest.fileCount ?? 0;
     const knownBytes = sourceListingManifest.totalKnownBytes ?? 0;
     const sourceRelevantFileCount = sourceListingManifest.sourceOrBuildRelevantFileCount ?? 0;
+    const sourceBuildSignalCount = sourceListingManifest.buildSignalCount ?? 0;
+    const sourceGpuSignalCount = sourceListingManifest.gpuSourceSignalCount ?? 0;
+    const sourceDerivedBackendObserved = sourceDerivedBackendCandidates.length > 0;
+    const sourceDerivedProjectEvidenceObserved =
+      sourceDerivedBackendObserved
+      || sourceGpuSignalCount > 0
+      || (
+        sourceBuildSignalCount > 0
+        && sourceRelevantFileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT
+      );
     const rawLargeSourceTree =
       fileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_FILE_COUNT
       || knownBytes >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_KNOWN_BYTES;
@@ -27920,7 +27925,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && selectionAudit.present === true
       && selectionAudit.accepted === true
       && arbitraryColdIntake
-      && sourceDerivedBackendObserved
+      && sourceDerivedProjectEvidenceObserved
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
       && sourceIntakeFormConsistency.accepted === true
@@ -27959,14 +27964,7 @@ function randomColdInternalLocalPathReason(normalized, context = {}) {
   const internalSegmentReason = compactStringList([
     segmentSet.has('.gpu-hmr-test-logs') ? 'gpu_hmr_test_logs_root' : null,
     segmentSet.has('.gpu-hmr-test-artifacts') ? 'gpu_hmr_test_artifacts_root' : null,
-    segmentSet.has('validation-runs') ? 'validation_runs_root' : null,
-    segmentSet.has('real-rocm') ? 'real_rocm_retained_root' : null,
-    segmentSet.has('node_modules') ? 'dependency_cache_root' : null,
     containsPair('.synthi', 'generated') ? 'synthi_generated_namespace' : null,
-    containsPair('test', 'fixtures') || containsPair('tests', 'fixtures')
-      ? 'test_fixture_root'
-      : null,
-    containsPair('scripts', 'tests') ? 'script_test_root' : null,
     insideContextRoot ? 'context_internal_collection_root' : null,
   ])[0] ?? null;
   return internalSegmentReason;
@@ -28363,7 +28361,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       'direct_source_input_evidence_accepted',
       'selection_audit_present_and_accepted',
       'direct_cli_or_env_input_mode_observed',
-      'direct_local_git_repo_path_outside_matrix_fixture_roots',
+      'direct_local_git_repo_path_outside_matrix_internal_roots',
       'distinct_direct_source_identities_observed',
       'distinct_source_content_identities_observed',
       'distinct_source_content_only_identities_observed',
@@ -28371,7 +28369,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       'source_url_or_repo_path_present',
       'source_listing_hash_observed',
       'source_intake_facet_hash_observed',
-      'source_derived_backend_candidates_observed',
+      'source_project_or_backend_signal_observed',
       'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
       'build_metadata_discovery_accepted',
@@ -28390,7 +28388,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       'direct_source_input_evidence_accepted',
       'selection_audit_present_and_accepted',
       'direct_cli_or_env_input_mode_observed',
-      'direct_local_git_repo_path_outside_matrix_fixture_roots',
+      'direct_local_git_repo_path_outside_matrix_internal_roots',
       'distinct_direct_source_identities_observed',
       'distinct_source_content_identities_observed',
       'distinct_source_content_only_identities_observed',
@@ -28398,7 +28396,7 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       'source_url_or_repo_path_present',
       'source_listing_hash_observed',
       'source_intake_facet_hash_observed',
-      'source_derived_backend_candidates_observed',
+      'source_project_or_backend_signal_observed',
       'candidate_backend_declarations_diagnostic_only',
       'source_tree_intake_accepted',
       'build_metadata_discovery_accepted',
@@ -28462,8 +28460,10 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       'profile_id_value',
       'sample_pool_membership',
     ],
-    backendIdentityRole: 'source_tree_intake_backend_candidates_only_not_candidate_declaration',
-    backend_identity_role: 'source_tree_intake_backend_candidates_only_not_candidate_declaration',
+    backendIdentityRole:
+      'source_tree_intake_backend_or_generic_source_build_signal_not_candidate_declaration',
+    backend_identity_role:
+      'source_tree_intake_backend_or_generic_source_build_signal_not_candidate_declaration',
     candidateBackendDeclarationsDiagnosticOnly: true,
     candidate_backend_declarations_diagnostic_only: true,
     rejectedDirectLocalRepoPathRootsForBroadReadiness: [
@@ -28471,22 +28471,18 @@ function randomColdPathBroadReadinessPredicate(options = {}) {
       '.gpu-hmr-test-artifacts',
       'tmp/validation-runs',
       'tmp/real-rocm',
-      'test/fixtures',
-      'tests/fixtures',
+      'context-bound test fixture roots',
       'mcp test harness roots',
       '.synthi/generated',
-      'node_modules',
     ],
     rejected_direct_local_repo_path_roots_for_broad_readiness: [
       '.gpu-hmr-test-logs',
       '.gpu-hmr-test-artifacts',
       'tmp/validation-runs',
       'tmp/real-rocm',
-      'test/fixtures',
-      'tests/fixtures',
+      'context-bound test fixture roots',
       'mcp test harness roots',
       '.synthi/generated',
-      'node_modules',
     ],
   };
   const predicateHash = stableJsonHash(predicate);

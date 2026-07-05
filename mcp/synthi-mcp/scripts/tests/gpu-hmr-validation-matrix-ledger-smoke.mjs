@@ -1968,6 +1968,9 @@ function randomColdBuildMetadataContentEvidenceFixture({
   buildFileObject = null,
   declaredByteLength = null,
 } = {}) {
+  const observedByteLength = Number.isFinite(declaredByteLength)
+    ? declaredByteLength
+    : 4096;
   const buildFiles = accepted
     ? [
       {
@@ -1988,8 +1991,8 @@ function randomColdBuildMetadataContentEvidenceFixture({
         content_hash: hashValue(`random-cold-build-file:${targetId}:${buildFilePath}`),
         ...(includeByteLength
           ? {
-            byteLength: 4096,
-            byte_length: 4096,
+            byteLength: observedByteLength,
+            byte_length: observedByteLength,
           }
           : {}),
         ...(includeTransport
@@ -2206,25 +2209,51 @@ function randomColdBuildMetadataContentEvidenceForListing({
 function randomColdPathManifest({
   candidateId = 'direct-random-arbitrary-cold',
   sourceUrl = 'https://example.invalid/arbitrary/user-project.git',
+  repoPath = null,
   immutableCommit = '1111111111111111111111111111111111111111',
+  candidateSource = 'direct_source_url_commit',
   template = hashedColdRuntimeBoundaryTemplateFacet(),
   directInputEvidenceOverrides = null,
+  sourceListingManifestOptions = {},
   resultOverrides = {},
   topLevelOverrides = {},
 } = {}) {
-  const sourceRelevantFileCount = 73;
-  const sourceOrBuildRelevantFileCount = 75;
-  const gpuSourceFileCount = 31;
   const directInputEvidence = {
-    ...randomColdDirectInputEvidenceFixture({ sourceUrl, immutableCommit }),
+    ...randomColdDirectInputEvidenceFixture({
+      candidateSource,
+      sourceUrl,
+      repoPath,
+      immutableCommit,
+    }),
     ...(directInputEvidenceOverrides ?? {}),
   };
   const sourceListingManifest = randomColdSourceListingManifestFixture({
     targetId: candidateId,
     fileCount: 2445,
     totalKnownBytes: 35885065,
-    sourceRelevantFileCount,
-    gpuSourceSignalCount: gpuSourceFileCount,
+    sourceRelevantFileCount: 73,
+    gpuSourceSignalCount: 31,
+    ...sourceListingManifestOptions,
+  });
+  const sourceRelevantFileCount = sourceListingManifest.sourceRelevantFileCount;
+  const sourceOrBuildRelevantFileCount = sourceListingManifest.sourceOrBuildRelevantFileCount;
+  const gpuSourceFileCount = sourceListingManifest.gpuSourceSignalCount;
+  const sourceRelevantFiles = (sourceListingManifest.entries ?? [])
+    .map((entry) => entry.path)
+    .filter((filePath) => /\.(hip|cu|cuh|cl|wgsl|spv|glsl|hlsl|comp|vert|frag|geom|tesc|tese|metal|c|cc|cpp|cxx|h|hh|hpp|hxx|rs|zig|swift)$/i.test(filePath))
+    .slice(0, 80);
+  const gpuSourceSignals = (sourceListingManifest.entries ?? [])
+    .map((entry) => entry.path)
+    .filter((filePath) => /\.(hip|cu|cuh|cl|wgsl|spv|glsl|hlsl|comp|vert|frag|geom|tesc|tese|metal)$/i.test(filePath))
+    .slice(0, 80);
+  const sourceBackendCandidates = Array.isArray(sourceListingManifest.backendCandidates)
+    ? sourceListingManifest.backendCandidates
+    : gpuSourceFileCount > 0
+      ? ['hip_rocm']
+      : [];
+  const buildMetadataContentEvidence = randomColdBuildMetadataContentEvidenceForListing({
+    targetId: candidateId,
+    sourceListingManifest,
   });
   const runtimeSupportClosureObligation = randomColdRuntimeSupportClosureFixture();
   const sourceIntakeEvidence = {
@@ -2251,18 +2280,18 @@ function randomColdPathManifest({
     file_count: sourceListingManifest.fileCount,
     totalKnownBytes: sourceListingManifest.totalKnownBytes,
     total_known_bytes: sourceListingManifest.totalKnownBytes,
-    gpuSourceSignals: ['src/shaders/sample.wgsl'],
-    gpu_source_signals: ['src/shaders/sample.wgsl'],
+    gpuSourceSignals,
+    gpu_source_signals: gpuSourceSignals,
     gpuSourceSignalCount: gpuSourceFileCount,
     gpu_source_signal_count: gpuSourceFileCount,
-    sourceRelevantFiles: ['src/shaders/sample.wgsl', 'src/lib.rs'],
-    source_relevant_files: ['src/shaders/sample.wgsl', 'src/lib.rs'],
+    sourceRelevantFiles,
+    source_relevant_files: sourceRelevantFiles,
     sourceRelevantFileCount,
     source_relevant_file_count: sourceRelevantFileCount,
     sourceOrBuildRelevantFileCount,
     source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
-    backendCandidates: ['vulkan', 'webgpu_wgsl'],
-    backend_candidates: ['vulkan', 'webgpu_wgsl'],
+    backendCandidates: sourceBackendCandidates,
+    backend_candidates: sourceBackendCandidates,
     detectedBuildSystems: ['cargo', 'npm_or_node'],
     detected_build_systems: ['cargo', 'npm_or_node'],
     buildMetadataDiscoveryAccepted: true,
@@ -2276,8 +2305,8 @@ function randomColdPathManifest({
       gpu_hmr_success: false,
       detectedBuildSystems: ['cargo', 'npm_or_node'],
       detected_build_systems: ['cargo', 'npm_or_node'],
-      backendCandidates: ['vulkan', 'webgpu_wgsl'],
-      backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      backendCandidates: sourceBackendCandidates,
+      backend_candidates: sourceBackendCandidates,
       gpuSourceSignalCount: gpuSourceFileCount,
       gpu_source_signal_count: gpuSourceFileCount,
       sourceRelevantFileCount,
@@ -2295,20 +2324,8 @@ function randomColdPathManifest({
     },
     buildMetadataContentAccepted: true,
     build_metadata_content_accepted: true,
-    buildMetadataContentEvidence: {
-      proofAuthority: 'build_metadata_content_bytes_only_not_gpu_hmr_success',
-      proof_authority: 'build_metadata_content_bytes_only_not_gpu_hmr_success',
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      acceptedAsBuildMetadataContent: true,
-      accepted_as_build_metadata_content: true,
-      contentEvidenceHash: hashValue(`${candidateId}:build-content`),
-      content_evidence_hash: hashValue(`${candidateId}:build-content`),
-      acceptedBuildFileCount: 2,
-      accepted_build_file_count: 2,
-    },
+    buildMetadataContentEvidence,
+    build_metadata_content_evidence: buildMetadataContentEvidence,
     runtimeBoundaryExpectationAccepted: true,
     runtime_boundary_expectation_accepted: true,
     runtimeBoundaryExpectation: {
@@ -2322,8 +2339,8 @@ function randomColdPathManifest({
       accepted_as_runtime_boundary_expectation: true,
       expectationHash: hashValue(`${candidateId}:runtime-boundary-expectation`),
       expectation_hash: hashValue(`${candidateId}:runtime-boundary-expectation`),
-      backendCandidates: ['vulkan', 'webgpu_wgsl'],
-      backend_candidates: ['vulkan', 'webgpu_wgsl'],
+      backendCandidates: sourceBackendCandidates,
+      backend_candidates: sourceBackendCandidates,
       requiredBoundaryStages: [
         'runtime_adapter_or_app_hook_contract',
         'same_process_loader',
@@ -2352,6 +2369,24 @@ function randomColdPathManifest({
   };
   sourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(sourceIntakeEvidence);
   sourceIntakeEvidence.facet_hash = sourceIntakeEvidence.facetHash;
+  const sizeSignals = {
+    proofAuthority: 'random_large_project_size_signals_only_not_gpu_hmr_success',
+    proof_authority: 'random_large_project_size_signals_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    inputMode: 'cli_or_env_direct_source',
+    input_mode: 'cli_or_env_direct_source',
+    candidateSource,
+    candidate_source: candidateSource,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
+    gpuSourceFileCount,
+    gpu_source_file_count: gpuSourceFileCount,
+  };
   const result = {
     candidateId,
     status: 'unprofiled_arbitrary_project_cold_intake_refused',
@@ -2361,12 +2396,14 @@ function randomColdPathManifest({
     profile_mode: 'unprofiled_arbitrary_project_cold_intake',
     runnerAttempted: false,
     runner_attempted: false,
-    candidateSource: 'direct_source_url_commit',
-    candidate_source: 'direct_source_url_commit',
+    candidateSource,
+    candidate_source: candidateSource,
     directInputEvidence,
     direct_input_evidence: directInputEvidence,
     sourceUrl,
     source_url: sourceUrl,
+    repoPath,
+    repo_path: repoPath,
     immutableCommit,
     immutable_commit: immutableCommit,
     sourceRelevantFileCount,
@@ -2391,6 +2428,8 @@ function randomColdPathManifest({
     runtime_support_closure_obligation: runtimeSupportClosureObligation,
     runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
     runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
+    sizeSignals,
+    size_signals: sizeSignals,
     sourceIntakeEvidence,
     source_intake_evidence: sourceIntakeEvidence,
     blockingGaps: [
@@ -2463,8 +2502,8 @@ function randomColdPathManifest({
     selected_count: 1,
     resultCount: 1,
     result_count: 1,
-    candidateSources: ['direct_source_url_commit'],
-    candidate_sources: ['direct_source_url_commit'],
+    candidateSources: [candidateSource],
+    candidate_sources: [candidateSource],
     profileModes: ['unprofiled_arbitrary_project_cold_intake'],
     profile_modes: ['unprofiled_arbitrary_project_cold_intake'],
     backendFamilies: ['unknown_gpu_project'],
@@ -2528,14 +2567,18 @@ function randomColdPathManifest({
       backend_family: 'unknown_gpu_project',
       profileMode: 'unprofiled_arbitrary_project_cold_intake',
       profile_mode: 'unprofiled_arbitrary_project_cold_intake',
-      candidateSource: 'direct_source_url_commit',
-      candidate_source: 'direct_source_url_commit',
+      candidateSource,
+      candidate_source: candidateSource,
       directInputEvidence,
       direct_input_evidence: directInputEvidence,
       sourceUrl,
       source_url: sourceUrl,
+      repoPath,
+      repo_path: repoPath,
       immutableCommit,
       immutable_commit: immutableCommit,
+      sizeSignals,
+      size_signals: sizeSignals,
     }],
     selectedCandidates: [{
       id: candidateId,
@@ -2543,15 +2586,21 @@ function randomColdPathManifest({
       backend_family: 'unknown_gpu_project',
       profileMode: 'unprofiled_arbitrary_project_cold_intake',
       profile_mode: 'unprofiled_arbitrary_project_cold_intake',
-      candidateSource: 'direct_source_url_commit',
-      candidate_source: 'direct_source_url_commit',
+      candidateSource,
+      candidate_source: candidateSource,
       directInputEvidence,
       direct_input_evidence: directInputEvidence,
       sourceUrl,
       source_url: sourceUrl,
+      repoPath,
+      repo_path: repoPath,
       immutableCommit,
       immutable_commit: immutableCommit,
+      sizeSignals,
+      size_signals: sizeSignals,
     }],
+    sizeSignals,
+    size_signals: sizeSignals,
     dryRun: false,
     dry_run: false,
     timeoutMs: 120000,
@@ -2671,14 +2720,14 @@ assert.equal(
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
 );
 assert.equal(randomColdRow.randomLargeProjectColdPath.sourceRelevantFileCount, 73);
-assert.equal(randomColdRow.randomLargeProjectColdPath.sourceOrBuildRelevantFileCount, 75);
+assert.equal(randomColdRow.randomLargeProjectColdPath.sourceOrBuildRelevantFileCount, 74);
 assert.equal(randomColdRow.randomLargeProjectColdPath.gpuSourceFileCount, 31);
 assert.equal(randomColdRow.coldSourceTreeIntake.accepted, true);
 assert.equal(randomColdRow.coldSourceTreeIntake.sourceRelevantFileCount, 73);
-assert.equal(randomColdRow.coldSourceTreeIntake.sourceOrBuildRelevantFileCount, 75);
+assert.equal(randomColdRow.coldSourceTreeIntake.sourceOrBuildRelevantFileCount, 74);
 assert.equal(randomColdRow.coldSourceTreeIntake.gpuSourceSignalCount, 31);
 assert.equal(randomColdRow.sourceRelevantFileCount, 73);
-assert.equal(randomColdRow.sourceOrBuildRelevantFileCount, 75);
+assert.equal(randomColdRow.sourceOrBuildRelevantFileCount, 74);
 assert.equal(randomColdRow.gpuSourceFileCount, 31);
 assert.equal(randomColdRow.coldRuntimeBoundaryEventManifestTemplate.validated, true);
 assert.equal(
@@ -2703,6 +2752,92 @@ assert.equal(
   'unsupported_requires_app_hook',
 );
 assert.ok(randomColdRow.openGaps.includes('runtime_support_closure_requires_app_hook'));
+assert.equal(
+  randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
+assert.equal(
+  randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+const unknownBackendColdDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-unknown-backend-source-build',
+);
+await writeJson(
+  path.join(unknownBackendColdDir, 'random-cold-unknown-backend-source-build.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-unknown-backend',
+    sourceUrl: 'https://example.invalid/arbitrary/unknown-backend-large-project.git',
+    immutableCommit: sha256Hex('unknown-backend-large-project:commit').slice(0, 40),
+    sourceListingManifestOptions: {
+      gpuSourceSignalCount: 0,
+      sourceRelevantFileCount: 73,
+    },
+  }),
+);
+const unknownBackendColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [unknownBackendColdDir],
+  includeUnproven: true,
+});
+const unknownBackendColdRow = unknownBackendColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(unknownBackendColdRow?.matrixOutcome, 'refusal_proven');
+assert.equal(unknownBackendColdRow.acceptedForGpuHmr, false);
+assert.equal(unknownBackendColdRow.gpuHmrSuccess, false);
+assert.deepEqual(
+  unknownBackendColdRow.randomColdBackendEvidence.sourceDerivedBackendCandidates,
+  [],
+);
+assert.equal(
+  unknownBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
+assert.equal(
+  unknownBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceIdentityCount,
+  1,
+);
+const externalLocalColdDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-external-local-segments',
+);
+const externalLocalRepoPath = path.join(
+  os.tmpdir(),
+  'arbitrary-user-checkouts',
+  'tests',
+  'fixtures',
+  'node_modules',
+  'gpu-app',
+);
+await writeJson(
+  path.join(externalLocalColdDir, 'random-cold-external-local-segments.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-external-local-segments',
+    sourceUrl: null,
+    repoPath: externalLocalRepoPath,
+    candidateSource: 'direct_local_git_repo_path',
+    immutableCommit: sha256Hex('external-local-segments:commit').slice(0, 40),
+  }),
+);
+const externalLocalColdLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [externalLocalColdDir],
+  includeUnproven: true,
+});
+const externalLocalColdRow = externalLocalColdLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(externalLocalColdRow?.matrixOutcome, 'refusal_proven');
+assert.equal(externalLocalColdRow.acceptedForGpuHmr, false);
+assert.equal(externalLocalColdRow.gpuHmrSuccess, false);
+assert.equal(
+  externalLocalColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  1,
+);
 const forgedSelectionAuditDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-selection-audit-forged',
@@ -2899,15 +3034,15 @@ const randomColdCoverage = new Map(
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status,
-  'diagnostic_only',
+  'candidate_only',
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
-  0,
+  1,
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
-  0,
+  1,
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
@@ -2915,7 +3050,11 @@ assert.equal(
 );
 assert.ok(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
-    .includes('qualifying_direct_random_large_project_cold_path_required'),
+    .includes('random_large_project_cold_path_more_distinct_sources_required'),
+);
+assert.ok(
+  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
+    .includes('random_large_project_cold_path_more_distinct_source_content_required'),
 );
 const randomColdRuntimeClosure = randomColdCoverage.get('large_arbitrary_project_runtime_closure');
 assert.equal(randomColdRuntimeClosure?.status, 'refused');
@@ -12333,21 +12472,26 @@ const broadReadinessWithSerializedBackendOnlyQuery = queryGpuHmrValidationMatrix
 assert.equal(broadReadinessWithSerializedBackendOnlyQuery.accepted, true);
 assert.equal(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  false,
+  true,
 );
 assert.equal(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathRowCount,
-  0,
+  5,
 );
 assert.equal(
   broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathCandidateRowCount,
-  0,
+  5,
 );
-assert.ok(
-  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
-    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+assert.ok(!broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness.openGaps
+  .includes('broad_acceptance_requires_random_large_project_cold_path'));
+assert.equal(
+  broadReadinessWithSerializedBackendOnlyQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathTargets
+    .filter((target) => String(target).startsWith('serialized-backend-only-cold-readiness-'))
+    .length,
+  5,
 );
 const broadReadinessDocOnlyBackendSignalRows = Array.from({ length: 5 }, (_, index) => {
   const sourceListingManifest = randomColdSourceListingManifestFixture({
@@ -12387,16 +12531,21 @@ assert.equal(broadReadinessWithDocOnlyBackendSignalQuery.accepted, true);
 assert.equal(
   broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathRowCount,
-  0,
+  5,
 );
 assert.equal(
   broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
     .randomColdPathCandidateRowCount,
-  0,
+  5,
 );
-assert.ok(
-  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness.openGaps
-    .includes('broad_acceptance_requires_random_large_project_cold_path'),
+assert.ok(!broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness.openGaps
+  .includes('broad_acceptance_requires_random_large_project_cold_path'));
+assert.equal(
+  broadReadinessWithDocOnlyBackendSignalQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathTargets
+    .filter((target) => String(target).startsWith('doc-only-backend-signal-cold-readiness-'))
+    .length,
+  5,
 );
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);
@@ -12999,7 +13148,7 @@ assert.ok(
 assert.ok(
   broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
     .broadLibraryAgnosticProof.sourceFirstVisualSelectionPredicate.requiredSignals
-    .includes('direct_local_source_path_outside_matrix_fixture_roots'),
+    .includes('direct_local_source_path_outside_matrix_internal_roots'),
 );
 assert.ok(
   broadReadinessWithFixtureLocalSourceFirstVisualQuery.summary.broadLibraryAgnosticReadiness
@@ -13396,7 +13545,7 @@ assert.ok(
 assert.ok(
   broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness
     .broadLibraryAgnosticProof.randomColdPathSelectionPredicate.requiredSignals
-    .includes('direct_local_git_repo_path_outside_matrix_fixture_roots'),
+    .includes('direct_local_git_repo_path_outside_matrix_internal_roots'),
 );
 assert.ok(
   broadReadinessWithFixtureLocalColdQuery.summary.broadLibraryAgnosticReadiness
