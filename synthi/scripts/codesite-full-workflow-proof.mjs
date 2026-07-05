@@ -2413,6 +2413,19 @@ function trustedProofKeysPath(slug) {
   return null;
 }
 
+function hasTrustedHmacProofAuthority(env = process.env) {
+  return Boolean(env.SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET || env.SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE);
+}
+
+function verifierProofAuthorityEnv() {
+  const env = { ...process.env };
+  if (!hasTrustedHmacProofAuthority(env)) {
+    delete env.AUTH_SECRET;
+    delete env.NEXTAUTH_SECRET;
+  }
+  return env;
+}
+
 function proofAuthorityEnvValue(key) {
   const direct = process.env[key];
   if (direct) return direct;
@@ -2442,7 +2455,9 @@ async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRo
   const bundlePath = path.join(artifactRoot, bundleRel);
   const trailersPath = path.join(artifactRoot, trailersRel);
   const trustedKeysPath = trustedProofKeysPath(slug);
-  if (!trustedKeysPath) {
+  const verifierEnv = verifierProofAuthorityEnv();
+  const trustedHmacProofAuthority = hasTrustedHmacProofAuthority(verifierEnv);
+  if (!trustedKeysPath && !trustedHmacProofAuthority) {
     return {
       ok: false,
       reason: 'trusted_proof_authority_missing',
@@ -2464,11 +2479,19 @@ async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRo
     trailersPath,
     '--require-trailers',
     ...(gitRepoRoot && commitSha ? ['--repo', gitRepoRoot, '--commit', commitSha, '--require-git-commit'] : []),
-    '--trusted-keys',
-    trustedKeysPath,
+    ...(trustedKeysPath ? ['--trusted-keys', trustedKeysPath] : []),
     '--require-trusted-authority',
-  ], { cwd: path.join(repoRoot(), 'synthi') }).then(
-    ({ stdout, stderr }) => ({ ok: true, stdout, stderr, artifactRoot, bundlePath, trailersPath, trustedKeysPath }),
+  ], { cwd: path.join(repoRoot(), 'synthi'), env: verifierEnv }).then(
+    ({ stdout, stderr }) => ({
+      ok: true,
+      stdout,
+      stderr,
+      artifactRoot,
+      bundlePath,
+      trailersPath,
+      trustedKeysPath,
+      trustedHmacProofAuthority,
+    }),
     (error) => ({
       ok: false,
       stdout: String(error.stdout || ''),
@@ -2478,6 +2501,7 @@ async function runVerifier({ proofBundle, exportPaths, slug, repoRoot: gitRepoRo
       bundlePath,
       trailersPath,
       trustedKeysPath,
+      trustedHmacProofAuthority,
     }),
   );
   try {
