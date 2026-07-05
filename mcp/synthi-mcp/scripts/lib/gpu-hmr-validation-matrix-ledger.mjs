@@ -1066,7 +1066,53 @@ function realRocmRuntimeAdapterBoundaryCoverage(lines = [], coverageInput = {}) 
 function runtimeBoundaryLineMaterializationFacet(input = {}, lines = []) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
+  const hasSerializedPayload = Boolean(
+    firstText(
+      facet.schemaVersion,
+      facet.schema_version,
+      facet.proofAuthority,
+      facet.proof_authority,
+      facet.bindingHash,
+      facet.binding_hash,
+    )
+    || (Array.isArray(facet.runtimeBoundaryLines) && facet.runtimeBoundaryLines.length > 0)
+    || (Array.isArray(facet.runtime_boundary_lines) && facet.runtime_boundary_lines.length > 0)
+    || (Array.isArray(facet.adapterRuntimeBoundaryLines) && facet.adapterRuntimeBoundaryLines.length > 0)
+    || (Array.isArray(facet.adapter_runtime_boundary_lines) && facet.adapter_runtime_boundary_lines.length > 0)
+    || (Array.isArray(facet.boundaryLineHashes) && facet.boundaryLineHashes.length > 0)
+    || (Array.isArray(facet.boundary_line_hashes) && facet.boundary_line_hashes.length > 0)
+    || (Array.isArray(facet.runtimeBoundaryLineHashes) && facet.runtimeBoundaryLineHashes.length > 0)
+    || (Array.isArray(facet.runtime_boundary_line_hashes) && facet.runtime_boundary_line_hashes.length > 0)
+    || (Array.isArray(facet.adapterRuntimeBoundaryLineHashes)
+      && facet.adapterRuntimeBoundaryLineHashes.length > 0)
+    || (Array.isArray(facet.adapter_runtime_boundary_line_hashes)
+      && facet.adapter_runtime_boundary_line_hashes.length > 0)
+    || (Array.isArray(facet.sourceEventHashes) && facet.sourceEventHashes.length > 0)
+    || (Array.isArray(facet.source_event_hashes) && facet.source_event_hashes.length > 0)
+  );
   if (!present) {
+    return {
+      present: false,
+      accepted: null,
+      acceptedAsMaterializedBoundaryLines: false,
+      accepted_as_materialized_boundary_lines: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      boundaryLineHashes: [],
+      boundary_line_hashes: [],
+      sourceEventHashes: [],
+      source_event_hashes: [],
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  if (firstBool(facet.present) === false && !hasSerializedPayload) {
     return {
       present: false,
       accepted: null,
@@ -11956,7 +12002,8 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
     adapterRuntimeBoundaryLines.length > 0
       ? null
       : 'runtime_profile_adapter_boundary_lines_missing',
-    runtimeBoundaryLineMaterialization.present === true
+    runtimeBoundaryLineMaterialization.serializedPresent === true
+      && runtimeBoundaryLineMaterialization.present === true
       && runtimeBoundaryLineMaterialization.accepted !== true
       ? 'runtime_profile_adapter_boundary_line_materialization_failed'
       : null,
@@ -12025,6 +12072,10 @@ function realRocmRuntimeProfileAdapterResultFacet(input = {}) {
       : null,
     adapterBoundaryCoverage.missingEventKinds.length > 0
       ? 'real_rocm_runtime_profile_adapter_result_boundary_coverage_incomplete'
+      : null,
+    runtimeBoundaryLineMaterialization.present === true
+      && runtimeBoundaryLineMaterialization.accepted !== true
+      ? 'runtime_profile_adapter_boundary_line_materialization_failed'
       : null,
     ...adapterBoundaryCoverage.failedGates,
     ...runtimeBoundaryLineMaterialization.failedGates,
