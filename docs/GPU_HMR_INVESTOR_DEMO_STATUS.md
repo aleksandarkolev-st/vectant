@@ -1,6 +1,6 @@
 # GPU HMR Investor Demo Status
 
-Updated: 2026-07-01
+Updated: 2026-07-05
 
 ## Demo Position
 
@@ -9,6 +9,66 @@ Safe investor-demo claim:
 ```text
 On the local AMD ROCm machine, Synthi can hot-reload scoped/profiled GPU device-artifact edits, keep the runtime alive, and prove changed output with strict runtime-ledger evidence. Visual profiles use pixel-backed before/after/diff frame artifacts; compute/readback profiles use raw mapped GPU bytes plus data-derived compute cards, and those cards are not runtime frame visual proof.
 ```
+
+## 2026-07-05 Current Proof Snapshot
+
+Latest retained validation matrix:
+
+```text
+matrix: gpu-validation-matrix-ledger:sha256:bfcf5b1bdc3e27dc9daf8a5dcb7f58884d7005d18d96b89536cd0ca922875007
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260705T171452Z.json
+rows: 284 rows
+accepted full-runtime: 19 accepted full-runtime GPU HMR
+broad library-agnostic full-runtime: 19 broad library-agnostic full-runtime GPU HMR
+scoped full-runtime: 0 scoped full-runtime GPU HMR
+all full-runtime: 19 all full-runtime
+refusals: 221 refusals
+cold splits: 13 cold splits
+scope breakdown: generated_rocm_hip_preview_visual: 6
+scope breakdown: hip_module_declared_compute_readback: 2
+scope breakdown: opencl_declared_compute_readback: 2
+scope breakdown: vulkan_declared_pipeline_visual: 1
+scope breakdown: webgpu_declared_compute_readback: 2
+scope breakdown: webgpu_declared_pipeline_visual: 6
+unproven rows: 0 included unproven rows
+per_target_run_modes status=accepted
+current HIP visual row: gpu-validation-matrix-row:sha256:35deb4849d14c286ac002f35443b067f1f5663720222f8a9774ed23f81cc70bd
+current OpenCL row: gpu-validation-matrix-row:sha256:24f73bfcc6464a4fc98d3ee81a06052636f4bc3f53ba8344ac12a668b7c72cc7
+current Vulkan row: gpu-validation-matrix-row:sha256:4d1564606584a2d58f360b74aee6c927c8e2cdb9a1c8ae1058f8c32d16de7e18
+```
+
+Latest history audit:
+
+```text
+history matrix: gpu-validation-matrix-ledger:sha256:aaef5d0c03be6505caa61adcd636a64aa50fcffd8428399fa0add12d4e628ded
+history json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260705T183615Z.json
+history rows: 1214 rows
+history accepted full-runtime: 19 accepted full-runtime GPU HMR
+history broad library-agnostic full-runtime: 19 broad library-agnostic full-runtime GPU HMR
+history scoped full-runtime: 0 scoped full-runtime GPU HMR
+history all full-runtime: 19 all full-runtime
+history refusals: 221 refusals
+history cold splits: 13 cold splits
+history scope breakdown: generated_rocm_hip_preview_visual: 6
+history scope breakdown: hip_module_declared_compute_readback: 2
+history scope breakdown: opencl_declared_compute_readback: 2
+history scope breakdown: vulkan_declared_pipeline_visual: 1
+history scope breakdown: webgpu_declared_compute_readback: 2
+history scope breakdown: webgpu_declared_pipeline_visual: 6
+history unproven rows: 930 historical unproven rows
+```
+
+Latest timing telemetry remains unchanged:
+
+```text
+timing summary: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260624T093916Z.json
+timing count: count=21
+timing metrics are telemetry only
+evidenceAuthority=timing_telemetry_only
+proofVerdict=not_evaluated_by_timing_summary
+```
+
+The current matrix aggregate is a recomputed portfolio proof over strict scoped HIP/OpenCL/Vulkan/WebGPU rows, adversarial refusals, direct source-first visual proof, and random large-project cold refusals. It remains an evidence-backed demo and generalization proof, not production acceptance for every arbitrary GPU project. A new arbitrary project still needs its own same-process loader, artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, runtime chain, and strict proof-ledger closure.
 
 Dev-loop demo note:
 
@@ -162,8 +222,8 @@ latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/g
 latest global matrix summary: 114 rows, 19 accepted full-runtime GPU HMR, 0 broad library-agnostic full-runtime GPU HMR rows, 19 scoped full-runtime GPU HMR rows, 19 all full-runtime rows, 74 refusals, 8 cold splits, 2 deterministic fission, 3 visual profiles, 8 preflight-only rows, 0 included unproven rows
 latest global matrix scope breakdown: generated_rocm_hip_preview_visual: 4, hip_module_declared_compute_readback: 2, opencl_declared_compute_readback: 2, vulkan_declared_pipeline_visual: 1, webgpu_declared_compute_readback: 2, webgpu_declared_pipeline_visual: 8
 current accepted strict backend families: HIP, OpenCL, Vulkan, WebGPU
-current OpenCL full-runtime rows: hot_delta_1=gpu-validation-matrix-row:sha256:4943d7b099075a431f37236b184ad7dfbac131d385dae48eb6ed99731f1b5773, hot_delta_2=gpu-validation-matrix-row:sha256:d5e45d4eb8952ca30a1fbc882ea02b491581783f66f3fbd566de71f07959ca84
-current Vulkan full-runtime row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8, proof=vulkan-runtime-proof:sha256:de768ddd560863deac94f7740adf55af5a3fb59e730c9e0109fd383135bc8e84, runtime_artifact=vulkan-runtime-proof-artifact:62fbf87f8551fdce10a33595c8c5a76d42683ac3522676a942c7f1a5c4a94134, ledger=gpu-ledger-proof:sha256:599ef0607b62dab245d7b29b9dae68ed6a30733520bb8aaaff7a54371ae03fb1
+historical OpenCL full-runtime rows: hot_delta_1=gpu-validation-matrix-row:sha256:4943d7b099075a431f37236b184ad7dfbac131d385dae48eb6ed99731f1b5773, hot_delta_2=gpu-validation-matrix-row:sha256:d5e45d4eb8952ca30a1fbc882ea02b491581783f66f3fbd566de71f07959ca84
+historical Vulkan full-runtime row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8, proof=vulkan-runtime-proof:sha256:de768ddd560863deac94f7740adf55af5a3fb59e730c9e0109fd383135bc8e84, runtime_artifact=vulkan-runtime-proof-artifact:62fbf87f8551fdce10a33595c8c5a76d42683ac3522676a942c7f1a5c4a94134, ledger=gpu-ledger-proof:sha256:599ef0607b62dab245d7b29b9dae68ed6a30733520bb8aaaff7a54371ae03fb1
 latest broad readiness after content-backed build metadata hardening, five large direct arbitrary cold-path rows, source-first visual predicate hardening, and row-local scope separation: current readiness accepted=false until row-local broad full-runtime proof exists; aggregate matrix proof remains accepted as portfolio evidence. Retained recompute=gpu-validation-matrix-ledger:sha256:70a59fb470f0b433993ec70cc699a3cb47efdfda0cf3d81c1185df9e09225e59, broad proof=gpu-hmr-broad-library-agnostic-proof:sha256:c2c76ea4ef18f7a8c22b98b4740173c801a29589c51401d1d74b19edab554ea2, broadRuntimeRows=0, broadRuntimeRowsMissing=false, rowLocalBroadRuntimeRowsMissing=true, scopedRuntimeRows=19, matrixGeneralizationRuntimeRows=19, randomColdPathSelectionPredicate=synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1, predicateAuthority=matrix_static_predicate_not_project_name_whitelist, predicateHash=sha256:a184d8c93a3ec1ec35957e7aa2982c536a346a15c16322955294da4660dcde89, sourceFirstVisualSelectionPredicate=synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1, sourceFirstVisualPredicateAuthority=matrix_static_source_first_visual_predicate_not_project_name_whitelist, sourceFirstVisualTargetNameIndependent=true, requiredDirectInputEvidence=synthi.gpu_hmr.random_cold_path_direct_source_input.v1, requiredDirectInputEvidenceAuthority=runner_cli_env_direct_source_input_only_not_gpu_hmr_success, sourceFirstVisualRequiredSignals=strict_full_runtime_row_accepted,source_first_ingestion_accepted,explicit_user_source_authority,async_visual_proof_ready,async_visual_worker_cas_input_accepted,native_image_dependency_bound,visual_artifacts_accepted,strict_runtime_visual_authority_accepted,visual_output_oracle_accepted,no_gpu_hmr_success_claims_from_support_facets, targetNameIndependent=true, projectNameWhitelist=[], specificTargetIdsAllowed=[], currentSourceIdentityRole=source_identity_hash_bound_to_direct_input_not_whitelist, qualifying large cold-path targets=direct-llama-cpp-current-template,direct-filament-user-path-current-template,direct-vulkan-samples-user-path-current-template,direct-bevy-user-path-current-template,direct-wgpu-user-path-current-template, randomColdPathRowCount=5, randomColdPathCandidateRowCount=7, minimumRandomColdPathFileCount=1000, minimumRandomColdPathKnownBytes=10485760, historical sourceFirstVisualRowCount=2 before explicit-source tightening
 claim boundary: broad arbitrary-user readiness is a matrix-level generalization proof over strict scoped HIP/OpenCL/Vulkan/WebGPU runtime rows, adversarial refusals, direct user-owned source-first visual proof, and five large direct arbitrary cold-path refusals. It is not row-local broad acceptance and not blanket production acceptance for every arbitrary GPU project; each project still needs its own same-process loader, epoch, dispatch, host-identity, output-oracle, firewall, and strict proof-ledger closure.
 Flow rerun boundary: current Flow rows for generated-gpu-split:3e2e1e99e0bfca5a804d336c accepted strict visual hot deltas, but they carry sourceAuthority=builtin_fixture_source. They are useful visual/regression coverage and do not satisfy the arbitrary-user source-first gate.
@@ -1126,7 +1186,7 @@ Scoped host-local Vulkan runtime proof:
 proof id: vulkan-runtime-proof:sha256:de768ddd560863deac94f7740adf55af5a3fb59e730c9e0109fd383135bc8e84
 runtime artifact: vulkan-runtime-proof-artifact:62fbf87f8551fdce10a33595c8c5a76d42683ac3522676a942c7f1a5c4a94134
 ledger: gpu-ledger-proof:sha256:599ef0607b62dab245d7b29b9dae68ed6a30733520bb8aaaff7a54371ae03fb1
-matrix row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8
+historical matrix row: gpu-validation-matrix-row:sha256:c0e9f8d1509334ae80200ee736df5050e585e12bb11ae7a8fd951248893342e8
 visual artifacts: mcp/synthi-mcp/.gpu-hmr-test-artifacts/vulkan-runtime-proof/vulkan-runtime-frame-20260630124806/vulkan-before-frame.png, vulkan-after-frame.png, vulkan-diff-frame.png
 ```
 
