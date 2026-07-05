@@ -121,6 +121,7 @@ export interface DojoEvidenceLedger {
     legal_hold_blocks_artifact_disposal: boolean;
   };
   retention_plan: DojoEvidenceRetentionPlan;
+  evidence_ledger_records: DojoEvidenceLedgerRecord[];
   records: Array<{
     record_id: string;
     kind: "trace" | "scenario" | "checkride" | "case_law" | "guardrail" | "license" | "proof" | "artifact";
@@ -630,6 +631,7 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
       records: retentionRecords,
       now: skill.generated_at,
     }),
+    evidence_ledger_records: retentionRecords,
     records,
     head_hash: records.at(-1)?.hash ?? hash("empty"),
   };
