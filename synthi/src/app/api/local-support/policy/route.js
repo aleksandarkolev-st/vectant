@@ -10,6 +10,6 @@ export async function GET() {
     ...policy,
     user_visible_message: policy.enabled
       ? "Local Support is available for this organization. The local app still enforces every request."
-      : "Local Support is disabled by organization or global policy.",
+      : policy.disabled_reason || "Local Support is disabled by organization, emergency, or global policy.",
   });
 }
