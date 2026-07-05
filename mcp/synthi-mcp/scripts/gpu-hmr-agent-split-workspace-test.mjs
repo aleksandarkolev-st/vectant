@@ -117,6 +117,10 @@ const CFG = {
 };
 
 const AGENT_VISUAL_PROFILE_SCHEMA_VERSION = 'synthi.gpu_hmr.agent_split_visual_profile.v1';
+const VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_semantic_probe_binding.v1';
+const VISUAL_SEMANTIC_PROBE_AUTHORITY =
+  'semantic_visual_probe_binding_only_not_gpu_hmr_success';
 let ACTIVE_AGENT_PROFILE = null;
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
@@ -6067,6 +6071,105 @@ function selfCheckAgentVisualProfile() {
   }
 }
 
+async function writeSelfCheckSemanticImage(name, pixelFn) {
+  const width = 8;
+  const height = 8;
+  const channels = 4;
+  const raw = Buffer.alloc(width * height * channels);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * channels;
+      const [r, g, b, a = 255] = pixelFn(x, y);
+      raw[index] = r;
+      raw[index + 1] = g;
+      raw[index + 2] = b;
+      raw[index + 3] = a;
+    }
+  }
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  const file = path.join(ARTIFACT_DIR, `${name}.png`);
+  await sharp(raw, { raw: { width, height, channels } }).png().toFile(file);
+  const bytes = await readFile(file);
+  return {
+    path: path.relative(process.cwd(), file),
+    hash: `sha256:${sha256BufferHex(bytes)}`,
+  };
+}
+
+async function selfCheckSemanticVisualProbeEvidence() {
+  const originalProfile = ACTIVE_AGENT_PROFILE;
+  try {
+    const sceneManifest = {
+      schemaVersion: 'synthi.gpu_hmr.visual_scene_manifest.v1',
+      sceneId: 'semantic-probe-self-check-scene',
+      semanticProbes: [
+        {
+          id: 'self-check-material-gem',
+          probeClass: 'material_response',
+          region: [0, 0, 4, 8],
+          expected: 'material response changes on gem facets',
+        },
+        {
+          id: 'self-check-light-shadow',
+          probeClass: 'lighting_response',
+          region: [4, 0, 4, 8],
+          expected: 'lighting response changes on shadow edge',
+        },
+      ],
+    };
+    const visualSceneManifestHash = `sha256:${sha256Hex(stableJson(sceneManifest))}`;
+    ACTIVE_AGENT_PROFILE = {
+      visualSceneManifest: sceneManifest,
+      visual_scene_manifest: sceneManifest,
+      visualSceneManifestHash,
+      visual_scene_manifest_hash: visualSceneManifestHash,
+      visualSceneManifestEvidenceRef:
+        `evidence:agent-profile-visual-scene-manifest:${visualSceneManifestHash}`,
+      visual_scene_manifest_evidence_ref:
+        `evidence:agent-profile-visual-scene-manifest:${visualSceneManifestHash}`,
+      deterministicVisualModeHash: `sha256:${sha256Hex('semantic-probe-self-check-mode')}`,
+      deterministic_visual_mode_hash: `sha256:${sha256Hex('semantic-probe-self-check-mode')}`,
+    };
+    const before = await writeSelfCheckSemanticImage(
+      'semantic-probe-self-check-before',
+      () => [20, 22, 24, 255],
+    );
+    const after = await writeSelfCheckSemanticImage(
+      'semantic-probe-self-check-after',
+      (x) => (x < 4 ? [70, 76, 82, 255] : [38, 42, 46, 255]),
+    );
+    const diff = await writeSelfCheckSemanticImage(
+      'semantic-probe-self-check-diff',
+      (x) => (x < 4 ? [50, 54, 58, 255] : [18, 20, 22, 255]),
+    );
+    const semantic = await semanticVisualProbeEvidenceFromDelta({
+      visualArtifacts: {
+        beforeImage: before.path,
+        beforeImageHash: before.hash,
+        afterImage: after.path,
+        afterImageHash: after.hash,
+        diffImage: diff.path,
+        diffImageHash: diff.hash,
+      },
+    });
+    if (
+      semantic?.accepted !== true
+      || semantic.acceptedForGpuHmr !== false
+      || semantic.gpuHmrSuccess !== false
+      || semantic.materialProbeAccepted !== true
+      || semantic.lightingProbeAccepted !== true
+      || !/^sha256:[a-f0-9]{64}$/.test(semantic.bindingHash ?? '')
+      || !Array.isArray(semantic.probes)
+      || semantic.probes.length !== 2
+    ) {
+      throw new Error(`semantic visual probe self-check failed: ${JSON.stringify(semantic)}`);
+    }
+    console.log('semantic visual probe self-check passed');
+  } finally {
+    ACTIVE_AGENT_PROFILE = originalProfile;
+  }
+}
+
 function selfCheckRunModeVisualLedgerClockDomain() {
   const artifactBefore = `sha256:${'a'.repeat(64)}`;
   const artifactAfter = `sha256:${'b'.repeat(64)}`;
@@ -7223,6 +7326,313 @@ function visualLedgerArtifactsFromDelta({
   };
 }
 
+function semanticProbeRegion(rawProbe) {
+  const raw = rawProbe?.region ?? rawProbe?.roi ?? rawProbe?.bounds ?? rawProbe?.region_bounds;
+  if (Array.isArray(raw) && raw.length >= 4) {
+    const [x, y, width, height] = raw.map((value) => Number(value));
+    return [x, y, width, height].every(Number.isFinite) && width > 0 && height > 0
+      ? { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) }
+      : null;
+  }
+  if (isRecord(raw)) {
+    const x = Number(raw.x);
+    const y = Number(raw.y);
+    const width = Number(raw.width);
+    const height = Number(raw.height);
+    return [x, y, width, height].every(Number.isFinite) && width > 0 && height > 0
+      ? { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) }
+      : null;
+  }
+  return null;
+}
+
+function semanticProbeClassFromDeclaration(rawProbe, index) {
+  const explicit = String(
+    rawProbe?.probeClass
+      ?? rawProbe?.probe_class
+      ?? rawProbe?.semanticClass
+      ?? rawProbe?.semantic_class
+      ?? rawProbe?.kind
+      ?? rawProbe?.type
+      ?? '',
+  ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (explicit) return explicit;
+  const text = [
+    rawProbe?.id,
+    rawProbe?.probeId,
+    rawProbe?.probe_id,
+    rawProbe?.expected,
+    rawProbe?.description,
+  ].map((value) => String(value ?? '').toLowerCase()).join(' ');
+  if (/(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|diamond|surface|sparkle|glint|highlight)/.test(text)) {
+    return 'material_response';
+  }
+  if (/(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce|contrast)/.test(text)) {
+    return 'lighting_response';
+  }
+  if (/(geometry|silhouette|edge|normal|depth|parallax|occlusion)/.test(text)) {
+    return 'geometry_response';
+  }
+  if (/(color|tone|albedo|hue|temperature|white_balance)/.test(text)) {
+    return 'color_response';
+  }
+  return index === 0 ? 'material_response' : null;
+}
+
+function resolveVisualArtifactPath(filePath) {
+  if (!filePath) return null;
+  return path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+}
+
+async function loadRgbaImage(filePath) {
+  const resolved = resolveVisualArtifactPath(filePath);
+  if (!resolved) return null;
+  const { data, info } = await sharp(resolved)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height, channels: info.channels };
+}
+
+function clampProbeRegion(region, image) {
+  if (!region || !image?.width || !image?.height) return null;
+  const x = Math.max(0, Math.min(image.width - 1, region.x));
+  const y = Math.max(0, Math.min(image.height - 1, region.y));
+  const width = Math.max(1, Math.min(image.width - x, region.width));
+  const height = Math.max(1, Math.min(image.height - y, region.height));
+  return { x, y, width, height };
+}
+
+function semanticRegionBuffer(image, region) {
+  const channels = image.channels ?? 4;
+  const bytes = Buffer.alloc(region.width * region.height * channels);
+  let offset = 0;
+  for (let row = 0; row < region.height; row += 1) {
+    const start = ((region.y + row) * image.width + region.x) * channels;
+    const end = start + region.width * channels;
+    image.data.copy(bytes, offset, start, end);
+    offset += region.width * channels;
+  }
+  return bytes;
+}
+
+function semanticRegionMetrics(before, after, region) {
+  const channels = before.channels ?? 4;
+  let changedPixels = 0;
+  let meanAbsSum = 0;
+  for (let row = 0; row < region.height; row += 1) {
+    for (let col = 0; col < region.width; col += 1) {
+      const index = ((region.y + row) * before.width + region.x + col) * channels;
+      let pixelAbs = 0;
+      for (let channel = 0; channel < Math.min(3, channels); channel += 1) {
+        pixelAbs += Math.abs(Number(after.data[index + channel]) - Number(before.data[index + channel]));
+      }
+      if (pixelAbs > 0) changedPixels += 1;
+      meanAbsSum += pixelAbs / 3;
+    }
+  }
+  const totalPixels = region.width * region.height;
+  return {
+    changedPixelRatio: totalPixels > 0 ? changedPixels / totalPixels : 0,
+    changed_pixel_ratio: totalPixels > 0 ? changedPixels / totalPixels : 0,
+    meanAbsDelta: totalPixels > 0 ? meanAbsSum / totalPixels : 0,
+    mean_abs_delta: totalPixels > 0 ? meanAbsSum / totalPixels : 0,
+  };
+}
+
+function compactSemanticObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) =>
+    item !== undefined
+    && item !== null
+    && !(Array.isArray(item) && item.length === 0)
+  ));
+}
+
+function semanticProbeBindingPayload({
+  beforeImageHash,
+  afterImageHash,
+  diffImageHash,
+  visualSceneManifestHash,
+  deterministicVisualModeHash,
+  probes,
+}) {
+  return compactSemanticObject({
+    schemaVersion: VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION,
+    schema_version: VISUAL_SEMANTIC_PROBE_SCHEMA_VERSION,
+    proofAuthority: VISUAL_SEMANTIC_PROBE_AUTHORITY,
+    proof_authority: VISUAL_SEMANTIC_PROBE_AUTHORITY,
+    beforeImageHash,
+    before_image_hash: beforeImageHash,
+    afterImageHash,
+    after_image_hash: afterImageHash,
+    diffImageHash,
+    diff_image_hash: diffImageHash,
+    visualSceneManifestHash,
+    visual_scene_manifest_hash: visualSceneManifestHash,
+    deterministicVisualModeHash,
+    deterministic_visual_mode_hash: deterministicVisualModeHash,
+    probes: probes.map((probe) => compactSemanticObject({
+      probeId: probe.probeId,
+      probe_id: probe.probe_id,
+      probeClass: probe.probeClass,
+      probe_class: probe.probe_class,
+      source: probe.source,
+      beforeRegionHash: probe.beforeRegionHash,
+      before_region_hash: probe.before_region_hash,
+      afterRegionHash: probe.afterRegionHash,
+      after_region_hash: probe.after_region_hash,
+      diffRegionHash: probe.diffRegionHash,
+      diff_region_hash: probe.diff_region_hash,
+      roiBindingHash: probe.roiBindingHash,
+      roi_binding_hash: probe.roi_binding_hash,
+      region: probe.region,
+      changedPixelRatio: probe.changedPixelRatio,
+      changed_pixel_ratio: probe.changed_pixel_ratio,
+      meanAbsDelta: probe.meanAbsDelta,
+      mean_abs_delta: probe.mean_abs_delta,
+      evidenceRefs: probe.evidenceRefs,
+      evidence_refs: probe.evidence_refs,
+    })),
+  });
+}
+
+async function semanticVisualProbeEvidenceFromDelta(visualDelta) {
+  const sceneManifest = ACTIVE_AGENT_PROFILE?.visualSceneManifest
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest
+    ?? null;
+  const declaredProbes = Array.isArray(sceneManifest?.semanticProbes)
+    ? sceneManifest.semanticProbes
+    : Array.isArray(sceneManifest?.semantic_probes)
+      ? sceneManifest.semantic_probes
+      : [];
+  if (declaredProbes.length === 0) return null;
+  const visualArtifacts = visualDelta?.visualArtifacts ?? visualDelta?.visual_artifacts ?? {};
+  const beforeImageHash = visualArtifacts.beforeImageHash ?? visualArtifacts.before_image_hash ?? null;
+  const afterImageHash = visualArtifacts.afterImageHash ?? visualArtifacts.after_image_hash ?? null;
+  const diffImageHash = visualArtifacts.diffImageHash ?? visualArtifacts.diff_image_hash ?? null;
+  const visualSceneManifestHash =
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestHash
+    ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_hash
+    ?? null;
+  const deterministicVisualModeHash =
+    ACTIVE_AGENT_PROFILE?.deterministicVisualModeHash
+    ?? ACTIVE_AGENT_PROFILE?.deterministic_visual_mode_hash
+    ?? null;
+  if (!beforeImageHash || !afterImageHash || !diffImageHash || !visualSceneManifestHash) {
+    return null;
+  }
+  const before = await loadRgbaImage(visualArtifacts.beforeImage ?? visualArtifacts.before_image);
+  const after = await loadRgbaImage(visualArtifacts.afterImage ?? visualArtifacts.after_image);
+  const diff = await loadRgbaImage(visualArtifacts.diffImage ?? visualArtifacts.diff_image);
+  if (!before || !after || !diff) return null;
+  const probes = [];
+  for (const [index, rawProbe] of declaredProbes.entries()) {
+    const declaredRegion = semanticProbeRegion(rawProbe);
+    const region = clampProbeRegion(declaredRegion, before);
+    const probeClass = semanticProbeClassFromDeclaration(rawProbe, index);
+    if (!region || !probeClass) continue;
+    const beforeRegionHash = `sha256:${sha256BufferHex(semanticRegionBuffer(before, region))}`;
+    const afterRegionHash = `sha256:${sha256BufferHex(semanticRegionBuffer(after, region))}`;
+    if (beforeRegionHash === afterRegionHash) continue;
+    const diffRegionHash = `sha256:${sha256BufferHex(semanticRegionBuffer(diff, region))}`;
+    const roiBindingHash = `sha256:${sha256Hex(stableJson({
+      probeId: rawProbe?.id ?? rawProbe?.probeId ?? rawProbe?.probe_id ?? `semantic-probe:${index}`,
+      probeClass,
+      beforeRegionHash,
+      afterRegionHash,
+      diffRegionHash,
+      region,
+      beforeImageHash,
+      afterImageHash,
+      diffImageHash,
+      visualSceneManifestHash,
+      deterministicVisualModeHash,
+    }))}`;
+    const metrics = semanticRegionMetrics(before, after, region);
+    if (!(metrics.changedPixelRatio > 0 && metrics.meanAbsDelta > 0)) continue;
+    const probeId = String(rawProbe?.id ?? rawProbe?.probeId ?? rawProbe?.probe_id ?? `semantic-probe:${index}`);
+    const evidenceRefs = [...new Set([
+      beforeImageHash,
+      afterImageHash,
+      diffImageHash,
+      visualSceneManifestHash,
+      deterministicVisualModeHash,
+      ACTIVE_AGENT_PROFILE?.visualSceneManifestEvidenceRef
+        ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_evidence_ref
+        ?? null,
+    ].filter(Boolean))];
+    probes.push({
+      probeId,
+      probe_id: probeId,
+      probeClass,
+      probe_class: probeClass,
+      source: 'deterministic_oracle_region',
+      beforeRegionHash,
+      before_region_hash: beforeRegionHash,
+      afterRegionHash,
+      after_region_hash: afterRegionHash,
+      diffRegionHash,
+      diff_region_hash: diffRegionHash,
+      roiBindingHash,
+      roi_binding_hash: roiBindingHash,
+      region,
+      changedPixelRatio: metrics.changedPixelRatio,
+      changed_pixel_ratio: metrics.changedPixelRatio,
+      meanAbsDelta: metrics.meanAbsDelta,
+      mean_abs_delta: metrics.meanAbsDelta,
+      evidenceRefs,
+      evidence_refs: evidenceRefs,
+      accepted: true,
+    });
+  }
+  const hasMaterial = probes.some((probe) => probe.probeClass === 'material_response');
+  const hasLighting = probes.some((probe) => probe.probeClass === 'lighting_response');
+  if (!hasMaterial || !hasLighting) return null;
+  const bindingPayload = semanticProbeBindingPayload({
+    beforeImageHash,
+    afterImageHash,
+    diffImageHash,
+    visualSceneManifestHash,
+    deterministicVisualModeHash,
+    probes,
+  });
+  const bindingHash = `sha256:${sha256Hex(stableJson(bindingPayload))}`;
+  const evidenceRefs = [...new Set([
+    beforeImageHash,
+    afterImageHash,
+    diffImageHash,
+    visualSceneManifestHash,
+    deterministicVisualModeHash,
+    ACTIVE_AGENT_PROFILE?.visualSceneManifestEvidenceRef
+      ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest_evidence_ref
+      ?? null,
+    bindingHash,
+    ...probes.flatMap((probe) => probe.evidenceRefs),
+  ].filter(Boolean))];
+  return {
+    ...bindingPayload,
+    accepted: true,
+    acceptedAsSemanticVisualProbeEvidence: true,
+    accepted_as_semantic_visual_probe_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    materialProbeAccepted: true,
+    material_probe_accepted: true,
+    lightingProbeAccepted: true,
+    lighting_probe_accepted: true,
+    bindingHash,
+    binding_hash: bindingHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function withoutSuppliedLedgerIdentity(record) {
   if (!isRecord(record)) return record;
   const copy = { ...record };
@@ -8044,6 +8454,10 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     artifact_cas_locators: best.artifactCasLocators ?? [],
     visual_artifact_transport_evidence: best.visualArtifactTransportEvidence ?? null,
   };
+  const semanticVisualProbes = await semanticVisualProbeEvidenceFromDelta({
+    visualArtifacts,
+    visual_artifacts: visualArtifactsSnake,
+  });
   return {
     changedRatio: best.changedRatio,
     meanAbs: best.meanAbs,
@@ -8079,6 +8493,8 @@ async function assertVisualDelta(beforeShot, afterShot, diffArtifactName = 'befo
     visual_artifact_transport_evidence: best.visualArtifactTransportEvidence ?? null,
     visualProofBundle: best.visualProofBundle ?? null,
     visual_proof_bundle: best.visualProofBundle ?? null,
+    visualSemanticProbes: semanticVisualProbes,
+    visual_semantic_probes: semanticVisualProbes,
     asyncVisualProofJob: best.asyncVisualProofJob ?? null,
     async_visual_proof_job: best.asyncVisualProofJob ?? null,
     asyncVisualProof: best.asyncVisualProof ?? null,
@@ -8520,6 +8936,10 @@ async function run() {
       refreshed_source_baseline_proof: generatedDeviceResult.refreshedSourceBaselineProof,
       visualArtifacts: visualDelta.visualArtifacts,
       visual_artifacts: visualDelta.visual_artifacts,
+      visualSemanticProbes: visualDelta.visualSemanticProbes,
+      visual_semantic_probes: visualDelta.visual_semantic_probes,
+      evidenceRefs: visualDelta.visualSemanticProbes?.evidenceRefs ?? [],
+      evidence_refs: visualDelta.visual_semantic_probes?.evidence_refs ?? [],
       visualMetrics: {
         changedPixelRatio: visualDelta.changedRatio,
         meanAbsDelta8bit: visualDelta.meanAbs,
@@ -8682,6 +9102,10 @@ async function run() {
       refreshed_source_baseline_proof: hotDelta2Result.refreshedSourceBaselineProof,
       visualArtifacts: hotDelta2VisualDelta.visualArtifacts,
       visual_artifacts: hotDelta2VisualDelta.visual_artifacts,
+      visualSemanticProbes: hotDelta2VisualDelta.visualSemanticProbes,
+      visual_semantic_probes: hotDelta2VisualDelta.visual_semantic_probes,
+      evidenceRefs: hotDelta2VisualDelta.visualSemanticProbes?.evidenceRefs ?? [],
+      evidence_refs: hotDelta2VisualDelta.visual_semantic_probes?.evidence_refs ?? [],
       visualMetrics: {
         changedPixelRatio: hotDelta2VisualDelta.changedRatio,
         meanAbsDelta8bit: hotDelta2VisualDelta.meanAbs,
@@ -8794,6 +9218,7 @@ async function writeResults() {
 if (process.argv.includes('--self-check')) {
   try {
     selfCheckAgentVisualProfile();
+    await selfCheckSemanticVisualProbeEvidence();
     selfCheckRunModeVisualLedgerClockDomain();
     await selfCheckProofFinalizationRetry();
     selfCheckRequestedProofStateGate();
