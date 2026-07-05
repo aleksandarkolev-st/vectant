@@ -17,6 +17,7 @@ import {
   Play,
   PlugZap,
   RotateCcw,
+  Settings2,
   ShieldCheck,
   Trash2,
   Unplug,
@@ -88,6 +89,40 @@ const orgRestrictions = [
   ["Support agent page reading", "Blocked", "bad", "Blocked by organization"],
   ["Fast Support", "Disabled", "bad", "Disabled for MVP"],
   ["Minimum app version", "Required", "warn", "0.1.0 required"],
+];
+
+const setupChecklist = [
+  ["Workspace chosen", "C:\\Users\\alex\\projects\\vectant-demo"],
+  ["Secret denylist active", ".env, SSH, cloud, kube, keychain patterns"],
+  ["Local policy mode", "Balanced, with source and logs review-gated"],
+  ["Pairing consent", "Only this browser session and account"],
+];
+
+const permissionModes = [
+  {
+    mode: "Balanced mode",
+    status: "Active",
+    automatic: "Low-risk metadata only",
+    approval: "Source, logs, port preview",
+    blocked: "Secrets, writes, commands, agent page reading",
+    tone: "good",
+  },
+  {
+    mode: "Manual mode",
+    status: "Available",
+    automatic: "Nothing",
+    approval: "Every file, log, and port",
+    blocked: "Same security denylist",
+    tone: "info",
+  },
+  {
+    mode: "Fast Support",
+    status: "Disabled",
+    automatic: "Not available in MVP",
+    approval: "Requires separate security review",
+    blocked: "Auto-send, broad repo upload, persistent approvals",
+    tone: "bad",
+  },
 ];
 
 const ports = [
@@ -170,6 +205,7 @@ export default function LocalSupportTransparency() {
   const [reviewOpen, setReviewOpen] = useState(true);
   const [historyDeleted, setHistoryDeleted] = useState(false);
   const [lastExport, setLastExport] = useState(null);
+  const [approvalsRevoked, setApprovalsRevoked] = useState(false);
 
   const sessionState = useMemo(() => {
     if (!connected) return { label: "Disconnected", tone: "bad", Icon: XCircle };
@@ -304,6 +340,7 @@ export default function LocalSupportTransparency() {
               ["history", History, "Sent history"],
               ["blocked", FileWarning, "Blocked"],
               ["ports", PlugZap, "Ports"],
+              ["mode", Settings2, "Permission mode"],
               ["activity", ClipboardCheck, "Activity"],
             ].map(([value, Icon, label]) => (
               <TabsTrigger key={value} value={value} className="rounded-md px-3 text-zinc-300 data-[state=active]:bg-white/[0.08]">
@@ -343,6 +380,21 @@ export default function LocalSupportTransparency() {
                       <Pill tone={tone}>{value}</Pill>
                       {detail ? <span className={cn("text-xs", tone === "bad" ? "text-red-200" : "text-amber-200")}>{detail}</span> : null}
                     </span>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel
+              title="Workspace selection"
+              description="Installation is not consent. Vectant can only request context from the selected workspace, and sensitive paths remain blocked inside it."
+              action={<Pill tone="good">Selected</Pill>}
+            >
+              <div className="grid gap-3">
+                {setupChecklist.map(([label, value]) => (
+                  <div key={label} className="flex flex-col gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="text-sm font-medium text-zinc-200">{label}</span>
+                    <span className="font-mono text-xs text-zinc-400 sm:text-right">{value}</span>
                   </div>
                 ))}
               </div>
@@ -466,6 +518,59 @@ Error: module failed to resolve`}
                   </tr>
                 )}
               />
+            </Panel>
+          </TabsContent>
+
+          <TabsContent value="mode" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <Panel title="Permission mode" description="Balanced is the default for MVP. Manual mode is stricter. Fast Support is disabled until a separate security review approves it.">
+              <DataTable
+                columns={["Mode", "Status", "Automatic", "Requires approval", "Blocked"]}
+                rows={permissionModes}
+                renderRow={(item) => (
+                  <tr key={item.mode} className="text-zinc-300">
+                    <td className="px-4 py-3 font-medium text-zinc-100">{item.mode}</td>
+                    <td className="px-4 py-3"><Pill tone={item.tone}>{item.status}</Pill></td>
+                    <td className="px-4 py-3">{item.automatic}</td>
+                    <td className="px-4 py-3">{item.approval}</td>
+                    <td className="px-4 py-3">{item.blocked}</td>
+                  </tr>
+                )}
+              />
+            </Panel>
+
+            <Panel title="Approval controls" description="Revoking approvals forces every future send or preview request back through local review.">
+              <div className="grid gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
+                  onClick={() => setApprovalsRevoked(true)}
+                >
+                  <RotateCcw className="size-4" aria-hidden="true" />
+                  Revoke session approvals
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
+                  onClick={() => {
+                    setConnected(false);
+                    setPaused(true);
+                    setApprovalsRevoked(true);
+                  }}
+                >
+                  <Unplug className="size-4" aria-hidden="true" />
+                  Disconnect and revoke
+                </Button>
+                <div className={cn(
+                  "rounded-lg border px-3 py-2 text-sm",
+                  approvalsRevoked
+                    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                    : "border-white/10 bg-white/[0.03] text-zinc-400",
+                )}>
+                  {approvalsRevoked ? "Session approvals revoked. Future sends require review." : "No approvals revoked in this mock session."}
+                </div>
+              </div>
             </Panel>
           </TabsContent>
 

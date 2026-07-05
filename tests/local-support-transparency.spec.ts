@@ -13,6 +13,8 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Your organization allows browser preview")).toBeVisible();
     await expect(page.getByText("Vectant AI page reading")).toBeVisible();
     await expect(page.getByText("Blocked by organization").first()).toBeVisible();
+    await expect(page.getByText("Workspace selection")).toBeVisible();
+    await expect(page.getByText("Installation is not consent.")).toBeVisible();
 
     await page.getByRole("tab", { name: "Inventory" }).click();
     await expect(page.getByText(".env")).toBeVisible();
@@ -24,10 +26,18 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("GET, HEAD, OPTIONS")).toBeVisible();
     await expect(page.getByRole("cell", { name: "Off" }).first()).toBeVisible();
 
+    await page.getByRole("tab", { name: "Permission mode" }).click();
+    await expect(page.getByRole("cell", { name: "Balanced mode" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Manual mode" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Fast Support" })).toBeVisible();
+    await expect(page.getByText("Auto-send, broad repo upload, persistent approvals")).toBeVisible();
+    await page.getByRole("button", { name: "Revoke session approvals" }).click();
+    await expect(page.getByText("Session approvals revoked. Future sends require review.")).toBeVisible();
+
     await page.getByRole("button", { name: "Pause" }).click();
     await expect(page.getByText("Paused")).toBeVisible();
 
-    await page.getByRole("button", { name: "Disconnect" }).click();
+    await page.getByRole("button", { name: "Disconnect", exact: true }).click();
     await expect(page.getByText("Disconnected")).toBeVisible();
   });
 
