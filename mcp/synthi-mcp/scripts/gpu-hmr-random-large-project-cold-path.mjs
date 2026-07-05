@@ -257,6 +257,23 @@ function contentHash(value) {
   return `sha256:${sha256(value)}`;
 }
 
+function gitBlobObjectId(bytes) {
+  const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  return createHash('sha1')
+    .update(`blob ${buffer.length}\0`)
+    .update(buffer)
+    .digest('hex');
+}
+
+function githubRawUrlForPath({ owner, repo }, commit, pathName) {
+  const encodedPath = String(pathName)
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${commit}/${encodedPath}`;
+}
+
 function safeSlug(value, fallback = 'repo') {
   const slug = String(value ?? '')
     .trim()
@@ -1524,6 +1541,27 @@ async function readBuildFileContent({
       },
     );
     if (show.exitCode !== 0 || show.timedOut || show.error) {
+      const githubFallback = await readBuildFileContent({
+        candidate,
+        file,
+        transport: 'github_git_tree_api_recursive',
+        transportEvidence,
+        sourceIntakeTimeoutMs,
+      });
+      if (githubFallback.accepted === true) {
+        return {
+          ...githubFallback,
+          transport: `${githubFallback.transport ?? 'github_build_file_content'}_after_git_fetch_show_failed`,
+          fallbackTransport: githubFallback.transport ?? null,
+          fallback_transport: githubFallback.transport ?? null,
+          fallbackFromTransport: transport,
+          fallback_from_transport: transport,
+          fallbackReason: 'git_fetch_build_file_read_failed',
+          fallback_reason: 'git_fetch_build_file_read_failed',
+          fallbackGitShowResult: show,
+          fallback_git_show_result: show,
+        };
+      }
       return {
         path: pathName,
         accepted: false,
@@ -1533,6 +1571,8 @@ async function readBuildFileContent({
         lazyBlobFetchAllowed,
         lazy_blob_fetch_allowed: lazyBlobFetchAllowed,
         result: show,
+        fallbackAttempt: githubFallback,
+        fallback_attempt: githubFallback,
       };
     }
     return {
@@ -1553,6 +1593,51 @@ async function readBuildFileContent({
         status: 'github_build_file_blob_repo_unparsed',
         reason: 'github_build_file_blob_repo_unparsed',
       };
+    }
+    const rawUrl = githubRawUrlForPath(parsed, candidate.immutableCommit, pathName);
+    const rawController = new AbortController();
+    const rawTimer = setTimeout(() => rawController.abort(), Math.min(sourceIntakeTimeoutMs, 60000));
+    rawTimer.unref?.();
+    try {
+      const rawResponse = await fetch(rawUrl, { signal: rawController.signal });
+      const rawBytes = Buffer.from(await rawResponse.arrayBuffer());
+      if (rawResponse.ok) {
+        const observedObject = gitBlobObjectId(rawBytes);
+        const expectedObject = String(file.object ?? '').trim().toLowerCase();
+        if (expectedObject && observedObject !== expectedObject) {
+          return {
+            path: pathName,
+            accepted: false,
+            status: 'github_raw_build_file_object_mismatch',
+            reason: 'github_raw_build_file_object_mismatch',
+            rawUrl,
+            raw_url: rawUrl,
+            expectedObject,
+            expected_object: expectedObject,
+            observedObject,
+            observed_object: observedObject,
+          };
+        }
+        return {
+          path: pathName,
+          accepted: true,
+          transport: 'github_raw_commit_blob_verified',
+          rawUrl,
+          raw_url: rawUrl,
+          expectedObject,
+          expected_object: expectedObject,
+          observedObject,
+          observed_object: observedObject,
+          content: rawBytes.toString('utf8', 0, Math.min(rawBytes.length, BUILD_METADATA_CONTENT_MAX_BYTES)),
+          byteLength: rawBytes.length,
+          byte_length: rawBytes.length,
+          truncated: rawBytes.length > BUILD_METADATA_CONTENT_MAX_BYTES,
+        };
+      }
+    } catch {
+      // Fall through to the GitHub blob API path below; failures are recorded there.
+    } finally {
+      clearTimeout(rawTimer);
     }
     const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/blobs/${file.object}`;
     const controller = new AbortController();
@@ -1673,6 +1758,12 @@ async function collectBuildMetadataContentEvidence({
         content_hash: contentHash(content),
         truncated: result.truncated === true || Buffer.byteLength(content) > BUILD_METADATA_CONTENT_MAX_BYTES,
         transport: result.transport,
+        fallbackTransport: result.fallbackTransport ?? null,
+        fallback_transport: result.fallback_transport ?? result.fallbackTransport ?? null,
+        fallbackFromTransport: result.fallbackFromTransport ?? null,
+        fallback_from_transport: result.fallback_from_transport ?? result.fallbackFromTransport ?? null,
+        fallbackReason: result.fallbackReason ?? null,
+        fallback_reason: result.fallback_reason ?? result.fallbackReason ?? null,
         lazyBlobFetchAllowed: result.lazyBlobFetchAllowed === true,
         lazy_blob_fetch_allowed: result.lazyBlobFetchAllowed === true,
         githubApiAuthentication: result.githubApiAuthentication ?? null,
