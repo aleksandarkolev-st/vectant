@@ -1,0 +1,70 @@
+name: Local Support Security
+
+on:
+  pull_request:
+    paths:
+      - "backend/vectant-local-support-app/**"
+      - "synthi/src/app/api/local-support/**"
+      - "synthi/src/components/local-support/**"
+      - "synthi/src/lib/local-support/**"
+      - "tests/local-support-transparency.spec.ts"
+      - ".github/workflows/local-support-security.yml"
+  push:
+    branches:
+      - main
+      - dev
+      - "feature/**"
+    paths:
+      - "backend/vectant-local-support-app/**"
+      - "synthi/src/app/api/local-support/**"
+      - "synthi/src/components/local-support/**"
+      - "synthi/src/lib/local-support/**"
+      - "tests/local-support-transparency.spec.ts"
+      - ".github/workflows/local-support-security.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust-local-support:
+    name: Rust local support app
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path backend/vectant-local-support-app/Cargo.toml --check
+
+      - name: Run clippy
+        run: cargo clippy --manifest-path backend/vectant-local-support-app/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run security tests
+        run: cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml
+
+  web-local-support:
+    name: Web local support gates
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run focused policy tests
+        run: npm run test --workspace synthi -- src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/policy/route.test.js
+
+      - name: Build web app
+        run: npm run build --workspace synthi
