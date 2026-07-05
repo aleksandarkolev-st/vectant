@@ -275,6 +275,116 @@ function maydayResumeInspectionRefs(incident = {}, inspectionRuns = []) {
   );
 }
 
+function actionSeverity(action) {
+  if (action && typeof action === "object" && action.severity) {
+    return String(action.severity).toLowerCase();
+  }
+  const text = String(action?.kind || action?.type || action || "").toLowerCase();
+  if (/mayday|ground|revoke|stop|resume|critical|secret|prod/.test(text))
+    return "critical";
+  if (/commit|apply|permit|route|write|clearance/.test(text)) return "high";
+  if (/ack|inbox|rfi|document|change/.test(text)) return "medium";
+  return "low";
+}
+
+function actionOwner(action) {
+  if (action && typeof action === "object") {
+    return compact(
+      action.owner ||
+        action.ownerUserId ||
+        action.displayCallsign ||
+        action.agentSessionId ||
+        action.transactionId ||
+        action.documentId ||
+        action.eventId,
+      "tower",
+    );
+  }
+  const text = String(action || "");
+  const [, value] = text.split(":");
+  return value || "tower";
+}
+
+function actionEntity(action) {
+  if (action && typeof action === "object") {
+    return compact(
+      action.entity ||
+        action.documentId ||
+        action.eventId ||
+        action.transactionId ||
+        action.mutationLeaseId ||
+        action.routeRevisionId ||
+        action.id,
+      "project",
+    );
+  }
+  return compact(String(action || "").split(":")[0], "action");
+}
+
+function actionEntityId(action) {
+  if (action && typeof action === "object") {
+    return compact(
+      action.documentId ||
+        action.routeRevisionId ||
+        action.incidentId ||
+        action.eventId ||
+        action.entity ||
+        action.id,
+      "",
+    );
+  }
+  const [, value] = String(action || "").split(":");
+  return compact(value, "");
+}
+
+function actionKind(action) {
+  return compact(action?.kind || action?.type || String(action || "").split(":")[0], "action")
+    .toLowerCase();
+}
+
+function actionHasGovernanceReviewTarget(action) {
+  const kind = actionKind(action);
+  return Boolean(
+    action?.documentId ||
+      action?.routeRevisionId ||
+      action?.incidentId ||
+      /document|rfi|change_order|route|reroute|mayday|ground|resume/.test(kind),
+  );
+}
+
+function actionEvidenceRefs(action) {
+  if (!action || typeof action !== "object") return [];
+  return uniqueValues([
+    ...asArray(action.evidenceRefs || action.evidence_refs),
+    action.evidenceRef || action.evidence_ref,
+  ]);
+}
+
+function actionLabel(action) {
+  if (action && typeof action === "object") {
+    return compact(action.title || action.label || action.kind || action.type, "required action");
+  }
+  return compact(action, "required action");
+}
+
+function actionReviewSummary(action) {
+  const scope = asArray(action?.scope || action?.paths || action?.route || action?.affectedZones);
+  return {
+    severity: actionSeverity(action),
+    owner: actionOwner(action),
+    entity: actionEntity(action),
+    evidenceRefs: actionEvidenceRefs(action),
+    scope,
+  };
+}
+
+function findGovernanceEntityRow(attributeName, entityId) {
+  if (!entityId || typeof document === "undefined") return null;
+  return Array.from(document.querySelectorAll(`[${attributeName}]`)).find(
+    (element) => element.getAttribute(attributeName) === entityId,
+  );
+}
+
 function towerInstructionText(event = {}) {
   const details = event.details || {};
   return compact(
@@ -2547,6 +2657,108 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
   );
 }
 
+function GovernanceReviewGate({ action, rationale, onRationale, onCancel, onConfirm, disabled }) {
+  if (!action) return null;
+  const summary = actionReviewSummary(action);
+  const canConfirm = String(rationale || "").trim().length >= 12;
+  return (
+    <motion.div
+      layout
+      data-testid="codesite-governance-review-gate"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 8 }}
+      className="rounded-lg border p-3"
+      style={{
+        borderColor:
+          summary.severity === "critical"
+            ? "color-mix(in srgb, var(--accent-danger) 50%, var(--border-subtle))"
+            : "color-mix(in srgb, var(--accent-primary) 38%, var(--border-subtle))",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 88%, var(--accent-primary) 6%), var(--bg-surface))",
+      }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold">Review before tower action</div>
+          <div
+            className="mt-1 break-words text-[11px]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {compact(action.title || action.label, actionLabel(action))}
+          </div>
+        </div>
+        <Pill tone={summary.severity}>{summary.severity}</Pill>
+      </div>
+      <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3">
+        <div>
+          <div style={{ color: "var(--text-muted)" }}>Owner</div>
+          <div className="mt-1 break-all font-mono">{summary.owner}</div>
+        </div>
+        <div>
+          <div style={{ color: "var(--text-muted)" }}>Target</div>
+          <div className="mt-1 break-all font-mono">{summary.entity}</div>
+        </div>
+        <div>
+          <div style={{ color: "var(--text-muted)" }}>Evidence</div>
+          <div className="mt-1 break-all font-mono">
+            {summary.evidenceRefs[0] || action.evidenceRefs?.[0] || "required"}
+          </div>
+        </div>
+      </div>
+      {summary.scope.length ? (
+        <div className="mt-2">
+          <div className="mb-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+            Scope
+          </div>
+          <PathList paths={summary.scope} maxVisible={6} />
+        </div>
+      ) : null}
+      <label
+        className="mt-3 grid gap-1 text-[11px]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        Operator rationale
+        <textarea
+          data-testid="codesite-governance-review-rationale"
+          value={rationale}
+          onChange={(event) => onRationale(event.target.value)}
+          rows={3}
+          className="min-h-24 rounded border px-2 py-2 text-xs outline-none"
+          placeholder="Confirm replay, evidence, and impact before issuing this action."
+          style={{
+            borderColor: canConfirm
+              ? "color-mix(in srgb, var(--accent-primary) 38%, var(--border-subtle))"
+              : "var(--border-subtle)",
+            background: "var(--bg-editor)",
+            color: "var(--text-primary)",
+          }}
+        />
+      </label>
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <IconButton
+          title="Cancel tower action"
+          disabled={disabled}
+          onClick={onCancel}
+          testId="codesite-governance-review-cancel"
+        >
+          Cancel
+        </IconButton>
+        <IconButton
+          title="Confirm tower action"
+          variant="primary"
+          disabled={disabled || !canConfirm}
+          onClick={() => onConfirm(rationale)}
+          testId="codesite-governance-review-confirm"
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Confirm
+        </IconButton>
+      </div>
+    </motion.div>
+  );
+}
+
 function GovernanceConsole({
   project,
   activeFlights,
@@ -2579,6 +2791,20 @@ function GovernanceConsole({
   const defaultPermitRoute = firstRoutePattern(primaryPlan);
   const draftRoute = permitDraft.route || defaultPermitRoute;
   const permitAllowedPaths = draftRoute ? [draftRoute] : [];
+  const [pendingReview, setPendingReview] = useState(null);
+  const [reviewRationale, setReviewRationale] = useState("");
+  const queueGovernanceAction = useCallback((action) => {
+    setPendingReview(action);
+    setReviewRationale("");
+  }, []);
+  const confirmGovernanceAction = useCallback(async (rationale) => {
+    if (!pendingReview?.execute) return;
+    const trimmed = String(rationale || "").trim();
+    const result = await pendingReview.execute(trimmed);
+    setPendingReview(null);
+    setReviewRationale("");
+    return result;
+  }, [pendingReview]);
 
   return (
     <div
@@ -2593,7 +2819,7 @@ function GovernanceConsole({
         layout={!reduceMotion}
         onSubmit={(event) => {
           event.preventDefault();
-          onIssuePermit({
+          const payload = {
             title:
               permitDraft.title ||
               `Restricted work permit for ${compact(primaryPlan.displayCallsign, "flight")}`,
@@ -2608,6 +2834,24 @@ function GovernanceConsole({
             },
             approval: { source: "codesite_governance_console" },
             evidenceRefs: [`codesite:ui:permit:${project?.id || "project"}`],
+          };
+          queueGovernanceAction({
+            kind: "permit",
+            title: payload.title,
+            entity: payload.mutationLeaseId || payload.executionPlanId,
+            owner: primaryPlan.displayCallsign || lease.displayCallsign,
+            severity: "high",
+            scope: permitAllowedPaths,
+            evidenceRefs: payload.evidenceRefs,
+            execute: (rationale) =>
+              onIssuePermit({
+                ...payload,
+                approval: {
+                  ...payload.approval,
+                  rationale,
+                  reviewedAt: new Date().toISOString(),
+                },
+              }),
           });
         }}
         className="rounded border p-3"
@@ -2686,6 +2930,18 @@ function GovernanceConsole({
         </div>
       </motion.form>
 
+      <GovernanceReviewGate
+        action={pendingReview}
+        rationale={reviewRationale}
+        onRationale={setReviewRationale}
+        onCancel={() => {
+          setPendingReview(null);
+          setReviewRationale("");
+        }}
+        onConfirm={confirmGovernanceAction}
+        disabled={disabled || actionState.status === "running"}
+      />
+
       <div className="grid min-w-0 gap-3">
         <div className={condensed ? "grid gap-2" : "grid gap-2 md:grid-cols-2"}>
           <div
@@ -2703,10 +2959,12 @@ function GovernanceConsole({
               </Pill>
             </div>
             {documents.length ? (
-              documents.slice(0, 5).map((document) => (
+              <>
+              {documents.slice(0, 5).map((document) => (
                 <div
                   key={document.id}
                   data-testid="codesite-document-row"
+                  data-codesite-document-id={document.id || ""}
                   className="rounded-md border px-2 py-2 text-xs"
                   style={{
                     borderColor:
@@ -2733,7 +2991,21 @@ function GovernanceConsole({
                     <IconButton
                       title="Approve document"
                       disabled={disabled || !documentNeedsReview(document)}
-                      onClick={() => onReviewDocument(document, "approved")}
+                      onClick={() =>
+                        queueGovernanceAction({
+                          kind: "document_review",
+                          title: `Approve ${documentLabel(document)}`,
+                          entity: document.id,
+                          owner: document.fromSessionId || document.fromSession || "tower",
+                          severity: document.blocking ? "high" : "medium",
+                          evidenceRefs: uniqueValues([
+                            ...asArray(document.evidenceRefs),
+                            `codesite:ui:document-review:${document.id}`,
+                          ]),
+                          execute: (rationale) =>
+                            onReviewDocument(document, "approved", rationale),
+                        })
+                      }
                       testId="codesite-document-approve-button"
                     >
                       <ClipboardCheck className="h-3.5 w-3.5" />
@@ -2742,7 +3014,21 @@ function GovernanceConsole({
                     <IconButton
                       title="Reject document"
                       disabled={disabled || !documentNeedsReview(document)}
-                      onClick={() => onReviewDocument(document, "rejected")}
+                      onClick={() =>
+                        queueGovernanceAction({
+                          kind: "document_review",
+                          title: `Reject ${documentLabel(document)}`,
+                          entity: document.id,
+                          owner: document.fromSessionId || document.fromSession || "tower",
+                          severity: "high",
+                          evidenceRefs: uniqueValues([
+                            ...asArray(document.evidenceRefs),
+                            `codesite:ui:document-review:${document.id}`,
+                          ]),
+                          execute: (rationale) =>
+                            onReviewDocument(document, "rejected", rationale),
+                        })
+                      }
                       testId="codesite-document-reject-button"
                     >
                       <AlertTriangle className="h-3.5 w-3.5" />
@@ -2750,7 +3036,37 @@ function GovernanceConsole({
                     </IconButton>
                   </div>
                 </div>
-              ))
+              ))}
+              {documents.length > 5 ? (
+                <details
+                  data-testid="codesite-documents-show-all"
+                  className="rounded-md border px-2 py-2 text-xs"
+                  style={{
+                    borderColor: "var(--border-subtle)",
+                    background: "var(--bg-editor)",
+                  }}
+                >
+                  <summary className="cursor-pointer font-semibold">
+                    Show all documents ({documents.length})
+                  </summary>
+                  <div className="mt-2 grid gap-1">
+                    {documents.slice(5).map((document) => (
+                      <div
+                        key={`hidden-${document.id}`}
+                        className="flex min-w-0 items-center justify-between gap-2"
+                      >
+                        <span className="min-w-0 break-words">
+                          {documentLabel(document)}
+                        </span>
+                        <Pill tone={document.status}>
+                          {compact(document.status, "open")}
+                        </Pill>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+              </>
             ) : (
               <EmptyLine>No RFIs or change orders filed</EmptyLine>
             )}
@@ -2774,13 +3090,27 @@ function GovernanceConsole({
               className="mb-2 grid gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
-                onProposeRouteRevision(primaryPlan, {
+                const payload = {
                   proposedRoute: [routeDraft.route || defaultPermitRoute],
                   reason: routeDraft.reason || "operator_reroute",
                   affectedLeases: lease.id ? [lease.id] : [],
                   evidenceRefs: [
                     `codesite:ui:route-revision:${project?.id || "project"}`,
                   ],
+                };
+                queueGovernanceAction({
+                  kind: "route_revision",
+                  title: `Propose reroute for ${compact(primaryPlan.displayCallsign, "flight")}`,
+                  entity: primaryPlan.id,
+                  owner: primaryPlan.displayCallsign || lease.displayCallsign,
+                  severity: "high",
+                  scope: payload.proposedRoute,
+                  evidenceRefs: payload.evidenceRefs,
+                  execute: (rationale) =>
+                    onProposeRouteRevision(primaryPlan, {
+                      ...payload,
+                      reason: `${payload.reason}: ${rationale}`,
+                    }),
                 });
               }}
             >
@@ -2809,10 +3139,13 @@ function GovernanceConsole({
               </IconButton>
             </form>
             {routeRevisions.length
-              ? routeRevisions.slice(0, 5).map((revision) => (
+              ? (
+                <>
+                {routeRevisions.slice(0, 5).map((revision) => (
                   <div
                     key={revision.id}
                     data-testid="codesite-route-revision-row"
+                    data-codesite-route-revision-id={revision.id || ""}
                     className="rounded-md border px-2 py-2 text-xs"
                     style={{
                       borderColor:
@@ -2838,7 +3171,24 @@ function GovernanceConsole({
                         title="Approve route revision"
                         disabled={disabled || !routeRevisionCanReview(revision)}
                         onClick={() =>
-                          onReviewRouteRevision(revision, "approved")
+                          queueGovernanceAction({
+                            kind: "route_revision_review",
+                            title: "Approve route revision",
+                            entity: revision.id,
+                            owner: revision.displayCallsign || revision.executionPlanId,
+                            severity: "high",
+                            scope: revision.proposedRoute,
+                            evidenceRefs: uniqueValues([
+                              ...asArray(revision.evidenceRefs),
+                              `codesite:ui:route-review:${revision.id}`,
+                            ]),
+                            execute: (rationale) =>
+                              onReviewRouteRevision(
+                                revision,
+                                "approved",
+                                rationale,
+                              ),
+                          })
                         }
                         testId="codesite-route-review-button"
                       >
@@ -2848,7 +3198,22 @@ function GovernanceConsole({
                       <IconButton
                         title="Apply route revision"
                         disabled={disabled || !routeRevisionCanApply(revision)}
-                        onClick={() => onApplyRouteRevision(revision)}
+                        onClick={() =>
+                          queueGovernanceAction({
+                            kind: "route_revision_apply",
+                            title: "Apply route revision",
+                            entity: revision.id,
+                            owner: revision.displayCallsign || revision.executionPlanId,
+                            severity: "critical",
+                            scope: revision.proposedRoute,
+                            evidenceRefs: uniqueValues([
+                              ...asArray(revision.evidenceRefs),
+                              `codesite:ui:route-apply:${revision.id}`,
+                            ]),
+                            execute: (rationale) =>
+                              onApplyRouteRevision(revision, rationale),
+                          })
+                        }
                         testId="codesite-route-apply-button"
                       >
                         <CheckCircle2 className="h-3.5 w-3.5" />
@@ -2856,7 +3221,39 @@ function GovernanceConsole({
                       </IconButton>
                     </div>
                   </div>
-                ))
+                ))}
+                {routeRevisions.length > 5 ? (
+                  <details
+                    data-testid="codesite-route-revisions-show-all"
+                    className="rounded-md border px-2 py-2 text-xs"
+                    style={{
+                      borderColor: "var(--border-subtle)",
+                      background: "var(--bg-editor)",
+                    }}
+                  >
+                    <summary className="cursor-pointer font-semibold">
+                      Show all route revisions ({routeRevisions.length})
+                    </summary>
+                    <div className="mt-2 grid gap-1">
+                      {routeRevisions.slice(5).map((revision) => (
+                        <div
+                          key={`hidden-route-${revision.id}`}
+                          className="flex min-w-0 items-start justify-between gap-2"
+                        >
+                          <code className="min-w-0 break-all text-[10px]">
+                            {asArray(revision.proposedRoute).join(", ") ||
+                              "route pending"}
+                          </code>
+                          <Pill tone={revision.status}>
+                            {compact(revision.status, "proposed")}
+                          </Pill>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+                </>
+              )
               : null}
           </div>
         </div>
@@ -2890,7 +3287,9 @@ function GovernanceConsole({
             </Pill>
           </div>
           {maydayIncidents.length
-            ? maydayIncidents.slice(0, 3).map((incident) => {
+            ? (
+              <>
+              {maydayIncidents.slice(0, 3).map((incident) => {
                 const inspectionRunIds = maydayResumeInspectionRefs(
                   incident,
                   inspectionRuns,
@@ -2899,6 +3298,7 @@ function GovernanceConsole({
                   <div
                     key={incident.id}
                     data-testid="codesite-ground-stop-row"
+                    data-codesite-mayday-id={incident.id || ""}
                     className="mt-2 grid gap-2 rounded border px-2 py-1.5 text-xs sm:grid-cols-[minmax(0,1fr)_auto]"
                     style={{
                       borderColor: "var(--border-subtle)",
@@ -2930,7 +3330,27 @@ function GovernanceConsole({
                     <IconButton
                       title="Resume mayday"
                       disabled={disabled || inspectionRunIds.length === 0}
-                      onClick={() => onResumeMayday(incident, inspectionRunIds)}
+                      onClick={() =>
+                        queueGovernanceAction({
+                          kind: "mayday_resume",
+                          title: `Resume ${compact(incident.category, "mayday")}`,
+                          entity: incident.id,
+                          owner: asArray(incident.participants)[0] || "tower",
+                          severity: "critical",
+                          scope: incident.affectedZones,
+                          evidenceRefs: uniqueValues([
+                            ...asArray(incident.evidenceRefs),
+                            incident.replayDigest,
+                            `codesite:ui:mayday-resume:${incident.id}`,
+                          ]),
+                          execute: (rationale) =>
+                            onResumeMayday(
+                              incident,
+                              inspectionRunIds,
+                              rationale,
+                            ),
+                        })
+                      }
                       testId="codesite-resume-mayday-submit"
                     >
                       <Siren className="h-3.5 w-3.5" />
@@ -2938,7 +3358,39 @@ function GovernanceConsole({
                     </IconButton>
                   </div>
                 );
-              })
+              })}
+              {maydayIncidents.length > 3 ? (
+                <details
+                  data-testid="codesite-maydays-show-all"
+                  className="mt-2 rounded-md border px-2 py-2 text-xs"
+                  style={{
+                    borderColor: "var(--border-subtle)",
+                    background: "var(--bg-editor)",
+                  }}
+                >
+                  <summary className="cursor-pointer font-semibold">
+                    Show all ground stops ({maydayIncidents.length})
+                  </summary>
+                  <div className="mt-2 grid gap-1">
+                    {maydayIncidents.slice(3).map((incident) => (
+                      <div
+                        key={`hidden-mayday-${incident.id}`}
+                        className="flex min-w-0 items-start justify-between gap-2"
+                      >
+                        <span className="min-w-0 break-words">
+                          {compact(incident.category, "mayday")} /{" "}
+                          {compact(incident.id, "incident")}
+                        </span>
+                        <Pill tone={incident.severity || incident.status}>
+                          {compact(incident.severity || incident.status, "open")}
+                        </Pill>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+              </>
+            )
             : null}
         </div>
 
@@ -3905,6 +4357,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
         const stickyTabs = scrollContainer.querySelector(
           '[data-testid="codesite-mobile-section-tabs"]',
         );
+        if (typeof scrollContainer.scrollTo !== "function") {
+          target?.scrollIntoView?.({
+            behavior: "auto",
+            block: "start",
+          });
+          return;
+        }
         const containerRect = scrollContainer.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
         const stickyHeight = stickyTabs?.getBoundingClientRect().height || 0;
@@ -3922,6 +4381,61 @@ export default function CodeSitePanel({ workspaceSlug }) {
       }
     },
     [],
+  );
+
+  const handleRequiredActionReview = useCallback(
+    (action) => {
+      handleSelectSection("governance");
+      const kind = actionKind(action);
+      const entityId = actionEntityId(action);
+      window.setTimeout(() => {
+        const candidates = [];
+        if (action?.documentId || /document|rfi|change_order/.test(kind)) {
+          const row = findGovernanceEntityRow(
+            "data-codesite-document-id",
+            action?.documentId || entityId,
+          );
+          const button = row?.querySelector(
+            '[data-testid="codesite-document-approve-button"]',
+          );
+          if (button) candidates.push(button);
+        }
+        if (action?.routeRevisionId || /route|reroute/.test(kind)) {
+          const row = findGovernanceEntityRow(
+            "data-codesite-route-revision-id",
+            action?.routeRevisionId || entityId,
+          );
+          const button =
+            row?.querySelector('[data-testid="codesite-route-apply-button"]') ||
+            row?.querySelector('[data-testid="codesite-route-review-button"]');
+          if (button) candidates.push(button);
+        }
+        if (action?.incidentId || /mayday|ground|resume/.test(kind)) {
+          const row = findGovernanceEntityRow(
+            "data-codesite-mayday-id",
+            action?.incidentId || entityId,
+          );
+          const button = row?.querySelector(
+            '[data-testid="codesite-resume-mayday-submit"]',
+          );
+          if (button) candidates.push(button);
+        }
+
+        const target = candidates.find((button) => !button.disabled);
+        if (target) {
+          target.focus({ preventScroll: true });
+          target.click();
+          return;
+        }
+
+        const console = document.querySelector(
+          '[data-testid="codesite-governance-console"]',
+        );
+        console?.scrollIntoView?.({ behavior: "auto", block: "start" });
+        console?.focus?.({ preventScroll: true });
+      }, 0);
+    },
+    [handleSelectSection],
   );
 
   const handleCreateProject = useCallback(
@@ -4056,12 +4570,14 @@ export default function CodeSitePanel({ workspaceSlug }) {
   );
 
   const handleReviewDocument = useCallback(
-    (documentRecord, decision) => {
+    (documentRecord, decision, rationale = "") => {
       if (!documentRecord?.id) return;
       return runGovernanceAction(() =>
         reviewCodeSiteDocument(workspaceSlug, documentRecord.id, {
           decision,
-          summary: `Reviewed from CodeSite governance console as ${decision}.`,
+          summary:
+            rationale ||
+            `Reviewed from CodeSite governance console as ${decision}.`,
           reviewTimeMs: 90_000,
           baselineReviewTimeMs: 300_000,
           evidenceRefs: [`codesite:ui:document-review:${documentRecord.id}`],
@@ -4082,12 +4598,14 @@ export default function CodeSitePanel({ workspaceSlug }) {
   );
 
   const handleReviewRouteRevision = useCallback(
-    (revision, decision) => {
+    (revision, decision, rationale = "") => {
       if (!revision?.id) return;
       return runGovernanceAction(() =>
         reviewCodeSiteRouteRevision(workspaceSlug, revision.id, {
           decision,
-          reason: `Route revision ${decision} from CodeSite governance console.`,
+          reason:
+            rationale ||
+            `Route revision ${decision} from CodeSite governance console.`,
           evidenceRefs: [`codesite:ui:route-review:${revision.id}`],
         }),
       );
@@ -4096,11 +4614,14 @@ export default function CodeSitePanel({ workspaceSlug }) {
   );
 
   const handleApplyRouteRevision = useCallback(
-    (revision) => {
+    (revision, rationale = "") => {
       if (!revision?.id) return;
       return runGovernanceAction(() =>
         applyCodeSiteRouteRevision(workspaceSlug, revision.id, {
           appliedBy: "codesite_governance_console",
+          rationale:
+            rationale ||
+            "Operator reviewed route scope, affected leases, and evidence.",
           evidenceRefs: [`codesite:ui:route-apply:${revision.id}`],
         }),
       );
@@ -4109,9 +4630,10 @@ export default function CodeSitePanel({ workspaceSlug }) {
   );
 
   const handleResumeMayday = useCallback(
-    (incident, inspectionRunIds = []) => {
+    (incident, inspectionRunIds = [], reviewRationale = "") => {
       if (!incident?.id) return;
       const rationale =
+        reviewRationale ||
         "Operator reviewed incident replay, stop-work document, suspended clearances, and passing inspection evidence.";
       return runGovernanceAction(() =>
         resumeCodeSiteMayday(workspaceSlug, incident.id, {
@@ -6171,17 +6693,66 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 {asArray(controlState?.requiredActions).length === 0 ? (
                   <EmptyLine>No blocking actions</EmptyLine>
                 ) : (
-                  <div className="space-y-1">
+                  <div className="space-y-1" data-testid="codesite-required-actions-list">
                     {controlState.requiredActions.map((action, index) => (
                       <div
-                        key={`${action}-${index}`}
-                        className="rounded border px-2 py-1.5 font-mono text-[11px]"
+                        key={`${actionLabel(action)}-${index}`}
+                        data-testid="codesite-required-action-row"
+                        className="rounded border px-2 py-2 text-[11px]"
                         style={{
-                          borderColor: "var(--border-subtle)",
-                          background: "var(--bg-surface)",
+                          borderColor:
+                            "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                          background:
+                            "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 86%, var(--bg-editor) 14%))",
                         }}
                       >
-                        {action}
+                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                          <div className="min-w-0">
+                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                              <Pill tone={actionSeverity(action)}>
+                                {actionSeverity(action)}
+                              </Pill>
+                              <span className="min-w-0 break-words font-semibold">
+                                {actionLabel(action)}
+                              </span>
+                            </div>
+                            <div
+                              className="mt-1 grid gap-1 font-mono text-[10px] sm:grid-cols-2"
+                              style={{ color: "var(--text-muted)" }}
+                            >
+                              <span className="min-w-0 break-all">
+                                owner: {actionOwner(action)}
+                              </span>
+                              <span className="min-w-0 break-all">
+                                entity: {actionEntity(action)}
+                              </span>
+                            </div>
+                            {actionEvidenceRefs(action).length ? (
+                              <TagList
+                                items={actionEvidenceRefs(action)}
+                                maxVisible={3}
+                              />
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            data-testid="codesite-required-action-review"
+                            aria-label={`${actionHasGovernanceReviewTarget(action) ? "Review" : "Locate"} ${actionLabel(action)}`}
+                            onClick={() => handleRequiredActionReview(action)}
+                            className="inline-flex min-h-11 items-center justify-center rounded-md border px-3 text-xs font-semibold outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
+                            style={{
+                              borderColor:
+                                "color-mix(in srgb, var(--accent-primary) 45%, var(--border-subtle))",
+                              background:
+                                "color-mix(in srgb, var(--accent-primary) 12%, var(--bg-elevated))",
+                              color: "var(--text-primary)",
+                            }}
+                          >
+                            {actionHasGovernanceReviewTarget(action)
+                              ? "Review"
+                              : "Locate"}
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

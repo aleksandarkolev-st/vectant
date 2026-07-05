@@ -39,7 +39,13 @@ function fixture() {
       title: 'Confirm schema owner before clearance',
       status: 'pending_review',
       evidenceRefs: ['rfi:schema-owner'],
-    }],
+    }, ...Array.from({ length: 5 }, (_, index) => ({
+      id: `doc-rfi-${index + 2}`,
+      kind: index % 2 === 0 ? 'rfi' : 'change_order',
+      title: `Hidden governance document ${index + 2}`,
+      status: index === 4 ? 'blocked' : 'pending',
+      evidenceRefs: [`rfi:hidden:${index + 2}`],
+    }))],
     permits: [{
       id: 'permit-schema-1',
       permitType: 'restricted_route',
@@ -64,7 +70,15 @@ function fixture() {
       proposedRoute: ['backend/collab-server/codesiteWorkspaceGuard.js'],
       affectedLeases: ['lease-atlas-1'],
       evidenceRefs: ['route-revision:approved'],
-    }],
+    }, ...Array.from({ length: 4 }, (_, index) => ({
+      id: `route-rev-extra-${index + 1}`,
+      executionPlanId: 'plan-atlas-1',
+      status: index === 3 ? 'approved' : 'proposed',
+      previousRoute: ['backend/collab-server/**'],
+      proposedRoute: [`backend/collab-server/runtime-guard-${index + 1}.js`],
+      affectedLeases: ['lease-atlas-1'],
+      evidenceRefs: [`route-revision:hidden:${index + 1}`],
+    }))],
     proofBundles: [{
       id: 'proof-ui-1',
       transactionId: 'txn-atlas-1',
@@ -97,7 +111,23 @@ function fixture() {
         completeness: { score: 0.86, presentEventTypes: ['mayday.declared', 'ground_stop'], missingEventTypes: [] },
       },
       createdAt: '2026-07-04T09:00:00.000Z',
-    }],
+    }, ...Array.from({ length: 3 }, (_, index) => ({
+      id: `incident-mayday-hidden-${index + 1}`,
+      category: 'mayday',
+      status: 'open',
+      severity: index === 2 ? 'critical' : 'high',
+      affectedZones: ['backend/collab-server/**'],
+      evidenceRefs: [`incident:mayday:hidden:${index + 1}`],
+      replayDigest: `sha256:hidden-mayday-${index + 1}`,
+      incidentReplay: {
+        maydayWorkflow: {
+          inspectorRunId: 'inspection-mayday-1',
+          suspendedLeases: [{ id: 'lease-atlas-1' }],
+        },
+        completeness: { score: 0.84, presentEventTypes: ['mayday.declared', 'ground_stop'], missingEventTypes: [] },
+      },
+      createdAt: '2026-07-04T09:10:00.000Z',
+    }))],
     inspectionRuns: [{
       id: 'inspection-mayday-1',
       displayCallsign: 'QA-MAYDAY',
@@ -169,7 +199,31 @@ function fixture() {
       status: 'open',
       writeSet: ['backend/collab-server/codesiteWorkspaceGuard.js'],
     }],
-    requiredActions: ['review_document:doc-rfi-1', 'resume_mayday:incident-mayday-1'],
+    requiredActions: [{
+      kind: 'review_document',
+      title: 'Review schema owner RFI',
+      owner: 'ATLAS-1',
+      documentId: 'doc-rfi-1',
+      severity: 'high',
+      evidenceRefs: ['rfi:schema-owner'],
+      scope: ['synthi/prisma/**'],
+    }, {
+      kind: 'resume_mayday',
+      title: 'Resume runtime guard mayday',
+      owner: 'tower',
+      eventId: 'incident-mayday-1',
+      severity: 'critical',
+      evidenceRefs: ['incident:mayday:evidence', 'sha256:mayday-replay'],
+      scope: ['backend/collab-server/**'],
+    }, {
+      kind: 'route_apply',
+      title: 'Apply approved runtime reroute',
+      owner: 'ATLAS-1',
+      routeRevisionId: 'route-rev-2',
+      severity: 'high',
+      evidenceRefs: ['route-revision:approved'],
+      scope: ['backend/collab-server/codesiteWorkspaceGuard.js'],
+    }],
     pilotLicenseHealth: [{
       key: 'agent-atlas',
       displayCallsign: 'ATLAS-1',
@@ -544,6 +598,12 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     'codesite-document-row',
     'codesite-route-revision-row',
     'codesite-mayday-banner',
+    'codesite-documents-show-all',
+    'codesite-route-revisions-show-all',
+    'codesite-maydays-show-all',
+    'codesite-required-actions-list',
+    'codesite-required-action-row',
+    'codesite-required-action-review',
     'codesite-mobile-section-tabs',
     'codesite-mobile-action-drawer',
   ];
@@ -614,6 +674,21 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
       });
     const workflowStateChipsReadable = workflowStateChips.length > 0
       && workflowStateChips.every((item) => item.contained && item.unclippedText);
+    const requiredActionRows = Array.from(document.querySelectorAll('[data-testid="codesite-required-action-row"]')).map((row) => ({
+      text: row.textContent || '',
+      hasReviewButton: Boolean(row.querySelector('[data-testid="codesite-required-action-review"]')),
+      hasSeverity: /(critical|high|medium|low)/i.test(row.textContent || ''),
+      hasOwner: (row.textContent || '').includes('owner:'),
+      hasEntity: (row.textContent || '').includes('entity:'),
+    }));
+    const cappedQueuesReachable = [
+      'codesite-documents-show-all',
+      'codesite-route-revisions-show-all',
+      'codesite-maydays-show-all',
+    ].every((testId) => {
+      const element = document.querySelector(`[data-testid="${testId}"]`);
+      return Boolean(element) && /show all/i.test(element.textContent || '');
+    });
     const mobileTabs = Array.from(document.querySelectorAll('[data-testid="codesite-mobile-section-tab"]')).map((element) => {
       const rect = element.getBoundingClientRect();
       return {
@@ -637,6 +712,10 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
       singleCriticalSurfaces,
       workflowStateChips,
       workflowStateChipsReadable,
+      requiredActionRows,
+      requiredActionsActionable: requiredActionRows.length >= 3
+        && requiredActionRows.every((row) => row.hasReviewButton && row.hasSeverity && row.hasOwner && row.hasEntity),
+      cappedQueuesReachable,
       cockpitContainsLoop: cockpitText.includes('Airspace Map')
         && cockpitText.includes('Tower Feed')
         && cockpitText.includes('Governance Console')
@@ -662,6 +741,8 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     && checks.operatorLoopInFirstViewport
     && checks.singleCriticalSurfaces
     && checks.workflowStateChipsReadable
+    && checks.requiredActionsActionable
+    && checks.cappedQueuesReachable
     && checks.cockpitContainsLoop
     && checks.mobileTouchTargetsOk
     && checks.towerInstructionVisible
@@ -672,6 +753,30 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     && checks.consoleErrors.length === 0
     && (reducedMotion ? checks.reducedMotion : true);
   return { page, checks };
+}
+
+async function captureGovernanceReviewGate(page, screenshotPath) {
+  await page.locator('[data-testid="codesite-required-actions-list"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-testid="codesite-required-action-review"]').first().click();
+  const gate = page.locator('[data-testid="codesite-governance-review-gate"]');
+  await gate.waitFor({ state: 'visible', timeout: 30000 });
+  const confirm = page.locator('[data-testid="codesite-governance-review-confirm"]');
+  const initiallyDisabled = await confirm.isDisabled();
+  await page.locator('[data-testid="codesite-governance-review-rationale"]').fill(
+    'Reviewed replay evidence, owner, target, and scope before issuing this tower action.',
+  );
+  const enabledAfterRationale = !(await confirm.isDisabled());
+  await gate.screenshot({ path: screenshotPath });
+  const text = await gate.textContent();
+  return {
+    visible: true,
+    initiallyDisabled,
+    enabledAfterRationale,
+    containsOwner: /Owner/i.test(text || ''),
+    containsTarget: /Target/i.test(text || ''),
+    containsEvidence: /Evidence/i.test(text || ''),
+    containsRationale: /Operator rationale/i.test(text || ''),
+  };
 }
 
 async function main() {
@@ -690,6 +795,7 @@ async function main() {
     const cockpitPng = path.join(OUT_DIR, 'codesite-ui-governance-cockpit.png');
     const towerPng = path.join(OUT_DIR, 'codesite-ui-governance-tower-feed.png');
     const governancePng = path.join(OUT_DIR, 'codesite-ui-governance-console.png');
+    const reviewGatePng = path.join(OUT_DIR, 'codesite-ui-governance-review-gate.png');
     await desktop.page.screenshot({ path: desktopPng, fullPage: false });
     const cockpitBox = await desktop.page.locator('[data-testid="codesite-operator-cockpit"]').boundingBox();
     if (!cockpitBox) throw new Error('codesite_operator_cockpit_missing_for_screenshot');
@@ -704,6 +810,7 @@ async function main() {
     });
     await desktop.page.locator('[data-testid="codesite-tower-feed"]').scrollIntoViewIfNeeded();
     await desktop.page.locator('[data-testid="codesite-tower-feed"]').screenshot({ path: towerPng });
+    const reviewGate = await captureGovernanceReviewGate(desktop.page, reviewGatePng);
     await desktop.page.locator('[data-testid="codesite-governance-console"]').scrollIntoViewIfNeeded();
     await desktop.page.locator('[data-testid="codesite-governance-console"]').screenshot({ path: governancePng });
     await desktopContext.close();
@@ -723,11 +830,21 @@ async function main() {
     await reducedContext.close();
     await browser.close();
 
-    const screenshotPaths = { desktop: desktopPng, cockpit: cockpitPng, tower: towerPng, governance: governancePng, mobile: mobilePng, reducedMotion: reducedPng };
+    const screenshotPaths = { desktop: desktopPng, cockpit: cockpitPng, tower: towerPng, governance: governancePng, reviewGate: reviewGatePng, mobile: mobilePng, reducedMotion: reducedPng };
     const screenshots = Object.fromEntries(await Promise.all(Object.entries(screenshotPaths).map(async ([key, filePath]) => [key, await describePng(filePath)])));
     const proof = {
       schemaVersion: 'synthi.codesite.uiGovernanceProof.v2',
-      ok: desktop.checks.ok && mobile.checks.ok && reduced.checks.ok && Object.values(screenshots).every((item) => item.png.nonblank === true),
+      ok: desktop.checks.ok
+        && mobile.checks.ok
+        && reduced.checks.ok
+        && reviewGate.visible
+        && reviewGate.initiallyDisabled
+        && reviewGate.enabledAfterRationale
+        && reviewGate.containsOwner
+        && reviewGate.containsTarget
+        && reviewGate.containsEvidence
+        && reviewGate.containsRationale
+        && Object.values(screenshots).every((item) => item.png.nonblank === true),
       runId: RUN_ID,
       runStartedAt,
       baseUrl,
@@ -750,6 +867,7 @@ async function main() {
         desktop: desktop.checks,
         mobile: mobile.checks,
         reducedMotion: reduced.checks,
+        reviewGate,
       },
       screenshots,
     };

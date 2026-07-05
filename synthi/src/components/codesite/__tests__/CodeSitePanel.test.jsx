@@ -100,6 +100,22 @@ function laneNamed(name) {
     .find((lane) => lane.textContent.includes(name));
 }
 
+async function confirmGovernanceReview(rationale = 'Reviewed replay, evidence, scope, and operator impact.') {
+  const gate = container.querySelector('[data-testid="codesite-governance-review-gate"]');
+  expect(gate).toBeTruthy();
+  const textarea = gate.querySelector('[data-testid="codesite-governance-review-rationale"]');
+  const confirm = gate.querySelector('[data-testid="codesite-governance-review-confirm"]');
+  await act(async () => {
+    setNativeInputValue(textarea, rationale);
+  });
+  await flush();
+  expect(confirm.disabled).toBe(false);
+  await act(async () => {
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await flush();
+}
+
 function testRadarPoint(angle, radius) {
   const radians = (angle - 90) * (Math.PI / 180);
   return {
@@ -886,6 +902,12 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('hunk:checkout');
     expect(container.textContent).toContain('Agent Inbox');
     expect(container.textContent).toContain('Need schema owner');
+    const requiredAction = container.querySelector('[data-testid="codesite-required-action-row"]');
+    expect(requiredAction).toBeTruthy();
+    expect(requiredAction.textContent).toContain('ack_event:event-1');
+    expect(requiredAction.textContent).toContain('medium');
+    expect(requiredAction.textContent).toContain('owner: event-1');
+    expect(requiredAction.querySelector('[data-testid="codesite-required-action-review"]')).toBeTruthy();
     expect(container.textContent).toContain('logicalTime');
     expect(container.textContent).toContain('event:evidence');
     expect(container.textContent).toContain('projects/proj-1/control-state.json');
@@ -921,6 +943,8 @@ describe('CodeSitePanel', () => {
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
     await flush();
+    expect(h.issueCodeSitePermit).not.toHaveBeenCalled();
+    await confirmGovernanceReview('Permit reviewed against route, evidence, and Class B scope.');
     expect(h.issueCodeSitePermit).toHaveBeenCalledWith('acme', 'proj-1', expect.objectContaining({
       permitType: 'restricted_route',
       executionPlanId: 'plan-1',
@@ -928,6 +952,9 @@ describe('CodeSitePanel', () => {
       allowedPaths: ['api/checkout/**'],
       route: ['api/checkout/**'],
       scope: { allowedPaths: ['api/checkout/**'], route: ['api/checkout/**'] },
+      approval: expect.objectContaining({
+        rationale: 'Permit reviewed against route, evidence, and Class B scope.',
+      }),
       evidenceRefs: ['codesite:ui:permit:proj-1'],
     }));
 
@@ -935,8 +962,10 @@ describe('CodeSitePanel', () => {
       container.querySelector('[data-testid="codesite-document-approve-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
+    await confirmGovernanceReview('Document reviewed with evidence and recipient impact.');
     expect(h.reviewCodeSiteDocument).toHaveBeenCalledWith('acme', 'doc-1', expect.objectContaining({
       decision: 'approved',
+      summary: 'Document reviewed with evidence and recipient impact.',
       reviewTimeMs: 90_000,
       baselineReviewTimeMs: 300_000,
       evidenceRefs: ['codesite:ui:document-review:doc-1'],
@@ -948,9 +977,10 @@ describe('CodeSitePanel', () => {
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
     await flush();
+    await confirmGovernanceReview('Route proposal reviewed for affected lease and replay evidence.');
     expect(h.proposeCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'plan-1', expect.objectContaining({
       proposedRoute: ['api/checkout/**'],
-      reason: 'operator_reroute',
+      reason: 'operator_reroute: Route proposal reviewed for affected lease and replay evidence.',
       affectedLeases: ['lease-1'],
       evidenceRefs: ['codesite:ui:route-revision:proj-1'],
     }));
@@ -962,8 +992,10 @@ describe('CodeSitePanel', () => {
       proposedRouteRow.querySelector('[data-testid="codesite-route-review-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
+    await confirmGovernanceReview('Route review checked scope, evidence, and downstream impact.');
     expect(h.reviewCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-1', expect.objectContaining({
       decision: 'approved',
+      reason: 'Route review checked scope, evidence, and downstream impact.',
       evidenceRefs: ['codesite:ui:route-review:route-rev-1'],
     }));
 
@@ -971,8 +1003,10 @@ describe('CodeSitePanel', () => {
       approvedRouteRow.querySelector('[data-testid="codesite-route-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
+    await confirmGovernanceReview('Route application reviewed against active clearance and proof refs.');
     expect(h.applyCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-2', expect.objectContaining({
       appliedBy: 'codesite_governance_console',
+      rationale: 'Route application reviewed against active clearance and proof refs.',
       evidenceRefs: ['codesite:ui:route-apply:route-rev-2'],
     }));
 
@@ -980,9 +1014,11 @@ describe('CodeSitePanel', () => {
       container.querySelector('[data-testid="codesite-resume-mayday-submit"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
+    await confirmGovernanceReview('Mayday resume reviewed against recovery inspection and replay.');
     expect(h.resumeCodeSiteMayday).toHaveBeenCalledWith('acme', 'incident-mayday-1', expect.objectContaining({
       approved: true,
       humanApproval: true,
+      rationale: 'Mayday resume reviewed against recovery inspection and replay.',
       inspectionRunIds: ['inspection-mayday-1'],
       replayRefs: ['sha256:mayday-replay'],
       evidenceRefs: ['codesite:ui:mayday-resume:incident-mayday-1'],
@@ -1031,6 +1067,76 @@ describe('CodeSitePanel', () => {
     await flush();
 
     expect(h.exportCodeSiteArtifacts).toHaveBeenCalledWith('acme', 'proj-1');
+  });
+
+  it('exposes show-all controls for capped governance queues', async () => {
+    const state = radarState();
+    state.project.documents = Array.from({ length: 6 }, (_, index) => ({
+      id: `doc-${index + 1}`,
+      kind: 'rfi',
+      title: `Document ${index + 1}`,
+      status: 'pending',
+    }));
+    state.project.routeRevisions = Array.from({ length: 6 }, (_, index) => ({
+      id: `route-rev-${index + 1}`,
+      executionPlanId: 'plan-1',
+      status: index === 5 ? 'approved' : 'proposed',
+      proposedRoute: [`api/checkout/v${index + 1}/**`],
+    }));
+    state.project.incidents = [
+      ...state.project.incidents.filter((incident) => incident.category !== 'mayday'),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        id: `incident-mayday-${index + 1}`,
+        category: 'mayday',
+        status: 'open',
+        severity: 'high',
+        affectedZones: ['api/checkout/**'],
+        incidentReplay: { maydayWorkflow: { inspectorRunId: 'inspection-mayday-1' } },
+      })),
+    ];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-documents-show-all"]').textContent)
+      .toContain('Show all documents (6)');
+    expect(container.querySelector('[data-testid="codesite-route-revisions-show-all"]').textContent)
+      .toContain('Show all route revisions (6)');
+    expect(container.querySelector('[data-testid="codesite-maydays-show-all"]').textContent)
+      .toContain('Show all ground stops (4)');
+  });
+
+  it('routes structured required actions into the governance review gate', async () => {
+    const state = radarState();
+    state.controlState.requiredActions = [{
+      kind: 'review_document',
+      title: 'Review checkout schema RFI',
+      owner: 'ATLAS-1',
+      documentId: 'doc-1',
+      severity: 'high',
+      evidenceRefs: ['rfi:checkout-schema-owner'],
+      scope: ['api/checkout/**'],
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-required-action-review"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-governance-review-gate"]')).toBeTruthy();
+    expect(h.reviewCodeSiteDocument).not.toHaveBeenCalled();
+    await confirmGovernanceReview('Required action reviewed with evidence and scope.');
+    expect(h.reviewCodeSiteDocument).toHaveBeenCalledWith('acme', 'doc-1', expect.objectContaining({
+      decision: 'approved',
+      summary: 'Required action reviewed with evidence and scope.',
+    }));
   });
 
   it('does not draw a holding pattern for airborne flights', async () => {
