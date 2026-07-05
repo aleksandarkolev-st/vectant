@@ -66,6 +66,8 @@ const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
+const CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES = 8192;
+const classifiedJsonArtifactCache = new Map();
 const SOURCE_FIRST_VISUAL_USER_OWNED_AUTHORITIES = [
   'direct_source_url_commit',
   'direct_local_git_repo_path',
@@ -26195,6 +26197,57 @@ async function readJson(filePath) {
   }
 }
 
+async function readJsonArtifact(filePath) {
+  try {
+    const bytes = await fs.readFile(filePath);
+    return {
+      json: JSON.parse(bytes.toString('utf8')),
+      contentHash: sha256BufferHash(bytes),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cloneJsonLike(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+function classifiedJsonArtifactCacheKey({
+  filePath,
+  stat,
+  repoRoot,
+  mcpRoot,
+  contentHash,
+}) {
+  return stableJsonHash({
+    filePath: path.resolve(filePath),
+    repoRoot: path.resolve(repoRoot),
+    mcpRoot: path.resolve(mcpRoot),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    contentHash,
+  });
+}
+
+function cachedClassifiedJsonArtifactRows(cacheKey) {
+  const cached = classifiedJsonArtifactCache.get(cacheKey);
+  if (!cached) return null;
+  classifiedJsonArtifactCache.delete(cacheKey);
+  classifiedJsonArtifactCache.set(cacheKey, cached);
+  return cloneJsonLike(cached);
+}
+
+function rememberClassifiedJsonArtifactRows(cacheKey, rows) {
+  if (classifiedJsonArtifactCache.size >= CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES) {
+    const firstKey = classifiedJsonArtifactCache.keys().next().value;
+    if (firstKey) classifiedJsonArtifactCache.delete(firstKey);
+  }
+  classifiedJsonArtifactCache.set(cacheKey, cloneJsonLike(rows));
+}
+
 export function defaultValidationMatrixRoots({ repoRoot, mcpRoot }) {
   return [
     path.join(mcpRoot, '.gpu-hmr-test-logs'),
@@ -31486,17 +31539,29 @@ export async function collectGpuHmrValidationMatrixLedger(options = {}) {
   const rows = [];
   for (const filePath of files) {
     if (options.includeInvalidated !== true && filePath.split(path.sep).includes('invalidated')) continue;
-    const json = await readJson(filePath);
-    if (json === null) continue;
     const stat = await fs.stat(filePath);
-    const classified = await classifyJsonArtifact(json, filePath, {
+    const artifact = await readJsonArtifact(filePath);
+    if (artifact === null) continue;
+    const cacheKey = classifiedJsonArtifactCacheKey({
+      filePath,
+      stat,
+      repoRoot,
+      mcpRoot,
+      contentHash: artifact.contentHash,
+    });
+    const cachedRows = cachedClassifiedJsonArtifactRows(cacheKey);
+    if (cachedRows) {
+      rows.push(...cachedRows);
+      continue;
+    }
+    const classified = await classifyJsonArtifact(artifact.json, filePath, {
       repoRoot,
       mcpRoot,
       updatedAt: stat.mtime.toISOString(),
     });
-    for (const row of Array.isArray(classified) ? classified : [classified]) {
-      if (row) rows.push(row);
-    }
+    const classifiedRows = (Array.isArray(classified) ? classified : [classified]).filter(Boolean);
+    rememberClassifiedJsonArtifactRows(cacheKey, classifiedRows);
+    rows.push(...classifiedRows);
   }
   return buildGpuHmrValidationMatrixLedger(rows, {
     latestPerTarget: options.latestPerTarget !== false,
