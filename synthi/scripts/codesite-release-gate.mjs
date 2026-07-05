@@ -124,6 +124,12 @@ const REQUIRED_MATURE_PROOFS = [
   { name: 'monitorDowngrade', plan: '2A.3, 28', file: 'codesite-monitor-downgrade-proof.json', png: 'codesite-monitor-downgrade-proof.png' },
   { name: 'pathlessRun', plan: '2A.3, 28', file: 'codesite-pathless-run-proof.json', png: 'codesite-pathless-run-proof.png' },
   { name: 'terminalReattach', plan: '2A.3, 28', file: 'codesite-terminal-reattach-proof.json', png: 'codesite-terminal-reattach-proof.png' },
+  {
+    name: 'mutationSurfaceCoverage',
+    plan: '2A.3, 19, 25.2C, 28',
+    file: 'codesite-mutation-surface-coverage-proof.json',
+    png: 'codesite-mutation-surface-coverage-proof.png',
+  },
 ];
 
 async function main(argv) {

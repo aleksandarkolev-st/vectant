@@ -238,6 +238,12 @@ const PROOF_SPECS = [
     png: 'codesite-terminal-reattach-proof.png',
     generator: ['node', 'tmp/codesite-dojo-proof/run-terminal-reattach-proof.mjs'],
   },
+  {
+    name: 'mutationSurfaceCoverage',
+    file: 'codesite-mutation-surface-coverage-proof.json',
+    png: 'codesite-mutation-surface-coverage-proof.png',
+    generator: ['node', 'synthi/scripts/codesite-mutation-surface-coverage-proof.mjs'],
+  },
 ];
 
 function parseArgs(argv) {
