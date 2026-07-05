@@ -20,6 +20,18 @@ function request(body, init = {}) {
   });
 }
 
+function rawRequest(body, init = {}) {
+  return new Request("https://beta.vectant.dev/api/local-support/request-envelope", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://beta.vectant.dev",
+      ...(init.headers || {}),
+    },
+    body,
+  });
+}
+
 function envelope(overrides = {}) {
   return {
     request_id: "req_123",
@@ -72,6 +84,20 @@ describe("local support request-envelope route", () => {
     expect(json).toMatchObject({
       decision: "approval_required",
       local_enforcement_required: true,
+      bytes_sent: 0,
+    });
+  });
+
+  it("denies oversized request envelopes before policy evaluation", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+
+    const response = await POST(rawRequest(JSON.stringify({ padding: "x".repeat(70 * 1024) })));
+    const json = await response.json();
+
+    expect(response.status).toBe(413);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "body_too_large",
       bytes_sent: 0,
     });
   });

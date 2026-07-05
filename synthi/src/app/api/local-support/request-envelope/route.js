@@ -1,31 +1,24 @@
 import { NextResponse } from "next/server";
 
+import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import { readLocalSupportPolicy, validateRequestEnvelope } from "@/lib/local-support/controlPlane";
 
 export const runtime = "nodejs";
 
 export async function POST(req) {
   if (!isSameOriginRequest(req)) {
-    return NextResponse.json(
-      {
-        decision: "denied",
-        reason: "bad_origin",
-        bytes_sent: 0,
-        user_visible_message: "Request origin was not accepted.",
-      },
-      { status: 403 },
-    );
+    const denied = deniedJson("bad_origin", "Request origin was not accepted.");
+    return NextResponse.json(denied.body, { status: denied.status });
   }
 
-  const body = await req.json().catch(() => null);
+  const bodyResult = await readBoundedJson(req);
+  if (!bodyResult.ok) {
+    const denied = deniedJson(bodyResult.reason, "Request body was too large.", bodyResult.status);
+    return NextResponse.json(denied.body, { status: denied.status });
+  }
+
+  const body = bodyResult.value;
   const decision = validateRequestEnvelope(body, readLocalSupportPolicy());
   const status = decision.decision === "denied" ? 403 : 200;
   return NextResponse.json(decision, { status });
-}
-
-function isSameOriginRequest(req) {
-  const origin = req.headers.get("origin");
-  if (!origin) return true;
-  const url = new URL(req.url);
-  return origin === `${url.protocol}//${url.host}`;
 }

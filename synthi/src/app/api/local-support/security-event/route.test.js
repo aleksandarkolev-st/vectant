@@ -11,6 +11,17 @@ function request(body, { origin = "http://localhost:3000" } = {}) {
   });
 }
 
+function rawRequest(body, { origin = "http://localhost:3000" } = {}) {
+  return new Request("http://localhost:3000/api/local-support/security-event", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin,
+    },
+    body,
+  });
+}
+
 describe("local support security event route", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -53,5 +64,20 @@ describe("local support security event route", () => {
       raw_body_included: false,
     });
     expect(json.target_display).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
+
+  it("denies oversized security event bodies", async () => {
+    vi.stubEnv("VECTANT_LOCAL_SUPPORT_ENABLED", "true");
+    const { POST } = await import("./route");
+
+    const response = await POST(rawRequest(JSON.stringify({ padding: "x".repeat(70 * 1024) })));
+    const json = await response.json();
+
+    expect(response.status).toBe(413);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "body_too_large",
+      bytes_sent: 0,
+    });
   });
 });
