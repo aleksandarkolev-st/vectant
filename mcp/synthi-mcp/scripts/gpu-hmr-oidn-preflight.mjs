@@ -19,6 +19,9 @@ const args = new Set(rawArgs);
 
 const OIDN_OUTPUT_ORACLE_SCHEMA = 'synthi.gpu_hmr.oidn_output_oracle.v1';
 const OIDN_OUTPUT_ORACLE_AUTHORITY = 'oidn_output_oracle_file_bytes_only_not_gpu_hmr_success';
+const RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA = 'synthi.gpu_hmr.runtime_boundary_event_manifest.v1';
+const RUNTIME_BOUNDARY_EVENT_MANIFEST_AUTHORITY =
+  'runtime_boundary_event_manifest_only_not_gpu_hmr_success';
 const OIDN_OUTPUT_ORACLE_ROLES = [
   {
     role: 'noisy_input',
@@ -543,6 +546,10 @@ async function readOidnRuntimeBoundaryManifest(manifestPath) {
       accepted: false,
       manifestPath: null,
       manifest_path: null,
+      manifestSchemaVersion: null,
+      manifest_schema_version: null,
+      manifestProofAuthority: null,
+      manifest_proof_authority: null,
       events: [],
       metadata: {},
       failedGates: ['oidn_runtime_boundary_event_manifest_missing'],
@@ -556,6 +563,14 @@ async function readOidnRuntimeBoundaryManifest(manifestPath) {
     const failedGates = [];
     if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
       failedGates.push('oidn_runtime_boundary_event_manifest_not_object');
+    }
+    const schema = firstText(manifest?.schemaVersion, manifest?.schema_version, manifest?.schema);
+    const authority = firstText(manifest?.proofAuthority, manifest?.proof_authority);
+    if (schema !== RUNTIME_BOUNDARY_EVENT_MANIFEST_SCHEMA) {
+      failedGates.push('oidn_runtime_boundary_event_manifest_schema_unsupported');
+    }
+    if (authority !== RUNTIME_BOUNDARY_EVENT_MANIFEST_AUTHORITY) {
+      failedGates.push('oidn_runtime_boundary_event_manifest_authority_mismatch');
     }
     if (runtimeBoundaryManifestClaimsSuccess(manifest)) {
       failedGates.push('oidn_runtime_boundary_event_manifest_claims_gpu_hmr_success');
@@ -573,6 +588,10 @@ async function readOidnRuntimeBoundaryManifest(manifestPath) {
       accepted: failedGates.length === 0,
       manifestPath: resolvedPath,
       manifest_path: resolvedPath,
+      manifestSchemaVersion: schema,
+      manifest_schema_version: schema,
+      manifestProofAuthority: authority,
+      manifest_proof_authority: authority,
       manifestSha256: `sha256:${sha256Buffer(bytes)}`,
       manifest_sha256: `sha256:${sha256Buffer(bytes)}`,
       events,
@@ -586,6 +605,10 @@ async function readOidnRuntimeBoundaryManifest(manifestPath) {
       accepted: false,
       manifestPath: resolvedPath,
       manifest_path: resolvedPath,
+      manifestSchemaVersion: null,
+      manifest_schema_version: null,
+      manifestProofAuthority: null,
+      manifest_proof_authority: null,
       events: [],
       metadata: {},
       failedGates: ['oidn_runtime_boundary_event_manifest_unreadable'],
@@ -1302,6 +1325,7 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null, outputO
   const hipTests = tests.filter((test) => test.device === 'hip');
   const cpuTests = tests.filter((test) => test.device === 'cpu');
   const hipTestsPassed = hipTests.length > 0 && hipTests.every((test) => test.passed);
+  const missingLibs = ldd?.missingLibraries ?? [];
   const pathIntegrityAccepted =
     pathIntegrity === null
     || (
@@ -1309,9 +1333,9 @@ function classifyPreflight({ oidnTool, tests, ldd, pathIntegrity = null, outputO
       && pathIntegrity.noSymlinkApplied === true
       && pathIntegrity.noSynthesizedRuntime === true
     );
-  const oidnHipRuntimePreflightAccepted = hipTestsPassed && pathIntegrityAccepted;
+  const oidnHipRuntimePreflightAccepted =
+    hipTestsPassed && pathIntegrityAccepted && missingLibs.length === 0;
   const cpuPassed = cpuTests.length > 0 && cpuTests.every((test) => test.passed);
-  const missingLibs = ldd?.missingLibraries ?? [];
   const unsupportedReasons = [];
   if (!oidnTool) unsupportedReasons.push('oidnTest_not_found');
   for (const test of hipTests.filter((entry) => !entry.passed)) {
@@ -1622,6 +1646,28 @@ function runSelfCheck() {
   assert(rejected.resultState === 'oidn-hip-rejected', 'rejected state not classified');
   assert(rejected.oidnCpuDiagnosticsPassed === true, 'cpu diagnostic classification failed');
   assert(rejected.unsupportedReasons.includes('missing_dependency:libamdhip64.so.5'), 'missing dependency reason absent');
+  const missingLibRejected = classifyPreflight({
+    oidnTool: './bin/oidnTest',
+    tests: [
+      { name: 'device creation', device: 'hip', passed: true },
+      { name: 'buffer read/write', device: 'hip', passed: true },
+      { name: 'device creation', device: 'cpu', passed: true },
+      { name: 'buffer read/write', device: 'cpu', passed: true },
+    ],
+    ldd: { missingLibraries: ['libamdhip64.so.5'] },
+  });
+  assert(
+    missingLibRejected.resultState === 'oidn-hip-rejected',
+    'missing ldd library must reject even when HIP tests pass',
+  );
+  assert(
+    missingLibRejected.oidnHipRuntimePreflightAccepted === false,
+    'missing ldd library must block OIDN HIP runtime preflight acceptance',
+  );
+  assert(
+    missingLibRejected.unsupportedReasons.includes('missing_dependency:libamdhip64.so.5'),
+    'missing ldd dependency reason absent for passing HIP tests',
+  );
   const accepted = classifyPreflight({
     oidnTool: './bin/oidnTest',
     tests: [
@@ -2036,11 +2082,28 @@ async function runRuntimeBoundaryBridgeSelfCheck() {
       oidnHipRuntimePreflightAccepted: true,
     },
   });
-  CFG.runtimeBoundaryEventsPath = previousPath;
   assert(forged.accepted === false, 'forged OIDN runtime boundary manifest should reject');
   assert(
     forged.failedGates.includes('oidn_runtime_boundary_event_manifest_claims_gpu_hmr_success'),
     `forged manifest gate missing: ${forged.failedGates.join(',')}`,
+  );
+
+  const badAuthorityPath = path.join(dir, 'runtime-boundary-bad-authority.json');
+  const badAuthorityManifest = JSON.parse(await readFile(runtimeBoundaryPath, 'utf8'));
+  badAuthorityManifest.proofAuthority = 'runtime_boundary_event_manifest_runtime_authority_forged';
+  await writeFile(badAuthorityPath, JSON.stringify(badAuthorityManifest, null, 2));
+  CFG.runtimeBoundaryEventsPath = badAuthorityPath;
+  const badAuthority = await buildOidnRuntimeBoundaryRunModeProof({
+    outputOracle,
+    classification: {
+      oidnHipRuntimePreflightAccepted: true,
+    },
+  });
+  CFG.runtimeBoundaryEventsPath = previousPath;
+  assert(badAuthority.accepted === false, 'wrong OIDN runtime boundary manifest authority should reject');
+  assert(
+    badAuthority.failedGates.includes('oidn_runtime_boundary_event_manifest_authority_mismatch'),
+    `manifest authority gate missing: ${badAuthority.failedGates.join(',')}`,
   );
   console.log('[ok] OIDN runtime-boundary bridge self-check passed');
 }
