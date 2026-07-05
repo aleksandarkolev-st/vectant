@@ -206,6 +206,7 @@ const DEFAULT_CANDIDATES = [
 
 function parseArgs(argv = process.argv.slice(2)) {
   const out = {};
+  const positionals = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--self-check') out.selfCheck = true;
@@ -224,7 +225,26 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--backend-family') out.backendFamily = argv[++i];
     else if (arg === '--runtime-profile' || arg === '--runtime-profile-path') out.runtimeProofProfilePath = argv[++i];
     else if (arg === '--output-dir') out.outputDir = argv[++i];
-    else throw new Error(`unknown argument: ${arg}`);
+    else if (String(arg ?? '').startsWith('-')) throw new Error(`unknown argument: ${arg}`);
+    else positionals.push(arg);
+  }
+  if (positionals.length > 0) {
+    const [source, commit, sourceId, backendFamily, runtimeProofProfilePath] = positionals;
+    if (!out.sourceUrl && !out.repoPath && source) {
+      const sourceText = String(source);
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(sourceText) || /^git@/i.test(sourceText) || /\.git$/i.test(sourceText)) {
+        out.sourceUrl = sourceText;
+      } else {
+        out.repoPath = sourceText;
+      }
+    }
+    if (!out.immutableCommit && commit) out.immutableCommit = commit;
+    if (!out.sourceId && sourceId) out.sourceId = sourceId;
+    if (!out.backendFamily && backendFamily) out.backendFamily = backendFamily;
+    if (!out.runtimeProofProfilePath && runtimeProofProfilePath) {
+      out.runtimeProofProfilePath = runtimeProofProfilePath;
+    }
+    out.positionals = positionals;
   }
   return out;
 }
@@ -4268,6 +4288,25 @@ async function selfCheck() {
   if (
     parseArgs(['--require-direct-source']).requireDirectSource !== true
     || parseArgs(['--sample-pool']).samplePool !== true
+    || parseArgs([
+      '--require-direct-source',
+      'https://example.invalid/direct.git',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'direct-positional-project',
+      'unknown_gpu_project',
+    ]).sourceUrl !== 'https://example.invalid/direct.git'
+    || parseArgs([
+      '--require-direct-source',
+      'https://example.invalid/direct.git',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'direct-positional-project',
+      'unknown_gpu_project',
+    ]).immutableCommit !== 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    || parseArgs([
+      '--require-direct-source',
+      'C:/tmp/direct-local-project',
+      'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    ]).repoPath !== 'C:/tmp/direct-local-project'
     || directSourceRequired(
       { requireDirectSource: true },
       { SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SAMPLE_POOL: '1' },
