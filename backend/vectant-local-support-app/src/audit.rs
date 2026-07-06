@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -148,6 +151,17 @@ impl AuditLog {
                 .unwrap_or_else(|| ZERO_HASH.to_string()),
         }
     }
+
+    pub fn from_verified_export(scanner: SecretScanner, export: AuditExport) -> Result<Self, AuditStoreError> {
+        if !export.verify_hash_chain() {
+            return Err(AuditStoreError::HashChainInvalid);
+        }
+        Ok(Self {
+            events: export.events,
+            consent_receipts: export.consent_receipts,
+            scanner,
+        })
+    }
 }
 
 impl AuditExport {
@@ -173,6 +187,84 @@ impl AuditExport {
         self.root_hash == expected_previous && !self.raw_bodies_included
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct LocalAuditStore {
+    path: PathBuf,
+    retention_days: u16,
+    scanner: SecretScanner,
+}
+
+impl LocalAuditStore {
+    pub fn new(path: impl Into<PathBuf>, retention_days: u16, scanner: SecretScanner) -> Self {
+        Self {
+            path: path.into(),
+            retention_days,
+            scanner,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn retention_days(&self) -> u16 {
+        self.retention_days
+    }
+
+    pub fn load(&self) -> Result<AuditLog, AuditStoreError> {
+        if !self.path.exists() {
+            return Ok(AuditLog::new(self.scanner.clone()));
+        }
+        let bytes = fs::read(&self.path).map_err(AuditStoreError::Io)?;
+        let export: AuditExport = serde_json::from_slice(&bytes).map_err(AuditStoreError::Json)?;
+        AuditLog::from_verified_export(self.scanner.clone(), export)
+    }
+
+    pub fn persist(&self, log: &AuditLog) -> Result<(), AuditStoreError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(AuditStoreError::Io)?;
+        }
+        let export = log.export_incident_bundle(self.retention_days);
+        let bytes = serde_json::to_vec_pretty(&export).map_err(AuditStoreError::Json)?;
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, bytes).map_err(AuditStoreError::Io)?;
+        match fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AuditStoreError::Io(error)),
+        }
+        fs::rename(&tmp, &self.path).map_err(AuditStoreError::Io)?;
+        Ok(())
+    }
+
+    pub fn delete(&self) -> Result<(), AuditStoreError> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AuditStoreError::Io(error)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AuditStoreError {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    HashChainInvalid,
+}
+
+impl std::fmt::Display for AuditStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "audit store io error: {error}"),
+            Self::Json(error) => write!(formatter, "audit store json error: {error}"),
+            Self::HashChainInvalid => write!(formatter, "audit store hash chain invalid"),
+        }
+    }
+}
+
+impl std::error::Error for AuditStoreError {}
 
 fn hash_event(
     at: &DateTime<Utc>,

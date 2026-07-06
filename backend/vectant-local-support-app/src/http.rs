@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 
-use crate::audit::{AuditClass, AuditExport, AuditLog};
+use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
 use crate::approval::{denied_approval_response, ApprovalQueue};
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
@@ -29,6 +29,7 @@ pub struct AppState {
     pub workspace: Arc<WorkspacePolicy>,
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
     pub audit: Arc<Mutex<AuditLog>>,
+    pub audit_store: Option<Arc<LocalAuditStore>>,
     pub approvals: Arc<Mutex<ApprovalQueue>>,
 }
 
@@ -42,6 +43,28 @@ impl AppState {
                 DEFAULT_RATE_LIMIT_WINDOW,
             ))),
             audit: Arc::new(Mutex::new(AuditLog::new(SecretScanner::default()))),
+            audit_store: None,
+            approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
+        }
+    }
+
+    pub fn new_with_audit_store(
+        session: SessionGuard,
+        workspace: WorkspacePolicy,
+        audit_store: LocalAuditStore,
+    ) -> Self {
+        let audit = audit_store
+            .load()
+            .unwrap_or_else(|_| AuditLog::new(SecretScanner::default()));
+        Self {
+            session: Arc::new(Mutex::new(session)),
+            workspace: Arc::new(workspace),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
+                DEFAULT_RATE_LIMIT_REQUESTS,
+                DEFAULT_RATE_LIMIT_WINDOW,
+            ))),
+            audit: Arc::new(Mutex::new(audit)),
+            audit_store: Some(Arc::new(audit_store)),
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
         }
     }
@@ -195,6 +218,7 @@ async fn review_file(
         ),
         true,
     );
+    persist_audit(&state, &audit)?;
     Ok(Json(response))
 }
 
@@ -220,7 +244,9 @@ async fn approve_request(
     let Some((response, receipt)) = approved else {
         return Ok(Json(denied_approval_response(&request_id, &approval_id)));
     };
-    state.audit.lock().await.record_consent(receipt);
+    let mut audit = state.audit.lock().await;
+    audit.record_consent(receipt);
+    persist_audit(&state, &audit)?;
     Ok(Json(response))
 }
 
@@ -242,12 +268,14 @@ async fn deny_request(
         let mut approvals = state.approvals.lock().await;
         approvals.deny(&approval_id)
     };
-    state.audit.lock().await.append(
+    let mut audit = state.audit.lock().await;
+    audit.append(
         AuditClass::Control,
         Some(request_id.clone()),
         format!("Approval {approval_id} denied locally. Nothing was sent."),
         true,
     );
+    persist_audit(&state, &audit)?;
     if denied_pending {
         Ok(Json(denied_approval_response(&request_id, &approval_id)))
     } else {
@@ -270,12 +298,14 @@ async fn pause_session(
     session.pause();
     let session_state = session.state();
     drop(session);
-    state.audit.lock().await.append(
+    let mut audit = state.audit.lock().await;
+    audit.append(
         AuditClass::Control,
         Some(request_id),
         "Session paused by local user. No data can be sent while paused.",
         true,
     );
+    persist_audit(&state, &audit)?;
     Ok(Json(serde_json::json!(session_state)))
 }
 
@@ -327,7 +357,9 @@ async fn control_session(
         SessionAction::Resume => "Session resumed by local user.",
         SessionAction::Disconnect => "Session disconnected by local user. Approvals and ports must be revoked.",
     };
-    state.audit.lock().await.append(AuditClass::Control, Some(request_id), summary, true);
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Control, Some(request_id), summary, true);
+    persist_audit(&state, &audit)?;
     Ok(Json(serde_json::json!(session_state)))
 }
 
@@ -352,6 +384,7 @@ async fn export_history(
         "Scrubbed local support history exported. Raw bodies were not included.",
         true,
     );
+    persist_audit(&state, &audit)?;
     Ok(Json(audit.export_incident_bundle(30)))
 }
 
@@ -378,12 +411,29 @@ async fn delete_history(
         "Local support history deleted according to retention policy.",
         true,
     );
+    if let Some(store) = &state.audit_store {
+        store
+            .delete()
+            .map_err(|err| denied(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    }
     Ok(Json(serde_json::json!({
         "decision": "deleted",
         "request_id": request_id,
         "raw_bodies_included": false,
         "bytes_sent": 0
     })))
+}
+
+fn persist_audit(
+    state: &AppState,
+    audit: &AuditLog,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if let Some(store) = &state.audit_store {
+        store
+            .persist(audit)
+            .map_err(|err| denied(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    }
+    Ok(())
 }
 
 async fn enforce_rate_limit(state: &AppState) -> Result<(), (StatusCode, Json<serde_json::Value>)> {

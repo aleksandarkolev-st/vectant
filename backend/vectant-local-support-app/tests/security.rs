@@ -3,7 +3,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
 use tempfile::tempdir;
-use vectant_local_support_app::audit::{AuditClass, AuditLog, ConsentReceipt};
+use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
 use vectant_local_support_app::approval::{ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::http::{
     validate_file_request_authorization, LocalAuthorizationError, LocalRequestAuthorization,
@@ -1108,6 +1108,56 @@ fn audit_delete_clears_prior_events_and_keeps_new_chain_valid() {
     assert!(export.verify_hash_chain());
     assert!(!export.raw_bodies_included);
     assert!(!serde_json::to_string(&export).unwrap().contains("Sent package metadata"));
+}
+
+#[test]
+fn local_audit_store_persists_scrubbed_hash_chained_history() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(
+        dir.path().join("audit.json"),
+        30,
+        SecretScanner::default(),
+    );
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Denied,
+        Some("req_store_secret".to_string()),
+        "Blocked Authorization: Bearer abcdefghijklmnopqrstuvwxyz before send.",
+        true,
+    );
+
+    store.persist(&log).unwrap();
+    let raw = fs::read_to_string(store.path()).unwrap();
+    assert!(raw.contains("[REDACTED:authorization_header]"));
+    assert!(!raw.contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let loaded = store.load().unwrap();
+    let export = loaded.export_incident_bundle(store.retention_days());
+    assert!(export.verify_hash_chain());
+    assert_eq!(export.events.len(), 1);
+    assert!(!export.raw_bodies_included);
+}
+
+#[test]
+fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(
+        dir.path().join("audit.json"),
+        0,
+        SecretScanner::default(),
+    );
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(AuditClass::Control, Some("req_audit".to_string()), "Session paused.", true);
+    store.persist(&log).unwrap();
+
+    let mut export = log.export_incident_bundle(0);
+    export.events[0].summary = "tampered summary".to_string();
+    fs::write(store.path(), serde_json::to_vec_pretty(&export).unwrap()).unwrap();
+    assert!(matches!(store.load(), Err(AuditStoreError::HashChainInvalid)));
+
+    store.delete().unwrap();
+    assert!(!store.path().exists());
+    assert_eq!(store.load().unwrap().events().len(), 0);
 }
 
 #[test]

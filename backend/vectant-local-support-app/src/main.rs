@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use vectant_local_support_app::audit::LocalAuditStore;
 use vectant_local_support_app::http::{bind_loopback, AppState};
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
@@ -18,7 +19,8 @@ async fn main() -> anyhow::Result<()> {
     let session = SessionGuard::new(workspace_id, Duration::from_secs(30 * 60));
     #[cfg(debug_assertions)]
     let token = session.token_for_pairing_response().to_string();
-    let state = AppState::new(session, policy);
+    let audit_store = LocalAuditStore::new(default_audit_path()?, 30, SecretScanner::default());
+    let state = AppState::new_with_audit_store(session, policy, audit_store);
     let addr = bind_loopback(state).await?;
     println!("Vectant Local Support listening on http://{addr}");
     #[cfg(debug_assertions)]
@@ -27,4 +29,24 @@ async fn main() -> anyhow::Result<()> {
     }
     tokio::signal::ctrl_c().await?;
     Ok(())
+}
+
+fn default_audit_path() -> anyhow::Result<PathBuf> {
+    if let Ok(path) = std::env::var("VECTANT_LOCAL_SUPPORT_AUDIT_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return Ok(PathBuf::from(local_app_data)
+            .join("Vectant")
+            .join("LocalSupport")
+            .join("audit.json"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Ok(PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("vectant-local-support")
+            .join("audit.json"));
+    }
+    Ok(std::env::current_dir()?.join(".vectant-local-support").join("audit.json"))
 }
