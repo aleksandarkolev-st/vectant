@@ -58,6 +58,10 @@ const ADAPTER_CLOSURE_EXPECTATION_SCHEMA =
   'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1';
 const ADAPTER_CLOSURE_EXPECTATION_AUTHORITY =
   'adapter_closure_expectation_only_not_gpu_hmr_success';
+const APP_HOOK_MATERIALIZATION_PLAN_SCHEMA =
+  'synthi.gpu_hmr.random_cold_path_app_hook_materialization_plan.v1';
+const APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY =
+  'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success';
 const RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE =
   'runtime_adapter_or_app_hook_contract';
 const RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_GAP =
@@ -3506,6 +3510,262 @@ function deriveRuntimeBoundaryEventManifestTemplate({
   };
 }
 
+function runtimeBoundaryTemplateByKind(runtimeBoundaryEventManifestTemplate = {}) {
+  const templates = [
+    ...(Array.isArray(runtimeBoundaryEventManifestTemplate.eventObjectTemplates)
+      ? runtimeBoundaryEventManifestTemplate.eventObjectTemplates
+      : []),
+    ...(Array.isArray(runtimeBoundaryEventManifestTemplate.event_object_templates)
+      ? runtimeBoundaryEventManifestTemplate.event_object_templates
+      : []),
+  ];
+  const byKind = new Map();
+  for (const template of templates) {
+    const kind = firstString(template?.eventKind, template?.event_kind);
+    if (kind && !byKind.has(kind)) byKind.set(kind, template);
+  }
+  return byKind;
+}
+
+function runtimeBoundaryStageProofKinds(kind) {
+  const proofKinds = {
+    artifact_transport: [
+      'artifact_hash_after',
+      'loaded_artifact_identity',
+      'same_process_loader_target',
+    ],
+    epoch_publication: [
+      'published_epoch',
+      'published_artifact_hash',
+      'dispatch_table_binding',
+    ],
+    dispatch_trace: [
+      'dispatch_id',
+      'published_epoch_used_by_dispatch',
+      'artifact_hash_bound_to_dispatch',
+    ],
+    host_identity: [
+      'process_identity',
+      'device_identity',
+      'context_or_queue_identity',
+      'stable_runtime_resource_identity',
+    ],
+    output_oracle: [
+      'after_dispatch_output_binding',
+      'compute_or_visual_oracle_artifacts',
+      'oracle_artifact_hashes',
+    ],
+  };
+  return proofKinds[kind] ?? ['runtime_boundary_event'];
+}
+
+function deriveAppHookMaterializationPlan({
+  candidate,
+  runtimeBoundaryExpectation = {},
+  runtimeBoundaryEventManifestTemplate = {},
+  runtimeSupportClosureObligation = {},
+  derivedRuntimeProfileContract = null,
+  runtimeProfileProofBridge = null,
+  sourceIntakeEvidence = {},
+} = {}) {
+  const templateByKind = runtimeBoundaryTemplateByKind(runtimeBoundaryEventManifestTemplate);
+  const backendCandidates = uniqueSortedStrings([
+    ...firstArrayField(runtimeBoundaryExpectation, 'backendCandidates', 'backend_candidates'),
+    ...firstArrayField(sourceIntakeEvidence, 'backendCandidates', 'backend_candidates'),
+  ]);
+  const acceptableOracleKinds = uniqueSortedStrings([
+    ...firstArrayField(runtimeBoundaryExpectation, 'acceptableOracleKinds', 'acceptable_oracle_kinds'),
+    ...firstArrayField(runtimeBoundaryEventManifestTemplate, 'acceptableOracleKinds', 'acceptable_oracle_kinds'),
+  ]);
+  const stagePlans = REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS.map((kind) => {
+    const eventTemplate = templateByKind.get(kind)
+      ?? runtimeBoundaryEventObjectTemplate({ kind, backendCandidates, acceptableOracleKinds });
+    const requiredFields = uniqueSortedStrings([
+      ...firstArrayField(eventTemplate, 'requiredFields', 'required_fields'),
+    ]);
+    const backendSpecificFields = uniqueSortedStrings([
+      ...firstArrayField(eventTemplate, 'backendSpecificFields', 'backend_specific_fields'),
+    ]);
+    const oracleAlternatives = kind === 'output_oracle'
+      ? (
+        Array.isArray(eventTemplate.oracleFieldAlternatives)
+          ? eventTemplate.oracleFieldAlternatives
+          : Array.isArray(eventTemplate.oracle_field_alternatives)
+            ? eventTemplate.oracle_field_alternatives
+            : runtimeBoundaryOracleAlternatives(acceptableOracleKinds)
+      )
+      : [];
+    return {
+      stage: kind,
+      eventKind: kind,
+      event_kind: kind,
+      boundaryLineToken: firstString(
+        eventTemplate.boundaryLineToken,
+        eventTemplate.boundary_line_token,
+        runtimeBoundaryLineTokenForKind(kind),
+      ),
+      boundary_line_token: firstString(
+        eventTemplate.boundaryLineToken,
+        eventTemplate.boundary_line_token,
+        runtimeBoundaryLineTokenForKind(kind),
+      ),
+      requiredProofKinds: runtimeBoundaryStageProofKinds(kind),
+      required_proof_kinds: runtimeBoundaryStageProofKinds(kind),
+      requiredFields,
+      required_fields: requiredFields,
+      backendSpecificFields,
+      backend_specific_fields: backendSpecificFields,
+      oracleAlternatives,
+      oracle_alternatives: oracleAlternatives,
+      eventTemplateHash: firstString(eventTemplate.templateHash, eventTemplate.template_hash),
+      event_template_hash: firstString(eventTemplate.templateHash, eventTemplate.template_hash),
+      acceptedAsPlanOnlyStage: true,
+      accepted_as_plan_only_stage: true,
+      materialized: false,
+      observedRuntimeEventRequired: true,
+      observed_runtime_event_required: true,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      missingRuntimeEventGap: `app_hook_materialization_${kind}_event_missing`,
+      missing_runtime_event_gap: `app_hook_materialization_${kind}_event_missing`,
+      evidenceRefs: uniqueSortedStrings([
+        firstString(eventTemplate.templateHash, eventTemplate.template_hash)
+          ? `runtime-boundary-event-template:${firstString(eventTemplate.templateHash, eventTemplate.template_hash)}`
+          : null,
+      ]),
+      evidence_refs: uniqueSortedStrings([
+        firstString(eventTemplate.templateHash, eventTemplate.template_hash)
+          ? `runtime-boundary-event-template:${firstString(eventTemplate.templateHash, eventTemplate.template_hash)}`
+          : null,
+      ]),
+    };
+  });
+  const runtimeBoundaryExpectationHash = firstString(
+    runtimeBoundaryExpectation.expectationHash,
+    runtimeBoundaryExpectation.expectation_hash,
+  );
+  const runtimeBoundaryEventManifestTemplateHash = firstString(
+    runtimeBoundaryEventManifestTemplate.templateHash,
+    runtimeBoundaryEventManifestTemplate.template_hash,
+  );
+  const runtimeSupportClosureObligationHash = firstString(
+    runtimeSupportClosureObligation.obligationHash,
+    runtimeSupportClosureObligation.obligation_hash,
+  );
+  const derivedRuntimeProfileContractHash = firstString(
+    derivedRuntimeProfileContract?.facetHash,
+    derivedRuntimeProfileContract?.facet_hash,
+  );
+  const runtimeProfileProofBridgeHash = firstString(
+    runtimeProfileProofBridge?.facetHash,
+    runtimeProfileProofBridge?.facet_hash,
+  );
+  const sourceListingHash = firstString(
+    sourceIntakeEvidence.sourceListingHash,
+    sourceIntakeEvidence.source_listing_hash,
+    runtimeBoundaryEventManifestTemplate.sourceListingHash,
+    runtimeBoundaryEventManifestTemplate.source_listing_hash,
+  );
+  const buildMetadataContentHash = firstString(
+    sourceIntakeEvidence.buildMetadataContentEvidence?.contentEvidenceHash,
+    sourceIntakeEvidence.build_metadata_content_evidence?.content_evidence_hash,
+    runtimeBoundaryEventManifestTemplate.buildMetadataContentHash,
+    runtimeBoundaryEventManifestTemplate.build_metadata_content_hash,
+  );
+  const failedGates = uniqueSortedStrings([
+    claimsGpuHmrAuthority(candidate) ? 'app_hook_materialization_candidate_claimed_gpu_hmr_authority' : null,
+    claimsGpuHmrAuthority(runtimeBoundaryExpectation)
+      ? 'app_hook_materialization_expectation_claimed_gpu_hmr_authority'
+      : null,
+    claimsGpuHmrAuthority(runtimeBoundaryEventManifestTemplate)
+      ? 'app_hook_materialization_template_claimed_gpu_hmr_authority'
+      : null,
+    claimsGpuHmrAuthority(runtimeSupportClosureObligation)
+      ? 'app_hook_materialization_closure_claimed_gpu_hmr_authority'
+      : null,
+  ]);
+  const blockingGaps = uniqueSortedStrings([
+    runtimeBoundaryExpectationHash ? null : 'app_hook_materialization_runtime_boundary_expectation_hash_missing',
+    runtimeBoundaryEventManifestTemplateHash
+      ? null
+      : 'app_hook_materialization_event_manifest_template_hash_missing',
+    runtimeSupportClosureObligationHash
+      ? null
+      : 'app_hook_materialization_runtime_support_closure_hash_missing',
+    backendCandidates.length > 0 ? null : 'app_hook_materialization_backend_candidates_missing',
+    ...stagePlans.map((stage) => stage.missingRuntimeEventGap),
+    'app_hook_materialization_requires_observed_target_process_events',
+  ]);
+  const plan = {
+    schemaVersion: APP_HOOK_MATERIALIZATION_PLAN_SCHEMA,
+    schema_version: APP_HOOK_MATERIALIZATION_PLAN_SCHEMA,
+    proofAuthority: APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY,
+    proof_authority: APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY,
+    accepted: false,
+    acceptedAsSupportEvidence: failedGates.length === 0,
+    accepted_as_support_evidence: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    materializesRuntimeEvents: false,
+    materializes_runtime_events: false,
+    requiresObservedTargetProcessEvents: true,
+    requires_observed_target_process_events: true,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    candidateId: candidate?.id ?? null,
+    candidate_id: candidate?.id ?? null,
+    sourceUrl: candidate?.sourceUrl ?? null,
+    source_url: candidate?.sourceUrl ?? null,
+    immutableCommit: candidate?.immutableCommit ?? null,
+    immutable_commit: candidate?.immutableCommit ?? null,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    runtimeSupportClosureObligationHash,
+    runtime_support_closure_obligation_hash: runtimeSupportClosureObligationHash,
+    derivedRuntimeProfileContractHash,
+    derived_runtime_profile_contract_hash: derivedRuntimeProfileContractHash,
+    runtimeProfileProofBridgeHash,
+    runtime_profile_proof_bridge_hash: runtimeProfileProofBridgeHash,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    acceptableOracleKinds,
+    acceptable_oracle_kinds: acceptableOracleKinds,
+    requiredStages: REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS,
+    required_stages: REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS,
+    stagePlans,
+    stage_plans: stagePlans,
+    missingRuntimeEventGaps: stagePlans.map((stage) => stage.missingRuntimeEventGap),
+    missing_runtime_event_gaps: stagePlans.map((stage) => stage.missingRuntimeEventGap),
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+  return {
+    ...plan,
+    materializationPlanHash: contentHash(stableJson(plan)),
+    materialization_plan_hash: contentHash(stableJson(plan)),
+  };
+}
+
 function parseGitLsTree(text) {
   return String(text ?? '')
     .split(/\r?\n/)
@@ -4021,6 +4281,20 @@ async function buildAcceptedSourceIntakeFacet({
       ?? buildMetadataContentEvidence.content_evidence_hash
       ?? null,
   });
+  const runtimeAppHookMaterializationPlan = deriveAppHookMaterializationPlan({
+    candidate,
+    runtimeBoundaryExpectation,
+    runtimeBoundaryEventManifestTemplate,
+    runtimeSupportClosureObligation,
+    sourceIntakeEvidence: {
+      sourceListingHash,
+      source_listing_hash: sourceListingHash,
+      buildMetadataContentEvidence,
+      build_metadata_content_evidence: buildMetadataContentEvidence,
+      backendCandidates: classification.backendCandidates,
+      backend_candidates: classification.backendCandidates,
+    },
+  });
   const blockingGaps = [];
   if (classification.buildSignalCount === 0) blockingGaps.push('build_system_metadata_not_detected');
   if (classification.backendCandidates.length === 0) blockingGaps.push('gpu_backend_signal_not_detected');
@@ -4072,6 +4346,12 @@ async function buildAcceptedSourceIntakeFacet({
       runtimeBoundaryEventManifestTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate === true,
     runtime_boundary_event_manifest_template_accepted:
       runtimeBoundaryEventManifestTemplate.acceptedAsRuntimeBoundaryEventManifestTemplate === true,
+    runtimeAppHookMaterializationPlan,
+    runtime_app_hook_materialization_plan: runtimeAppHookMaterializationPlan,
+    runtimeAppHookMaterializationPlanAccepted:
+      runtimeAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
+    runtime_app_hook_materialization_plan_accepted:
+      runtimeAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
     runtimeBoundaryHints: candidate.runtimeBoundaryHints,
     runtime_boundary_hints: candidate.runtimeBoundaryHints,
     oracleHints: candidate.oracleHints,
@@ -5134,6 +5414,18 @@ async function runSelectedCandidate(
       runtimeProfileProofBridgeAccepted,
       runtimeProfileStrictRuntimeProofAccepted,
     });
+    const runtimeAppHookMaterializationPlan = deriveAppHookMaterializationPlan({
+      candidate,
+      runtimeBoundaryExpectation: sourceIntakeEvidence?.runtimeBoundaryExpectation
+        ?? sourceIntakeEvidence?.runtime_boundary_expectation,
+      runtimeBoundaryEventManifestTemplate:
+        sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate
+        ?? sourceIntakeEvidence?.runtime_boundary_event_manifest_template,
+      runtimeSupportClosureObligation,
+      derivedRuntimeProfileContract,
+      runtimeProfileProofBridge,
+      sourceIntakeEvidence: sourceIntakeEvidence ?? {},
+    });
     const runtimeSupportClosureGaps = uniqueSortedStrings([
       ...(Array.isArray(runtimeSupportClosureObligation.blockingGaps)
         ? runtimeSupportClosureObligation.blockingGaps
@@ -5254,6 +5546,12 @@ async function runSelectedCandidate(
       runtime_support_closure_obligation: runtimeSupportClosureObligation,
       runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
       runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
+      runtimeAppHookMaterializationPlan,
+      runtime_app_hook_materialization_plan: runtimeAppHookMaterializationPlan,
+      runtimeAppHookMaterializationPlanAccepted:
+        runtimeAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
+      runtime_app_hook_materialization_plan_accepted:
+        runtimeAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
       derivedRuntimeProfileContract,
       derived_runtime_profile_contract: derivedRuntimeProfileContract,
       derivedRuntimeProfileContractAccepted,
@@ -6839,6 +7137,22 @@ async function selfCheck() {
     || unprofiledResult.runtimeSupportClosureObligation?.acceptedForGpuHmr !== false
     || unprofiledResult.runtimeSupportClosureObligation?.gpuHmrSuccess !== false
     || unprofiledResult.runtimeSupportClosureObligation?.canSatisfyRuntimeProof !== false
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.proofAuthority
+      !== APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.acceptedAsSupportEvidence !== true
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.targetNameIndependent !== true
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.projectNameWhitelist?.length !== 0
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.specificTargetIdsAllowed?.length !== 0
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.acceptedForGpuHmr !== false
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.gpuHmrSuccess !== false
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.canSatisfyRuntimeProof !== false
+    || unprofiledResult.runtimeAppHookMaterializationPlan?.canSatisfyDispatchProof !== false
+    || !unprofiledResult.runtimeAppHookMaterializationPlan?.materializationPlanHash?.startsWith('sha256:')
+    || !REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS.every((kind) =>
+      unprofiledResult.runtimeAppHookMaterializationPlan?.requiredStages?.includes(kind)
+      && unprofiledResult.runtimeAppHookMaterializationPlan?.stagePlans
+        ?.some((stage) => stage.stage === kind && stage.materialized === false)
+    )
     || unprofiledResult.acceptedForGpuHmr !== false
     || unprofiledResult.gpuHmrSuccess !== false
   ) {
@@ -7010,6 +7324,29 @@ async function selfCheck() {
       !== ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
     || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.gpuHmrSuccess !== false
     || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.canSatisfyRuntimeProof !== false
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.proofAuthority
+      !== APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.acceptedAsSupportEvidence !== true
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.targetNameIndependent !== true
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.projectNameWhitelist?.length !== 0
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan
+      ?.specificTargetIdsAllowed?.length !== 0
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.gpuHmrSuccess !== false
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.canSatisfyRuntimeProof !== false
+    || localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.canSatisfyDispatchProof !== false
+    || !REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS.every((kind) =>
+      localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.requiredStages?.includes(kind)
+      && localResult.sourceIntakeEvidence?.runtimeAppHookMaterializationPlan?.stagePlans
+        ?.some((stage) => stage.stage === kind && stage.observedRuntimeEventRequired === true)
+    )
+    || localResult.runtimeAppHookMaterializationPlan?.proofAuthority
+      !== APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY
+    || localResult.runtimeAppHookMaterializationPlan?.acceptedAsSupportEvidence !== true
+    || localResult.runtimeAppHookMaterializationPlan?.gpuHmrSuccess !== false
+    || localResult.runtimeAppHookMaterializationPlan?.canSatisfyRuntimeProof !== false
+    || localResult.runtimeAppHookMaterializationPlan?.canSatisfyDispatchProof !== false
+    || !localResult.runtimeAppHookMaterializationPlan?.blockingGaps
+      ?.includes('app_hook_materialization_requires_observed_target_process_events')
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.gpuHmrSuccess !== false
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.canSatisfyRuntimeProof !== false
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.requiredEventKinds?.includes('dispatch_trace')

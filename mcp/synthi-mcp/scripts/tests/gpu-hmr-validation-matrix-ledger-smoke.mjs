@@ -2202,6 +2202,106 @@ function randomColdRuntimeSupportClosureFixture(overrides = {}) {
   };
 }
 
+function randomColdAppHookMaterializationPlanFixture(overrides = {}) {
+  const requiredStages = [
+    'artifact_transport',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_oracle',
+  ];
+  const stagePlans = requiredStages.map((stage) => ({
+    stage,
+    eventKind: stage,
+    event_kind: stage,
+    boundaryLineToken: stage === 'epoch_publication'
+      ? 'dispatcher_epoch'
+      : stage === 'dispatch_trace'
+        ? 'synthi_gpu_launch'
+        : stage,
+    boundary_line_token: stage === 'epoch_publication'
+      ? 'dispatcher_epoch'
+      : stage === 'dispatch_trace'
+        ? 'synthi_gpu_launch'
+        : stage,
+    requiredProofKinds: [`${stage}_proof`],
+    required_proof_kinds: [`${stage}_proof`],
+    requiredFields: ['runtime_session', 'process_id'],
+    required_fields: ['runtime_session', 'process_id'],
+    backendSpecificFields: [],
+    backend_specific_fields: [],
+    oracleAlternatives: stage === 'output_oracle'
+      ? [{ mode: 'compute_readback', requiredFields: ['raw_readback_hash'] }]
+      : [],
+    oracle_alternatives: stage === 'output_oracle'
+      ? [{ mode: 'compute_readback', required_fields: ['raw_readback_hash'] }]
+      : [],
+    eventTemplateHash: hashValue(`random-cold-app-hook-materialization:${stage}`),
+    event_template_hash: hashValue(`random-cold-app-hook-materialization:${stage}`),
+    acceptedAsPlanOnlyStage: true,
+    accepted_as_plan_only_stage: true,
+    materialized: false,
+    observedRuntimeEventRequired: true,
+    observed_runtime_event_required: true,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    missingRuntimeEventGap: `app_hook_materialization_${stage}_event_missing`,
+    missing_runtime_event_gap: `app_hook_materialization_${stage}_event_missing`,
+  }));
+  const plan = {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_app_hook_materialization_plan.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_path_app_hook_materialization_plan.v1',
+    proofAuthority: 'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success',
+    proof_authority: 'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success',
+    accepted: false,
+    acceptedAsSupportEvidence: true,
+    accepted_as_support_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    materializesRuntimeEvents: false,
+    materializes_runtime_events: false,
+    requiresObservedTargetProcessEvents: true,
+    requires_observed_target_process_events: true,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    requiredStages,
+    required_stages: requiredStages,
+    stagePlans,
+    stage_plans: stagePlans,
+    missingRuntimeEventGaps: stagePlans.map((stage) => stage.missingRuntimeEventGap),
+    missing_runtime_event_gaps: stagePlans.map((stage) => stage.missing_runtime_event_gap),
+    blockingGaps: [
+      'app_hook_materialization_requires_observed_target_process_events',
+      ...stagePlans.map((stage) => stage.missingRuntimeEventGap),
+    ],
+    blocking_gaps: [
+      'app_hook_materialization_requires_observed_target_process_events',
+      ...stagePlans.map((stage) => stage.missing_runtime_event_gap),
+    ],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+  const materializationPlanHash = contentHashFor(plan);
+  return {
+    ...plan,
+    materializationPlanHash,
+    materialization_plan_hash: materializationPlanHash,
+  };
+}
+
 function randomColdSourceListingManifestFixture({
   targetId = 'random-cold-readiness-user-project',
   fileCount = 1500,
@@ -2519,6 +2619,28 @@ function randomColdPathManifest({
     }),
   });
   const runtimeSupportClosureObligation = randomColdRuntimeSupportClosureFixture();
+  const runtimeAppHookMaterializationPlan = randomColdAppHookMaterializationPlanFixture({
+    candidateId,
+    candidate_id: candidateId,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    sourceListingHash: sourceListingManifest.sourceListingHash,
+    source_listing_hash: sourceListingManifest.sourceListingHash,
+    buildMetadataContentHash: buildMetadataContentEvidence.contentEvidenceHash,
+    build_metadata_content_hash: buildMetadataContentEvidence.contentEvidenceHash,
+    runtimeBoundaryExpectationHash: runtimeBoundaryExpectation.expectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectation.expectationHash,
+    runtimeBoundaryEventManifestTemplateHash: runtimeBoundaryEventManifestTemplate.templateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplate.templateHash,
+    runtimeSupportClosureObligationHash: runtimeSupportClosureObligation.obligationHash,
+    runtime_support_closure_obligation_hash: runtimeSupportClosureObligation.obligationHash,
+    backendCandidates: expectationBackendCandidates,
+    backend_candidates: expectationBackendCandidates,
+    acceptableOracleKinds: ['compute_readback'],
+    acceptable_oracle_kinds: ['compute_readback'],
+  });
   const sourceIntakeEvidence = {
     schemaVersion: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
     schema_version: 'synthi.gpu_hmr.unprofiled_cold_source_intake.v1',
@@ -2601,6 +2723,10 @@ function randomColdPathManifest({
     runtime_boundary_event_manifest_template_accepted: runtimeBoundaryTemplateAccepted,
     runtimeBoundaryEventManifestTemplate,
     runtime_boundary_event_manifest_template: runtimeBoundaryEventManifestTemplate,
+    runtimeAppHookMaterializationPlan,
+    runtime_app_hook_materialization_plan: runtimeAppHookMaterializationPlan,
+    runtimeAppHookMaterializationPlanAccepted: true,
+    runtime_app_hook_materialization_plan_accepted: true,
   };
   sourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(sourceIntakeEvidence);
   sourceIntakeEvidence.facet_hash = sourceIntakeEvidence.facetHash;
@@ -2663,6 +2789,10 @@ function randomColdPathManifest({
     runtime_support_closure_obligation: runtimeSupportClosureObligation,
     runtimeSupportClosureOutcome: runtimeSupportClosureObligation.outcome,
     runtime_support_closure_outcome: runtimeSupportClosureObligation.outcome,
+    runtimeAppHookMaterializationPlan,
+    runtime_app_hook_materialization_plan: runtimeAppHookMaterializationPlan,
+    runtimeAppHookMaterializationPlanAccepted: true,
+    runtime_app_hook_materialization_plan_accepted: true,
     sizeSignals,
     size_signals: sizeSignals,
     sourceIntakeEvidence,
@@ -3132,7 +3262,32 @@ assert.equal(
   randomColdRow.randomColdRuntimeSupportClosureObligation.outcome,
   'unsupported_requires_app_hook',
 );
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.present, true);
+assert.equal(
+  randomColdRow.randomColdAppHookMaterializationPlan.proofAuthority,
+  'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success',
+);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.acceptedAsSupportEvidence, true);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.targetNameIndependent, true);
+assert.deepEqual(randomColdRow.randomColdAppHookMaterializationPlan.projectNameWhitelist, []);
+assert.deepEqual(randomColdRow.randomColdAppHookMaterializationPlan.specificTargetIdsAllowed, []);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.acceptedForGpuHmr, false);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.gpuHmrSuccess, false);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.canSatisfyRuntimeProof, false);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.canSatisfyDispatchProof, false);
+assert.equal(randomColdRow.randomColdAppHookMaterializationPlan.materializesRuntimeEvents, false);
+assert.ok(randomColdRow.randomColdAppHookMaterializationPlan.materializationPlanHash.startsWith('sha256:'));
+assert.ok(['artifact_transport', 'epoch_publication', 'dispatch_trace', 'host_identity', 'output_oracle']
+  .every((stage) =>
+    randomColdRow.randomColdAppHookMaterializationPlan.requiredStages.includes(stage)
+    && randomColdRow.randomColdAppHookMaterializationPlan.stagePlans.some((plan) =>
+      plan.stage === stage
+      && plan.materialized === false
+      && plan.observedRuntimeEventRequired === true
+    )
+  ));
 assert.ok(randomColdRow.openGaps.includes('runtime_support_closure_requires_app_hook'));
+assert.ok(randomColdRow.openGaps.includes('app_hook_materialization_requires_observed_target_process_events'));
 assert.equal(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   1,
@@ -5611,6 +5766,86 @@ assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
 ));
 assert.ok(forgedAdapterClosureAuthorityRow.safety.failedGates.some((gate) =>
   gate.code === 'random_large_project_cold_adapter_closure_expectation_claimed_authority'
+));
+
+const forgedAppHookMaterializationAuthorityDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-app-hook-materialization-authority-forged',
+);
+const forgedAppHookMaterializationAuthority = randomColdAppHookMaterializationPlanFixture({
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: true,
+  can_satisfy_dispatch_proof: true,
+  materializesRuntimeEvents: true,
+  materializes_runtime_events: true,
+  stagePlans: randomColdAppHookMaterializationPlanFixture().stagePlans.map((stage, index) => ({
+    ...stage,
+    materialized: index === 0 ? true : stage.materialized,
+  })),
+});
+await writeJson(
+  path.join(
+    forgedAppHookMaterializationAuthorityDir,
+    'random-cold-app-hook-materialization-authority.json',
+  ),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-app-hook-materialization-authority',
+    sourceUrl: 'https://example.invalid/arbitrary/app-hook-materialization-authority.git',
+    immutableCommit: sha256Hex('app-hook-materialization-authority:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeAppHookMaterializationPlan: forgedAppHookMaterializationAuthority,
+      runtime_app_hook_materialization_plan: forgedAppHookMaterializationAuthority,
+      runtimeAppHookMaterializationPlanAccepted: true,
+      runtime_app_hook_materialization_plan_accepted: true,
+    },
+  }),
+);
+const forgedAppHookMaterializationAuthorityLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedAppHookMaterializationAuthorityDir],
+  includeInvalidated: true,
+});
+const forgedAppHookMaterializationAuthorityRow =
+  forgedAppHookMaterializationAuthorityLedger.rows.find(
+    (row) => row.proofMode === 'random_large_project_cold_path',
+  );
+assert.equal(forgedAppHookMaterializationAuthorityRow?.safety.accepted, false);
+assert.equal(forgedAppHookMaterializationAuthorityRow.acceptedForGpuHmr, false);
+assert.equal(forgedAppHookMaterializationAuthorityRow.gpuHmrSuccess, false);
+assert.equal(
+  forgedAppHookMaterializationAuthorityRow.randomColdAppHookMaterializationPlan.present,
+  true,
+);
+assert.equal(
+  forgedAppHookMaterializationAuthorityRow.randomColdAppHookMaterializationPlan.accepted,
+  false,
+);
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_app_hook_materialization_plan_invalid'
+));
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_app_hook_materialization_plan_claimed_gpu_hmr_success'
+));
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_app_hook_materialization_plan_claimed_runtime_authority'
+));
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_app_hook_materialization_plan_claimed_dispatch_authority'
+));
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_app_hook_materialization_plan_claimed_event_materialization'
+));
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_app_hook_materialization_plan_stage_claimed_authority'
+));
+assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_app_hook_materialization_plan_claimed_authority'
 ));
 
 const multiRandomColdPathDir = path.join(

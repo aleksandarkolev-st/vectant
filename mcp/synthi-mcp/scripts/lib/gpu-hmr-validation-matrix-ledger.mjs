@@ -245,6 +245,10 @@ const RANDOM_COLD_ADAPTER_CLOSURE_EXPECTATION_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_adapter_closure_expectation.v1';
 const RANDOM_COLD_ADAPTER_CLOSURE_EXPECTATION_AUTHORITY =
   'adapter_closure_expectation_only_not_gpu_hmr_success';
+const RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_app_hook_materialization_plan.v1';
+const RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY =
+  'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success';
 const RANDOM_COLD_ADAPTER_CLOSURE_OUTCOMES = Object.freeze([
   'built_in_reload',
   'generated_adapter',
@@ -5574,6 +5578,251 @@ function randomColdAdapterClosureExpectationFacet(raw = {}) {
   };
 }
 
+function randomColdAppHookMaterializationPlanFacet(raw = {}) {
+  const facet = compactObject(raw);
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const materializesRuntimeEvents = firstBool(
+    facet.materializesRuntimeEvents,
+    facet.materializes_runtime_events,
+  );
+  const requiresObservedTargetProcessEvents = firstBool(
+    facet.requiresObservedTargetProcessEvents,
+    facet.requires_observed_target_process_events,
+  );
+  const targetNameIndependent = firstBool(
+    facet.targetNameIndependent,
+    facet.target_name_independent,
+  );
+  const acceptedAsSupportEvidence = firstBool(
+    facet.acceptedAsSupportEvidence,
+    facet.accepted_as_support_evidence,
+    facet.accepted,
+  ) === true;
+  const requiredStages = compactStringList([
+    ...(Array.isArray(facet.requiredStages) ? facet.requiredStages : []),
+    ...(Array.isArray(facet.required_stages) ? facet.required_stages : []),
+  ]);
+  const stagePlans = compactObjectList(facet.stagePlans ?? facet.stage_plans);
+  const stageNames = compactStringList(stagePlans.map((stage) =>
+    firstText(stage.stage, stage.eventKind, stage.event_kind)
+  ));
+  const missingRuntimeEventGaps = compactStringList([
+    ...(Array.isArray(facet.missingRuntimeEventGaps) ? facet.missingRuntimeEventGaps : []),
+    ...(Array.isArray(facet.missing_runtime_event_gaps) ? facet.missing_runtime_event_gaps : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const suppliedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const authorityClaims = compactStringList(facet.authorityClaims ?? facet.authority_claims);
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(facet.projectNameWhitelist) ? facet.projectNameWhitelist : []),
+    ...(Array.isArray(facet.project_name_whitelist) ? facet.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(facet.specificTargetIdsAllowed) ? facet.specificTargetIdsAllowed : []),
+    ...(Array.isArray(facet.specific_target_ids_allowed) ? facet.specific_target_ids_allowed : []),
+  ]);
+  const materializationPlanHash = normalizeSha256(firstText(
+    facet.materializationPlanHash,
+    facet.materialization_plan_hash,
+  ));
+  const existingRecomputedPlanHash = normalizeSha256(firstText(
+    facet.recomputedMaterializationPlanHash,
+    facet.recomputed_materialization_plan_hash,
+  ));
+  const planHashSeed = { ...facet };
+  delete planHashSeed.materializationPlanHash;
+  delete planHashSeed.materialization_plan_hash;
+  delete planHashSeed.suppliedMaterializationPlanHash;
+  delete planHashSeed.supplied_materialization_plan_hash;
+  delete planHashSeed.recomputedMaterializationPlanHash;
+  delete planHashSeed.recomputed_materialization_plan_hash;
+  const recomputedMaterializationPlanHash = existingRecomputedPlanHash
+    ?? normalizeSha256(stableJsonHash(planHashSeed));
+  const authorityFlagClaimed = acceptedForGpuHmr === true
+    || gpuHmrSuccess === true
+    || canSatisfyRuntimeProof === true
+    || canSatisfyDispatchProof === true
+    || authorityClaims.length > 0;
+  const hasPlanMaterial = Boolean(
+    schemaVersion
+      || proofAuthority
+      || acceptedAsSupportEvidence
+      || requiredStages.length
+      || stagePlans.length
+      || materializationPlanHash
+      || blockingGaps.length
+      || suppliedFailedGates.length
+  );
+  const present = Object.keys(facet).length > 0
+    && (firstBool(facet.present) !== false || authorityFlagClaimed || hasPlanMaterial);
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+      blockingGaps: [],
+      blocking_gaps: [],
+    };
+  }
+  const requiredStageSet = new Set(COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS);
+  const requiredStagesComplete = COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS
+    .every((stage) => requiredStages.includes(stage));
+  const stagePlansComplete = COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS
+    .every((stage) => stageNames.includes(stage));
+  const stageAuthorityClaimed = stagePlans.some((stage) =>
+    firstBool(stage.materialized) === true
+    || firstBool(stage.canSatisfyRuntimeProof, stage.can_satisfy_runtime_proof) === true
+    || firstBool(stage.canSatisfyDispatchProof, stage.can_satisfy_dispatch_proof) === true
+  );
+  const stagePlanOnlyAccepted = stagePlans.every((stage) =>
+    firstBool(stage.acceptedAsPlanOnlyStage, stage.accepted_as_plan_only_stage) === true
+    && firstBool(stage.observedRuntimeEventRequired, stage.observed_runtime_event_required) === true
+  );
+  const unexpectedStages = requiredStages.filter((stage) => !requiredStageSet.has(stage));
+  const failedGates = compactStringList([
+    ...suppliedFailedGates,
+    schemaVersion === RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_SCHEMA_VERSION
+      ? null
+      : 'random_cold_app_hook_materialization_plan_schema_invalid',
+    proofAuthority === RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY
+      ? null
+      : 'random_cold_app_hook_materialization_plan_authority_invalid',
+    acceptedAsSupportEvidence === true
+      ? null
+      : 'random_cold_app_hook_materialization_plan_not_accepted_as_support',
+    acceptedForGpuHmr === true
+      ? 'random_cold_app_hook_materialization_plan_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'random_cold_app_hook_materialization_plan_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'random_cold_app_hook_materialization_plan_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'random_cold_app_hook_materialization_plan_claimed_dispatch_authority'
+      : null,
+    materializesRuntimeEvents === true
+      ? 'random_cold_app_hook_materialization_plan_claimed_event_materialization'
+      : null,
+    authorityClaims.length === 0
+      ? null
+      : 'random_cold_app_hook_materialization_plan_authority_claim_present',
+    requiresObservedTargetProcessEvents === true
+      ? null
+      : 'random_cold_app_hook_materialization_plan_missing_observed_event_requirement',
+    targetNameIndependent === true
+      ? null
+      : 'random_cold_app_hook_materialization_plan_not_target_independent',
+    projectNameWhitelist.length === 0
+      ? null
+      : 'random_cold_app_hook_materialization_plan_project_whitelist_present',
+    specificTargetIdsAllowed.length === 0
+      ? null
+      : 'random_cold_app_hook_materialization_plan_specific_target_allowlist_present',
+    requiredStagesComplete
+      ? null
+      : 'random_cold_app_hook_materialization_plan_required_stages_incomplete',
+    stagePlansComplete
+      ? null
+      : 'random_cold_app_hook_materialization_plan_stage_plans_incomplete',
+    unexpectedStages.length === 0
+      ? null
+      : 'random_cold_app_hook_materialization_plan_unexpected_stage',
+    stageAuthorityClaimed
+      ? 'random_cold_app_hook_materialization_plan_stage_claimed_authority'
+      : null,
+    stagePlanOnlyAccepted
+      ? null
+      : 'random_cold_app_hook_materialization_plan_stage_not_plan_only',
+    materializationPlanHash
+      ? null
+      : 'random_cold_app_hook_materialization_plan_hash_missing',
+    materializationPlanHash
+      && recomputedMaterializationPlanHash
+      && materializationPlanHash !== recomputedMaterializationPlanHash
+      ? 'random_cold_app_hook_materialization_plan_hash_mismatch'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    materializesRuntimeEvents: false,
+    materializes_runtime_events: false,
+    requiresObservedTargetProcessEvents: requiresObservedTargetProcessEvents === true,
+    requires_observed_target_process_events: requiresObservedTargetProcessEvents === true,
+    targetNameIndependent: targetNameIndependent === true,
+    target_name_independent: targetNameIndependent === true,
+    requiredStages,
+    required_stages: requiredStages,
+    stagePlans,
+    stage_plans: stagePlans,
+    stageNames,
+    stage_names: stageNames,
+    missingRuntimeEventGaps,
+    missing_runtime_event_gaps: missingRuntimeEventGaps,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    authorityClaims,
+    authority_claims: authorityClaims,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    suppliedMaterializationPlanHash: materializationPlanHash,
+    supplied_materialization_plan_hash: materializationPlanHash,
+    materializationPlanHash: recomputedMaterializationPlanHash,
+    materialization_plan_hash: recomputedMaterializationPlanHash,
+    recomputedMaterializationPlanHash,
+    recomputed_materialization_plan_hash: recomputedMaterializationPlanHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathSupportFacet(json = {}, result = {}, candidate = {}) {
   const selection = compactObject(json.selection);
   const selectedCandidates = compactObjectList(json.selectedCandidates ?? json.selected_candidates);
@@ -9253,6 +9502,12 @@ function rowEvidenceRefs(row = {}) {
     ...evidenceRefsFromValue(row.runtimeProofArtifact ?? row.runtime_proof_artifact),
     ...evidenceRefsFromValue(row.visual),
     ...evidenceRefsFromValue(row.sourceFirstIngestion ?? row.source_first_ingestion),
+    ...evidenceRefsFromValue(
+      row.randomColdAppHookMaterializationPlan
+      ?? row.random_cold_app_hook_materialization_plan
+      ?? row.runtimeAppHookMaterializationPlan
+      ?? row.runtime_app_hook_materialization_plan,
+    ),
   ]);
 }
 
@@ -18298,6 +18553,68 @@ function rowSafetyFailures(row, context = {}) {
       )
     ) {
       failures.push({ code: 'random_large_project_cold_adapter_closure_expectation_claimed_authority' });
+    }
+    const appHookMaterializationRaw = firstCompactObject(
+      row.randomColdAppHookMaterializationPlan,
+      row.random_cold_app_hook_materialization_plan,
+      row.runtimeAppHookMaterializationPlan,
+      row.runtime_app_hook_materialization_plan,
+      coldPathFacet.runtimeAppHookMaterializationPlan,
+      coldPathFacet.runtime_app_hook_materialization_plan,
+    );
+    const appHookMaterialization =
+      randomColdAppHookMaterializationPlanFacet(appHookMaterializationRaw);
+    const appHookMaterializationFailedGates = compactStringList([
+      ...(Array.isArray(appHookMaterialization.failedGates)
+        ? appHookMaterialization.failedGates
+        : []),
+      ...(Array.isArray(appHookMaterialization.failed_gates)
+        ? appHookMaterialization.failed_gates
+        : []),
+    ]);
+    if (appHookMaterialization.present === true && appHookMaterialization.accepted !== true) {
+      failures.push({ code: 'random_large_project_cold_app_hook_materialization_plan_invalid' });
+      failures.push(...appHookMaterializationFailedGates.map((code) => ({ code })));
+    }
+    const appHookMaterializationAuthorityFailed =
+      appHookMaterializationFailedGates.some((code) =>
+        code === 'random_cold_app_hook_materialization_plan_claimed_gpu_hmr_acceptance'
+        || code === 'random_cold_app_hook_materialization_plan_claimed_gpu_hmr_success'
+        || code === 'random_cold_app_hook_materialization_plan_claimed_runtime_authority'
+        || code === 'random_cold_app_hook_materialization_plan_claimed_dispatch_authority'
+        || code === 'random_cold_app_hook_materialization_plan_claimed_event_materialization'
+        || code === 'random_cold_app_hook_materialization_plan_authority_claim_present'
+        || code === 'random_cold_app_hook_materialization_plan_stage_claimed_authority'
+      );
+    if (
+      appHookMaterialization.present === true
+      && (
+        appHookMaterializationAuthorityFailed
+        || firstBool(
+          appHookMaterializationRaw.acceptedForGpuHmr,
+          appHookMaterializationRaw.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          appHookMaterializationRaw.gpuHmrSuccess,
+          appHookMaterializationRaw.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          appHookMaterializationRaw.canSatisfyRuntimeProof,
+          appHookMaterializationRaw.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          appHookMaterializationRaw.canSatisfyDispatchProof,
+          appHookMaterializationRaw.can_satisfy_dispatch_proof,
+        ) === true
+        || firstBool(
+          appHookMaterializationRaw.materializesRuntimeEvents,
+          appHookMaterializationRaw.materializes_runtime_events,
+        ) === true
+      )
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_app_hook_materialization_plan_claimed_authority',
+      });
     }
     const coldSourceIntakeRaw = compactObject(
       row.sourceIntakeEvidence
@@ -29422,6 +29739,14 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomLargeProjectColdPath.runtimeSupportClosureObligation,
     randomLargeProjectColdPath.runtime_support_closure_obligation,
   ));
+  const randomColdAppHookMaterializationPlan = randomColdAppHookMaterializationPlanFacet(firstCompactObject(
+    result.runtimeAppHookMaterializationPlan,
+    result.runtime_app_hook_materialization_plan,
+    sourceIntake.runtimeAppHookMaterializationPlan,
+    sourceIntake.runtime_app_hook_materialization_plan,
+    randomLargeProjectColdPath.runtimeAppHookMaterializationPlan,
+    randomLargeProjectColdPath.runtime_app_hook_materialization_plan,
+  ));
   const randomColdPathDirectInputEvidence =
     randomLargeProjectColdPath.directInputEvidence
     ?? randomLargeProjectColdPath.direct_input_evidence
@@ -29511,6 +29836,12 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdRuntimeSupportClosureObligation.present === true
       ? randomColdRuntimeSupportClosureObligation.failedGates
       : []),
+    ...(randomColdAppHookMaterializationPlan.present === true
+      ? randomColdAppHookMaterializationPlan.blockingGaps
+      : []),
+    ...(randomColdAppHookMaterializationPlan.present === true
+      ? randomColdAppHookMaterializationPlan.failedGates
+      : []),
     'same_process_loader_unproven',
     'epoch_publication_unproven',
     'dispatch_trace_unproven',
@@ -29585,6 +29916,7 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeStrictImportProjection.facetHash,
     randomColdRuntimeStrictImportProjection.facet_hash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
+    randomColdAppHookMaterializationPlan.materializationPlanHash,
   ]);
   return finalizeRow({
     artifactPath: relPath(filePath, context.repoRoot),
@@ -29752,6 +30084,28 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       randomColdRuntimeSupportClosureObligation.present === true
         ? randomColdRuntimeSupportClosureObligation
         : null,
+    randomColdAppHookMaterializationPlan:
+      randomColdAppHookMaterializationPlan.present === true
+        ? randomColdAppHookMaterializationPlan
+        : null,
+    random_cold_app_hook_materialization_plan:
+      randomColdAppHookMaterializationPlan.present === true
+        ? randomColdAppHookMaterializationPlan
+        : null,
+    runtimeAppHookMaterializationPlan:
+      randomColdAppHookMaterializationPlan.present === true
+        ? randomColdAppHookMaterializationPlan
+        : null,
+    runtime_app_hook_materialization_plan:
+      randomColdAppHookMaterializationPlan.present === true
+        ? randomColdAppHookMaterializationPlan
+        : null,
+    runtimeAppHookMaterializationPlanAccepted:
+      randomColdAppHookMaterializationPlan.present === true
+      && randomColdAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
+    runtime_app_hook_materialization_plan_accepted:
+      randomColdAppHookMaterializationPlan.present === true
+      && randomColdAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
     runtimeSupportClosureOutcome:
       randomColdRuntimeSupportClosureObligation.present === true
         ? randomColdRuntimeSupportClosureObligation.outcome
@@ -30022,6 +30376,12 @@ function rowRuntimeBoundarySupportScore(row) {
     ?? row.runtimeProfileAdapterResultImport
     ?? row.runtime_profile_adapter_result_import,
   );
+  const randomColdAppHookMaterializationPlan = compactObject(
+    row.randomColdAppHookMaterializationPlan
+    ?? row.random_cold_app_hook_materialization_plan
+    ?? row.runtimeAppHookMaterializationPlan
+    ?? row.runtime_app_hook_materialization_plan,
+  );
   const adapterResult = compactObject(
     row.realRocmRuntimeProfileAdapterResult
     ?? row.real_rocm_runtime_profile_adapter_result,
@@ -30089,6 +30449,24 @@ function rowRuntimeBoundarySupportScore(row) {
       ?? randomColdRuntimeProfileAdapterResultImport.adapterRuntimeBoundaryLines
       ?? randomColdRuntimeProfileAdapterResultImport.adapter_runtime_boundary_lines,
       10,
+    );
+  }
+  if (
+    firstText(
+      randomColdAppHookMaterializationPlan.proofAuthority,
+      randomColdAppHookMaterializationPlan.proof_authority,
+    ) === RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY
+    && firstBool(
+      randomColdAppHookMaterializationPlan.acceptedAsSupportEvidence,
+      randomColdAppHookMaterializationPlan.accepted_as_support_evidence,
+    ) === true
+    && runtimeBoundarySupportAuthorityNeutral(randomColdAppHookMaterializationPlan)
+  ) {
+    score += 5;
+    score += boundedSupportCount(
+      randomColdAppHookMaterializationPlan.stagePlans
+      ?? randomColdAppHookMaterializationPlan.stage_plans,
+      5,
     );
   }
   if (
@@ -31538,6 +31916,14 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       facet.runtimeSupportClosureObligation,
       facet.runtime_support_closure_obligation,
     ));
+    const appHookMaterialization = randomColdAppHookMaterializationPlanFacet(firstCompactObject(
+      row.randomColdAppHookMaterializationPlan,
+      row.random_cold_app_hook_materialization_plan,
+      row.runtimeAppHookMaterializationPlan,
+      row.runtime_app_hook_materialization_plan,
+      facet.runtimeAppHookMaterializationPlan,
+      facet.runtime_app_hook_materialization_plan,
+    ));
     const backendEvidence = compactObject(
       row.randomColdBackendEvidence
       ?? row.random_cold_backend_evidence,
@@ -31702,6 +32088,10 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       rawLargeSourceTree
       && sourceRelevantFileCount >= BROAD_LIBRARY_MIN_RANDOM_COLD_PATH_SOURCE_RELEVANT_FILE_COUNT;
     const forbiddenAuthority = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      || firstBool(row.acceptedForGpuHmr, row.accepted_for_gpu_hmr) === true
+      || firstBool(row.gpuHmrSuccess, row.gpu_hmr_success) === true
+      || firstBool(row.canSatisfyRuntimeProof, row.can_satisfy_runtime_proof) === true
+      || firstBool(row.canSatisfyDispatchProof, row.can_satisfy_dispatch_proof) === true
       || firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
       || firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
       || firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
@@ -31723,6 +32113,24 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
         runtimeSupportClosure.can_satisfy_dispatch_proof,
       ) === true
       || (runtimeSupportClosure.present === true && runtimeSupportClosure.accepted !== true)
+      || firstBool(
+        appHookMaterialization.acceptedForGpuHmr,
+        appHookMaterialization.accepted_for_gpu_hmr,
+      ) === true
+      || firstBool(appHookMaterialization.gpuHmrSuccess, appHookMaterialization.gpu_hmr_success) === true
+      || firstBool(
+        appHookMaterialization.canSatisfyRuntimeProof,
+        appHookMaterialization.can_satisfy_runtime_proof,
+      ) === true
+      || firstBool(
+        appHookMaterialization.canSatisfyDispatchProof,
+        appHookMaterialization.can_satisfy_dispatch_proof,
+      ) === true
+      || firstBool(
+        appHookMaterialization.materializesRuntimeEvents,
+        appHookMaterialization.materializes_runtime_events,
+      ) === true
+      || (appHookMaterialization.present === true && appHookMaterialization.accepted !== true)
       || firstBool(
         directInputEvidence.acceptedForGpuHmr,
         directInputEvidence.accepted_for_gpu_hmr,
@@ -33973,6 +34381,14 @@ function rowRefs(rows) {
     runtime_support_closure_obligation: row.runtimeSupportClosureObligation,
     runtimeSupportClosureOutcome: row.runtimeSupportClosureOutcome,
     runtime_support_closure_outcome: row.runtimeSupportClosureOutcome,
+    randomColdAppHookMaterializationPlan:
+      row.randomColdAppHookMaterializationPlan,
+    random_cold_app_hook_materialization_plan:
+      row.randomColdAppHookMaterializationPlan,
+    runtimeAppHookMaterializationPlan:
+      row.runtimeAppHookMaterializationPlan,
+    runtime_app_hook_materialization_plan:
+      row.runtimeAppHookMaterializationPlan,
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
@@ -35380,6 +35796,12 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.runtimeSupportClosureObligation
     ?? row.runtime_support_closure_obligation
   );
+  const appHookMaterializationPlan = compactObject(
+    row.randomColdAppHookMaterializationPlan
+    ?? row.random_cold_app_hook_materialization_plan
+    ?? row.runtimeAppHookMaterializationPlan
+    ?? row.runtime_app_hook_materialization_plan
+  );
   const runtimeChain = compactObject(
     row.realRocmRuntimeChain
     ?? row.real_rocm_runtime_chain
@@ -35534,6 +35956,9 @@ function runtimeClosureRowSignals(row = {}) {
       || runtimeSupportClosure.acceptedAsSupportEvidence === true
       || runtimeSupportClosure.accepted_as_support_evidence === true
       || runtimeSupportClosure.present === true
+      || appHookMaterializationPlan.acceptedAsSupportEvidence === true
+      || appHookMaterializationPlan.accepted_as_support_evidence === true
+      || appHookMaterializationPlan.present === true
       || derivedRuntimeProfileContract.present === true
       || coldTemplate.acceptedAsSupportEvidence === true
       || runtimeProfileBridgePresent,
@@ -35581,6 +36006,10 @@ function runtimeClosureRowSignals(row = {}) {
     runtimeSupportClosureAccepted:
       runtimeSupportClosure.acceptedAsSupportEvidence === true
       || runtimeSupportClosure.accepted_as_support_evidence === true,
+    appHookMaterializationPlanPresent: appHookMaterializationPlan.present === true,
+    appHookMaterializationPlanAccepted:
+      appHookMaterializationPlan.acceptedAsSupportEvidence === true
+      || appHookMaterializationPlan.accepted_as_support_evidence === true,
     strictRuntimeProofAccepted,
     runtimeBoundaryTemplateAccepted:
       coldTemplate.acceptedAsSupportEvidence === true
@@ -35638,6 +36067,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     signals.filter((signal) => signal.runtimeSupportClosurePresent).length;
   const runtimeSupportClosureAcceptedCount =
     signals.filter((signal) => signal.runtimeSupportClosureAccepted).length;
+  const appHookMaterializationPlanPresentCount =
+    signals.filter((signal) => signal.appHookMaterializationPlanPresent).length;
+  const appHookMaterializationPlanAcceptedCount =
+    signals.filter((signal) => signal.appHookMaterializationPlanAccepted).length;
   const strictRuntimeProofAcceptedCount =
     signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
   const status = acceptedClosureRows.length > 0
@@ -35689,6 +36122,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     runtime_support_closure_present_count: runtimeSupportClosurePresentCount,
     runtimeSupportClosureAcceptedCount,
     runtime_support_closure_accepted_count: runtimeSupportClosureAcceptedCount,
+    appHookMaterializationPlanPresentCount,
+    app_hook_materialization_plan_present_count: appHookMaterializationPlanPresentCount,
+    appHookMaterializationPlanAcceptedCount,
+    app_hook_materialization_plan_accepted_count: appHookMaterializationPlanAcceptedCount,
     strictRuntimeProofAcceptedCount,
     strict_runtime_proof_accepted_count: strictRuntimeProofAcceptedCount,
     matrixRuntimeIngestionRequired:
