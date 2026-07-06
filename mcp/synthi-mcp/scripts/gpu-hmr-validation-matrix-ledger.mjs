@@ -687,10 +687,70 @@ function compactBroadLibraryAgnosticReadiness(readiness = {}) {
     backend_families: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
     acceptanceScopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
     acceptance_scopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
-    visualOracleScopes: compactPrimitiveArray(readiness.visualOracleScopes ?? readiness.visual_oracle_scopes),
-    visual_oracle_scopes: compactPrimitiveArray(readiness.visualOracleScopes ?? readiness.visual_oracle_scopes),
-    computeOracleScopes: compactPrimitiveArray(readiness.computeOracleScopes ?? readiness.compute_oracle_scopes),
-    compute_oracle_scopes: compactPrimitiveArray(readiness.computeOracleScopes ?? readiness.compute_oracle_scopes),
+    visualOracleTargets: compactPrimitiveArray(
+      readiness.visualOracleTargets
+        ?? readiness.visual_oracle_targets
+        ?? readiness.visualTargets
+        ?? readiness.visual_targets
+        ?? broadProof.visualOracleTargets
+        ?? broadProof.visual_oracle_targets
+        ?? broadProof.visualTargets
+        ?? broadProof.visual_targets,
+    ),
+    visual_oracle_targets: compactPrimitiveArray(
+      readiness.visualOracleTargets
+        ?? readiness.visual_oracle_targets
+        ?? readiness.visualTargets
+        ?? readiness.visual_targets
+        ?? broadProof.visualOracleTargets
+        ?? broadProof.visual_oracle_targets
+        ?? broadProof.visualTargets
+        ?? broadProof.visual_targets,
+    ),
+    visualOracleScopes: compactPrimitiveArray(
+      readiness.visualOracleScopes
+        ?? readiness.visual_oracle_scopes
+        ?? broadProof.visualOracleScopes
+        ?? broadProof.visual_oracle_scopes,
+    ),
+    visual_oracle_scopes: compactPrimitiveArray(
+      readiness.visualOracleScopes
+        ?? readiness.visual_oracle_scopes
+        ?? broadProof.visualOracleScopes
+        ?? broadProof.visual_oracle_scopes,
+    ),
+    computeOracleTargets: compactPrimitiveArray(
+      readiness.computeOracleTargets
+        ?? readiness.compute_oracle_targets
+        ?? readiness.computeTargets
+        ?? readiness.compute_targets
+        ?? broadProof.computeOracleTargets
+        ?? broadProof.compute_oracle_targets
+        ?? broadProof.computeTargets
+        ?? broadProof.compute_targets,
+    ),
+    compute_oracle_targets: compactPrimitiveArray(
+      readiness.computeOracleTargets
+        ?? readiness.compute_oracle_targets
+        ?? readiness.computeTargets
+        ?? readiness.compute_targets
+        ?? broadProof.computeOracleTargets
+        ?? broadProof.compute_oracle_targets
+        ?? broadProof.computeTargets
+        ?? broadProof.compute_targets,
+    ),
+    computeOracleScopes: compactPrimitiveArray(
+      readiness.computeOracleScopes
+        ?? readiness.compute_oracle_scopes
+        ?? broadProof.computeOracleScopes
+        ?? broadProof.compute_oracle_scopes,
+    ),
+    compute_oracle_scopes: compactPrimitiveArray(
+      readiness.computeOracleScopes
+        ?? readiness.compute_oracle_scopes
+        ?? broadProof.computeOracleScopes
+        ?? broadProof.compute_oracle_scopes,
+    ),
     adversarialRefusalRows:
       Number.isSafeInteger(Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows))
         ? Number(readiness.adversarialRefusalRows ?? readiness.adversarial_refusal_rows)

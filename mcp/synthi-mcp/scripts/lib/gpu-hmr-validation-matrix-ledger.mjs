@@ -32914,10 +32914,20 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle'))
       .map((row) => row.targetId),
   );
+  const visualOracleScopes = compactStringList(
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle'))
+      .map((row) => row.acceptanceScope),
+  );
   const computeTargets = compactStringList(
     fullRuntimeRows
       .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle'))
       .map((row) => row.targetId),
+  );
+  const computeOracleScopes = compactStringList(
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle'))
+      .map((row) => row.acceptanceScope),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
   const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
@@ -33062,7 +33072,9 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     refusalFreshnessGaps,
     sourceFirstVisualFreshnessGaps,
     visualTargets,
+    visualOracleScopes,
     computeTargets,
+    computeOracleScopes,
     refusalTargets,
     randomColdPathTargets,
     randomColdPathRowIds,
@@ -33160,8 +33172,16 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     proof_modes: proofModes,
     visualTargets,
     visual_targets: visualTargets,
+    visualOracleTargets: visualTargets,
+    visual_oracle_targets: visualTargets,
+    visualOracleScopes,
+    visual_oracle_scopes: visualOracleScopes,
     computeTargets,
     compute_targets: computeTargets,
+    computeOracleTargets: computeTargets,
+    compute_oracle_targets: computeTargets,
+    computeOracleScopes,
+    compute_oracle_scopes: computeOracleScopes,
     refusalTargets,
     refusal_targets: refusalTargets,
     randomColdPathRows: randomColdPathRows.length,
@@ -33447,10 +33467,20 @@ function broadLibraryAgnosticReadiness(
       .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle'))
       .map((row) => row.targetId),
   );
+  const visualOracleScopes = compactStringList(
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'visual_oracle'))
+      .map((row) => row.acceptanceScope),
+  );
   const computeTargets = compactStringList(
     fullRuntimeRows
       .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle'))
       .map((row) => row.targetId),
+  );
+  const computeOracleScopes = compactStringList(
+    fullRuntimeRows
+      .filter((row) => rowHasAcceptedStrictFullRuntimeOutputOracle(row, 'compute_oracle'))
+      .map((row) => row.acceptanceScope),
   );
   const refusalTargets = compactStringList(refusalRowsForReadiness.map((row) => row.targetId));
   const randomColdPathTargets = compactStringList(randomColdPathRows.map((row) => row.targetId));
@@ -33699,7 +33729,15 @@ function broadLibraryAgnosticReadiness(
     acceptanceScopes,
     proofModes,
     visualTargets,
+    visualOracleTargets: visualTargets,
+    visual_oracle_targets: visualTargets,
+    visualOracleScopes,
+    visual_oracle_scopes: visualOracleScopes,
     computeTargets,
+    computeOracleTargets: computeTargets,
+    compute_oracle_targets: computeTargets,
+    computeOracleScopes,
+    compute_oracle_scopes: computeOracleScopes,
     refusalTargets,
     randomColdPathTargets,
     random_cold_path_targets: randomColdPathTargets,

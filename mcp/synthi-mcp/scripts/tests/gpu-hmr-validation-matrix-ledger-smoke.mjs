@@ -17933,6 +17933,32 @@ assert.equal(
   2,
 );
 assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.visualOracleTargets].sort(),
+  ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
+);
+assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.visualOracleScopes].sort(),
+  ['rocm_hip_declared_runtime_profile', 'vulkan_declared_pipeline_visual'],
+);
+assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.computeOracleTargets].sort(),
+  ['broad-readiness-opencl-compute', 'broad-readiness-webgpu-compute'],
+);
+assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.computeOracleScopes].sort(),
+  ['opencl_declared_compute_readback', 'webgpu_declared_compute_readback'],
+);
+assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .visualOracleTargets].sort(),
+  ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
+);
+assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .computeOracleTargets].sort(),
+  ['broad-readiness-opencl-compute', 'broad-readiness-webgpu-compute'],
+);
+assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.sourceFirstVisualTargets,
   ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
 );
