@@ -66,6 +66,9 @@ jobs:
       - name: Run focused policy tests
         run: npm run test --workspace synthi -- src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/policy/route.test.js src/app/api/local-support/security-event/route.test.js
 
+      - name: Audit production web dependencies
+        run: npm audit --workspace synthi --omit=dev --audit-level=high
+
       - name: Build web app
         run: npm run build --workspace synthi
 
@@ -82,6 +85,14 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust audit tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit Rust dependencies
+        run: cargo audit --manifest-path backend/vectant-local-support-app/Cargo.toml --deny warnings
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
