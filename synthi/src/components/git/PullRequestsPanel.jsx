@@ -78,8 +78,7 @@ function PRListItem({ pr, onClick, onContextMenu }) {
     <button
       onClick={onClick}
       onContextMenu={onContextMenu}
-      className="w-full text-left px-3 py-2.5 border-b transition hover:opacity-90 group"
-      style={{ borderColor: 'var(--border-subtle)', background: 'transparent' }}
+      className="vt-workflow-row group w-full px-3 py-2.5 text-left"
     >
       <div className="flex items-start gap-2.5">
         {/* State icon */}
@@ -90,23 +89,23 @@ function PRListItem({ pr, onClick, onContextMenu }) {
         {/* Main content */}
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-1">
-            <p className="text-xs font-medium leading-snug group-hover:underline flex-1" style={{ color: 'var(--text-primary)' }}>
+            <p className="flex-1 text-xs font-medium leading-snug text-[var(--text-primary)] group-hover:underline">
               {pr.title}
             </p>
-            <span className="text-[9px] font-mono flex-shrink-0 mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            <span className="mt-0.5 flex-shrink-0 font-mono text-[9px] text-[var(--text-muted)]">
               #{pr.number}
             </span>
           </div>
 
           <div className="flex items-center gap-2 mt-1 flex-wrap">
             {/* Author */}
-            <span className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
               <img src={pr.user?.avatar_url} alt={pr.user?.login} className="w-3 h-3 rounded-full" />
               {pr.user?.login}
             </span>
 
             {/* Branch */}
-            <span className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
               <GitBranch className="w-3 h-3" />
               <span className="font-mono truncate max-w-[80px]">{pr.head?.ref}</span>
               <span className="opacity-50">→</span>
@@ -114,7 +113,7 @@ function PRListItem({ pr, onClick, onContextMenu }) {
             </span>
 
             {/* Time */}
-            <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
+            <span className="ml-auto text-[10px] text-[var(--text-muted)]">
               {relativeTime(pr.updated_at)}
             </span>
           </div>
@@ -125,8 +124,8 @@ function PRListItem({ pr, onClick, onContextMenu }) {
               {pr.labels.map(label => (
                 <span
                   key={label.id}
-                  className="px-1.5 py-0 rounded-full text-[9px] font-medium"
-                  style={{ background: `#${label.color}22`, color: `#${label.color}` }}
+                  className="vt-workflow-chip text-[9px]"
+                  style={{ '--chip-color': `#${label.color}` }}
                 >
                   {label.name}
                 </span>
@@ -136,7 +135,7 @@ function PRListItem({ pr, onClick, onContextMenu }) {
 
           {/* Stats (comments) */}
           {pr.comments > 0 && (
-            <span className="flex items-center gap-0.5 text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            <span className="mt-1 flex items-center gap-0.5 text-[10px] text-[var(--text-muted)]">
               <MessageSquare className="w-3 h-3" />
               {pr.comments}
             </span>
@@ -150,24 +149,20 @@ function PRListItem({ pr, onClick, onContextMenu }) {
 // ── No-token state ──────────────────────────────────────────────────────────────
 function NoTokenState({ onSetup, loading }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-4 py-8 text-center">
-      <div
-        className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-        style={{ background: 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' }}
-      >
-        <Key className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} />
+    <div className="vt-empty-state m-3 flex h-[calc(100%-24px)] flex-col items-center justify-center px-4 py-8 text-center">
+      <div className="vt-agent-card mb-4 flex h-12 w-12 items-center justify-center">
+        <Key className="w-5 h-5 text-[var(--attention-purple)]" />
       </div>
-      <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+      <h3 className="mb-1 text-sm font-semibold text-[var(--text-primary)]">
         Connect to GitHub
       </h3>
-      <p className="text-xs mb-4 max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+      <p className="mb-4 max-w-[220px] text-xs text-[var(--text-muted)]">
         Add a GitHub Personal Access Token to create and manage pull requests.
       </p>
       <button
         onClick={onSetup}
         disabled={loading}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition"
-        style={{ background: 'var(--accent-primary)', color: '#fff' }}
+        className="th-focus-ring th-btn-primary flex items-center gap-2 px-4 py-2 text-xs font-semibold disabled:opacity-50"
       >
         <Key className="w-3.5 h-3.5" />
         Add Token
@@ -179,20 +174,17 @@ function NoTokenState({ onSetup, loading }) {
 // ── No-remote state ─────────────────────────────────────────────────────────────
 function NoRemoteState() {
   return (
-    <div className="flex flex-col items-center justify-center h-full px-4 py-8 text-center">
-      <div
-        className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-        style={{ background: 'rgba(239,68,68,0.1)' }}
-      >
-        <AlertCircle className="w-5 h-5" style={{ color: 'var(--accent-danger)' }} />
+    <div className="vt-empty-state m-3 flex h-[calc(100%-24px)] flex-col items-center justify-center px-4 py-8 text-center">
+      <div className="vt-workflow-alert vt-workflow-alert--danger mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-panel)]">
+        <AlertCircle className="w-5 h-5 text-[var(--accent-danger)]" />
       </div>
-      <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+      <h3 className="mb-1 text-sm font-semibold text-[var(--text-primary)]">
         No GitHub Remote
       </h3>
-      <p className="text-xs mb-2 max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+      <p className="mb-2 max-w-[220px] text-xs text-[var(--text-muted)]">
         This workspace does not have a GitHub remote configured.
       </p>
-      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+      <p className="text-xs text-[var(--text-muted)]">
         Clone or push to a GitHub repository to use Pull Requests.
       </p>
     </div>
@@ -205,11 +197,8 @@ function ProviderBadge({ provider, owner, repo, htmlUrl }) {
   if (provider !== 'github') {
     return (
       <span
-        className="text-[9px] px-1.5 py-0.5 rounded font-semibold"
-        style={{
-          background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
-          color: 'var(--accent-danger)',
-        }}
+        className="vt-workflow-chip text-[9px]"
+        style={{ '--chip-color': 'var(--accent-danger)' }}
       >
         {provider} — PRs for GitHub only
       </span>
@@ -220,8 +209,7 @@ function ProviderBadge({ provider, owner, repo, htmlUrl }) {
       href={htmlUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex items-center gap-1 text-[10px] hover:underline"
-      style={{ color: 'var(--text-muted)' }}
+      className="vt-state-pill hover:text-[var(--text-primary)]"
     >
       {owner}/{repo}
       <ExternalLink className="w-2.5 h-2.5" />
@@ -403,16 +391,10 @@ export function PullRequestsPanel({ slug }) {
 
   // ── List view ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)', background: 'var(--bg-sidebar)' }}>
-      <div
-        className="flex items-center gap-2 px-3 py-2 border-b flex-shrink-0"
-        style={{
-          borderColor: 'var(--border-subtle)',
-          background: 'color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)',
-        }}
-      >
-        <GitPullRequest className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
-        <span className="text-sm font-semibold flex-1">Pull Requests</span>
+    <div className="vt-panel-frame flex h-full min-h-0 flex-col rounded-none border-0 text-[var(--text-primary)]">
+      <div className="vt-panel-header flex-shrink-0">
+        <GitPullRequest className="w-4 h-4 flex-shrink-0 text-[var(--attention-purple)]" strokeWidth={1.5} />
+        <span className="vt-panel-title flex-1">Pull Requests</span>
 
         {githubInfo && isGitHub && (
           <ProviderBadge provider={provider} owner={owner} repo={repo} htmlUrl={githubInfo.htmlUrl} />
@@ -423,8 +405,7 @@ export function PullRequestsPanel({ slug }) {
             <button
               onClick={handleRefresh}
               disabled={prListLoading}
-              className="p-1 rounded-md hover:opacity-70 transition disabled:opacity-30"
-              style={{ color: 'var(--text-muted)' }}
+              className="vt-icon-button th-focus-ring h-7 min-w-7 disabled:opacity-30"
               title="Refresh"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${prListLoading ? 'animate-spin' : ''}`} />
@@ -432,8 +413,7 @@ export function PullRequestsPanel({ slug }) {
           )}
           <button
             onClick={() => setShowTokenModal(true)}
-            className="p-1 rounded-md hover:opacity-70 transition"
-            style={{ color: hasToken ? 'var(--text-muted)' : 'var(--accent-primary)' }}
+            className={`vt-icon-button th-focus-ring h-7 min-w-7 ${!hasToken ? 'th-btn-active' : ''}`}
             title={hasToken ? 'Manage GitHub token' : 'Add GitHub token'}
           >
             <Key className="w-3.5 h-3.5" />
@@ -441,8 +421,7 @@ export function PullRequestsPanel({ slug }) {
           {hasToken && isGitHub && (
             <button
               onClick={() => setView('create')}
-              className="p-1 rounded-md hover:opacity-70 transition"
-              style={{ color: 'var(--accent-primary)' }}
+              className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--attention-purple)]"
               title="Create Pull Request"
             >
               <Plus className="w-4 h-4" />
@@ -455,7 +434,7 @@ export function PullRequestsPanel({ slug }) {
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
         {/* Loading github info */}
         {githubInfoLoading && (
-          <div className="flex items-center justify-center py-8 text-xs" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center justify-center py-8 text-xs text-[var(--text-muted)]">
             <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Detecting repository…
           </div>
         )}
@@ -467,10 +446,10 @@ export function PullRequestsPanel({ slug }) {
 
         {/* Non-GitHub remote */}
         {!githubInfoLoading && githubInfo && owner && !isGitHub && (
-          <div className="flex flex-col items-center justify-center h-full px-4 py-8 text-center">
-            <GitPullRequest className="w-8 h-8 mb-3 opacity-30" style={{ color: 'var(--text-muted)' }} />
-            <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>GitHub only</p>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          <div className="vt-empty-state m-3 flex h-[calc(100%-24px)] flex-col items-center justify-center px-4 py-8 text-center">
+            <GitPullRequest className="mb-3 h-8 w-8 text-[var(--text-muted)] opacity-50" />
+            <p className="mb-1 text-xs font-medium text-[var(--text-primary)]">GitHub only</p>
+            <p className="text-xs text-[var(--text-muted)]">
               Pull request management is currently supported for GitHub repositories.
             </p>
           </div>
@@ -485,12 +464,9 @@ export function PullRequestsPanel({ slug }) {
         {githubInfo && isGitHub && hasToken && (
           <>
             {/* State filter + search */}
-            <div
-              className="flex-shrink-0 border-b"
-              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
-            >
+            <div className="flex-shrink-0 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-panel)_78%,var(--bg-app)_22%)]">
               {/* State tabs */}
-              <div className="flex">
+              <div className="flex gap-1 px-2 pt-2">
                 {[
                   { value: 'open', label: 'Open' },
                   { value: 'closed', label: 'Closed' },
@@ -502,11 +478,7 @@ export function PullRequestsPanel({ slug }) {
                       dispatch(setPRListState(tab.value));
                       dispatch(fetchPRList({ owner, repo, state: tab.value, slug }));
                     }}
-                    className="flex-1 py-1.5 text-xs font-medium transition border-b-2"
-                    style={{
-                      borderBottomColor: prListState === tab.value ? 'var(--accent-primary)' : 'transparent',
-                      color: prListState === tab.value ? 'var(--accent-primary)' : 'var(--text-muted)',
-                    }}
+                    className={`th-focus-ring flex-1 rounded-[var(--radius-control)] px-2 py-1.5 text-xs font-medium transition ${prListState === tab.value ? 'th-btn-active' : 'th-btn-ghost'}`}
                   >
                     {tab.label}
                     {tab.value === prListState && prList.length > 0 && (
@@ -524,12 +496,7 @@ export function PullRequestsPanel({ slug }) {
                     value={searchQuery}
                     onChange={e => setSearchQuery(e.target.value)}
                     placeholder="Filter by title, number, author…"
-                    className="w-full px-2.5 py-1 rounded-md text-xs border outline-none"
-                    style={{
-                      background: 'var(--bg-app)',
-                      borderColor: 'var(--border-subtle)',
-                      color: 'var(--text-primary)',
-                    }}
+                    className="th-input w-full rounded-[var(--radius-control)] border px-2.5 py-1 text-xs outline-none"
                   />
                 </div>
               )}
@@ -539,63 +506,32 @@ export function PullRequestsPanel({ slug }) {
             {prListLoading && prList.length === 0 ? (
               <div className="px-3 py-2 space-y-2">
                 {[1, 2, 3].map(i => (
-                  <div key={i} className="rounded-lg border p-2.5 animate-pulse" style={{ borderColor: 'var(--border-subtle)' }}>
-                    <div className="h-3 rounded w-3/4 mb-2" style={{ background: 'var(--bg-elevated)' }} />
-                    <div className="h-2 rounded w-1/2" style={{ background: 'var(--bg-elevated)' }} />
+                  <div key={i} className="vt-workflow-card p-2.5">
+                    <div className="vt-skeleton h-3 w-3/4 rounded mb-2" />
+                    <div className="vt-skeleton h-2 w-1/2 rounded" />
                   </div>
                 ))}
               </div>
             ) : prListError ? (
-              <div
-                className="mx-3 mt-3 p-3 rounded-lg text-xs"
-                style={{
-                  background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
-                  color: 'var(--accent-danger)',
-                }}
-              >
+              <div className="vt-workflow-alert vt-workflow-alert--danger mx-3 mt-3 p-3 text-xs text-[var(--accent-danger)]">
                 <AlertCircle className="w-3.5 h-3.5 inline mr-1" />{prListError}
               </div>
             ) : filteredPRs.length === 0 ? (
-              <div className="relative flex flex-col items-center justify-center flex-1 py-10 text-center px-4">
-                {/* Soft ambient brand halo — same signature treatment as Extensions */}
-                <div
-                  aria-hidden="true"
-                  className="absolute pointer-events-none"
-                  style={{
-                    width: 180,
-                    height: 180,
-                    borderRadius: '50%',
-                    background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 14%, transparent) 0%, transparent 70%)',
-                    filter: 'blur(8px)',
-                    top: 'calc(50% - 130px)',
-                  }}
-                />
-                <div
-                  className="relative w-11 h-11 mb-3 rounded-xl flex items-center justify-center"
-                  style={{
-                    background: 'color-mix(in srgb, var(--brand-stop-3) 8%, var(--bg-elevated))',
-                    border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
-                    boxShadow: '0 0 22px -4px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)',
-                  }}
-                >
-                  <GitPullRequest className="w-5 h-5" style={{ color: 'var(--accent-secondary)' }} />
+              <div className="vt-empty-state m-3 flex flex-1 flex-col items-center justify-center px-4 py-10 text-center">
+                <div className="vt-agent-card mb-3 flex h-11 w-11 items-center justify-center">
+                  <GitPullRequest className="w-5 h-5 text-[var(--accent-secondary)]" />
                 </div>
-                <p className="relative text-[13px] font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+                <p className="mb-1 text-[13px] font-medium text-[var(--text-primary)]">
                   {searchQuery ? 'No matching pull requests' : `No ${prListState === 'all' ? '' : prListState} pull requests`}
                 </p>
                 {!searchQuery && prListState === 'open' && (
                   <>
-                    <p className="relative text-[11px] mb-4 max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
+                    <p className="mb-4 max-w-[220px] text-[11px] text-[var(--text-muted)]">
                       Create a pull request to propose changes from one branch to another.
                     </p>
                     <button
                       onClick={() => setView('create')}
-                      className="relative flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[11px] font-semibold transition-all hover:-translate-y-px"
-                      style={{
-                        background: 'var(--brand-gradient-horizontal)',
-                        color: '#ffffff',
-                        boxShadow: '0 4px 16px -4px color-mix(in srgb, var(--brand-stop-3) 40%, transparent)',
-                      }}
+                      className="th-focus-ring th-btn-primary flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-semibold"
                     >
                       <Plus className="w-3.5 h-3.5" />
                       New Pull Request
@@ -603,7 +539,7 @@ export function PullRequestsPanel({ slug }) {
                   </>
                 )}
                 {!searchQuery && prListState === 'closed' && (
-                  <p className="relative text-[11px] max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
+                  <p className="max-w-[220px] text-[11px] text-[var(--text-muted)]">
                     No closed pull requests found. Try switching to "Open" or "All".
                   </p>
                 )}
@@ -619,7 +555,7 @@ export function PullRequestsPanel({ slug }) {
                   />
                 ))}
                 {prListLoading && prList.length > 0 && (
-                  <div className="flex items-center justify-center py-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  <div className="flex items-center justify-center py-2 text-[10px] text-[var(--text-muted)]">
                     <RefreshCw className="w-3 h-3 animate-spin mr-1.5" /> Refreshing…
                   </div>
                 )}

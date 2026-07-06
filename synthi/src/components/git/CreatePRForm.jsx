@@ -90,22 +90,18 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div
-        className="flex items-center gap-2 px-3 py-2.5 border-b flex-shrink-0"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
-      >
+      <div className="vt-panel-header flex-shrink-0">
         <button
           onClick={onBack}
-          className="p-1 rounded-md hover:opacity-70 transition"
-          style={{ color: 'var(--text-muted)' }}
+          className="vt-icon-button th-focus-ring h-7 min-w-7"
         >
           <ChevronLeft className="w-4 h-4" />
         </button>
-        <GitPullRequest className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
-        <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+        <GitPullRequest className="w-4 h-4 text-[var(--attention-purple)]" strokeWidth={1.5} />
+        <span className="vt-panel-title">
           New Pull Request
         </span>
-        <span className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>
+        <span className="vt-state-pill ml-auto">
           {owner}/{repo}
         </span>
       </div>
@@ -114,7 +110,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
         {/* Branch selectors */}
         <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
           <div>
-            <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
+            <label className="vt-panel-kicker mb-1 block">
               FROM (head)
             </label>
             <BranchSelect
@@ -126,10 +122,10 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
             />
           </div>
           <div className="flex items-center justify-center pb-1">
-            <ArrowRight className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+            <ArrowRight className="w-4 h-4 text-[var(--text-muted)]" />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
+            <label className="vt-panel-kicker mb-1 block">
               INTO (base)
             </label>
             <BranchSelect
@@ -142,23 +138,20 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           </div>
         </div>
         {head && base && head === base && (
-          <div
-            className="flex items-center gap-1.5 text-[10px] -mt-1"
-            style={{ color: 'var(--accent-warning)' }}
-          >
+          <div className="-mt-1 flex items-center gap-1.5 text-[10px] text-[var(--accent-warning)]">
             <AlertCircle className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
             Head and base branches must be different
           </div>
         )}
         {repoBranches.length === 0 && (
-          <div className="flex items-center gap-1.5 text-[10px] -mt-1" style={{ color: 'var(--text-muted)' }}>
+          <div className="-mt-1 flex items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
             <RefreshCw className="w-3 h-3 animate-spin" /> Loading branches…
           </div>
         )}
 
         {/* Title */}
         <div>
-          <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
+          <label className="vt-panel-kicker mb-1 block">
             TITLE *
           </label>
           <input
@@ -167,18 +160,13 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
             onChange={e => { setTitle(e.target.value); setTitleTouched(true); }}
             placeholder="PR title…"
             required
-            className="w-full px-2.5 py-1.5 rounded-lg text-sm border outline-none transition"
-            style={{
-              background: 'var(--bg-app)',
-              borderColor: 'var(--border-medium)',
-              color: 'var(--text-primary)',
-            }}
+            className="th-input w-full rounded-[var(--radius-control)] border px-2.5 py-1.5 text-sm outline-none"
           />
         </div>
 
         {/* Description */}
         <div>
-          <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
+          <label className="vt-panel-kicker mb-1 block">
             DESCRIPTION
           </label>
           <MarkdownEditor
@@ -192,15 +180,14 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
         {/* Labels */}
         {repoLabels.length > 0 && (
           <div>
-            <label className="block text-[10px] font-semibold mb-1" style={{ color: 'var(--text-muted)' }}>
+            <label className="vt-panel-kicker mb-1 block">
               LABELS
             </label>
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowLabelPicker(v => !v)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border w-full text-left"
-                style={{ background: 'var(--bg-app)', borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
+                className="th-focus-ring th-input flex w-full items-center gap-1.5 rounded-[var(--radius-control)] border px-2.5 py-1.5 text-left text-xs text-[var(--text-secondary)]"
               >
                 <Tag className="w-3 h-3" />
                 {selectedLabels.length > 0
@@ -209,10 +196,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
                 <ChevronDown className="w-3 h-3 ml-auto" />
               </button>
               {showLabelPicker && (
-                <div
-                  className="absolute top-full mt-1 left-0 right-0 z-20 rounded-lg border shadow-xl overflow-y-auto max-h-40"
-                  style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
-                >
+                <div className="vt-command-popover absolute left-0 right-0 top-full z-20 mt-1 max-h-40 overflow-y-auto p-1">
                   {repoLabels.map(label => {
                     const isSelected = selectedLabels.find(l => l.name === label.name);
                     return (
@@ -220,15 +204,14 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
                         key={label.id}
                         type="button"
                         onClick={() => toggleLabel(label)}
-                        className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs hover:opacity-80 transition text-left"
-                        style={{ color: 'var(--text-primary)', background: isSelected ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' : 'transparent' }}
+                        className={`vt-command-item flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${isSelected ? 'th-btn-active' : ''}`}
                       >
                         <span
                           className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                           style={{ background: `#${label.color}` }}
                         />
                         {label.name}
-                        {isSelected && <CheckCircle2 className="w-3 h-3 ml-auto" style={{ color: 'var(--accent-primary)' }} />}
+                        {isSelected && <CheckCircle2 className="ml-auto h-3 w-3 text-[var(--attention-purple)]" />}
                       </button>
                     );
                   })}
@@ -253,13 +236,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
 
         {/* Error */}
         {createPRError && (
-          <div
-            className="flex items-center gap-2 text-xs p-2 rounded-lg"
-            style={{
-              background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
-              color: 'var(--accent-danger)',
-            }}
-          >
+          <div className="vt-workflow-alert vt-workflow-alert--danger flex items-center gap-2 p-2 text-xs text-[var(--accent-danger)]">
             <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2} />
             {createPRError}
           </div>
@@ -269,8 +246,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
         <button
           type="submit"
           disabled={createPRLoading || !title.trim() || !head || !base || head === base}
-          className="w-full py-2 rounded-lg text-sm font-semibold transition disabled:opacity-50"
-          style={{ background: 'var(--accent-primary)', color: '#ffffff' }}
+          className="th-focus-ring th-btn-primary w-full py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
         >
           {createPRLoading ? 'Creating…' : 'Create Pull Request'}
         </button>
@@ -285,12 +261,7 @@ function BranchSelect({ value, onChange, branches, placeholder, loading }) {
       value={value}
       onChange={e => onChange(e.target.value)}
       disabled={loading}
-      className="w-full px-2 py-1.5 rounded-lg text-xs border outline-none transition disabled:opacity-50"
-      style={{
-        background: 'var(--bg-app)',
-        borderColor: 'var(--border-medium)',
-        color: 'var(--text-primary)',
-      }}
+      className="th-input w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none transition disabled:opacity-50"
     >
       {!value && <option value="">{loading ? 'Loading…' : placeholder}</option>}
       {branches.map(b => (

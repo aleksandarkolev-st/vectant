@@ -1425,6 +1425,101 @@
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent-success) 38%, transparent);
 }
 
+.vt-workflow-card {
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 84%, transparent);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 82%, white 3%), color-mix(in srgb, var(--bg-app) 58%, transparent));
+  box-shadow: var(--vt-bezel);
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-workflow-card:hover {
+  border-color: color-mix(in srgb, var(--attention-purple) 24%, var(--border-subtle));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 7%, transparent), transparent 68%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, white 4%), color-mix(in srgb, var(--bg-app) 48%, transparent));
+}
+
+.vt-workflow-card:active {
+  transform: translateY(1px);
+}
+
+.vt-workflow-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  background: transparent;
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-workflow-row:hover {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 8%, transparent), transparent 72%),
+    color-mix(in srgb, var(--text-primary) 3.8%, transparent);
+}
+
+.vt-workflow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--chip-color, var(--text-muted)) 24%, transparent);
+  border-radius: 999px;
+  color: var(--chip-color, var(--text-muted));
+  background: color-mix(in srgb, var(--chip-color, var(--text-muted)) 9%, transparent);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.vt-workflow-alert {
+  --workflow-alert-color: var(--accent-warning);
+  border: 1px solid color-mix(in srgb, var(--workflow-alert-color) 28%, transparent);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--workflow-alert-color) 10%, transparent), transparent 76%),
+    color-mix(in srgb, var(--bg-panel) 78%, transparent);
+  color: var(--text-secondary);
+}
+
+.vt-workflow-alert--danger {
+  --workflow-alert-color: var(--accent-danger);
+}
+
+.vt-workflow-alert--success {
+  --workflow-alert-color: var(--accent-success);
+}
+
+.vt-workflow-alert--muted {
+  --workflow-alert-color: var(--text-muted);
+}
+
+.vt-code-surface {
+  background: color-mix(in srgb, var(--bg-editor) 82%, black 18%);
+  color: var(--text-secondary);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+}
+
+.vt-code-line-add {
+  background: color-mix(in srgb, var(--accent-success) 9%, transparent);
+  color: var(--accent-success);
+}
+
+.vt-code-line-del {
+  background: color-mix(in srgb, var(--accent-danger) 9%, transparent);
+  color: var(--accent-danger);
+}
+
+.vt-code-line-hunk {
+  background: color-mix(in srgb, var(--accent-secondary) 9%, transparent);
+  color: var(--accent-secondary);
+}
+
 .vt-agent-card {
   border: 1px solid color-mix(in srgb, var(--border-subtle) 82%, transparent);
   border-radius: var(--radius-workbench);
