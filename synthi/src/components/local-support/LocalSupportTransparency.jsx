@@ -228,6 +228,13 @@ function CapabilityFlag({ label, enabled }) {
   );
 }
 
+function blockerStatusView(status) {
+  if (status === "ci_required") {
+    return { tone: "warn", label: "CI required" };
+  }
+  return { tone: "warn", label: "Partial" };
+}
+
 export default function LocalSupportTransparency() {
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(true);
@@ -740,10 +747,11 @@ Error: module failed to resolve`}
           <TabsContent value="release" className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
             <Panel
               title="Release blocker evidence"
-              description="Every blocker from the security transparency plan is mapped to code, tests, UI proof, CI gates, or release packaging evidence."
+              description="This table maps evidence, but mapped evidence is not completion. Current implementation is about 44%; live end-to-end proof is required before any blocker can be treated as shipped."
             >
-              <div className="grid gap-3 sm:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-5">
                 <Stat icon={ClipboardCheck} label="Mapped" value={`${releaseReadiness.mapped}/${releaseReadiness.total}`} tone="text-emerald-200" />
+                <Stat icon={AlertTriangle} label="MVP reality" value="44%" tone="text-amber-200" />
                 <Stat icon={ShieldCheck} label="Security" value={releaseReadiness.byCategory.security} tone="text-sky-200" />
                 <Stat icon={Eye} label="Transparency" value={releaseReadiness.byCategory.frontend_transparency} tone="text-amber-200" />
                 <Stat icon={Settings2} label="Product" value={releaseReadiness.byCategory.product} tone="text-zinc-200" />
@@ -759,28 +767,29 @@ Error: module failed to resolve`}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
-                    {RELEASE_BLOCKERS.map((item) => (
-                      <tr key={item.id} className="text-zinc-300">
-                        <td className="px-4 py-3">
-                          <div className="font-medium text-zinc-100">{item.label}</div>
-                          <div className="mt-1 font-mono text-xs text-zinc-500">{item.category}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Pill tone={item.status === "implemented" ? "good" : "warn"}>
-                            {item.status === "implemented" ? "Implemented" : "CI required"}
-                          </Pill>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex flex-wrap gap-1">
-                            {item.evidence.map((evidence) => (
-                              <span key={evidence} className="rounded border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] text-zinc-400">
-                                {evidence}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {RELEASE_BLOCKERS.map((item) => {
+                      const statusView = blockerStatusView(item.status);
+                      return (
+                        <tr key={item.id} className="text-zinc-300">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-zinc-100">{item.label}</div>
+                            <div className="mt-1 font-mono text-xs text-zinc-500">{item.category}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <Pill tone={statusView.tone}>{statusView.label}</Pill>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1">
+                              {item.evidence.map((evidence) => (
+                                <span key={evidence} className="rounded border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] text-zinc-400">
+                                  {evidence}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

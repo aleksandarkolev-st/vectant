@@ -3336,3 +3336,13 @@ Sensitive files are blocked locally.
 Nothing sensitive is sent without review.
 You can pause or disconnect at any time.
 ```
+
+---
+
+## 32. Current Implementation Goals
+
+The remaining shippable implementation goals are tracked in:
+
+- `docs/VECTANT_LOCAL_SUPPORT_APP_REMAINING_IMPLEMENTATION_GOALS.md`
+
+Do not treat release-checklist mappings, static UI evidence, helper functions, or unit-only coverage as completion. A blocker is complete only when the feature works end-to-end through the production desktop app, local daemon, cloud control plane, browser UI, audit storage, and security tests.
