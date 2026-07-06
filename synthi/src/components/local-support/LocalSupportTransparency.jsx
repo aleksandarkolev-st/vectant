@@ -26,6 +26,11 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  RED_TEAM_SCENARIOS,
+  RELEASE_BLOCKERS,
+  summarizeLocalSupportReleaseReadiness,
+} from "@/lib/local-support/acceptance";
 import { cn } from "@/lib/utils";
 
 const inventory = [
@@ -239,6 +244,8 @@ export default function LocalSupportTransparency() {
 
   const SessionIcon = sessionState.Icon;
   const visibleActivity = historyDeleted ? [] : activity;
+  const releaseReadiness = summarizeLocalSupportReleaseReadiness();
+  const ciRequiredBlockers = RELEASE_BLOCKERS.filter((item) => item.status === "ci_required");
 
   function exportScrubbedHistory() {
     const payload = {
@@ -366,6 +373,7 @@ export default function LocalSupportTransparency() {
               ["ports", PlugZap, "Ports"],
               ["mode", Settings2, "Permission mode"],
               ["activity", ClipboardCheck, "Activity"],
+              ["release", ShieldCheck, "Release gate"],
             ].map(([value, Icon, label]) => (
               <TabsTrigger key={value} value={value} className="rounded-md px-3 text-zinc-300 data-[state=active]:bg-white/[0.08]">
                 <Icon className="size-4" aria-hidden="true" />
@@ -726,6 +734,92 @@ Error: module failed to resolve`}
                 ) : null}
               </div>
             </Panel>
+          </TabsContent>
+
+          <TabsContent value="release" className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+            <Panel
+              title="Release blocker evidence"
+              description="Every blocker from the security transparency plan is mapped to code, tests, UI proof, CI gates, or release packaging evidence."
+            >
+              <div className="grid gap-3 sm:grid-cols-4">
+                <Stat icon={ClipboardCheck} label="Mapped" value={`${releaseReadiness.mapped}/${releaseReadiness.total}`} tone="text-emerald-200" />
+                <Stat icon={ShieldCheck} label="Security" value={releaseReadiness.byCategory.security} tone="text-sky-200" />
+                <Stat icon={Eye} label="Transparency" value={releaseReadiness.byCategory.frontend_transparency} tone="text-amber-200" />
+                <Stat icon={Settings2} label="Product" value={releaseReadiness.byCategory.product} tone="text-zinc-200" />
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-lg border border-white/10">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="bg-white/[0.04] text-xs uppercase tracking-[0.08em] text-zinc-500">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Blocker</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10">
+                    {RELEASE_BLOCKERS.map((item) => (
+                      <tr key={item.id} className="text-zinc-300">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-zinc-100">{item.label}</div>
+                          <div className="mt-1 font-mono text-xs text-zinc-500">{item.category}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Pill tone={item.status === "implemented" ? "good" : "warn"}>
+                            {item.status === "implemented" ? "Implemented" : "CI required"}
+                          </Pill>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {item.evidence.map((evidence) => (
+                              <span key={evidence} className="rounded border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] text-zinc-400">
+                                {evidence}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+
+            <div className="grid gap-4">
+              <Panel title="CI and release packaging" description="These items are intentionally gated outside the browser UI and must stay green before beta.">
+                <div className="space-y-3">
+                  {ciRequiredBlockers.map((item) => (
+                    <div key={item.id} className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-amber-100">{item.label}</span>
+                        <Pill tone="warn">CI required</Pill>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {item.evidence.map((evidence) => (
+                          <span key={evidence} className="rounded border border-amber-200/20 bg-zinc-950/40 px-2 py-1 font-mono text-[11px] text-amber-100/80">
+                            {evidence}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+
+              <Panel title="Red-team scenarios" description="Public beta stays blocked until these attack paths have passing evidence and no open critical or high findings.">
+                <div className="space-y-2">
+                  {RED_TEAM_SCENARIOS.map((scenario) => (
+                    <div key={scenario.id} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm text-zinc-200">{scenario.label}</span>
+                        <Pill tone="good">Covered</Pill>
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] text-zinc-500">{scenario.evidence}</div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            </div>
           </TabsContent>
         </Tabs>
       </div>
