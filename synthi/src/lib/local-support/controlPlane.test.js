@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   clearRequestEnvelopeReplayCache,
+  buildRelayForwardDecision,
   enforceRequestEnvelopeReplayProtection,
   evaluatePolicyPrecedence,
   readLocalSupportPolicy,
@@ -288,5 +289,35 @@ describe("local support control plane policy", () => {
     expect(event.target_display).toContain("[REDACTED:database_url]");
     expect(event.target_display).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(event.target_display).not.toContain("postgres://user:pass");
+  });
+
+  it("builds minimized relay forwarding decisions without raw local bodies", () => {
+    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const decision = buildRelayForwardDecision(
+      envelope({
+        actor: "support_agent",
+        capability: "workspace.log.read",
+        target_display: "server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        target_classification: "L3",
+      }),
+      policy,
+    );
+
+    expect(decision).toMatchObject({
+      decision: "relay_ready",
+      relay_forward: true,
+      local_enforcement_required: true,
+      raw_body_included: false,
+      response_body_included: false,
+      bytes_sent: 0,
+      actor: "support_agent",
+      capability: "workspace.log.read",
+      target_classification: "L3",
+      control_plane_log_class: "local_support.control",
+      data_plane_log_class: "local_support.data",
+    });
+    expect(decision.target_hash).toMatch(/^sha256:/);
+    expect(decision.target_display).toContain("authorization: [REDACTED]");
+    expect(JSON.stringify(decision)).not.toContain("abcdefghijklmnopqrstuvwxyz");
   });
 });

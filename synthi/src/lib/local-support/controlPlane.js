@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const LOCAL_SUPPORT_PROTOCOL = "local-support-mvp.1";
 export const DEFAULT_MIN_APP_VERSION = "0.1.0";
@@ -287,6 +287,48 @@ export function summarizeSecurityEvent(input, policy = readLocalSupportPolicy())
     request_id: scrubTelemetryValue(event.request_id || ""),
     target_display: target,
     user_visible_message: "Security event recorded without raw local content.",
+  };
+}
+
+export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy()) {
+  const envelopeDecision = validateRequestEnvelope(input, policy);
+  if (envelopeDecision.decision === "denied") {
+    return {
+      ...envelopeDecision,
+      relay_forward: false,
+      raw_body_included: false,
+      control_plane_log_class: "local_support.control",
+      data_plane_log_class: "local_support.data",
+    };
+  }
+
+  const targetDisplay = scrubTelemetryValue(input.target_display || input.target || input.path || input.url || "");
+  const targetHash = targetDisplay
+    ? `sha256:${createHash("sha256").update(targetDisplay).digest("hex")}`
+    : null;
+
+  return {
+    decision: "relay_ready",
+    reason: "signed_nonce_bound_envelope_ready_for_local_authority",
+    relay_forward: true,
+    local_enforcement_required: true,
+    raw_body_included: false,
+    response_body_included: false,
+    bytes_sent: 0,
+    actor: scrubTelemetryValue(input.actor),
+    request_id: scrubTelemetryValue(input.request_id),
+    session_id: scrubTelemetryValue(input.session_id),
+    workspace_id: scrubTelemetryValue(input.workspace_id),
+    capability: scrubTelemetryValue(input.capability),
+    target_display: targetDisplay,
+    target_hash: targetHash,
+    target_classification: scrubTelemetryValue(input.target_classification || "unknown"),
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    app_version: scrubTelemetryValue(input.app_version),
+    control_plane_log_class: "local_support.control",
+    data_plane_log_class: "local_support.data",
+    user_visible_message: "Relay may forward only this signed envelope. Local app remains final authority.",
   };
 }
 
