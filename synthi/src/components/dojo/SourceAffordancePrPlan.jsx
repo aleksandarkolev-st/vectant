@@ -3,8 +3,10 @@
 import { FileCode2, ListChecks } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function SourceAffordancePrPlan({ plan }) {
@@ -14,7 +16,7 @@ export default function SourceAffordancePrPlan({ plan }) {
 
   return (
     <section className="rounded-md border" style={panelStyle} data-testid="source-affordance-pr-plan">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <FileCode2 size={15} aria-hidden="true" />
@@ -26,7 +28,7 @@ export default function SourceAffordancePrPlan({ plan }) {
       </div>
 
       {files.length ? (
-        <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {files.map((file) => (
             <article key={file.filePath} className="px-4 py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -38,7 +40,7 @@ export default function SourceAffordancePrPlan({ plan }) {
               </div>
               <div className="mt-3 grid gap-2">
                 {file.patches.map((patch) => (
-                  <div key={patch.patchId} className="rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+                  <div key={patch.patchId} className="rounded-md border p-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-semibold">{patch.intent || patch.actionId || patch.patchId}</span>
                       <span style={{ color: patch.reviewRequired ? 'var(--accent-warning)' : 'var(--accent-success)' }}>
@@ -63,7 +65,7 @@ export default function SourceAffordancePrPlan({ plan }) {
         </div>
       )}
 
-      <div className="grid gap-3 border-t p-4 md:grid-cols-2" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="grid gap-3 border-t p-4 md:grid-cols-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <section>
           <h3 className="flex items-center gap-2 text-xs font-semibold">
             <ListChecks size={13} aria-hidden="true" />
@@ -72,7 +74,7 @@ export default function SourceAffordancePrPlan({ plan }) {
           {generatedTests.length ? (
             <ul className="mt-2 grid gap-2 text-xs">
               {generatedTests.map((test) => (
-                <li key={`${test.path}-${test.purpose}`} className="rounded-md border p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+                <li key={`${test.path}-${test.purpose}`} className="rounded-md border p-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                   <div className="truncate font-medium">{test.path || test.purpose}</div>
                   {test.purpose ? <div className="mt-1 truncate" style={{ color: 'var(--text-muted)' }}>{test.purpose}</div> : null}
                 </li>

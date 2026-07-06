@@ -1,8 +1,10 @@
 'use client';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function CortexNodeInspector({ node, graph }) {
@@ -48,15 +50,15 @@ export default function CortexNodeInspector({ node, graph }) {
 
       {node.memory && Object.keys(node.memory).length ? (
         <>
-          <details className="mt-3 rounded-md border px-3 py-2 md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
+          <details className="mt-3 rounded-md border px-3 py-2 md:hidden" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
             <summary className="cursor-pointer text-xs font-semibold">Memory</summary>
-            <pre className="mt-3 max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+            <pre className="mt-3 max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               {JSON.stringify(node.memory, null, 2)}
             </pre>
           </details>
           <section className="mt-4 hidden md:block">
             <h3 className="mb-2 text-xs font-semibold">Memory</h3>
-            <pre className="max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+            <pre className="max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               {JSON.stringify(node.memory, null, 2)}
             </pre>
           </section>
@@ -79,7 +81,7 @@ function InspectorSection({ title, items = [] }) {
   const content = items.length ? (
     <ul className="grid gap-2 text-xs">
       {items.map((item) => (
-        <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {item}
         </li>
       ))}
@@ -90,7 +92,7 @@ function InspectorSection({ title, items = [] }) {
 
   return (
     <>
-      <details className="mt-3 rounded-md border px-3 py-2 md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
+      <details className="mt-3 rounded-md border px-3 py-2 md:hidden" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <summary className="cursor-pointer text-xs font-semibold">{title}</summary>
         <div className="mt-3">{content}</div>
       </details>

@@ -1,8 +1,10 @@
 'use client';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function HumanVsAgentActionDiff({ observedLabel = '', plannedLabel = '', observedAction = {}, plannedAction = {} }) {
@@ -25,7 +27,7 @@ export default function HumanVsAgentActionDiff({ observedLabel = '', plannedLabe
 
 function ActionBlock({ title, label, action }) {
   return (
-    <div className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
       <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{title}</div>
       <div className="mt-1 truncate text-sm font-semibold">{label}</div>
       <dl className="mt-3 grid gap-2 text-xs">

@@ -1,15 +1,17 @@
 'use client';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function CheckrideReportView({ branchTraces = [] }) {
   const traces = Array.isArray(branchTraces) ? branchTraces : [];
   return (
     <section className="min-w-0 rounded-md border" style={panelStyle} data-testid="dojo-checkride-regret-report">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <div>
           <h2 className="text-sm font-semibold">Checkride Branch Comparison</h2>
           <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -22,7 +24,7 @@ export default function CheckrideReportView({ branchTraces = [] }) {
         <div className="overflow-x-auto">
           <table className="min-w-full table-fixed text-left text-xs">
             <thead style={{ color: 'var(--text-muted)' }}>
-              <tr className="border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+              <tr className="border-b" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <th className="w-44 px-4 py-3 font-medium">Branch</th>
                 <th className="w-32 px-4 py-3 font-medium">Outcome</th>
                 <th className="w-36 px-4 py-3 font-medium">Exposure</th>
@@ -31,7 +33,7 @@ export default function CheckrideReportView({ branchTraces = [] }) {
             </thead>
             <tbody>
               {traces.map((trace) => (
-                <tr key={trace.branchId} className="border-b last:border-b-0" style={{ borderColor: 'var(--border-subtle)' }}>
+                <tr key={trace.branchId} className="border-b last:border-b-0" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                   <td className="px-4 py-3">
                     <div className="truncate font-medium">{trace.branchKind || trace.branchId}</div>
                     <div className="mt-1 truncate" style={{ color: 'var(--text-muted)' }}>{trace.branchId}</div>

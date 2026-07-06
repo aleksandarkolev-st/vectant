@@ -3,8 +3,10 @@
 import { AlertTriangle, BadgeCheck, CircleGauge, FileBadge, GitBranch, KeyRound, ShieldCheck } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 function compactList(items = [], limit = 3) {
@@ -71,7 +73,7 @@ export default function ConsumerSkillCard({ skill, workspaceSlug = '' }) {
         <ScopeBlock icon={AlertTriangle} title="Will Not Do" items={blocked} empty="No blocked actions recorded" />
       </div>
 
-      <div className="mt-4 flex items-center justify-between gap-3 border-t pt-3 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="mt-4 flex items-center justify-between gap-3 border-t pt-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <span className="inline-flex min-w-0 items-center gap-2" style={{ color: safeMode ? 'var(--accent-success)' : 'var(--text-muted)' }}>
           <CircleGauge size={14} aria-hidden="true" />
           <span className="truncate">{safeMode ? 'Safe Mode constrained' : 'Practice mode'}</span>
@@ -104,7 +106,7 @@ function InfoRow({ label, value }) {
 
 function ScopeBlock({ icon: Icon, title, items, empty }) {
   return (
-    <section className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+    <section className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
       <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold">
         <Icon size={14} aria-hidden="true" />
         {title}

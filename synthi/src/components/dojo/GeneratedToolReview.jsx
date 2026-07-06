@@ -3,14 +3,16 @@
 import { Wrench } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function GeneratedToolReview({ tools = [] }) {
   return (
     <section className="rounded-md border" style={panelStyle} data-testid="generated-tool-review">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Wrench size={15} aria-hidden="true" />
           Generated Tool Review
@@ -18,7 +20,7 @@ export default function GeneratedToolReview({ tools = [] }) {
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{tools.length} tools</span>
       </div>
       {tools.length ? (
-        <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {tools.map((tool) => (
             <article key={`${tool.toolName}-${tool.toolVersion}`} className="px-4 py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">

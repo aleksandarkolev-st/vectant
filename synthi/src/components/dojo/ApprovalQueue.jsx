@@ -3,8 +3,10 @@
 import { CheckCircle2, ClipboardCheck, XCircle } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function ApprovalQueue({
@@ -51,7 +53,7 @@ function ApprovalQueueItem({ item, onApprove, onDeny, busyQueueId, canApprove, c
   const approveDisabled = !onApprove || busyQueueId === item.queueId || !approveSupported;
   const denyDisabled = !onDeny || busyQueueId === item.queueId || !denySupported;
   return (
-    <article className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+    <article className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold">{item.action || 'Approval'}</h3>
@@ -63,7 +65,7 @@ function ApprovalQueueItem({ item, onApprove, onDeny, busyQueueId, canApprove, c
       {item.constraints?.length ? (
         <ul className="mt-3 grid gap-2 text-xs">
           {item.constraints.map((constraint) => (
-            <li key={`${item.queueId}-${constraint}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <li key={`${item.queueId}-${constraint}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               {constraint}
             </li>
           ))}

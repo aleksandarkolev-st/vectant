@@ -3,14 +3,16 @@
 import { Braces } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function ApiCandidateReview({ candidates = [] }) {
   return (
     <section className="rounded-md border" style={panelStyle} data-testid="api-candidate-review">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Braces size={15} aria-hidden="true" />
           API Candidate Review
@@ -18,7 +20,7 @@ export default function ApiCandidateReview({ candidates = [] }) {
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{candidates.length} candidates</span>
       </div>
       {candidates.length ? (
-        <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {candidates.map((candidate) => (
             <article key={candidate.candidateId} className="px-4 py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -38,7 +40,7 @@ export default function ApiCandidateReview({ candidates = [] }) {
               {candidate.issues.length ? (
                 <ul className="mt-3 grid gap-2 text-xs">
                   {candidate.issues.map((issue) => (
-                    <li key={`${candidate.candidateId}-${issue.issueId}-${issue.message}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)', color: issue.severity === 'error' ? 'var(--accent-warning)' : 'var(--text-secondary)' }}>
+                    <li key={`${candidate.candidateId}-${issue.issueId}-${issue.message}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', color: issue.severity === 'error' ? 'var(--accent-warning)' : 'var(--text-secondary)' }}>
                       {issue.issueId || issue.message}
                     </li>
                   ))}

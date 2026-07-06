@@ -6,14 +6,17 @@ import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojo
 import CortexNodeInspector from './CortexNodeInspector';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 const elevatedPanelStyle = {
   borderColor: 'color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)',
   background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 96%, transparent), color-mix(in srgb, var(--bg-app) 76%, transparent))',
-  boxShadow: '0 18px 48px -30px rgba(0, 0, 0, 0.7)',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: '0 18px 48px -30px color-mix(in srgb, var(--bg-app) 70%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 const FORCE_MIN_WIDTH = 940;
@@ -80,12 +83,12 @@ export default function SkillCortexGraph({
 
   return (
     <main
-      className="min-h-screen px-4 py-5 text-sm md:px-8"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      className="dojo-page min-h-[100dvh] px-4 py-5 text-sm md:px-8"
+      style={{ color: 'var(--text-primary)' }}
       data-testid="skill-cortex-view"
     >
       <div className="mx-auto flex max-w-[1580px] flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs transition hover:-translate-y-px" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
@@ -285,7 +288,7 @@ function StatusChip({ label, value, tone = 'neutral' }) {
 
 function MetadataItem({ label, value }) {
   return (
-    <div className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
       <div style={{ color: 'var(--text-muted)' }}>{label}</div>
       <div className="mt-1 truncate font-medium">{value}</div>
     </div>
@@ -347,9 +350,9 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
       ref={frameRef}
       className="relative h-[460px] min-h-[420px] max-h-[560px] w-full overflow-hidden rounded-lg border md:h-[72vh] md:min-h-[620px] md:max-h-[780px]"
       style={{
-        borderColor: 'var(--border-subtle)',
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
         background:
-          'radial-gradient(circle at 12% 14%, rgba(30, 41, 59, 0.2), transparent 26%), radial-gradient(circle at 88% 74%, rgba(15, 23, 42, 0.2), transparent 30%), radial-gradient(circle at 64% 18%, rgba(8, 13, 24, 0.34), transparent 36%), color-mix(in srgb, var(--bg-app) 92%, transparent)',
+          'radial-gradient(circle at 12% 14%, color-mix(in srgb, var(--accent-secondary) 13%, transparent), transparent 26%), radial-gradient(circle at 88% 74%, color-mix(in srgb, var(--attention-purple) 8%, transparent), transparent 30%), radial-gradient(circle at 64% 18%, color-mix(in srgb, var(--bg-sidebar) 48%, transparent), transparent 36%), color-mix(in srgb, var(--bg-app) 92%, transparent)',
       }}
       data-testid="skill-cortex-graph"
     >
@@ -484,7 +487,7 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                   cx={star.x}
                   cy={star.y}
                   r={Math.max(10, star.r + 7)}
-                  fill="rgba(255,255,255,0.001)"
+                  fill="color-mix(in srgb, var(--text-primary) 0.1%, transparent)"
                   stroke="transparent"
                   style={{ cursor: 'default' }}
                 />
@@ -513,8 +516,8 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                       x={labelX}
                       y={labelY}
                       textAnchor={labelAnchor}
-                      fill="rgba(226, 232, 240, 0.94)"
-                      stroke="rgba(6, 9, 16, 0.92)"
+                      fill="color-mix(in srgb, var(--text-primary) 94%, transparent)"
+                      stroke="color-mix(in srgb, var(--bg-app) 92%, transparent)"
                       strokeWidth="4"
                       paintOrder="stroke"
                       fontSize={layout.mobile ? 11.5 : 10.5}
@@ -575,7 +578,7 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                   cx={position.x}
                   cy={position.y}
                   r={Math.max(16, radius + 11)}
-                  fill="rgba(255,255,255,0.001)"
+                  fill="color-mix(in srgb, var(--text-primary) 0.1%, transparent)"
                   stroke="transparent"
                   style={{ cursor: 'pointer' }}
                   data-testid={`cortex-node-${node.id}`}
@@ -629,8 +632,8 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
                       x={labelX}
                       y={labelY}
                       textAnchor={labelAnchor}
-                      fill="rgba(241, 245, 249, 0.94)"
-                      stroke="rgba(6, 9, 16, 0.92)"
+                      fill="color-mix(in srgb, var(--text-primary) 94%, transparent)"
+                      stroke="color-mix(in srgb, var(--bg-app) 92%, transparent)"
                       strokeWidth="4"
                       paintOrder="stroke"
                       fontSize={layout.mobile ? 12.5 : 11}
@@ -645,10 +648,10 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'f
           })}
           {activeNode ? (
             <g pointerEvents="none">
-              <text x="18" y={layout.height - 36} fill="rgba(148, 163, 184, 0.78)" fontSize="10">
+              <text x="18" y={layout.height - 36} fill="color-mix(in srgb, var(--text-muted) 78%, transparent)" fontSize="10">
                 Selected node
               </text>
-              <text x="18" y={layout.height - 18} fill="rgba(241, 245, 249, 0.94)" fontSize="12" fontWeight="700">
+              <text x="18" y={layout.height - 18} fill="color-mix(in srgb, var(--text-primary) 94%, transparent)" fontSize="12" fontWeight="700">
                 {truncateLabel(activeNode.label || activeNode.id, 52)}
               </text>
             </g>
@@ -893,7 +896,7 @@ function buildSemanticPathSegments({ graph, nodes, edges, positions, stars }) {
         y1: a.y,
         x2: b.x,
         y2: b.y,
-        color: index % 2 === 0 ? sourceTone.color : 'rgba(148, 163, 184, 0.54)',
+        color: index % 2 === 0 ? sourceTone.color : 'color-mix(in srgb, var(--text-muted) 54%, transparent)',
         activeColor: targetTone.color,
         opacity: Math.max(0.08, 0.2 - pointDistance(a, b) / 620),
       });
@@ -1152,7 +1155,7 @@ function buildStarLinks({ stars, nodes, positions, random }) {
         y1: star.y,
         x2: candidate.other.x,
         y2: candidate.other.y,
-        color: candidate.sameCluster ? 'rgba(191, 219, 254, 0.72)' : 'rgba(148, 163, 184, 0.52)',
+        color: candidate.sameCluster ? 'color-mix(in srgb, var(--accent-secondary) 72%, transparent)' : 'color-mix(in srgb, var(--text-muted) 52%, transparent)',
         opacity: Math.round((opacityBase * (1 - candidate.distance / (candidate.sameCluster ? 84 : 58)) + random() * 0.025) * 100) / 100,
         width: candidate.sameCluster ? 0.7 : 0.55,
       });
@@ -1231,11 +1234,11 @@ function createSeededRandom(seedText = '') {
 
 function starColor(random) {
   const value = random();
-  if (value < 0.34) return 'rgba(226, 232, 240, 0.86)';
-  if (value < 0.58) return 'rgba(191, 219, 254, 0.72)';
-  if (value < 0.78) return 'rgba(148, 163, 184, 0.66)';
-  if (value < 0.92) return 'rgba(203, 213, 225, 0.54)';
-  return 'rgba(219, 234, 254, 0.92)';
+  if (value < 0.34) return 'color-mix(in srgb, var(--text-primary) 86%, transparent)';
+  if (value < 0.58) return 'color-mix(in srgb, var(--accent-secondary) 72%, transparent)';
+  if (value < 0.78) return 'color-mix(in srgb, var(--text-muted) 66%, transparent)';
+  if (value < 0.92) return 'color-mix(in srgb, var(--text-secondary) 54%, transparent)';
+  return 'color-mix(in srgb, var(--accent-secondary) 92%, transparent)';
 }
 
 function stableNodeSeed(value = '') {
@@ -1257,7 +1260,7 @@ function nodeTone(node) {
   if (node.risk === 'dangerous') return { color: 'oklch(62% 0.17 25)', text: 'oklch(84% 0.09 25)' };
   if (node.kind === 'Action' || node.risk === 'mutation') return { color: 'oklch(69% 0.14 75)', text: 'oklch(87% 0.09 75)' };
   if (['Permission', 'Assertion', 'Checkride'].includes(node.kind)) return { color: 'oklch(63% 0.12 145)', text: 'oklch(84% 0.08 145)' };
-  return { color: 'rgba(148, 163, 184, 0.76)', text: '#cbd5e1' };
+  return { color: 'color-mix(in srgb, var(--text-muted) 76%, transparent)', text: 'var(--text-secondary)' };
 }
 
 function operationalStarTone(star) {
@@ -1269,7 +1272,7 @@ function operationalStarTone(star) {
   if (star.type === 'evidence' || star.type === 'output') return { color: 'oklch(72% 0.065 226)' };
   if (star.type === 'expiry') return { color: 'oklch(62% 0.035 250)' };
   if (star.type === 'substrate') return { color: 'oklch(68% 0.11 88)' };
-  return { color: 'rgba(203, 213, 225, 0.78)' };
+  return { color: 'color-mix(in srgb, var(--text-secondary) 78%, transparent)' };
 }
 
 function Badge({ label, icon: Icon }) {
@@ -1288,7 +1291,7 @@ function Legend({ label, tone }) {
     mutation: 'oklch(66% 0.14 75)',
     dangerous: 'oklch(57% 0.17 25)',
     expired: 'oklch(56% 0.04 250)',
-  }[tone] || 'rgba(148, 163, 184, 0.62)';
+  }[tone] || 'color-mix(in srgb, var(--text-muted) 62%, transparent)';
   return (
     <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs" style={{ background: 'color-mix(in srgb, var(--text-primary) 4%, transparent)' }}>
       <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />

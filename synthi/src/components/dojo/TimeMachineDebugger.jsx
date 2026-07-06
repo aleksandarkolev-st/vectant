@@ -6,8 +6,10 @@ import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojo
 import GhostModePanel from './GhostModePanel';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function TimeMachineDebugger({
@@ -50,12 +52,12 @@ export default function TimeMachineDebugger({
 
   return (
     <main
-      className="min-h-screen px-5 py-5 text-sm"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      className="dojo-page min-h-[100dvh] px-5 py-5 text-sm"
+      style={{ color: 'var(--text-primary)' }}
       data-testid="dojo-time-machine"
     >
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
@@ -119,7 +121,7 @@ export default function TimeMachineDebugger({
                 {timeMachine.guardrails.length ? (
                   <div className="mt-3 grid gap-2">
                     {timeMachine.guardrails.map((guardrail) => (
-                      <div key={`${guardrail.id}-${guardrail.title}`} className="rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+                      <div key={`${guardrail.id}-${guardrail.title}`} className="rounded-md border p-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                         <div className="font-semibold">{guardrail.title || guardrail.id}</div>
                         {guardrail.rule ? <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{guardrail.rule}</div> : null}
                         {guardrail.severity ? <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{guardrail.severity}</div> : null}
@@ -133,11 +135,11 @@ export default function TimeMachineDebugger({
             </section>
 
             <section className="rounded-md border" style={panelStyle} data-testid="time-machine-replay-plan">
-              <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <Route size={15} aria-hidden="true" />
                 Replay Plan
               </div>
-              <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 {timeMachine.replayPlan.map((step) => (
                   <div key={step.step} className="grid gap-3 px-4 py-3 md:grid-cols-[180px_120px_minmax(0,1fr)]">
                     <div className="truncate font-semibold">{step.step}</div>
@@ -174,7 +176,7 @@ function Metric({ label, value }) {
 
 function OutcomePanel({ title, outcome, rows }) {
   return (
-    <section className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+    <section className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">{title}</h3>
         <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{outcome}</span>
