@@ -1,0 +1,20 @@
+{
+  "id": "cmr76v5vw00fhqk01bix5nv03",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "agentSessionId": "cmr76v37z00fbqk013exmm4kh",
+  "displayCallsign": "DRIFT-04",
+  "mission": "Attempt stale source clearance",
+  "domain": "schema",
+  "status": "preflight",
+  "route": [
+    "synthi/prisma/**"
+  ],
+  "blockedZones": [],
+  "abortConditions": [],
+  "requestedTools": [
+    "file_write"
+  ],
+  "estimatedDurationMs": null,
+  "filedAt": "2026-07-05T02:45:28.077Z",
+  "closedAt": null
+}

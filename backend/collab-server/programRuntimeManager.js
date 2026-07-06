@@ -47,6 +47,24 @@ const BLOCKED_ENV_PREFIXES = [
   'SYNTHI_GCS_',
 ];
 
+const BLOCKED_ENV_KEY_PATTERNS = [
+  /(^|_)API_?KEY$/,
+  /(^|_)KEY$/,
+  /(^|_)TOKEN$/,
+  /(^|_)SECRET$/,
+  /(^|_)PASSWORD$/,
+  /(^|_)PASSWD$/,
+  /(^|_)CREDENTIAL$/,
+  /(^|_)CREDENTIALS$/,
+  /(^|_)AUTH_TOKEN$/,
+  /^OPENAI_/,
+  /^ANTHROPIC_/,
+  /^GEMINI_/,
+  /^SERPER_/,
+  /^AI_BACKEND_/,
+  /^CODE_INTEL_/,
+];
+
 const BLOCKED_ENV_VALUE_FRAGMENTS = [
   '/var/run/docker.sock',
   '\\\\.\\pipe\\docker_engine',
@@ -189,7 +207,11 @@ function buildManagedRuntimeEnv(baseEnv = process.env, overrides = {}) {
   for (const key of Object.keys(merged)) {
     const upperKey = key.toUpperCase();
     const value = merged[key];
-    if (BLOCKED_ENV_KEYS.has(upperKey) || BLOCKED_ENV_PREFIXES.some((prefix) => upperKey.startsWith(prefix))) {
+    if (
+      BLOCKED_ENV_KEYS.has(upperKey) ||
+      BLOCKED_ENV_PREFIXES.some((prefix) => upperKey.startsWith(prefix)) ||
+      BLOCKED_ENV_KEY_PATTERNS.some((pattern) => pattern.test(upperKey))
+    ) {
       delete merged[key];
       continue;
     }

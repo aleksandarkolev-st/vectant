@@ -21,7 +21,7 @@ services:
   redis:
     image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -35,7 +35,7 @@ services:
       dockerfile: Dockerfile
     image: synthi-y-sweet
     ports:
-      - "127.0.0.1:8180:8080"
+      - "127.0.0.1:${YSWEET_HOST_PORT:-8180}:8080"
     volumes:
       - ysweet-data:/data
     restart: unless-stopped
@@ -50,6 +50,29 @@ services:
 
   # ── Core Services ──────────────────────────────────────────────────────────
 
+  frontend-migrate:
+    build:
+      context: .
+      dockerfile: synthi/Dockerfile
+      target: builder
+      args:
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
+        NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"
+        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
+        NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
+    working_dir: /app/synthi
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   frontend:
     build:
       # npm-workspace build: root context so synthi can resolve the
@@ -57,10 +80,10 @@ services:
       context: .
       dockerfile: synthi/Dockerfile
       args:
-        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:1234"
-        NEXT_PUBLIC_YSWEET_URL: "http://localhost:8180"
-        NEXT_PUBLIC_COLLAB_PORT: "1234"
-        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
+        NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"
         NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
         NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
@@ -71,11 +94,31 @@ services:
         # Browser-side code-intel / provenance hooks call the ai-engine via a
         # public host URL, not the compose-network hostname. Default to 8081
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-3000}:3000"
+    volumes:
+      # Read-only workspace mirror for server-side CodeSite snapshot validation.
+      # Runtime mutation surfaces still use managed overlays/quarantine paths.
+      - .:/workspace:ro
+      # Writable CodeSite artifact projection root. Release proofs verify these
+      # files from tmp/codesite-dojo-proof/app-artifacts/<workspace-slug>/...
+      - ./tmp/codesite-dojo-proof/app-artifacts:/codesite-app-artifacts
     environment:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
-      NEXTAUTH_URL: "http://localhost:3000/"
+      NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
+      SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Local-compose auth secret used by NextAuth. Production deployments must
+      # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
+      AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://synthi:password@postgres:5432/synthi}"
+      SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
+      # Mature CodeSite shadow proofs execute isolated repo-command universes.
+      # The runner reads from the read-only /workspace mirror and copies each
+      # universe to /tmp before applying patches or running checks.
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON: '["node","/workspace/synthi/scripts/codesite-shadow-runner.mjs"]'
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: "/workspace"
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS: "1"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"
@@ -83,7 +126,7 @@ services:
       CLOUDFLARE_TURN_TOKEN_ID: ""
       CLOUDFLARE_TURN_API_TOKEN: ""
       # Local TURN (returned to browser via /api/turn-credentials)
-      LOCAL_TURN_URL: "turn:localhost:3478"
+      LOCAL_TURN_URL: "turn:localhost:${TURN_HOST_PORT:-3478}"
       LOCAL_TURN_USERNAME: "synthi"
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
@@ -101,7 +144,24 @@ services:
       # Match collab-server's gate so the default marketplace seed ships the
       # Dev Container as a real `container` program (not managed commands).
       ENABLE_CONTAINER_RUNTIME: "1"
+      # Optional proof-authority material. Local proof runs pass ephemeral
+      # Ed25519 keys through *_FILE vars mounted from /workspace/tmp so proof
+      # bundles can be verified with pinned public authorities without storing
+      # private keys in the repository or image.
+      SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID: "${SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_NAME: "${SYNTHI_CODESITE_PROOF_AUTHORITY_NAME:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: "${SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE:-}"
+      SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY: "${SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY:-}"
     depends_on:
+      frontend-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       y-sweet:
@@ -114,7 +174,7 @@ services:
       context: ./backend/collab-server
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:1234:1234"
+      - "127.0.0.1:${COLLAB_HOST_PORT:-1234}:1234"
     environment:
       COLLAB_PORT: "1234"
       SPAWNER_MODE: "local"
@@ -124,7 +184,8 @@ services:
       LOCAL_TURN_USERNAME: "synthi"
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Networking
-      CORS_ORIGIN: "http://localhost:3000"
+      CORS_ORIGIN: "http://localhost:${FRONTEND_HOST_PORT:-3000}"
+      SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret
@@ -179,7 +240,7 @@ services:
       context: ./backend/synthi-webrtc-compiler/signaling-server
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:${SIGNALING_HOST_PORT:-9000}:9000"
     environment:
       SIGNALING_PORT: "9000"
       REDIS_URL: "redis://redis:6379"
@@ -200,7 +261,7 @@ services:
     ports:
       # Keep container port 8000 stable for inter-service traffic, but avoid
       # assuming the Windows host can also bind 8000.
-      - "${AI_ENGINE_HOST_PORT:-8081}:8000"
+      - "127.0.0.1:${AI_ENGINE_HOST_PORT:-8081}:8000"
     # ai-engine needs access to the same workspace files collab-server
     # writes. Without this mount, /code-intel/edit-impact can't index any
     # workspace and returns empty candidates — NEP loses the entire cross-
@@ -246,9 +307,9 @@ services:
   coturn:
     image: coturn/coturn:4.7.0-r2@sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1
     ports:
-      - "127.0.0.1:3478:3478"
-      - "127.0.0.1:3478:3478/udp"
-      - "127.0.0.1:49152-49200:49152-49200/udp"
+      - "127.0.0.1:${TURN_HOST_PORT:-3478}:3478"
+      - "127.0.0.1:${TURN_HOST_PORT:-3478}:3478/udp"
+      - "127.0.0.1:${TURN_RELAY_HOST_PORT_RANGE:-49152-49200}:49152-49200/udp"
 
     command: >
       --no-tls
@@ -282,7 +343,7 @@ services:
     ports:
       # Expose Prometheus /metrics to the host so live-test.mjs can scrape
       # http://127.0.0.1:9464/metrics without a second `docker exec`.
-      - "127.0.0.1:9464:9464"
+      - "127.0.0.1:${MCP_METRICS_HOST_PORT:-9464}:9464"
     depends_on:
       - signaling-server
       - worker
@@ -293,7 +354,10 @@ services:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
       args:
-        WORKER_CARGO_FEATURES: "gpu-hmr"
+        # The base compose stack must run on ordinary local/CI hosts. GPU
+        # toolchains and devices are enabled by the AMD/NVIDIA overlays.
+        WORKER_CARGO_FEATURES: "${WORKER_CARGO_FEATURES:-gpu-hmr}"
+        INSTALL_ROCM: "${INSTALL_ROCM:-false}"
     # If the worker process dies (e.g. an unhandled panic, or an X11 IO
     # handler trip during reset tear-down) we want the container to come
     # back up automatically, the same way every other service in this
@@ -323,17 +387,12 @@ services:
       # buffer log lines are visible during this debugging session.
       SYNTHI_WORKER_VERBOSE: "1"
       SYNTHI_VSCODE_VERBOSE: "1"
-      # Build-time gpu-hmr enables the Rust modules; this runtime flag keeps
-      # the local stack explicit for harnesses and diagnostics.
-      SYNTHI_GPU_HMR: "1"
-      # Docker Desktop / WSL2 ROCm path. ROCDXG tells the HSA runtime to use
-      # the /dev/dxg device exposed by Windows instead of native /dev/kfd.
-      HSA_ENABLE_DXG_DETECTION: "1"
-    devices:
-      - "/dev/dxg:/dev/dxg"
+      # GPU overlays opt into device-backed HMR. The base stack stays host-only
+      # so Docker health/proof gates do not depend on /dev/dxg or nvidia-smi.
+      SYNTHI_GPU_HMR: "${SYNTHI_GPU_HMR:-0}"
+      HSA_ENABLE_DXG_DETECTION: "${HSA_ENABLE_DXG_DETECTION:-}"
     volumes:
       - collab-data:/data:ro
-      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
     cap_drop:
       - ALL
     security_opt:

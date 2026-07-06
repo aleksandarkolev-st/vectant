@@ -1,0 +1,452 @@
+{
+  "schemaVersion": "synthi.codesite.terminalReattachProof.v1",
+  "generatedAt": "2026-07-06T02:21:42.948Z",
+  "repoRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session",
+  "nodeImage": "node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5",
+  "ok": true,
+  "decisions": [
+    {
+      "name": "legacy request can reattach normally",
+      "ok": true,
+      "expected": {
+        "ok": true
+      },
+      "decision": {
+        "ok": true
+      }
+    },
+    {
+      "name": "active request blocks unmanaged existing PTY",
+      "ok": true,
+      "expected": {
+        "ok": false,
+        "reason": "existing_session_unmanaged"
+      },
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "existing_session_unmanaged",
+        "message": "CodeSite terminal blocked: active transactions cannot reattach to an unmanaged terminal session."
+      }
+    },
+    {
+      "name": "active request blocks transaction mismatch",
+      "ok": true,
+      "expected": {
+        "ok": false,
+        "reason": "transaction_mismatch"
+      },
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "transaction_mismatch",
+        "message": "CodeSite terminal blocked: requested transaction does not match the existing terminal session."
+      }
+    },
+    {
+      "name": "active request blocks lease mismatch",
+      "ok": true,
+      "expected": {
+        "ok": false,
+        "reason": "lease_mismatch"
+      },
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "lease_mismatch",
+        "message": "CodeSite terminal blocked: requested lease does not match the existing terminal session."
+      }
+    },
+    {
+      "name": "active request blocks agent session mismatch",
+      "ok": true,
+      "expected": {
+        "ok": false,
+        "reason": "agent_session_mismatch"
+      },
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "agent_session_mismatch",
+        "message": "CodeSite terminal blocked: requested agent session does not match the existing terminal session."
+      }
+    },
+    {
+      "name": "active request blocks workspace mismatch",
+      "ok": true,
+      "expected": {
+        "ok": false,
+        "reason": "workspace_mismatch"
+      },
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "workspace_mismatch",
+        "message": "CodeSite terminal blocked: requested workspace does not match the existing terminal session."
+      }
+    },
+    {
+      "name": "active request blocks non-overlay CodeSite PTY",
+      "ok": true,
+      "expected": {
+        "ok": false,
+        "reason": "overlay_missing"
+      },
+      "decision": {
+        "ok": false,
+        "code": "codesite_terminal_reattach_denied",
+        "reason": "overlay_missing",
+        "message": "CodeSite terminal blocked: existing terminal session is not backed by a Docker overlay runtime."
+      }
+    },
+    {
+      "name": "active request permits matching overlay runtime",
+      "ok": true,
+      "expected": {
+        "ok": true
+      },
+      "decision": {
+        "ok": true
+      }
+    },
+    {
+      "name": "active request permits matching quarantine overlay",
+      "ok": true,
+      "expected": {
+        "ok": true
+      },
+      "decision": {
+        "ok": true
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "hostTerminalRouting",
+      "command": "node --test backend/collab-server/__tests__/terminalRouting.test.js",
+      "exitCode": 0,
+      "ok": true,
+      "startedAt": "2026-07-06T02:21:40.509Z",
+      "completedAt": "2026-07-06T02:21:40.896Z",
+      "stdout": "TAP version 13\n# [Spawner] Using process backend\n# Subtest: shouldUseContainerTerminal requires the flag, a runtime manager, and a slug\nok 1 - shouldUseContainerTerminal requires the flag, a runtime manager, and a slug\n  ---\n  duration_ms: 2.169464\n  ...\n# Subtest: CodeSite terminal launch mode blocks host shells and permits container overlay runtime\nok 2 - CodeSite terminal launch mode blocks host shells and permits container overlay runtime\n  ---\n  duration_ms: 0.19844\n  ...\n# Subtest: CodeSite terminal reattach blocks unmanaged or mismatched existing sessions\nok 3 - CodeSite terminal reattach blocks unmanaged or mismatched existing sessions\n  ---\n  duration_ms: 1.073704\n  ...\n# Subtest: CodeSite terminal reattach permits only matching overlay-backed sessions\nok 4 - CodeSite terminal reattach permits only matching overlay-backed sessions\n  ---\n  duration_ms: 0.157633\n  ...\n# Subtest: runtimeTerminalTarget picks the runtime container under the sysbox flag, else the worker\nok 5 - runtimeTerminalTarget picks the runtime container under the sysbox flag, else the worker\n  ---\n  duration_ms: 0.170951\n  ...\n# Subtest: programRuntimeTarget: non-container is always headless\nok 6 - programRuntimeTarget: non-container is always headless\n  ---\n  duration_ms: 0.135286\n  ...\n# Subtest: programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)\nok 7 - programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)\n  ---\n  duration_ms: 0.082639\n  ...\n# Subtest: codeSiteProgramRuntimeTarget: active container + hybrid → hybrid even when sysbox is enabled\nok 8 - codeSiteProgramRuntimeTarget: active container + hybrid → hybrid even when sysbox is enabled\n  ---\n  duration_ms: 0.149838\n  ...\n# Subtest: programRuntimeTarget: container + hybrid only → hybrid\nok 9 - programRuntimeTarget: container + hybrid only → hybrid\n  ---\n  duration_ms: 0.23312\n  ...\n# Subtest: programRuntimeTarget: container + neither → unavailable\nok 10 - programRuntimeTarget: container + neither → unavailable\n  ---\n  duration_ms: 0.231997\n  ...\n# Subtest: CodeSite program runtime mode blocks headless host launches and permits hybrid overlay runtime\nok 11 - CodeSite program runtime mode blocks headless host launches and permits hybrid overlay runtime\n  ---\n  duration_ms: 0.179956\n  ...\n# Subtest: buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected\nok 12 - buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected\n  ---\n  duration_ms: 0.403866\n  ...\n# Subtest: pickRuntimeScopeForSlug matches slug → runtimeScope, else null\nok 13 - pickRuntimeScopeForSlug matches slug → runtimeScope, else null\n  ---\n  duration_ms: 0.145462\n  ...\n1..13\n# tests 13\n# suites 0\n# pass 13\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 244.392509\n",
+      "stderr": "",
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 13,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "ok": true
+      }
+    },
+    {
+      "name": "dockerTerminalRouting",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/terminalRouting.test.js",
+      "exitCode": 0,
+      "ok": true,
+      "startedAt": "2026-07-06T02:21:40.896Z",
+      "completedAt": "2026-07-06T02:21:42.016Z",
+      "stdout": "TAP version 13\n# [Spawner] Using process backend\n# Subtest: shouldUseContainerTerminal requires the flag, a runtime manager, and a slug\nok 1 - shouldUseContainerTerminal requires the flag, a runtime manager, and a slug\n  ---\n  duration_ms: 5.944405\n  ...\n# Subtest: CodeSite terminal launch mode blocks host shells and permits container overlay runtime\nok 2 - CodeSite terminal launch mode blocks host shells and permits container overlay runtime\n  ---\n  duration_ms: 0.350055\n  ...\n# Subtest: CodeSite terminal reattach blocks unmanaged or mismatched existing sessions\nok 3 - CodeSite terminal reattach blocks unmanaged or mismatched existing sessions\n  ---\n  duration_ms: 0.80467\n  ...\n# Subtest: CodeSite terminal reattach permits only matching overlay-backed sessions\nok 4 - CodeSite terminal reattach permits only matching overlay-backed sessions\n  ---\n  duration_ms: 0.191241\n  ...\n# Subtest: runtimeTerminalTarget picks the runtime container under the sysbox flag, else the worker\nok 5 - runtimeTerminalTarget picks the runtime container under the sysbox flag, else the worker\n  ---\n  duration_ms: 0.171541\n  ...\n# Subtest: programRuntimeTarget: non-container is always headless\nok 6 - programRuntimeTarget: non-container is always headless\n  ---\n  duration_ms: 0.185381\n  ...\n# Subtest: programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)\nok 7 - programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)\n  ---\n  duration_ms: 0.221072\n  ...\n# Subtest: codeSiteProgramRuntimeTarget: active container + hybrid → hybrid even when sysbox is enabled\nok 8 - codeSiteProgramRuntimeTarget: active container + hybrid → hybrid even when sysbox is enabled\n  ---\n  duration_ms: 0.169505\n  ...\n# Subtest: programRuntimeTarget: container + hybrid only → hybrid\nok 9 - programRuntimeTarget: container + hybrid only → hybrid\n  ---\n  duration_ms: 0.167617\n  ...\n# Subtest: programRuntimeTarget: container + neither → unavailable\nok 10 - programRuntimeTarget: container + neither → unavailable\n  ---\n  duration_ms: 0.182327\n  ...\n# Subtest: CodeSite program runtime mode blocks headless host launches and permits hybrid overlay runtime\nok 11 - CodeSite program runtime mode blocks headless host launches and permits hybrid overlay runtime\n  ---\n  duration_ms: 0.175721\n  ...\n# Subtest: buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected\nok 12 - buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected\n  ---\n  duration_ms: 0.491892\n  ...\n# Subtest: pickRuntimeScopeForSlug matches slug → runtimeScope, else null\nok 13 - pickRuntimeScopeForSlug matches slug → runtimeScope, else null\n  ---\n  duration_ms: 0.179699\n  ...\n1..13\n# tests 13\n# suites 0\n# pass 13\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 279.008432\n",
+      "stderr": "",
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 13,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "ok": true
+      }
+    },
+    {
+      "name": "proofSuiteGenerator:terminalReattach",
+      "command": "node tmp/codesite-dojo-proof/run-terminal-reattach-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\",",
+        "  \"htmlPath\": \"tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\",",
+        "  \"pngPath\": \"tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\",",
+        "  \"testSummary\": {",
+        "    \"tests\": 26,",
+        "    \"pass\": 26,",
+        "    \"fail\": 0,",
+        "    \"cancelled\": 0,",
+        "    \"skipped\": 0,",
+        "    \"todo\": 0",
+        "  },",
+        "  \"assertions\": 15",
+        "}"
+      ]
+    }
+  ],
+  "totalSkipped": 0,
+  "testSummary": {
+    "tests": 26,
+    "pass": 26,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "assertions": [
+    {
+      "name": "legacy request can reattach normally",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": true
+        },
+        "decision": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "active request blocks unmanaged existing PTY",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": false,
+          "reason": "existing_session_unmanaged"
+        },
+        "decision": {
+          "ok": false,
+          "code": "codesite_terminal_reattach_denied",
+          "reason": "existing_session_unmanaged",
+          "message": "CodeSite terminal blocked: active transactions cannot reattach to an unmanaged terminal session."
+        }
+      }
+    },
+    {
+      "name": "active request blocks transaction mismatch",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": false,
+          "reason": "transaction_mismatch"
+        },
+        "decision": {
+          "ok": false,
+          "code": "codesite_terminal_reattach_denied",
+          "reason": "transaction_mismatch",
+          "message": "CodeSite terminal blocked: requested transaction does not match the existing terminal session."
+        }
+      }
+    },
+    {
+      "name": "active request blocks lease mismatch",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": false,
+          "reason": "lease_mismatch"
+        },
+        "decision": {
+          "ok": false,
+          "code": "codesite_terminal_reattach_denied",
+          "reason": "lease_mismatch",
+          "message": "CodeSite terminal blocked: requested lease does not match the existing terminal session."
+        }
+      }
+    },
+    {
+      "name": "active request blocks agent session mismatch",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": false,
+          "reason": "agent_session_mismatch"
+        },
+        "decision": {
+          "ok": false,
+          "code": "codesite_terminal_reattach_denied",
+          "reason": "agent_session_mismatch",
+          "message": "CodeSite terminal blocked: requested agent session does not match the existing terminal session."
+        }
+      }
+    },
+    {
+      "name": "active request blocks workspace mismatch",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": false,
+          "reason": "workspace_mismatch"
+        },
+        "decision": {
+          "ok": false,
+          "code": "codesite_terminal_reattach_denied",
+          "reason": "workspace_mismatch",
+          "message": "CodeSite terminal blocked: requested workspace does not match the existing terminal session."
+        }
+      }
+    },
+    {
+      "name": "active request blocks non-overlay CodeSite PTY",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": false,
+          "reason": "overlay_missing"
+        },
+        "decision": {
+          "ok": false,
+          "code": "codesite_terminal_reattach_denied",
+          "reason": "overlay_missing",
+          "message": "CodeSite terminal blocked: existing terminal session is not backed by a Docker overlay runtime."
+        }
+      }
+    },
+    {
+      "name": "active request permits matching overlay runtime",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": true
+        },
+        "decision": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "active request permits matching quarantine overlay",
+      "ok": true,
+      "details": {
+        "expected": {
+          "ok": true
+        },
+        "decision": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "hostTerminalRouting exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/terminalRouting.test.js",
+        "summary": {
+          "tests": 13,
+          "suites": 0,
+          "pass": 13,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "ok": true
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "hostTerminalRouting completed with zero skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 13,
+          "suites": 0,
+          "pass": 13,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "dockerTerminalRouting exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 node --test backend/collab-server/__tests__/terminalRouting.test.js",
+        "summary": {
+          "tests": 13,
+          "suites": 0,
+          "pass": 13,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "ok": true
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerTerminalRouting completed with zero skipped/todo/cancelled tests",
+      "ok": true,
+      "details": {
+        "summary": {
+          "tests": 13,
+          "suites": 0,
+          "pass": 13,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "all executed terminal routing tests passed without skipped cases",
+      "ok": true,
+      "details": {
+        "summaries": [
+          {
+            "tests": 13,
+            "suites": 0,
+            "pass": 13,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "ok": true
+          },
+          {
+            "tests": 13,
+            "suites": 0,
+            "pass": 13,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0,
+            "ok": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "terminal reattach proof is based on live routing decisions",
+      "ok": true,
+      "details": {
+        "decisions": 9
+      }
+    }
+  ],
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T02:21:42.948Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json"
+  }
+}

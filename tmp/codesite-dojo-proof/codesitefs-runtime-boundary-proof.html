@@ -3,75 +3,142 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CodeSiteFS Runtime Boundary Proof</title>
+<title>CodeSite Mature Proof: codesiteFsRuntimeBoundary</title>
 <style>
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a0e;color:#f5f7fb}
-body{margin:0;padding:28px;background:#080a0e}
-main{max-width:1180px;margin:0 auto;display:grid;gap:18px}
-.hero,.card{border:1px solid #293246;border-radius:8px;background:#10151f;padding:18px}
-.pass{display:inline-block;border-radius:6px;background:#123b27;color:#9df2bd;padding:4px 8px;font-size:12px;font-weight:700}
-h1{font-size:25px;margin:8px 0 6px;letter-spacing:0}
-h2{font-size:16px;margin:0 0 10px;letter-spacing:0}
-p{margin:0;color:#afbad0;line-height:1.5}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
-.label{font-size:12px;color:#98a2b8}
-.value{margin-top:6px;font-size:14px;overflow-wrap:anywhere}
-table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{border-top:1px solid #293246;padding:8px;text-align:left;vertical-align:top}
-th{color:#afbad0;font-weight:600}
-pre{white-space:pre-wrap;border:1px solid #293246;border-radius:8px;background:#05060a;padding:14px;color:#cbd3e7;font-size:12px;overflow-wrap:anywhere}
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b10;color:#f5f7fb}
+body{margin:0;background:#080b10;padding:30px}
+main{max-width:1180px;margin:0 auto;display:grid;gap:16px}
+.hero,.card{border:1px solid #2c3443;background:#111722;border-radius:8px;padding:18px}
+.hero{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
+h1{margin:8px 0 8px;font-size:30px;line-height:1.12;letter-spacing:0}
+h2{margin:0 0 10px;font-size:16px;letter-spacing:0}
+p{margin:0;color:#aeb8c9;line-height:1.55;max-width:92ch}
+.stamp{border-radius:6px;padding:7px 11px;font-size:12px;font-weight:800;background:#133d2a;color:#9df1bd}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.metric{border:1px solid #2c3443;background:#0b1018;border-radius:8px;padding:12px;min-width:0}
+.label{font-size:12px;color:#8f9caf}.value{margin-top:6px;font-size:16px;font-weight:750;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+th,td{border-top:1px solid #2c3443;padding:8px;text-align:left;vertical-align:top}
+th{font-size:12px;color:#aeb8c9}
+code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere;color:#dce5f5}
+.ok{color:#9df1bd;font-weight:800}.bad{color:#ffc1c1;font-weight:800}
+@media(max-width:820px){body{padding:14px}.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}h1{font-size:25px}}
 </style>
 </head>
 <body>
 <main>
 <section class="hero">
-<span class="pass">PASS</span>
-<h1>CodeSiteFS Runtime Boundary Proof</h1>
-<p>Real Docker container attempted raw workspace writes. CodeSiteFS mounted a writable quarantine overlay, preserved the real repo, and recorded write_quarantined evidence for every changed path.</p>
+  <div>
+    <span class="stamp">VALIDATED</span>
+    <h1>CodeSite Mature Proof: codesiteFsRuntimeBoundary</h1>
+    <p>Generated from the current proof-suite runner. This visual summary binds assertions, executable commands, and git provenance for release-gate verification.</p>
+  </div>
+  <span class="stamp">validated</span>
 </section>
 <section class="grid">
-<div class="card"><div class="label">Docker image</div><div class="value">node:22-bookworm</div></div>
-<div class="card"><div class="label">Container</div><div class="value">codesitefs-boundary-1782884854557</div></div>
-<div class="card"><div class="label">Transaction</div><div class="value">txn-1782884854528</div></div>
-<div class="card"><div class="label">Quarantine root</div><div class="value">/tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
+  <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
+  <div class="metric"><div class="label">Assertions</div><div class="value">15/15</div></div>
+  <div class="metric"><div class="label">Commands</div><div class="value">1/1</div></div>
 </section>
-<section class="card">
-<h2>Repo Preservation</h2>
-<table><thead><tr><th>Path</th><th>Real repo after raw Docker write</th><th>Quarantine change</th></tr></thead><tbody>
-<tr><td>src/app.js</td><td>real repo app before</td><td>modified</td></tr><tr><td>api/auth/signup.ts</td><td>real repo auth before</td><td>modified</td></tr><tr><td>runtime.out</td><td>missing from real repo</td><td>created</td></tr>
-</tbody></table>
-</section>
-<section class="card">
-<h2>Recorded Boundary Events</h2>
-<table><thead><tr><th>Path</th><th>Event</th><th>Reason</th><th>Evidence</th></tr></thead><tbody>
-<tr><td>api/auth/signup.ts</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:0f152e74939dedc447f505f2c2dbebe066fedfa2da4be2adad186f04d7129deb</td></tr><tr><td>runtime.out</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:bb825ec19f1394ce0c0f1e22aefcd7edf9982a93d32c9e7f5a88c7b0497df1bb</td></tr><tr><td>src/app.js</td><td>write_quarantined</td><td>raw_terminal_quarantine</td><td>codesitefs:quarantine:sha256:09389546c1f6a472d5ace04bff9b4af78ff5c0cd7f75b714c4bed01e70476515</td></tr>
-</tbody></table>
-</section>
-<section class="card">
-<h2>Product Runtime Contract</h2>
-<table><thead><tr><th>Check</th><th>Value</th></tr></thead><tbody>
-<tr><td>Container terminal launch mode</td><td>quarantine-runtime</td></tr>
-<tr><td>Sysbox terminal launch mode</td><td>block-runtime</td></tr>
-<tr><td>Overlay A runtime container</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-64cde05e87</td></tr>
-<tr><td>Overlay B runtime container</td><td>workspace-runtime-codesitefs-runtime-boundary-wo-codesite-ed9c873e6d</td></tr>
-</tbody></table>
-</section>
-<section class="card"><h2>Assertions</h2><pre>{
-  &quot;containerTerminalRoutesToQuarantineRuntime&quot;: true,
-  &quot;sysboxTerminalStillBlocksWithoutMountStrategy&quot;: true,
-  &quot;sameTransactionOverlaysUseDistinctRuntimeContainers&quot;: true,
-  &quot;realRepoAllowedFileUnchanged&quot;: true,
-  &quot;realRepoBlockedFileUnchanged&quot;: true,
-  &quot;runtimeContainerChangedOnlyQuarantine&quot;: true,
-  &quot;blockedPathRecordedAsQuarantined&quot;: true,
-  &quot;processTreeProvenanceRecorded&quot;: true,
-  &quot;durableEvidenceRefsCreated&quot;: true
-}</pre></section>
-<section class="card"><h2>Docker Command</h2><pre>docker run --rm --name codesitefs-boundary-1782884854557 -v /tmp/codesitefs-runtime-boundary-proof/1782884854508-89224cc8/quarantine/codesitefs-runtime-boundary/txn-1782884854528/1782884854528-dbee6c8e:/workspace -w /workspace node:22-bookworm sh -lc set -eu
-mkdir -p src api/auth
-printf 'overlay app from raw docker\n' &gt; src/app.js
-printf 'raw auth bypass attempt\n' &gt; api/auth/signup.ts
-printf 'runtime wrote only to quarantine\n' &gt; runtime.out</pre></section>
+<section class="card"><h2>Executable Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Summary</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node scripts/codesitefs-runtime-boundary-proof.mjs</code></td>
+      <td><code>{&quot;tests&quot;:1,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;}</code></td>
+    </tr>
+  </tbody></table></section>
+<section class="card"><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Name</th><th>Details</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>managerCreatedTwoRuntimeContainers</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>sameTransactionOverlaysUseDistinctRuntimeContainers</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimeMountsReadOnlyBaseAndWritableOverlay</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimeContainersDeclareOverlayMode</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimeWorkspaceWritable</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>realRepoAllowedFileUnchanged</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>realRepoBlockedFileUnchanged</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimeOutNeverCreatedInRealRepo</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimeContainerChangedOnlyQuarantine</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>blockedPathRecordedAsQuarantined</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>processTreeProvenanceRecorded</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>durableEvidenceRefsCreated</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimePodWithoutManagedMountFailsClosed</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>runtimePodWithHybridFallsBackToQuarantineRuntime</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hybridContainerRuntimeRoutesToQuarantine</td>
+      <td><code>{}</code></td>
+    </tr>
+  </tbody></table></section>
 </main>
 </body>
 </html>

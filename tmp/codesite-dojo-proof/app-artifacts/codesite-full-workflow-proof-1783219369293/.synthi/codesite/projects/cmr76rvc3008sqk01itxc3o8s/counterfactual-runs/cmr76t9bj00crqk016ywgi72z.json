@@ -1,0 +1,68 @@
+{
+  "id": "cmr76t9bj00crqk016ywgi72z",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "shadowJobRef": "shadow:codesite-full-workflow-proof-1783219369293:counterfactual-choice",
+  "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+  "universes": [
+    {
+      "universe": "schema-first",
+      "result": "passed",
+      "route": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionCost": 3,
+      "staleAssumptions": 0,
+      "reasonCodes": [
+        "schema_first_contract_landed"
+      ]
+    },
+    {
+      "universe": "frontend-backend-parallel",
+      "result": "near_miss",
+      "route": [
+        "synthi/prisma/schema.prisma",
+        "synthi/src/app/api/auth/**"
+      ],
+      "inspectionCost": 8,
+      "staleAssumptions": 2,
+      "reasonCodes": [
+        "parallel_schema_contract_near_miss"
+      ]
+    }
+  ],
+  "arbiterVerdict": {
+    "selected": "schema-first",
+    "verdict": "schema-first",
+    "reasonCodes": [
+      "avoid_parallel_schema_contract_near_miss"
+    ],
+    "policyDeltaCandidates": [
+      {
+        "rule": "schema_contract_first_before_api_parallelism",
+        "preferredStrategies": [
+          "schema_first"
+        ],
+        "avoidStrategies": [
+          "frontend_backend_parallel"
+        ],
+        "affectedRoutes": [
+          "synthi/prisma/schema.prisma",
+          "synthi/src/app/api/auth/**"
+        ],
+        "requiredTowerActions": [
+          "refresh_downstream_assumptions",
+          "hold_dependent_api_until_schema_lands"
+        ],
+        "expectedRiskReduction": 0.31,
+        "confidence": 0.84
+      }
+    ]
+  },
+  "userChoice": null,
+  "laterManualEdits": [],
+  "validityStrength": "strong",
+  "evidenceRefs": [
+    "codesite:shadow:full-workflow-counterfactual"
+  ],
+  "createdAt": "2026-07-05T02:43:59.216Z"
+}

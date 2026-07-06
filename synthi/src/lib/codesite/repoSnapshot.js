@@ -26,22 +26,33 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
   const normalizedReadSet = normalizePathList(readSet);
   const limits = normalizeLimits(options);
   const repoRoot = resolveCodeSiteRepoRoot(options);
+  const scope = normalizeSnapshotScope(options.scope || options.snapshotScope || options.snapshot_scope);
+  const repoManifestExcludedPaths = scope === 'repo_wide'
+    ? normalizePathList(options.excludePaths || options.exclude_paths || options.repoManifestExcludedPaths || options.repo_manifest_excluded_paths || [])
+    : [];
   const generatedAt = new Date().toISOString();
   const baseEvidence = {
     schemaVersion: READ_SNAPSHOT_SCHEMA_VERSION,
     status: normalizedReadSet.length ? 'recording' : 'empty',
+    scope,
     readSet: normalizedReadSet,
     repoRoot,
     fileDigests: [],
     missingPaths: [],
     skippedPaths: [],
     truncated: false,
+    repoManifestDigest: null,
+    repoManifestFileCount: 0,
+    repoManifestScannedEntries: 0,
+    repoManifestTruncated: false,
+    repoManifestSkippedPaths: [],
+    repoManifestExcludedPaths,
     limits,
     generatedAt,
     source: options.source || 'codesite_control_plane',
   };
 
-  if (!normalizedReadSet.length) {
+  if (!normalizedReadSet.length && scope !== 'repo_wide') {
     return finalizeEvidence({ ...baseEvidence, status: 'empty' });
   }
 
@@ -72,13 +83,15 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
     scanEntries: 0,
   };
 
-  for (const entry of normalizedReadSet) {
-    if (accumulator.files.size >= limits.maxFiles) {
-      accumulator.truncated = true;
-      accumulator.skippedPaths.push({ path: entry, reason: 'max_files_exceeded' });
-      continue;
+  if (normalizedReadSet.length) {
+    for (const entry of normalizedReadSet) {
+      if (accumulator.files.size >= limits.maxFiles) {
+        accumulator.truncated = true;
+        accumulator.skippedPaths.push({ path: entry, reason: 'max_files_exceeded' });
+        continue;
+      }
+      await collectReadSetEntry(repoRoot, entry, accumulator, limits);
     }
-    await collectReadSetEntry(repoRoot, entry, accumulator, limits);
   }
 
   const fileDigests = [];
@@ -90,6 +103,9 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
       fileDigests.push(result.file);
     }
   }
+  const repoManifest = scope === 'repo_wide'
+    ? await buildRepoManifest(repoRoot, limits, repoManifestExcludedPaths)
+    : emptyRepoManifest();
 
   return finalizeEvidence({
     ...baseEvidence,
@@ -99,6 +115,12 @@ export async function buildReadSnapshotEvidence(readSet, options = {}) {
     skippedPaths: accumulator.skippedPaths.sort(comparePathEntries),
     truncated: accumulator.truncated,
     scannedEntries: accumulator.scanEntries,
+    repoManifestDigest: repoManifest.repoManifestDigest,
+    repoManifestFileCount: repoManifest.repoManifestFileCount,
+    repoManifestScannedEntries: repoManifest.repoManifestScannedEntries,
+    repoManifestTruncated: repoManifest.repoManifestTruncated,
+    repoManifestSkippedPaths: repoManifest.repoManifestSkippedPaths,
+    repoManifestExcludedPaths,
   });
 }
 
@@ -135,6 +157,8 @@ export async function validateReadSnapshotEvidence(evidence, options = {}) {
   const current = await buildReadSnapshotEvidence(expected.readSet, {
     ...options,
     repoRoot: options.repoRoot || options.root || expected.repoRoot,
+    scope: expected.scope,
+    excludePaths: options.excludePaths || options.exclude_paths || expected.repoManifestExcludedPaths,
     maxFiles: expected.limits?.maxFiles,
     maxFileBytes: expected.limits?.maxFileBytes,
     maxScanEntries: expected.limits?.maxScanEntries,
@@ -152,14 +176,20 @@ export async function validateReadSnapshotEvidence(evidence, options = {}) {
 
   const driftedPaths = compareSnapshotFiles(expected, current);
   const digestChanged = expected.snapshotDigest !== current.snapshotDigest;
+  const repoManifestDrifted = expected.scope === 'repo_wide'
+    && expected.repoManifestDigest !== current.repoManifestDigest;
   const ok = !digestChanged && driftedPaths.length === 0;
   return {
     ok,
-    reasonCodes: ok ? ['repo_snapshot_stable'] : ['repo_snapshot_drift_detected'],
+    reasonCodes: ok ? ['repo_snapshot_stable'] : [
+      'repo_snapshot_drift_detected',
+      ...(repoManifestDrifted ? ['repo_snapshot_repo_manifest_drift_detected'] : []),
+    ],
     expected,
     current,
     driftedPaths,
     digestChanged,
+    repoManifestDrifted,
   };
 }
 
@@ -170,12 +200,19 @@ export function normalizeReadSnapshotEvidence(input) {
   const evidence = {
     schemaVersion: input.schemaVersion || input.schema_version || READ_SNAPSHOT_SCHEMA_VERSION,
     status: input.status || (readSet.length ? 'recorded' : 'empty'),
+    scope: normalizeSnapshotScope(input.scope || input.snapshotScope || input.snapshot_scope),
     readSet,
     repoRoot: input.repoRoot || input.repo_root || null,
     fileDigests,
     missingPaths: normalizePathList(input.missingPaths || input.missing_paths || []),
     skippedPaths: normalizeSkippedPaths(input.skippedPaths || input.skipped_paths || []),
     truncated: Boolean(input.truncated),
+    repoManifestDigest: input.repoManifestDigest || input.repo_manifest_digest || null,
+    repoManifestFileCount: Number.isFinite(input.repoManifestFileCount) ? input.repoManifestFileCount : Number(input.repo_manifest_file_count || 0),
+    repoManifestScannedEntries: Number.isFinite(input.repoManifestScannedEntries) ? input.repoManifestScannedEntries : Number(input.repo_manifest_scanned_entries || 0),
+    repoManifestTruncated: Boolean(input.repoManifestTruncated || input.repo_manifest_truncated),
+    repoManifestSkippedPaths: normalizeSkippedPaths(input.repoManifestSkippedPaths || input.repo_manifest_skipped_paths || []),
+    repoManifestExcludedPaths: normalizePathList(input.repoManifestExcludedPaths || input.repo_manifest_excluded_paths || []),
     limits: normalizeLimits(input.limits || input),
     generatedAt: input.generatedAt || input.generated_at || null,
     source: input.source || 'codesite_control_plane',
@@ -184,12 +221,18 @@ export function normalizeReadSnapshotEvidence(input) {
   evidence.evidenceDigest = input.evidenceDigest || input.evidence_digest || digest({
     schemaVersion: evidence.schemaVersion,
     status: evidence.status,
+    scope: evidence.scope,
     readSet: evidence.readSet,
     snapshotDigest: evidence.snapshotDigest,
     fileCount: evidence.fileDigests.length,
     missingPaths: evidence.missingPaths,
     skippedPaths: evidence.skippedPaths,
     truncated: evidence.truncated,
+    repoManifestDigest: evidence.repoManifestDigest,
+    repoManifestFileCount: evidence.repoManifestFileCount,
+    repoManifestTruncated: evidence.repoManifestTruncated,
+    repoManifestSkippedPaths: evidence.repoManifestSkippedPaths,
+    repoManifestExcludedPaths: evidence.repoManifestExcludedPaths,
     source: evidence.source,
   });
   return evidence;
@@ -281,7 +324,53 @@ async function collectDirectory(repoRoot, relDir, accumulator, limits, predicate
   }
 }
 
+async function buildRepoManifest(repoRoot, limits, excludedPaths = []) {
+  const accumulator = {
+    files: new Set(),
+    missingPaths: new Set(),
+    skippedPaths: [],
+    truncated: false,
+    scanEntries: 0,
+    excludedPaths,
+  };
+  await collectDirectory(repoRoot, '', accumulator, limits, () => true);
+  const fileDigests = [];
+  for (const filePath of [...accumulator.files].sort()) {
+    const result = await digestRepoFile(repoRoot, filePath, limits);
+    if (result.skipped) accumulator.skippedPaths.push(result.skipped);
+    else fileDigests.push(result.file);
+  }
+  return {
+    repoManifestDigest: digest({
+      schemaVersion: READ_SNAPSHOT_SCHEMA_VERSION,
+      scope: 'repo_wide',
+      fileDigests,
+      skippedPaths: accumulator.skippedPaths.sort(comparePathEntries),
+      truncated: accumulator.truncated,
+      limits,
+    }),
+    repoManifestFileCount: fileDigests.length,
+    repoManifestScannedEntries: accumulator.scanEntries,
+    repoManifestTruncated: accumulator.truncated,
+    repoManifestSkippedPaths: accumulator.skippedPaths.sort(comparePathEntries),
+  };
+}
+
+function emptyRepoManifest() {
+  return {
+    repoManifestDigest: null,
+    repoManifestFileCount: 0,
+    repoManifestScannedEntries: 0,
+    repoManifestTruncated: false,
+    repoManifestSkippedPaths: [],
+    repoManifestExcludedPaths: [],
+  };
+}
+
 function addFile(accumulator, filePath, limits) {
+  if (isRepoManifestExcluded(filePath, accumulator.excludedPaths || [])) {
+    return;
+  }
   if (accumulator.files.size >= limits.maxFiles) {
     accumulator.truncated = true;
     accumulator.skippedPaths.push({ path: filePath, reason: 'max_files_exceeded' });
@@ -323,12 +412,18 @@ function finalizeEvidence(evidence) {
   normalized.evidenceDigest = digest({
     schemaVersion: normalized.schemaVersion,
     status: normalized.status,
+    scope: normalized.scope,
     readSet: normalized.readSet,
     snapshotDigest: normalized.snapshotDigest,
     fileCount: normalized.fileDigests.length,
     missingPaths: normalized.missingPaths,
     skippedPaths: normalized.skippedPaths,
     truncated: normalized.truncated,
+    repoManifestDigest: normalized.repoManifestDigest,
+    repoManifestFileCount: normalized.repoManifestFileCount,
+    repoManifestTruncated: normalized.repoManifestTruncated,
+    repoManifestSkippedPaths: normalized.repoManifestSkippedPaths,
+    repoManifestExcludedPaths: normalized.repoManifestExcludedPaths,
     source: normalized.source,
   });
   return normalized;
@@ -338,13 +433,26 @@ function buildSnapshotDigest(evidence) {
   return digest({
     schemaVersion: evidence.schemaVersion,
     status: evidence.status,
+    scope: evidence.scope,
     readSet: evidence.readSet,
     fileDigests: evidence.fileDigests,
     missingPaths: evidence.missingPaths,
     skippedPaths: evidence.skippedPaths.map(({ path: skippedPath, reason, size }) => ({ path: skippedPath, reason, size: size ?? null })),
     truncated: evidence.truncated,
+    repoManifestDigest: evidence.repoManifestDigest,
+    repoManifestFileCount: evidence.repoManifestFileCount,
+    repoManifestTruncated: evidence.repoManifestTruncated,
+    repoManifestSkippedPaths: evidence.repoManifestSkippedPaths.map(({ path: skippedPath, reason, size }) => ({ path: skippedPath, reason, size: size ?? null })),
     limits: evidence.limits,
   });
+}
+
+function isRepoManifestExcluded(filePath, excludedPaths = []) {
+  return normalizePathList(excludedPaths).some((pattern) => (
+    pattern === filePath
+      || matchPathPattern(filePath, pattern)
+      || (pattern.endsWith('/**') && filePath.startsWith(pattern.slice(0, -3)))
+  ));
 }
 
 function compareSnapshotFiles(expected, current) {
@@ -370,6 +478,10 @@ function compareSnapshotFiles(expected, current) {
   }
 
   return drifted;
+}
+
+function normalizeSnapshotScope(value) {
+  return String(value || '').trim().toLowerCase() === 'repo_wide' ? 'repo_wide' : 'read_set';
 }
 
 function missingFile(filePath) {

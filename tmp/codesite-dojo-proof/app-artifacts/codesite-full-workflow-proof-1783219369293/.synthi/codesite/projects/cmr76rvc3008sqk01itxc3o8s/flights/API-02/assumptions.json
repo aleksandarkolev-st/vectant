@@ -1,0 +1,23 @@
+[
+  {
+    "id": "cmr76t2r400c9qk01qfeyolp9",
+    "projectId": "cmr76rvc3008sqk01itxc3o8s",
+    "ownerSessionId": "cmr76s0bl009vqk013j9fu23i",
+    "displayCallsign": "API-02",
+    "assumptionKey": "api.signup.depends_on_schema.v1",
+    "dependsOn": [
+      {
+        "ref": "auth.signup.schema",
+        "version": "v1",
+        "path": "synthi/prisma/schema.prisma"
+      }
+    ],
+    "usedBy": [
+      "synthi/src/app/api/auth/signup.ts"
+    ],
+    "status": "invalidated",
+    "invalidatedBy": "SCHEMA-01",
+    "invalidatedAt": "2026-07-05T02:44:49.270Z",
+    "createdAt": "2026-07-05T02:43:50.704Z"
+  }
+]

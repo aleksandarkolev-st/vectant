@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite AgentSession",
+  "type": "object",
+  "required": [
+    "ownerUserId",
+    "agentProvider",
+    "displayCallsign",
+    "status"
+  ],
+  "properties": {
+    "ownerUserId": {
+      "type": "string"
+    },
+    "agentProvider": {
+      "type": "string"
+    },
+    "agentRuntime": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "providerSessionRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "displayCallsign": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "permissions": {
+      "type": "array"
+    },
+    "redactionPolicy": {
+      "type": "object"
+    },
+    "dojoPilotLicenseRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dojoProofRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dojoEvidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dojoDecisionDigest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pilotLicenseSnapshot": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

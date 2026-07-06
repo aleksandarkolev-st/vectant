@@ -1,0 +1,125 @@
+{
+  "ok": true,
+  "skill_id": "dojo_save_profile",
+  "requested_action": "run_prefix_validation",
+  "control_plane_source": "compatibility_registry",
+  "proof_key": null,
+  "proof_record": {
+    "tenant_id": "local-tenant-23af210391f3",
+    "workspace_id": "workflow-pipeline-profile-form-mr79no5t",
+    "capsule_id": "capsule_eb544f72-a40f-4641-8495-a4f4730dc897",
+    "skill_id": "dojo_save_profile",
+    "license_id": "license_3103ef056d7a",
+    "license_version": "1.0.0",
+    "requested_action": "run_prefix_validation",
+    "nonce": "4f6d9a2f-45ed-4ddf-a1f0-5595eeeed8a6",
+    "key_id": "dojo-key-4171243b214f",
+    "signature_algorithm": "hmac-sha256",
+    "substrate_claim": "mcp",
+    "evidence_record_ids": [
+      "evidence_001_587d74a5e748",
+      "evidence_023_d5769495b27d",
+      "evidence_028_c6ba04843a82",
+      "evidence_029_13d7216338fa",
+      "evidence_030_5a128350e3db",
+      "evidence_031_34d70a2152fd",
+      "evidence_032_76949c39cb4c",
+      "evidence_035_b8bd5f52bee9"
+    ],
+    "ledger_checkpoint_hash": "274a821b5049eb291cd4d99eb701ff076a0cbd76bf001929ad854bb20a2e99d0",
+    "issued_at": "2026-07-05T04:04:06.593Z",
+    "expires_at": "2026-07-05T04:19:06.593Z",
+    "status": "issued",
+    "issued_by": {
+      "actor_id": "workflow-pipeline-e2e:profile-form:proof-agent",
+      "actor_type": "agent"
+    },
+    "last_validated_at": "2026-07-05T04:04:06.632Z"
+  },
+  "evidence_ledger_validation": null,
+  "evidence_claim_results": [],
+  "license_kernel": {
+    "ok": true,
+    "status": "allowed",
+    "validation": {
+      "ok": true,
+      "status": "allowed",
+      "blocked_by": [],
+      "error_codes": [],
+      "license": {
+        "skill_id": "dojo_save_profile",
+        "license_version": "1.0.0",
+        "entrustment_level": "EX"
+      }
+    },
+    "blocked_by": [],
+    "error_codes": [],
+    "proof_record": {
+      "tenant_id": "local-tenant-23af210391f3",
+      "workspace_id": "workflow-pipeline-profile-form-mr79no5t",
+      "capsule_id": "capsule_eb544f72-a40f-4641-8495-a4f4730dc897",
+      "skill_id": "dojo_save_profile",
+      "license_id": "license_3103ef056d7a",
+      "license_version": "1.0.0",
+      "requested_action": "run_prefix_validation",
+      "nonce": "4f6d9a2f-45ed-4ddf-a1f0-5595eeeed8a6",
+      "key_id": "dojo-key-4171243b214f",
+      "signature_algorithm": "hmac-sha256",
+      "substrate_claim": "mcp",
+      "evidence_record_ids": [
+        "evidence_001_587d74a5e748",
+        "evidence_023_d5769495b27d",
+        "evidence_028_c6ba04843a82",
+        "evidence_029_13d7216338fa",
+        "evidence_030_5a128350e3db",
+        "evidence_031_34d70a2152fd",
+        "evidence_032_76949c39cb4c",
+        "evidence_035_b8bd5f52bee9"
+      ],
+      "ledger_checkpoint_hash": "274a821b5049eb291cd4d99eb701ff076a0cbd76bf001929ad854bb20a2e99d0",
+      "issued_at": "2026-07-05T04:04:06.593Z",
+      "expires_at": "2026-07-05T04:19:06.593Z",
+      "status": "issued",
+      "issued_by": {
+        "actor_id": "workflow-pipeline-e2e:profile-form:proof-agent",
+        "actor_type": "agent"
+      },
+      "last_validated_at": "2026-07-05T04:04:06.632Z"
+    },
+    "runtime_claims": {
+      "tenant_id": "local-tenant-23af210391f3",
+      "organization_id": "local-tenant-23af210391f3",
+      "workspace_id": "workflow-pipeline-profile-form-mr79no5t",
+      "app_origin": "http://127.0.0.1:11234",
+      "requested_action": "run_prefix_validation",
+      "dry_run": true,
+      "actor_id": "workflow-pipeline-e2e:profile-form:proof-agent",
+      "actor_type": "agent",
+      "roles": [
+        "agent",
+        "dojo:artifact:export",
+        "dojo:auditor",
+        "dojo:proof:issue",
+        "dojo:runtime:create"
+      ],
+      "request_id": "workflow-pipeline-profile-form-1783224246584",
+      "correlation_id": "workflow-pipeline-profile-form"
+    }
+  },
+  "implementation_status": "executable",
+  "runtime_enforced": true,
+  "runtime_scope": "registry_operation",
+  "production_runtime": false,
+  "evidence_backing": "runtime_validation",
+  "simulation_backing": "none",
+  "dojo_implementation": {
+    "implementation_status": "executable",
+    "runtime_enforced": true,
+    "runtime_scope": "registry_operation",
+    "production_runtime": false,
+    "evidence_backing": "runtime_validation",
+    "simulation_backing": "none",
+    "summary": "Validates proof capsule signature, registry status, action scope, expiry, and replay state.",
+    "maturity_blockers": []
+  }
+}

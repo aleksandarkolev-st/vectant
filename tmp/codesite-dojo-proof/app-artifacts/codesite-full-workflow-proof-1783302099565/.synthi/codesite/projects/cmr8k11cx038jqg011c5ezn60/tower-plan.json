@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "title": "Full workflow proof",
+  "request": "Land schema contract before dependent backend mutation",
+  "towerState": "planning",
+  "selectedStrategy": "airspace_survey_first",
+  "missions": [
+    {
+      "callsign": "SCHEMA-01",
+      "domain": "schema",
+      "mission": "Schema first",
+      "status": "preflight",
+      "route": [
+        "synthi/prisma/**"
+      ],
+      "requestedTools": [
+        "file_write",
+        "npm_test"
+      ],
+      "ownerUserId": "cmr8k117q038aqg019q7vkjbb"
+    },
+    {
+      "callsign": "API-02",
+      "domain": "backend",
+      "mission": "Dependent API",
+      "status": "holding",
+      "route": [
+        "synthi/prisma/**",
+        "synthi/src/app/api/auth/**"
+      ],
+      "requestedTools": [
+        "file_write",
+        "npm_test"
+      ],
+      "ownerUserId": "cmr8k118i038dqg01ozra0m3l"
+    },
+    {
+      "callsign": "TEST-03",
+      "domain": "inspection",
+      "mission": "Landing radar",
+      "status": "holding",
+      "route": [
+        "synthi/src/lib/codesite/__tests__/**"
+      ],
+      "requestedTools": [
+        "npm_test"
+      ],
+      "ownerUserId": "cmr8k1196038gqg01d9jkva7j"
+    }
+  ],
+  "routeIntersections": [],
+  "requiredRadar": [
+    "clearance",
+    "type",
+    "test",
+    "handover"
+  ],
+  "zoneDigest": "sha256:9d757bd8e85756d725c578a05bc9b239febca0d60655c05ea08453d4d92fb1c1",
+  "createdAt": "2026-07-06T01:41:43.328Z"
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "callsign",
+    "providerSessionRef",
+    "role",
+    "inspectedPaths",
+    "commandsRun",
+    "workflowActions",
+    "workflowFinding",
+    "risk"
+  ],
+  "properties": {
+    "callsign": {
+      "type": "string"
+    },
+    "providerSessionRef": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "schema",
+        "backend",
+        "inspection"
+      ]
+    },
+    "inspectedPaths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "commandsRun": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "workflowActions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "action"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "workflowFinding": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ]
+    }
+  }
+}

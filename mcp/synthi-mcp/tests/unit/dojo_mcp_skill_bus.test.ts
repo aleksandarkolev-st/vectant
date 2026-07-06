@@ -386,6 +386,78 @@ describe("Dojo MCP skill bus", () => {
     expect(executions).toEqual([skill.published_tool_name]);
   });
 
+  it("allows proof-backed prefix validation for EX skills while keeping workflow execution blocked", async () => {
+    const baseSkill = skillFixture("workspace-a", "Save profile");
+    const skill: DojoSkill = {
+      ...baseSkill,
+      entrustment_level: "EX",
+      permission_license: {
+        ...baseSkill.permission_license,
+        entrustment_level: "EX",
+        autonomy_level: "blocked",
+        allowed_actions: [
+          ...baseSkill.permission_license.allowed_actions.filter((action) => action.action !== "run_workflow"),
+          { action: "run_prefix_validation", constraints: ["no_mutation_execution"] },
+        ],
+        blocked_actions: [
+          ...baseSkill.permission_license.blocked_actions.filter((action) => action.action !== "run_workflow"),
+          { action: "run_workflow", constraints: ["executable_checkride_not_passed"] },
+        ],
+      },
+      skill_passport: {
+        ...baseSkill.skill_passport,
+        entrustment_level: "EX",
+      },
+    };
+    const proof = issueDojoProofCapsule(skill, "run_prefix_validation", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const validations: string[] = [];
+    const executions: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      proofConsumptionMode: "external_executor",
+      validateProof: ({ requested_action }): DojoSkillBusProofValidation => {
+        validations.push(requested_action);
+        return { ok: true, status: "allowed", blocked_by: [] };
+      },
+      executeTool: ({ tool_name }) => {
+        executions.push(tool_name);
+        return { ok: true, tool_name };
+      },
+    });
+
+    await expect(bus.resolveTool({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["dojo_mcp_skill_not_published_or_licensed"],
+      requested_action: "run_workflow",
+    }));
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_prefix_validation",
+      args: { workspace_id: "workspace-a" },
+      proof_capsule: proof,
+      dry_run: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "allowed",
+      dry_run: true,
+      validation: expect.objectContaining({ ok: true }),
+    }));
+    expect(validations).toEqual(["run_prefix_validation"]);
+    expect(executions).toEqual([]);
+  });
+
   it("fails closed when live proof dispatch has validation but no proof consumer", async () => {
     const skill = skillFixture("workspace-a", "Open details");
     const proof = issueDojoProofCapsule(skill, "run_workflow", {

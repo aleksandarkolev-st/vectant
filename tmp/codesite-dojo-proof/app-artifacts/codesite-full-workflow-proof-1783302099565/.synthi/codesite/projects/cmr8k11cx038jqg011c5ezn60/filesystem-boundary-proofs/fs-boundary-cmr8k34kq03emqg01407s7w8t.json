@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+  "proofId": "fs-boundary-cmr8k34kq03emqg01407s7w8t",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+  "eventId": "cmr8k34kq03emqg01407s7w8t",
+  "policyDecisionId": "cmr8k34kk03ekqg01efy9p2cx",
+  "eventType": "write_denied",
+  "disposition": "write_denied",
+  "prevented": true,
+  "quarantined": false,
+  "path": "secrets/prod.env",
+  "transactionId": "cmr8k1okx03bcqg01803em330",
+  "mutationLeaseId": null,
+  "requestedMutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+  "inspectedLeases": [],
+  "displayCallsign": "SCHEMA-01",
+  "leaseState": "unmatched_clearance",
+  "lease": null,
+  "reasonCodes": [
+    "outside_clearance_route"
+  ],
+  "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+  "zone": {
+    "zoneKey": "unclassified",
+    "label": "Unclassified repo airspace",
+    "class": "C",
+    "risk": "medium",
+    "rules": [
+      "auto_clearance_allowed",
+      "landing_inspection_required"
+    ],
+    "path": "secrets/prod.env"
+  },
+  "boundary": {
+    "source": "codesitefs",
+    "tool": "file_write",
+    "operation": "raw-terminal-write",
+    "actorType": "codesitefs",
+    "actorId": "cmr8k34kk03ekqg01efy9p2cx"
+  },
+  "process": {
+    "ancestry": [
+      "mcp:synthi_codesite_apply_patch",
+      "codex:tmp-proof-session",
+      "node",
+      "sh",
+      "npm-run-codesite-proof-full-workflow",
+      "codex",
+      "init"
+    ],
+    "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session <- node <- sh <- npm-run-codesite-proof-full-workflow <- codex <- init"
+  },
+  "evidence": {
+    "refs": [
+      "event:cmr8k34kq03emqg01407s7w8t",
+      "mcp:audit:codesitefs-denied-full-workflow"
+    ],
+    "lineProvenanceCount": 0,
+    "changedLineRanges": [],
+    "dojoSourceRefs": []
+  },
+  "evidenceRefs": [
+    "event:cmr8k34kq03emqg01407s7w8t",
+    "mcp:audit:codesitefs-denied-full-workflow"
+  ],
+  "quarantine": null,
+  "proofComplete": true,
+  "missingProofFields": [],
+  "createdAt": "2026-07-06T01:43:20.810Z"
+}

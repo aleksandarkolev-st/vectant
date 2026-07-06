@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CodeSite Release Gate</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #07080d; color: #f5f7fb; }
+    body { margin: 0; padding: 28px; background: #07080d; }
+    main { max-width: 1180px; margin: 0 auto; }
+    .hero { border: 1px solid #2b3450; background: #111521; border-radius: 8px; padding: 24px; margin-bottom: 18px; }
+    .status { display: inline-flex; align-items: center; border-radius: 4px; padding: 5px 10px; font-size: 12px; font-weight: 800; letter-spacing: .04em; background: #0f6b3b; color: white; }
+    h1 { margin: 10px 0 8px; font-size: 28px; line-height: 1.15; letter-spacing: 0; }
+    p { margin: 0; color: #aeb8d4; line-height: 1.55; max-width: 900px; }
+    .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0 18px; }
+    .metric, .card { border: 1px solid #27304a; background: #111521; border-radius: 8px; padding: 16px; min-width: 0; }
+    .label { color: #8f9bb8; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+    .value { font-size: 22px; line-height: 1.2; overflow-wrap: anywhere; }
+    .good { color: #8dffb8; }
+    .bad { color: #ff9999; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; color: #d8def1; background: #070a12; border: 1px solid #202842; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.45; }
+    @media (max-width: 720px) { body { padding: 12px; } .meta, .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <span class="status">PASS</span>
+      <h1>CodeSite Release Gate</h1>
+      <p>Blocking release validation for committed CodeSite workflow proof, visual artifacts, runtime mount boundary evidence, trusted proof bundles, and real Codex agent transcripts.</p>
+    </section>
+    <section class="meta">
+      <div class="metric"><div class="label">Slug</div><div class="value">codesite-mature-full-proof-20260703-overlay13</div></div>
+      <div class="metric"><div class="label">Proof root</div><div class="value">tmp/codesite-dojo-proof</div></div>
+      <div class="metric"><div class="label">Generated</div><div class="value">2026-07-04T01:12:41.957Z</div></div>
+    </section>
+    <section class="grid">
+    <section class="card">
+      <div class="label">workflowAssertions</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;workflowAssertions&quot;,
+  &quot;count&quot;: 44,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">proofGitProvenance</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;proofGitProvenance&quot;,
+  &quot;ok&quot;: true,
+  &quot;proofHead&quot;: &quot;3c41db1df4e8577602e20a2b9925fc849ff399c2&quot;,
+  &quot;currentHead&quot;: &quot;0540c74409b49a0d82ae42317518e123c53697a5&quot;,
+  &quot;postProofChangedPathCount&quot;: 191,
+  &quot;artifactOnlyPostProofChanges&quot;: true,
+  &quot;samplePostProofChangedPaths&quot;: [
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/.codesite-projection-files.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/airspace/class-rules.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/airspace/compiler-output.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/airspace/no-fly-zones.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/airspace/zones.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/artifact-path-history.jsonl&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/manifest.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/clearances/cmr5n8q0i00xspm0zc16y3e69.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/clearances/cmr5n8udo00z2pm0zdv8tlf7s.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/clearances/cmr5n9b2f012qpm0zaxizcpoq.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/collision-forecast.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/control-state.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/counterfactual-runs/cmr5n8w5g00zipm0zh1ls23au.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/counterfactual-runs/cmr5n8wlm00zwpm0zqoixdsl4.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/counterfactual-runs/cmr5n8y2j0108pm0z2k91d7zp.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/documents/change_order-cmr5n8zlg010qpm0zqjb5it52.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/documents/rfi-cmr5n8yh0010ipm0z88mpt3oc.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/events.jsonl&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/filesystem-boundary-proof.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/filesystem-boundary-proofs/fs-boundary-cmr5n92310114pm0zo1kdar8m.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/filesystem-boundary-proofs/fs-boundary-cmr5n934u011apm0zjsl3dvdp.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/filesystem-boundary-proofs/index.jsonl&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/flight-plans/cmr5n8nlb00x4pm0zvb4u0w2j.json&quot;,
+    &quot;tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/flight-plans/cmr5n8ohp00xepm0zndi5xq6o.json&quot;
+  ]
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">visualArtifacts</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;visualArtifacts&quot;,
+  &quot;checked&quot;: 8,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">runtimeMountBoundary</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;runtimeMountBoundary&quot;,
+  &quot;assertions&quot;: 10,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">activeTransactionAuthority</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;activeTransactionAuthority&quot;,
+  &quot;assertions&quot;: 48,
+  &quot;commands&quot;: 17,
+  &quot;qualityCounters&quot;: 34,
+  &quot;dockerTests&quot;: 119,
+  &quot;visualBytes&quot;: 1012000,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">maturePlanProofSuite</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;maturePlanProofSuite&quot;,
+  &quot;required&quot;: 30,
+  &quot;artifacts&quot;: [
+    {
+      &quot;name&quot;: &quot;activeMutationBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.1, 2B, 25.2A&quot;,
+      &quot;assertions&quot;: 13,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 12,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 12,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;gitServiceBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 2B&quot;,
+      &quot;assertions&quot;: 14,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;gitServiceIndexBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 2B&quot;,
+      &quot;assertions&quot;: 13,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;gitServiceWorktreeBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 2B&quot;,
+      &quot;assertions&quot;: 15,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;directGitServiceBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 2B&quot;,
+      &quot;assertions&quot;: 27,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 10,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 10,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;gitProvisioningBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 2B&quot;,
+      &quot;assertions&quot;: 15,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 12,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 12,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;repoCacheBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 2B&quot;,
+      &quot;assertions&quot;: 14,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 12,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 12,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;workspacePrepGuard&quot;,
+      &quot;plan&quot;: &quot;2A.3, 25.2C&quot;,
+      &quot;assertions&quot;: 10,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 10,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 10,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;runtimeFilesystemHydration&quot;,
+      &quot;plan&quot;: &quot;2A.3, 25.2C&quot;,
+      &quot;assertions&quot;: 18,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 12,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 18,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;runtimeOverlay&quot;,
+      &quot;plan&quot;: &quot;2A.3, 25.2C&quot;,
+      &quot;assertions&quot;: 8,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 13,
+      &quot;dockerCommands&quot;: 9,
+      &quot;qualityCounters&quot;: 13,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;runtimeQuarantine&quot;,
+      &quot;plan&quot;: &quot;2A.3, 26.9&quot;,
+      &quot;assertions&quot;: 13,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;codesiteFsRuntimeBoundary&quot;,
+      &quot;plan&quot;: &quot;2A.3, 25.2C, 26.9&quot;,
+      &quot;assertions&quot;: 15,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;quarantineReview&quot;,
+      &quot;plan&quot;: &quot;2A.3, 26.9&quot;,
+      &quot;assertions&quot;: 39,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;proofCarryingCommit&quot;,
+      &quot;plan&quot;: &quot;2A.4, 25.7B, 26.4&quot;,
+      &quot;assertions&quot;: 13,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;lineInspector&quot;,
+      &quot;plan&quot;: &quot;2A.6, 25.7B, 26.10&quot;,
+      &quot;assertions&quot;: 10,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 2,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;shadowSimulator&quot;,
+      &quot;plan&quot;: &quot;2A.5, 25.4, 26.6&quot;,
+      &quot;assertions&quot;: 13,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 2,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;runwayOccupancy&quot;,
+      &quot;plan&quot;: &quot;26.2&quot;,
+      &quot;assertions&quot;: 14,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;counterfactualMemory&quot;,
+      &quot;plan&quot;: &quot;22, 25.9&quot;,
+      &quot;assertions&quot;: 8,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;repoPolicyCompiler&quot;,
+      &quot;plan&quot;: &quot;2A.7, 25.0&quot;,
+      &quot;assertions&quot;: 10,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;repoLocalAutosync&quot;,
+      &quot;plan&quot;: &quot;23&quot;,
+      &quot;assertions&quot;: 12,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;radarAdapter&quot;,
+      &quot;plan&quot;: &quot;8, 15, 25.3&quot;,
+      &quot;assertions&quot;: 4,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;radarUi&quot;,
+      &quot;plan&quot;: &quot;8, 25.3, 26.1&quot;,
+      &quot;assertions&quot;: 0,
+      &quot;visuals&quot;: 2,
+      &quot;browserCaptures&quot;: 2,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;schemaFirstClearance&quot;,
+      &quot;plan&quot;: &quot;9, 17, 25.4&quot;,
+      &quot;assertions&quot;: 4,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;metrics&quot;,
+      &quot;plan&quot;: &quot;27&quot;,
+      &quot;assertions&quot;: 10,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;isolationContract&quot;,
+      &quot;plan&quot;: &quot;2A.1, 26.7&quot;,
+      &quot;assertions&quot;: 9,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;runtimeContext&quot;,
+      &quot;plan&quot;: &quot;20, 25.2C&quot;,
+      &quot;assertions&quot;: 7,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 0,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;contextAlias&quot;,
+      &quot;plan&quot;: &quot;20, 25.2C&quot;,
+      &quot;assertions&quot;: 6,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 1,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;monitorDowngrade&quot;,
+      &quot;plan&quot;: &quot;2A.3, 28&quot;,
+      &quot;assertions&quot;: 5,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 1,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;pathlessRun&quot;,
+      &quot;plan&quot;: &quot;2A.3, 28&quot;,
+      &quot;assertions&quot;: 5,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 0,
+      &quot;dockerCommands&quot;: 0,
+      &quot;qualityCounters&quot;: 1,
+      &quot;ok&quot;: true
+    },
+    {
+      &quot;name&quot;: &quot;terminalReattach&quot;,
+      &quot;plan&quot;: &quot;2A.3, 28&quot;,
+      &quot;assertions&quot;: 15,
+      &quot;visuals&quot;: 1,
+      &quot;browserCaptures&quot;: 0,
+      &quot;commands&quot;: 4,
+      &quot;dockerCommands&quot;: 2,
+      &quot;qualityCounters&quot;: 7,
+      &quot;ok&quot;: true
+    }
+  ],
+  &quot;assertions&quot;: 359,
+  &quot;visuals&quot;: 31,
+  &quot;browserCaptures&quot;: 6,
+  &quot;commands&quot;: 85,
+  &quot;dockerCommands&quot;: 23,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">proofBundles</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;proofBundles&quot;,
+  &quot;found&quot;: 1,
+  &quot;verified&quot;: 1,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+
+
+    <section class="card">
+      <div class="label">codexAgentEvidence</div>
+      <div class="value good">pass</div>
+      <pre>{
+  &quot;name&quot;: &quot;codexAgentEvidence&quot;,
+  &quot;records&quot;: 3,
+  &quot;valid&quot;: 3,
+  &quot;ok&quot;: true
+}</pre>
+    </section>
+  </section>
+    <section class="card" style="margin-top:12px">
+      <div class="label">Failures</div>
+      <pre>[]</pre>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,63 @@
+{
+  "id": "cmr8k2ve503ecqg01lb9d6fs4",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+  "recipientUserId": "cmr8k117q038aqg019q7vkjbb",
+  "eventId": "cmr8k2tqi03eaqg010a8w90vb",
+  "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+  "kind": "change_order",
+  "requiresResponse": false,
+  "status": "acknowledged",
+  "redactedPayload": {
+    "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+    "eventId": "cmr8k2tqi03eaqg010a8w90vb",
+    "kind": "change_order",
+    "title": "API flight accepts schema-first hold",
+    "body": {
+      "answerToDocumentId": "cmr8k2pfn03e0qg01llwk06uj",
+      "decision": "accepted",
+      "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+      "routing": {
+        "fromSessionId": "cmr8k14ac039mqg01vcrrgs71",
+        "toSessionIds": [
+          "cmr8k13e8039cqg01xyi06yi0"
+        ],
+        "projectRefs": {
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+          "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+          "transactionId": "cmr8k1okx03bcqg01803em330",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "contractRefs": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "inspectionRunId": null,
+          "incidentId": null
+        }
+      }
+    },
+    "redaction": {
+      "policyApplied": true,
+      "recipientSessionId": "cmr8k13e8039cqg01xyi06yi0"
+    },
+    "delivery": {
+      "modes": [
+        "durable_inbox",
+        "sse_stream",
+        "mcp_poll",
+        "repo_local_projection"
+      ],
+      "targets": [],
+      "adapterStatus": "not_configured",
+      "recipient": {
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "provider": "codex",
+        "runtime": "tmp-codex-cli",
+        "providerSessionRef": "codex-schema-96e35fee3b"
+      }
+    }
+  },
+  "createdAt": "2026-07-06T01:43:08.909Z",
+  "acknowledgedAt": "2026-07-06T01:43:13.986Z"
+}

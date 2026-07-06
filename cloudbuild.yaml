@@ -75,13 +75,38 @@ steps:
           exit 1
         fi
 
+  - id: codesite-mature-proof-suite
+    waitFor: ['reject-mutable-images']
+    name: docker.io/library/node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm --prefix synthi run codesite:proof:mature-suite -- \
+          --proof-root tmp/codesite-dojo-proof \
+          --no-screenshot
+
+  - id: codesite-release-gate
+    waitFor: ['codesite-mature-proof-suite']
+    name: docker.io/library/node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm --prefix synthi run codesite:release-gate -- \
+          --proof-root tmp/codesite-dojo-proof \
+          --require-mature-suite-run \
+          --out tmp/codesite-dojo-proof/codesite-release-gate-cloudbuild.json
+
   # ───────────────────────────────────────────────────────────────────────────
   # BUILD — Service images in parallel via Kaniko (layer-cached)
   # ───────────────────────────────────────────────────────────────────────────
 
   # ── 0. Prepare Next.js environment ───────────────────────────────────────
   - id: prepare-frontend-env
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: 'ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e'
     entrypoint: 'bash'
     env:
@@ -133,7 +158,7 @@ steps:
 
   # ── 2. Collab Server (Node.js) ──────────────────────────────────────────
   - id: build-collab-server
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/collab-server/Dockerfile
@@ -144,7 +169,7 @@ steps:
 
   # ── 3. AI Engine (Python FastAPI) ───────────────────────────────────────
   - id: build-ai-engine
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=ai-backend/ai-engine/Dockerfile
@@ -155,7 +180,7 @@ steps:
 
   # ── 4. AI Gateway (Node.js WS proxy) ───────────────────────────────────
   - id: build-ai-gateway
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=ai-backend/gateway/Dockerfile
@@ -190,7 +215,7 @@ steps:
 
   # ── 7. Prisma Migration Image (lightweight, for K8s Job) ────────────────
   - id: build-prisma-migrate
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=synthi/Dockerfile.migrate
@@ -201,7 +226,7 @@ steps:
 
   # ── 8. Browser Workflow Bridge + Hosted Browser Runtime ────────────────
   - id: build-browser-workflow-bridge
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=mcp/synthi-mcp/Dockerfile.workflow-bridge
@@ -214,7 +239,7 @@ steps:
   # Agent Dojo HTTP MCP host. Built for the release-gate overlay; the default
   # beta kustomization does not deploy this image.
   - id: build-dojo-mcp-host
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
     entrypoint: /busybox/sh
     env:
@@ -248,7 +273,7 @@ steps:
   # not in CI); it crash-loops under Sysbox (rootlesskit can't nest a userns).
   # Pulled at runtime by spawnRuntimePod() only when RUNTIME_BACKEND=sysbox-pod.
   - id: build-runtime-image
-    waitFor: ['reject-mutable-images']
+    waitFor: ['codesite-release-gate']
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/runtime-image/Dockerfile

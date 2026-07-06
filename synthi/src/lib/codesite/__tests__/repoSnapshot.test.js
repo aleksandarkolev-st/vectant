@@ -59,4 +59,106 @@ describe('CodeSite repo read snapshots', () => {
     expect(snapshot.readSet).toEqual(['api/auth/signup.ts']);
     expect(snapshot.fileDigests).toEqual([expect.objectContaining({ path: 'api/auth/signup.ts' })]);
   });
+
+  it('records a repo-wide manifest digest for serializable evidence', async () => {
+    const root = await tempRepo();
+    const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+    });
+
+    expect(snapshot.scope).toBe('repo_wide');
+    expect(snapshot.repoManifestDigest).toMatch(/^sha256:/);
+    expect(snapshot.repoManifestFileCount).toBeGreaterThanOrEqual(2);
+    expect(snapshot.repoManifestScannedEntries).toBeGreaterThanOrEqual(snapshot.repoManifestFileCount);
+    expect(snapshot.snapshotDigest).toMatch(/^sha256:/);
+  });
+
+  it('detects unrelated raw file drift through the repo-wide manifest', async () => {
+    const root = await tempRepo();
+    const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+    });
+
+    await fs.writeFile(path.join(root, 'README.md'), 'raw host edit outside read set\n', 'utf8');
+
+    const validation = await validateReadSnapshotEvidence(snapshot, { repoRoot: root });
+
+    expect(validation.ok).toBe(false);
+    expect(validation.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+    expect(validation.repoManifestDrifted).toBe(true);
+  });
+
+  it('keeps skipped evidence directories out of repo-wide content drift', async () => {
+    const root = await tempRepo();
+    const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+    });
+
+    await fs.mkdir(path.join(root, '.synthi', 'codesite', 'projects', 'proof'), { recursive: true });
+    await fs.writeFile(path.join(root, '.synthi', 'codesite', 'projects', 'proof', 'control-state.json'), '{}\n', 'utf8');
+
+    const validation = await validateReadSnapshotEvidence(snapshot, { repoRoot: root });
+
+    expect(validation).toMatchObject({
+      ok: true,
+      reasonCodes: ['repo_snapshot_stable'],
+      driftedPaths: [],
+    });
+    expect(validation.current.repoManifestScannedEntries).toBeGreaterThan(snapshot.repoManifestScannedEntries);
+  });
+
+  it('excludes declared write paths from repo-wide manifest drift only', async () => {
+    const root = await tempRepo();
+    const writePath = 'api/auth/signup.ts';
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+      excludePaths: [writePath],
+    });
+
+    await fs.writeFile(path.join(root, writePath), 'export const route = "updated by transaction";\n', 'utf8');
+
+    const allowedValidation = await validateReadSnapshotEvidence(snapshot, {
+      repoRoot: root,
+      excludePaths: [writePath],
+    });
+
+    expect(snapshot.repoManifestExcludedPaths).toEqual([writePath]);
+    expect(allowedValidation).toMatchObject({
+      ok: true,
+      reasonCodes: ['repo_snapshot_stable'],
+      driftedPaths: [],
+    });
+
+    await fs.writeFile(path.join(root, 'README.md'), 'raw edit outside write set\n', 'utf8');
+
+    const blockedValidation = await validateReadSnapshotEvidence(snapshot, {
+      repoRoot: root,
+      excludePaths: [writePath],
+    });
+
+    expect(blockedValidation.ok).toBe(false);
+    expect(blockedValidation.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+  });
+
+  it('marks truncated repo-wide manifests for serializable validation', async () => {
+    const root = await tempRepo();
+    const snapshot = await buildReadSnapshotEvidence(['api/auth/signup.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+      maxFiles: 1,
+    });
+
+    expect(snapshot.repoManifestTruncated || snapshot.truncated).toBe(true);
+    expect(snapshot.repoManifestFileCount).toBeLessThanOrEqual(1);
+  });
 });

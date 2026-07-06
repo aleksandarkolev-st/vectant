@@ -1,0 +1,455 @@
+{
+  "id": "cmr43gnnv00nnpm0z4rnj5l0t",
+  "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+  "mutationLeaseId": "cmr43gnnp00nlpm0zpbjcrwbg",
+  "displayCallsign": "DRIFT-04",
+  "decision": "block",
+  "reasonCodes": [
+    "restricted_airspace_requires_inspection",
+    "dojo_clearance_proof_verified",
+    "dojo_public_proof_signature_verified",
+    "schema_first_leader_clearance",
+    "pilot_license_source_drift_expired",
+    "pilot_license_expired",
+    "pilot_license_airspace_not_authorized"
+  ],
+  "inputDigest": "sha256:62d0b238d5820764b05c79a2e24067fa7893f47b1a4d03680fc364b91515afb1",
+  "decisionBody": {
+    "status": "blocked",
+    "towerInstruction": "Hold DRIFT-04: IFR pilot license health is required for Class B mutation airspace.",
+    "inspectedZones": [
+      {
+        "zoneKey": "class_b",
+        "label": "Shared contract airspace",
+        "class": "B",
+        "paths": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation"
+        ],
+        "risk": "high",
+        "source": "compiled_default",
+        "path": "synthi/prisma/**"
+      }
+    ],
+    "dojoProof": {
+      "proofRef": "pcap-full-workflow-schema",
+      "licenseRef": "schema.level_2@2026-06-25",
+      "evidenceRefs": [
+        "full-workflow-checkride"
+      ],
+      "ledgerCheckpointHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "decisionDigest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+      "implementationStatus": {
+        "executable": true,
+        "productionRuntime": true,
+        "verificationRuntime": "codesite-ed25519-proof-verifier",
+        "runtimeBoundary": "docker-full-workflow-proof"
+      },
+      "verification": {
+        "ok": true,
+        "status": "verified",
+        "checkedAt": "2026-07-02T22:46:53.850Z",
+        "source": "dojo_public_proof_verifier",
+        "capsuleId": "pcap-full-workflow-schema",
+        "keyId": "dojo-full-workflow-key",
+        "proofKeyStatus": "active",
+        "proofKeyIssuer": "dojo-full-workflow-issuer",
+        "proofKeySigningProvider": "ed25519-local",
+        "proofKeyCustody": "local",
+        "signatureVerified": true,
+        "blockedBy": [],
+        "expected": {
+          "required_evidence_claims": [
+            "codesite.restricted_mutation"
+          ],
+          "ledger_checkpoint_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "requested_action": "codesite.mutation.clearance"
+        },
+        "digest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2"
+      }
+    },
+    "pilotLicenseHealth": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr43gma300nbpm0zpm0gvw81",
+      "projectId": "cmr43fhwm00h0pm0zhpsk0p2q",
+      "workspaceSlug": "codesite-mature-full-proof-20260702bc",
+      "agentSessionId": "cmr43gma300nbpm0zpm0gvw81",
+      "ownerUserId": "cmr43fbmh00grpm0z02hxkegj",
+      "displayCallsign": "DRIFT-04",
+      "status": "expired",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:6b147e9aabf855f37e710c99197ce7daee828669c5d95079cd6fd6772e909559",
+      "repoScope": "codesite-mature-full-proof-20260702bc",
+      "authorizedAirspace": [
+        "synthi/prisma/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:source-drift-checkride",
+        "full-workflow-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": true
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 0,
+        "critical": 0,
+        "latestAt": null,
+        "evidenceRefs": []
+      },
+      "reasonCodes": [
+        "pilot_license_source_drift_expired"
+      ],
+      "requiredAction": "renew_pilot_license_source:cmr43gma300nbpm0zpm0gvw81",
+      "evidenceRefs": [
+        "dojo:evidence:source-drift-checkride",
+        "pcap-full-workflow-schema",
+        "schema.level_2@2026-06-25",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+        "full-workflow-checkride"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-02T22:46:52.107Z",
+        "checkedAt": "2026-07-02T22:46:53.891Z",
+        "latestLandingAt": null,
+        "latestViolationAt": null,
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+        "clearanceProofCheckedAt": "2026-07-02T22:46:53.850Z"
+      }
+    },
+    "pilotLicenseRequirement": {
+      "required": true,
+      "classes": [
+        "B"
+      ],
+      "minimumLevel": "IFR",
+      "minimumLevelRank": 3
+    },
+    "collisionAvoidance": {
+      "forecast": {
+        "riskLevel": "high",
+        "risks": [
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "DRIFT-04",
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put DRIFT-04 in holding",
+                "Put SCHEMA-01 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          },
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "API-02",
+              "DRIFT-04"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put DRIFT-04 in holding",
+                "Put API-02 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          },
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "CURRENT-04",
+              "DRIFT-04"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put DRIFT-04 in holding",
+                "Put CURRENT-04 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          },
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "API-02",
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put SCHEMA-01 in holding",
+                "Put API-02 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          },
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "CURRENT-04",
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put SCHEMA-01 in holding",
+                "Put CURRENT-04 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          },
+          {
+            "risk": "contract_collision",
+            "severity": "high",
+            "aircraft": [
+              "API-02",
+              "CURRENT-04"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "overlaps": [
+              [
+                "synthi/prisma/**",
+                "synthi/prisma/**"
+              ]
+            ],
+            "recommendedResolution": {
+              "action": "schema_first",
+              "steps": [
+                "Put API-02 in holding",
+                "Put CURRENT-04 in holding",
+                "Issue schema clearance first",
+                "Reissue downstream clearances after contract landing"
+              ]
+            }
+          },
+          {
+            "risk": "restricted_airspace_occupancy",
+            "severity": "medium",
+            "aircraft": [
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "recommendedResolution": {
+              "action": "inspect_before_landing",
+              "steps": [
+                "Keep route locked",
+                "Run required radar before commit",
+                "Attach proof bundle at landing"
+              ]
+            }
+          },
+          {
+            "risk": "wake_turbulence",
+            "severity": "high",
+            "aircraft": [
+              "API-02",
+              "CURRENT-04",
+              "DRIFT-04",
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "wake": {
+              "kind": "schema_or_contract",
+              "runway": "synthi/prisma/**",
+              "occupiedBy": "SCHEMA-01",
+              "affectedFlights": [
+                "DRIFT-04",
+                "API-02",
+                "CURRENT-04"
+              ],
+              "requiredWaits": [
+                "generated_client_refresh",
+                "contract_radar",
+                "downstream_test_rerun"
+              ],
+              "downstreamSignals": {
+                "schemaSignals": [
+                  "synthi/prisma/**"
+                ],
+                "generatedClients": []
+              }
+            },
+            "recommendedResolution": {
+              "action": "hold_for_wake_turbulence",
+              "steps": [
+                "Hold downstream feature flights until schema or contract radar completes",
+                "Refresh generated clients before dependent code lands",
+                "Rerun tests covering the changed contract surface"
+              ]
+            }
+          }
+        ],
+        "runwayOccupancy": [
+          {
+            "runway": "synthi/prisma/**",
+            "route": [
+              "synthi/prisma/**"
+            ],
+            "occupiedBy": "SCHEMA-01",
+            "mutationLeaseId": "cmr43fp1800inpm0zegvwgvkc",
+            "runwayClass": "B",
+            "diffPaths": [
+              "synthi/prisma/**"
+            ],
+            "pendingInspections": [
+              "landing_inspection"
+            ],
+            "eligibleFlights": [
+              "TEST-03"
+            ]
+          },
+          {
+            "runway": "synthi/src/app/api/auth/**",
+            "route": [
+              "synthi/src/app/api/auth/**"
+            ],
+            "occupiedBy": "API-02",
+            "mutationLeaseId": "cmr43fsyv00jxpm0zj22ezi6d",
+            "runwayClass": "C",
+            "diffPaths": [
+              "synthi/src/app/api/auth/**"
+            ],
+            "pendingInspections": [],
+            "eligibleFlights": [
+              "DRIFT-04",
+              "SCHEMA-01",
+              "TEST-03",
+              "CURRENT-04"
+            ]
+          }
+        ],
+        "wakeTurbulence": [
+          {
+            "risk": "wake_turbulence",
+            "severity": "high",
+            "aircraft": [
+              "API-02",
+              "CURRENT-04",
+              "DRIFT-04",
+              "SCHEMA-01"
+            ],
+            "conflictZone": "synthi/prisma/**",
+            "wake": {
+              "kind": "schema_or_contract",
+              "runway": "synthi/prisma/**",
+              "occupiedBy": "SCHEMA-01",
+              "affectedFlights": [
+                "DRIFT-04",
+                "API-02",
+                "CURRENT-04"
+              ],
+              "requiredWaits": [
+                "generated_client_refresh",
+                "contract_radar",
+                "downstream_test_rerun"
+              ],
+              "downstreamSignals": {
+                "schemaSignals": [
+                  "synthi/prisma/**"
+                ],
+                "generatedClients": []
+              }
+            },
+            "recommendedResolution": {
+              "action": "hold_for_wake_turbulence",
+              "steps": [
+                "Hold downstream feature flights until schema or contract radar completes",
+                "Refresh generated clients before dependent code lands",
+                "Rerun tests covering the changed contract surface"
+              ]
+            }
+          }
+        ]
+      },
+      "risk": null,
+      "schemaFirstLeader": true,
+      "reasonCodes": [
+        "schema_first_leader_clearance"
+      ],
+      "towerInstruction": "Schema-first clearance issued for DRIFT-04. Dependent overlapping flights remain in holding until this contract lands."
+    },
+    "counterfactualPolicy": null
+  },
+  "createdAt": "2026-07-02T22:46:53.899Z"
+}

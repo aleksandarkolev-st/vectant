@@ -1,0 +1,25 @@
+{
+  "id": "cmr76s11k00a1qk01eb3ut011",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+  "displayCallsign": "API-02",
+  "mission": "Dependent API",
+  "domain": "backend",
+  "status": "holding",
+  "route": [
+    "synthi/prisma/**",
+    "synthi/src/app/api/auth/**"
+  ],
+  "blockedZones": [],
+  "abortConditions": [
+    "required radar failed",
+    "tower reroute issued"
+  ],
+  "requestedTools": [
+    "file_write",
+    "npm_test"
+  ],
+  "estimatedDurationMs": null,
+  "filedAt": "2026-07-05T02:43:01.833Z",
+  "closedAt": null
+}

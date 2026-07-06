@@ -1,0 +1,26 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/codesite-codex-agent-home-dev"))
+Reading additional input from stdin...
+2026-07-06T01:45:31.348932Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:45:31.350029Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:45:31.833267Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:45:31.916664Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.916702Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.918575Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.918597Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.920448Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.920556Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.924997Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.925074Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.926914Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.926952Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.928853Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:31.928888Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-06T01:45:32.850533Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:45:49.297339Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:45:52.335458Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:45:55.288627Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:46:01.545842Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:46:04.361376Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:46:07.519873Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:46:10.554244Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-06T01:46:24.239782Z  WARN codex_file_watcher: failed to unwatch /tmp/codesite-codex-agent-home-dev/skills/.system: No watch was found. about ["/tmp/codesite-codex-agent-home-dev/skills/.system"]

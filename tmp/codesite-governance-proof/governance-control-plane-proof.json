@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "synthi.codesite.governanceControlPlaneProof.v1",
+  "scope": "CodeSite construction/legal governance control-plane patch",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "proofArtifacts": [
+    {
+      "path": "tmp/codesite-governance-proof/governance-control-plane-proof.html",
+      "kind": "html_visual_report"
+    },
+    {
+      "path": "tmp/codesite-governance-proof/governance-control-plane-proof.png",
+      "kind": "desktop_png",
+      "viewport": {
+        "width": 1440,
+        "height": 1200
+      }
+    },
+    {
+      "path": "tmp/codesite-governance-proof/governance-control-plane-proof-mobile.png",
+      "kind": "mobile_png",
+      "viewport": {
+        "width": 390,
+        "height": 900
+      }
+    }
+  ],
+  "validations": [
+    {
+      "command": "node --input-type=module --check < synthi/src/lib/codesite/controlPlane.js",
+      "status": "passed"
+    },
+    {
+      "command": "node --input-type=module --check < synthi/src/app/api/workspace/[slug]/codesite/[[...path]]/route.js",
+      "status": "passed"
+    },
+    {
+      "command": "node --input-type=module --check < synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+      "status": "passed"
+    },
+    {
+      "command": "DATABASE_URL=postgresql://user:pass@localhost:5432/synthi npx prisma validate --schema prisma/schema.prisma",
+      "status": "passed"
+    },
+    {
+      "command": "docker run --rm -v \"$PWD\":/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc 'node -v && npm exec vitest -- src/lib/codesite/__tests__/controlPlane.test.js --run --testTimeout=60000'",
+      "status": "passed",
+      "result": "84 tests passed under Node v22.23.1"
+    },
+    {
+      "command": "npx playwright screenshot --viewport-size=1440,1200 file://.../governance-control-plane-proof.html tmp/codesite-governance-proof/governance-control-plane-proof.png",
+      "status": "passed",
+      "result": "PNG image data, 1440 x 1200"
+    },
+    {
+      "command": "npx playwright screenshot --viewport-size=390,900 file://.../governance-control-plane-proof.html tmp/codesite-governance-proof/governance-control-plane-proof-mobile.png",
+      "status": "passed",
+      "result": "PNG image data, 390 x 900"
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed"
+    }
+  ],
+  "behaviorProven": [
+    "CodeSitePermit records project/plan/lease/document refs, path scope, affected zones, approval, and evidence refs.",
+    "CodeSiteDocumentReview records reviewer decision, reason codes, measured review time, baseline review time, and document lifecycle status.",
+    "CodeSiteRouteRevision proposes change-order-backed reroutes, reviews approvals, applies routes to execution plans, suspends affected clearances, and records policy decisions.",
+    "API routes expose permit, document-review, route-revision proposal, review, apply, and list flows.",
+    "Permit events are tower governance instructions, not false mutation clearance issuance."
+  ],
+  "knownRemainingWork": [
+    "Permit approval is now durable governance evidence, but MutationLease gating still needs an explicit permit/change-order enforcement policy.",
+    "MCP tools need the new governance lifecycle exposed to CLI agents.",
+    "Human review time saved must be surfaced in metrics from review timing evidence.",
+    "Full release-gate proof and real multi-agent workflow proof must be regenerated at final HEAD."
+  ]
+}

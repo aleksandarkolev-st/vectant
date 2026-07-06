@@ -1,0 +1,60 @@
+{
+  "id": "cmr5lhy9y002kpm0zn6k7wy4l",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+  "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+  "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+  "baseSnapshotEvidence": {
+    "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+    "status": "recorded",
+    "readSet": [
+      "synthi/prisma/schema-contract-read.txt"
+    ],
+    "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+    "fileDigests": [
+      {
+        "path": "synthi/prisma/schema-contract-read.txt",
+        "exists": true,
+        "size": 24,
+        "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+      }
+    ],
+    "missingPaths": [],
+    "skippedPaths": [],
+    "truncated": false,
+    "limits": {
+      "maxFiles": 512,
+      "maxFileBytes": 2097152,
+      "maxScanEntries": 15000
+    },
+    "generatedAt": "2026-07-03T23:59:07.617Z",
+    "source": "codesite-full-workflow-proof",
+    "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+    "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+  },
+  "isolation": "serializable",
+  "status": "aborted",
+  "readSet": [
+    "synthi/prisma/schema-contract-read.txt",
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedReadSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "writeSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedWriteSet": [],
+  "semanticDependencyRefs": [],
+  "invariants": [
+    "clearance.diff.inside_route"
+  ],
+  "assumptionRefs": [],
+  "commitDecision": {
+    "reason": "serializable_snapshot_undercovered",
+    "abortedAt": "2026-07-03T23:59:36.632Z"
+  },
+  "proofBundleDigest": null,
+  "openedAt": "2026-07-03T23:59:33.574Z",
+  "closedAt": "2026-07-03T23:59:36.632Z"
+}

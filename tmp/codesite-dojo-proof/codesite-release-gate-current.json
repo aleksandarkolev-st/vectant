@@ -1,0 +1,1079 @@
+{
+  "ok": true,
+  "schemaVersion": "synthi.codesite.releaseGate.v1",
+  "generatedAt": "2026-07-06T02:23:09.425Z",
+  "proofRoot": "tmp/codesite-dojo-proof",
+  "slug": "codesite-full-workflow-proof-1783302099565",
+  "checks": [
+    {
+      "name": "workflowAssertions",
+      "count": 46,
+      "ok": true
+    },
+    {
+      "name": "proofGitProvenance",
+      "ok": true,
+      "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+      "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+      "postProofChangedPathCount": 0,
+      "artifactOnlyPostProofChanges": true,
+      "samplePostProofChangedPaths": []
+    },
+    {
+      "name": "visualArtifacts",
+      "checked": 9,
+      "ok": true
+    },
+    {
+      "name": "runtimeMountBoundary",
+      "assertions": 10,
+      "ok": true
+    },
+    {
+      "name": "activeTransactionAuthority",
+      "assertions": 48,
+      "commands": 17,
+      "qualityCounters": 34,
+      "dockerTests": 119,
+      "visualBytes": 1012000,
+      "ok": true
+    },
+    {
+      "name": "maturePlanProofSuite",
+      "required": 40,
+      "artifacts": [
+        {
+          "name": "activeMutationBoundary",
+          "plan": "2A.1, 2B, 25.2A",
+          "assertions": 17,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 13,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 13,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "gitServiceBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "gitServiceIndexBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "gitServiceWorktreeBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "directGitServiceBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 27,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 11,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 11,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "gitProvisioningBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 13,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 13,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "repoCacheBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 13,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 13,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "workspacePrepGuard",
+          "plan": "2A.3, 25.2C",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 11,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 11,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "runtimeFilesystemHydration",
+          "plan": "2A.3, 25.2C",
+          "assertions": 18,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 13,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 19,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "runtimeOverlay",
+          "plan": "2A.3, 25.2C",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 14,
+          "dockerCommands": 9,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 14,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "runtimeQuarantine",
+          "plan": "2A.3, 26.9",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "codesiteFsRuntimeBoundary",
+          "plan": "2A.3, 25.2C, 26.9",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "unmanagedHostBoundary",
+          "plan": "2A.3, 25.2C",
+          "assertions": 16,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 4,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "quarantineReview",
+          "plan": "2A.3, 26.9",
+          "assertions": 39,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "proofCarryingCommit",
+          "plan": "2A.4, 25.7B, 26.4",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "actualGitCommitProof",
+          "plan": "2A.4, 25.7B, 26.4",
+          "assertions": 9,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 3,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 3,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "proofBundleGitContext",
+          "plan": "2A.4, 25.7B, 26.4",
+          "assertions": 5,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 3,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 3,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "repoStateIdentity",
+          "plan": "2A.2, 2A.4, 25.7A, 26.4",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 5,
+          "dockerCommands": 4,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 5,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "blackBoxCompleteness",
+          "plan": "2A.5, 25.7B, 26.8",
+          "assertions": 6,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 3,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 3,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "lineInspector",
+          "plan": "2A.6, 25.7B, 26.10",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 2,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "lineProvenanceDiff",
+          "plan": "2A.6, 25.7B, 26.10",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 5,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 5,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "shadowSimulator",
+          "plan": "2A.5, 25.4, 26.6",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 2,
+          "commands": 11,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "runwayOccupancy",
+          "plan": "26.2",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "counterfactualMemory",
+          "plan": "22, 25.9",
+          "assertions": 12,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 7,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "emergencyBroadcasts",
+          "plan": "Phase 6, 26.5",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 2,
+          "dockerCommands": 1,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "repoPolicyCompiler",
+          "plan": "2A.7, 25.0",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "repoLocalAutosync",
+          "plan": "23",
+          "assertions": 12,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "radarAdapter",
+          "plan": "8, 15, 25.3",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "governanceMcpLifecycle",
+          "plan": "2C, 16, 19, 20, 21.4-21.7, 23, 25.2B",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 5,
+          "dockerCommands": 4,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 5,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "radarUi",
+          "plan": "8, 25.3, 26.1",
+          "assertions": 3,
+          "visuals": 2,
+          "browserCaptures": 2,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "schemaFirstClearance",
+          "plan": "9, 17, 25.4",
+          "assertions": 4,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "metrics",
+          "plan": "27",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 6,
+          "dockerCommands": 5,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 5,
+          "metricThresholds": {
+            "requiredMeasured": 6,
+            "thresholds": 6,
+            "passed": 6
+          },
+          "ok": true
+        },
+        {
+          "name": "isolationContract",
+          "plan": "2A.1, 26.7",
+          "assertions": 9,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "serializableCommitRace",
+          "plan": "2A.1, 26.7",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 5,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 5,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "runtimeContext",
+          "plan": "20, 25.2C",
+          "assertions": 7,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "contextAlias",
+          "plan": "20, 25.2C",
+          "assertions": 6,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "monitorDowngrade",
+          "plan": "2A.3, 28",
+          "assertions": 5,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "pathlessRun",
+          "plan": "2A.3, 28",
+          "assertions": 5,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "terminalReattach",
+          "plan": "2A.3, 28",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 5,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 8,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        },
+        {
+          "name": "mutationSurfaceCoverage",
+          "plan": "2A.3, 19, 25.2C, 28",
+          "assertions": 7,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 1,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+            "postProofChangedPathCount": 0,
+            "artifactOnlyPostProofChanges": true,
+            "recordedDirtyPathCount": 139,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": true
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": true
+        }
+      ],
+      "assertions": 476,
+      "visuals": 41,
+      "browserCaptures": 6,
+      "commands": 172,
+      "dockerCommands": 49,
+      "ok": true
+    },
+    {
+      "name": "matureProofSuiteRun",
+      "file": "tmp/codesite-dojo-proof/codesite-mature-proof-suite-run.json",
+      "required": 40,
+      "results": 40,
+      "currentHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+      "proofHead": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+      "artifactOnlyPostProofChanges": true,
+      "ok": true
+    },
+    {
+      "name": "proofBundles",
+      "found": 1,
+      "verified": 1,
+      "gitVerified": 1,
+      "ok": true
+    },
+    {
+      "name": "codexAgentEvidence",
+      "records": 3,
+      "valid": 3,
+      "ok": true
+    }
+  ],
+  "warnings": [],
+  "failures": []
+}

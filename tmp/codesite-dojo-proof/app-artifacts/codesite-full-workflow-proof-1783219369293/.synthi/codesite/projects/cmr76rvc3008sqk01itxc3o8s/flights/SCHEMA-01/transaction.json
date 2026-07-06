@@ -1,0 +1,67 @@
+{
+  "id": "cmr76sgjw00b5qk01xadbal59",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+  "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+  "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+  "baseSnapshotEvidence": {
+    "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+    "status": "recorded",
+    "scope": "read_set",
+    "readSet": [
+      "synthi/prisma/schema-contract-read.txt"
+    ],
+    "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293",
+    "fileDigests": [
+      {
+        "path": "synthi/prisma/schema-contract-read.txt",
+        "exists": true,
+        "size": 24,
+        "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+      }
+    ],
+    "missingPaths": [],
+    "skippedPaths": [],
+    "truncated": false,
+    "repoManifestDigest": null,
+    "repoManifestFileCount": 0,
+    "repoManifestScannedEntries": 0,
+    "repoManifestTruncated": false,
+    "repoManifestSkippedPaths": [],
+    "repoManifestExcludedPaths": [],
+    "limits": {
+      "maxFiles": 512,
+      "maxFileBytes": 2097152,
+      "maxScanEntries": 15000
+    },
+    "generatedAt": "2026-07-05T02:42:54.352Z",
+    "source": "codesite-full-workflow-proof",
+    "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+    "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+  },
+  "isolation": "serializable",
+  "status": "aborted",
+  "readSet": [
+    "synthi/prisma/schema-contract-read.txt",
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedReadSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "writeSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedWriteSet": [],
+  "semanticDependencyRefs": [],
+  "invariants": [
+    "clearance.diff.inside_route"
+  ],
+  "assumptionRefs": [],
+  "commitDecision": {
+    "reason": "serializable_snapshot_undercovered",
+    "abortedAt": "2026-07-05T02:43:28.822Z"
+  },
+  "proofBundleDigest": null,
+  "openedAt": "2026-07-05T02:43:21.932Z",
+  "closedAt": "2026-07-05T02:43:28.822Z"
+}

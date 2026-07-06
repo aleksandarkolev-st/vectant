@@ -1,7 +1,9 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3107';
 
@@ -23,7 +25,26 @@ function safeSegment(value) {
   return String(value || 'workspace').replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'workspace';
 }
 
+function digest(value) {
+  return `sha256:${crypto.createHash('sha256').update(String(value)).digest('hex')}`;
+}
+
+function gitValue(args, fallback = '') {
+  try {
+    return execFileSync('git', args, {
+      cwd: repoRoot(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return fallback;
+  }
+}
+
 function artifactRoot(slug) {
+  if (process.env.CODESITE_PROOF_APP_ARTIFACT_HOST_ROOT) {
+    return path.resolve(process.env.CODESITE_PROOF_APP_ARTIFACT_HOST_ROOT, safeSegment(slug), '.synthi', 'codesite');
+  }
   if (process.env.SYNTHI_CODESITE_ARTIFACT_ROOT) {
     return path.resolve(process.env.SYNTHI_CODESITE_ARTIFACT_ROOT, safeSegment(slug), '.synthi', 'codesite');
   }
@@ -159,14 +180,19 @@ async function screenshotSummary(htmlPath, pngPath) {
 }
 
 function verifyProofBundle(bundlePath, trailersPath) {
+  const verifierEnv = { ...process.env };
+  if (!verifierEnv.SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET && !verifierEnv.SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE) {
+    delete verifierEnv.AUTH_SECRET;
+    delete verifierEnv.NEXTAUTH_SECRET;
+  }
   const output = execFileSync(process.execPath, [
-    path.join(process.cwd(), 'scripts', 'codesite-proof-verify.mjs'),
+    path.join(repoRoot(), 'synthi', 'scripts', 'codesite-proof-verify.mjs'),
     '--bundle',
     bundlePath,
     '--trailers',
     trailersPath,
     '--require-trailers',
-  ], { encoding: 'utf8' });
+  ], { encoding: 'utf8', env: verifierEnv });
   return JSON.parse(output);
 }
 
@@ -176,7 +202,13 @@ async function main() {
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
   const root = artifactRoot(slug);
-  const api = createApi(baseUrl, slug);
+  const { api } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Repo-local autosync proof workspace',
+    apiOptions: {
+      trackRoutes: true,
+      rejectRoute: (route) => route.includes('/artifacts/export'),
+    },
+  });
 
   const projectResponse = await api('/projects', {
     method: 'POST',
@@ -326,6 +358,16 @@ async function main() {
       }],
     }),
   });
+  const contractLineRange = {
+    filePath: 'src/contracts/signup.ts',
+    lineAnchor: 'src/contracts/signup.ts#L1-L4',
+    startLine: 1,
+    endLine: 4,
+    reasonRef: 'rfi:signup-payload-v2',
+    evidenceRefs: ['mcp:audit:repo-local-autosync-write'],
+    processAncestry: ['mcp:synthi_codesite_apply_patch', 'codex:repo-local-autosync-proof'],
+    promptSummary: 'Update signup contract to v2',
+  };
 
   const assumptionsPath = path.join(projectDir, 'flights', 'UI-01', 'assumptions.json');
   const assumptions = await waitForJson(assumptionsPath, (json) => json.some((item) => item.id === assumption.id && item.status === 'invalidated'));
@@ -351,18 +393,28 @@ async function main() {
     workspaceSlug: slug,
     transactionId: contractTxn.id,
     baseSnapshot: contractTxn.baseSnapshot,
-    gitHead: 'repo-local-autosync-proof',
-    stagedDiffDigest: 'sha256:repo-local-staged',
-    worktreeDiffDigest: 'sha256:repo-local-worktree',
+    repoIdentity: {
+      workspaceSlug: slug,
+      transactionId: contractTxn.id,
+      repoRootDigest: digest(repoRoot()),
+      gitTopLevelDigest: digest(gitValue(['rev-parse', '--show-toplevel'], repoRoot())),
+      gitCommonDirDigest: digest(gitValue(['rev-parse', '--git-common-dir'], path.join(repoRoot(), '.git'))),
+      gitTopLevelMatchesRepoRoot: path.resolve(gitValue(['rev-parse', '--show-toplevel'], repoRoot())) === path.resolve(repoRoot()),
+      source: 'codesite-repo-local-autosync-proof',
+    },
+    gitHead: gitValue(['rev-parse', 'HEAD'], 'repo-local-autosync-proof'),
+    stagedDiffDigest: digest(`${contractTxn.id}:staged:src/contracts/signup.ts`),
+    worktreeDiffDigest: digest(`${contractTxn.id}:worktree:src/contracts/signup.ts`),
+    changedLineRanges: [contractLineRange],
     writeFileDigests: [{
       path: 'src/contracts/signup.ts',
-      digest: 'sha256:signup-contract-v2',
+      digest: digest('export interface SignupPayload { email: string; displayName?: string }'),
       size: 240,
       exists: true,
+      changedLineRanges: [contractLineRange],
     }],
     generatedAt: new Date().toISOString(),
     source: 'codesite-repo-local-autosync-proof',
-    evidenceDigest: 'sha256:repo-local-state',
   };
   const commit = await api(`/transactions/${encodeURIComponent(contractTxn.id)}/commit`, {
     method: 'POST',
