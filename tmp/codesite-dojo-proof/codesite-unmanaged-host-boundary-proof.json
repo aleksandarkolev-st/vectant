@@ -2,27 +2,472 @@
   "schemaVersion": "synthi.codesite.unmanagedHostBoundaryProof.v1",
   "ok": true,
   "status": "validated",
-  "generatedAt": "2026-07-05T06:43:54.111Z",
-  "slug": "codesite-unmanaged-host-boundary-1783233830305",
+  "generatedAt": "2026-07-06T01:55:22.961Z",
+  "slug": "codesite-unmanaged-host-boundary-1783302918687",
   "boundary": {
-    "mode": "read_only_real_tree_with_writable_transaction_overlay",
-    "claim": "Unmanaged writes target a sealed base mount and cannot mutate the real tree before CodeSite review; writable changes land only in transaction overlay/quarantine.",
+    "mode": "host_prewrite_guard_plus_read_only_real_tree_with_writable_transaction_overlay",
+    "claim": "Unmanaged writes are denied before real-tree mutation by a host prewrite guard, and runtime writes target a sealed base mount whose writable changes land only in transaction overlay/quarantine.",
     "notSatisfiedBy": "post_write_polling_restore"
   },
   "workspaces": {
-    "sourceRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/source",
-    "overlayRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/overlay"
+    "sourceRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/source",
+    "overlayRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/overlay"
   },
   "summary": {
+    "hostPrewriteDeniedWrites": 2,
     "baseWriteAttempts": 4,
     "deniedBaseWrites": 4,
     "overlayWriteAttempts": 4,
     "allowedOverlayWrites": 4
   },
+  "hostPrewriteGuard": {
+    "sourceRoot": "/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source",
+    "sourceBase": "/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687",
+    "sentinelRoot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/host-prewrite-sentinel",
+    "started": {
+      "started": true,
+      "sentinelId": "prewrite-codesite-unmanaged-host-boundary-1783302918687",
+      "workspaceSlug": "codesite-unmanaged-host-boundary-1783302918687",
+      "transactionId": "txn-unmanaged-host-boundary-prewrite",
+      "repoRoot": "/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source",
+      "manifestPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/host-prewrite-sentinel/codesite-unmanaged-host-boundary-1783302918687/_records/prewrite-codesite-unmanaged-host-boundary-1783302918687.json",
+      "baselineDir": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/host-prewrite-sentinel/codesite-unmanaged-host-boundary-1783302918687/_baselines/prewrite-codesite-unmanaged-host-boundary-1783302918687",
+      "quarantinedCount": 0,
+      "prewriteBoundary": {
+        "schemaVersion": "synthi.codesite.hostPrewriteBoundary.v1",
+        "mode": "posix_readonly_tree",
+        "active": true,
+        "enforcedBeforeMutation": true,
+        "verification": {
+          "createDenied": true,
+          "code": "EACCES",
+          "message": "EACCES: permission denied, open '/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52'"
+        },
+        "guardedPathCount": 3
+      },
+      "processAncestry": [
+        "codesite-proof",
+        "unmanaged-host-boundary",
+        "host-filesystem",
+        "codesite-host-write-sentinel",
+        "node",
+        "sh",
+        "127.0.0.1-3100",
+        "codex",
+        "init"
+      ],
+      "osProcessAncestry": {
+        "schemaVersion": "synthi.codesite.processAncestry.v1",
+        "source": "linux_procfs",
+        "sourcePath": "/proc",
+        "platform": "linux",
+        "wsl": true,
+        "available": true,
+        "complete": true,
+        "direction": "process_to_root",
+        "collectorPid": 794839,
+        "requestedPid": 794839,
+        "capturedAt": "2026-07-06T01:55:18.875Z",
+        "labels": [
+          "node",
+          "sh",
+          "127.0.0.1-3100",
+          "codex",
+          "init"
+        ],
+        "nodes": [
+          {
+            "pid": 794839,
+            "ppid": 789642,
+            "comm": "node",
+            "state": "R",
+            "argv0Basename": "node",
+            "argvCount": 2,
+            "exeBasename": "node",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8944747,
+            "cmdlineDigest": "sha256:9af926c86bf938c0bbde87e7b43f48d792927447642809ceeab118c3c1c715f5",
+            "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+            "label": "node"
+          },
+          {
+            "pid": 789642,
+            "ppid": 789641,
+            "comm": "node",
+            "state": "S",
+            "argv0Basename": "node",
+            "argvCount": 6,
+            "exeBasename": "node",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8906314,
+            "cmdlineDigest": "sha256:a3167f84e5db9ff4e88c109c4febff7d832b5cce64d4dbedaae1a9f4bd24b01c",
+            "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+            "label": "node"
+          },
+          {
+            "pid": 789641,
+            "ppid": 789620,
+            "comm": "sh",
+            "state": "S",
+            "argv0Basename": "sh",
+            "argvCount": 3,
+            "exeBasename": "dash",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8906313,
+            "cmdlineDigest": "sha256:2480eb3fff3e43f7d21ca8a1acaf312b81d21182b4167d3c2acab633444f0daa",
+            "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+            "label": "sh"
+          },
+          {
+            "pid": 789620,
+            "ppid": 575113,
+            "comm": "npm-run-codesit",
+            "state": "S",
+            "argv0Basename": "127.0.0.1-3100",
+            "argvCount": 1,
+            "exeBasename": "node",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8906263,
+            "cmdlineDigest": "sha256:2233118d5ceceebba725918f65e9b07b765e69d0270b5011160e9187ec2bc95d",
+            "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+            "label": "127.0.0.1-3100"
+          },
+          {
+            "pid": 575113,
+            "ppid": 575111,
+            "comm": "codex",
+            "state": "S",
+            "argv0Basename": "codex",
+            "argvCount": 3,
+            "exeBasename": "codex",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 6164801,
+            "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+            "exePathDigest": "sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030",
+            "label": "codex"
+          },
+          {
+            "pid": 575111,
+            "ppid": 575109,
+            "comm": "Relay-575113",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 6164800,
+            "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+            "exePathDigest": null,
+            "label": "init"
+          },
+          {
+            "pid": 575109,
+            "ppid": 2,
+            "comm": "SessionLeader",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 6164800,
+            "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+            "exePathDigest": null,
+            "label": "init"
+          },
+          {
+            "pid": 2,
+            "ppid": 1,
+            "comm": "init-systemd-Ub",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 728,
+            "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+            "exePathDigest": null,
+            "label": "init"
+          },
+          {
+            "pid": 1,
+            "ppid": 0,
+            "comm": "systemd",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 723,
+            "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+            "exePathDigest": null,
+            "label": "init"
+          }
+        ],
+        "unavailableReason": null,
+        "digest": "sha256:6991acb7d41bbba59994b93def11b3bf2b9aa6ed89ed451e14603dd830e5fa60"
+      }
+    },
+    "stopped": {
+      "started": false,
+      "sentinelId": "prewrite-codesite-unmanaged-host-boundary-1783302918687",
+      "workspaceSlug": "codesite-unmanaged-host-boundary-1783302918687",
+      "transactionId": "txn-unmanaged-host-boundary-prewrite",
+      "repoRoot": "/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source",
+      "manifestPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/host-prewrite-sentinel/codesite-unmanaged-host-boundary-1783302918687/_records/prewrite-codesite-unmanaged-host-boundary-1783302918687.json",
+      "baselineDir": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/host-prewrite-sentinel/codesite-unmanaged-host-boundary-1783302918687/_baselines/prewrite-codesite-unmanaged-host-boundary-1783302918687",
+      "quarantinedCount": 0,
+      "prewriteBoundary": {
+        "schemaVersion": "synthi.codesite.hostPrewriteBoundary.v1",
+        "mode": "posix_readonly_tree",
+        "active": false,
+        "enforcedBeforeMutation": true,
+        "verification": {
+          "createDenied": true,
+          "code": "EACCES",
+          "message": "EACCES: permission denied, open '/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52'"
+        },
+        "guardedPathCount": 3
+      },
+      "processAncestry": [
+        "codesite-proof",
+        "unmanaged-host-boundary",
+        "host-filesystem",
+        "codesite-host-write-sentinel",
+        "node",
+        "sh",
+        "127.0.0.1-3100",
+        "codex",
+        "init"
+      ],
+      "osProcessAncestry": {
+        "schemaVersion": "synthi.codesite.processAncestry.v1",
+        "source": "linux_procfs",
+        "sourcePath": "/proc",
+        "platform": "linux",
+        "wsl": true,
+        "available": true,
+        "complete": true,
+        "direction": "process_to_root",
+        "collectorPid": 794839,
+        "requestedPid": 794839,
+        "capturedAt": "2026-07-06T01:55:18.893Z",
+        "labels": [
+          "node",
+          "sh",
+          "127.0.0.1-3100",
+          "codex",
+          "init"
+        ],
+        "nodes": [
+          {
+            "pid": 794839,
+            "ppid": 789642,
+            "comm": "node",
+            "state": "R",
+            "argv0Basename": "node",
+            "argvCount": 2,
+            "exeBasename": "node",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8944747,
+            "cmdlineDigest": "sha256:9af926c86bf938c0bbde87e7b43f48d792927447642809ceeab118c3c1c715f5",
+            "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+            "label": "node"
+          },
+          {
+            "pid": 789642,
+            "ppid": 789641,
+            "comm": "node",
+            "state": "S",
+            "argv0Basename": "node",
+            "argvCount": 6,
+            "exeBasename": "node",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8906314,
+            "cmdlineDigest": "sha256:a3167f84e5db9ff4e88c109c4febff7d832b5cce64d4dbedaae1a9f4bd24b01c",
+            "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+            "label": "node"
+          },
+          {
+            "pid": 789641,
+            "ppid": 789620,
+            "comm": "sh",
+            "state": "S",
+            "argv0Basename": "sh",
+            "argvCount": 3,
+            "exeBasename": "dash",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8906313,
+            "cmdlineDigest": "sha256:2480eb3fff3e43f7d21ca8a1acaf312b81d21182b4167d3c2acab633444f0daa",
+            "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+            "label": "sh"
+          },
+          {
+            "pid": 789620,
+            "ppid": 575113,
+            "comm": "npm-run-codesit",
+            "state": "S",
+            "argv0Basename": "127.0.0.1-3100",
+            "argvCount": 1,
+            "exeBasename": "node",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 8906263,
+            "cmdlineDigest": "sha256:2233118d5ceceebba725918f65e9b07b765e69d0270b5011160e9187ec2bc95d",
+            "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+            "label": "127.0.0.1-3100"
+          },
+          {
+            "pid": 575113,
+            "ppid": 575111,
+            "comm": "codex",
+            "state": "S",
+            "argv0Basename": "codex",
+            "argvCount": 3,
+            "exeBasename": "codex",
+            "uid": 1000,
+            "gid": 1000,
+            "startTimeClockTicks": 6164801,
+            "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+            "exePathDigest": "sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030",
+            "label": "codex"
+          },
+          {
+            "pid": 575111,
+            "ppid": 575109,
+            "comm": "Relay-575113",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 6164800,
+            "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+            "exePathDigest": null,
+            "label": "init"
+          },
+          {
+            "pid": 575109,
+            "ppid": 2,
+            "comm": "SessionLeader",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 6164800,
+            "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+            "exePathDigest": null,
+            "label": "init"
+          },
+          {
+            "pid": 2,
+            "ppid": 1,
+            "comm": "init-systemd-Ub",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 728,
+            "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+            "exePathDigest": null,
+            "label": "init"
+          },
+          {
+            "pid": 1,
+            "ppid": 0,
+            "comm": "systemd",
+            "state": "S",
+            "argv0Basename": "init",
+            "argvCount": 1,
+            "exeBasename": null,
+            "uid": 0,
+            "gid": 0,
+            "startTimeClockTicks": 723,
+            "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+            "exePathDigest": null,
+            "label": "init"
+          }
+        ],
+        "unavailableReason": null,
+        "digest": "sha256:6991acb7d41bbba59994b93def11b3bf2b9aa6ed89ed451e14603dd830e5fa60"
+      }
+    },
+    "attempts": {
+      "overwrite": {
+        "denied": true,
+        "code": "EACCES",
+        "message": "EACCES: permission denied, open '/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/src/app.js'"
+      },
+      "create": {
+        "denied": true,
+        "code": "EACCES",
+        "message": "EACCES: permission denied, open '/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/src/rogue.js'"
+      },
+      "postStopWrite": {
+        "denied": false,
+        "code": null,
+        "message": null
+      }
+    },
+    "before": {
+      "app": "sha256:874a3aa75b9367e763be73ac924bf3d2deff6efa3adc47fc1ae49f2403edb7e4",
+      "rogueExists": false
+    },
+    "afterDenied": {
+      "app": "sha256:874a3aa75b9367e763be73ac924bf3d2deff6efa3adc47fc1ae49f2403edb7e4",
+      "rogueExists": false
+    },
+    "scan": {
+      "ok": true,
+      "quarantinedCount": 0,
+      "manifestPath": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/host-prewrite-sentinel/codesite-unmanaged-host-boundary-1783302918687/_records/prewrite-codesite-unmanaged-host-boundary-1783302918687.json"
+    },
+    "manifest": {
+      "status": "prewrite_guard_armed",
+      "reason": "unmanaged_host_boundary_prewrite_probe",
+      "prewriteBoundary": {
+        "schemaVersion": "synthi.codesite.hostPrewriteBoundary.v1",
+        "mode": "posix_readonly_tree",
+        "active": true,
+        "enforcedBeforeMutation": true,
+        "verification": {
+          "createDenied": true,
+          "code": "EACCES",
+          "message": "EACCES: permission denied, open '/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52'"
+        },
+        "guardedPathCount": 3,
+        "guardedPathsSample": [
+          "src/app.js",
+          "src",
+          "."
+        ],
+        "armedAt": "2026-07-06T01:55:18.863Z",
+        "restoredAt": null,
+        "restoreErrors": [],
+        "reason": "unmanaged_host_boundary_prewrite_probe"
+      }
+    }
+  },
   "docker": {
     "image": "node:20-bookworm",
-    "containerName": "codesite-unmanaged-boundary-21a496bc9b90",
-    "command": "docker run --rm --name codesite-unmanaged-boundary-21a496bc9b90 -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/source:/codesite-base:ro -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783233830305/overlay:/workspace --workdir /workspace node:20-bookworm node -e \"\\nconst fs = require('fs');\\nconst cp = require('child_process');\\nfunction mountFlags(target) {\\n  const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\\\\n');\\n  const row = mounts.find((line) => line.split(' ')[1] === target);\\n  return row ? row.split(' ')[3] : '';\\n}\\nfunction attempt(name, fn) {\\n  try {\\n    fn();\\n    return { name, ok: true, status: 0 };\\n  } catch (error) {\\n    return {\\n      name,\\n      ok: false,\\n      status: typeof error.status === 'number' ? error.status : 1,\\n      code: error.code || null,\\n      message: String(error.message || ''),\\n      stderr: String(error.stderr || ''),\\n    };\\n  }\\n}\\nconst attempts = [\\n  attempt('node_write_existing_base', () => fs.writeFileSync('/codesite-base/src/app.js', 'rogue node write\\\\n')),\\n  attempt('shell_redirect_existing_base', () => cp.execFileSync('bash', ['-lc', 'printf \\\"rogue shell redirect\\\\\\\\n\\\" > /codesite-base/api/auth/signup.ts'])),\\n  attempt('mkdir_base', () => fs.mkdirSync('/codesite-base/generated', { recursive: true })),\\n  attempt('append_package_base', () => fs.appendFileSync('/codesite-base/package.json', '\\\\n\\\"rogue\\\": true\\\\n')),\\n  attempt('node_write_overlay', () => fs.writeFileSync('/workspace/src/app.js', 'overlay node write\\\\n')),\\n  attempt('shell_redirect_overlay', () => cp.execFileSync('bash', ['-lc', 'printf \\\"overlay shell redirect\\\\\\\\n\\\" > /workspace/api/auth/signup.ts'])),\\n  attempt('mkdir_overlay', () => fs.mkdirSync('/workspace/generated', { recursive: true })),\\n  attempt('append_overlay_package', () => fs.appendFileSync('/workspace/package.json', '\\\\n{\\\"overlay\\\":true}\\\\n')),\\n];\\nfs.writeFileSync('/workspace/generated/overlay-only.txt', 'overlay-only artifact\\\\n');\\nconsole.log(JSON.stringify({\\n  mounts: {\\n    base: mountFlags('/codesite-base'),\\n    workspace: mountFlags('/workspace'),\\n  },\\n  attempts,\\n}, null, 2));\\n\"",
+    "containerName": "codesite-unmanaged-boundary-c79a37d1a43f",
+    "command": "docker run --rm --name codesite-unmanaged-boundary-c79a37d1a43f -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/source:/codesite-base:ro -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/unmanaged-host-boundary/codesite-unmanaged-host-boundary-1783302918687/overlay:/workspace --workdir /workspace node:20-bookworm node -e \"\\nconst fs = require('fs');\\nconst cp = require('child_process');\\nfunction mountFlags(target) {\\n  const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\\\\n');\\n  const row = mounts.find((line) => line.split(' ')[1] === target);\\n  return row ? row.split(' ')[3] : '';\\n}\\nfunction attempt(name, fn) {\\n  try {\\n    fn();\\n    return { name, ok: true, status: 0 };\\n  } catch (error) {\\n    return {\\n      name,\\n      ok: false,\\n      status: typeof error.status === 'number' ? error.status : 1,\\n      code: error.code || null,\\n      message: String(error.message || ''),\\n      stderr: String(error.stderr || ''),\\n    };\\n  }\\n}\\nconst attempts = [\\n  attempt('node_write_existing_base', () => fs.writeFileSync('/codesite-base/src/app.js', 'rogue node write\\\\n')),\\n  attempt('shell_redirect_existing_base', () => cp.execFileSync('bash', ['-lc', 'printf \\\"rogue shell redirect\\\\\\\\n\\\" > /codesite-base/api/auth/signup.ts'])),\\n  attempt('mkdir_base', () => fs.mkdirSync('/codesite-base/generated', { recursive: true })),\\n  attempt('append_package_base', () => fs.appendFileSync('/codesite-base/package.json', '\\\\n\\\"rogue\\\": true\\\\n')),\\n  attempt('node_write_overlay', () => fs.writeFileSync('/workspace/src/app.js', 'overlay node write\\\\n')),\\n  attempt('shell_redirect_overlay', () => cp.execFileSync('bash', ['-lc', 'printf \\\"overlay shell redirect\\\\\\\\n\\\" > /workspace/api/auth/signup.ts'])),\\n  attempt('mkdir_overlay', () => fs.mkdirSync('/workspace/generated', { recursive: true })),\\n  attempt('append_overlay_package', () => fs.appendFileSync('/workspace/package.json', '\\\\n{\\\"overlay\\\":true}\\\\n')),\\n];\\nfs.writeFileSync('/workspace/generated/overlay-only.txt', 'overlay-only artifact\\\\n');\\nconsole.log(JSON.stringify({\\n  mounts: {\\n    base: mountFlags('/codesite-base'),\\n    workspace: mountFlags('/workspace'),\\n  },\\n  attempts,\\n}, null, 2));\\n\"",
     "exitCode": 0,
     "stdout": "{\n  \"mounts\": {\n    \"base\": \"ro,noatime,aname=drvfs;path=C:\\\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6\",\n    \"workspace\": \"rw,noatime,aname=drvfs;path=C:\\\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6\"\n  },\n  \"attempts\": [\n    {\n      \"name\": \"node_write_existing_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": \"EROFS\",\n      \"message\": \"EROFS: read-only file system, open '/codesite-base/src/app.js'\",\n      \"stderr\": \"\"\n    },\n    {\n      \"name\": \"shell_redirect_existing_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": null,\n      \"message\": \"Command failed: bash -lc printf \\\"rogue shell redirect\\\\n\\\" > /codesite-base/api/auth/signup.ts\\nbash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\\n\",\n      \"stderr\": \"bash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\\n\"\n    },\n    {\n      \"name\": \"mkdir_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": \"ENOENT\",\n      \"message\": \"ENOENT: no such file or directory, mkdir '/codesite-base/generated'\",\n      \"stderr\": \"\"\n    },\n    {\n      \"name\": \"append_package_base\",\n      \"ok\": false,\n      \"status\": 1,\n      \"code\": \"EROFS\",\n      \"message\": \"EROFS: read-only file system, open '/codesite-base/package.json'\",\n      \"stderr\": \"\"\n    },\n    {\n      \"name\": \"node_write_overlay\",\n      \"ok\": true,\n      \"status\": 0\n    },\n    {\n      \"name\": \"shell_redirect_overlay\",\n      \"ok\": true,\n      \"status\": 0\n    },\n    {\n      \"name\": \"mkdir_overlay\",\n      \"ok\": true,\n      \"status\": 0\n    },\n    {\n      \"name\": \"append_overlay_package\",\n      \"ok\": true,\n      \"status\": 0\n    }\n  ]\n}\n",
     "stderr": "bash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system\n",
@@ -88,11 +533,32 @@
     }
   },
   "productRuntimeContract": {
-    "activeHostShellPolicy": "block-host",
+    "activeHostShellPolicy": "deny unmanaged host writes with prewrite guard or block host shell",
     "activeRuntimePolicy": "mount read-only base plus writable overlay/quarantine",
-    "readonlyRuntimeName": "workspace-runtime-codesite-unmanaged-host-boundary-1783233",
-    "activeOverlayRuntimeName": "workspace-runtime-codesite-unmanaged-host-bounda-codesite-c93a169fa7",
-    "overlayVolumeSubpath": "codesite-unmanaged-host-boundary-1783233830305/overlay"
+    "prewriteBoundary": {
+      "schemaVersion": "synthi.codesite.hostPrewriteBoundary.v1",
+      "mode": "posix_readonly_tree",
+      "active": true,
+      "enforcedBeforeMutation": true,
+      "verification": {
+        "createDenied": true,
+        "code": "EACCES",
+        "message": "EACCES: permission denied, open '/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52'"
+      },
+      "guardedPathCount": 3,
+      "guardedPathsSample": [
+        "src/app.js",
+        "src",
+        "."
+      ],
+      "armedAt": "2026-07-06T01:55:18.863Z",
+      "restoredAt": null,
+      "restoreErrors": [],
+      "reason": "unmanaged_host_boundary_prewrite_probe"
+    },
+    "readonlyRuntimeName": "workspace-runtime-codesite-unmanaged-host-boundary-1783302",
+    "activeOverlayRuntimeName": "workspace-runtime-codesite-unmanaged-host-bounda-codesite-4690cf37c1",
+    "overlayVolumeSubpath": "codesite-unmanaged-host-boundary-1783302918687/overlay"
   },
   "digests": {
     "sourceBefore": {
@@ -117,6 +583,12 @@
     }
   },
   "assertions": {
+    "hostPrewriteGuardArmed": true,
+    "hostPrewriteExistingWriteDenied": true,
+    "hostPrewriteCreateDenied": true,
+    "hostPrewriteRealTreeUnchanged": true,
+    "hostPrewriteNoPostWriteQuarantineNeeded": true,
+    "hostPrewriteGuardRestoredPermissions": true,
     "dockerProcessExecuted": true,
     "sourceMountedReadOnly": true,
     "overlayMountedWritable": true,
@@ -130,6 +602,16 @@
   },
   "failedAssertions": [],
   "commands": [
+    {
+      "name": "hostPrewriteGuardProbe",
+      "command": "node codesite-unmanaged-host-boundary-proof.mjs <prewrite-guard-probe>",
+      "runner": "node",
+      "exitCode": 0,
+      "summary": {
+        "deniedWritesBeforeMutation": 2,
+        "quarantinedAfterScan": 0
+      }
+    },
     {
       "name": "unmanagedDockerWriteProbe",
       "command": "docker run --rm -v <source>:/codesite-base:ro -v <overlay>:/workspace node:20-bookworm node <unmanaged-write-probe>",
@@ -154,20 +636,24 @@
         "runner": "command"
       },
       "outputTail": [
-        "{",
-        "  \"ok\": true,",
-        "  \"artifacts\": {",
         "    \"jsonPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\",",
         "    \"htmlPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\",",
         "    \"pngPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\"",
         "  },",
         "  \"summary\": {",
+        "    \"hostPrewriteDeniedWrites\": 2,",
         "    \"baseWriteAttempts\": 4,",
         "    \"deniedBaseWrites\": 4,",
         "    \"overlayWriteAttempts\": 4,",
         "    \"allowedOverlayWrites\": 4",
         "  },",
         "  \"assertions\": {",
+        "    \"hostPrewriteGuardArmed\": true,",
+        "    \"hostPrewriteExistingWriteDenied\": true,",
+        "    \"hostPrewriteCreateDenied\": true,",
+        "    \"hostPrewriteRealTreeUnchanged\": true,",
+        "    \"hostPrewriteNoPostWriteQuarantineNeeded\": true,",
+        "    \"hostPrewriteGuardRestoredPermissions\": true,",
         "    \"dockerProcessExecuted\": true,",
         "    \"sourceMountedReadOnly\": true,",
         "    \"overlayMountedWritable\": true,",
@@ -184,13 +670,13 @@
     }
   ],
   "git": {
-    "head": "b2f03aee60659a7cf8faae64b43f1db72fae307b",
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
     "branch": "codex/codesite-atc-full-from-dev-20260630",
-    "statusShort": "M  synthi/package.json\nM  synthi/scripts/codesite-release-gate.mjs\nM  synthi/scripts/codesite-run-mature-proof-suite.mjs\nAM synthi/scripts/codesite-unmanaged-host-boundary-proof.mjs\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\nAM tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\nAM tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\nAM tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n?? .synthi/codesite/"
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
   },
   "proofSuite": {
     "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
-    "stampedAt": "2026-07-05T06:43:54.111Z",
+    "stampedAt": "2026-07-06T01:55:22.961Z",
     "proofFile": "tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json"
   }
 }

@@ -1,0 +1,30 @@
+{
+  "id": "cmr8k1ayf03akqg013zsev75z",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+  "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+  "baseSnapshot": "sha256:5d489675ee28999fc6474276e279f723da5e4c93eb629e4d2e0de6224bec0d2e",
+  "baseSnapshotEvidence": null,
+  "isolation": "serializable",
+  "status": "aborted",
+  "readSet": [
+    "synthi/prisma/schema-contract-read.txt"
+  ],
+  "observedReadSet": [],
+  "writeSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedWriteSet": [],
+  "semanticDependencyRefs": [],
+  "invariants": [
+    "clearance.diff.inside_route"
+  ],
+  "assumptionRefs": [],
+  "commitDecision": {
+    "reason": "serializable_snapshot_required",
+    "abortedAt": "2026-07-06T01:41:58.399Z"
+  },
+  "proofBundleDigest": null,
+  "openedAt": "2026-07-06T01:41:55.767Z",
+  "closedAt": "2026-07-06T01:41:58.399Z"
+}

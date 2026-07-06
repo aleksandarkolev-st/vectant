@@ -36,7 +36,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
   <span class="stamp">validated</span>
 </section>
 <section class="grid">
-  <div class="metric"><div class="label">Git head</div><div class="value">41c0f2af9ffa1b6f6896a3199abd5ff9a522325b</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
   <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
   <div class="metric"><div class="label">Assertions</div><div class="value">6/6</div></div>
   <div class="metric"><div class="label">Commands</div><div class="value">2/2</div></div>
@@ -45,9 +45,9 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code></td>
-      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0}</code></td>
+      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:136,&quot;skipped&quot;:0,&quot;tests&quot;:136,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node tmp/codesite-dojo-proof/run-black-box-completeness-proof.mjs</code></td>
@@ -60,35 +60,35 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
       <td>committed replay requires proof evidence</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>completeness score includes proof export evidence</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>missing proof bundle cannot score complete</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>successful committed workflow has no missing evidence</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>release gate requires black-box completeness proof</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerControlPlaneSuite command exited successfully</td>
-      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:136,&quot;skipped&quot;:0,&quot;tests&quot;:136,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
     </tr>
   </tbody></table></section>
 </main>

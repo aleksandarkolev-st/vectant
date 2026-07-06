@@ -36,7 +36,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
   <span class="stamp">validated</span>
 </section>
 <section class="grid">
-  <div class="metric"><div class="label">Git head</div><div class="value">41c0f2af9ffa1b6f6896a3199abd5ff9a522325b</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
   <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
   <div class="metric"><div class="label">Assertions</div><div class="value">15/15</div></div>
   <div class="metric"><div class="label">Commands</div><div class="value">3/3</div></div>
@@ -47,13 +47,13 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js</code></td>
       <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:1,&quot;skipped&quot;:0,&quot;tests&quot;:1,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/metrics.test.js</code></td>
       <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:6,&quot;skipped&quot;:0,&quot;tests&quot;:6,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node tmp/codesite-dojo-proof/run-mature-metrics-proof.mjs</code></td>
@@ -66,85 +66,85 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
       <td>docker metrics engine emitted CodeSite metrics JSON</td>
       <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js&quot;,&quot;exitCode&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>proofBundlesVerifiedOutsideUi is measured and finite</td>
       <td><code>{&quot;value&quot;:2,&quot;status&quot;:&quot;measured&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>proofBundlesVerifiedOutsideUi meets release threshold</td>
       <td><code>{&quot;value&quot;:2,&quot;minimum&quot;:1}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>shadowMergeSimulatorAccuracy is measured and finite</td>
       <td><code>{&quot;value&quot;:1,&quot;status&quot;:&quot;measured&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>shadowMergeSimulatorAccuracy meets release threshold</td>
       <td><code>{&quot;value&quot;:1,&quot;minimum&quot;:0.8}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>lineProvenanceCoverage is measured and finite</td>
       <td><code>{&quot;value&quot;:1,&quot;status&quot;:&quot;measured&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>lineProvenanceCoverage meets release threshold</td>
       <td><code>{&quot;value&quot;:1,&quot;minimum&quot;:0.5}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>blackBoxCompletenessScore is measured and finite</td>
       <td><code>{&quot;value&quot;:0.855,&quot;status&quot;:&quot;measured&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>blackBoxCompletenessScore meets release threshold</td>
       <td><code>{&quot;value&quot;:0.855,&quot;minimum&quot;:0.75}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>humanReviewTimeSavedMs is measured and finite</td>
       <td><code>{&quot;value&quot;:210000,&quot;status&quot;:&quot;measured&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>humanReviewTimeSavedMs meets release threshold</td>
       <td><code>{&quot;value&quot;:210000,&quot;minimum&quot;:1}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>percentageWritesWithValidClearance is measured and finite</td>
       <td><code>{&quot;value&quot;:0.3333,&quot;status&quot;:&quot;measured&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>percentageWritesWithValidClearance meets release threshold</td>
       <td><code>{&quot;value&quot;:0.3333,&quot;minimum&quot;:0.3}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerMetricsEngine command exited successfully</td>
       <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:1,&quot;skipped&quot;:0,&quot;tests&quot;:1,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerMetricsSuite command exited successfully</td>

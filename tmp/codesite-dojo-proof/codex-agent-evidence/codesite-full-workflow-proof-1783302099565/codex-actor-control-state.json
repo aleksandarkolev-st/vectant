@@ -1,0 +1,919 @@
+{
+  "schemaVersion": "synthi.codesite.agentProjection.v1",
+  "source": "codesite-full-workflow-proof",
+  "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "generatedAt": "2026-07-06T01:44:33.202Z",
+  "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+  "agents": [
+    {
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "mission": "Schema first",
+      "status": "preflight",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "permissions": [
+        "synthi_codesite_get_radar",
+        "synthi_codesite_open_transaction",
+        "synthi_codesite_apply_patch",
+        "synthi_codesite_record_assumption"
+      ],
+      "requestedTools": [
+        "file_write",
+        "npm_test"
+      ],
+      "route": [
+        "synthi/prisma/**"
+      ]
+    },
+    {
+      "callsign": "API-02",
+      "role": "backend",
+      "mission": "Dependent API",
+      "status": "holding",
+      "providerSessionRef": "codex-api-96e35fee3b",
+      "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+      "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+      "permissions": [
+        "synthi_codesite_get_radar",
+        "synthi_codesite_get_inbox",
+        "synthi_codesite_ack_event",
+        "synthi_codesite_file_change_order"
+      ],
+      "requestedTools": [
+        "file_write",
+        "npm_test"
+      ],
+      "route": [
+        "synthi/prisma/**",
+        "synthi/src/app/api/auth/**"
+      ]
+    },
+    {
+      "callsign": "TEST-03",
+      "role": "inspection",
+      "mission": "Landing radar",
+      "status": "holding",
+      "providerSessionRef": "codex-test-96e35fee3b",
+      "agentSessionId": "cmr8k15vq039wqg01ty20vgqu",
+      "executionPlanId": "cmr8k16ne03a2qg012ja7ghf2",
+      "permissions": [
+        "synthi_codesite_get_radar",
+        "synthi_codesite_request_landing",
+        "synthi_codesite_get_metrics"
+      ],
+      "requestedTools": [
+        "npm_test"
+      ],
+      "route": [
+        "synthi/src/lib/codesite/__tests__/**"
+      ]
+    }
+  ],
+  "mutation": {
+    "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+    "transactionId": "cmr8k1okx03bcqg01803em330",
+    "writeSet": [
+      "synthi/prisma/schema.prisma"
+    ],
+    "readSet": [
+      "synthi/prisma/schema-contract-read.txt"
+    ],
+    "observedReadSet": []
+  },
+  "patch": {
+    "path": "synthi/prisma/schema.prisma",
+    "afterSha256": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160",
+    "reasonRef": "change_order:cmr8k2tqe03e8qg01zl9arvm3",
+    "evidenceRefs": [
+      "codesite:document:cmr8k2pfn03e0qg01llwk06uj",
+      "codesite:document:cmr8k2tqe03e8qg01zl9arvm3",
+      "codesite:counterfactual-run:cmr8k2axz03cuqg01ak9lce1g"
+    ]
+  },
+  "coordination": {
+    "rfiDocument": {
+      "id": "cmr8k2pfn03e0qg01llwk06uj",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "kind": "rfi",
+      "status": "open",
+      "title": "Confirm schema-first contract before API route",
+      "body": {
+        "question": "Confirm API flight will hold until auth.signup.schema.v1 lands.",
+        "proposedContract": "synthi/prisma/schema-contract-read.txt",
+        "transactionId": "cmr8k1okx03bcqg01803em330",
+        "routing": {
+          "fromSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "toSessionIds": [
+            "cmr8k14ac039mqg01vcrrgs71"
+          ],
+          "projectRefs": {
+            "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+            "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+            "transactionId": "cmr8k1okx03bcqg01803em330",
+            "affectedZones": [
+              "synthi/prisma/schema.prisma"
+            ],
+            "contractRefs": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "inspectionRunId": null,
+            "incidentId": null
+          }
+        }
+      },
+      "blocking": true,
+      "createdAt": "2026-07-06T01:43:01.187Z",
+      "resolvedAt": null
+    },
+    "rfiInboxItem": {
+      "id": "cmr8k2qrq03e4qg01f3q6ambl",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+      "recipientUserId": "cmr8k118i038dqg01ozra0m3l",
+      "eventId": "cmr8k2pfs03e2qg01gu2bhod4",
+      "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+      "kind": "rfi",
+      "requiresResponse": true,
+      "status": "pending",
+      "redactedPayload": {
+        "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+        "eventId": "cmr8k2pfs03e2qg01gu2bhod4",
+        "kind": "rfi",
+        "title": "Confirm schema-first contract before API route",
+        "body": {
+          "question": "Confirm API flight will hold until auth.signup.schema.v1 lands.",
+          "proposedContract": "synthi/prisma/schema-contract-read.txt",
+          "transactionId": "cmr8k1okx03bcqg01803em330",
+          "routing": {
+            "fromSessionId": "cmr8k13e8039cqg01xyi06yi0",
+            "toSessionIds": [
+              "cmr8k14ac039mqg01vcrrgs71"
+            ],
+            "projectRefs": {
+              "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+              "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+              "transactionId": "cmr8k1okx03bcqg01803em330",
+              "affectedZones": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "contractRefs": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "inspectionRunId": null,
+              "incidentId": null
+            }
+          }
+        },
+        "redaction": {
+          "policyApplied": true,
+          "recipientSessionId": "cmr8k14ac039mqg01vcrrgs71"
+        },
+        "delivery": {
+          "modes": [
+            "durable_inbox",
+            "sse_stream",
+            "mcp_poll",
+            "repo_local_projection"
+          ],
+          "targets": [],
+          "adapterStatus": "not_configured",
+          "recipient": {
+            "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+            "provider": "codex",
+            "runtime": "tmp-codex-cli",
+            "providerSessionRef": "codex-api-96e35fee3b"
+          }
+        }
+      },
+      "createdAt": "2026-07-06T01:43:02.918Z",
+      "acknowledgedAt": null
+    },
+    "rfiAck": {
+      "id": "cmr8k2qrq03e4qg01f3q6ambl",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+      "recipientUserId": "cmr8k118i038dqg01ozra0m3l",
+      "eventId": "cmr8k2pfs03e2qg01gu2bhod4",
+      "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+      "kind": "rfi",
+      "requiresResponse": true,
+      "status": "acknowledged",
+      "redactedPayload": {
+        "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+        "eventId": "cmr8k2pfs03e2qg01gu2bhod4",
+        "kind": "rfi",
+        "title": "Confirm schema-first contract before API route",
+        "body": {
+          "question": "Confirm API flight will hold until auth.signup.schema.v1 lands.",
+          "proposedContract": "synthi/prisma/schema-contract-read.txt",
+          "transactionId": "cmr8k1okx03bcqg01803em330",
+          "routing": {
+            "fromSessionId": "cmr8k13e8039cqg01xyi06yi0",
+            "toSessionIds": [
+              "cmr8k14ac039mqg01vcrrgs71"
+            ],
+            "projectRefs": {
+              "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+              "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+              "transactionId": "cmr8k1okx03bcqg01803em330",
+              "affectedZones": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "contractRefs": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "inspectionRunId": null,
+              "incidentId": null
+            }
+          }
+        },
+        "redaction": {
+          "policyApplied": true,
+          "recipientSessionId": "cmr8k14ac039mqg01vcrrgs71"
+        },
+        "delivery": {
+          "modes": [
+            "durable_inbox",
+            "sse_stream",
+            "mcp_poll",
+            "repo_local_projection"
+          ],
+          "targets": [],
+          "adapterStatus": "not_configured",
+          "recipient": {
+            "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+            "provider": "codex",
+            "runtime": "tmp-codex-cli",
+            "providerSessionRef": "codex-api-96e35fee3b"
+          }
+        }
+      },
+      "createdAt": "2026-07-06T01:43:02.918Z",
+      "acknowledgedAt": "2026-07-06T01:43:04.791Z"
+    },
+    "changeOrderDocument": {
+      "id": "cmr8k2tqe03e8qg01zl9arvm3",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "kind": "change_order",
+      "status": "open",
+      "title": "API flight accepts schema-first hold",
+      "body": {
+        "answerToDocumentId": "cmr8k2pfn03e0qg01llwk06uj",
+        "decision": "accepted",
+        "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+        "routing": {
+          "fromSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "toSessionIds": [
+            "cmr8k13e8039cqg01xyi06yi0"
+          ],
+          "projectRefs": {
+            "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+            "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+            "transactionId": "cmr8k1okx03bcqg01803em330",
+            "affectedZones": [
+              "synthi/prisma/schema.prisma"
+            ],
+            "contractRefs": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "inspectionRunId": null,
+            "incidentId": null
+          }
+        }
+      },
+      "blocking": false,
+      "createdAt": "2026-07-06T01:43:06.759Z",
+      "resolvedAt": null
+    },
+    "changeOrderInboxItem": {
+      "id": "cmr8k2ve503ecqg01lb9d6fs4",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "recipientUserId": "cmr8k117q038aqg019q7vkjbb",
+      "eventId": "cmr8k2tqi03eaqg010a8w90vb",
+      "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+      "kind": "change_order",
+      "requiresResponse": false,
+      "status": "pending",
+      "redactedPayload": {
+        "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+        "eventId": "cmr8k2tqi03eaqg010a8w90vb",
+        "kind": "change_order",
+        "title": "API flight accepts schema-first hold",
+        "body": {
+          "answerToDocumentId": "cmr8k2pfn03e0qg01llwk06uj",
+          "decision": "accepted",
+          "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+          "routing": {
+            "fromSessionId": "cmr8k14ac039mqg01vcrrgs71",
+            "toSessionIds": [
+              "cmr8k13e8039cqg01xyi06yi0"
+            ],
+            "projectRefs": {
+              "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+              "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+              "transactionId": "cmr8k1okx03bcqg01803em330",
+              "affectedZones": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "contractRefs": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "inspectionRunId": null,
+              "incidentId": null
+            }
+          }
+        },
+        "redaction": {
+          "policyApplied": true,
+          "recipientSessionId": "cmr8k13e8039cqg01xyi06yi0"
+        },
+        "delivery": {
+          "modes": [
+            "durable_inbox",
+            "sse_stream",
+            "mcp_poll",
+            "repo_local_projection"
+          ],
+          "targets": [],
+          "adapterStatus": "not_configured",
+          "recipient": {
+            "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+            "provider": "codex",
+            "runtime": "tmp-codex-cli",
+            "providerSessionRef": "codex-schema-96e35fee3b"
+          }
+        }
+      },
+      "createdAt": "2026-07-06T01:43:08.909Z",
+      "acknowledgedAt": null
+    },
+    "changeOrderAck": {
+      "id": "cmr8k2ve503ecqg01lb9d6fs4",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "recipientUserId": "cmr8k117q038aqg019q7vkjbb",
+      "eventId": "cmr8k2tqi03eaqg010a8w90vb",
+      "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+      "kind": "change_order",
+      "requiresResponse": false,
+      "status": "acknowledged",
+      "redactedPayload": {
+        "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+        "eventId": "cmr8k2tqi03eaqg010a8w90vb",
+        "kind": "change_order",
+        "title": "API flight accepts schema-first hold",
+        "body": {
+          "answerToDocumentId": "cmr8k2pfn03e0qg01llwk06uj",
+          "decision": "accepted",
+          "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+          "routing": {
+            "fromSessionId": "cmr8k14ac039mqg01vcrrgs71",
+            "toSessionIds": [
+              "cmr8k13e8039cqg01xyi06yi0"
+            ],
+            "projectRefs": {
+              "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+              "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+              "transactionId": "cmr8k1okx03bcqg01803em330",
+              "affectedZones": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "contractRefs": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "inspectionRunId": null,
+              "incidentId": null
+            }
+          }
+        },
+        "redaction": {
+          "policyApplied": true,
+          "recipientSessionId": "cmr8k13e8039cqg01xyi06yi0"
+        },
+        "delivery": {
+          "modes": [
+            "durable_inbox",
+            "sse_stream",
+            "mcp_poll",
+            "repo_local_projection"
+          ],
+          "targets": [],
+          "adapterStatus": "not_configured",
+          "recipient": {
+            "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+            "provider": "codex",
+            "runtime": "tmp-codex-cli",
+            "providerSessionRef": "codex-schema-96e35fee3b"
+          }
+        }
+      },
+      "createdAt": "2026-07-06T01:43:08.909Z",
+      "acknowledgedAt": "2026-07-06T01:43:13.986Z"
+    }
+  },
+  "assumptions": {
+    "schema": {
+      "id": "cmr8k1r1f03biqg015b0ln7c9",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "ownerSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "displayCallsign": "SCHEMA-01",
+      "assumptionKey": "auth.signup.schema.v1",
+      "dependsOn": [
+        {
+          "ref": "auth.signup.schema",
+          "version": "v1",
+          "path": "synthi/prisma/schema-contract-read.txt"
+        }
+      ],
+      "usedBy": [
+        "synthi/src/app/api/auth/signup.ts"
+      ],
+      "status": "active",
+      "invalidatedBy": null,
+      "invalidatedAt": null,
+      "createdAt": "2026-07-06T01:42:16.612Z"
+    },
+    "stale": {
+      "id": "cmr8k1x3e03c0qg01vraxhie6",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "ownerSessionId": "cmr8k14ac039mqg01vcrrgs71",
+      "displayCallsign": "API-02",
+      "assumptionKey": "api.signup.depends_on_schema.v1",
+      "dependsOn": [
+        {
+          "ref": "auth.signup.schema",
+          "version": "v1",
+          "path": "synthi/prisma/schema.prisma"
+        }
+      ],
+      "usedBy": [
+        "synthi/src/app/api/auth/signup.ts"
+      ],
+      "status": "active",
+      "invalidatedBy": null,
+      "invalidatedAt": null,
+      "createdAt": "2026-07-06T01:42:24.459Z"
+    },
+    "apiTransaction": {
+      "id": "cmr8k1uuf03buqg01e2w9qki2",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "mutationLeaseId": "cmr8k1tma03boqg01zblb8x9s",
+      "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+      "baseSnapshot": "sha256:b1fa939e1424e26725ecfc5633d5cc67ce164e97501cc885182548c056d596a5",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "repo_wide",
+        "readSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema.prisma",
+            "exists": true,
+            "size": 135,
+            "digest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": "sha256:0d5295c30c9b1ad15061bc13f499774665df3cd1d52987ab9bd138a3bb30a94b",
+        "repoManifestFileCount": 6,
+        "repoManifestScannedEntries": 10,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [
+          "synthi/src/app/api/auth/signup.ts"
+        ],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-06T01:42:21.477Z",
+        "source": "codesite_control_plane",
+        "snapshotDigest": "sha256:b1fa939e1424e26725ecfc5633d5cc67ce164e97501cc885182548c056d596a5",
+        "evidenceDigest": "sha256:9166298ed75a0d09daeec015fb8952b98c6a5f3438d6613223558ab831936172"
+      },
+      "isolation": "serializable",
+      "status": "open",
+      "readSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedReadSet": [],
+      "writeSet": [
+        "synthi/src/app/api/auth/signup.ts"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "schema.assumption.refresh_before_api_landing"
+      ],
+      "assumptionRefs": [],
+      "commitDecision": null,
+      "proofBundleDigest": null,
+      "openedAt": "2026-07-06T01:42:21.544Z",
+      "closedAt": null
+    },
+    "apiAbort": {
+      "id": "cmr8k1uuf03buqg01e2w9qki2",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "mutationLeaseId": "cmr8k1tma03boqg01zblb8x9s",
+      "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+      "baseSnapshot": "sha256:b1fa939e1424e26725ecfc5633d5cc67ce164e97501cc885182548c056d596a5",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "repo_wide",
+        "readSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema.prisma",
+            "exists": true,
+            "size": 135,
+            "digest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": "sha256:0d5295c30c9b1ad15061bc13f499774665df3cd1d52987ab9bd138a3bb30a94b",
+        "repoManifestFileCount": 6,
+        "repoManifestScannedEntries": 10,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [
+          "synthi/src/app/api/auth/signup.ts"
+        ],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-06T01:42:21.477Z",
+        "source": "codesite_control_plane",
+        "snapshotDigest": "sha256:b1fa939e1424e26725ecfc5633d5cc67ce164e97501cc885182548c056d596a5",
+        "evidenceDigest": "sha256:9166298ed75a0d09daeec015fb8952b98c6a5f3438d6613223558ab831936172"
+      },
+      "isolation": "serializable",
+      "status": "aborted",
+      "readSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedReadSet": [],
+      "writeSet": [
+        "synthi/src/app/api/auth/signup.ts"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "schema.assumption.refresh_before_api_landing"
+      ],
+      "assumptionRefs": [
+        "cmr8k1x3e03c0qg01vraxhie6"
+      ],
+      "commitDecision": {
+        "reason": "schema_contract_refreshed_assumption_invalidated",
+        "abortedAt": "2026-07-06T01:43:34.020Z"
+      },
+      "proofBundleDigest": null,
+      "openedAt": "2026-07-06T01:42:21.544Z",
+      "closedAt": "2026-07-06T01:43:34.020Z"
+    }
+  },
+  "inspection": {
+    "inspectionRun": {
+      "id": "cmr8k3jpz03f8qg01pjqi5qp4",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "displayCallsign": "SCHEMA-01",
+      "status": "completed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "governance",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:permit:cmr8k17f003a6qg011rcu62p4",
+            "codesite:governance:full-workflow-schema-permit"
+          ],
+          "reasonCodes": [
+            "governance_clearance_evidence_verified"
+          ]
+        },
+        {
+          "key": "type",
+          "adapter": {
+            "key": "type",
+            "label": "Type radar",
+            "evidencePrefix": "typecheck:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "run",
+              "typecheck"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 249,
+          "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:5bb4493393d0224e77892e2e48023c99dc00a845301acb8ef7af1f4d75a607fc",
+          "evidenceRefs": [
+            "typecheck:run:sha256:5bb4493393d0224e77892e2e48023c99dc00a845301acb8ef7af1f4d75a607fc",
+            "artifact:sha256:5bb4493393d0224e77892e2e48023c99dc00a845301acb8ef7af1f4d75a607fc"
+          ],
+          "reasonCodes": [
+            "type_radar_passed",
+            "type_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-06T01:43:41.997Z",
+          "completedAt": "2026-07-06T01:43:42.246Z"
+        },
+        {
+          "key": "tests",
+          "adapter": {
+            "key": "tests",
+            "label": "Test radar",
+            "evidencePrefix": "test:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "test"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 252,
+          "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:2ef8de018d07e552c89d85df3a62bd5fda3088be4db7e6607d0246dcc4f2d6e3",
+          "evidenceRefs": [
+            "test:run:sha256:2ef8de018d07e552c89d85df3a62bd5fda3088be4db7e6607d0246dcc4f2d6e3",
+            "artifact:sha256:2ef8de018d07e552c89d85df3a62bd5fda3088be4db7e6607d0246dcc4f2d6e3"
+          ],
+          "reasonCodes": [
+            "tests_radar_passed",
+            "tests_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-06T01:43:42.246Z",
+          "completedAt": "2026-07-06T01:43:42.498Z"
+        }
+      ],
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr8k17f003a6qg011rcu62p4",
+        "typecheck:run:sha256:5bb4493393d0224e77892e2e48023c99dc00a845301acb8ef7af1f4d75a607fc",
+        "artifact:sha256:5bb4493393d0224e77892e2e48023c99dc00a845301acb8ef7af1f4d75a607fc",
+        "test:run:sha256:2ef8de018d07e552c89d85df3a62bd5fda3088be4db7e6607d0246dcc4f2d6e3",
+        "artifact:sha256:2ef8de018d07e552c89d85df3a62bd5fda3088be4db7e6607d0246dcc4f2d6e3"
+      ],
+      "requestedAt": "2026-07-06T01:43:40.440Z",
+      "completedAt": "2026-07-06T01:43:42.498Z"
+    },
+    "status": "completed",
+    "changedPaths": [
+      "synthi/prisma/schema.prisma"
+    ]
+  },
+  "metrics": {
+    "startupWorkflow": "schema-first signup audit-log migration",
+    "documentCount": 2,
+    "inboxItemCount": 2,
+    "counterfactualRunId": "cmr8k2axz03cuqg01ak9lce1g"
+  },
+  "actionContracts": {
+    "SCHEMA-01": [
+      {
+        "action": "read-control-state",
+        "kind": "control_state_read",
+        "tool": "synthi_codesite_get_radar",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi"
+        }
+      },
+      {
+        "action": "file-execution-plan",
+        "kind": "execution_plan_filed",
+        "tool": "synthi_codesite_file_flight_plan",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi"
+        }
+      },
+      {
+        "action": "request-mutation-lease",
+        "kind": "mutation_lease_requested",
+        "tool": "synthi_codesite_request_clearance",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "mutationLeaseId": "cmr8k19c003acqg01swot8vyl"
+        }
+      },
+      {
+        "action": "open-mutation-transaction",
+        "kind": "mutation_transaction_opened",
+        "tool": "synthi_codesite_open_transaction",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "transactionId": "cmr8k1okx03bcqg01803em330",
+          "mutationLeaseId": "cmr8k19c003acqg01swot8vyl"
+        }
+      },
+      {
+        "action": "record-assumption",
+        "kind": "assumption_recorded",
+        "tool": "synthi_codesite_record_assumption",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "assumptionId": "cmr8k1r1f03biqg015b0ln7c9",
+          "path": "synthi/prisma/schema-contract-read.txt"
+        }
+      },
+      {
+        "action": "propose-controlled-write",
+        "kind": "controlled_write_proposed",
+        "tool": "synthi_codesite_apply_patch",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "transactionId": "cmr8k1okx03bcqg01803em330",
+          "path": "synthi/prisma/schema.prisma",
+          "contentSha256": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160"
+        }
+      },
+      {
+        "action": "request-inspection",
+        "kind": "inspection_requested",
+        "tool": "synthi_codesite_request_landing",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "inspectionRunId": "cmr8k3jpz03f8qg01pjqi5qp4"
+        }
+      },
+      {
+        "action": "request-commit",
+        "kind": "commit_requested",
+        "tool": "synthi_codesite_request_commit",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "transactionId": "cmr8k1okx03bcqg01803em330"
+        }
+      }
+    ],
+    "API-02": [
+      {
+        "action": "read-control-state",
+        "kind": "control_state_read",
+        "tool": "synthi_codesite_get_radar",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06"
+        }
+      },
+      {
+        "action": "file-execution-plan",
+        "kind": "execution_plan_filed",
+        "tool": "synthi_codesite_file_flight_plan",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06"
+        }
+      },
+      {
+        "action": "read-inbox",
+        "kind": "inbox_read",
+        "tool": "synthi_codesite_get_inbox",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+          "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+          "eventId": "cmr8k2pfs03e2qg01gu2bhod4"
+        }
+      },
+      {
+        "action": "ack-inbox-event",
+        "kind": "inbox_event_acknowledged",
+        "tool": "synthi_codesite_ack_event",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+          "inboxItemId": "cmr8k2qrq03e4qg01f3q6ambl",
+          "eventId": "cmr8k2pfs03e2qg01gu2bhod4"
+        }
+      },
+      {
+        "action": "file-change-order",
+        "kind": "change_order_filed",
+        "tool": "synthi_codesite_file_change_order",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+          "documentId": "cmr8k2tqe03e8qg01zl9arvm3",
+          "answersDocumentId": "cmr8k2pfn03e0qg01llwk06uj"
+        }
+      },
+      {
+        "action": "abort-stale-transaction",
+        "kind": "stale_transaction_aborted",
+        "tool": "synthi_codesite_abort_transaction",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+          "executionPlanId": "cmr8k14zz039sqg015bhzld06",
+          "transactionId": "cmr8k1uuf03buqg01e2w9qki2",
+          "originalTransactionId": "cmr8k1uuf03buqg01e2w9qki2",
+          "staleAssumptionId": "cmr8k1x3e03c0qg01vraxhie6"
+        }
+      }
+    ],
+    "TEST-03": [
+      {
+        "action": "read-control-state",
+        "kind": "control_state_read",
+        "tool": "synthi_codesite_get_radar",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k15vq039wqg01ty20vgqu",
+          "executionPlanId": "cmr8k16ne03a2qg012ja7ghf2"
+        }
+      },
+      {
+        "action": "file-execution-plan",
+        "kind": "execution_plan_filed",
+        "tool": "synthi_codesite_file_flight_plan",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k15vq039wqg01ty20vgqu",
+          "executionPlanId": "cmr8k16ne03a2qg012ja7ghf2"
+        }
+      },
+      {
+        "action": "request-landing",
+        "kind": "landing_requested",
+        "tool": "synthi_codesite_request_landing",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k15vq039wqg01ty20vgqu",
+          "executionPlanId": "cmr8k16ne03a2qg012ja7ghf2",
+          "inspectionRunId": "cmr8k3jpz03f8qg01pjqi5qp4",
+          "changedPath": "synthi/prisma/schema.prisma"
+        }
+      },
+      {
+        "action": "read-metrics",
+        "kind": "metrics_read",
+        "tool": "synthi_codesite_get_metrics",
+        "references": {
+          "projectId": "cmr8k11cx038jqg011c5ezn60",
+          "agentSessionId": "cmr8k15vq039wqg01ty20vgqu",
+          "executionPlanId": "cmr8k16ne03a2qg012ja7ghf2",
+          "inspectionRunId": "cmr8k3jpz03f8qg01pjqi5qp4"
+        }
+      }
+    ]
+  }
+}

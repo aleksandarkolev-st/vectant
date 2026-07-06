@@ -36,7 +36,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
   <span class="stamp">validated</span>
 </section>
 <section class="grid">
-  <div class="metric"><div class="label">Git head</div><div class="value">41c0f2af9ffa1b6f6896a3199abd5ff9a522325b</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
   <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
   <div class="metric"><div class="label">Assertions</div><div class="value">10/10</div></div>
   <div class="metric"><div class="label">Commands</div><div class="value">3/3</div></div>
@@ -45,15 +45,15 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code></td>
-      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0}</code></td>
+      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:136,&quot;skipped&quot;:0,&quot;tests&quot;:136,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node --test backend/collab-server/__tests__/codesiteFs.test.js</code></td>
       <td><code>{&quot;tests&quot;:48,&quot;suites&quot;:0,&quot;pass&quot;:48,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node tmp/codesite-dojo-proof/run-line-provenance-diff-proof.mjs</code></td>
@@ -66,55 +66,55 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
       <td>repo-state collector requests zero-context Git diff hunks</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>repo-state evidence carries changed line ranges from Git diff output</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>collector avoids stale HEAD hunks when staged or worktree diffs exist</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>repo-state hunk ranges are required for landing provenance</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>landing decision exposes uncovered actual hunk ranges</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>control-plane test rejects forged strict provenance</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>CodeSiteFS test derives hunk ranges from a real temporary Git repo</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>release gate requires the line provenance diff proof</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerControlPlaneSuite command exited successfully</td>
-      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:136,&quot;skipped&quot;:0,&quot;tests&quot;:136,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>codesiteFsTests command exited successfully</td>

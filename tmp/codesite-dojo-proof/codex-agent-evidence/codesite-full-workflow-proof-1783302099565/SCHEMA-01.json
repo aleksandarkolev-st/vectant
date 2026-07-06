@@ -1,0 +1,441 @@
+{
+  "schemaVersion": "synthi.codesite.codexAgentExecutionEvidence.v1",
+  "callsign": "SCHEMA-01",
+  "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+  "providerSessionRef": "codex-schema-96e35fee3b",
+  "providerSessionRefSource": "codesite_registered_session",
+  "role": "schema",
+  "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+  "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+  "codexExecThreadId": "019f3519-3abb-75a2-bd6e-0e42f18848c3",
+  "commands": [
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 read-control-state'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_0",
+      "outputDigest": "sha256:5d5c951267a5d83edb7dd24dd8777eaa8b1a232134ccf7b0d988833612f8e3a5",
+      "evidenceDigest": "sha256:765a525b0003dc68ef19496d0f85bbfec4c0f3b8a370f8ec2865d3245eab7786"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 file-execution-plan'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_1",
+      "outputDigest": "sha256:b15a32b19013d6bb9a34a17c867efbd6a05ba7c6ce60421555ddefc943a4e62e",
+      "evidenceDigest": "sha256:daa3732bd0aac2519241cf5effc9193f43d8911ed21ae39f841af125455397e4"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 request-mutation-lease'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_2",
+      "outputDigest": "sha256:5d4a6324721a2368a1365848426a9796a987d5e53639515120b3ba810717a0b3",
+      "evidenceDigest": "sha256:534b6f3a272b0b45043a69f73d93080f31a1eb898cb83ed1221eb3d97aebd4a5"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 open-mutation-transaction'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_3",
+      "outputDigest": "sha256:f7d789c18f45c26ee7d49c838a9640f33e30ed5891815a01c4ae418f088fddbd",
+      "evidenceDigest": "sha256:d9489604bcc72515fef801b6f00e1bd69475e3b6210ed7829ef90be87cabf27c"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 record-assumption'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_4",
+      "outputDigest": "sha256:94ec52b4215755061c2d3cbde2e922771b18e1e3839b94d0e51828bd8fe768c0",
+      "evidenceDigest": "sha256:d0b13a94954ba61014cdf64d5b057ab4f8fb05f0f7813635cd3385e2b31b589d"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 propose-controlled-write'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_5",
+      "outputDigest": "sha256:bbe123bac50bec7137c65524ae746f585c87a80b022dbb02e5b0044c0bdc73c3",
+      "evidenceDigest": "sha256:2ac7b632518dd78c54cc4d50fa440ed5ef0cd208775f7c1a86554b6c7960a74c"
+    },
+    {
+      "command": "/bin/bash -lc 'cd tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565 && npm run typecheck'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_6",
+      "outputDigest": "sha256:ab366bd76387034113b4fe64cc9b5aa948c4ac55709930ce3196e0b6837b3b46",
+      "evidenceDigest": "sha256:7b8dd74557fd30ee55b675f3da1430283c44d089e68d2d465336e57945d63b90"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 request-inspection'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_7",
+      "outputDigest": "sha256:94287bd223be89094415a9bc01c9e5df55864c217ae918d60361e6c79aec353c",
+      "evidenceDigest": "sha256:9ccc6e8d9c505acf0488c56f726ae8ecf102ef22fd12adad5a16180890091622"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 request-commit'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_8",
+      "outputDigest": "sha256:6d98bf26f974562bffcee4d79b7e3cb91353f65370cd19ba5c2569203c98b0b8",
+      "evidenceDigest": "sha256:cb9bae427f1a1a3214b460f93027f250b16f8e9b9d45ca9052f856557e81decc"
+    }
+  ],
+  "reportedCommands": [
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 read-control-state",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 file-execution-plan",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 request-mutation-lease",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 open-mutation-transaction",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 record-assumption",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 propose-controlled-write",
+    "cd tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565 && npm run typecheck",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 request-inspection",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs --project cmr8k11cx038jqg011c5ezn60 --callsign SCHEMA-01 request-commit"
+  ],
+  "workflowActions": [
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "read-control-state",
+      "kind": "control_state_read",
+      "tool": "synthi_codesite_get_radar",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:44:40.959Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:1e183210ead55918b6ed4139e4a5def37f5d798ec1fa5356c04c93ba03c21b32"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "file-execution-plan",
+      "kind": "execution_plan_filed",
+      "tool": "synthi_codesite_file_flight_plan",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:44:44.180Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:a2f5bebbd0af246e69dd0cee1a6e12ef2da7e4e726dd0c24e156368b232ad5b6"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "request-mutation-lease",
+      "kind": "mutation_lease_requested",
+      "tool": "synthi_codesite_request_clearance",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:44:48.658Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:0da385b5a379ee0e37d9c0ead93a51f329947bdd43f5390e9b348634ff566a5f"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "open-mutation-transaction",
+      "kind": "mutation_transaction_opened",
+      "tool": "synthi_codesite_open_transaction",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+        "transactionId": "cmr8k1okx03bcqg01803em330",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:44:55.315Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:5f237b16716d6828056995ac30769bfa2d72217159e6d00d7a737ab2134d4a2e"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "record-assumption",
+      "kind": "assumption_recorded",
+      "tool": "synthi_codesite_record_assumption",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+        "assumptionId": "cmr8k1r1f03biqg015b0ln7c9",
+        "path": "synthi/prisma/schema-contract-read.txt"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:44:58.892Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:709e561f493a02058b482be9ff517116e4051126a38975f3b7c98075821ccf70"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "propose-controlled-write",
+      "kind": "controlled_write_proposed",
+      "tool": "synthi_codesite_apply_patch",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+        "transactionId": "cmr8k1okx03bcqg01803em330",
+        "path": "synthi/prisma/schema.prisma",
+        "contentSha256": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:45:02.219Z",
+      "outputArtifacts": [
+        {
+          "kind": "controlled_patch_proposal",
+          "path": ".synthi/codesite/projects/cmr8k11cx038jqg011c5ezn60/outbox/SCHEMA-01/patch-proposals/857390399b61b8c46b81610bd4644f3b2791d1fbbba48603d811271b31a09720.json",
+          "sha256": "sha256:c55bb9d90004539c91b728c5c28ea49c4720d659ec1e4e3c0db6a7c23376ccad",
+          "proposalDigest": "sha256:857390399b61b8c46b81610bd4644f3b2791d1fbbba48603d811271b31a09720"
+        }
+      ],
+      "receiptDigest": "sha256:5e74d14acf7963fe15d91d164940fd3b6dc093d3f4326c69e9a30f0a56e9e630"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "request-inspection",
+      "kind": "inspection_requested",
+      "tool": "synthi_codesite_request_landing",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+        "inspectionRunId": "cmr8k3jpz03f8qg01pjqi5qp4"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:45:08.936Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:9b5b5ed5c642a9fc72cf59f314da7ebdb7a0a2851fa8b7107a6000c3f126be24"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "callsign": "SCHEMA-01",
+      "role": "schema",
+      "providerSessionRef": "codex-schema-96e35fee3b",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+      "action": "request-commit",
+      "kind": "commit_requested",
+      "tool": "synthi_codesite_request_commit",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+        "transactionId": "cmr8k1okx03bcqg01803em330"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-06T01:45:12.157Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:ce1b7ceea5a6109f81f6f96e565dbcf64bac29c55e6c6e8689bea7e3d2736e92"
+    }
+  ],
+  "actorProjection": {
+    "surface": "repo_local_codesite_projection",
+    "runtimeControlStatePath": "tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/.synthi/codesite/projects/cmr8k11cx038jqg011c5ezn60/control-state.json",
+    "runtimeActionScriptPath": "tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565/scripts/codesite-agent-action.mjs",
+    "controlStatePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565/codex-actor-control-state.json",
+    "actionScriptPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565/codesite-agent-action.mjs.txt",
+    "receiptPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565/SCHEMA-01.actions.jsonl",
+    "controlStateSha256": "sha256:bee158de43aa9e54d1a685f1f96380e34ba4b9919b1efc363c23f0e6c5a93a35",
+    "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+    "receiptSha256": "sha256:89c3ce2db3ee3bd7726037e978545785293f701409592b846963321f6e6df1b6",
+    "requiredActions": [
+      "control_state_read",
+      "execution_plan_filed",
+      "mutation_lease_requested",
+      "mutation_transaction_opened",
+      "assumption_recorded",
+      "controlled_write_proposed",
+      "inspection_requested",
+      "commit_requested"
+    ]
+  },
+  "finalReportedWorkflowActions": [
+    {
+      "kind": "control_state_read",
+      "action": "read-control-state"
+    },
+    {
+      "kind": "execution_plan_filed",
+      "action": "file-execution-plan"
+    },
+    {
+      "kind": "mutation_lease_requested",
+      "action": "request-mutation-lease"
+    },
+    {
+      "kind": "mutation_transaction_opened",
+      "action": "open-mutation-transaction"
+    },
+    {
+      "kind": "assumption_recorded",
+      "action": "record-assumption"
+    },
+    {
+      "kind": "controlled_write_proposed",
+      "action": "propose-controlled-write"
+    },
+    {
+      "kind": "inspection_requested",
+      "action": "request-inspection"
+    },
+    {
+      "kind": "commit_requested",
+      "action": "request-commit"
+    }
+  ],
+  "finalMessageDigest": "sha256:0cd92e05781b5b95eb1c75d80da634dab5c22c1f00f70cbbabd8010df07ad243",
+  "transcriptDigest": "sha256:9c7cb2653316288b0b9d96d528bf4c03283d88ed076776f151a38288f1270f9d",
+  "stdoutDigest": "sha256:9c7cb2653316288b0b9d96d528bf4c03283d88ed076776f151a38288f1270f9d",
+  "stderrDigest": "sha256:65a4b051921e1a191e522956e120ba6f6c08854fbaef134d9a037276389177ab",
+  "transcript": {
+    "eventsRawPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565/SCHEMA-01.events.raw.jsonl",
+    "stderrPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565/SCHEMA-01.stderr.log",
+    "finalMessagePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565/SCHEMA-01.final.txt",
+    "eventCount": 22,
+    "toolEventCount": 18,
+    "threadId": "019f3519-3abb-75a2-bd6e-0e42f18848c3",
+    "usage": {
+      "input_tokens": 181724,
+      "cached_input_tokens": 146176,
+      "output_tokens": 1993,
+      "reasoning_output_tokens": 69
+    },
+    "stdoutDigest": "sha256:9c7cb2653316288b0b9d96d528bf4c03283d88ed076776f151a38288f1270f9d",
+    "stderrDigest": "sha256:65a4b051921e1a191e522956e120ba6f6c08854fbaef134d9a037276389177ab",
+    "finalMessageDigest": "sha256:0cd92e05781b5b95eb1c75d80da634dab5c22c1f00f70cbbabd8010df07ad243",
+    "eventsRawSha256": "sha256:f89b95d44864ecb2aee848e81a14a8c88f69ed10ea96a3a75cb523cc0bff1010",
+    "stderrSha256": "sha256:eb2d449a990a039f262e17b8106d3eedab6cb98a72747abd765aa7e8b702b08a",
+    "finalMessageSha256": "sha256:37bb238d130cc616140469d5036fbf95ffb38bb3c53c7e1c0b4ced503c6b3191",
+    "redactionCounts": {}
+  },
+  "redactionReport": {
+    "finalPublicationSecretScanRequired": true,
+    "rawCredentialMaterialStored": "redacted_before_publication",
+    "authHomeStoredInRepo": "validated_at_publication",
+    "promptIncludedSecrets": "redacted_before_publication",
+    "counts": {},
+    "outerIsolation": "docker_playwright_sidecar_networked_with_proof_app"
+  },
+  "generatedAt": "2026-07-06T01:45:30.413Z",
+  "startedAt": "2026-07-06T01:44:33.244Z",
+  "completedAt": "2026-07-06T01:45:30.413Z"
+}

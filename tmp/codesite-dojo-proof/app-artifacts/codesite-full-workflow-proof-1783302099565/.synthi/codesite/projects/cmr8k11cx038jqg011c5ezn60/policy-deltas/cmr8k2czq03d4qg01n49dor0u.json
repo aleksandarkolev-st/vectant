@@ -1,0 +1,49 @@
+{
+  "id": "cmr8k2czq03d4qg01n49dor0u",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": "synthi/prisma/schema.prisma",
+  "ruleCandidate": {
+    "rule": "schema_first_policy_reduced_rework",
+    "learningSignals": [
+      "schema_first_reduced_rework"
+    ],
+    "preferredStrategies": [
+      "schema-first"
+    ],
+    "avoidStrategies": [
+      "frontend-backend-parallel"
+    ],
+    "requiredTowerActions": [
+      "issue_schema_clearance_before_dependents",
+      "refresh_downstream_assumptions_after_contract"
+    ],
+    "evidenceBasis": {
+      "validityStrength": "strong",
+      "incidentRefs": [],
+      "evidenceRefs": [
+        "codesite:shadow:full-workflow-counterfactual"
+      ],
+      "humanOverride": null,
+      "laterManualEditCount": 0
+    }
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/schema.prisma"
+    },
+    {
+      "risk": "semantic_collision"
+    }
+  ],
+  "expectedRiskReduction": 0.215,
+  "confidence": 0.86,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr8k2axz03cuqg01ak9lce1g",
+    "shadow:job:shadow:codesite-full-workflow-proof-1783302099565:counterfactual-choice",
+    "codesite:shadow:full-workflow-counterfactual"
+  ],
+  "createdAt": "2026-07-06T01:42:45.062Z",
+  "promotedAt": null
+}

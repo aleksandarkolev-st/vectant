@@ -1,6 +1,6 @@
 {
   "schemaVersion": "synthi.codesite.gitProvisioningBoundaryProof.v1",
-  "generatedAt": "2026-07-03T18:42:07.003Z",
+  "generatedAt": "2026-07-06T01:51:41.563Z",
   "ok": true,
   "assertions": [
     {
@@ -54,7 +54,182 @@
         "reason_codes": [
           "repo_provisioning_clearance_required"
         ],
-        "process_ancestry": [],
+        "process_ancestry": [
+          "node",
+          "sh",
+          "127.0.0.1-3100",
+          "codex",
+          "init"
+        ],
+        "process_ancestry_sources": {
+          "caller_supplied": [],
+          "os_procfs": [
+            "node",
+            "sh",
+            "127.0.0.1-3100",
+            "codex",
+            "init"
+          ]
+        },
+        "os_process_ancestry": {
+          "schemaVersion": "synthi.codesite.processAncestry.v1",
+          "source": "linux_procfs",
+          "sourcePath": "/proc",
+          "platform": "linux",
+          "wsl": true,
+          "available": true,
+          "complete": true,
+          "direction": "process_to_root",
+          "collectorPid": 792154,
+          "requestedPid": 792154,
+          "capturedAt": "2026-07-06T01:51:16.080Z",
+          "labels": [
+            "node",
+            "sh",
+            "127.0.0.1-3100",
+            "codex",
+            "init"
+          ],
+          "nodes": [
+            {
+              "pid": 792154,
+              "ppid": 789642,
+              "comm": "node",
+              "state": "R",
+              "argv0Basename": "node",
+              "argvCount": 2,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8922789,
+              "cmdlineDigest": "sha256:b0345d95f3ecbea727dba857d484aac7cbef1479a632d974875c5f851ae5a5ed",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "node"
+            },
+            {
+              "pid": 789642,
+              "ppid": 789641,
+              "comm": "node",
+              "state": "S",
+              "argv0Basename": "node",
+              "argvCount": 6,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8906314,
+              "cmdlineDigest": "sha256:a3167f84e5db9ff4e88c109c4febff7d832b5cce64d4dbedaae1a9f4bd24b01c",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "node"
+            },
+            {
+              "pid": 789641,
+              "ppid": 789620,
+              "comm": "sh",
+              "state": "S",
+              "argv0Basename": "sh",
+              "argvCount": 3,
+              "exeBasename": "dash",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8906313,
+              "cmdlineDigest": "sha256:2480eb3fff3e43f7d21ca8a1acaf312b81d21182b4167d3c2acab633444f0daa",
+              "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+              "label": "sh"
+            },
+            {
+              "pid": 789620,
+              "ppid": 575113,
+              "comm": "npm-run-codesit",
+              "state": "S",
+              "argv0Basename": "127.0.0.1-3100",
+              "argvCount": 1,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8906263,
+              "cmdlineDigest": "sha256:2233118d5ceceebba725918f65e9b07b765e69d0270b5011160e9187ec2bc95d",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "127.0.0.1-3100"
+            },
+            {
+              "pid": 575113,
+              "ppid": 575111,
+              "comm": "codex",
+              "state": "S",
+              "argv0Basename": "codex",
+              "argvCount": 3,
+              "exeBasename": "codex",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 6164801,
+              "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+              "exePathDigest": "sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030",
+              "label": "codex"
+            },
+            {
+              "pid": 575111,
+              "ppid": 575109,
+              "comm": "Relay-575113",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 6164800,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 575109,
+              "ppid": 2,
+              "comm": "SessionLeader",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 6164800,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 2,
+              "ppid": 1,
+              "comm": "init-systemd-Ub",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 728,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 1,
+              "ppid": 0,
+              "comm": "systemd",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 723,
+              "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+              "exePathDigest": null,
+              "label": "init"
+            }
+          ],
+          "unavailableReason": null,
+          "digest": "sha256:c58b2e5f7bcf1d860c2d6c66b714860c4536fae470fc0a75954a63158dfe9705"
+        },
         "operation": "init"
       }
     },
@@ -66,7 +241,182 @@
         "reason_codes": [
           "inside_clearance_route"
         ],
-        "process_ancestry": [],
+        "process_ancestry": [
+          "node",
+          "sh",
+          "127.0.0.1-3100",
+          "codex",
+          "init"
+        ],
+        "process_ancestry_sources": {
+          "caller_supplied": [],
+          "os_procfs": [
+            "node",
+            "sh",
+            "127.0.0.1-3100",
+            "codex",
+            "init"
+          ]
+        },
+        "os_process_ancestry": {
+          "schemaVersion": "synthi.codesite.processAncestry.v1",
+          "source": "linux_procfs",
+          "sourcePath": "/proc",
+          "platform": "linux",
+          "wsl": true,
+          "available": true,
+          "complete": true,
+          "direction": "process_to_root",
+          "collectorPid": 792154,
+          "requestedPid": 792154,
+          "capturedAt": "2026-07-06T01:51:16.081Z",
+          "labels": [
+            "node",
+            "sh",
+            "127.0.0.1-3100",
+            "codex",
+            "init"
+          ],
+          "nodes": [
+            {
+              "pid": 792154,
+              "ppid": 789642,
+              "comm": "node",
+              "state": "R",
+              "argv0Basename": "node",
+              "argvCount": 2,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8922789,
+              "cmdlineDigest": "sha256:b0345d95f3ecbea727dba857d484aac7cbef1479a632d974875c5f851ae5a5ed",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "node"
+            },
+            {
+              "pid": 789642,
+              "ppid": 789641,
+              "comm": "node",
+              "state": "S",
+              "argv0Basename": "node",
+              "argvCount": 6,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8906314,
+              "cmdlineDigest": "sha256:a3167f84e5db9ff4e88c109c4febff7d832b5cce64d4dbedaae1a9f4bd24b01c",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "node"
+            },
+            {
+              "pid": 789641,
+              "ppid": 789620,
+              "comm": "sh",
+              "state": "S",
+              "argv0Basename": "sh",
+              "argvCount": 3,
+              "exeBasename": "dash",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8906313,
+              "cmdlineDigest": "sha256:2480eb3fff3e43f7d21ca8a1acaf312b81d21182b4167d3c2acab633444f0daa",
+              "exePathDigest": "sha256:6bfb5004339731b0429ac20ef9a649fce6473252ef4c6d4aba196a3e5b411a6a",
+              "label": "sh"
+            },
+            {
+              "pid": 789620,
+              "ppid": 575113,
+              "comm": "npm-run-codesit",
+              "state": "S",
+              "argv0Basename": "127.0.0.1-3100",
+              "argvCount": 1,
+              "exeBasename": "node",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 8906263,
+              "cmdlineDigest": "sha256:2233118d5ceceebba725918f65e9b07b765e69d0270b5011160e9187ec2bc95d",
+              "exePathDigest": "sha256:f359b3013a0808cd81a1860de014345f1c6493fc14d59a00a2512da2a531e482",
+              "label": "127.0.0.1-3100"
+            },
+            {
+              "pid": 575113,
+              "ppid": 575111,
+              "comm": "codex",
+              "state": "S",
+              "argv0Basename": "codex",
+              "argvCount": 3,
+              "exeBasename": "codex",
+              "uid": 1000,
+              "gid": 1000,
+              "startTimeClockTicks": 6164801,
+              "cmdlineDigest": "sha256:ef8dcfce5e39d6fab72469d7ddc83510732875fba28bb62517af226c0e9fee64",
+              "exePathDigest": "sha256:6bf53fc3c754edcd0bdc3b0cae14f474174a6f32f8e1d960b6d2641439217030",
+              "label": "codex"
+            },
+            {
+              "pid": 575111,
+              "ppid": 575109,
+              "comm": "Relay-575113",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 6164800,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 575109,
+              "ppid": 2,
+              "comm": "SessionLeader",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 6164800,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 2,
+              "ppid": 1,
+              "comm": "init-systemd-Ub",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 728,
+              "cmdlineDigest": "sha256:6d8f4104c6b688f53c0ca3f78d22a5a516b0716b177d899f1b6f5e98aa76841b",
+              "exePathDigest": null,
+              "label": "init"
+            },
+            {
+              "pid": 1,
+              "ppid": 0,
+              "comm": "systemd",
+              "state": "S",
+              "argv0Basename": "init",
+              "argvCount": 1,
+              "exeBasename": null,
+              "uid": 0,
+              "gid": 0,
+              "startTimeClockTicks": 723,
+              "cmdlineDigest": "sha256:6628c1ade33319fc12730a87856ccdb1e4eaed9a0aa2b0bce0535a97a232f272",
+              "exePathDigest": null,
+              "label": "init"
+            }
+          ],
+          "unavailableReason": null,
+          "digest": "sha256:c58b2e5f7bcf1d860c2d6c66b714860c4536fae470fc0a75954a63158dfe9705"
+        },
         "operation": "init"
       }
     },
@@ -119,9 +469,9 @@
       "details": {
         "command": "node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
         "summary": {
-          "tests": 35,
+          "tests": 46,
           "suites": 0,
-          "pass": 35,
+          "pass": 46,
           "fail": 0,
           "cancelled": 0,
           "skipped": 0,
@@ -136,9 +486,9 @@
       "details": {
         "command": "node --test backend/collab-server/__tests__/codesiteFs.test.js",
         "summary": {
-          "tests": 45,
+          "tests": 48,
           "suites": 0,
-          "pass": 45,
+          "pass": 48,
           "fail": 0,
           "cancelled": 0,
           "skipped": 0,
@@ -153,9 +503,9 @@
       "details": {
         "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codeSiteGitPolicy.js && node --check backend/collab-server/codesiteFs.js && node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js backend/collab-server/__tests__/codesiteFs.test.js",
         "summary": {
-          "tests": 52,
+          "tests": 55,
           "suites": 0,
-          "pass": 52,
+          "pass": 55,
           "fail": 0,
           "cancelled": 0,
           "skipped": 0,
@@ -200,7 +550,7 @@
     {
       "name": "syntax",
       "command": "node --check backend/collab-server/server.js",
-      "startedAt": "2026-07-03T18:40:56.233Z",
+      "startedAt": "2026-07-06T01:51:16.083Z",
       "exitCode": 0,
       "signal": null,
       "summary": {
@@ -213,7 +563,7 @@
     {
       "name": "policySyntax",
       "command": "node --check backend/collab-server/codeSiteGitPolicy.js",
-      "startedAt": "2026-07-03T18:40:56.383Z",
+      "startedAt": "2026-07-06T01:51:16.188Z",
       "exitCode": 0,
       "signal": null,
       "summary": {
@@ -226,7 +576,7 @@
     {
       "name": "policy",
       "command": "node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js",
-      "startedAt": "2026-07-03T18:40:56.516Z",
+      "startedAt": "2026-07-06T01:51:16.306Z",
       "exitCode": 0,
       "signal": null,
       "summary": {
@@ -241,12 +591,12 @@
       "outputTail": [
         "ok 6 - maps tags, stash refs, and remotes to ref/config attempts",
         "  ---",
-        "  duration_ms: 0.760288",
+        "  duration_ms: 0.950179",
         "  ...",
         "# Subtest: leaves read-only and already path-gated file actions unmapped",
         "ok 7 - leaves read-only and already path-gated file actions unmapped",
         "  ---",
-        "  duration_ms: 0.129658",
+        "  duration_ms: 0.451484",
         "  ...",
         "1..7",
         "# tests 7",
@@ -256,116 +606,172 @@
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 162.232695"
+        "# duration_ms 162.134435"
       ]
     },
     {
       "name": "gitService",
       "command": "node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
-      "startedAt": "2026-07-03T18:40:56.787Z",
+      "startedAt": "2026-07-06T01:51:16.592Z",
       "exitCode": 0,
       "signal": null,
       "summary": {
-        "tests": 35,
+        "tests": 46,
         "suites": 0,
-        "pass": 35,
+        "pass": 46,
         "fail": 0,
         "cancelled": 0,
         "skipped": 0,
         "todo": 0
       },
       "outputTail": [
-        "ok 34 - direct gitService.createDirectory can be required to fail closed without CodeSite context",
+        "ok 45 - direct gitService.createDirectory can be required to fail closed without CodeSite context",
         "  ---",
-        "  duration_ms: 197.476322",
+        "  duration_ms: 76.819583",
         "  ...",
         "# Subtest: nested CodeSite options can override authoritative hydration",
-        "ok 35 - nested CodeSite options can override authoritative hydration",
+        "ok 46 - nested CodeSite options can override authoritative hydration",
         "  ---",
-        "  duration_ms: 218.388022",
+        "  duration_ms: 76.296573",
         "  ...",
-        "1..35",
-        "# tests 35",
+        "1..46",
+        "# tests 46",
         "# suites 0",
-        "# pass 35",
+        "# pass 46",
         "# fail 0",
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 65112.140141"
+        "# duration_ms 17755.783403"
       ]
     },
     {
       "name": "codesiteFs",
       "command": "node --test backend/collab-server/__tests__/codesiteFs.test.js",
-      "startedAt": "2026-07-03T18:42:02.056Z",
+      "startedAt": "2026-07-06T01:51:37.786Z",
       "exitCode": 0,
       "signal": null,
       "summary": {
-        "tests": 45,
+        "tests": 48,
         "suites": 0,
-        "pass": 45,
+        "pass": 48,
         "fail": 0,
         "cancelled": 0,
         "skipped": 0,
         "todo": 0
       },
       "outputTail": [
-        "ok 44 - raw terminal quarantine replaces symlink escapes before command execution",
+        "ok 47 - raw terminal quarantine replaces symlink escapes before command execution",
         "  ---",
-        "  duration_ms: 379.922992",
+        "  duration_ms: 17.296875",
         "  ...",
         "# Subtest: can record managed runtime quarantine evidence without closing the overlay",
-        "ok 45 - can record managed runtime quarantine evidence without closing the overlay",
+        "ok 48 - can record managed runtime quarantine evidence without closing the overlay",
         "  ---",
-        "  duration_ms: 456.959581",
+        "  duration_ms: 30.714319",
         "  ...",
-        "1..45",
-        "# tests 45",
+        "1..48",
+        "# tests 48",
         "# suites 0",
-        "# pass 45",
+        "# pass 48",
         "# fail 0",
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 3437.925222"
+        "# duration_ms 720.346529"
       ]
     },
     {
       "name": "dockerCodeSiteFs",
       "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/codeSiteGitPolicy.js && node --check backend/collab-server/codesiteFs.js && node --test backend/collab-server/__tests__/codesiteGitPolicy.test.js backend/collab-server/__tests__/codesiteFs.test.js",
-      "startedAt": "2026-07-03T18:42:05.615Z",
+      "startedAt": "2026-07-06T01:51:38.608Z",
       "exitCode": 0,
       "signal": null,
       "summary": {
-        "tests": 52,
+        "tests": 55,
         "suites": 0,
-        "pass": 52,
+        "pass": 55,
         "fail": 0,
         "cancelled": 0,
         "skipped": 0,
         "todo": 0
       },
       "outputTail": [
-        "ok 51 - maps tags, stash refs, and remotes to ref/config attempts",
+        "ok 54 - maps tags, stash refs, and remotes to ref/config attempts",
         "  ---",
-        "  duration_ms: 0.158972",
+        "  duration_ms: 0.228941",
         "  ...",
         "# Subtest: leaves read-only and already path-gated file actions unmapped",
-        "ok 52 - leaves read-only and already path-gated file actions unmapped",
+        "ok 55 - leaves read-only and already path-gated file actions unmapped",
         "  ---",
-        "  duration_ms: 0.164572",
+        "  duration_ms: 0.20246",
         "  ...",
-        "1..52",
-        "# tests 52",
+        "1..55",
+        "# tests 55",
         "# suites 0",
-        "# pass 52",
+        "# pass 55",
         "# fail 0",
         "# cancelled 0",
         "# skipped 0",
         "# todo 0",
-        "# duration_ms 550.902045"
+        "# duration_ms 696.130317"
+      ]
+    },
+    {
+      "name": "proofSuiteGenerator:gitProvisioningBoundary",
+      "command": "node tmp/codesite-dojo-proof/run-git-provisioning-boundary-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "      }",
+        "    },",
+        "    {",
+        "      \"name\": \"codesiteFs\",",
+        "      \"exitCode\": 0,",
+        "      \"summary\": {",
+        "        \"tests\": 48,",
+        "        \"suites\": 0,",
+        "        \"pass\": 48,",
+        "        \"fail\": 0,",
+        "        \"cancelled\": 0,",
+        "        \"skipped\": 0,",
+        "        \"todo\": 0",
+        "      }",
+        "    },",
+        "    {",
+        "      \"name\": \"dockerCodeSiteFs\",",
+        "      \"exitCode\": 0,",
+        "      \"summary\": {",
+        "        \"tests\": 55,",
+        "        \"suites\": 0,",
+        "        \"pass\": 55,",
+        "        \"fail\": 0,",
+        "        \"cancelled\": 0,",
+        "        \"skipped\": 0,",
+        "        \"todo\": 0",
+        "      }",
+        "    }",
+        "  ]",
+        "}"
       ]
     }
-  ]
+  ],
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T01:51:41.563Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json"
+  }
 }

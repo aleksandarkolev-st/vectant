@@ -25,9 +25,9 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--
     <div>
       <span class="badge">PASS</span>
       <h1>CodeSite Unmanaged Host Boundary Proof</h1>
-      <p>Unmanaged Node and shell writes were attempted against the real tree mounted as read-only. The same process could write to the transaction overlay, proving a general sealed-base plus writable-overlay boundary without relying on polling restoration.</p>
+      <p>Unmanaged Node and shell writes were denied before real-tree mutation by the host prewrite guard, then attempted again against a read-only Docker base with a writable transaction overlay. This proves the mature sealed-base boundary without relying on polling restoration.</p>
     </div>
-    <span class="badge">read_only_real_tree_with_writable_transaction_overlay</span>
+    <span class="badge">host_prewrite_guard_plus_read_only_real_tree_with_writable_transaction_overlay</span>
   </section>
   <section class="grid">
     <div class="metric"><div class="label">Docker image</div><div class="value">node:20-bookworm</div></div>
@@ -36,6 +36,18 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--
     <div class="metric"><div class="label">Denied base writes</div><div class="value">4/4</div></div>
   </section>
   <section class="card"><h2>Assertions</h2><table><tbody>
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteGuardArmed</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteExistingWriteDenied</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteCreateDenied</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteRealTreeUnchanged</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteNoPostWriteQuarantineNeeded</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteGuardRestoredPermissions</td></tr>
+
     <tr><td><span class="ok">PASS</span></td><td>dockerProcessExecuted</td></tr>
 
     <tr><td><span class="ok">PASS</span></td><td>sourceMountedReadOnly</td></tr>
@@ -56,6 +68,48 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--
 
     <tr><td><span class="ok">PASS</span></td><td>overlayOnlyArtifactPresent</td></tr>
   </tbody></table></section>
+  <section class="card"><h2>Host Prewrite Guard</h2><table><thead><tr><th>Attempt</th><th>Disposition</th><th>Code</th><th>Evidence</th></tr></thead><tbody>
+    <tr>
+      <td>overwrite</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>EACCES</code></td>
+      <td><code>EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/src/app.js&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>create</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>EACCES</code></td>
+      <td><code>EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/src/rogue.js&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>postStopWrite</td>
+      <td><span class="ok">allowed</span></td>
+      <td><code></code></td>
+      <td><code></code></td>
+    </tr>
+  </tbody></table><pre>{
+  &quot;schemaVersion&quot;: &quot;synthi.codesite.hostPrewriteBoundary.v1&quot;,
+  &quot;mode&quot;: &quot;posix_readonly_tree&quot;,
+  &quot;active&quot;: true,
+  &quot;enforcedBeforeMutation&quot;: true,
+  &quot;verification&quot;: {
+    &quot;createDenied&quot;: true,
+    &quot;code&quot;: &quot;EACCES&quot;,
+    &quot;message&quot;: &quot;EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52&#39;&quot;
+  },
+  &quot;guardedPathCount&quot;: 3,
+  &quot;guardedPathsSample&quot;: [
+    &quot;src/app.js&quot;,
+    &quot;src&quot;,
+    &quot;.&quot;
+  ],
+  &quot;armedAt&quot;: &quot;2026-07-06T01:55:18.863Z&quot;,
+  &quot;restoredAt&quot;: null,
+  &quot;restoreErrors&quot;: [],
+  &quot;reason&quot;: &quot;unmanaged_host_boundary_prewrite_probe&quot;
+}</pre></section>
   <section class="card"><h2>Raw Process Attempts</h2><table><thead><tr><th>Attempt</th><th>Disposition</th><th>Code</th><th>Evidence</th></tr></thead><tbody>
     <tr>
       <td>node_write_existing_base</td>
@@ -137,11 +191,32 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--
   }
 }</pre></section>
   <section class="card"><h2>Product Runtime Contract</h2><pre>{
-  &quot;activeHostShellPolicy&quot;: &quot;block-host&quot;,
+  &quot;activeHostShellPolicy&quot;: &quot;deny unmanaged host writes with prewrite guard or block host shell&quot;,
   &quot;activeRuntimePolicy&quot;: &quot;mount read-only base plus writable overlay/quarantine&quot;,
-  &quot;readonlyRuntimeName&quot;: &quot;workspace-runtime-codesite-unmanaged-host-boundary-1783233&quot;,
-  &quot;activeOverlayRuntimeName&quot;: &quot;workspace-runtime-codesite-unmanaged-host-bounda-codesite-c93a169fa7&quot;,
-  &quot;overlayVolumeSubpath&quot;: &quot;codesite-unmanaged-host-boundary-1783233830305/overlay&quot;
+  &quot;prewriteBoundary&quot;: {
+    &quot;schemaVersion&quot;: &quot;synthi.codesite.hostPrewriteBoundary.v1&quot;,
+    &quot;mode&quot;: &quot;posix_readonly_tree&quot;,
+    &quot;active&quot;: true,
+    &quot;enforcedBeforeMutation&quot;: true,
+    &quot;verification&quot;: {
+      &quot;createDenied&quot;: true,
+      &quot;code&quot;: &quot;EACCES&quot;,
+      &quot;message&quot;: &quot;EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52&#39;&quot;
+    },
+    &quot;guardedPathCount&quot;: 3,
+    &quot;guardedPathsSample&quot;: [
+      &quot;src/app.js&quot;,
+      &quot;src&quot;,
+      &quot;.&quot;
+    ],
+    &quot;armedAt&quot;: &quot;2026-07-06T01:55:18.863Z&quot;,
+    &quot;restoredAt&quot;: null,
+    &quot;restoreErrors&quot;: [],
+    &quot;reason&quot;: &quot;unmanaged_host_boundary_prewrite_probe&quot;
+  },
+  &quot;readonlyRuntimeName&quot;: &quot;workspace-runtime-codesite-unmanaged-host-boundary-1783302&quot;,
+  &quot;activeOverlayRuntimeName&quot;: &quot;workspace-runtime-codesite-unmanaged-host-bounda-codesite-4690cf37c1&quot;,
+  &quot;overlayVolumeSubpath&quot;: &quot;codesite-unmanaged-host-boundary-1783302918687/overlay&quot;
 }</pre></section>
 </main>
 </body>

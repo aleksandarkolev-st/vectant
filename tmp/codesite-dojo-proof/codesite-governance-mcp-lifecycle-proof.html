@@ -36,7 +36,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
   <span class="stamp">validated</span>
 </section>
 <section class="grid">
-  <div class="metric"><div class="label">Git head</div><div class="value">41c0f2af9ffa1b6f6896a3199abd5ff9a522325b</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
   <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
   <div class="metric"><div class="label">Assertions</div><div class="value">8/8</div></div>
   <div class="metric"><div class="label">Commands</div><div class="value">3/3</div></div>
@@ -45,15 +45,15 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js</code></td>
-      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:100,&quot;skipped&quot;:0,&quot;tests&quot;:100,&quot;fail&quot;:0}</code></td>
+      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:105,&quot;skipped&quot;:0,&quot;tests&quot;:105,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/mcp/synthi-mcp node:22-bookworm bash -lc if [ ! -d node_modules/vitest ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run tests/unit/codesite_tools.test.ts</code></td>
       <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:18,&quot;skipped&quot;:0,&quot;tests&quot;:18,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node tmp/codesite-dojo-proof/run-governance-mcp-lifecycle-proof.mjs</code></td>
@@ -66,43 +66,43 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
       <td>restricted airspace clearance requires approved governance evidence</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>governance workflows are covered by control-plane tests</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>MCP registry exposes the actual CodeSite tool names</td>
       <td><code>{&quot;mcpToolCount&quot;:63}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>agent manifest tool list matches MCP registry</td>
       <td><code>{&quot;missingManifestTools&quot;:[],&quot;extraManifestTools&quot;:[]}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>full workflow Codex contracts reference only real MCP tools</td>
       <td><code>{&quot;invalidWorkflowToolNames&quot;:[]}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>release gate validates Codex workflow action tool names</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerGovernanceControlPlane command exited successfully</td>
-      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:100,&quot;skipped&quot;:0,&quot;tests&quot;:100,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; npm exec vitest -- run src/lib/codesite/__tests__/controlPlane.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:105,&quot;skipped&quot;:0,&quot;tests&quot;:105,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerMcpLifecycle command exited successfully</td>

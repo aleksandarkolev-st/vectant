@@ -1,68 +1,132 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8" /><title>CodeSite Proof-Carrying Commit</title><style>:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080a0f;color:#f5f7fb;color-scheme:dark}body{margin:0;padding:32px;background:#080a0f}main{max-width:1160px;margin:0 auto}.hero,.panel{border:1px solid #2b354f;background:#121724;border-radius:8px;padding:22px;margin-bottom:14px}.badge{display:inline-flex;background:#0f6b3b;color:#fff;font-size:12px;font-weight:800;border-radius:4px;padding:5px 10px;letter-spacing:.04em}h1{font-size:30px;line-height:1.15;margin:12px 0 8px;letter-spacing:0}h2{font-size:17px;margin:0 0 12px;letter-spacing:0}p{margin:0;color:#b8c3de;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #242d43;padding:10px 0}.row:last-child{border-bottom:0}.good{color:#83ffaf}.bad{color:#ff9999}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#070a12;border:1px solid #242d43;border-radius:6px;padding:14px;font-size:12px;line-height:1.45;color:#d9e0f2;margin:10px 0 0}@media(max-width:800px){body{padding:14px}.grid{grid-template-columns:1fr}h1{font-size:24px}}</style></head><body><main><section class="hero"><span class="badge">PASS</span><h1>CodeSite Proof-Carrying Commit</h1><p>Real gitService workflow proving managed commits complete transaction proof, append portable trailers, record git_refs through CodeSiteFS, keep plain commits plain, and preserve HEAD on proof rejection.</p></section><section class="grid"><div class="panel"><h2>Assertions</h2><div class="row"><span>proofCommitCreated</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasClearanceTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasTransactionTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasLeaseTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasReadSetTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasWriteSetTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasBlackBoxTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasProofDigestTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasProofAuthorityTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>hasProofSignatureTrailer</span><strong class="good">PASS</strong></div>
-<div class="row"><span>gitRefsBoundaryRecorded</span><strong class="good">PASS</strong></div>
-<div class="row"><span>plainCommitHasNoCodeSiteTrailers</span><strong class="good">PASS</strong></div>
-<div class="row"><span>proofRejectionPreservesHead</span><strong class="good">PASS</strong></div></div><div class="panel"><h2>Proof Commit Message</h2><pre>Land visual proof transaction
-
-CodeSite-Project: visual-proof-project
-CodeSite-Flight: ATLAS-VISUAL
-CodeSite-Clearance: lease-proof-visual
-CodeSite-Transaction: txn-proof-visual
-CodeSite-Lease: lease-proof-visual
-CodeSite-Read-Set: sha256:read-visual
-CodeSite-Write-Set: sha256:write-visual
-CodeSite-Invariants: unit:pass,docker:pass,visual:pass
-CodeSite-Black-Box: sha256:blackbox-visual
-CodeSite-Proof-Digest: sha256:portable-visual
-CodeSite-Proof-Authority: codesite-visual-authority
-CodeSite-Proof-Signature: hmac-sha256:visual-signature</pre></div></section><section class="panel"><h2>Boundary Event</h2><pre>{
-  &quot;path&quot;: &quot;**&quot;,
-  &quot;tool&quot;: &quot;git_refs&quot;,
-  &quot;evidenceRefs&quot;: [
-    &quot;visual-proof:commit&quot;,
-    &quot;proof:visual-generator&quot;
-  ],
-  &quot;processAncestry&quot;: [
-    &quot;visual-proof-generator&quot;
-  ],
-  &quot;lineProvenance&quot;: [],
-  &quot;codesiteFsEvent&quot;: {
-    &quot;type&quot;: &quot;write_allowed&quot;,
-    &quot;transaction_id&quot;: &quot;txn-proof-visual&quot;,
-    &quot;mutation_lease_id&quot;: &quot;lease-proof-visual&quot;,
-    &quot;display_callsign&quot;: null,
-    &quot;workspace_slug&quot;: &quot;visual-proof-1783090217925&quot;,
-    &quot;actor_user_id&quot;: null,
-    &quot;effective_user_id&quot;: null,
-    &quot;path&quot;: &quot;**&quot;,
-    &quot;tool&quot;: &quot;git_refs&quot;,
-    &quot;wall_time&quot;: &quot;2026-07-03T14:50:18.733Z&quot;,
-    &quot;evidence_refs&quot;: [
-      &quot;visual-proof:commit&quot;,
-      &quot;proof:visual-generator&quot;
-    ],
-    &quot;details&quot;: {
-      &quot;reason&quot;: &quot;inside_clearance_route&quot;,
-      &quot;reason_codes&quot;: [
-        &quot;inside_clearance_route&quot;
-      ],
-      &quot;process_ancestry&quot;: [
-        &quot;visual-proof-generator&quot;
-      ],
-      &quot;operation&quot;: &quot;commit&quot;
-    }
-  }
-}</pre></section><section class="panel"><h2>Rejected Commit</h2><pre>{
-  &quot;errorCode&quot;: &quot;CODESITE_COMMIT_BLOCKED&quot;,
-  &quot;beforeHead&quot;: &quot;8384129ac1029e6610b3ad17f18adc0dcb89f76b&quot;,
-  &quot;afterHead&quot;: &quot;8384129ac1029e6610b3ad17f18adc0dcb89f76b&quot;,
-  &quot;recordWriteCalls&quot;: 0
-}</pre></section></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CodeSite Mature Proof: proofCarryingCommit</title>
+<style>
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#080b10;color:#f5f7fb}
+body{margin:0;background:#080b10;padding:30px}
+main{max-width:1180px;margin:0 auto;display:grid;gap:16px}
+.hero,.card{border:1px solid #2c3443;background:#111722;border-radius:8px;padding:18px}
+.hero{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
+h1{margin:8px 0 8px;font-size:30px;line-height:1.12;letter-spacing:0}
+h2{margin:0 0 10px;font-size:16px;letter-spacing:0}
+p{margin:0;color:#aeb8c9;line-height:1.55;max-width:92ch}
+.stamp{border-radius:6px;padding:7px 11px;font-size:12px;font-weight:800;background:#133d2a;color:#9df1bd}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.metric{border:1px solid #2c3443;background:#0b1018;border-radius:8px;padding:12px;min-width:0}
+.label{font-size:12px;color:#8f9caf}.value{margin-top:6px;font-size:16px;font-weight:750;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+th,td{border-top:1px solid #2c3443;padding:8px;text-align:left;vertical-align:top}
+th{font-size:12px;color:#aeb8c9}
+code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere;color:#dce5f5}
+.ok{color:#9df1bd;font-weight:800}.bad{color:#ffc1c1;font-weight:800}
+@media(max-width:820px){body{padding:14px}.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}h1{font-size:25px}}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+  <div>
+    <span class="stamp">VALIDATED</span>
+    <h1>CodeSite Mature Proof: proofCarryingCommit</h1>
+    <p>Generated from the current proof-suite runner. This visual summary binds assertions, executable commands, and git provenance for release-gate verification.</p>
+  </div>
+  <span class="stamp">validated</span>
+</section>
+<section class="grid">
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
+  <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
+  <div class="metric"><div class="label">Assertions</div><div class="value">13/13</div></div>
+  <div class="metric"><div class="label">Commands</div><div class="value">1/1</div></div>
+</section>
+<section class="card"><h2>Executable Commands</h2><table><thead><tr><th>Status</th><th>Command</th><th>Summary</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td><code>node synthi/scripts/codesite-proof-verify.mjs --help</code></td>
+      <td><code>{&quot;tests&quot;:1,&quot;pass&quot;:1,&quot;fail&quot;:0,&quot;runner&quot;:&quot;command&quot;}</code></td>
+    </tr>
+  </tbody></table></section>
+<section class="card"><h2>Assertions</h2><table><thead><tr><th>Status</th><th>Name</th><th>Details</th></tr></thead><tbody>
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>proofCommitCreated</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasClearanceTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasTransactionTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasLeaseTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasReadSetTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasWriteSetTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasBlackBoxTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasProofDigestTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasProofAuthorityTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>hasProofSignatureTrailer</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>gitRefsBoundaryRecorded</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>plainCommitHasNoCodeSiteTrailers</td>
+      <td><code>{}</code></td>
+    </tr>
+  
+    <tr>
+      <td><span class="ok">PASS</span></td>
+      <td>proofRejectionPreservesHead</td>
+      <td><code>{}</code></td>
+    </tr>
+  </tbody></table></section>
+</main>
+</body>
+</html>

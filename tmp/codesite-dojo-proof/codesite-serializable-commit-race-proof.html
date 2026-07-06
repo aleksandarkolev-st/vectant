@@ -36,7 +36,7 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
   <span class="stamp">validated</span>
 </section>
 <section class="grid">
-  <div class="metric"><div class="label">Git head</div><div class="value">41c0f2af9ffa1b6f6896a3199abd5ff9a522325b</div></div>
+  <div class="metric"><div class="label">Git head</div><div class="value">96e35fee3eea974e4ce6a5076f33518cdb82a2f5</div></div>
   <div class="metric"><div class="label">Branch</div><div class="value">codex/codesite-atc-full-from-dev-20260630</div></div>
   <div class="metric"><div class="label">Assertions</div><div class="value">14/14</div></div>
   <div class="metric"><div class="label">Commands</div><div class="value">3/3</div></div>
@@ -45,15 +45,15 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js</code></td>
-      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0}</code></td>
+      <td><code>{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:136,&quot;skipped&quot;:0,&quot;tests&quot;:136,&quot;fail&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node --test backend/collab-server/__tests__/codesiteActivityRegistry.test.js</code></td>
       <td><code>{&quot;tests&quot;:11,&quot;suites&quot;:0,&quot;pass&quot;:11,&quot;fail&quot;:0,&quot;cancelled&quot;:0,&quot;skipped&quot;:0,&quot;todo&quot;:0,&quot;runner&quot;:&quot;node:test&quot;}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td><code>node tmp/codesite-dojo-proof/run-serializable-commit-race-proof.mjs</code></td>
@@ -66,79 +66,79 @@ code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wra
       <td>commit path enters a project-scoped serializable landing gate</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>landing gate requests serializable Prisma transaction isolation</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>landing gate locks the CodeSite project row before final revalidation</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>final stale-read validation runs through the same database client</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>proof creation is fenced by a committable-status updateMany guard</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>transaction_committed event is written inside the landing gate client</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>commit event stale-read surface includes observed write paths</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>committing status remains workspace-active in Next and collab registries</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>control-plane test covers concurrent overlapping commit race</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>race test asserts one commit, one stale loser, and one proof bundle</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>registry test proves committing remains an active workspace state</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>release gate requires this mature serializable race proof</td>
       <td><code>{}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>dockerAffectedSuite command exited successfully</td>
-      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:131,&quot;skipped&quot;:0,&quot;tests&quot;:131,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
+      <td><code>{&quot;command&quot;:&quot;docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/controlPlane.test.js /repo/synthi/src/app/api/workspace/[slug]/codesite/__tests__/codesiteRoute.test.js&quot;,&quot;summary&quot;:{&quot;runner&quot;:&quot;vitest&quot;,&quot;pass&quot;:136,&quot;skipped&quot;:0,&quot;tests&quot;:136,&quot;fail&quot;:0},&quot;exitCode&quot;:0}</code></td>
     </tr>
-
+  
     <tr>
       <td><span class="ok">PASS</span></td>
       <td>registryTests command exited successfully</td>
