@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 
 use crate::audit::{AuditClass, AuditExport, AuditLog};
+use crate::approval::{denied_approval_response, ApprovalQueue};
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
@@ -28,6 +29,7 @@ pub struct AppState {
     pub workspace: Arc<WorkspacePolicy>,
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
     pub audit: Arc<Mutex<AuditLog>>,
+    pub approvals: Arc<Mutex<ApprovalQueue>>,
 }
 
 impl AppState {
@@ -40,6 +42,7 @@ impl AppState {
                 DEFAULT_RATE_LIMIT_WINDOW,
             ))),
             audit: Arc::new(Mutex::new(AuditLog::new(SecretScanner::default()))),
+            approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
         }
     }
 }
@@ -87,6 +90,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
         .route("/v1/session/disconnect/:request_id", post(disconnect_session))
+        .route("/v1/approval/approve/:approval_id/:request_id", post(approve_request))
+        .route("/v1/approval/deny/:approval_id/:request_id", post(deny_request))
         .route("/v1/history/export/:request_id", get(export_history))
         .route("/v1/history/delete/:request_id", post(delete_history))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
@@ -164,7 +169,11 @@ async fn review_file(
             .validate(token, &request.request_id)
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
-    let response = state.workspace.read_file_for_review(&request);
+    let local_review = state.workspace.read_file_for_review(&request);
+    let response = {
+        let mut approvals = state.approvals.lock().await;
+        approvals.queue_file_review(request.clone(), local_review)
+    };
     let mut audit = state.audit.lock().await;
     let class = if response.decision == "denied" {
         AuditClass::Denied
@@ -187,6 +196,63 @@ async fn review_file(
         true,
     );
     Ok(Json(response))
+}
+
+async fn approve_request(
+    State(state): State<AppState>,
+    Path((approval_id, request_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<FileReadResponse>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    }
+
+    let approved = {
+        let mut approvals = state.approvals.lock().await;
+        approvals.approve(&approval_id)
+    };
+    let Some((response, receipt)) = approved else {
+        return Ok(Json(denied_approval_response(&request_id, &approval_id)));
+    };
+    state.audit.lock().await.record_consent(receipt);
+    Ok(Json(response))
+}
+
+async fn deny_request(
+    State(state): State<AppState>,
+    Path((approval_id, request_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<FileReadResponse>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    }
+    let denied_pending = {
+        let mut approvals = state.approvals.lock().await;
+        approvals.deny(&approval_id)
+    };
+    state.audit.lock().await.append(
+        AuditClass::Control,
+        Some(request_id.clone()),
+        format!("Approval {approval_id} denied locally. Nothing was sent."),
+        true,
+    );
+    if denied_pending {
+        Ok(Json(denied_approval_response(&request_id, &approval_id)))
+    } else {
+        Err(denied(StatusCode::NOT_FOUND, "approval_not_pending"))
+    }
 }
 
 async fn pause_session(
@@ -250,7 +316,10 @@ async fn control_session(
         .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     match action {
         SessionAction::Resume => session.resume(),
-        SessionAction::Disconnect => session.disconnect(),
+        SessionAction::Disconnect => {
+            session.disconnect();
+            state.approvals.lock().await.revoke_all();
+        }
     }
     let session_state = session.state();
     drop(session);
@@ -301,6 +370,7 @@ async fn delete_history(
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
     let mut audit = state.audit.lock().await;
+    state.approvals.lock().await.revoke_all();
     audit.clear();
     audit.append(
         AuditClass::Control,

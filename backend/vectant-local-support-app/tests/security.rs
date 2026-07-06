@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, ConsentReceipt};
+use vectant_local_support_app::approval::{ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::http::{
     validate_file_request_authorization, LocalAuthorizationError, LocalRequestAuthorization,
     RateLimiter, MAX_JSON_BODY_BYTES,
@@ -160,6 +161,65 @@ fn redacts_secrets_before_review_payload() {
     assert!(content.contains("[REDACTED:authorization_header]"));
     assert!(content.contains("[REDACTED:database_url]"));
     assert!(!content.contains("postgres://user:pass"));
+}
+
+#[test]
+fn approval_queue_keeps_review_content_local_until_approval() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("server.log"), "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut req = request("server.log");
+    req.capability = "workspace.log.read".to_string();
+    req.session_id = "sess_queue".to_string();
+    let local_review = policy.read_file_for_review(&req);
+    assert!(local_review.content.is_some());
+
+    let mut queue = ApprovalQueue::new();
+    let public = queue.queue_file_review(req.clone(), local_review);
+    let approval_id = public.approval_id.clone().unwrap();
+
+    assert_eq!(public.decision, "approval_queued");
+    assert_eq!(public.bytes_sent, 0);
+    assert!(public.content.is_none());
+    assert_eq!(queue.pending_len(), 1);
+    assert_eq!(queue.get(&approval_id).unwrap().status, ApprovalStatus::Pending);
+
+    let (approved, receipt) = queue.approve(&approval_id).unwrap();
+    assert_eq!(approved.approval_id.as_deref(), Some(approval_id.as_str()));
+    assert!(approved.content.unwrap().contains("[REDACTED:authorization_header]"));
+    assert_eq!(receipt.approval_id, approval_id);
+    assert_eq!(receipt.request_id, req.request_id);
+    assert_eq!(receipt.session_id, "sess_queue");
+    assert_eq!(receipt.capability, "workspace.log.read");
+    assert_eq!(receipt.scope, "once");
+}
+
+#[test]
+fn approval_queue_deny_and_revoke_invalidate_queued_content() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+
+    let req = request("app.rs");
+    let public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let approval_id = public.approval_id.clone().unwrap();
+
+    assert!(queue.deny(&approval_id));
+    let denied = queue.get(&approval_id).unwrap();
+    assert_eq!(denied.status, ApprovalStatus::Denied);
+    assert!(denied.local_review.content.is_none());
+    assert!(queue.approve(&approval_id).is_none());
+
+    let mut second_req = request("app.rs");
+    second_req.request_id = "req_second".to_string();
+    let second_public = queue.queue_file_review(second_req.clone(), policy.read_file_for_review(&second_req));
+    let second_approval_id = second_public.approval_id.clone().unwrap();
+    queue.revoke_all();
+    let revoked = queue.get(&second_approval_id).unwrap();
+    assert_eq!(revoked.status, ApprovalStatus::Revoked);
+    assert!(revoked.local_review.content.is_none());
+    assert_eq!(queue.pending_len(), 0);
 }
 
 #[test]

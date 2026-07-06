@@ -27,6 +27,7 @@ pub struct FileReadRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReadResponse {
     pub request_id: String,
+    pub approval_id: Option<String>,
     pub decision: String,
     pub path_display: String,
     pub classification: Classification,
@@ -110,6 +111,7 @@ impl WorkspacePolicy {
                     Err(_) => {
                         return FileReadResponse {
                             request_id: request.request_id.clone(),
+                            approval_id: None,
                             decision: "denied".to_string(),
                             path_display: request.path.clone(),
                             classification: Classification::L5,
@@ -130,6 +132,7 @@ impl WorkspacePolicy {
                     let redacted = self.scanner.redact(&content, &scan);
                     return FileReadResponse {
                         request_id: request.request_id.clone(),
+                        approval_id: None,
                         decision: "redact_then_approval".to_string(),
                         path_display: request.path.clone(),
                         classification: scan.classification,
@@ -145,6 +148,7 @@ impl WorkspacePolicy {
 
                 FileReadResponse {
                     request_id: request.request_id.clone(),
+                    approval_id: None,
                     decision: "approval_required".to_string(),
                     path_display: request.path.clone(),
                     classification: scan.classification,
@@ -159,6 +163,7 @@ impl WorkspacePolicy {
             }
             Err(error) => FileReadResponse {
                 request_id: request.request_id.clone(),
+                approval_id: None,
                 decision: "denied".to_string(),
                 path_display: request.path.clone(),
                 classification: Classification::L5,
@@ -207,6 +212,7 @@ fn denied_response(request: &FileReadRequest, decision: PolicyDecision) -> FileR
     let reason = decision.reason;
     FileReadResponse {
         request_id: request.request_id.clone(),
+        approval_id: None,
         decision: "denied".to_string(),
         path_display: request.path.clone(),
         classification,
