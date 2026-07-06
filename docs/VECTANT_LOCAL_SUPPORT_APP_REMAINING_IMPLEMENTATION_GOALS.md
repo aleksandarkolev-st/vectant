@@ -145,13 +145,13 @@ Status baseline: current implementation is approximately 44% complete. Treat the
 
 **Blockers/dependencies:** Admin policy store, observability stack, legal/product retention decisions, cloud audit schema.
 
-## Post-MVP / Future Work
+## Pre-Beta / Public Release Blockers
 
 ### Goal 8: Signed Release, Incident Response, and Beta Red-Team Gate
 
-**Objective:** Establish the release and incident-response path required before public beta, then keep future expansion behind separate security reviews.
+**Objective:** Establish the signed release, incident-response, and red-team path required before any public beta.
 
-**Scope:** Code-signed installer, signed artifacts, auto-update verification, downgrade prevention, emergency revocation, signing-key rotation playbook, SBOM, dependency scanning, secret scanning, protected branches, two-person review for signing changes, incident playbooks, and full integration/red-team gates. Agent page read/interact, Fast Support, persistent approvals, write actions, shell commands, and editor integrations remain out of MVP.
+**Scope:** Code-signed installer, signed artifacts, auto-update verification, downgrade prevention, emergency revocation, signing-key rotation playbook, SBOM, dependency scanning, secret scanning, protected branches, two-person review for signing changes, incident playbooks, and full integration/red-team gates.
 
 **Acceptance criteria:**
 
@@ -159,7 +159,7 @@ Status baseline: current implementation is approximately 44% complete. Treat the
 - Signed installer/update path rejects unsigned, tampered, revoked, and downgraded builds.
 - Emergency disable and signing-key rotation playbooks have been exercised.
 - Required red-team scenarios pass: malicious website localhost call, compromised session, symlink farm, malicious dev server, SSRF, secret-heavy logs, downgrade attempt, endpoint fuzzing, WebSocket abuse, confused-deputy approval flow.
-- Any future agent-read/write/automation feature has a separate threat model, UI consent model, enterprise policy gate, and red-team review.
+- Release evidence is based on live implementation and CI/E2E proof, not acceptance tables or static UI mappings.
 
 **Key files/areas:** `.github/workflows/local-support-security.yml`, release/signing workflows, updater module, incident response docs, red-team test harness.
 
@@ -167,3 +167,12 @@ Status baseline: current implementation is approximately 44% complete. Treat the
 
 **Blockers/dependencies:** Signing certificate/key management, release infrastructure, security owner sign-off, red-team capacity.
 
+## Post-MVP / Future Work
+
+Keep these outside the MVP and out of public beta unless they receive a separate product/security design, enterprise policy gate, consent model, implementation plan, and red-team review:
+
+- Vectant AI or support agent page read access for localhost preview.
+- Agent browser interaction, clicking, form submission, screenshots, or console/network body capture.
+- Fast Support auto-send mode, broad repository upload, or persistent approvals.
+- File writes, file edits, shell commands, package installation, git mutation, database mutation, or terminal control.
+- VS Code/editor extension integration, remote desktop, screen recording, clipboard monitoring, accessibility APIs, or browser profile access.
