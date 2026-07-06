@@ -32,6 +32,9 @@ const BUILD_METADATA_CONTENT_SCHEMA = 'synthi.gpu_hmr.cold_build_metadata_conten
 const BUILD_METADATA_CONTENT_AUTHORITY = 'build_metadata_content_bytes_only_not_gpu_hmr_success';
 const BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
   'build_metadata_semantic_tokens_only_not_runtime_authority';
+const COLD_BUILD_EXECUTION_PLAN_SCHEMA = 'synthi.gpu_hmr.cold_build_execution_plan.v1';
+const COLD_BUILD_EXECUTION_PLAN_AUTHORITY =
+  'cold_build_execution_plan_only_not_gpu_hmr_success';
 const RUNTIME_BOUNDARY_EXPECTATION_SCHEMA = 'synthi.gpu_hmr.cold_runtime_boundary_expectation.v1';
 const RUNTIME_BOUNDARY_EXPECTATION_AUTHORITY = 'runtime_boundary_expectation_only_not_gpu_hmr_success';
 const RUNTIME_BOUNDARY_EVENT_SCHEMA = 'synthi.gpu_hmr.runtime_boundary_event.v1';
@@ -2703,6 +2706,205 @@ function discoverBuildMetadata({ candidate, files, classification, contentEviden
   };
 }
 
+function genericBuildExecutionStepsForFamilies(buildSystems = []) {
+  const families = uniqueSortedStrings(buildSystems);
+  const genericSteps = [
+    {
+      step: 'configure_or_prepare_build_graph',
+      requiredEvidence: ['build_command_invocation', 'build_environment_snapshot'],
+      required_evidence: ['build_command_invocation', 'build_environment_snapshot'],
+    },
+    {
+      step: 'capture_compiler_invocations',
+      requiredEvidence: ['compile_database_or_compiler_trace'],
+      required_evidence: ['compile_database_or_compiler_trace'],
+    },
+    {
+      step: 'build_smallest_device_artifact_candidate',
+      requiredEvidence: ['device_artifact_hash_after_build', 'dependency_closure_hash'],
+      required_evidence: ['device_artifact_hash_after_build', 'dependency_closure_hash'],
+    },
+  ];
+  const familySteps = families.map((family) => ({
+    step: `${family}_build_system_probe`,
+    buildSystem: family,
+    build_system: family,
+    requiredEvidence: ['build_system_command_observed', 'exit_status_observed'],
+    required_evidence: ['build_system_command_observed', 'exit_status_observed'],
+  }));
+  return [...genericSteps, ...familySteps];
+}
+
+function compileDatabaseCandidatePathsForFamilies(buildSystems = [], buildFiles = []) {
+  const paths = new Set();
+  for (const file of buildFiles) {
+    const filePath = firstString(file.path, file.relativePath, file.relative_path);
+    if (!filePath) continue;
+    if (/compile_commands\.json$/i.test(filePath)) paths.add(filePath);
+  }
+  const families = new Set(uniqueSortedStrings(buildSystems));
+  if (families.has('cmake')) {
+    paths.add('compile_commands.json');
+    paths.add('build/compile_commands.json');
+    paths.add('out/compile_commands.json');
+  }
+  if (families.has('meson')) {
+    paths.add('builddir/compile_commands.json');
+    paths.add('build/compile_commands.json');
+  }
+  if (families.has('make') || families.has('autotools') || families.has('xmake')) {
+    paths.add('compile_commands.json');
+  }
+  return [...paths].sort();
+}
+
+function deriveColdBuildExecutionPlan({
+  candidate,
+  sourceListingHash,
+  buildMetadataDiscovery,
+  buildMetadataContentEvidence,
+  runtimeBoundaryExpectation,
+}) {
+  const buildSystems = uniqueSortedStrings([
+    ...firstArrayField(buildMetadataDiscovery, 'detectedBuildSystems', 'detected_build_systems'),
+  ]);
+  const buildFiles = firstArrayField(
+    buildMetadataContentEvidence,
+    'buildFiles',
+    'build_files',
+  ).map((file) => ({
+    path: firstString(file.path, file.relativePath, file.relative_path),
+    contentHash: firstString(file.contentHash, file.content_hash),
+    content_hash: firstString(file.contentHash, file.content_hash),
+    family: firstString(file.family),
+  })).filter((file) => file.path);
+  const buildMetadataContentHash = firstString(
+    buildMetadataContentEvidence.contentEvidenceHash,
+    buildMetadataContentEvidence.content_evidence_hash,
+  );
+  const buildMetadataDiscoveryHash = firstString(
+    buildMetadataDiscovery.discoveryHash,
+    buildMetadataDiscovery.discovery_hash,
+  );
+  const runtimeBoundaryExpectationHash = firstString(
+    runtimeBoundaryExpectation.expectationHash,
+    runtimeBoundaryExpectation.expectation_hash,
+  );
+  const backendCandidates = uniqueSortedStrings([
+    ...firstArrayField(runtimeBoundaryExpectation, 'backendCandidates', 'backend_candidates'),
+    ...firstArrayField(buildMetadataDiscovery, 'backendCandidates', 'backend_candidates'),
+  ]);
+  const rootBuildFiles = uniqueSortedStrings([
+    ...firstArrayField(buildMetadataDiscovery, 'rootBuildFiles', 'root_build_files'),
+    ...buildFiles
+      .map((file) => file.path)
+      .filter((filePath) => filePath && !filePath.includes('/')),
+  ]);
+  const requiredBuildEvidence = [
+    'build_command_invocation',
+    'build_exit_status',
+    'compile_database_or_compiler_trace',
+    'device_artifact_hash_after_build',
+    'dependency_closure_hash',
+  ];
+  const requiredRuntimeBridgeOutputs = [
+    'runtime_profile_contract',
+    'runtime_boundary_event_manifest',
+    'artifact_transport_event',
+    'epoch_publication_event',
+    'dispatch_trace_event',
+    'host_identity_event',
+    'output_oracle_artifact',
+  ];
+  const failedGates = uniqueSortedStrings([
+    claimsGpuHmrAuthority(candidate)
+      ? 'cold_build_execution_plan_candidate_claimed_gpu_hmr_authority'
+      : null,
+    sourceListingHash ? null : 'cold_build_execution_plan_source_listing_hash_missing',
+    buildMetadataContentHash ? null : 'cold_build_execution_plan_build_metadata_hash_missing',
+    buildMetadataDiscoveryHash ? null : 'cold_build_execution_plan_discovery_hash_missing',
+    runtimeBoundaryExpectationHash ? null : 'cold_build_execution_plan_runtime_expectation_hash_missing',
+    buildSystems.length > 0 ? null : 'cold_build_execution_plan_build_systems_missing',
+    buildFiles.length > 0 ? null : 'cold_build_execution_plan_build_files_missing',
+  ]);
+  const blockingGaps = [
+    backendCandidates.length > 0 ? null : 'cold_build_execution_plan_backend_candidates_missing',
+    'build_command_execution_not_observed',
+    'compile_database_not_verified',
+    'compiler_invocation_trace_missing',
+    'device_artifact_build_not_observed',
+    'cold_runtime_profile_contract_not_executed',
+  ].filter(Boolean);
+  const plan = {
+    schemaVersion: COLD_BUILD_EXECUTION_PLAN_SCHEMA,
+    schema_version: COLD_BUILD_EXECUTION_PLAN_SCHEMA,
+    proofAuthority: COLD_BUILD_EXECUTION_PLAN_AUTHORITY,
+    proof_authority: COLD_BUILD_EXECUTION_PLAN_AUTHORITY,
+    accepted: false,
+    acceptedAsSupportEvidence: failedGates.length === 0,
+    accepted_as_support_evidence: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    observedBuildExecution: false,
+    observed_build_execution: false,
+    observedCompileDatabase: false,
+    observed_compile_database: false,
+    observedDeviceArtifactBuild: false,
+    observed_device_artifact_build: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    candidateId: candidate?.id ?? null,
+    candidate_id: candidate?.id ?? null,
+    sourceUrl: candidate?.sourceUrl ?? null,
+    source_url: candidate?.sourceUrl ?? null,
+    immutableCommit: candidate?.immutableCommit ?? null,
+    immutable_commit: candidate?.immutableCommit ?? null,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    buildMetadataDiscoveryHash,
+    build_metadata_discovery_hash: buildMetadataDiscoveryHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    buildSystems,
+    build_systems: buildSystems,
+    rootBuildFiles,
+    root_build_files: rootBuildFiles,
+    buildFiles,
+    build_files: buildFiles,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    compileDatabaseCandidatePaths: compileDatabaseCandidatePathsForFamilies(buildSystems, buildFiles),
+    compile_database_candidate_paths: compileDatabaseCandidatePathsForFamilies(buildSystems, buildFiles),
+    executionSteps: genericBuildExecutionStepsForFamilies(buildSystems),
+    execution_steps: genericBuildExecutionStepsForFamilies(buildSystems),
+    requiredBuildEvidence,
+    required_build_evidence: requiredBuildEvidence,
+    requiredRuntimeBridgeOutputs,
+    required_runtime_bridge_outputs: requiredRuntimeBridgeOutputs,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+  };
+  return {
+    ...plan,
+    planHash: contentHash(stableJson(plan)),
+    plan_hash: contentHash(stableJson(plan)),
+  };
+}
+
 function runtimeRequirementsForBackend(backend) {
   const commonStages = [
     'runtime_profile_contract',
@@ -4407,6 +4609,13 @@ async function buildAcceptedSourceIntakeFacet({
     classification,
     buildMetadataDiscovery,
   });
+  const coldBuildExecutionPlan = deriveColdBuildExecutionPlan({
+    candidate,
+    sourceListingHash,
+    buildMetadataDiscovery,
+    buildMetadataContentEvidence,
+    runtimeBoundaryExpectation,
+  });
   const runtimeSupportClosureObligation = deriveRuntimeSupportClosureObligation({
     candidate,
     runtimeBoundaryExpectation,
@@ -4469,6 +4678,12 @@ async function buildAcceptedSourceIntakeFacet({
     build_metadata_content_evidence: buildMetadataContentEvidence,
     buildMetadataContentAccepted: buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true,
     build_metadata_content_accepted: buildMetadataContentEvidence.acceptedAsBuildMetadataContent === true,
+    coldBuildExecutionPlan,
+    cold_build_execution_plan: coldBuildExecutionPlan,
+    coldBuildExecutionPlanAccepted:
+      coldBuildExecutionPlan.acceptedAsSupportEvidence === true,
+    cold_build_execution_plan_accepted:
+      coldBuildExecutionPlan.acceptedAsSupportEvidence === true,
     runtimeBoundaryExpectation,
     runtime_boundary_expectation: runtimeBoundaryExpectation,
     runtimeBoundaryExpectationAccepted:
@@ -5492,6 +5707,9 @@ async function runSelectedCandidate(
     const sourceTreeIntakeAccepted = sourceIntakeEvidence?.acceptedAsIntakeEvidence === true;
     const buildMetadataDiscoveryAccepted = sourceIntakeEvidence?.buildMetadataDiscoveryAccepted === true;
     const buildMetadataContentAccepted = sourceIntakeEvidence?.buildMetadataContentAccepted === true;
+    const coldBuildExecutionPlanAccepted =
+      sourceIntakeEvidence?.coldBuildExecutionPlanAccepted === true
+      || sourceIntakeEvidence?.cold_build_execution_plan_accepted === true;
     const runtimeBoundaryExpectationAccepted =
       sourceIntakeEvidence?.runtimeBoundaryExpectationAccepted === true;
     const runtimeBoundaryEventManifestTemplateAccepted =
@@ -5588,6 +5806,19 @@ async function runSelectedCandidate(
       : (buildMetadataDiscoveryAccepted
         ? 'semantic_build_metadata_verification_missing'
         : 'build_metadata_unverified');
+    const buildExecutionPlanGaps = coldBuildExecutionPlanAccepted
+      ? [
+        'cold_build_execution_plan_support_only_not_runtime_proof',
+        ...uniqueSortedStrings([
+          ...(Array.isArray(sourceIntakeEvidence?.coldBuildExecutionPlan?.blockingGaps)
+            ? sourceIntakeEvidence.coldBuildExecutionPlan.blockingGaps
+            : []),
+          ...(Array.isArray(sourceIntakeEvidence?.cold_build_execution_plan?.blocking_gaps)
+            ? sourceIntakeEvidence.cold_build_execution_plan.blocking_gaps
+            : []),
+        ]),
+      ]
+      : ['cold_build_execution_plan_missing'];
     const runtimeProfileBridgeGaps = runtimeProfileProofBridge
       ? [
         ...(Array.isArray(runtimeProfileProofBridge.blockingGaps)
@@ -5616,6 +5847,7 @@ async function runSelectedCandidate(
       ];
     const blockingGaps = uniqueSortedStrings([
       buildMetadataGap,
+      ...buildExecutionPlanGaps,
       ...missingRuntimeGaps,
     ]);
     if (!sourceTreeIntakeAccepted) {
@@ -5681,6 +5913,10 @@ async function runSelectedCandidate(
       build_metadata_discovery: sourceIntakeEvidence?.build_metadata_discovery ?? null,
       buildMetadataContentEvidence: sourceIntakeEvidence?.buildMetadataContentEvidence ?? null,
       build_metadata_content_evidence: sourceIntakeEvidence?.build_metadata_content_evidence ?? null,
+      coldBuildExecutionPlan: sourceIntakeEvidence?.coldBuildExecutionPlan ?? null,
+      cold_build_execution_plan: sourceIntakeEvidence?.cold_build_execution_plan ?? null,
+      coldBuildExecutionPlanAccepted,
+      cold_build_execution_plan_accepted: coldBuildExecutionPlanAccepted,
       runtimeBoundaryExpectationAccepted,
       runtime_boundary_expectation_accepted: runtimeBoundaryExpectationAccepted,
       runtimeBoundaryExpectation: sourceIntakeEvidence?.runtimeBoundaryExpectation ?? null,
@@ -7288,6 +7524,7 @@ async function selfCheck() {
     || unprofiledResult.runnerAttempted !== false
     || !unprofiledResult.blockingGaps?.includes('runtime_profile_contract_missing')
     || !unprofiledResult.blockingGaps?.includes('runtime_support_closure_requires_app_hook')
+    || !unprofiledResult.blockingGaps?.includes('cold_build_execution_plan_missing')
     || !unprofiledResult.blockingGaps?.includes('strict_runtime_ledger_missing')
     || unprofiledResult.runtimeSupportClosureObligation?.proofAuthority
       !== ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
@@ -7409,6 +7646,7 @@ async function selfCheck() {
   });
   const localResult = localManifest.results[0] ?? {};
   const localBuildContentFiles = localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.buildFiles ?? [];
+  const localColdBuildExecutionPlan = localResult.sourceIntakeEvidence?.coldBuildExecutionPlan;
   if (
     localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
     || localManifest.candidates[0]?.directInputEvidence?.acceptedAsDirectInputEvidence !== true
@@ -7477,6 +7715,27 @@ async function selfCheck() {
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.requiredBoundaryStages
       ?.includes(RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE)
     || localResult.sourceIntakeEvidence?.runtimeBoundaryExpectation?.gpuHmrSuccess !== false
+    || localColdBuildExecutionPlan?.proofAuthority !== COLD_BUILD_EXECUTION_PLAN_AUTHORITY
+    || localColdBuildExecutionPlan?.acceptedAsSupportEvidence !== true
+    || localColdBuildExecutionPlan?.targetNameIndependent !== true
+    || localColdBuildExecutionPlan?.projectNameWhitelist?.length !== 0
+    || localColdBuildExecutionPlan?.specificTargetIdsAllowed?.length !== 0
+    || localColdBuildExecutionPlan?.acceptedForGpuHmr !== false
+    || localColdBuildExecutionPlan?.gpuHmrSuccess !== false
+    || localColdBuildExecutionPlan?.canSatisfyRuntimeProof !== false
+    || localColdBuildExecutionPlan?.canSatisfyDispatchProof !== false
+    || localColdBuildExecutionPlan?.observedBuildExecution !== false
+    || localColdBuildExecutionPlan?.observedCompileDatabase !== false
+    || localColdBuildExecutionPlan?.observedDeviceArtifactBuild !== false
+    || !localColdBuildExecutionPlan?.planHash?.startsWith('sha256:')
+    || !localColdBuildExecutionPlan?.requiredBuildEvidence?.includes(
+      'compile_database_or_compiler_trace',
+    )
+    || !localColdBuildExecutionPlan?.requiredRuntimeBridgeOutputs?.includes(
+      'output_oracle_artifact',
+    )
+    || !localColdBuildExecutionPlan?.blockingGaps?.includes('build_command_execution_not_observed')
+    || !localColdBuildExecutionPlan?.blockingGaps?.includes('compile_database_not_verified')
     || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.proofAuthority
       !== ADAPTER_CLOSURE_EXPECTATION_AUTHORITY
     || localResult.sourceIntakeEvidence?.runtimeSupportClosureObligation?.gpuHmrSuccess !== false

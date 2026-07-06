@@ -291,6 +291,10 @@ const RANDOM_COLD_BUILD_METADATA_CONTENT_SCHEMA_VERSION =
   'synthi.gpu_hmr.cold_build_metadata_content.v1';
 const RANDOM_COLD_BUILD_METADATA_CONTENT_AUTHORITY =
   'build_metadata_content_bytes_only_not_gpu_hmr_success';
+const RANDOM_COLD_BUILD_EXECUTION_PLAN_SCHEMA_VERSION =
+  'synthi.gpu_hmr.cold_build_execution_plan.v1';
+const RANDOM_COLD_BUILD_EXECUTION_PLAN_AUTHORITY =
+  'cold_build_execution_plan_only_not_gpu_hmr_success';
 const RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
   'build_metadata_semantic_tokens_only_not_runtime_authority';
 const LARGE_ROCM_ML_RANDOM_COLD_ROCM_BACKEND_CANDIDATES = new Set([
@@ -2781,6 +2785,12 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ?? result.runtimeBoundaryExpectation
     ?? result.runtime_boundary_expectation,
   );
+  const coldBuildExecutionPlanRaw = firstCompactObject(
+    facet.coldBuildExecutionPlan,
+    facet.cold_build_execution_plan,
+    result.coldBuildExecutionPlan,
+    result.cold_build_execution_plan,
+  );
   const transportEvidence = compactObject(
     facet.transportEvidence
     ?? facet.transport_evidence,
@@ -2858,6 +2868,22 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ...(Array.isArray(buildDiscovery.detectedBuildSystems) ? buildDiscovery.detectedBuildSystems : []),
     ...(Array.isArray(buildDiscovery.detected_build_systems) ? buildDiscovery.detected_build_systems : []),
   ]);
+  const coldBuildExecutionPlan = randomColdBuildExecutionPlanFacet(coldBuildExecutionPlanRaw, {
+    sourceIntake: {
+      sourceListingHash,
+      source_listing_hash: sourceListingHash,
+      buildMetadataContentHash: buildContentEvidence.contentEvidenceHash,
+      build_metadata_content_hash: buildContentEvidence.contentEvidenceHash,
+      runtimeBoundaryExpectationHash: normalizeSha256(firstText(
+        runtimeBoundaryExpectation.expectationHash,
+        runtimeBoundaryExpectation.expectation_hash,
+      )),
+      runtime_boundary_expectation_hash: normalizeSha256(firstText(
+        runtimeBoundaryExpectation.expectationHash,
+        runtimeBoundaryExpectation.expectation_hash,
+      )),
+    },
+  });
   const buildMetadataListingBinding = randomColdBuildMetadataListingBinding(
     sourceListingManifest,
     buildContentEvidence,
@@ -2927,6 +2953,14 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
       : null,
     ...(present && transportFallbackEvidence.present === true
       ? transportFallbackEvidence.failedGates
+      : []),
+    present
+      && coldBuildExecutionPlan.present === true
+      && coldBuildExecutionPlan.accepted !== true
+      ? 'random_cold_source_intake_build_execution_plan_invalid'
+      : null,
+    ...(present && coldBuildExecutionPlan.present === true
+      ? coldBuildExecutionPlan.failedGates
       : []),
     ...suppliedFailedGates,
   ]);
@@ -3068,6 +3102,10 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     build_metadata_content_hash: buildContentEvidence.contentEvidenceHash,
     buildMetadataContentEvidence: buildContentEvidence,
     build_metadata_content_evidence: buildContentEvidence,
+    coldBuildExecutionPlan,
+    cold_build_execution_plan: coldBuildExecutionPlan,
+    coldBuildExecutionPlanAccepted: coldBuildExecutionPlan.accepted === true,
+    cold_build_execution_plan_accepted: coldBuildExecutionPlan.accepted === true,
     runtimeBoundaryExpectationAccepted: firstBool(
       facet.runtimeBoundaryExpectationAccepted,
       facet.runtime_boundary_expectation_accepted,
@@ -3413,6 +3451,358 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}, options = {}) {
     content_evidence_hash_verification_mode: serializedRawVerifierOutputReplay
       ? 'serialized_raw_content_verifier_output_replayed'
       : 'raw_content_evidence_hash_recomputed',
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdBuildExecutionPlanHashSeed(facet) {
+  const seed = JSON.parse(JSON.stringify(compactObject(facet)));
+  if ('accepted' in seed) seed.accepted = false;
+  delete seed.present;
+  delete seed.planHash;
+  delete seed.plan_hash;
+  delete seed.recomputedPlanHash;
+  delete seed.recomputed_plan_hash;
+  delete seed.suppliedPlanHash;
+  delete seed.supplied_plan_hash;
+  delete seed.authorityClaims;
+  delete seed.authority_claims;
+  return seed;
+}
+
+function randomColdBuildExecutionPlanFacet(raw = {}, { sourceIntake = {} } = {}) {
+  const facet = compactObject(raw);
+  const rawPresent = Object.keys(facet).length > 0;
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedForGpuHmr = firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    facet.canSatisfyRuntimeProof,
+    facet.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    facet.canSatisfyDispatchProof,
+    facet.can_satisfy_dispatch_proof,
+  );
+  const observedBuildExecution = firstBool(
+    facet.observedBuildExecution,
+    facet.observed_build_execution,
+  );
+  const observedCompileDatabase = firstBool(
+    facet.observedCompileDatabase,
+    facet.observed_compile_database,
+  );
+  const observedDeviceArtifactBuild = firstBool(
+    facet.observedDeviceArtifactBuild,
+    facet.observed_device_artifact_build,
+  );
+  const targetNameIndependent = firstBool(
+    facet.targetNameIndependent,
+    facet.target_name_independent,
+  );
+  const candidateId = firstText(facet.candidateId, facet.candidate_id);
+  const sourceUrl = firstText(facet.sourceUrl, facet.source_url);
+  const immutableCommit = firstText(facet.immutableCommit, facet.immutable_commit);
+  const acceptedAsSupportEvidence = firstBool(
+    facet.acceptedAsSupportEvidence,
+    facet.accepted_as_support_evidence,
+    facet.accepted,
+  ) === true;
+  const sourceListingHash = normalizeSha256(firstText(
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+  ));
+  const buildMetadataContentHash = normalizeSha256(firstText(
+    facet.buildMetadataContentHash,
+    facet.build_metadata_content_hash,
+  ));
+  const buildMetadataDiscoveryHash = normalizeSha256(firstText(
+    facet.buildMetadataDiscoveryHash,
+    facet.build_metadata_discovery_hash,
+  ));
+  const runtimeBoundaryExpectationHash = normalizeSha256(firstText(
+    facet.runtimeBoundaryExpectationHash,
+    facet.runtime_boundary_expectation_hash,
+  ));
+  const sourceIntakeSourceListingHash = normalizeSha256(firstText(
+    sourceIntake.sourceListingHash,
+    sourceIntake.source_listing_hash,
+  ));
+  const sourceIntakeBuildMetadataContentHash = normalizeSha256(firstText(
+    sourceIntake.buildMetadataContentHash,
+    sourceIntake.build_metadata_content_hash,
+  ));
+  const sourceIntakeRuntimeBoundaryExpectationHash = normalizeSha256(firstText(
+    sourceIntake.runtimeBoundaryExpectationHash,
+    sourceIntake.runtime_boundary_expectation_hash,
+  ));
+  const buildSystems = compactStringList([
+    ...(Array.isArray(facet.buildSystems) ? facet.buildSystems : []),
+    ...(Array.isArray(facet.build_systems) ? facet.build_systems : []),
+  ]);
+  const rootBuildFiles = compactStringList([
+    ...(Array.isArray(facet.rootBuildFiles) ? facet.rootBuildFiles : []),
+    ...(Array.isArray(facet.root_build_files) ? facet.root_build_files : []),
+  ]);
+  const buildFiles = compactObjectList(facet.buildFiles ?? facet.build_files);
+  const backendCandidates = compactStringList([
+    ...(Array.isArray(facet.backendCandidates) ? facet.backendCandidates : []),
+    ...(Array.isArray(facet.backend_candidates) ? facet.backend_candidates : []),
+  ]);
+  const compileDatabaseCandidatePaths = compactStringList([
+    ...(Array.isArray(facet.compileDatabaseCandidatePaths) ? facet.compileDatabaseCandidatePaths : []),
+    ...(Array.isArray(facet.compile_database_candidate_paths) ? facet.compile_database_candidate_paths : []),
+  ]);
+  const executionSteps = compactObjectList(facet.executionSteps ?? facet.execution_steps);
+  const requiredBuildEvidence = compactStringList([
+    ...(Array.isArray(facet.requiredBuildEvidence) ? facet.requiredBuildEvidence : []),
+    ...(Array.isArray(facet.required_build_evidence) ? facet.required_build_evidence : []),
+  ]);
+  const requiredRuntimeBridgeOutputs = compactStringList([
+    ...(Array.isArray(facet.requiredRuntimeBridgeOutputs) ? facet.requiredRuntimeBridgeOutputs : []),
+    ...(Array.isArray(facet.required_runtime_bridge_outputs) ? facet.required_runtime_bridge_outputs : []),
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const suppliedFailedGates = compactStringList([
+    ...(Array.isArray(facet.failedGates) ? facet.failedGates : []),
+    ...(Array.isArray(facet.failed_gates) ? facet.failed_gates : []),
+  ]);
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(facet.projectNameWhitelist) ? facet.projectNameWhitelist : []),
+    ...(Array.isArray(facet.project_name_whitelist) ? facet.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(facet.specificTargetIdsAllowed) ? facet.specificTargetIdsAllowed : []),
+    ...(Array.isArray(facet.specific_target_ids_allowed) ? facet.specific_target_ids_allowed : []),
+  ]);
+  const authorityClaims = compactStringList(facet.authorityClaims ?? facet.authority_claims);
+  const suppliedPlanHash = normalizeSha256(firstText(facet.planHash, facet.plan_hash));
+  const authorityFlagClaimed =
+    acceptedForGpuHmr === true
+    || gpuHmrSuccess === true
+    || canSatisfyRuntimeProof === true
+    || canSatisfyDispatchProof === true
+    || observedBuildExecution === true
+    || observedCompileDatabase === true
+    || observedDeviceArtifactBuild === true
+    || authorityClaims.length > 0;
+  const hasPlanMaterial = Boolean(
+    schemaVersion
+      || proofAuthority
+      || acceptedAsSupportEvidence
+      || sourceListingHash
+      || buildMetadataContentHash
+      || buildMetadataDiscoveryHash
+      || runtimeBoundaryExpectationHash
+      || buildSystems.length
+      || buildFiles.length
+      || backendCandidates.length
+      || executionSteps.length
+      || requiredBuildEvidence.length
+      || requiredRuntimeBridgeOutputs.length
+      || suppliedPlanHash
+  );
+  const present = rawPresent
+    && (firstBool(facet.present) !== false || authorityFlagClaimed || hasPlanMaterial);
+  const recomputedPlanHash = present
+    ? normalizeSha256(stableJsonHash(randomColdBuildExecutionPlanHashSeed(facet)))
+    : null;
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      observedBuildExecution: false,
+      observed_build_execution: false,
+      observedCompileDatabase: false,
+      observed_compile_database: false,
+      observedDeviceArtifactBuild: false,
+      observed_device_artifact_build: false,
+      blockingGaps: [],
+      blocking_gaps: [],
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const failedGates = compactStringList([
+    present ? null : 'random_cold_build_execution_plan_missing',
+    present && schemaVersion !== RANDOM_COLD_BUILD_EXECUTION_PLAN_SCHEMA_VERSION
+      ? 'random_cold_build_execution_plan_schema_invalid'
+      : null,
+    present && proofAuthority !== RANDOM_COLD_BUILD_EXECUTION_PLAN_AUTHORITY
+      ? 'random_cold_build_execution_plan_authority_invalid'
+      : null,
+    present && acceptedAsSupportEvidence !== true
+      ? 'random_cold_build_execution_plan_not_accepted_as_support'
+      : null,
+    present && acceptedForGpuHmr === true
+      ? 'random_cold_build_execution_plan_claimed_gpu_hmr_acceptance'
+      : null,
+    present && gpuHmrSuccess === true
+      ? 'random_cold_build_execution_plan_claimed_gpu_hmr_success'
+      : null,
+    present && canSatisfyRuntimeProof === true
+      ? 'random_cold_build_execution_plan_claimed_runtime_authority'
+      : null,
+    present && canSatisfyDispatchProof === true
+      ? 'random_cold_build_execution_plan_claimed_dispatch_authority'
+      : null,
+    present && observedBuildExecution === true
+      ? 'random_cold_build_execution_plan_claimed_observed_build_execution'
+      : null,
+    present && observedCompileDatabase === true
+      ? 'random_cold_build_execution_plan_claimed_observed_compile_database'
+      : null,
+    present && observedDeviceArtifactBuild === true
+      ? 'random_cold_build_execution_plan_claimed_observed_device_artifact_build'
+      : null,
+    present && targetNameIndependent !== true
+      ? 'random_cold_build_execution_plan_target_name_dependent'
+      : null,
+    present && projectNameWhitelist.length > 0
+      ? 'random_cold_build_execution_plan_project_whitelist_present'
+      : null,
+    present && specificTargetIdsAllowed.length > 0
+      ? 'random_cold_build_execution_plan_target_whitelist_present'
+      : null,
+    present && authorityClaims.length > 0
+      ? 'random_cold_build_execution_plan_authority_claim_present'
+      : null,
+    present && !sourceListingHash
+      ? 'random_cold_build_execution_plan_source_listing_hash_missing'
+      : null,
+    present && !buildMetadataContentHash
+      ? 'random_cold_build_execution_plan_build_metadata_hash_missing'
+      : null,
+    present && !buildMetadataDiscoveryHash
+      ? 'random_cold_build_execution_plan_discovery_hash_missing'
+      : null,
+    present && !runtimeBoundaryExpectationHash
+      ? 'random_cold_build_execution_plan_runtime_expectation_hash_missing'
+      : null,
+    present && sourceIntakeSourceListingHash && sourceListingHash !== sourceIntakeSourceListingHash
+      ? 'random_cold_build_execution_plan_source_listing_hash_mismatch'
+      : null,
+    present
+      && sourceIntakeBuildMetadataContentHash
+      && buildMetadataContentHash !== sourceIntakeBuildMetadataContentHash
+      ? 'random_cold_build_execution_plan_build_metadata_hash_mismatch'
+      : null,
+    present
+      && sourceIntakeRuntimeBoundaryExpectationHash
+      && runtimeBoundaryExpectationHash !== sourceIntakeRuntimeBoundaryExpectationHash
+      ? 'random_cold_build_execution_plan_runtime_expectation_hash_mismatch'
+      : null,
+    present && buildSystems.length === 0
+      ? 'random_cold_build_execution_plan_build_systems_missing'
+      : null,
+    present && buildFiles.length === 0
+      ? 'random_cold_build_execution_plan_build_files_missing'
+      : null,
+    present && executionSteps.length === 0
+      ? 'random_cold_build_execution_plan_execution_steps_missing'
+      : null,
+    present && requiredBuildEvidence.length === 0
+      ? 'random_cold_build_execution_plan_required_build_evidence_missing'
+      : null,
+    present && requiredRuntimeBridgeOutputs.length === 0
+      ? 'random_cold_build_execution_plan_required_runtime_bridge_outputs_missing'
+      : null,
+    present && blockingGaps.length === 0
+      ? 'random_cold_build_execution_plan_blocking_gaps_missing'
+      : null,
+    present && !suppliedPlanHash
+      ? 'random_cold_build_execution_plan_hash_missing'
+      : null,
+    present && suppliedPlanHash && recomputedPlanHash && suppliedPlanHash !== recomputedPlanHash
+      ? 'random_cold_build_execution_plan_hash_mismatch'
+      : null,
+    ...suppliedFailedGates,
+  ]);
+  const accepted = present && failedGates.length === 0;
+  return {
+    present,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
+    proofAuthority: proofAuthority ?? null,
+    proof_authority: proofAuthority ?? null,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    observedBuildExecution: false,
+    observed_build_execution: false,
+    observedCompileDatabase: false,
+    observed_compile_database: false,
+    observedDeviceArtifactBuild: false,
+    observed_device_artifact_build: false,
+    targetNameIndependent: targetNameIndependent === true,
+    target_name_independent: targetNameIndependent === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    candidateId,
+    candidate_id: candidateId,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    buildMetadataDiscoveryHash,
+    build_metadata_discovery_hash: buildMetadataDiscoveryHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    buildSystems,
+    build_systems: buildSystems,
+    rootBuildFiles,
+    root_build_files: rootBuildFiles,
+    buildFiles,
+    build_files: buildFiles,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    compileDatabaseCandidatePaths,
+    compile_database_candidate_paths: compileDatabaseCandidatePaths,
+    executionSteps,
+    execution_steps: executionSteps,
+    requiredBuildEvidence,
+    required_build_evidence: requiredBuildEvidence,
+    requiredRuntimeBridgeOutputs,
+    required_runtime_bridge_outputs: requiredRuntimeBridgeOutputs,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    authorityClaims,
+    authority_claims: authorityClaims,
+    suppliedPlanHash,
+    supplied_plan_hash: suppliedPlanHash,
+    planHash: recomputedPlanHash,
+    plan_hash: recomputedPlanHash,
+    recomputedPlanHash,
+    recomputed_plan_hash: recomputedPlanHash,
     failedGates,
     failed_gates: failedGates,
   };
@@ -18888,6 +19278,98 @@ function rowSafetyFailures(row, context = {}) {
         code: 'random_large_project_cold_derived_runtime_profile_contract_claimed_authority',
       });
     }
+    const coldBuildExecutionPlanRaw = firstCompactObject(
+      row.randomColdBuildExecutionPlan,
+      row.random_cold_build_execution_plan,
+      row.coldBuildExecutionPlan,
+      row.cold_build_execution_plan,
+      compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake).coldBuildExecutionPlan,
+      compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake).cold_build_execution_plan,
+      compactObject(row.sourceIntakeEvidence ?? row.source_intake_evidence).coldBuildExecutionPlan,
+      compactObject(row.sourceIntakeEvidence ?? row.source_intake_evidence).cold_build_execution_plan,
+      coldPathFacet.coldBuildExecutionPlan,
+      coldPathFacet.cold_build_execution_plan,
+    );
+    const coldBuildExecutionPlanDeclaredAccepted = firstBool(
+      row.coldBuildExecutionPlanAccepted,
+      row.cold_build_execution_plan_accepted,
+      coldBuildExecutionPlanRaw.accepted,
+      coldBuildExecutionPlanRaw.acceptedAsSupportEvidence,
+      coldBuildExecutionPlanRaw.accepted_as_support_evidence,
+    ) === true;
+    const coldBuildExecutionPlan =
+      randomColdBuildExecutionPlanFacet(coldBuildExecutionPlanRaw, {
+        sourceIntake: compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake),
+      });
+    const coldBuildExecutionPlanFailedGates = compactStringList([
+      ...(Array.isArray(coldBuildExecutionPlan.failedGates)
+        ? coldBuildExecutionPlan.failedGates
+        : []),
+      ...(Array.isArray(coldBuildExecutionPlan.failed_gates)
+        ? coldBuildExecutionPlan.failed_gates
+        : []),
+    ]);
+    const coldBuildExecutionPlanPresent =
+      coldBuildExecutionPlan.present === true
+      || coldBuildExecutionPlanDeclaredAccepted;
+    if (
+      coldBuildExecutionPlanPresent
+      && coldBuildExecutionPlan.accepted !== true
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_build_execution_plan_invalid',
+      });
+      failures.push(...coldBuildExecutionPlanFailedGates.map((code) => ({ code })));
+    }
+    const coldBuildExecutionPlanAuthorityFailed =
+      coldBuildExecutionPlanFailedGates.some((code) =>
+        code === 'random_cold_build_execution_plan_claimed_gpu_hmr_acceptance'
+        || code === 'random_cold_build_execution_plan_claimed_gpu_hmr_success'
+        || code === 'random_cold_build_execution_plan_claimed_runtime_authority'
+        || code === 'random_cold_build_execution_plan_claimed_dispatch_authority'
+        || code === 'random_cold_build_execution_plan_claimed_observed_build_execution'
+        || code === 'random_cold_build_execution_plan_claimed_observed_compile_database'
+        || code === 'random_cold_build_execution_plan_claimed_observed_device_artifact_build'
+        || code === 'random_cold_build_execution_plan_authority_claim_present'
+      );
+    if (
+      coldBuildExecutionPlanPresent
+      && (
+        coldBuildExecutionPlanAuthorityFailed
+        || firstBool(
+          coldBuildExecutionPlanRaw.acceptedForGpuHmr,
+          coldBuildExecutionPlanRaw.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          coldBuildExecutionPlanRaw.gpuHmrSuccess,
+          coldBuildExecutionPlanRaw.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          coldBuildExecutionPlanRaw.canSatisfyRuntimeProof,
+          coldBuildExecutionPlanRaw.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          coldBuildExecutionPlanRaw.canSatisfyDispatchProof,
+          coldBuildExecutionPlanRaw.can_satisfy_dispatch_proof,
+        ) === true
+        || firstBool(
+          coldBuildExecutionPlanRaw.observedBuildExecution,
+          coldBuildExecutionPlanRaw.observed_build_execution,
+        ) === true
+        || firstBool(
+          coldBuildExecutionPlanRaw.observedCompileDatabase,
+          coldBuildExecutionPlanRaw.observed_compile_database,
+        ) === true
+        || firstBool(
+          coldBuildExecutionPlanRaw.observedDeviceArtifactBuild,
+          coldBuildExecutionPlanRaw.observed_device_artifact_build,
+        ) === true
+      )
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_build_execution_plan_claimed_authority',
+      });
+    }
     const runtimeProfileAdapterResultImport = compactObject(
       row.randomColdRuntimeProfileAdapterResultImport
       ?? row.random_cold_runtime_profile_adapter_result_import
@@ -30342,6 +30824,18 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       };
   const randomLargeProjectColdPath =
     randomColdPathSupportFacet(json, result, candidate);
+  const randomColdBuildExecutionPlan = randomColdBuildExecutionPlanFacet(firstCompactObject(
+    result.coldBuildExecutionPlan,
+    result.cold_build_execution_plan,
+    sourceIntake.coldBuildExecutionPlan,
+    sourceIntake.cold_build_execution_plan,
+    coldSourceTreeIntake.coldBuildExecutionPlan,
+    coldSourceTreeIntake.cold_build_execution_plan,
+    randomLargeProjectColdPath.coldBuildExecutionPlan,
+    randomLargeProjectColdPath.cold_build_execution_plan,
+  ), {
+    sourceIntake: coldSourceTreeIntake,
+  });
   const randomColdRuntimeProfileProofBridge = randomColdRuntimeProfileProofBridgeFacet(firstCompactObject(
     result.runtimeProfileProofBridge,
     result.runtime_profile_proof_bridge,
@@ -30556,6 +31050,12 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdRuntimeProfileAdapterResultImport.present === true
       ? randomColdRuntimeProfileAdapterResultImport.failedGates
       : []),
+    ...(randomColdBuildExecutionPlan.present === true
+      ? randomColdBuildExecutionPlan.blockingGaps
+      : ['cold_build_execution_plan_missing']),
+    ...(randomColdBuildExecutionPlan.present === true
+      ? randomColdBuildExecutionPlan.failedGates
+      : []),
     ...(randomColdRuntimeAdapterStageEvents.present === true
       ? randomColdRuntimeAdapterStageEvents.blockingGaps
       : []),
@@ -30630,6 +31130,8 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     coldSourceTreeIntake.runtimeBoundaryExpectationHash,
     coldSourceTreeIntake.sourceIntakeTransportFallback?.fallbackEvidenceHash,
     coldSourceTreeIntake.source_intake_transport_fallback?.fallback_evidence_hash,
+    randomColdBuildExecutionPlan.planHash,
+    randomColdBuildExecutionPlan.plan_hash,
     coldRuntimeBoundaryEventManifestTemplate.templateHash,
     randomColdDerivedRuntimeProfileContract.runtimeProofProfileSha256,
     randomColdDerivedRuntimeProfileContract.runtimeBoundaryEventManifestSha256,
@@ -30697,6 +31199,28 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     source_intake_evidence: coldSourceTreeIntakeForRow,
     sourceIntakeTransportFallback: coldSourceTreeIntake.sourceIntakeTransportFallback,
     source_intake_transport_fallback: coldSourceTreeIntake.source_intake_transport_fallback,
+    randomColdBuildExecutionPlan:
+      randomColdBuildExecutionPlan.present === true
+        ? randomColdBuildExecutionPlan
+        : null,
+    random_cold_build_execution_plan:
+      randomColdBuildExecutionPlan.present === true
+        ? randomColdBuildExecutionPlan
+        : null,
+    coldBuildExecutionPlan:
+      randomColdBuildExecutionPlan.present === true
+        ? randomColdBuildExecutionPlan
+        : null,
+    cold_build_execution_plan:
+      randomColdBuildExecutionPlan.present === true
+        ? randomColdBuildExecutionPlan
+        : null,
+    coldBuildExecutionPlanAccepted:
+      randomColdBuildExecutionPlan.present === true
+      && randomColdBuildExecutionPlan.acceptedAsSupportEvidence === true,
+    cold_build_execution_plan_accepted:
+      randomColdBuildExecutionPlan.present === true
+      && randomColdBuildExecutionPlan.acceptedAsSupportEvidence === true,
     coldRuntimeBoundaryEventManifestTemplate,
     cold_runtime_boundary_event_manifest_template: coldRuntimeBoundaryEventManifestTemplate,
     randomColdDerivedRuntimeProfileContract:

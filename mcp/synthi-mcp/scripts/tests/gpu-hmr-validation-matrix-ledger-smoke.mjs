@@ -2144,6 +2144,159 @@ function randomColdBuildMetadataContentEvidenceFixture({
   };
 }
 
+function randomColdBuildExecutionPlanFixture({
+  candidateId = 'direct-random-arbitrary-cold',
+  sourceUrl = 'https://example.invalid/arbitrary/user-project.git',
+  immutableCommit = '1111111111111111111111111111111111111111',
+  sourceListingHash,
+  buildMetadataContentHash,
+  buildMetadataDiscoveryHash,
+  runtimeBoundaryExpectationHash,
+  buildSystems = ['cargo', 'npm_or_node'],
+  rootBuildFiles = ['Cargo.toml', 'package.json'],
+  buildFiles = [
+    {
+      path: 'Cargo.toml',
+      contentHash: hashValue('random-cold-build-plan:Cargo.toml'),
+      content_hash: hashValue('random-cold-build-plan:Cargo.toml'),
+      family: 'cargo',
+    },
+  ],
+  backendCandidates = ['hip_rocm'],
+  overrides = {},
+} = {}) {
+  const executionSteps = [
+    {
+      step: 'configure_or_prepare_build_graph',
+      requiredEvidence: ['build_command_invocation', 'build_environment_snapshot'],
+      required_evidence: ['build_command_invocation', 'build_environment_snapshot'],
+    },
+    {
+      step: 'capture_compiler_invocations',
+      requiredEvidence: ['compile_database_or_compiler_trace'],
+      required_evidence: ['compile_database_or_compiler_trace'],
+    },
+    ...buildSystems.map((family) => ({
+      step: `${family}_build_system_probe`,
+      buildSystem: family,
+      build_system: family,
+      requiredEvidence: ['build_system_command_observed', 'exit_status_observed'],
+      required_evidence: ['build_system_command_observed', 'exit_status_observed'],
+    })),
+  ];
+  const plan = {
+    schemaVersion: 'synthi.gpu_hmr.cold_build_execution_plan.v1',
+    schema_version: 'synthi.gpu_hmr.cold_build_execution_plan.v1',
+    proofAuthority: 'cold_build_execution_plan_only_not_gpu_hmr_success',
+    proof_authority: 'cold_build_execution_plan_only_not_gpu_hmr_success',
+    accepted: false,
+    acceptedAsSupportEvidence: true,
+    accepted_as_support_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    observedBuildExecution: false,
+    observed_build_execution: false,
+    observedCompileDatabase: false,
+    observed_compile_database: false,
+    observedDeviceArtifactBuild: false,
+    observed_device_artifact_build: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    candidateId,
+    candidate_id: candidateId,
+    sourceUrl,
+    source_url: sourceUrl,
+    immutableCommit,
+    immutable_commit: immutableCommit,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    buildMetadataDiscoveryHash,
+    build_metadata_discovery_hash: buildMetadataDiscoveryHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    buildSystems,
+    build_systems: buildSystems,
+    rootBuildFiles,
+    root_build_files: rootBuildFiles,
+    buildFiles,
+    build_files: buildFiles,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    compileDatabaseCandidatePaths: ['compile_commands.json', 'build/compile_commands.json'],
+    compile_database_candidate_paths: ['compile_commands.json', 'build/compile_commands.json'],
+    executionSteps,
+    execution_steps: executionSteps,
+    requiredBuildEvidence: [
+      'build_command_invocation',
+      'build_exit_status',
+      'compile_database_or_compiler_trace',
+      'device_artifact_hash_after_build',
+      'dependency_closure_hash',
+    ],
+    required_build_evidence: [
+      'build_command_invocation',
+      'build_exit_status',
+      'compile_database_or_compiler_trace',
+      'device_artifact_hash_after_build',
+      'dependency_closure_hash',
+    ],
+    requiredRuntimeBridgeOutputs: [
+      'runtime_profile_contract',
+      'runtime_boundary_event_manifest',
+      'artifact_transport_event',
+      'epoch_publication_event',
+      'dispatch_trace_event',
+      'host_identity_event',
+      'output_oracle_artifact',
+    ],
+    required_runtime_bridge_outputs: [
+      'runtime_profile_contract',
+      'runtime_boundary_event_manifest',
+      'artifact_transport_event',
+      'epoch_publication_event',
+      'dispatch_trace_event',
+      'host_identity_event',
+      'output_oracle_artifact',
+    ],
+    blockingGaps: [
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'compiler_invocation_trace_missing',
+      'device_artifact_build_not_observed',
+      'cold_runtime_profile_contract_not_executed',
+    ],
+    blocking_gaps: [
+      'build_command_execution_not_observed',
+      'compile_database_not_verified',
+      'compiler_invocation_trace_missing',
+      'device_artifact_build_not_observed',
+      'cold_runtime_profile_contract_not_executed',
+    ],
+    failedGates: [],
+    failed_gates: [],
+    ...overrides,
+  };
+  const cleanPlan = JSON.parse(JSON.stringify(plan));
+  const planHash = contentHashFor(cleanPlan);
+  return {
+    ...cleanPlan,
+    planHash,
+    plan_hash: planHash,
+  };
+}
+
 function randomColdRuntimeSupportClosureFixture(overrides = {}) {
   const possibleOutcomes = [
     'api_interpose',
@@ -2745,6 +2898,52 @@ function randomColdPathManifest({
     }),
   });
   const runtimeSupportClosureObligation = randomColdRuntimeSupportClosureFixture();
+  const buildMetadataDiscovery = {
+    proofAuthority: 'build_metadata_discovery_only_not_gpu_hmr_success',
+    proof_authority: 'build_metadata_discovery_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    detectedBuildSystems: ['cargo', 'npm_or_node'],
+    detected_build_systems: ['cargo', 'npm_or_node'],
+    backendCandidates: sourceBackendCandidates,
+    backend_candidates: sourceBackendCandidates,
+    gpuSourceSignalCount: gpuSourceFileCount,
+    gpu_source_signal_count: gpuSourceFileCount,
+    sourceRelevantFileCount,
+    source_relevant_file_count: sourceRelevantFileCount,
+    sourceOrBuildRelevantFileCount,
+    source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
+    buildSystemSignals: {
+      cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
+      npm_or_node: ['tests/wasm/runner/package.json'],
+    },
+    build_system_signals: {
+      cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
+      npm_or_node: ['tests/wasm/runner/package.json'],
+    },
+  };
+  buildMetadataDiscovery.discoveryHash = contentHashFor(buildMetadataDiscovery);
+  buildMetadataDiscovery.discovery_hash = buildMetadataDiscovery.discoveryHash;
+  const coldBuildExecutionPlan = randomColdBuildExecutionPlanFixture({
+    candidateId,
+    sourceUrl,
+    immutableCommit,
+    sourceListingHash: sourceListingManifest.sourceListingHash,
+    buildMetadataContentHash: buildMetadataContentEvidence.contentEvidenceHash,
+    buildMetadataDiscoveryHash: buildMetadataDiscovery.discoveryHash,
+    runtimeBoundaryExpectationHash: runtimeBoundaryExpectation.expectationHash,
+    buildSystems: buildMetadataDiscovery.detectedBuildSystems,
+    rootBuildFiles: ['Cargo.toml'],
+    buildFiles: buildMetadataContentEvidence.buildFiles.map((file) => ({
+      path: file.path,
+      contentHash: file.contentHash,
+      content_hash: file.content_hash,
+      family: file.family,
+    })),
+    backendCandidates: expectationBackendCandidates,
+  });
   const runtimeAppHookMaterializationPlan = randomColdAppHookMaterializationPlanFixture({
     candidateId,
     candidate_id: candidateId,
@@ -2807,36 +3006,16 @@ function randomColdPathManifest({
     detected_build_systems: ['cargo', 'npm_or_node'],
     buildMetadataDiscoveryAccepted: true,
     build_metadata_discovery_accepted: true,
-    buildMetadataDiscovery: {
-      proofAuthority: 'build_metadata_discovery_only_not_gpu_hmr_success',
-      proof_authority: 'build_metadata_discovery_only_not_gpu_hmr_success',
-      acceptedForGpuHmr: false,
-      accepted_for_gpu_hmr: false,
-      gpuHmrSuccess: false,
-      gpu_hmr_success: false,
-      detectedBuildSystems: ['cargo', 'npm_or_node'],
-      detected_build_systems: ['cargo', 'npm_or_node'],
-      backendCandidates: sourceBackendCandidates,
-      backend_candidates: sourceBackendCandidates,
-      gpuSourceSignalCount: gpuSourceFileCount,
-      gpu_source_signal_count: gpuSourceFileCount,
-      sourceRelevantFileCount,
-      source_relevant_file_count: sourceRelevantFileCount,
-      sourceOrBuildRelevantFileCount,
-      source_or_build_relevant_file_count: sourceOrBuildRelevantFileCount,
-      buildSystemSignals: {
-        cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
-        npm_or_node: ['tests/wasm/runner/package.json'],
-      },
-      build_system_signals: {
-        cargo: ['Cargo.toml', 'examples/standalone/02_hello_window/Cargo.toml'],
-        npm_or_node: ['tests/wasm/runner/package.json'],
-      },
-    },
+    buildMetadataDiscovery,
+    build_metadata_discovery: buildMetadataDiscovery,
     buildMetadataContentAccepted: true,
     build_metadata_content_accepted: true,
     buildMetadataContentEvidence,
     build_metadata_content_evidence: buildMetadataContentEvidence,
+    coldBuildExecutionPlan,
+    cold_build_execution_plan: coldBuildExecutionPlan,
+    coldBuildExecutionPlanAccepted: true,
+    cold_build_execution_plan_accepted: true,
     runtimeBoundaryExpectationAccepted: runtimeBoundaryTemplateAccepted,
     runtime_boundary_expectation_accepted: runtimeBoundaryTemplateAccepted,
     runtimeBoundaryExpectation,
@@ -2919,6 +3098,10 @@ function randomColdPathManifest({
     runtime_app_hook_materialization_plan: runtimeAppHookMaterializationPlan,
     runtimeAppHookMaterializationPlanAccepted: true,
     runtime_app_hook_materialization_plan_accepted: true,
+    coldBuildExecutionPlan,
+    cold_build_execution_plan: coldBuildExecutionPlan,
+    coldBuildExecutionPlanAccepted: true,
+    cold_build_execution_plan_accepted: true,
     sizeSignals,
     size_signals: sizeSignals,
     sourceIntakeEvidence,
@@ -2926,6 +3109,7 @@ function randomColdPathManifest({
     blockingGaps: [
       'runtime_profile_contract_missing',
       'runtime_support_closure_requires_app_hook',
+      'cold_build_execution_plan_support_only_not_runtime_proof',
       'semantic_build_metadata_execution_missing',
       'same_process_loader_unproven',
       'epoch_publication_unproven',
@@ -2937,6 +3121,7 @@ function randomColdPathManifest({
     blocking_gaps: [
       'runtime_profile_contract_missing',
       'runtime_support_closure_requires_app_hook',
+      'cold_build_execution_plan_support_only_not_runtime_proof',
       'semantic_build_metadata_execution_missing',
       'same_process_loader_unproven',
       'epoch_publication_unproven',
@@ -3366,6 +3551,33 @@ assert.equal(randomColdRow.coldSourceTreeIntake.gpuSourceSignalCount, 31);
 assert.equal(randomColdRow.sourceRelevantFileCount, 73);
 assert.equal(randomColdRow.sourceOrBuildRelevantFileCount, 74);
 assert.equal(randomColdRow.gpuSourceFileCount, 31);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.present, true);
+assert.equal(
+  randomColdRow.randomColdBuildExecutionPlan.proofAuthority,
+  'cold_build_execution_plan_only_not_gpu_hmr_success',
+);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.acceptedAsSupportEvidence, true);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.targetNameIndependent, true);
+assert.deepEqual(randomColdRow.randomColdBuildExecutionPlan.projectNameWhitelist, []);
+assert.deepEqual(randomColdRow.randomColdBuildExecutionPlan.specificTargetIdsAllowed, []);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.acceptedForGpuHmr, false);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.gpuHmrSuccess, false);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.canSatisfyRuntimeProof, false);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.canSatisfyDispatchProof, false);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.observedBuildExecution, false);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.observedCompileDatabase, false);
+assert.equal(randomColdRow.randomColdBuildExecutionPlan.observedDeviceArtifactBuild, false);
+assert.ok(randomColdRow.randomColdBuildExecutionPlan.planHash.startsWith('sha256:'));
+assert.ok(randomColdRow.randomColdBuildExecutionPlan.buildSystems.includes('cargo'));
+assert.ok(randomColdRow.randomColdBuildExecutionPlan.requiredBuildEvidence.includes(
+  'compile_database_or_compiler_trace',
+));
+assert.ok(randomColdRow.randomColdBuildExecutionPlan.requiredRuntimeBridgeOutputs.includes(
+  'output_oracle_artifact',
+));
+assert.ok(randomColdRow.openGaps.includes('cold_build_execution_plan_support_only_not_runtime_proof'));
+assert.ok(randomColdRow.openGaps.includes('build_command_execution_not_observed'));
+assert.ok(randomColdRow.openGaps.includes('compile_database_not_verified'));
 assert.equal(randomColdRow.coldRuntimeBoundaryEventManifestTemplate.validated, true);
 assert.equal(
   randomColdRow.coldRuntimeBoundaryEventManifestTemplate.acceptedAsSupportEvidence,
@@ -6127,6 +6339,60 @@ assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate
 ));
 assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
   gate.code === 'random_large_project_cold_app_hook_materialization_plan_claimed_authority'
+));
+
+const forgedColdBuildExecutionPlanDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-build-execution-plan-forged',
+);
+const forgedColdBuildExecutionPlanManifest = randomColdPathManifest({
+  candidateId: 'direct-random-arbitrary-forged-build-execution-plan',
+  sourceUrl: 'https://example.invalid/arbitrary/forged-build-execution-plan.git',
+  immutableCommit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+});
+const forgedColdBuildExecutionPlan = {
+  ...forgedColdBuildExecutionPlanManifest.results[0].coldBuildExecutionPlan,
+  observedBuildExecution: true,
+  observed_build_execution: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+};
+delete forgedColdBuildExecutionPlan.planHash;
+delete forgedColdBuildExecutionPlan.plan_hash;
+forgedColdBuildExecutionPlan.planHash = contentHashFor(forgedColdBuildExecutionPlan);
+forgedColdBuildExecutionPlan.plan_hash = forgedColdBuildExecutionPlan.planHash;
+forgedColdBuildExecutionPlanManifest.results[0].coldBuildExecutionPlan = forgedColdBuildExecutionPlan;
+forgedColdBuildExecutionPlanManifest.results[0].cold_build_execution_plan =
+  forgedColdBuildExecutionPlan;
+await writeJson(
+  path.join(forgedColdBuildExecutionPlanDir, 'random-cold-forged-build-execution-plan.json'),
+  forgedColdBuildExecutionPlanManifest,
+);
+const forgedColdBuildExecutionPlanLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedColdBuildExecutionPlanDir],
+  includeInvalidated: true,
+});
+const forgedColdBuildExecutionPlanRow = forgedColdBuildExecutionPlanLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_cold_path',
+);
+assert.equal(forgedColdBuildExecutionPlanRow?.safety.accepted, false);
+assert.equal(forgedColdBuildExecutionPlanRow.acceptedForGpuHmr, false);
+assert.equal(forgedColdBuildExecutionPlanRow.gpuHmrSuccess, false);
+assert.equal(forgedColdBuildExecutionPlanRow.randomColdBuildExecutionPlan.present, true);
+assert.equal(forgedColdBuildExecutionPlanRow.randomColdBuildExecutionPlan.accepted, false);
+assert.ok(forgedColdBuildExecutionPlanRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_build_execution_plan_invalid'
+));
+assert.ok(forgedColdBuildExecutionPlanRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_build_execution_plan_claimed_authority'
+));
+assert.ok(forgedColdBuildExecutionPlanRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_build_execution_plan_claimed_runtime_authority'
+));
+assert.ok(forgedColdBuildExecutionPlanRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_build_execution_plan_claimed_observed_build_execution'
 ));
 
 const multiRandomColdPathDir = path.join(
