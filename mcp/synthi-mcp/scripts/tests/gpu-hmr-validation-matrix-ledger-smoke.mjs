@@ -13630,6 +13630,31 @@ function acceptedAuthoritativeMatrixRow(targetId, fields = {}) {
   return out;
 }
 
+const identityShortcutAcceptedRow = withQueryRecomputedRowId((() => {
+  const row = acceptedAuthoritativeMatrixRow('accepted-row-forged-identity-shortcut');
+  row.identityShortcutProbe = {
+    schemaVersion: 'synthi.gpu_hmr.identity_shortcut_probe.v1',
+    proofAuthority: 'test_forged_identity_shortcut_not_gpu_hmr_success',
+    targetNameIndependent: false,
+    projectNameWhitelist: ['one-special-project'],
+    candidateOracleHintsUsedForAcceptance: true,
+  };
+  row.identity_shortcut_probe = row.identityShortcutProbe;
+  return row;
+})());
+const identityShortcutAcceptedQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [identityShortcutAcceptedRow],
+});
+assert.equal(identityShortcutAcceptedQuery.accepted, false);
+assert.equal(identityShortcutAcceptedQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(identityShortcutAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_project_or_target_identity_whitelist'
+));
+assert.ok(identityShortcutAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_candidate_or_profile_identity_hint'
+));
+
 function scopedGeneralityClaim(acceptanceScope) {
   return {
     schemaVersion: 'synthi.gpu_hmr.generality_claim.v1',

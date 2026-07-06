@@ -18023,6 +18023,121 @@ function diagnosticSelfCheckArtifactFacet(...sources) {
   };
 }
 
+const IDENTITY_SHORTCUT_LIST_KEYS = new Set([
+  'acceptedProfileIds',
+  'acceptedTargetIds',
+  'accepted_profile_ids',
+  'accepted_target_ids',
+  'allowedProfileIds',
+  'allowedTargetIds',
+  'allowed_profile_ids',
+  'allowed_target_ids',
+  'candidateNameWhitelist',
+  'candidate_name_whitelist',
+  'profileNameWhitelist',
+  'profile_name_whitelist',
+  'projectNameWhitelist',
+  'project_name_whitelist',
+  'specificProfileIdsAllowed',
+  'specificTargetIdsAllowed',
+  'specific_profile_ids_allowed',
+  'specific_target_ids_allowed',
+  'targetNameWhitelist',
+  'target_name_whitelist',
+  'whitelistedProfileIds',
+  'whitelistedProjectIds',
+  'whitelistedTargetIds',
+  'whitelisted_profile_ids',
+  'whitelisted_project_ids',
+  'whitelisted_target_ids',
+]);
+
+const IDENTITY_SHORTCUT_TRUE_KEYS = new Set([
+  'candidateBackendUsedForAcceptance',
+  'candidateDeclarationsUsedForAcceptance',
+  'candidateHintsUsedForAcceptance',
+  'candidateIdentityUsedForAcceptance',
+  'candidateOracleHintsUsedForAcceptance',
+  'candidate_backend_used_for_acceptance',
+  'candidate_declarations_used_for_acceptance',
+  'candidate_hints_used_for_acceptance',
+  'candidate_identity_used_for_acceptance',
+  'candidate_oracle_hints_used_for_acceptance',
+  'profileIdUsedForAcceptance',
+  'profileNameUsedForAcceptance',
+  'profile_id_used_for_acceptance',
+  'profile_name_used_for_acceptance',
+  'projectIdUsedForAcceptance',
+  'projectNameUsedForAcceptance',
+  'project_id_used_for_acceptance',
+  'project_name_used_for_acceptance',
+  'sourceUrlUsedForAcceptance',
+  'source_url_used_for_acceptance',
+  'targetIdUsedForAcceptance',
+  'targetNameUsedForAcceptance',
+  'target_id_used_for_acceptance',
+  'target_name_used_for_acceptance',
+]);
+
+const IDENTITY_SHORTCUT_SCAN_SKIP_KEYS = new Set([
+  'afterImage',
+  'after_image',
+  'beforeImage',
+  'before_image',
+  'data',
+  'diffImage',
+  'diff_image',
+  'encodedBytes',
+  'encoded_bytes',
+  'imageData',
+  'image_data',
+  'pixelData',
+  'pixel_data',
+  'rawBytes',
+  'rawReadback',
+  'raw_bytes',
+  'raw_readback',
+  'rowDetails',
+  'row_details',
+  'rows',
+  'visualArtifacts',
+  'visual_artifacts',
+]);
+
+function identityShortcutAcceptanceFailures(source) {
+  const failures = [];
+  const record = (code, pathValue) => {
+    if (!failures.some((failure) => failure.code === code && failure.path === pathValue)) {
+      failures.push({ code, path: pathValue });
+    }
+  };
+  const inspectObject = (value, pathValue = '$') => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    for (const [key, entry] of Object.entries(value)) {
+      const entryPath = `${pathValue}.${key}`;
+      if (IDENTITY_SHORTCUT_LIST_KEYS.has(key)) {
+        const entries = compactStringList(entry);
+        if (entries.length > 0) {
+          record('gpu_hmr_success_cannot_use_project_or_target_identity_whitelist', entryPath);
+        }
+      }
+      if (
+        IDENTITY_SHORTCUT_TRUE_KEYS.has(key)
+        && firstBool(entry) === true
+      ) {
+        record('gpu_hmr_success_cannot_use_candidate_or_profile_identity_hint', entryPath);
+      }
+    }
+  };
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return failures;
+  inspectObject(source);
+  for (const [key, entry] of Object.entries(source)) {
+    if (IDENTITY_SHORTCUT_SCAN_SKIP_KEYS.has(key)) continue;
+    inspectObject(entry, `$.${key}`);
+  }
+  return failures;
+}
+
 function rowSafetyFailures(row, context = {}) {
   const failures = [];
   const acceptanceScope = firstText(row.acceptanceScope, row.acceptance_scope);
@@ -18059,6 +18174,7 @@ function rowSafetyFailures(row, context = {}) {
     if (row.refusalProven === true || row.refusal_proven === true) {
       failures.push({ code: 'accepted_gpu_hmr_row_cannot_be_refusal_proven' });
     }
+    failures.push(...identityShortcutAcceptanceFailures(row));
     failures.push(...generalityClaimFailures(row, context));
     failures.push(...fullRuntimeLedgerAuthorityFailures(row));
     const fullRuntimeAuthority = fullRuntimeEvidenceAuthorityFacet(row);
