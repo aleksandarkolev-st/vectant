@@ -533,7 +533,7 @@ export function SourceControlPanel({ slug }) {
 
   // ── Render ─────────────────────────────────────────────────────
   return (
-    <div className="scm-panel" data-git-panel>
+    <div className="scm-panel vt-app-surface" data-git-panel>
       <div className="scm-bridge-shell" style={{ position: 'relative' }}>
         <BranchBridge
           slug={slug}
@@ -594,9 +594,8 @@ export function SourceControlPanel({ slug }) {
           The full remote-management UI is deferred to Phase 6. */}
       {showCloneForm && (
         <div
-          className="mx-3 mb-2 p-2.5 rounded-lg"
+          className="vt-shell-panel mx-3 mb-2 p-2.5"
           style={{
-            background: 'var(--bg-elevated)',
             border: '1px solid var(--border-subtle)',
           }}
         >

@@ -342,7 +342,7 @@ export default function ProgramsPanel() {
     : null;
 
   return (
-    <div className="flex flex-col h-full min-h-0" style={{ ...PROGRAM_STYLE.panelShell, borderRadius: '0' }}>
+    <div className="vt-app-surface flex h-full min-h-0 flex-col" style={{ ...PROGRAM_STYLE.panelShell, borderRadius: '0' }}>
       {view === 'library' ? (
         <LibraryView
           canManage={canManage}

@@ -1480,10 +1480,10 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   return (
     <section
       data-testid="agent-workflow-panel"
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}
+      className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden"
+      style={{ color: 'var(--text-primary)' }}
     >
-      <header className="border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <header className="vt-toolbar px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Workflow className="h-4 w-4 shrink-0" strokeWidth={2} style={{ color: 'var(--accent-tertiary)' }} />
@@ -1505,7 +1505,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           ))}
         </div>
 
-        <section className="mt-4 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }}>
+        <section className="vt-shell-panel mt-4">
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="min-w-0">
               <h3 className="truncate text-xs font-semibold">{model.workflow.title}</h3>
@@ -1525,7 +1525,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           </div>
         </section>
 
-        <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-steps">
+        <section className="vt-shell-panel mt-3" data-testid="agent-workflow-steps">
           <div className="flex items-center gap-2 px-3 py-2">
             <Route className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--text-muted)' }} />
             <h3 className="truncate text-xs font-semibold">Recorded Trace</h3>
@@ -1545,7 +1545,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
         <HistoryList history={model.history} />
       </div>
 
-      <footer className="grid gap-2 border-t p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <footer className="grid gap-2 border-t p-3" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 72%, transparent)' }}>
         <ActionButton
           action={model.actions.primary?.action}
           label={model.actions.primary?.label || 'Attach'}

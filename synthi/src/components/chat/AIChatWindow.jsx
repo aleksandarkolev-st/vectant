@@ -786,16 +786,10 @@ const AIChatWindow = ({
     // distinct card with a brand-gradient rim and depth shadow — reads
     // as "AI is here over your editor" rather than "permanent panel".
     const containerClass = docked
-        ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
-        : 'fixed top-10 right-3 bottom-11 w-[420px] flex flex-col min-h-0 z-40 rounded-xl overflow-hidden';
+        ? 'vx-chat-shell vx-chat-shell--docked h-full w-full min-w-0 max-w-full flex flex-col min-h-0'
+        : 'vx-chat-shell vx-chat-shell--floating fixed top-12 right-4 bottom-12 w-[420px] flex flex-col min-h-0 z-40 overflow-hidden';
 
     const containerStyle = docked ? undefined : {
-        background: 'var(--bg-app)',
-        border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
-        boxShadow:
-            '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 14%, transparent), ' +
-            '0 24px 60px -12px rgba(0,0,0,0.7), ' +
-            '0 0 32px -8px color-mix(in srgb, var(--brand-stop-3) 24%, transparent)',
         backdropFilter: 'blur(8px) saturate(140%)',
         WebkitBackdropFilter: 'blur(8px) saturate(140%)',
     };
@@ -938,7 +932,7 @@ const AIChatWindow = ({
             </ChatRail>
 
             {/* Header */}
-            <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-app)' }}>
+            <div className="vx-chat-header flex flex-col">
                 <div className="flex items-center justify-between px-3.5 py-2.5 relative">
                     <div className="flex items-center gap-2.5">
                         {chatMode === 'wide' && (
@@ -965,7 +959,7 @@ const AIChatWindow = ({
                             />
                         )}
                         {(suggestedCode || fileSuggestions.length > 0) && (
-                            <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
+                            <div className="vx-run-badge text-[9px] font-semibold px-2 py-0.5 rounded-full">
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
                             </div>
                         )}
@@ -975,12 +969,7 @@ const AIChatWindow = ({
                             <button
                                 type="button"
                                 onClick={onDockRight}
-                                className="px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200"
-                                style={{
-                                    color: 'var(--accent-secondary)',
-                                    background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
-                                    border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)',
-                                }}
+                                className="vx-mini-action th-focus-ring px-2 py-1 text-[10px] font-semibold"
                                 title="Dock chat to the right"
                             >
                                 Dock right
@@ -990,8 +979,7 @@ const AIChatWindow = ({
                             <button
                                 type="button"
                                 onClick={onClose}
-                                className="p-1.5 rounded-lg transition-all duration-200"
-                                style={{ color: 'var(--text-muted)' }}
+                                className="vx-icon-action th-focus-ring p-1.5"
                                 title="Close chat"
                             >
                                 <X className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -1026,7 +1014,7 @@ const AIChatWindow = ({
                     />
                 </div>
             ) : (
-            <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 relative overflow-hidden" style={{ background: 'var(--bg-app)' }}>
+            <ScrollArea ref={scrollRef} className="vx-chat-scroll flex-1 px-3 py-3 min-h-0 min-w-0 relative overflow-hidden">
                 {/* Subtle ambient glow */}
                 <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full blur-[60px] z-0" style={{ background: 'color-mix(in srgb, var(--accent-primary) 4%, transparent)' }}></div>
                 <div className="space-y-3 min-w-0 relative z-10">
@@ -1440,7 +1428,7 @@ const AIChatWindow = ({
             )}
 
             {/* Input Area (composer) — docked at bottom; centered hero when empty */}
-            <div ref={composerRef} className="vx-composer-dock px-3.5 py-2.5" style={{ background: 'var(--bg-app)', borderTop: isEmpty ? 'none' : '1px solid var(--border-subtle)' }}>
+            <div ref={composerRef} className={`vx-composer-dock px-3.5 py-2.5 ${isEmpty ? 'is-empty' : ''}`}>
                 <input
                     ref={fileInputRef}
                     type="file"

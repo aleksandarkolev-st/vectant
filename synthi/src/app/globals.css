@@ -1829,7 +1829,7 @@
     var(--brand-stop-1)
   );
   background-size: 200% 100%;
-  animation: vt-brand-sweep 3.5s linear infinite;
+  animation: vt-brand-sweep 3.5s cubic-bezier(0.32, 0.72, 0, 1) infinite;
 }
 
 .terminal-pane-shell .xterm .xterm-scroll-area {
@@ -1844,6 +1844,7 @@
 @media (prefers-reduced-motion: reduce) {
   .vt-brand-pulse,
   .vt-brand-sweep,
+  .vt-skeleton::after,
   .vt-ambient-bottom::after,
   .vt-ambient-top::before {
     animation: none !important;

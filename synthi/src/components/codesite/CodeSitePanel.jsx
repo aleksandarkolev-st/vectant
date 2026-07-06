@@ -7560,7 +7560,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   return (
     <div
       data-testid="codesite-panel"
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
         "--accent-primary": "oklch(73% 0.13 196)",
         "--attention-purple": "oklch(73% 0.13 196)",

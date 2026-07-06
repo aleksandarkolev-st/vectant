@@ -28,7 +28,9 @@
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: var(--bg-sidebar);
+  background:
+    radial-gradient(circle at 18% -8%, color-mix(in srgb, var(--brand-stop-3) 7%, transparent), transparent 18rem),
+    var(--bg-sidebar);
   color: var(--text-primary);
   font-family: var(--font-ui);
 }
@@ -119,9 +121,13 @@
   position: relative;
   margin: 10px 12px 6px;
   padding: 12px 14px;
-  border-radius: 8px;
-  background: var(--bg-panel);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 92%, white 3%), color-mix(in srgb, var(--bg-panel) 90%, transparent));
   border: 1px solid var(--border-subtle);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+    0 18px 46px -38px rgba(0, 0, 0, 0.95);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -163,8 +169,10 @@
   align-items: center;
   text-align: center;
   padding: 18px 14px 14px;
-  background: transparent;
-  border: none;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 70%, transparent), transparent),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 3%, transparent) 0 1px, transparent 1px 12px);
+  border: 1px dashed color-mix(in srgb, var(--border-medium) 75%, transparent);
 }
 
 .scm-focal-title {
@@ -195,17 +203,23 @@
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   border: 1px solid transparent;
-  background: var(--bg-elevated);
+  background: color-mix(in srgb, var(--bg-panel) 54%, transparent);
   color: var(--text-primary);
-  transition: background 150ms ease, transform 120ms ease, filter 150ms ease;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    transform var(--motion-fast),
+    filter var(--motion-fast);
 }
 .scm-focal-action:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--attention-purple) 26%, var(--border-subtle));
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
 }
 .scm-focal-action:active:not(:disabled) {
   transform: translateY(1px);
@@ -213,8 +227,10 @@
 .scm-focal-action--primary {
   background: var(--brand-gradient);
   color: #ffffff;
-  border: none;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  border: 1px solid color-mix(in srgb, var(--brand-stop-4) 26%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 16px 36px -28px color-mix(in srgb, var(--brand-stop-3) 80%, transparent);
 }
 .scm-focal-action--primary:hover:not(:disabled) {
   filter: brightness(1.08);

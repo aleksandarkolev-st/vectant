@@ -100,8 +100,8 @@ export default function ConnectedToolsPanel() {
   };
 
   return (
-    <div className="flex flex-col h-full" style={{ color: 'var(--text-primary)' }}>
-      <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="vt-app-surface flex h-full flex-col" style={{ color: 'var(--text-primary)' }}>
+      <div className="vt-toolbar flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
           <Plug className="w-3.5 h-3.5" /> Connected Tools
         </div>
@@ -111,10 +111,15 @@ export default function ConnectedToolsPanel() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-2">
-        {loading && <div className="text-xs px-2 py-3" style={{ color: 'var(--text-muted)' }}>Loading…</div>}
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
+        {loading && (
+          <div className="space-y-2 px-1 py-2">
+            <div className="vt-skeleton h-12 rounded-[var(--radius-panel)]" />
+            <div className="vt-skeleton h-12 rounded-[var(--radius-panel)]" />
+          </div>
+        )}
         {!loading && connections.length === 0 && (
-          <div className="text-xs px-2 py-6 text-center" style={{ color: 'var(--text-muted)' }}>
+          <div className="vt-empty-state text-center text-xs">
             No tools connected yet. Click "Add connection" to connect an MCP server
             (GitHub, Sentry, Linear, TesterArmy…).
           </div>
@@ -124,7 +129,7 @@ export default function ConnectedToolsPanel() {
           const tools = toolsByConn[conn.id] || [];
           const allow = new Set(conn.toolAllowlist || []);
           return (
-            <div key={conn.id} className="rounded-lg border" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+            <div key={conn.id} className="vt-shell-panel">
               <div className="flex items-center justify-between px-2.5 py-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <HealthDot state={conn.lastHealthState} />
@@ -140,8 +145,8 @@ export default function ConnectedToolsPanel() {
                 </div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => onToggleEnabled(conn)} title={conn.enabled ? 'Enabled' : 'Disabled'}
-                    className="text-[10px] px-1.5 py-0.5 rounded"
-                    style={{ background: conn.enabled ? 'color-mix(in srgb, #4ade80 18%, transparent)' : 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                    className={`th-focus-ring rounded-[var(--radius-control)] border px-1.5 py-0.5 text-[10px] ${conn.enabled ? 'th-btn-active' : 'th-btn-ghost'}`}
+                    style={{ color: conn.enabled ? 'var(--accent-success)' : 'var(--text-secondary)' }}>
                     {conn.enabled ? 'on' : 'off'}
                   </button>
                   <Button variant="ghost" size="icon" onClick={() => onTest(conn)} title="Test & list tools"><RefreshCw className="w-3.5 h-3.5" /></Button>
