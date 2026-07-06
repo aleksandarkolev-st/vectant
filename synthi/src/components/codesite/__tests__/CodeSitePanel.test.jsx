@@ -763,7 +763,7 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
     expect(container.textContent).toContain('Workspace Graph');
-    expect(container.textContent).toContain('Path Lock Occupancy');
+    expect(container.textContent).toContain('Path Locks');
     expect(container.textContent).toContain('Agent Readiness');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
@@ -774,12 +774,12 @@ describe('CodeSitePanel', () => {
     expect(replayHandover.textContent).toContain('txn-1');
     expect(replayHandover.textContent).toContain('proof-1');
     expect(replayHandover.textContent).toContain('sha256:incident');
-    expect(replayHandover.textContent).toContain('CodeSite-Black-Box');
+    expect(replayHandover.textContent).toContain('Event evidence digest');
     expect(replayHandover.textContent).toContain('transaction.committed');
     expect(replayHandover.textContent).toContain('black_box.closed');
     expect(replayHandover.textContent).toContain('write.denied');
     expect(replayHandover.textContent).toContain('incident-replay-incident-1.jsonl');
-    expect(container.textContent).toContain('Filesystem Boundary Proofs');
+    expect(container.textContent).toContain('Filesystem Boundary Evidence');
     const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
     expect(boundaryProof).toBeTruthy();
     expect(boundaryProof.textContent).toContain('secrets/prod.env');
@@ -885,7 +885,7 @@ describe('CodeSitePanel', () => {
     expect(laneNamed('Health API work scope').textContent).not.toContain('ATLAS-1');
     expect(container.textContent).toContain('CodeSite-Clearance');
     expect(container.textContent).toContain('CodeSite-Transaction');
-    expect(container.textContent).toContain('Line Provenance');
+    expect(container.textContent).toContain('Lineage Inspector');
     expect(container.textContent).toContain('api/checkout/route.js');
     expect(container.textContent).toContain('L42-L44');
     expect(container.textContent).toContain('hunk:checkout');
@@ -910,12 +910,12 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-scope-topology"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-tower-feed"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('EventSource live');
+    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('Live updates connected');
     expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
     expect(container.querySelector('[data-testid="codesite-route-revision-row"]').textContent).toContain('api/checkout/v2/**');
     expect(container.querySelector('[data-testid="codesite-mayday-banner"]').textContent).toContain('1 open');
-    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('emergency stop');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('paused incident');
     expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('inspection-mayday-1');
     expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
       'acme',
@@ -1093,7 +1093,7 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-route-revisions-show-all"]').textContent)
       .toContain('Show all plan changes (6)');
     expect(container.querySelector('[data-testid="codesite-maydays-show-all"]').textContent)
-      .toContain('Show all emergency holds (4)');
+      .toContain('Show all paused incidents (4)');
   });
 
   it('routes structured required actions into the governance review gate', async () => {

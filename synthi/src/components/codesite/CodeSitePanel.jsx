@@ -3,24 +3,33 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
-  Activity,
-  AlertTriangle,
-  BarChart3,
+  ArchiveRestore,
+  Bot,
   CheckCircle2,
+  CircleGauge,
+  Cable,
   ClipboardCheck,
+  DatabaseZap,
+  FileCheck2,
   FileJson,
-  FileSearch,
-  GitCommit,
-  Inbox,
-  Layers,
-  Network,
+  FileStack,
+  FolderGit2,
+  GitBranch,
+  History,
+  ListChecks,
+  LockKeyhole,
+  MapPinned,
+  PackageCheck,
   Plus,
   RefreshCw,
-  Route,
-  ScrollText,
+  SearchCheck,
+  ServerCog,
+  ShieldAlert,
   ShieldCheck,
   Siren,
-  Upload,
+  SquareActivity,
+  Waypoints,
+  Workflow,
 } from "lucide-react";
 import {
   applyCodeSiteRouteRevision,
@@ -43,6 +52,36 @@ import {
 const POLL_MS = 5000;
 const MOTION_EASE = [0.16, 1, 0.3, 1];
 const STATUS_PULSE_EASE = [0.45, 0, 0.55, 1];
+
+const CodeSiteIcons = Object.freeze({
+  control: ServerCog,
+  liveState: SquareActivity,
+  workspaceGraph: Waypoints,
+  paths: FolderGit2,
+  agents: Bot,
+  actions: ListChecks,
+  approvals: ShieldCheck,
+  governance: ClipboardCheck,
+  planChanges: GitBranch,
+  pathLocks: LockKeyhole,
+  conflicts: ShieldAlert,
+  evidence: FileCheck2,
+  transactions: DatabaseZap,
+  metrics: CircleGauge,
+  activity: History,
+  recovery: Siren,
+  simulator: Workflow,
+  quarantine: ArchiveRestore,
+  inspections: ClipboardCheck,
+  incidents: ShieldAlert,
+  replay: History,
+  artifacts: PackageCheck,
+  files: FileStack,
+  lineage: SearchCheck,
+  scopes: MapPinned,
+  signals: Cable,
+  json: FileJson,
+});
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -98,10 +137,10 @@ function productCopy(value, fallback = "none") {
     .replace(/\breroutes\b/g, "plan changes")
     .replace(/\bReroute\b/g, "Plan change")
     .replace(/\breroute\b/g, "plan change")
-    .replace(/\bMayday\b/g, "Emergency stop")
-    .replace(/\bmayday\b/g, "emergency stop")
-    .replace(/\bGround stop\b/g, "Emergency hold")
-    .replace(/\bground stop\b/g, "emergency hold")
+    .replace(/\bMayday\b/g, "Paused incident")
+    .replace(/\bmayday\b/g, "paused incident")
+    .replace(/\bGround stop\b/g, "Stop-work hold")
+    .replace(/\bground stop\b/g, "stop-work hold")
     .replace(/\bLanding\b/g, "Commit")
     .replace(/\blanding\b/g, "commit")
     .replace(/\bLandings\b/g, "Commits")
@@ -1300,16 +1339,24 @@ function toneLabel(value) {
 }
 
 function Pill({ children, tone = "idle", className = "", testId }) {
+  const toneStyle = typeof tone === "string" ? statusTone(tone) : tone;
   return (
     <span
       data-testid={testId}
-      className={`inline-flex min-h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
+      className={`inline-flex min-h-6 min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 74%, var(--text-primary) 12%)",
-        ...(typeof tone === "string" ? statusTone(tone) : tone),
+        ...toneStyle,
       }}
     >
+      {typeof tone === "string" ? (
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ background: statusColor(tone) }}
+        />
+      ) : null}
       {children}
     </span>
   );
@@ -1337,7 +1384,7 @@ function IconButton({
       whileHover={disabled || reduceMotion ? undefined : { y: -1 }}
       whileTap={disabled || reduceMotion ? undefined : { scale: 0.985 }}
       transition={{ duration: reduceMotion ? 0 : 0.18, ease: MOTION_EASE }}
-      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold outline-none transition-[background,border-color,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)] disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold outline-none transition-[background,border-color,box-shadow,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)] disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: active
           ? "color-mix(in srgb, var(--accent-primary) 62%, var(--border-subtle))"
@@ -1346,6 +1393,9 @@ function IconButton({
           ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
           : "var(--bg-elevated)",
         color: "var(--text-primary)",
+        boxShadow: active
+          ? "inset 0 1px 0 color-mix(in srgb, var(--accent-primary) 28%, transparent)"
+          : "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent)",
         transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
       }}
     >
@@ -1365,10 +1415,18 @@ function Section({ title, icon: Icon, children, right, sectionKey }) {
           "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
       }}
     >
-      <div className="flex min-h-12 items-center justify-between gap-3 px-4 py-3">
+      <div
+        className="flex min-h-12 items-center justify-between gap-3 border-b px-4 py-3"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 82%, var(--bg-editor) 18%), color-mix(in srgb, var(--bg-surface) 96%, transparent))",
+        }}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border shadow-[inset_0_1px_0_rgba(255,255,255,0.055)]"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)",
@@ -1395,22 +1453,34 @@ function Section({ title, icon: Icon, children, right, sectionKey }) {
   );
 }
 
-function Metric({ label, value, tone = null, testId }) {
+function Metric({ label, value, tone = null, testId, icon: Icon }) {
   return (
     <div
       data-testid={testId}
-      className="min-h-[76px] rounded-md border px-3 py-3 transition-[border-color,background] duration-200"
+      className="min-h-[76px] rounded-md border px-3 py-3 transition-[border-color,background,box-shadow] duration-200"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 92%, var(--accent-primary) 8%)",
-        background: "var(--bg-surface)",
+        background:
+          "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 88%, var(--bg-editor) 12%))",
+        boxShadow:
+          "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent)",
       }}
     >
-      <div
-        className="text-[11px] font-medium leading-tight"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {label}
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div
+          className="truncate text-[11px] font-medium leading-tight"
+          style={{ color: "var(--text-muted)" }}
+          title={label}
+        >
+          {label}
+        </div>
+        {Icon ? (
+          <Icon
+            className="h-3.5 w-3.5 shrink-0"
+            style={{ color: "var(--accent-primary)" }}
+          />
+        ) : null}
       </div>
       <div className="mt-1 flex items-start justify-between gap-2">
         <div
@@ -1438,22 +1508,25 @@ function StatusRailItem({
   label,
   value,
   tone = "idle",
-  icon: Icon = Activity,
+  icon: Icon = CodeSiteIcons.liveState,
   testId,
 }) {
   return (
     <div
       data-testid={testId}
-      className="grid min-h-16 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2.5 py-2"
+      className="grid min-h-16 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
-        background: "color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%)",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 96%, var(--accent-primary) 3%), color-mix(in srgb, var(--bg-surface) 90%, var(--bg-editor) 10%))",
       }}
     >
       <span
-        className="grid h-8 w-8 place-items-center rounded-md"
+        className="grid h-8 w-8 place-items-center rounded-md border"
         style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
           background:
             "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
         }}
@@ -1531,7 +1604,7 @@ function TowerNowStrip({
           ? "Live coordination stream"
           : `Stream ${toneLabel(streamStatus)}`,
       tone: towerState,
-      icon: Activity,
+      icon: CodeSiteIcons.liveState,
       section: "tower",
     },
     {
@@ -1543,7 +1616,7 @@ function TowerNowStrip({
         ? `${riskCount} forecasted risk${riskCount === 1 ? "" : "s"}`
         : "No forecasted conflicts",
       tone: forecastRisk,
-      icon: AlertTriangle,
+      icon: CodeSiteIcons.conflicts,
       section: "radar",
     },
     {
@@ -1553,17 +1626,19 @@ function TowerNowStrip({
       value: requiredCount,
       detail: `${documentsNeedingReview} docs / ${routeReviews} plan changes`,
       tone: requiredCount ? "holding" : "active",
-      icon: Inbox,
+      icon: CodeSiteIcons.actions,
       section: "governance",
     },
     {
       key: "mayday",
-      label: "Recovery review",
+      label: "Paused incidents",
       shortLabel: "Resume",
       value: maydayCount,
-      detail: maydayCount ? "Resume needs inspection evidence" : "No recovery holds",
+      detail: maydayCount
+        ? "Inspection evidence needed before resume"
+        : "No paused incidents",
       tone: maydayCount ? "high" : "active",
-      icon: Siren,
+      icon: CodeSiteIcons.recovery,
       section: "replay",
     },
     {
@@ -1575,7 +1650,7 @@ function TowerNowStrip({
         ? `${transactionCount} open transaction${transactionCount === 1 ? "" : "s"}`
         : "No occupied write lock",
       tone: runwayCount || transactionCount ? "holding" : "active",
-      icon: Route,
+      icon: CodeSiteIcons.pathLocks,
       section: "radar",
     },
     {
@@ -1586,7 +1661,7 @@ function TowerNowStrip({
         ? `${quarantineCount} quarantine${quarantineCount === 1 ? "" : "s"} need replay`
         : "Evidence handoff ready",
       tone: quarantineCount ? "warning" : proofCount ? "active" : "idle",
-      icon: GitCommit,
+      icon: CodeSiteIcons.evidence,
       section: "evidence",
     },
   ];
@@ -1706,7 +1781,7 @@ function CodeSiteOperatingModel({
       label: "Work scope",
       value: `${asArray(activeFlights).length} workstream${asArray(activeFlights).length === 1 ? "" : "s"}`,
       detail: "Owned paths, risk areas, and active changes",
-      icon: Network,
+      icon: CodeSiteIcons.workspaceGraph,
       section: "radar",
     },
     {
@@ -1714,7 +1789,7 @@ function CodeSiteOperatingModel({
       label: "Activity",
       value: "Live events",
       detail: "Agent updates, blockers, and system guardrails",
-      icon: Activity,
+      icon: CodeSiteIcons.activity,
       section: "tower",
     },
     {
@@ -1722,7 +1797,7 @@ function CodeSiteOperatingModel({
       label: "Governance",
       value: `${asArray(activeLeases).length} approval${asArray(activeLeases).length === 1 ? "" : "s"}`,
       detail: "Permits, document review, and plan changes",
-      icon: ShieldCheck,
+      icon: CodeSiteIcons.governance,
       section: "governance",
     },
     {
@@ -1730,7 +1805,7 @@ function CodeSiteOperatingModel({
       label: "Evidence",
       value: `${asArray(proofBundles).length} bundle${asArray(proofBundles).length === 1 ? "" : "s"}`,
       detail: `${asArray(documents).length} docs / ${asArray(routeRevisions).length} plan changes`,
-      icon: GitCommit,
+      icon: CodeSiteIcons.evidence,
       section: "evidence",
     },
   ];
@@ -2210,7 +2285,7 @@ function RunwayOccupancyBoard({ runways }) {
                 className="text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Can land
+                Can write now
               </div>
               <PathList
                 paths={eligibleFlights}
@@ -2293,7 +2368,7 @@ function TowerSimulatorDeck({
           disabled={disabled}
           testId="codesite-run-tower-simulator"
         >
-          <Activity className="h-3.5 w-3.5" />
+          <CodeSiteIcons.simulator className="h-3.5 w-3.5" />
           Simulate
         </IconButton>
       </div>
@@ -3069,7 +3144,7 @@ function PilotLicenseHealthPanel({ records }) {
 function FilesystemBoundaryProofPanel({ records }) {
   const rows = asArray(records);
   if (!rows.length)
-    return <EmptyLine>No filesystem boundary proofs recorded</EmptyLine>;
+    return <EmptyLine>No filesystem boundary evidence recorded</EmptyLine>;
 
   return (
     <div
@@ -3635,7 +3710,7 @@ function QuarantineReviewPanel({
                   }
                   testId="codesite-quarantine-replay-button"
                 >
-                  <FileSearch className="h-3.5 w-3.5" />
+                  <CodeSiteIcons.replay className="h-3.5 w-3.5" />
                   Replay
                 </IconButton>
                 <IconButton
@@ -4003,52 +4078,60 @@ function MobileSectionTabs({ sections, activeSection, onSelect }) {
           background: "color-mix(in srgb, var(--bg-editor) 76%, transparent)",
         }}
       >
-        {sections.map((section) => (
-          <motion.button
-            key={section.key}
-            type="button"
-            role="tab"
-            aria-selected={activeSection === section.key}
-            aria-controls={`codesite-section-${section.key}`}
-            data-testid="codesite-mobile-section-tab"
-            onClick={() => onSelect(section.key)}
-            whileTap={reduceMotion ? undefined : { scale: 0.985 }}
-            className="relative inline-flex h-11 shrink-0 items-center rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"
-            style={{
-              borderColor:
-                activeSection === section.key
-                  ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
-                  : "var(--border-subtle)",
-              background:
-                activeSection === section.key
-                  ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
-                  : "var(--bg-elevated)",
-              color: "var(--text-primary)",
-              transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
-            }}
-          >
-            {activeSection === section.key && !reduceMotion ? (
-              <motion.span
-                layoutId="codesite-mobile-active-section"
-                className="absolute inset-0 rounded-md"
-                style={{
-                  border: "1px solid color-mix(in srgb, var(--accent-primary) 54%, transparent)",
-                }}
-                transition={{ duration: 0.2, ease: MOTION_EASE }}
-              />
-            ) : null}
-            <span className="relative">{section.label}</span>
-            <span
-              className="relative ml-2 h-1.5 w-1.5 rounded-full"
+        {sections.map((section) => {
+          const Icon = section.icon || CodeSiteIcons.liveState;
+          return (
+            <motion.button
+              key={section.key}
+              type="button"
+              role="tab"
+              aria-selected={activeSection === section.key}
+              aria-controls={`codesite-section-${section.key}`}
+              data-testid="codesite-mobile-section-tab"
+              onClick={() => onSelect(section.key)}
+              whileTap={reduceMotion ? undefined : { scale: 0.985 }}
+              className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"
               style={{
+                borderColor:
+                  activeSection === section.key
+                    ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
+                    : "var(--border-subtle)",
                 background:
                   activeSection === section.key
-                    ? "var(--accent-primary)"
-                    : "var(--border-subtle)",
+                    ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
+                    : "var(--bg-elevated)",
+                color: "var(--text-primary)",
+                transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
               }}
-            />
-          </motion.button>
-        ))}
+            >
+              {activeSection === section.key && !reduceMotion ? (
+                <motion.span
+                  layoutId="codesite-mobile-active-section"
+                  className="absolute inset-0 rounded-md"
+                  style={{
+                    border:
+                      "1px solid color-mix(in srgb, var(--accent-primary) 54%, transparent)",
+                  }}
+                  transition={{ duration: 0.2, ease: MOTION_EASE }}
+                />
+              ) : null}
+              <Icon
+                className="relative h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+              />
+              <span className="relative">{section.label}</span>
+              <span
+                className="relative h-1.5 w-1.5 rounded-full"
+                style={{
+                  background:
+                    activeSection === section.key
+                      ? "var(--accent-primary)"
+                      : "var(--border-subtle)",
+                }}
+              />
+            </motion.button>
+          );
+        })}
       </div>
       <div
         data-testid="codesite-mobile-action-drawer"
@@ -4120,18 +4203,40 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
         }}
       >
         <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">Activity stream</div>
+          <div className="flex min-w-0 items-start gap-2">
+            <span
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 76%, var(--accent-primary) 24%)",
+                background:
+                  "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
+              }}
+            >
+              <CodeSiteIcons.activity
+                className="h-3.5 w-3.5"
+                style={{ color: "var(--accent-primary)" }}
+              />
+            </span>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">Activity log</div>
+              <div
+                className="mt-0.5 text-[10px] uppercase"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Agent updates, blockers, and guardrails
+              </div>
+            </div>
             <div
               data-testid="codesite-event-stream-status"
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
               {streamStatus === "live"
-                ? "EventSource live"
+                ? "Live updates connected"
                 : streamStatus === "reconnecting"
-                  ? "Reconnecting to activity stream"
-                  : "Polling fallback active"}
+                  ? "Reconnecting updates"
+                  : "Checking for updates"}
             </div>
           </div>
           <Pill
@@ -4154,6 +4259,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
             label="Events"
             value={rows.length}
             tone={rows.length ? "active" : "idle"}
+            icon={CodeSiteIcons.activity}
           />
           <Metric
             label="Coordination"
@@ -4162,6 +4268,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
                 String(event.eventType || "").includes("tower"),
               ).length
             }
+            icon={CodeSiteIcons.governance}
           />
           <Metric
             label="Blocks"
@@ -4173,6 +4280,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
               ).length
             }
             tone="holding"
+            icon={CodeSiteIcons.conflicts}
           />
         </div>
       </div>
@@ -4349,7 +4457,7 @@ function GovernanceReviewGate({ action, rationale, onRationale, onCancel, onConf
           onClick={() => onConfirm(rationale)}
           testId="codesite-governance-review-confirm"
         >
-          <ShieldCheck className="h-3.5 w-3.5" />
+          <CodeSiteIcons.approvals className="h-3.5 w-3.5" />
           Confirm
         </IconButton>
       </div>
@@ -4499,7 +4607,7 @@ function GovernanceConsole({
             className="grid gap-1 text-[11px]"
             style={{ color: "var(--text-muted)" }}
           >
-            Route scope
+            Allowed paths
             <input
               data-testid="codesite-permit-route-input"
               value={draftRoute}
@@ -4522,7 +4630,7 @@ function GovernanceConsole({
             disabled={disabled || !project?.id}
             testId="codesite-issue-permit-button"
           >
-            <ShieldCheck className="h-3.5 w-3.5" />
+            <CodeSiteIcons.approvals className="h-3.5 w-3.5" />
             Issue permit
           </IconButton>
         </div>
@@ -4606,7 +4714,7 @@ function GovernanceConsole({
                       }
                       testId="codesite-document-approve-button"
                     >
-                      <ClipboardCheck className="h-3.5 w-3.5" />
+                      <CodeSiteIcons.governance className="h-3.5 w-3.5" />
                       Approve
                     </IconButton>
                     <IconButton
@@ -4629,7 +4737,7 @@ function GovernanceConsole({
                       }
                       testId="codesite-document-reject-button"
                     >
-                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <CodeSiteIcons.conflicts className="h-3.5 w-3.5" />
                       Reject
                     </IconButton>
                   </div>
@@ -4732,7 +4840,7 @@ function GovernanceConsole({
                 disabled={disabled || !primaryPlan.id}
                 testId="codesite-route-propose-button"
               >
-                <Route className="h-3.5 w-3.5" />
+                <CodeSiteIcons.planChanges className="h-3.5 w-3.5" />
                 Propose change
               </IconButton>
             </form>
@@ -4766,12 +4874,12 @@ function GovernanceConsole({
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1">
                       <IconButton
-                        title="Approve route revision"
+                        title="Approve plan change"
                         disabled={disabled || !routeRevisionCanReview(revision)}
                         onClick={() =>
                           queueGovernanceAction({
                             kind: "route_revision_review",
-                            title: "Approve route revision",
+                            title: "Approve plan change",
                             entity: revision.id,
                             owner: revision.displayCallsign || revision.executionPlanId,
                             severity: "high",
@@ -4790,16 +4898,16 @@ function GovernanceConsole({
                         }
                         testId="codesite-route-review-button"
                       >
-                        <ClipboardCheck className="h-3.5 w-3.5" />
+                        <CodeSiteIcons.governance className="h-3.5 w-3.5" />
                         Approve
                       </IconButton>
                       <IconButton
-                        title="Apply route revision"
+                        title="Apply plan change"
                         disabled={disabled || !routeRevisionCanApply(revision)}
                         onClick={() =>
                           queueGovernanceAction({
                             kind: "route_revision_apply",
-                            title: "Apply route revision",
+                            title: "Apply plan change",
                             entity: revision.id,
                             owner: revision.displayCallsign || revision.executionPlanId,
                             severity: "critical",
@@ -4871,7 +4979,7 @@ function GovernanceConsole({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-xs font-semibold">
-                Emergency hold recovery
+                Paused incident recovery
               </div>
               <div
                 className="mt-1 truncate text-[11px]"
@@ -4926,12 +5034,12 @@ function GovernanceConsole({
                       </div>
                     </div>
                     <IconButton
-                      title="Resume emergency hold"
+                      title="Resume paused incident"
                       disabled={disabled || inspectionRunIds.length === 0}
                       onClick={() =>
                         queueGovernanceAction({
                           kind: "mayday_resume",
-                          title: `Resume ${productCopy(incident.category, "emergency")}`,
+                          title: `Resume ${productCopy(incident.category, "paused incident")}`,
                           entity: incident.id,
                           owner: asArray(incident.participants)[0] || "coordinator",
                           severity: "critical",
@@ -4951,7 +5059,7 @@ function GovernanceConsole({
                       }
                       testId="codesite-resume-mayday-submit"
                     >
-                      <Siren className="h-3.5 w-3.5" />
+                      <CodeSiteIcons.recovery className="h-3.5 w-3.5" />
                       Resume
                     </IconButton>
                   </div>
@@ -4967,7 +5075,7 @@ function GovernanceConsole({
                   }}
                 >
                   <summary className="cursor-pointer font-semibold">
-                    Show all emergency holds ({maydayIncidents.length})
+                    Show all paused incidents ({maydayIncidents.length})
                   </summary>
                   <div className="mt-2 grid gap-1">
                     {maydayIncidents.slice(3).map((incident) => (
@@ -5393,7 +5501,7 @@ function replayCompletenessTone(completeness) {
 
 function CausalReplayDeck({ handovers }) {
   const rows = asArray(handovers);
-  if (!rows.length) return <EmptyLine>No black-box handover closed yet</EmptyLine>;
+  if (!rows.length) return <EmptyLine>No replay package closed yet</EmptyLine>;
   const visibleRows = rows.slice(0, 3);
   const hiddenRows = rows.length - visibleRows.length;
 
@@ -5409,9 +5517,9 @@ function CausalReplayDeck({ handovers }) {
           background: "var(--bg-surface)",
         }}
       >
-        <span className="font-semibold">Replay coverage queue</span>
+        <span className="font-semibold">Incident replay packages</span>
         <div className="flex flex-wrap gap-1">
-          <Pill>{rows.length} handovers</Pill>
+          <Pill>{rows.length} packages</Pill>
           {hiddenRows > 0 ? (
             <Pill tone="holding">+{hiddenRows} archived</Pill>
           ) : null}
@@ -5461,9 +5569,9 @@ function CausalReplayDeck({ handovers }) {
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   {[
-                    ["Replay digest", handover.incident.replayDigest],
+                    ["Replay artifact", handover.incident.replayDigest],
                     ["Proof bundle", handover.proofBundle?.id],
-                    ["CodeSite-Black-Box", handover.codeSiteBlackBox],
+                    ["Event evidence digest", handover.codeSiteBlackBox],
                   ].map(([label, value]) => (
                     <div key={label} className="min-w-0 rounded-md border px-2 py-1.5" style={{
                       borderColor: "var(--border-subtle)",
@@ -5513,7 +5621,7 @@ function CausalReplayDeck({ handovers }) {
                       className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      Causal timeline
+                      Event timeline
                     </div>
                     {latestEvents.length === 0 ? (
                       <EmptyLine>No replay events indexed</EmptyLine>
@@ -5574,11 +5682,11 @@ function CausalReplayDeck({ handovers }) {
                   className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  Export refs
+                  Exported files
                 </div>
                 <PathList
                   paths={handover.exportPaths}
-                  empty="no export refs"
+                  empty="no exported files"
                   maxVisible={7}
                 />
                 <div className="mt-3">
@@ -6272,7 +6380,7 @@ function ScopeTopology({
                       eyebrow="Path group"
                       title={displayZoneName(zone, index)}
                       tone={tone}
-                      icon={Layers}
+                      icon={CodeSiteIcons.paths}
                       testId="codesite-scope-path-node"
                     >
                       <div className="flex min-w-0 flex-wrap gap-1">
@@ -6309,7 +6417,7 @@ function ScopeTopology({
                           ? "holding"
                           : relatedFlights[0]?.status || "idle"
                       }
-                      icon={Activity}
+                      icon={CodeSiteIcons.agents}
                       testId="codesite-scope-agent-node"
                     >
                       <div className="flex min-w-0 flex-wrap gap-1">
@@ -6355,7 +6463,7 @@ function ScopeTopology({
                       eyebrow="Guardrail checks"
                       title={guardrail.label}
                       tone={connectorTone}
-                      icon={ShieldCheck}
+                      icon={CodeSiteIcons.approvals}
                       testId="codesite-scope-guardrail-node"
                     >
                       <div className="flex min-w-0 items-center gap-2">
@@ -7001,7 +7109,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
           decision,
           reason:
             rationale ||
-            `Route revision ${decision} from CodeSite governance console.`,
+            `Plan change ${decision} from CodeSite governance console.`,
           evidenceRefs: [`codesite:ui:route-review:${revision.id}`],
         }),
       );
@@ -7436,15 +7544,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
   }, [controlState?.towerState, currentProject?.status, error]);
   const mobileSections = useMemo(
     () => [
-      { key: "radar", label: "Graph" },
-      { key: "tower", label: "Activity" },
-      { key: "governance", label: "Governance" },
-      { key: "evidence", label: "Metrics" },
-      { key: "simulator", label: "Simulator" },
-      { key: "quarantine", label: "Quarantine" },
-      { key: "replay", label: "Replay" },
-      { key: "lineage", label: "Lineage" },
-      { key: "runway", label: "Locks" },
+      { key: "radar", label: "Graph", icon: CodeSiteIcons.workspaceGraph },
+      { key: "tower", label: "Activity", icon: CodeSiteIcons.activity },
+      { key: "governance", label: "Governance", icon: CodeSiteIcons.governance },
+      { key: "evidence", label: "Evidence", icon: CodeSiteIcons.evidence },
+      { key: "simulator", label: "Simulator", icon: CodeSiteIcons.simulator },
+      { key: "quarantine", label: "Quarantine", icon: CodeSiteIcons.quarantine },
+      { key: "replay", label: "Replay", icon: CodeSiteIcons.replay },
+      { key: "lineage", label: "Lineage", icon: CodeSiteIcons.lineage },
+      { key: "runway", label: "Locks", icon: CodeSiteIcons.pathLocks },
     ],
     [],
   );
@@ -7491,20 +7599,20 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   "color-mix(in srgb, var(--accent-primary) 9%, var(--bg-elevated))",
               }}
             >
-              <ShieldCheck
+              <CodeSiteIcons.control
                 className="h-4 w-4"
                 style={{ color: "var(--accent-primary)" }}
               />
             </span>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold">
-                CodeSite Control
+                CodeSite Operations
               </div>
               <div
                 className="truncate text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Agent coordination, path locks, approvals, and evidence
+                Agent work, path locks, governance, and release evidence
               </div>
             </div>
           </div>
@@ -7567,7 +7675,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
             disabled={!radarState.selectedProjectId || loading || acting}
             testId="codesite-export"
           >
-            <Upload className="h-3.5 w-3.5" />
+            <CodeSiteIcons.artifacts className="h-3.5 w-3.5" />
             Export
           </IconButton>
         </div>
@@ -7607,7 +7715,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
             >
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2 font-semibold">
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <CodeSiteIcons.conflicts className="h-3.5 w-3.5 shrink-0" />
                   <span>CodeSite sync interrupted</span>
                 </div>
                 <div
@@ -7654,7 +7762,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
                         }}
                       >
-                        <ShieldCheck
+                        <CodeSiteIcons.control
                           className="h-3.5 w-3.5"
                           style={{ color: "var(--accent-primary)" }}
                         />
@@ -7775,21 +7883,21 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       label="Workstreams"
                       value={radarState.counts.activeFlights}
                       tone={activeFlights.length ? "active" : "idle"}
-                      icon={Activity}
+                      icon={CodeSiteIcons.agents}
                       testId="codesite-status-flights"
                     />
                     <StatusRailItem
                       label="Actions"
                       value={radarState.counts.requiredActions}
                       tone={radarState.counts.requiredActions ? "high" : "low"}
-                      icon={Inbox}
+                      icon={CodeSiteIcons.actions}
                       testId="codesite-status-required"
                     />
                     <StatusRailItem
                       label="Approvals"
                       value={permits.length}
                       tone={permits.length ? "active" : "holding"}
-                      icon={ShieldCheck}
+                      icon={CodeSiteIcons.approvals}
                       testId="codesite-status-permits"
                     />
                     <StatusRailItem
@@ -7800,7 +7908,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           ? "warning"
                           : "active"
                       }
-                      icon={Route}
+                      icon={CodeSiteIcons.planChanges}
                       testId="codesite-status-reroutes"
                     />
                   </div>
@@ -7838,7 +7946,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
                       title="Workspace Graph"
-                      icon={Network}
+                      icon={CodeSiteIcons.workspaceGraph}
                       sectionKey="radar"
                       testId="codesite-operator-airspace-pane"
                       right={
@@ -7864,14 +7972,17 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         label="Workstreams"
                         value={radarState.counts.activeFlights}
                         testId="codesite-metric-flights"
+                        icon={CodeSiteIcons.agents}
                       />
                       <Metric
                         label="Path locks"
                         value={radarState.counts.activeMutationLeases}
+                        icon={CodeSiteIcons.pathLocks}
                       />
                       <Metric
                         label="Transactions"
                         value={radarState.counts.activeTransactions}
+                        icon={CodeSiteIcons.transactions}
                       />
                       <Metric
                         label="Actions"
@@ -7879,17 +7990,20 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         tone={
                           radarState.counts.requiredActions ? "high" : "low"
                         }
+                        icon={CodeSiteIcons.actions}
                       />
                       <Metric
                         label="Conflict"
                         value={compact(collisionForecast.riskLevel, "unknown")}
                         tone={collisionForecast.riskLevel}
+                        icon={CodeSiteIcons.conflicts}
                       />
                       <Metric
                         label="Approvals"
                         value={permits.length}
                         tone={permits.length ? "active" : "idle"}
                         testId="codesite-metric-permits"
+                        icon={CodeSiteIcons.approvals}
                       />
                       <Metric
                         label="Documents"
@@ -7899,6 +8013,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             ? "holding"
                             : "active"
                         }
+                        icon={CodeSiteIcons.files}
                       />
                       <Metric
                         label="Plan changes"
@@ -7908,6 +8023,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             ? "holding"
                             : "idle"
                         }
+                        icon={CodeSiteIcons.planChanges}
                       />
                     </div>
                   </div>
@@ -7915,7 +8031,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
                       title="Activity Feed"
-                      icon={Activity}
+                      icon={CodeSiteIcons.activity}
                       sectionKey="tower"
                       testId="codesite-operator-tower-pane"
                       right={
@@ -7941,7 +8057,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
                     <OperatorPane
                       title="Governance Console"
-                      icon={ClipboardCheck}
+                      icon={CodeSiteIcons.governance}
                       sectionKey="governance"
                       testId="codesite-operator-governance-pane"
                       right={
@@ -7987,7 +8103,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Success Metrics"
-                icon={BarChart3}
+                icon={CodeSiteIcons.metrics}
                 sectionKey="evidence"
                 right={
                   <Pill tone={metrics?.status || "pending"}>
@@ -8006,8 +8122,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Path Lock Occupancy"
-                icon={Route}
+                title="Path Locks"
+                icon={CodeSiteIcons.pathLocks}
                 sectionKey="runway"
                 right={
                   <Pill tone={runwayOccupancy.length ? "holding" : "active"}>
@@ -8020,7 +8136,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Agent Readiness"
-                icon={ShieldCheck}
+                icon={CodeSiteIcons.agents}
                 right={
                   <Pill
                     tone={
@@ -8039,8 +8155,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Filesystem Boundary Proofs"
-                icon={FileSearch}
+                title="Filesystem Boundary Evidence"
+                icon={CodeSiteIcons.files}
                 right={
                   <Pill
                     tone={
@@ -8064,7 +8180,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Quarantine Review"
-                icon={FileSearch}
+                icon={CodeSiteIcons.quarantine}
                 sectionKey="quarantine"
                 right={
                   <Pill
@@ -8095,7 +8211,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Conflict Forecast"
-                icon={AlertTriangle}
+                icon={CodeSiteIcons.conflicts}
                 right={
                   <Pill tone={riskTone(collisionForecast.riskLevel)}>
                     {compact(collisionForecast.riskLevel, "unknown")}
@@ -8140,7 +8256,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Coordination Simulator"
-                icon={Activity}
+                icon={CodeSiteIcons.simulator}
                 sectionKey="simulator"
                 right={
                   <Pill tone={selectedUniverse?.result || simulationRun.status}>
@@ -8170,7 +8286,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Workstreams"
-                icon={Route}
+                icon={CodeSiteIcons.agents}
                 right={<Pill>{activeFlights.length}</Pill>}
               >
                 {activeFlights.length === 0 ? (
@@ -8212,7 +8328,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Approvals"
-                icon={ShieldCheck}
+                icon={CodeSiteIcons.approvals}
                 right={<Pill>{activeLeases.length}</Pill>}
               >
                 {activeLeases.length === 0 ? (
@@ -8276,8 +8392,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Transactions And Evidence"
-                icon={GitCommit}
+                title="Transactions & Evidence"
+                icon={CodeSiteIcons.transactions}
                 right={
                   <Pill>
                     {mergeTransactionSources(activeTransactions, mutationTransactions).length}/
@@ -8294,8 +8410,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Inspections And Incidents"
-                icon={Siren}
+                title="Inspections & Incidents"
+                icon={CodeSiteIcons.incidents}
                 right={
                   <Pill tone={incidents.length ? "blocked" : "active"}>
                     {incidents.length}
@@ -8407,8 +8523,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Causal Replay Handover"
-                icon={ScrollText}
+                title="Replay Handover"
+                icon={CodeSiteIcons.replay}
                 sectionKey="replay"
                 right={
                   <Pill
@@ -8428,8 +8544,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Artifact Projection"
-                icon={FileJson}
+                title="Artifact Export Preview"
+                icon={CodeSiteIcons.artifacts}
                 right={<Pill>{artifacts.length}</Pill>}
               >
                 {exportResult ? (
@@ -8479,7 +8595,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           className="mb-1 flex items-center gap-2 text-[11px]"
                           style={{ color: "var(--text-muted)" }}
                         >
-                          <FileSearch className="h-3.5 w-3.5" />
+                          <CodeSiteIcons.lineage className="h-3.5 w-3.5" />
                           <span className="min-w-0 truncate">
                             {artifactContentPath}
                           </span>
@@ -8492,8 +8608,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Event Recorder"
-                icon={ScrollText}
+                title="Audit Event Log"
+                icon={CodeSiteIcons.activity}
                 right={<Pill>{events.length}</Pill>}
               >
                 <BlackBoxFlightRecorder events={events} />
@@ -8501,7 +8617,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Required Actions"
-                icon={Inbox}
+                icon={CodeSiteIcons.actions}
                 right={
                   <Pill
                     tone={
@@ -8583,7 +8699,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Agent Inbox"
-                icon={Inbox}
+                icon={CodeSiteIcons.files}
                 right={
                   <Pill
                     tone={
@@ -8654,7 +8770,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Inspections Queue"
-                icon={ClipboardCheck}
+                icon={CodeSiteIcons.inspections}
                 right={<Pill>{inspectionRuns.length}</Pill>}
               >
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2">
@@ -8663,18 +8779,24 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     label="Incidents"
                     value={incidents.length}
                     tone={incidents.length ? "high" : "low"}
+                    icon={CodeSiteIcons.incidents}
                   />
-                  <Metric label="Events" value={radarState.counts.events} />
                   <Metric
-                    label="Proof"
+                    label="Events"
+                    value={radarState.counts.events}
+                    icon={CodeSiteIcons.activity}
+                  />
+                  <Metric
+                    label="Evidence"
                     value={radarState.counts.proofBundles}
+                    icon={CodeSiteIcons.evidence}
                   />
                 </div>
               </Section>
 
               <Section
-                title="Line Provenance"
-                icon={FileSearch}
+                title="Lineage Inspector"
+                icon={CodeSiteIcons.lineage}
                 sectionKey="lineage"
                 right={<Pill>{lineProvenance.length}</Pill>}
               >
@@ -8694,7 +8816,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Work Scope Zones"
-                icon={Layers}
+                icon={CodeSiteIcons.scopes}
                 right={<Pill>{zones.length}</Pill>}
               >
                 {zones.length === 0 ? (
@@ -8731,7 +8853,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
-              <Section title="Signal Sources" icon={Activity}>
+              <Section title="Policy Inputs" icon={CodeSiteIcons.signals}>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs">
                   <div
                     className="rounded border px-3 py-2"
