@@ -16,11 +16,15 @@ async fn main() -> anyhow::Result<()> {
     let scanner = SecretScanner::default();
     let policy = WorkspacePolicy::new(workspace, workspace_id, scanner)?;
     let session = SessionGuard::new(workspace_id, Duration::from_secs(30 * 60));
+    #[cfg(debug_assertions)]
     let token = session.token_for_pairing_response().to_string();
     let state = AppState::new(session, policy);
     let addr = bind_loopback(state).await?;
     println!("Vectant Local Support listening on http://{addr}");
-    println!("Development pairing bearer token: {token}");
+    #[cfg(debug_assertions)]
+    if std::env::var("VECTANT_LOCAL_SUPPORT_PRINT_DEV_TOKEN").ok().as_deref() == Some("1") {
+        println!("Development pairing bearer token: {token}");
+    }
     tokio::signal::ctrl_c().await?;
     Ok(())
 }

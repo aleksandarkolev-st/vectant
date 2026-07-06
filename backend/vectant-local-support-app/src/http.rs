@@ -12,6 +12,8 @@ use tokio::sync::Mutex;
 
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
+use crate::audit::{AuditClass, AuditExport, AuditLog};
+use crate::scanner::SecretScanner;
 
 pub const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
 pub const DEFAULT_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
@@ -22,6 +24,7 @@ pub struct AppState {
     pub session: Arc<Mutex<SessionGuard>>,
     pub workspace: Arc<WorkspacePolicy>,
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
+    pub audit: Arc<Mutex<AuditLog>>,
 }
 
 impl AppState {
@@ -33,6 +36,7 @@ impl AppState {
                 DEFAULT_RATE_LIMIT_REQUESTS,
                 DEFAULT_RATE_LIMIT_WINDOW,
             ))),
+            audit: Arc::new(Mutex::new(AuditLog::new(SecretScanner::default()))),
         }
     }
 }
@@ -80,6 +84,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
         .route("/v1/session/disconnect/:request_id", post(disconnect_session))
+        .route("/v1/history/export/:request_id", get(export_history))
+        .route("/v1/history/delete/:request_id", post(delete_history))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .with_state(state)
 }
@@ -113,7 +119,23 @@ async fn status(
     session
         .validate(token, &request_id)
         .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
-    Ok(Json(serde_json::json!(session.state())))
+    let session_state = session.state();
+    drop(session);
+    let audit = state.audit.lock().await;
+    Ok(Json(serde_json::json!({
+        "session": session_state,
+        "workspace": {
+            "workspace_id": state.workspace.workspace_id(),
+            "root": state.workspace.root_display(),
+            "policy_version": crate::POLICY_VERSION,
+            "scanner_version": crate::SCANNER_VERSION
+        },
+        "history": {
+            "events": audit.events(),
+            "consent_receipts": audit.consent_receipts(),
+            "raw_bodies_included": false
+        }
+    })))
 }
 
 async fn review_file(
@@ -130,7 +152,29 @@ async fn review_file(
             .validate(token, &request.request_id)
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
-    Ok(Json(state.workspace.read_file_for_review(&request)))
+    let response = state.workspace.read_file_for_review(&request);
+    let mut audit = state.audit.lock().await;
+    let class = if response.decision == "denied" {
+        AuditClass::Denied
+    } else if response.redactions.is_empty() {
+        AuditClass::Data
+    } else {
+        AuditClass::Redaction
+    };
+    audit.append(
+        class,
+        Some(response.request_id.clone()),
+        format!(
+            "{} {} for {}. {} bytes prepared for local review; {} redactions.",
+            response.decision,
+            request.capability,
+            response.path_display,
+            response.bytes_sent,
+            response.redactions.len()
+        ),
+        true,
+    );
+    Ok(Json(response))
 }
 
 async fn pause_session(
@@ -146,7 +190,15 @@ async fn pause_session(
         .validate(token, &request_id)
         .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     session.pause();
-    Ok(Json(serde_json::json!(session.state())))
+    let session_state = session.state();
+    drop(session);
+    state.audit.lock().await.append(
+        AuditClass::Control,
+        Some(request_id),
+        "Session paused by local user. No data can be sent while paused.",
+        true,
+    );
+    Ok(Json(serde_json::json!(session_state)))
 }
 
 async fn resume_session(
@@ -165,6 +217,7 @@ async fn disconnect_session(
     control_session(state, request_id, headers, SessionAction::Disconnect).await
 }
 
+#[derive(Clone, Copy)]
 enum SessionAction {
     Resume,
     Disconnect,
@@ -187,7 +240,68 @@ async fn control_session(
         SessionAction::Resume => session.resume(),
         SessionAction::Disconnect => session.disconnect(),
     }
-    Ok(Json(serde_json::json!(session.state())))
+    let session_state = session.state();
+    drop(session);
+    let summary = match action {
+        SessionAction::Resume => "Session resumed by local user.",
+        SessionAction::Disconnect => "Session disconnected by local user. Approvals and ports must be revoked.",
+    };
+    state.audit.lock().await.append(AuditClass::Control, Some(request_id), summary, true);
+    Ok(Json(serde_json::json!(session_state)))
+}
+
+async fn export_history(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AuditExport>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    }
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Control,
+        Some(request_id),
+        "Scrubbed local support history exported. Raw bodies were not included.",
+        true,
+    );
+    Ok(Json(audit.export_incident_bundle(30)))
+}
+
+async fn delete_history(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    }
+    let mut audit = state.audit.lock().await;
+    audit.clear();
+    audit.append(
+        AuditClass::Control,
+        Some(request_id),
+        "Local support history deleted according to retention policy.",
+        true,
+    );
+    Ok(Json(serde_json::json!({
+        "decision": "deleted",
+        "request_id": request_id,
+        "raw_bodies_included": false,
+        "bytes_sent": 0
+    })))
 }
 
 async fn enforce_rate_limit(state: &AppState) -> Result<(), (StatusCode, Json<serde_json::Value>)> {

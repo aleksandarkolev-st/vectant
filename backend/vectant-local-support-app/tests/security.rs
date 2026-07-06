@@ -926,6 +926,32 @@ fn audit_export_contains_consent_receipts_and_detects_tampering() {
 }
 
 #[test]
+fn audit_delete_clears_prior_events_and_keeps_new_chain_valid() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Data,
+        Some("req_before_delete".to_string()),
+        "Sent package metadata after local review.",
+        true,
+    );
+    assert_eq!(log.events().len(), 1);
+
+    log.clear();
+    log.append(
+        AuditClass::Control,
+        Some("req_delete".to_string()),
+        "Local support history deleted according to retention policy.",
+        true,
+    );
+
+    let export = log.export_incident_bundle(0);
+    assert_eq!(export.events.len(), 1);
+    assert!(export.verify_hash_chain());
+    assert!(!export.raw_bodies_included);
+    assert!(!serde_json::to_string(&export).unwrap().contains("Sent package metadata"));
+}
+
+#[test]
 fn update_manifest_requires_valid_signature_and_blocks_downgrades() {
     let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
     assert!(verify_update_manifest(&trusted_key, "0.1.0", &manifest).is_ok());

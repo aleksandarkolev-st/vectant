@@ -63,6 +63,14 @@ impl WorkspacePolicy {
         &self.root
     }
 
+    pub fn root_display(&self) -> String {
+        self.root.display().to_string()
+    }
+
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
     pub fn decide_file(&self, request: &FileReadRequest) -> PolicyDecision {
         if request.workspace_id != self.workspace_id {
             return PolicyDecision::deny("workspace_mismatch", Classification::L5);

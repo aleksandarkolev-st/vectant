@@ -128,6 +128,11 @@ impl AuditLog {
         &self.consent_receipts
     }
 
+    pub fn clear(&mut self) {
+        self.events.clear();
+        self.consent_receipts.clear();
+    }
+
     pub fn export_incident_bundle(&self, retention_days: u16) -> AuditExport {
         AuditExport {
             export_version: AUDIT_EXPORT_VERSION.to_string(),
