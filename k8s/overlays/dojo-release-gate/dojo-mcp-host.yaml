@@ -271,7 +271,12 @@ spec:
     matchLabels:
       app: dojo-mcp-host
   ingress:
-    - ports:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
         - port: 9467
           protocol: TCP
   policyTypes:

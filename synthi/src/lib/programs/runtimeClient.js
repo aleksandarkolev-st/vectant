@@ -1,6 +1,7 @@
 import { parseProgramManifest } from './manifest';
 import { importDevcontainer } from './devcontainer';
 import { detectRepoProgram } from './repoDetect';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 const COLLAB_BASE = (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
 
@@ -21,7 +22,7 @@ async function requestJson(path, options = {}) {
   const response = await fetch(`${COLLAB_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...withInternalAiAuth({ 'Content-Type': 'application/json' }),
       ...(options.headers || {}),
     },
   });

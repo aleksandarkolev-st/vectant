@@ -33,7 +33,7 @@ import {
   startPrometheusServer,
 } from "./observability/prometheus_server.js";
 import {
-  resolveOperatorBridgePort,
+  resolveOperatorBridgeOptions,
   startOperatorBridge,
 } from "./operator_bridge/server.js";
 import {
@@ -122,21 +122,15 @@ async function main(): Promise<void> {
   // Optional: Operator HTTP bridge exposing the escape-hatch queue so a
   // browser-based operator UI can list pending `request_human` /
   // `annotate_and_ask` entries and drain them. Opt-in via
-  // SYNTHI_OPERATOR_BRIDGE_PORT; token-gated via SYNTHI_OPERATOR_BRIDGE_TOKEN
-  // when you want to guard a multi-user box.
+  // SYNTHI_OPERATOR_BRIDGE_PORT; SYNTHI_OPERATOR_BRIDGE_TOKEN is required.
   let operatorBridge: ReturnType<typeof startOperatorBridge> | undefined;
-  const bridgePort = resolveOperatorBridgePort(process.env["SYNTHI_OPERATOR_BRIDGE_PORT"]);
-  if (bridgePort !== undefined) {
-    const bridgeHost = process.env["SYNTHI_OPERATOR_BRIDGE_HOST"];
-    const bridgeToken = process.env["SYNTHI_OPERATOR_BRIDGE_TOKEN"];
-    operatorBridge = startOperatorBridge({
-      port: bridgePort,
-      ...(bridgeHost ? { host: bridgeHost } : {}),
-      ...(bridgeToken ? { token: bridgeToken } : {}),
-    });
-    const auth = bridgeToken ? " (token-gated)" : " (no auth — local only)";
+  const operatorBridgeOptions = resolveOperatorBridgeOptions(process.env);
+  if (operatorBridgeOptions !== undefined) {
+    const bridgeHost = operatorBridgeOptions.host;
+    const bridgePort = operatorBridgeOptions.port;
+    operatorBridge = startOperatorBridge(operatorBridgeOptions);
     process.stderr.write(
-      `synthi-mcp operator bridge: http://${bridgeHost ?? "127.0.0.1"}:${bridgePort}/escape-hatch/queue${auth}\n`
+      `synthi-mcp operator bridge: http://${bridgeHost ?? "127.0.0.1"}:${bridgePort}/escape-hatch/queue (token-gated)\n`
     );
   }
 

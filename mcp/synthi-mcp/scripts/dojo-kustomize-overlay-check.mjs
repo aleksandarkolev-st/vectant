@@ -80,6 +80,7 @@ const REQUIRED_EXTERNAL_SECRET_KEYS = [
 ];
 
 const REDIS_DEPLOYMENTS = ["collab-server", "signaling-server"];
+const GCLB_SOURCE_RANGES = ["35.191.0.0/16", "130.211.0.0/22"];
 const DOJO_MCP_HOST = {
   deployment: "dojo-mcp-host",
   service: "dojo-mcp-host",
@@ -439,6 +440,11 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       code: "missing_dojo_mcp_host_network_policy",
       message: `NetworkPolicy/${dojoMcpHost.networkPolicy} was not rendered.`,
     });
+  } else if (!networkPolicyAllowsOnlyGclb(mcpNetworkPolicy.doc, dojoMcpHost.deployment, dojoMcpHost.port)) {
+    failures.push({
+      code: "dojo_mcp_host_network_policy_not_gclb_only",
+      message: `NetworkPolicy/${dojoMcpHost.networkPolicy} must allow only Google Cloud Load Balancer source ranges to port ${dojoMcpHost.port}.`,
+    });
   }
 
   const ingress = findResource(resources, "Ingress", "synthi-ingress");
@@ -529,6 +535,17 @@ function hasEnvFromRef(doc, refKind, name) {
 
 function backendConfigIapEnabled(doc) {
   return /iap:\s*\n\s*enabled:\s*true(?:\s|$)/.test(doc);
+}
+
+function networkPolicyAllowsOnlyGclb(doc, app, port) {
+  return (
+    new RegExp(`^\\s*app:\\s*${escapeRegex(app)}(?:\\s|$)`, "m").test(doc) &&
+    new RegExp(`^\\s*(?:-\\s*)?port:\\s*${escapeRegex(port)}(?:\\s|$)`, "m").test(doc) &&
+    /^\s*(?:-\s*)?from:\s*$/m.test(doc) &&
+    GCLB_SOURCE_RANGES.every((range) => new RegExp(`^\\s*cidr:\\s*${escapeRegex(range)}(?:\\s|$)`, "m").test(doc)) &&
+    !/^\s*-\s*\{\}\s*$/m.test(doc) &&
+    !/^\s*-\s*podSelector:\s*\{\}\s*$/m.test(doc)
+  );
 }
 
 function serviceHasIngressNeg(doc) {
@@ -750,6 +767,19 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-to-dojo-mcp-host
+spec:
+  podSelector:
+    matchLabels:
+      app: dojo-mcp-host
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 9467
+          protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -927,6 +957,27 @@ spec:
   const invalidBackend = validateRenderedOverlay(validRendered.replace("  iap:\n    enabled: true\n", ""));
   if (invalidBackend.ok || !invalidBackend.failures.some((failure) => failure.code === "dojo_mcp_host_iap_not_enabled")) {
     throw new Error("invalid self-check fixture did not detect missing MCP host IAP");
+  }
+
+  const invalidNetworkPolicy = validateRenderedOverlay(validRendered.replace(
+    `  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 9467
+          protocol: TCP
+`,
+    `  ingress:
+    - ports:
+        - port: 9467
+          protocol: TCP
+`,
+  ));
+  if (invalidNetworkPolicy.ok || !invalidNetworkPolicy.failures.some((failure) => failure.code === "dojo_mcp_host_network_policy_not_gclb_only")) {
+    throw new Error("invalid self-check fixture did not detect broad MCP host NetworkPolicy");
   }
 
   return {

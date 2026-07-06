@@ -3,25 +3,33 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
-  Activity,
-  AlertTriangle,
-  BarChart3,
+  ArchiveRestore,
+  Bot,
   CheckCircle2,
+  CircleGauge,
+  Cable,
   ClipboardCheck,
+  DatabaseZap,
+  FileCheck2,
   FileJson,
-  FileSearch,
-  GitCommit,
-  Inbox,
-  Layers,
-  Map,
+  FileStack,
+  FolderGit2,
+  GitBranch,
+  History,
+  ListChecks,
+  LockKeyhole,
+  MapPinned,
+  PackageCheck,
   Plus,
-  Radar,
   RefreshCw,
-  Route,
-  ScrollText,
+  SearchCheck,
+  ServerCog,
+  ShieldAlert,
   ShieldCheck,
   Siren,
-  Upload,
+  SquareActivity,
+  Waypoints,
+  Workflow,
 } from "lucide-react";
 import {
   applyCodeSiteRouteRevision,
@@ -43,7 +51,37 @@ import {
 
 const POLL_MS = 5000;
 const MOTION_EASE = [0.16, 1, 0.3, 1];
-const RADAR_SWEEP_EASE = [0.45, 0, 0.55, 1];
+const STATUS_PULSE_EASE = [0.45, 0, 0.55, 1];
+
+const CodeSiteIcons = Object.freeze({
+  control: ServerCog,
+  liveState: SquareActivity,
+  workspaceGraph: Waypoints,
+  paths: FolderGit2,
+  agents: Bot,
+  actions: ListChecks,
+  approvals: ShieldCheck,
+  governance: ClipboardCheck,
+  planChanges: GitBranch,
+  pathLocks: LockKeyhole,
+  conflicts: ShieldAlert,
+  evidence: FileCheck2,
+  transactions: DatabaseZap,
+  metrics: CircleGauge,
+  activity: History,
+  recovery: Siren,
+  simulator: Workflow,
+  quarantine: ArchiveRestore,
+  inspections: ClipboardCheck,
+  incidents: ShieldAlert,
+  replay: History,
+  artifacts: PackageCheck,
+  files: FileStack,
+  lineage: SearchCheck,
+  scopes: MapPinned,
+  signals: Cable,
+  json: FileJson,
+});
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -75,6 +113,42 @@ function uniqueByEvent(events) {
 function compact(value, fallback = "none") {
   if (value == null || value === "") return fallback;
   return String(value);
+}
+
+function productCopy(value, fallback = "none") {
+  return compact(value, fallback)
+    .replace(/\bAirspace\b/g, "Work scope")
+    .replace(/\bairspace\b/g, "work scope")
+    .replace(/\bTower\b/g, "Coordinator")
+    .replace(/\btower\b/g, "coordinator")
+    .replace(/\bFlights\b/g, "Workstreams")
+    .replace(/\bflights\b/g, "workstreams")
+    .replace(/\bFlight\b/g, "Workstream")
+    .replace(/\bflight\b/g, "workstream")
+    .replace(/\bRunways\b/g, "Path locks")
+    .replace(/\brunways\b/g, "path locks")
+    .replace(/\bRunway\b/g, "Path lock")
+    .replace(/\brunway\b/g, "path lock")
+    .replace(/\bClearances\b/g, "Approvals")
+    .replace(/\bclearances\b/g, "approvals")
+    .replace(/\bClearance\b/g, "Approval")
+    .replace(/\bclearance\b/g, "approval")
+    .replace(/\bReroutes\b/g, "Plan changes")
+    .replace(/\breroutes\b/g, "plan changes")
+    .replace(/\bReroute\b/g, "Plan change")
+    .replace(/\breroute\b/g, "plan change")
+    .replace(/\bMayday\b/g, "Paused incident")
+    .replace(/\bmayday\b/g, "paused incident")
+    .replace(/\bGround stop\b/g, "Stop-work hold")
+    .replace(/\bground stop\b/g, "stop-work hold")
+    .replace(/\bLanding\b/g, "Commit")
+    .replace(/\blanding\b/g, "commit")
+    .replace(/\bLandings\b/g, "Commits")
+    .replace(/\blandings\b/g, "commits")
+    .replace(/\bRadar\b/g, "Signals")
+    .replace(/\bradar\b/g, "signals")
+    .replace(/\bPilot\b/g, "Agent")
+    .replace(/\bpilot\b/g, "agent");
 }
 
 function formatPercent(value) {
@@ -150,7 +224,7 @@ function metricTargetLabel(metric = {}) {
   if (metric.key === "lineProvenanceCoverage") return "target 100% traced";
   if (metric.key === "blackBoxCompletenessScore") return "release >=75%";
   if (metric.key === "percentageWritesWithValidClearance")
-    return "target 100% cleared";
+    return "target 100% approved";
   if (metric.key === "shadowMergeSimulatorAccuracy") return "target 100%";
   if (
     /blocked|violation|abort|goAround|rollback|drift|red/i.test(
@@ -320,10 +394,10 @@ function transactionTowerAction(transaction = {}, events = []) {
     return "pause writes and review quarantine";
   }
   if (["open", "validated"].includes(status)) {
-    return "observe read set until landing";
+    return "observe read set until commit";
   }
-  if (status === "committed") return "proof bundle closed";
-  return "hold for tower review";
+  if (status === "committed") return "evidence bundle closed";
+  return "hold for coordinator review";
 }
 
 function transactionDigestLabel(value) {
@@ -585,12 +659,12 @@ function actionOwner(action) {
         action.transactionId ||
         action.documentId ||
         action.eventId,
-      "tower",
+      "coordinator",
     );
   }
   const text = String(action || "");
   const [, value] = text.split(":");
-  return value || "tower";
+  return value || "coordinator";
 }
 
 function actionEntity(action) {
@@ -676,7 +750,7 @@ function findGovernanceEntityRow(attributeName, entityId) {
 function towerInstructionText(event = {}) {
   const details = event.details || {};
   const eventType = String(event.eventType || "");
-  return compact(
+  return productCopy(
     details.towerInstruction ||
       details.instruction ||
       details.summary ||
@@ -687,27 +761,27 @@ function towerInstructionText(event = {}) {
       event.message ||
       TOWER_EVENT_LABELS[eventType] ||
       eventDisplayType(event),
-    "tower event",
+    "coordination event",
   );
 }
 
 const TOWER_EVENT_LABELS = {
-  flight_plan_filed: "Flight plan filed",
-  clearance_issued: "Clearance issued",
+  flight_plan_filed: "Work plan filed",
+  clearance_issued: "Write approval issued",
   write_attempted: "Write attempted",
-  write_allowed: "Write cleared",
+  write_allowed: "Write approved",
   write_denied: "Write blocked by CodeSiteFS",
   write_quarantined: "Write quarantined for review",
   transaction_opened: "Transaction opened",
   transaction_validated: "Transaction validated",
-  transaction_committed: "Transaction landed",
+  transaction_committed: "Transaction committed",
   transaction_aborted: "Transaction aborted",
-  proof_bundle_verified: "Proof bundle verified",
-  black_box_closed: "Black box closed",
-  tower_instruction: "Tower instruction",
-  route_deviation: "Route deviation filed",
-  ground_stop: "Ground stop issued",
-  mayday_resumed: "Ground stop resumed",
+  proof_bundle_verified: "Evidence bundle verified",
+  black_box_closed: "Event recorder closed",
+  tower_instruction: "Coordination instruction",
+  route_deviation: "Plan change filed",
+  ground_stop: "Recovery hold issued",
+  mayday_resumed: "Recovery resumed",
   quarantine_reviewed: "Quarantine reviewed",
   quarantine_replayed: "Quarantine replayed",
   quarantine_applied: "Quarantine applied",
@@ -1147,6 +1221,35 @@ function formatTime(value) {
   });
 }
 
+function toneColor(status, riskLevel = null) {
+  const risk = String(riskLevel || "").toLowerCase();
+  if (["critical", "high"].includes(risk)) return "var(--codesite-danger)";
+  if (["medium", "warning"].includes(risk)) return "var(--codesite-warning)";
+  const normalized = String(status || "").toLowerCase();
+  if (
+    ["holding", "blocked", "denied", "mayday", "failed", "critical"].includes(
+      normalized,
+    )
+  )
+    return "var(--codesite-danger)";
+  if (
+    [
+      "pending",
+      "filed",
+      "preflight",
+      "open",
+      "running",
+      "warning",
+      "medium",
+      "partially_applied",
+    ].includes(normalized)
+  )
+    return "var(--codesite-warning)";
+  if (["idle", "unknown", "missing"].includes(normalized))
+    return "var(--codesite-muted-accent)";
+  return "var(--codesite-success)";
+}
+
 function statusTone(status) {
   const normalized = String(status || "").toLowerCase();
   if (
@@ -1155,7 +1258,8 @@ function statusTone(status) {
     )
   ) {
     return {
-      background: "color-mix(in srgb, #4ade80 16%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-success) 16%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1165,7 +1269,7 @@ function statusTone(status) {
     )
   ) {
     return {
-      background: "color-mix(in srgb, #ff5757 18%, transparent)",
+      background: "color-mix(in srgb, var(--codesite-danger) 18%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1182,7 +1286,8 @@ function statusTone(status) {
     ].includes(normalized)
   ) {
     return {
-      background: "color-mix(in srgb, #fbbf24 18%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-warning) 18%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1193,19 +1298,21 @@ function riskTone(level) {
   const normalized = String(level || "").toLowerCase();
   if (["critical", "high"].includes(normalized)) {
     return {
-      background: "color-mix(in srgb, #ff5757 20%, transparent)",
+      background: "color-mix(in srgb, var(--codesite-danger) 20%, transparent)",
       color: "var(--text-primary)",
     };
   }
   if (["medium", "warning"].includes(normalized)) {
     return {
-      background: "color-mix(in srgb, #fbbf24 20%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-warning) 20%, transparent)",
       color: "var(--text-primary)",
     };
   }
   if (["low", "clear", "none"].includes(normalized)) {
     return {
-      background: "color-mix(in srgb, #4ade80 16%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-success) 16%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1224,20 +1331,32 @@ function indicatorTone(value) {
 }
 
 function toneLabel(value) {
-  return compact(value, "idle").replaceAll("_", " ");
+  return productCopy(compact(value, "idle").replaceAll("_", " "))
+    .replace(/\bairborne\b/g, "active")
+    .replace(/\bpreflight\b/g, "precheck")
+    .replace(/\bcleared\b/g, "approved")
+    .replace(/\bholding\b/g, "review hold");
 }
 
 function Pill({ children, tone = "idle", className = "", testId }) {
+  const toneStyle = typeof tone === "string" ? statusTone(tone) : tone;
   return (
     <span
       data-testid={testId}
-      className={`inline-flex min-h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
+      className={`inline-flex min-h-6 min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold leading-4 ${className}`}
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 74%, var(--text-primary) 12%)",
-        ...(typeof tone === "string" ? statusTone(tone) : tone),
+        ...toneStyle,
       }}
     >
+      {typeof tone === "string" ? (
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ background: statusColor(tone) }}
+        />
+      ) : null}
       {children}
     </span>
   );
@@ -1265,7 +1384,7 @@ function IconButton({
       whileHover={disabled || reduceMotion ? undefined : { y: -1 }}
       whileTap={disabled || reduceMotion ? undefined : { scale: 0.985 }}
       transition={{ duration: reduceMotion ? 0 : 0.18, ease: MOTION_EASE }}
-      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold outline-none transition-[background,border-color,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)] disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold outline-none transition-[background,border-color,box-shadow,opacity] duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)] disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: active
           ? "color-mix(in srgb, var(--accent-primary) 62%, var(--border-subtle))"
@@ -1274,6 +1393,9 @@ function IconButton({
           ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
           : "var(--bg-elevated)",
         color: "var(--text-primary)",
+        boxShadow: active
+          ? "inset 0 1px 0 color-mix(in srgb, var(--accent-primary) 28%, transparent)"
+          : "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent)",
         transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
       }}
     >
@@ -1293,10 +1415,18 @@ function Section({ title, icon: Icon, children, right, sectionKey }) {
           "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
       }}
     >
-      <div className="flex min-h-12 items-center justify-between gap-3 px-4 py-3">
+      <div
+        className="flex min-h-12 items-center justify-between gap-3 border-b px-4 py-3"
+        style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 82%, var(--bg-editor) 18%), color-mix(in srgb, var(--bg-surface) 96%, transparent))",
+        }}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border shadow-[inset_0_1px_0_rgba(255,255,255,0.055)]"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 72%, var(--accent-primary) 28%)",
@@ -1323,22 +1453,34 @@ function Section({ title, icon: Icon, children, right, sectionKey }) {
   );
 }
 
-function Metric({ label, value, tone = null, testId }) {
+function Metric({ label, value, tone = null, testId, icon: Icon }) {
   return (
     <div
       data-testid={testId}
-      className="min-h-[76px] rounded-md border px-3 py-3 transition-[border-color,background] duration-200"
+      className="min-h-[76px] rounded-md border px-3 py-3 transition-[border-color,background,box-shadow] duration-200"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 92%, var(--accent-primary) 8%)",
-        background: "var(--bg-surface)",
+        background:
+          "linear-gradient(180deg, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 88%, var(--bg-editor) 12%))",
+        boxShadow:
+          "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent)",
       }}
     >
-      <div
-        className="text-[11px] font-medium leading-tight"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {label}
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div
+          className="truncate text-[11px] font-medium leading-tight"
+          style={{ color: "var(--text-muted)" }}
+          title={label}
+        >
+          {label}
+        </div>
+        {Icon ? (
+          <Icon
+            className="h-3.5 w-3.5 shrink-0"
+            style={{ color: "var(--accent-primary)" }}
+          />
+        ) : null}
       </div>
       <div className="mt-1 flex items-start justify-between gap-2">
         <div
@@ -1366,22 +1508,25 @@ function StatusRailItem({
   label,
   value,
   tone = "idle",
-  icon: Icon = Activity,
+  icon: Icon = CodeSiteIcons.liveState,
   testId,
 }) {
   return (
     <div
       data-testid={testId}
-      className="grid min-h-16 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2.5 py-2"
+      className="grid min-h-16 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
-        background: "color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%)",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 96%, var(--accent-primary) 3%), color-mix(in srgb, var(--bg-surface) 90%, var(--bg-editor) 10%))",
       }}
     >
       <span
-        className="grid h-8 w-8 place-items-center rounded-md"
+        className="grid h-8 w-8 place-items-center rounded-md border"
         style={{
+          borderColor:
+            "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
           background:
             "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
         }}
@@ -1451,65 +1596,72 @@ function TowerNowStrip({
   const cards = [
     {
       key: "tower",
-      label: "Tower",
+      label: "Live state",
+      shortLabel: "Live",
       value: toneLabel(towerState),
       detail:
         streamStatus === "live"
-          ? "Live instruction stream"
+          ? "Live coordination stream"
           : `Stream ${toneLabel(streamStatus)}`,
       tone: towerState,
-      icon: Activity,
+      icon: CodeSiteIcons.liveState,
       section: "tower",
     },
     {
       key: "collision",
-      label: "Collision",
+      label: "Conflicts",
+      shortLabel: "Risk",
       value: toneLabel(forecastRisk),
       detail: riskCount
         ? `${riskCount} forecasted risk${riskCount === 1 ? "" : "s"}`
-        : "No forecasted collisions",
+        : "No forecasted conflicts",
       tone: forecastRisk,
-      icon: AlertTriangle,
+      icon: CodeSiteIcons.conflicts,
       section: "radar",
     },
     {
       key: "clearance",
-      label: "Clearance",
+      label: "Approvals",
+      shortLabel: "Approval",
       value: requiredCount,
-      detail: `${documentsNeedingReview} docs / ${routeReviews} reroutes`,
+      detail: `${documentsNeedingReview} docs / ${routeReviews} plan changes`,
       tone: requiredCount ? "holding" : "active",
-      icon: Inbox,
+      icon: CodeSiteIcons.actions,
       section: "governance",
     },
     {
       key: "mayday",
-      label: "Mayday",
+      label: "Paused incidents",
+      shortLabel: "Resume",
       value: maydayCount,
-      detail: maydayCount ? "Resume needs inspection evidence" : "No ground stop",
+      detail: maydayCount
+        ? "Inspection evidence needed before resume"
+        : "No paused incidents",
       tone: maydayCount ? "high" : "active",
-      icon: Siren,
+      icon: CodeSiteIcons.recovery,
       section: "replay",
     },
     {
       key: "runway",
-      label: "Runways",
+      label: "Path locks",
+      shortLabel: "Locks",
       value: runwayCount,
       detail: transactionCount
         ? `${transactionCount} open transaction${transactionCount === 1 ? "" : "s"}`
-        : "No occupied write runway",
+        : "No occupied write lock",
       tone: runwayCount || transactionCount ? "holding" : "active",
-      icon: Route,
+      icon: CodeSiteIcons.pathLocks,
       section: "radar",
     },
     {
       key: "proof",
-      label: "Proof",
+      label: "Evidence",
       value: proofCount,
       detail: quarantineCount
         ? `${quarantineCount} quarantine${quarantineCount === 1 ? "" : "s"} need replay`
         : "Evidence handoff ready",
       tone: quarantineCount ? "warning" : proofCount ? "active" : "idle",
-      icon: GitCommit,
+      icon: CodeSiteIcons.evidence,
       section: "evidence",
     },
   ];
@@ -1517,14 +1669,14 @@ function TowerNowStrip({
   return (
     <div
       data-testid="codesite-tower-now"
-      className="grid grid-cols-3 gap-1.5 rounded-lg border p-1.5 sm:grid-cols-3 xl:grid-cols-6"
+      className="grid grid-cols-2 gap-1.5 rounded-lg border p-1.5 sm:grid-cols-3 xl:grid-cols-6"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 62%, var(--accent-primary) 38%)",
         background:
           "linear-gradient(135deg, color-mix(in srgb, var(--bg-elevated) 90%, var(--accent-primary) 7%), color-mix(in srgb, var(--bg-surface) 94%, var(--text-primary) 3%))",
       }}
-      aria-label="CodeSite tower now"
+      aria-label="CodeSite live coordination summary"
     >
       {cards.map((card, index) => {
         const Icon = card.icon;
@@ -1562,7 +1714,13 @@ function TowerNowStrip({
                   />
                 </span>
                 <span
-                  className="truncate text-[10px] font-semibold uppercase"
+                  className="truncate text-[10px] font-semibold uppercase sm:hidden"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {card.shortLabel || card.label}
+                </span>
+                <span
+                  className="hidden truncate text-[10px] font-semibold uppercase sm:inline"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {card.label}
@@ -1581,7 +1739,7 @@ function TowerNowStrip({
                   urgent && !reduceMotion
                     ? {
                         duration: 1.8,
-                        ease: RADAR_SWEEP_EASE,
+                        ease: STATUS_PULSE_EASE,
                         repeat: Infinity,
                         delay: index * 0.08,
                       }
@@ -1602,6 +1760,120 @@ function TowerNowStrip({
               {card.detail}
             </div>
           </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CodeSiteOperatingModel({
+  activeFlights,
+  activeLeases,
+  documents,
+  routeRevisions,
+  proofBundles,
+  onSelect,
+}) {
+  const reduceMotion = useReducedMotion();
+  const cards = [
+    {
+      key: "scope",
+      label: "Work scope",
+      value: `${asArray(activeFlights).length} workstream${asArray(activeFlights).length === 1 ? "" : "s"}`,
+      detail: "Owned paths, risk areas, and active changes",
+      icon: CodeSiteIcons.workspaceGraph,
+      section: "radar",
+    },
+    {
+      key: "activity",
+      label: "Activity",
+      value: "Live events",
+      detail: "Agent updates, blockers, and system guardrails",
+      icon: CodeSiteIcons.activity,
+      section: "tower",
+    },
+    {
+      key: "governance",
+      label: "Governance",
+      value: `${asArray(activeLeases).length} approval${asArray(activeLeases).length === 1 ? "" : "s"}`,
+      detail: "Permits, document review, and plan changes",
+      icon: CodeSiteIcons.governance,
+      section: "governance",
+    },
+    {
+      key: "evidence",
+      label: "Evidence",
+      value: `${asArray(proofBundles).length} bundle${asArray(proofBundles).length === 1 ? "" : "s"}`,
+      detail: `${asArray(documents).length} docs / ${asArray(routeRevisions).length} plan changes`,
+      icon: CodeSiteIcons.evidence,
+      section: "evidence",
+    },
+  ];
+
+  return (
+    <div
+      data-testid="codesite-operating-model"
+      className="grid gap-2 md:grid-cols-2 xl:grid-cols-4"
+    >
+      {cards.map((card, index) => {
+        const Icon = card.icon;
+        return (
+          <motion.button
+            key={card.key}
+            type="button"
+            onClick={() => onSelect?.(card.section)}
+            whileHover={reduceMotion ? undefined : { y: -1 }}
+            whileTap={reduceMotion ? undefined : { scale: 0.99 }}
+            transition={{
+              duration: reduceMotion ? 0 : 0.18,
+              ease: MOTION_EASE,
+            }}
+            className="group grid min-h-[92px] grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-lg border px-3 py-3 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
+            style={{
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)",
+              background:
+                index % 2
+                  ? "color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%)"
+                  : "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 94%, var(--accent-primary) 5%), var(--bg-surface))",
+            }}
+          >
+            <span
+              className="grid h-8 w-8 place-items-center rounded-md border"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 74%, var(--accent-primary) 26%)",
+                background:
+                  "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
+              }}
+            >
+              <Icon
+                className="h-3.5 w-3.5"
+                style={{ color: "var(--accent-primary)" }}
+              />
+            </span>
+            <span className="min-w-0">
+              <span
+                className="block text-xs font-semibold"
+                style={{ color: "var(--text-primary)" }}
+              >
+                {card.label}
+              </span>
+              <span
+                className="mt-1 block truncate font-mono text-[11px]"
+                style={{ color: "var(--text-secondary)" }}
+                title={card.value}
+              >
+                {card.value}
+              </span>
+              <span
+                className="mt-1 block text-[11px] leading-4"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {card.detail}
+              </span>
+            </span>
+          </motion.button>
         );
       })}
     </div>
@@ -1825,7 +2097,7 @@ function SuccessMetricsDeck({ sections, summary }) {
       label: "Collisions avoided",
       value: compact(summary.collisionsAvoided, "0"),
       tone: summary.collisionsAvoided ? "active" : "idle",
-      target: "tower prevented overlap",
+      target: "coordinator prevented overlap",
     },
     {
       label: "Blocked writes",
@@ -1942,7 +2214,7 @@ function SuccessMetricsDeck({ sections, summary }) {
 
 function RunwayOccupancyBoard({ runways }) {
   const rows = asArray(runways);
-  if (!rows.length) return <EmptyLine>No occupied runways</EmptyLine>;
+  if (!rows.length) return <EmptyLine>No active path locks</EmptyLine>;
   return (
     <div
       data-testid="codesite-runway-occupancy"
@@ -1969,12 +2241,12 @@ function RunwayOccupancyBoard({ runways }) {
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   className="truncate font-medium"
-                  title={runway.runway || "unassigned runway"}
+                  title={runway.runway || "unassigned path lock"}
                 >
-                  {compact(runway.runway, "unassigned runway")}
+                  {compact(runway.runway, "unassigned path lock")}
                 </span>
                 <Pill tone={runway.runwayClass === "A" ? "holding" : "active"}>
-                  Class {compact(runway.runwayClass, "C")}
+                  {zoneTierLabel({ zoneClass: runway.runwayClass })}
                 </Pill>
               </div>
               <div className="mt-1 flex flex-wrap gap-1">
@@ -1991,7 +2263,7 @@ function RunwayOccupancyBoard({ runways }) {
                 className="text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Diff on runway
+                Changed paths
               </div>
               <PathList paths={diffPaths} empty="no diff yet" maxVisible={3} />
             </div>
@@ -2013,11 +2285,11 @@ function RunwayOccupancyBoard({ runways }) {
                 className="text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Can land
+                Can write now
               </div>
               <PathList
                 paths={eligibleFlights}
-                empty="runway locked"
+                empty="path locked"
                 maxVisible={3}
               />
             </div>
@@ -2076,7 +2348,7 @@ function TowerSimulatorDeck({
               health {formatPercent(selectedHealth)}
             </Pill>
             {towerUniverses.length ? (
-              <Pill>{towerUniverses.length} universes</Pill>
+              <Pill>{towerUniverses.length} options</Pill>
             ) : null}
           </div>
           <div className="mt-2 text-sm font-semibold">
@@ -2086,17 +2358,17 @@ function TowerSimulatorDeck({
             className="mt-1 max-w-[70ch] text-xs leading-5"
             style={{ color: "var(--text-muted)" }}
           >
-            Compares policy-safe routes before landing, using stale
+            Compares policy-safe routes before commit, using stale
             assumptions, inspection cost, unresolved risks, and proof refs.
           </div>
         </div>
         <IconButton
-          title="Run Tower simulation"
+          title="Run coordination simulation"
           onClick={onRun}
           disabled={disabled}
           testId="codesite-run-tower-simulator"
         >
-          <Radar className="h-3.5 w-3.5" />
+          <CodeSiteIcons.simulator className="h-3.5 w-3.5" />
           Simulate
         </IconButton>
       </div>
@@ -2235,7 +2507,7 @@ function TowerSimulatorDeck({
                           className="text-[11px]"
                           style={{ color: "var(--text-muted)" }}
                         >
-                          Tower actions
+                          Coordinator actions
                         </div>
                         <PathList
                           paths={universe.requiredTowerActions || []}
@@ -2380,7 +2652,7 @@ function AssumptionInvalidatorPanel({
                   className="mt-1 break-words font-mono text-[10px]"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  invalidated by {compact(row.invalidatedBy, "tower")}
+                  invalidated by {compact(row.invalidatedBy, "coordinator")}
                 </div>
               </div>
               <Pill tone="holding">writes paused</Pill>
@@ -2461,7 +2733,7 @@ function SerializableIsolationDeck({
             style={{ color: "var(--text-muted)" }}
           >
             Database-style mutation validation with base snapshot, declared
-            reads, observed reads, writes, result, reason, and tower action.
+            reads, observed reads, writes, result, reason, and coordinator action.
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1 sm:justify-end">
@@ -2624,7 +2896,7 @@ function SerializableIsolationDeck({
                   <span className="font-mono text-[10px]">{reason}</span>
                 </div>
                 <div className="mt-1 break-words">
-                  Tower action:{" "}
+                  Coordinator action:{" "}
                   <span className="font-mono text-[10px]">{towerAction}</span>
                 </div>
                 <div className="mt-2">
@@ -2635,7 +2907,7 @@ function SerializableIsolationDeck({
                       proofBundle?.bundleDigest,
                       ...asArray(proofBundle?.evidenceRefs),
                     ])}
-                    empty="proof pending"
+                    empty="evidence pending"
                     maxVisible={4}
                   />
                 </div>
@@ -2664,7 +2936,7 @@ function SerializableIsolationDeck({
                     className="text-[10px]"
                     style={{ color: "var(--text-muted)" }}
                   >
-                    proof bundle
+                    evidence bundle
                   </div>
                 </div>
                 <div
@@ -2725,7 +2997,7 @@ function SerializableIsolationDeck({
 
 function PilotLicenseHealthPanel({ records }) {
   const rows = asArray(records);
-  if (!rows.length) return <EmptyLine>No pilot licenses on file</EmptyLine>;
+  if (!rows.length) return <EmptyLine>No agent readiness records</EmptyLine>;
   return (
     <div
       data-testid="codesite-pilot-license-health"
@@ -2782,7 +3054,7 @@ function PilotLicenseHealthPanel({ records }) {
                 className="text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Authorized airspace
+                Authorized scope
               </div>
               <PathList
                 paths={record.authorizedAirspace || []}
@@ -2803,7 +3075,7 @@ function PilotLicenseHealthPanel({ records }) {
               <div className="grid grid-cols-3 gap-2">
                 {[
                   [
-                    "Landings",
+                    "Commits",
                     `${landingStats.passed || 0}/${landingStats.total || 0}`,
                     landingStats.failed || 0 ? "holding" : "active",
                   ],
@@ -2817,7 +3089,7 @@ function PilotLicenseHealthPanel({ records }) {
                         : "idle",
                   ],
                   [
-                    "Radar",
+                    "Signals",
                     asArray(record.requiredRadar).length,
                     asArray(record.requiredRadar).length ? "active" : "idle",
                   ],
@@ -2872,7 +3144,7 @@ function PilotLicenseHealthPanel({ records }) {
 function FilesystemBoundaryProofPanel({ records }) {
   const rows = asArray(records);
   if (!rows.length)
-    return <EmptyLine>No filesystem boundary proofs recorded</EmptyLine>;
+    return <EmptyLine>No filesystem boundary evidence recorded</EmptyLine>;
 
   return (
     <div
@@ -3419,7 +3691,7 @@ function QuarantineReviewPanel({
                   </div>
                   <div className="min-w-0">
                     <span style={{ color: "var(--text-muted)" }}>
-                      Clearance{" "}
+                      Approval{" "}
                     </span>
                     <code className="truncate" title={selected.mutationLeaseId}>
                       {compact(selected.mutationLeaseId, "none")}
@@ -3438,7 +3710,7 @@ function QuarantineReviewPanel({
                   }
                   testId="codesite-quarantine-replay-button"
                 >
-                  <FileSearch className="h-3.5 w-3.5" />
+                  <CodeSiteIcons.replay className="h-3.5 w-3.5" />
                   Replay
                 </IconButton>
                 <IconButton
@@ -3806,52 +4078,60 @@ function MobileSectionTabs({ sections, activeSection, onSelect }) {
           background: "color-mix(in srgb, var(--bg-editor) 76%, transparent)",
         }}
       >
-        {sections.map((section) => (
-          <motion.button
-            key={section.key}
-            type="button"
-            role="tab"
-            aria-selected={activeSection === section.key}
-            aria-controls={`codesite-section-${section.key}`}
-            data-testid="codesite-mobile-section-tab"
-            onClick={() => onSelect(section.key)}
-            whileTap={reduceMotion ? undefined : { scale: 0.985 }}
-            className="relative inline-flex h-11 shrink-0 items-center rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"
-            style={{
-              borderColor:
-                activeSection === section.key
-                  ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
-                  : "var(--border-subtle)",
-              background:
-                activeSection === section.key
-                  ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
-                  : "var(--bg-elevated)",
-              color: "var(--text-primary)",
-              transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
-            }}
-          >
-            {activeSection === section.key && !reduceMotion ? (
-              <motion.span
-                layoutId="codesite-mobile-active-section"
-                className="absolute inset-0 rounded-md"
-                style={{
-                  border: "1px solid color-mix(in srgb, var(--accent-primary) 54%, transparent)",
-                }}
-                transition={{ duration: 0.2, ease: MOTION_EASE }}
-              />
-            ) : null}
-            <span className="relative">{section.label}</span>
-            <span
-              className="relative ml-2 h-1.5 w-1.5 rounded-full"
+        {sections.map((section) => {
+          const Icon = section.icon || CodeSiteIcons.liveState;
+          return (
+            <motion.button
+              key={section.key}
+              type="button"
+              role="tab"
+              aria-selected={activeSection === section.key}
+              aria-controls={`codesite-section-${section.key}`}
+              data-testid="codesite-mobile-section-tab"
+              onClick={() => onSelect(section.key)}
+              whileTap={reduceMotion ? undefined : { scale: 0.985 }}
+              className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,color] active:scale-[0.98]"
               style={{
+                borderColor:
+                  activeSection === section.key
+                    ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
+                    : "var(--border-subtle)",
                 background:
                   activeSection === section.key
-                    ? "var(--accent-primary)"
-                    : "var(--border-subtle)",
+                    ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
+                    : "var(--bg-elevated)",
+                color: "var(--text-primary)",
+                transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
               }}
-            />
-          </motion.button>
-        ))}
+            >
+              {activeSection === section.key && !reduceMotion ? (
+                <motion.span
+                  layoutId="codesite-mobile-active-section"
+                  className="absolute inset-0 rounded-md"
+                  style={{
+                    border:
+                      "1px solid color-mix(in srgb, var(--accent-primary) 54%, transparent)",
+                  }}
+                  transition={{ duration: 0.2, ease: MOTION_EASE }}
+                />
+              ) : null}
+              <Icon
+                className="relative h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+              />
+              <span className="relative">{section.label}</span>
+              <span
+                className="relative h-1.5 w-1.5 rounded-full"
+                style={{
+                  background:
+                    activeSection === section.key
+                      ? "var(--accent-primary)"
+                      : "var(--border-subtle)",
+                }}
+              />
+            </motion.button>
+          );
+        })}
       </div>
       <div
         data-testid="codesite-mobile-action-drawer"
@@ -3871,7 +4151,7 @@ function MobileSectionTabs({ sections, activeSection, onSelect }) {
             style={{ color: "var(--text-primary)" }}
           >
             {sections.find((section) => section.key === activeSection)?.label ||
-              "Radar"}
+              "Scope"}
           </span>
         </div>
         <div
@@ -3906,7 +4186,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
   const rows = asArray(events).slice(0, condensed ? 5 : 8);
   return (
     <div
-      data-testid="codesite-tower-feed"
+      data-testid="codesite-activity-feed"
       className={
         condensed
           ? "grid min-w-0 gap-2"
@@ -3923,18 +4203,40 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
         }}
       >
         <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">Tower stream</div>
+          <div className="flex min-w-0 items-start gap-2">
+            <span
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 76%, var(--accent-primary) 24%)",
+                background:
+                  "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
+              }}
+            >
+              <CodeSiteIcons.activity
+                className="h-3.5 w-3.5"
+                style={{ color: "var(--accent-primary)" }}
+              />
+            </span>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">Activity log</div>
+              <div
+                className="mt-0.5 text-[10px] uppercase"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Agent updates, blockers, and guardrails
+              </div>
+            </div>
             <div
               data-testid="codesite-event-stream-status"
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
               {streamStatus === "live"
-                ? "EventSource live"
+                ? "Live updates connected"
                 : streamStatus === "reconnecting"
-                  ? "Reconnecting to tower stream"
-                  : "Polling fallback active"}
+                  ? "Reconnecting updates"
+                  : "Checking for updates"}
             </div>
           </div>
           <Pill
@@ -3957,14 +4259,16 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
             label="Events"
             value={rows.length}
             tone={rows.length ? "active" : "idle"}
+            icon={CodeSiteIcons.activity}
           />
           <Metric
-            label="Instructions"
+            label="Coordination"
             value={
               rows.filter((event) =>
                 String(event.eventType || "").includes("tower"),
               ).length
             }
+            icon={CodeSiteIcons.governance}
           />
           <Metric
             label="Blocks"
@@ -3976,6 +4280,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
               ).length
             }
             tone="holding"
+            icon={CodeSiteIcons.conflicts}
           />
         </div>
       </div>
@@ -3996,7 +4301,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
           }}
         >
           <span>Time</span>
-          <span>Instruction</span>
+          <span>Update</span>
           <span>Actor</span>
         </div>
         <AnimatePresence initial={false}>
@@ -4043,13 +4348,13 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
                   </span>
                 </span>
                 <Pill tone={event.eventType}>
-                  {compact(event.displayCallsign || event.actorType, "tower")}
+                  {compact(event.displayCallsign || event.actorType, "system")}
                 </Pill>
               </motion.div>
             ))
           ) : (
             <div className="p-3">
-              <EmptyLine>No tower events received</EmptyLine>
+              <EmptyLine>No activity events received</EmptyLine>
             </div>
           )}
         </AnimatePresence>
@@ -4081,7 +4386,7 @@ function GovernanceReviewGate({ action, rationale, onRationale, onCancel, onConf
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-xs font-semibold">Review before tower action</div>
+          <div className="text-xs font-semibold">Review before governed action</div>
           <div
             className="mt-1 break-words text-[11px]"
             style={{ color: "var(--text-muted)" }}
@@ -4138,7 +4443,7 @@ function GovernanceReviewGate({ action, rationale, onRationale, onCancel, onConf
       </label>
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         <IconButton
-          title="Cancel tower action"
+          title="Cancel governed action"
           disabled={disabled}
           onClick={onCancel}
           testId="codesite-governance-review-cancel"
@@ -4146,13 +4451,13 @@ function GovernanceReviewGate({ action, rationale, onRationale, onCancel, onConf
           Cancel
         </IconButton>
         <IconButton
-          title="Confirm tower action"
+          title="Confirm governed action"
           variant="primary"
           disabled={disabled || !canConfirm}
           onClick={() => onConfirm(rationale)}
           testId="codesite-governance-review-confirm"
         >
-          <ShieldCheck className="h-3.5 w-3.5" />
+          <CodeSiteIcons.approvals className="h-3.5 w-3.5" />
           Confirm
         </IconButton>
       </div>
@@ -4223,7 +4528,7 @@ function GovernanceConsole({
           const payload = {
             title:
               permitDraft.title ||
-              `Restricted work permit for ${compact(primaryPlan.displayCallsign, "flight")}`,
+              `Protected change approval for ${compact(primaryPlan.displayCallsign, "workstream")}`,
             permitType: permitDraft.permitType || "restricted_route",
             executionPlanId: primaryPlan.id || null,
             mutationLeaseId: lease.id || null,
@@ -4265,12 +4570,12 @@ function GovernanceConsole({
       >
         <div className="flex items-center justify-between gap-2">
           <div>
-            <div className="text-sm font-semibold">Restricted work permit</div>
+            <div className="text-sm font-semibold">Protected change approval</div>
             <div
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
-              Issue governance evidence for Class A/B paths before clearance.
+              Issue review evidence for protected and shared paths before approval.
             </div>
           </div>
           <Pill tone={permits.length ? "active" : "holding"}>
@@ -4289,7 +4594,7 @@ function GovernanceConsole({
               onChange={(event) =>
                 onPermitDraft({ ...permitDraft, title: event.target.value })
               }
-              placeholder={`Permit for ${compact(primaryPlan.displayCallsign, "flight")}`}
+              placeholder={`Permit for ${compact(primaryPlan.displayCallsign, "workstream")}`}
               className="h-10 rounded border px-2 text-xs outline-none"
               style={{
                 borderColor: "var(--border-subtle)",
@@ -4302,7 +4607,7 @@ function GovernanceConsole({
             className="grid gap-1 text-[11px]"
             style={{ color: "var(--text-muted)" }}
           >
-            Route scope
+            Allowed paths
             <input
               data-testid="codesite-permit-route-input"
               value={draftRoute}
@@ -4325,7 +4630,7 @@ function GovernanceConsole({
             disabled={disabled || !project?.id}
             testId="codesite-issue-permit-button"
           >
-            <ShieldCheck className="h-3.5 w-3.5" />
+            <CodeSiteIcons.approvals className="h-3.5 w-3.5" />
             Issue permit
           </IconButton>
         </div>
@@ -4397,7 +4702,7 @@ function GovernanceConsole({
                           kind: "document_review",
                           title: `Approve ${documentLabel(document)}`,
                           entity: document.id,
-                          owner: document.fromSessionId || document.fromSession || "tower",
+                          owner: document.fromSessionId || document.fromSession || "coordinator",
                           severity: document.blocking ? "high" : "medium",
                           evidenceRefs: uniqueValues([
                             ...asArray(document.evidenceRefs),
@@ -4409,7 +4714,7 @@ function GovernanceConsole({
                       }
                       testId="codesite-document-approve-button"
                     >
-                      <ClipboardCheck className="h-3.5 w-3.5" />
+                      <CodeSiteIcons.governance className="h-3.5 w-3.5" />
                       Approve
                     </IconButton>
                     <IconButton
@@ -4420,7 +4725,7 @@ function GovernanceConsole({
                           kind: "document_review",
                           title: `Reject ${documentLabel(document)}`,
                           entity: document.id,
-                          owner: document.fromSessionId || document.fromSession || "tower",
+                          owner: document.fromSessionId || document.fromSession || "coordinator",
                           severity: "high",
                           evidenceRefs: uniqueValues([
                             ...asArray(document.evidenceRefs),
@@ -4432,7 +4737,7 @@ function GovernanceConsole({
                       }
                       testId="codesite-document-reject-button"
                     >
-                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <CodeSiteIcons.conflicts className="h-3.5 w-3.5" />
                       Reject
                     </IconButton>
                   </div>
@@ -4482,7 +4787,7 @@ function GovernanceConsole({
             }}
           >
             <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold">Route revisions</div>
+              <div className="text-xs font-semibold">Plan changes</div>
               <Pill tone={routeRevisions.length ? "holding" : "idle"}>
                 {routeRevisions.length}
               </Pill>
@@ -4501,7 +4806,7 @@ function GovernanceConsole({
                 };
                 queueGovernanceAction({
                   kind: "route_revision",
-                  title: `Propose reroute for ${compact(primaryPlan.displayCallsign, "flight")}`,
+                  title: `Propose plan change for ${compact(primaryPlan.displayCallsign, "workstream")}`,
                   entity: primaryPlan.id,
                   owner: primaryPlan.displayCallsign || lease.displayCallsign,
                   severity: "high",
@@ -4530,13 +4835,13 @@ function GovernanceConsole({
                 }}
               />
               <IconButton
-                title="Propose route revision"
+                title="Propose plan change"
                 type="submit"
                 disabled={disabled || !primaryPlan.id}
                 testId="codesite-route-propose-button"
               >
-                <Route className="h-3.5 w-3.5" />
-                Propose reroute
+                <CodeSiteIcons.planChanges className="h-3.5 w-3.5" />
+                Propose change
               </IconButton>
             </form>
             {routeRevisions.length
@@ -4569,12 +4874,12 @@ function GovernanceConsole({
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1">
                       <IconButton
-                        title="Approve route revision"
+                        title="Approve plan change"
                         disabled={disabled || !routeRevisionCanReview(revision)}
                         onClick={() =>
                           queueGovernanceAction({
                             kind: "route_revision_review",
-                            title: "Approve route revision",
+                            title: "Approve plan change",
                             entity: revision.id,
                             owner: revision.displayCallsign || revision.executionPlanId,
                             severity: "high",
@@ -4593,16 +4898,16 @@ function GovernanceConsole({
                         }
                         testId="codesite-route-review-button"
                       >
-                        <ClipboardCheck className="h-3.5 w-3.5" />
+                        <CodeSiteIcons.governance className="h-3.5 w-3.5" />
                         Approve
                       </IconButton>
                       <IconButton
-                        title="Apply route revision"
+                        title="Apply plan change"
                         disabled={disabled || !routeRevisionCanApply(revision)}
                         onClick={() =>
                           queueGovernanceAction({
                             kind: "route_revision_apply",
-                            title: "Apply route revision",
+                            title: "Apply plan change",
                             entity: revision.id,
                             owner: revision.displayCallsign || revision.executionPlanId,
                             severity: "critical",
@@ -4633,7 +4938,7 @@ function GovernanceConsole({
                     }}
                   >
                     <summary className="cursor-pointer font-semibold">
-                      Show all route revisions ({routeRevisions.length})
+                    Show all plan changes ({routeRevisions.length})
                     </summary>
                     <div className="mt-2 grid gap-1">
                       {routeRevisions.slice(5).map((revision) => (
@@ -4674,7 +4979,7 @@ function GovernanceConsole({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-xs font-semibold">
-                Mayday and ground stop recovery
+                Paused incident recovery
               </div>
               <div
                 className="mt-1 truncate text-[11px]"
@@ -4708,7 +5013,7 @@ function GovernanceConsole({
                   >
                     <div className="min-w-0">
                       <div className="truncate font-medium">
-                        {compact(incident.category, "mayday")}
+                        {productCopy(incident.category, "emergency")}
                       </div>
                       <PathList
                         paths={incident.affectedZones}
@@ -4729,14 +5034,14 @@ function GovernanceConsole({
                       </div>
                     </div>
                     <IconButton
-                      title="Resume mayday"
+                      title="Resume paused incident"
                       disabled={disabled || inspectionRunIds.length === 0}
                       onClick={() =>
                         queueGovernanceAction({
                           kind: "mayday_resume",
-                          title: `Resume ${compact(incident.category, "mayday")}`,
+                          title: `Resume ${productCopy(incident.category, "paused incident")}`,
                           entity: incident.id,
-                          owner: asArray(incident.participants)[0] || "tower",
+                          owner: asArray(incident.participants)[0] || "coordinator",
                           severity: "critical",
                           scope: incident.affectedZones,
                           evidenceRefs: uniqueValues([
@@ -4754,7 +5059,7 @@ function GovernanceConsole({
                       }
                       testId="codesite-resume-mayday-submit"
                     >
-                      <Siren className="h-3.5 w-3.5" />
+                      <CodeSiteIcons.recovery className="h-3.5 w-3.5" />
                       Resume
                     </IconButton>
                   </div>
@@ -4770,7 +5075,7 @@ function GovernanceConsole({
                   }}
                 >
                   <summary className="cursor-pointer font-semibold">
-                    Show all ground stops ({maydayIncidents.length})
+                    Show all paused incidents ({maydayIncidents.length})
                   </summary>
                   <div className="mt-2 grid gap-1">
                     {maydayIncidents.slice(3).map((incident) => (
@@ -4779,7 +5084,7 @@ function GovernanceConsole({
                         className="flex min-w-0 items-start justify-between gap-2"
                       >
                         <span className="min-w-0 break-words">
-                          {compact(incident.category, "mayday")} /{" "}
+                          {productCopy(incident.category, "emergency")} /{" "}
                           {compact(incident.id, "incident")}
                         </span>
                         <Pill tone={incident.severity || incident.status}>
@@ -4849,6 +5154,10 @@ function zoneName(zone, index) {
   return compact(
     zone?.label || zone?.zoneKey || zone?.id || `zone-${index + 1}`,
   );
+}
+
+function displayZoneName(zone, index) {
+  return productCopy(zoneName(zone, index), `Scope ${index + 1}`);
 }
 
 function zonePaths(zone) {
@@ -5009,80 +5318,127 @@ function riskTouchesFlight(risk, flight) {
   );
 }
 
-function radarPoint(angle, radius) {
-  const radians = (angle - 90) * (Math.PI / 180);
-  return {
-    x: 50 + Math.cos(radians) * radius,
-    y: 50 + Math.sin(radians) * radius,
-  };
-}
-
-function sectorPath(index, total, outer = 45) {
-  const startAngle = (360 / total) * index;
-  const endAngle = (360 / total) * (index + 1);
-  const start = radarPoint(startAngle, outer);
-  const end = radarPoint(endAngle, outer);
-  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-  return `M 50 50 L ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${outer} ${outer} 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)} Z`;
-}
-
-function plotFlight(flight, index, zones, totalFlights) {
-  const matchedZoneIndex = zones.findIndex((zone) =>
-    zoneHasFlight(zone, flight),
-  );
-  const zoneIndex =
-    matchedZoneIndex === -1
-      ? index % Math.max(1, zones.length || totalFlights)
-      : matchedZoneIndex;
-  const baseAngle = zones.length
-    ? (360 / zones.length) * zoneIndex
-    : (360 / Math.max(1, totalFlights)) * index;
-  const angle =
-    baseAngle +
-    18 +
-    ((index * 17) %
-      Math.max(26, 360 / Math.max(1, zones.length || totalFlights)));
-  const radius = 18 + (index % 3) * 9;
-  return radarPoint(angle, radius);
-}
-
-function eventPoint(event, index, total) {
-  const seed = String(event?.eventType || event?.id || index)
-    .split("")
-    .reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  const angle = (seed + index * 29) % 360;
-  const radius = 12 + (index % Math.max(1, total)) * (34 / Math.max(1, total));
-  return radarPoint(angle, radius);
-}
-
-function radarColor(status, riskLevel = null) {
-  const risk = String(riskLevel || "").toLowerCase();
-  if (["critical", "high"].includes(risk)) return "#ff5757";
-  if (["medium", "warning"].includes(risk)) return "#fbbf24";
-  const normalized = String(status || "").toLowerCase();
-  if (
-    ["holding", "blocked", "denied", "mayday", "failed", "critical"].includes(
-      normalized,
-    )
-  )
-    return "#ff5757";
-  if (
-    [
-      "pending",
-      "filed",
-      "preflight",
-      "open",
-      "running",
-      "warning",
-      "medium",
-    ].includes(normalized)
-  )
-    return "#fbbf24";
-  return "#4ade80";
+function statusColor(status, riskLevel = null) {
+  return toneColor(status, riskLevel);
 }
 
 function replayTailFromNewestFirst(events) {
   return events.slice(0, 7).reverse();
+}
+
+function zoneTierLabel(zone = {}) {
+  const risk = String(zone.risk || "").toLowerCase();
+  if (["critical", "high"].includes(risk)) return "Protected path";
+  if (["medium", "warning"].includes(risk)) return "Shared contract";
+  if (["low", "clear", "none"].includes(risk)) return "Routine path";
+  return `Policy tier ${zoneClass(zone)}`;
+}
+
+function graphNodeStyle(tone = "idle", depth = "surface") {
+  const color = statusColor(tone);
+  return {
+    borderColor: `color-mix(in srgb, ${color} 34%, var(--border-subtle))`,
+    background:
+      depth === "raised"
+        ? `linear-gradient(180deg, color-mix(in srgb, ${color} 11%, var(--bg-elevated)), color-mix(in srgb, var(--bg-surface) 92%, var(--bg-editor) 8%))`
+        : `linear-gradient(180deg, color-mix(in srgb, ${color} 8%, var(--bg-surface)), color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%))`,
+    boxShadow: `inset 0 1px 0 color-mix(in srgb, ${color} 18%, transparent)`,
+  };
+}
+
+function WorkGraphConnector({ tone = "active", active = false, delay = 0 }) {
+  const reduceMotion = useReducedMotion();
+  const color = statusColor(tone);
+  return (
+    <div
+      className="hidden min-w-0 items-center justify-center md:flex"
+      aria-hidden="true"
+    >
+      <div className="relative h-6 w-full min-w-[28px]">
+        <motion.span
+          className="absolute left-0 right-0 top-1/2 h-px origin-left rounded-full"
+          style={{
+            background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+          }}
+          initial={reduceMotion ? false : { scaleX: 0.15, opacity: 0.35 }}
+          animate={{ scaleX: 1, opacity: active ? 0.92 : 0.55 }}
+          transition={{
+            duration: reduceMotion ? 0 : 0.28,
+            delay: reduceMotion ? 0 : delay,
+            ease: MOTION_EASE,
+          }}
+        />
+        <motion.span
+          className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{
+            background: color,
+            boxShadow: `0 0 0 3px color-mix(in srgb, ${color} 18%, transparent)`,
+          }}
+          animate={
+            !reduceMotion && active
+              ? { opacity: [0.62, 1, 0.62], scale: [0.94, 1.16, 0.94] }
+              : { opacity: 0.7, scale: 1 }
+          }
+          transition={{
+            duration: 1.8,
+            repeat: !reduceMotion && active ? Infinity : 0,
+            ease: STATUS_PULSE_EASE,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function WorkGraphNode({
+  eyebrow,
+  title,
+  tone = "idle",
+  icon: Icon,
+  children,
+  testId,
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="min-w-0 rounded-md border px-3 py-2 text-xs"
+      style={graphNodeStyle(tone, "raised")}
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div
+            className="text-[10px] font-semibold uppercase"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {eyebrow}
+          </div>
+          <div
+            className="mt-1 min-w-0 break-words font-semibold leading-tight"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {title}
+          </div>
+        </div>
+        {Icon ? (
+          <span
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+            style={{
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 76%, var(--accent-primary) 24%)",
+              background:
+                "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
+            }}
+          >
+            <Icon
+              className="h-3.5 w-3.5"
+              style={{ color: "var(--accent-primary)" }}
+            />
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-2 min-w-0">{children}</div>
+    </div>
+  );
 }
 
 function causalReplayHandovers(incidents, proofBundles) {
@@ -5145,7 +5501,7 @@ function replayCompletenessTone(completeness) {
 
 function CausalReplayDeck({ handovers }) {
   const rows = asArray(handovers);
-  if (!rows.length) return <EmptyLine>No black-box handover closed yet</EmptyLine>;
+  if (!rows.length) return <EmptyLine>No replay package closed yet</EmptyLine>;
   const visibleRows = rows.slice(0, 3);
   const hiddenRows = rows.length - visibleRows.length;
 
@@ -5161,9 +5517,9 @@ function CausalReplayDeck({ handovers }) {
           background: "var(--bg-surface)",
         }}
       >
-        <span className="font-semibold">Replay coverage queue</span>
+        <span className="font-semibold">Incident replay packages</span>
         <div className="flex flex-wrap gap-1">
-          <Pill>{rows.length} handovers</Pill>
+          <Pill>{rows.length} packages</Pill>
           {hiddenRows > 0 ? (
             <Pill tone="holding">+{hiddenRows} archived</Pill>
           ) : null}
@@ -5199,7 +5555,10 @@ function CausalReplayDeck({ handovers }) {
               <div className="min-w-0">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <span className="min-w-0 truncate font-medium">
-                    {compact(handover.transactionId, handover.incident.category)}
+                    {compact(
+                      handover.transactionId,
+                      productCopy(handover.incident.category, "incident"),
+                    )}
                   </span>
                   <Pill tone={handover.incident.severity}>
                     {handover.incident.severity}
@@ -5210,9 +5569,9 @@ function CausalReplayDeck({ handovers }) {
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   {[
-                    ["Replay digest", handover.incident.replayDigest],
+                    ["Replay artifact", handover.incident.replayDigest],
                     ["Proof bundle", handover.proofBundle?.id],
-                    ["CodeSite-Black-Box", handover.codeSiteBlackBox],
+                    ["Event evidence digest", handover.codeSiteBlackBox],
                   ].map(([label, value]) => (
                     <div key={label} className="min-w-0 rounded-md border px-2 py-1.5" style={{
                       borderColor: "var(--border-subtle)",
@@ -5262,7 +5621,7 @@ function CausalReplayDeck({ handovers }) {
                       className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      Causal timeline
+                      Event timeline
                     </div>
                     {latestEvents.length === 0 ? (
                       <EmptyLine>No replay events indexed</EmptyLine>
@@ -5323,11 +5682,11 @@ function CausalReplayDeck({ handovers }) {
                   className="mb-1 text-[10px] font-semibold uppercase tracking-normal"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  Export refs
+                  Exported files
                 </div>
                 <PathList
                   paths={handover.exportPaths}
-                  empty="no export refs"
+                  empty="no exported files"
                   maxVisible={7}
                 />
                 <div className="mt-3">
@@ -5369,13 +5728,13 @@ function BlackBoxFlightRecorder({ events }) {
         }}
       >
         <div className="min-w-0">
-          <div className="font-semibold">Flight recorder stream</div>
+          <div className="font-semibold">Event recorder stream</div>
           <div
             className="mt-1 max-w-[65ch] leading-5"
             style={{ color: "var(--text-muted)" }}
           >
             Ordered event evidence with actor, logical time, path, and payload
-            preview for black-box replay.
+            preview for event replay.
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1 lg:justify-end">
@@ -5482,7 +5841,7 @@ function LineProvenanceDeck({
 }) {
   const provenanceRows = asArray(rows);
   if (!provenanceRows.length) {
-    return <EmptyLine>No line provenance indexed</EmptyLine>;
+    return <EmptyLine>No lineage evidence indexed</EmptyLine>;
   }
   const visibleRows = provenanceRows.slice(-10).reverse();
   const hiddenRows = provenanceRows.length - visibleRows.length;
@@ -5501,7 +5860,7 @@ function LineProvenanceDeck({
   const causalSteps = selectedLineRow
     ? [
         {
-          label: "Clearance",
+          label: "Approval",
           value: `${compact(
             selectedLineLease?.displayCallsign || selectedLineRow.displayCallsign,
             "agent",
@@ -5539,7 +5898,7 @@ function LineProvenanceDeck({
 
   return (
     <div
-      data-testid="codesite-line-provenance-deck"
+      data-testid="codesite-lineage-deck"
       className="grid min-w-0 gap-3"
     >
       <div
@@ -5550,7 +5909,7 @@ function LineProvenanceDeck({
           background: "var(--bg-surface)",
         }}
       >
-        <span className="font-semibold">Line provenance ledger</span>
+        <span className="font-semibold">Lineage evidence ledger</span>
         <div className="flex flex-wrap gap-1">
           <Pill>{provenanceRows.length} rows</Pill>
           {hiddenRows > 0 ? (
@@ -5580,7 +5939,7 @@ function LineProvenanceDeck({
                   `${row.filePath || "line"}-${index}`
                 }
                 type="button"
-                data-testid="codesite-line-provenance-row"
+                data-testid="codesite-lineage-row"
                 aria-pressed={selected}
                 onClick={() => onInspectLine(row)}
                 className="block w-full min-w-0 overflow-hidden rounded-md border px-2.5 py-2 text-left text-xs transition-colors"
@@ -5779,7 +6138,7 @@ function LineProvenanceDeck({
   );
 }
 
-function AirspaceMap({
+function ScopeTopology({
   zones,
   noFlyZones,
   flights,
@@ -5798,18 +6157,20 @@ function AirspaceMap({
           paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4),
         },
       ];
-  const visibleFlights = flights.slice(0, condensed ? 8 : 12);
-  const visibleRisks = risks.slice(0, condensed ? 6 : 8);
-  const flightOverflow = Math.max(0, flights.length - visibleFlights.length);
+  const visibleLanes = lanes.slice(0, condensed ? 4 : 5);
+  const laneOverflow = Math.max(0, lanes.length - visibleLanes.length);
+  const visibleFlights = flights.slice(0, condensed ? 5 : 7);
+  const visibleRisks = risks.slice(0, condensed ? 4 : 6);
+  const workstreamOverflow = Math.max(
+    0,
+    flights.length - visibleFlights.length,
+  );
   const riskOverflow = Math.max(0, risks.length - visibleRisks.length);
   const replayEvents = replayTailFromNewestFirst(events);
-  const replayPoints = replayEvents.map((event, index) =>
-    eventPoint(event, index, replayEvents.length),
-  );
-  const replayPath = replayPoints
-    .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
-    .join(" ");
   const landingRuns = asArray(inspections).slice(-4).reverse();
+  const failedCommitChecks = landingRuns.some((run) =>
+    String(run.status || "").includes("failed"),
+  );
   const priorityFlights = flights
     .slice()
     .sort((left, right) => {
@@ -5830,11 +6191,76 @@ function AirspaceMap({
       return rightRisk - leftRisk;
     })
     .slice(0, condensed ? 4 : 6);
+  const hasBlockedScopes = asArray(noFlyZones).length > 0;
+  const guardrailNodes = [
+    {
+      key: "conflicts",
+      label: "Conflicts",
+      value: visibleRisks.length ? `${visibleRisks.length} active` : "clear",
+      detail: riskOverflow ? `+${riskOverflow} more risks` : "risk forecast",
+      tone: visibleRisks.length ? "holding" : "active",
+      y: 22,
+    },
+    {
+      key: "checks",
+      label: "Commit checks",
+      value: landingRuns.length ? `${landingRuns.length} runs` : "none",
+      detail: failedCommitChecks
+        ? "failed check present"
+        : "latest validations",
+      tone: failedCommitChecks
+        ? "failed"
+        : landingRuns.length
+          ? "active"
+          : "idle",
+      y: 50,
+    },
+    {
+      key: "evidence",
+      label: "Evidence",
+      value: replayEvents.length ? `${replayEvents.length} events` : "none",
+      detail: hasBlockedScopes ? "blocked scopes tracked" : "activity history",
+      tone: hasBlockedScopes
+        ? "warning"
+        : replayEvents.length
+          ? "active"
+          : "idle",
+      y: 78,
+    },
+  ];
+  const guardrailNodeForZone = (zone) => {
+    if (!zone) return guardrailNodes[2];
+    if (risks.some((risk) => riskTouchesZone(risk, zone))) {
+      return guardrailNodes[0];
+    }
+    if (landingRuns.length) return guardrailNodes[1];
+    return guardrailNodes[2];
+  };
+  const graphRows = visibleLanes.map((zone, index) => {
+    const relatedFlights = visibleFlights.filter((flight) =>
+      zoneHasFlight(zone, flight),
+    );
+    const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
+    const guardrail = guardrailNodeForZone(zone);
+    return {
+      id: zone.zoneKey || zone.id || `scope-${index}`,
+      zone,
+      relatedFlights,
+      relatedRoutes: uniqueValues(
+        relatedFlights.flatMap((flight) => asArray(flight.route)),
+      ),
+      visibleRelatedFlights: relatedFlights.slice(0, 3),
+      hiddenRelatedFlightCount: Math.max(0, relatedFlights.length - 3),
+      hasRisk,
+      guardrail,
+      tone: hasRisk ? "holding" : zone.risk || guardrail.tone || "active",
+    };
+  });
 
   return (
     <div className="space-y-2">
       <div
-        data-testid="codesite-radar-graph"
+        data-testid="codesite-scope-topology"
         className={
           condensed
             ? "overflow-hidden rounded-lg border p-2"
@@ -5843,249 +6269,225 @@ function AirspaceMap({
         style={{
           borderColor:
             "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-          background: "var(--bg-surface)",
+          background:
+            "linear-gradient(145deg, color-mix(in srgb, var(--bg-surface) 88%, var(--accent-primary) 7%), color-mix(in srgb, var(--bg-editor) 96%, var(--codesite-accent-secondary) 4%))",
         }}
       >
         <div
+          data-testid="codesite-work-graph"
           className={
             condensed
-              ? "grid gap-2 lg:grid-cols-[minmax(300px,0.96fr)_minmax(0,1.04fr)]"
-              : "grid gap-3 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]"
+              ? "grid gap-2 2xl:grid-cols-[minmax(0,1.28fr)_minmax(270px,0.72fr)]"
+              : "grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]"
           }
         >
           <div
-            className={
-              condensed
-                ? "relative min-h-[272px] overflow-hidden rounded-lg border"
-                : "relative min-h-[340px] overflow-hidden rounded-lg border"
-            }
+            data-testid="codesite-scope-matrix"
+            className="overflow-hidden rounded-lg border"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
               background:
-                "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 16%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 14%, transparent) 1px, transparent 1px), radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-primary) 9%, transparent), transparent 62%), color-mix(in srgb, var(--bg-editor) 90%, transparent)",
-              backgroundSize: "20px 20px, 20px 20px, auto, auto",
+                "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 88%, var(--accent-primary) 7%), color-mix(in srgb, var(--bg-editor) 94%, var(--bg-surface) 6%))",
             }}
           >
-            <svg
-              className="absolute inset-0 h-full w-full"
-              viewBox="0 0 100 100"
-              role="img"
-              aria-label="CodeSite radar graph with flights, risks, and replay trace"
+            <div
+              className="grid gap-2 border-b px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+              style={{
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-muted)",
+              }}
             >
-              <defs>
-                <radialGradient
-                  id="codesite-radar-sweep"
-                  cx="50%"
-                  cy="50%"
-                  r="50%"
+              <div className="min-w-0">
+                <div
+                  className="text-sm font-semibold"
+                  style={{ color: "var(--text-primary)" }}
                 >
-                  <stop
-                    offset="0%"
-                    stopColor="var(--accent-primary)"
-                    stopOpacity="0.18"
-                  />
-                  <stop
-                    offset="66%"
-                    stopColor="var(--accent-primary)"
-                    stopOpacity="0.04"
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="var(--accent-primary)"
-                    stopOpacity="0"
-                  />
-                </radialGradient>
-              </defs>
-              <rect
-                width="100"
-                height="100"
-                fill="url(#codesite-radar-sweep)"
-                opacity="0.72"
-              />
-              <circle
-                cx="50"
-                cy="50"
-                r="47"
-                fill="none"
-                stroke="color-mix(in srgb, var(--accent-primary) 28%, transparent)"
-                strokeWidth="0.55"
-              />
-              {[14, 27, 40].map((radius) => (
-                <circle
-                  key={radius}
-                  cx="50"
-                  cy="50"
-                  r={radius}
-                  fill="none"
-                  stroke="var(--border-subtle)"
-                  strokeWidth="0.35"
-                />
-              ))}
-              {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => {
-                const end = radarPoint(angle, 45);
-                return (
-                  <line
-                    key={angle}
-                    x1="50"
-                    y1="50"
-                    x2={end.x}
-                    y2={end.y}
-                    stroke="var(--border-subtle)"
-                    strokeWidth="0.25"
-                  />
-                );
-              })}
-              <motion.g
-                data-testid="codesite-radar-sweep"
-                style={{ transformOrigin: "50% 50%" }}
-                animate={reduceMotion ? { rotate: 0 } : { rotate: 360 }}
-                transition={{
-                  duration: 8,
-                  repeat: reduceMotion ? 0 : Infinity,
-                  ease: RADAR_SWEEP_EASE,
-                }}
+                  Workspace Graph
+                </div>
+                <div className="mt-0.5 text-[10px] font-semibold uppercase">
+                  Paths -&gt; Agents -&gt; Checks
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 sm:justify-end">
+                <Pill tone={visibleRisks.length ? "holding" : "active"}>
+                  {visibleRisks.length || "no"} conflicts
+                </Pill>
+                <Pill
+                  tone={
+                    failedCommitChecks
+                      ? "failed"
+                      : landingRuns.length
+                        ? "active"
+                        : "idle"
+                  }
+                >
+                  {landingRuns.length} checks
+                </Pill>
+              </div>
+            </div>
+            <div
+              className="grid gap-2 p-3"
+              style={{
+                background:
+                  "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 18%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 12%, transparent) 1px, transparent 1px)",
+                backgroundSize: "34px 34px",
+              }}
+            >
+              <div
+                className="hidden grid-cols-[minmax(0,0.95fr)_40px_minmax(0,1.08fr)_40px_minmax(0,0.88fr)] gap-2 px-1 text-[10px] font-semibold uppercase md:grid"
+                style={{ color: "var(--text-muted)" }}
+                aria-hidden="true"
               >
-                <path
-                  d="M 50 50 L 50 5 A 45 45 0 0 1 72 11 Z"
-                  fill="color-mix(in srgb, var(--accent-primary) 42%, transparent)"
-                  opacity="0.22"
-                />
-                <line
-                  x1="50"
-                  y1="50"
-                  x2="50"
-                  y2="5"
-                  stroke="color-mix(in srgb, var(--accent-primary) 76%, #8fd9ff)"
-                  strokeWidth="0.45"
-                />
-              </motion.g>
-              {lanes.slice(0, 6).map((zone, index) => {
-                const hasRisk = risks.some((risk) =>
-                  riskTouchesZone(risk, zone),
-                );
+                <span>Paths</span>
+                <span />
+                <span>Agents</span>
+                <span />
+                <span>Checks</span>
+              </div>
+              {graphRows.map((row, index) => {
+                const {
+                  zone,
+                  relatedFlights,
+                  visibleRelatedFlights,
+                  hiddenRelatedFlightCount,
+                  relatedRoutes,
+                  hasRisk,
+                  guardrail,
+                  tone,
+                } = row;
+                const connectorTone = hasRisk ? "holding" : guardrail.tone;
                 return (
-                  <path
-                    key={`sector-${zone.zoneKey || zone.id || index}`}
-                    d={sectorPath(
-                      index,
-                      Math.max(1, Math.min(6, lanes.length)),
-                    )}
-                    fill={hasRisk ? "#ff5757" : "var(--accent-primary)"}
-                    opacity={hasRisk ? "0.16" : "0.06"}
-                    stroke={hasRisk ? "#ff5757" : "var(--border-subtle)"}
-                    strokeWidth="0.35"
-                  />
-                );
-              })}
-              {visibleRisks.map((risk, index) => {
-                const angle = 24 + index * 68;
-                const left = radarPoint(angle - 13, 44);
-                const right = radarPoint(angle + 18, 44);
-                return (
-                  <path
-                    key={`risk-cone-${index}`}
-                    data-testid="codesite-risk-cone"
-                    d={`M 50 50 L ${left.x.toFixed(2)} ${left.y.toFixed(2)} L ${right.x.toFixed(2)} ${right.y.toFixed(2)} Z`}
-                    fill={radarColor(null, risk.severity || risk.riskLevel)}
-                    opacity="0.24"
-                  />
-                );
-              })}
-              {replayPoints.length > 1 ? (
-                <polyline
-                  data-testid="codesite-replay-trace"
-                  points={replayPath}
-                  fill="none"
-                  stroke="color-mix(in srgb, var(--accent-primary) 72%, #8fd9ff)"
-                  strokeWidth="0.9"
-                  strokeDasharray="2.4 1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              ) : null}
-              {visibleFlights.map((flight, index) => {
-                const point = plotFlight(
-                  flight,
-                  index,
-                  lanes,
-                  visibleFlights.length,
-                );
-                const hasRisk = risks.some((risk) =>
-                  riskTouchesFlight(risk, flight),
-                );
-                const color = radarColor(
-                  flight.status,
-                  hasRisk ? "high" : null,
-                );
-                const holding = ["holding", "blocked", "preflight"].includes(
-                  String(flight.status || "").toLowerCase(),
-                );
-                return (
-                  <motion.g
-                    key={`flight-dot-${flight.id || flight.displayCallsign || index}`}
-                    data-testid="codesite-flight-blip"
-                    initial={{ opacity: 0.72, scale: 0.96 }}
-                    animate={{ opacity: 1, scale: 1 }}
+                  <motion.div
+                    key={row.id}
+                    data-testid="codesite-scope-matrix-row"
+                    className="grid gap-2 rounded-md border p-2 text-xs md:grid-cols-[minmax(0,0.95fr)_40px_minmax(0,1.08fr)_40px_minmax(0,0.88fr)] md:items-stretch"
+                    style={{
+                      ...graphNodeStyle(tone),
+                      outline: hasRisk
+                        ? "1px solid color-mix(in srgb, var(--codesite-danger) 28%, transparent)"
+                        : "1px solid transparent",
+                    }}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
                     transition={{
                       duration: 0.24,
                       delay: reduceMotion ? 0 : index * 0.04,
                       ease: MOTION_EASE,
                     }}
-                    style={{ transformOrigin: `${point.x}px ${point.y}px` }}
                   >
-                    {holding ? (
-                      <motion.circle
-                        data-testid="codesite-holding-pattern"
-                        cx={point.x}
-                        cy={point.y}
-                        r="4.5"
-                        fill="none"
-                        stroke={color}
-                        strokeWidth="0.45"
-                        strokeDasharray="1.4 1.2"
-                        opacity="0.92"
-                        animate={reduceMotion ? { rotate: 0 } : { rotate: 360 }}
-                        transition={{
-                          duration: 3.2,
-                          repeat: reduceMotion ? 0 : Infinity,
-                          ease: RADAR_SWEEP_EASE,
-                        }}
-                        style={{ transformOrigin: `${point.x}px ${point.y}px` }}
-                      />
-                    ) : null}
-                    <circle
-                      cx={point.x}
-                      cy={point.y}
-                      r="2.2"
-                      fill={color}
-                      stroke="var(--bg-surface)"
-                      strokeWidth="0.8"
-                    />
-                    <text
-                      x={Math.min(86, point.x + 3.4)}
-                      y={Math.max(9, point.y - 2.4)}
-                      fill="var(--text-primary)"
-                      fontSize="3.1"
-                      fontFamily="monospace"
+                    <WorkGraphNode
+                      eyebrow="Path group"
+                      title={displayZoneName(zone, index)}
+                      tone={tone}
+                      icon={CodeSiteIcons.paths}
+                      testId="codesite-scope-path-node"
                     >
-                      {compact(flight.displayCallsign, "agent").slice(0, 10)}
-                    </text>
-                  </motion.g>
+                      <div className="flex min-w-0 flex-wrap gap-1">
+                        <Pill
+                          tone={zone.risk || (hasRisk ? "holding" : "active")}
+                        >
+                          {zoneTierLabel(zone)}
+                        </Pill>
+                        {hasRisk ? <Pill tone="holding">conflict</Pill> : null}
+                      </div>
+                      <div className="mt-2">
+                        <PathList
+                          paths={zonePaths(zone)}
+                          empty="path pending"
+                        />
+                      </div>
+                    </WorkGraphNode>
+
+                    <WorkGraphConnector
+                      tone={connectorTone}
+                      active={hasRisk || relatedFlights.length > 0}
+                      delay={index * 0.04}
+                    />
+
+                    <WorkGraphNode
+                      eyebrow="Assigned agents"
+                      title={
+                        relatedFlights.length
+                          ? `${relatedFlights.length} active`
+                          : "Unassigned"
+                      }
+                      tone={
+                        hasRisk
+                          ? "holding"
+                          : relatedFlights[0]?.status || "idle"
+                      }
+                      icon={CodeSiteIcons.agents}
+                      testId="codesite-scope-agent-node"
+                    >
+                      <div className="flex min-w-0 flex-wrap gap-1">
+                        {visibleRelatedFlights.length ? (
+                          visibleRelatedFlights.map((flight, flightIndex) => (
+                            <Pill
+                              key={
+                                flight.id ||
+                                flight.displayCallsign ||
+                                `scope-agent-${flightIndex}`
+                              }
+                              tone={hasRisk ? "holding" : flight.status}
+                              className="max-w-[9rem]"
+                            >
+                              {compact(flight.displayCallsign, "agent")}
+                            </Pill>
+                          ))
+                        ) : (
+                          <Pill tone="idle">ready for owner</Pill>
+                        )}
+                        {hiddenRelatedFlightCount > 0 ? (
+                          <Pill tone={hasRisk ? "blocked" : "default"}>
+                            +{hiddenRelatedFlightCount}
+                          </Pill>
+                        ) : null}
+                      </div>
+                      <div className="mt-2">
+                        <PathList
+                          paths={relatedRoutes}
+                          empty="no write route yet"
+                          maxVisible={2}
+                        />
+                      </div>
+                    </WorkGraphNode>
+
+                    <WorkGraphConnector
+                      tone={connectorTone}
+                      active={hasRisk || guardrail.tone === "active"}
+                      delay={index * 0.04 + 0.06}
+                    />
+
+                    <WorkGraphNode
+                      eyebrow="Guardrail checks"
+                      title={guardrail.label}
+                      tone={connectorTone}
+                      icon={CodeSiteIcons.approvals}
+                      testId="codesite-scope-guardrail-node"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ background: statusColor(connectorTone) }}
+                        />
+                        <span className="font-mono text-[11px] leading-4">
+                          {guardrail.value}
+                        </span>
+                      </div>
+                      <div
+                        className="mt-1 text-[10px] leading-4"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        {guardrail.detail}
+                      </div>
+                    </WorkGraphNode>
+                  </motion.div>
                 );
               })}
-              <circle cx="50" cy="50" r="1.4" fill="var(--accent-primary)" />
-            </svg>
-            <div
-              className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3 text-[10px] font-medium"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <span>Risk cone</span>
-              <span>Replay trace</span>
-              <span>Holding pattern</span>
             </div>
             <div
-              className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px]"
+              className="mx-3 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-[10px]"
               style={{
                 borderColor:
                   "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
@@ -6095,145 +6497,32 @@ function AirspaceMap({
               }}
             >
               <span>
-                {visibleFlights.length} flights tracked
-                {flightOverflow ? ` (+${flightOverflow})` : ""}
+                {visibleFlights.length} workstreams
+                {workstreamOverflow ? " (+" + workstreamOverflow + ")" : ""}
               </span>
               <span>
-                {visibleRisks.length || "no"} active risk cones
-                {riskOverflow ? ` (+${riskOverflow})` : ""}
+                {visibleLanes.length} path scopes
+                {laneOverflow ? " (+" + laneOverflow + ")" : ""}
+              </span>
+              <span>
+                {visibleRisks.length || "no"} active conflicts
+                {riskOverflow ? " (+" + riskOverflow + ")" : ""}
               </span>
             </div>
           </div>
 
           <div className="grid content-start gap-2">
-            <div className="grid gap-1">
-              {lanes.slice(0, 4).map((zone, index) => {
-                const relatedFlights = visibleFlights.filter((flight) => {
-                  return zoneHasFlight(zone, flight);
-                });
-                const visibleRelatedFlights = relatedFlights.slice(0, 3);
-                const hiddenRelatedFlightCount =
-                  relatedFlights.length - visibleRelatedFlights.length;
-                const hasRisk = risks.some((risk) =>
-                  riskTouchesZone(risk, zone),
-                );
-                return (
-                  <div
-                    key={zone.zoneKey || zone.id || index}
-                    data-testid="codesite-airspace-lane"
-                    className="grid min-h-[66px] gap-2 rounded-md border px-2 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-[minmax(96px,0.72fr)_minmax(0,1.4fr)_minmax(108px,0.68fr)] sm:items-start"
-                    style={{
-                      borderColor: hasRisk
-                        ? "color-mix(in srgb, #ff5757 36%, var(--border-subtle))"
-                        : "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-                      background: hasRisk
-                        ? "color-mix(in srgb, #ff5757 12%, var(--bg-editor))"
-                        : "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 82%, var(--bg-surface) 18%))",
-                    }}
-                  >
-                    <div className="min-w-0 self-start">
-                      <div className="break-words text-[11px] font-semibold leading-tight">
-                        {zoneName(zone, index)}
-                      </div>
-                      <div
-                        className="text-[10px]"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        Class {zoneClass(zone)}
-                      </div>
-                    </div>
-                    <div className="min-w-0 self-start">
-                      <PathList paths={zonePaths(zone)} empty="route pending" />
-                    </div>
-                    <div className="flex min-w-0 flex-wrap gap-1 self-start sm:justify-end">
-                      {relatedFlights.length ? (
-                        <>
-                          {visibleRelatedFlights.map((flight, flightIndex) => (
-                            <Pill
-                              key={
-                                flight.id ||
-                                flight.displayCallsign ||
-                                `related-flight-${flightIndex}`
-                              }
-                              tone={flight.status}
-                              className={
-                                hasRisk
-                                  ? "max-w-[86px] motion-safe:animate-pulse"
-                                  : "max-w-[86px]"
-                              }
-                            >
-                              {compact(flight.displayCallsign, "agent")}
-                            </Pill>
-                          ))}
-                          {hiddenRelatedFlightCount > 0 ? (
-                            <Pill tone={hasRisk ? "blocked" : "default"}>
-                              +{hiddenRelatedFlightCount}
-                            </Pill>
-                          ) : null}
-                        </>
-                      ) : (
-                        <Pill>clear</Pill>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
             <div
               className="rounded-lg border px-3 py-2 text-xs"
               style={{
                 borderColor:
                   "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
                 background:
-                  "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 84%, var(--bg-surface) 16%))",
+                  "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 90%, var(--codesite-accent-secondary) 7%), color-mix(in srgb, var(--bg-surface) 92%, var(--bg-editor) 8%))",
               }}
             >
               <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-medium">Landing queue</span>
-                <Pill
-                  tone={
-                    landingRuns.some((run) =>
-                      String(run.status).includes("failed"),
-                    )
-                      ? "failed"
-                      : "active"
-                  }
-                >
-                  {landingRuns.length}
-                </Pill>
-              </div>
-              {landingRuns.length ? (
-                landingRuns.map((run, runIndex) => (
-                  <div
-                    key={run.id || `landing-run-${runIndex}`}
-                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5"
-                  >
-                    <span className="min-w-0 break-words">
-                      {compact(run.displayCallsign, "inspection")}
-                    </span>
-                    <span
-                      className="break-words text-[10px] leading-4"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {compact(run.status, "pending")}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div style={{ color: "var(--text-muted)" }}>No landings</div>
-              )}
-            </div>
-            <div
-              className="rounded-lg border px-3 py-2 text-xs"
-              style={{
-                borderColor:
-                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
-                background:
-                  "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 84%, var(--bg-surface) 16%))",
-              }}
-            >
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-medium">Priority traffic</span>
+                <span className="font-medium">Priority work</span>
                 <Pill
                   tone={
                     priorityFlights.some((flight) =>
@@ -6273,7 +6562,7 @@ function AirspaceMap({
                             compact(flight.domain, "route")}
                         </span>
                         <Pill tone={hasRisk ? "holding" : flight.status}>
-                          {hasRisk ? "risk" : compact(flight.status, "active")}
+                          {hasRisk ? "risk" : toneLabel(flight.status)}
                         </Pill>
                       </div>
                     );
@@ -6281,7 +6570,93 @@ function AirspaceMap({
                 </div>
               ) : (
                 <div style={{ color: "var(--text-muted)" }}>
-                  No active traffic
+                  No priority work
+                </div>
+              )}
+            </div>
+            <div
+              className="rounded-lg border px-3 py-2 text-xs"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 88%, var(--accent-primary) 6%), color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%))",
+              }}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Commit checks</span>
+                <Pill
+                  tone={
+                    failedCommitChecks
+                      ? "failed"
+                      : landingRuns.length
+                        ? "active"
+                        : "idle"
+                  }
+                >
+                  {landingRuns.length}
+                </Pill>
+              </div>
+              {landingRuns.length ? (
+                landingRuns.map((run, runIndex) => (
+                  <div
+                    key={run.id || `commit-run-${runIndex}`}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5"
+                  >
+                    <span className="min-w-0 break-words">
+                      {compact(run.displayCallsign, "inspection")}
+                    </span>
+                    <span
+                      className="break-words text-[10px] leading-4"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {toneLabel(run.status)}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: "var(--text-muted)" }}>
+                  No commit checks
+                </div>
+              )}
+            </div>
+            <div
+              className="rounded-lg border px-3 py-2 text-xs"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 90%, var(--codesite-muted-accent) 7%), color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%))",
+              }}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Recent evidence</span>
+                <Pill tone={replayEvents.length ? "active" : "idle"}>
+                  {replayEvents.length}
+                </Pill>
+              </div>
+              {replayEvents.length ? (
+                <div className="space-y-1">
+                  {replayEvents.slice(0, 4).map((event, eventIndex) => (
+                    <div
+                      key={event.id || `workspace-event-${eventIndex}`}
+                      className="grid grid-cols-[minmax(0,1fr)_auto] gap-2"
+                    >
+                      <span className="min-w-0 truncate">
+                        {towerEventKind(event)}
+                      </span>
+                      <span
+                        className="font-mono text-[10px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        {formatTime(event.createdAt) || event.logicalTime || ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: "var(--text-muted)" }}>
+                  No evidence events
                 </div>
               )}
             </div>
@@ -6303,7 +6678,7 @@ function AirspaceMap({
             background: "var(--bg-surface)",
           }}
         >
-          <div style={{ color: "var(--text-muted)" }}>No-fly zones</div>
+          <div style={{ color: "var(--text-muted)" }}>Blocked scopes</div>
           <div className="mt-1">
             <PathList paths={noFlyZones} empty="none" />
           </div>
@@ -6316,9 +6691,9 @@ function AirspaceMap({
             background: "var(--bg-surface)",
           }}
         >
-          <div style={{ color: "var(--text-muted)" }}>Radar layers</div>
+          <div style={{ color: "var(--text-muted)" }}>Evidence types</div>
           <div className="mt-1 flex flex-wrap gap-1">
-            {["clearance", "transaction", "inspection", "proof"].map(
+            {["approval", "transaction", "inspection", "evidence"].map(
               (layer) => (
                 <Pill key={layer}>{layer}</Pill>
               ),
@@ -6734,7 +7109,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
           decision,
           reason:
             rationale ||
-            `Route revision ${decision} from CodeSite governance console.`,
+            `Plan change ${decision} from CodeSite governance console.`,
           evidenceRefs: [`codesite:ui:route-review:${revision.id}`],
         }),
       );
@@ -6763,7 +7138,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       if (!incident?.id) return;
       const rationale =
         reviewRationale ||
-        "Operator reviewed incident replay, stop-work document, suspended clearances, and passing inspection evidence.";
+        "Operator reviewed incident replay, stop-work document, suspended approvals, and passing inspection evidence.";
       return runGovernanceAction(() =>
         resumeCodeSiteMayday(workspaceSlug, incident.id, {
           approved: true,
@@ -7169,15 +7544,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
   }, [controlState?.towerState, currentProject?.status, error]);
   const mobileSections = useMemo(
     () => [
-      { key: "radar", label: "Radar" },
-      { key: "tower", label: "Tower" },
-      { key: "governance", label: "Governance" },
-      { key: "evidence", label: "Metrics" },
-      { key: "simulator", label: "Simulator" },
-      { key: "quarantine", label: "Quarantine" },
-      { key: "replay", label: "Replay" },
-      { key: "lineage", label: "Lineage" },
-      { key: "runway", label: "Runway" },
+      { key: "radar", label: "Graph", icon: CodeSiteIcons.workspaceGraph },
+      { key: "tower", label: "Activity", icon: CodeSiteIcons.activity },
+      { key: "governance", label: "Governance", icon: CodeSiteIcons.governance },
+      { key: "evidence", label: "Evidence", icon: CodeSiteIcons.evidence },
+      { key: "simulator", label: "Simulator", icon: CodeSiteIcons.simulator },
+      { key: "quarantine", label: "Quarantine", icon: CodeSiteIcons.quarantine },
+      { key: "replay", label: "Replay", icon: CodeSiteIcons.replay },
+      { key: "lineage", label: "Lineage", icon: CodeSiteIcons.lineage },
+      { key: "runway", label: "Locks", icon: CodeSiteIcons.pathLocks },
     ],
     [],
   );
@@ -7187,20 +7562,30 @@ export default function CodeSitePanel({ workspaceSlug }) {
       data-testid="codesite-panel"
       className="flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
+        "--accent-primary": "oklch(73% 0.13 196)",
+        "--attention-purple": "oklch(73% 0.13 196)",
+        "--codesite-accent-secondary": "oklch(70% 0.13 252)",
+        "--codesite-success": "oklch(72% 0.15 155)",
+        "--codesite-warning": "oklch(80% 0.15 82)",
+        "--codesite-danger": "oklch(67% 0.19 29)",
+        "--codesite-muted-accent": "oklch(68% 0.06 235)",
         "--text-muted":
           "color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary) 22%)",
         "--codesite-panel-line":
           "color-mix(in srgb, var(--border-subtle) 88%, var(--accent-primary) 12%)",
+        "--codesite-panel-surface":
+          "color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%)",
         background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 98%, var(--bg-editor) 2%), var(--bg-sidebar) 44%, color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%))",
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 92%, var(--accent-primary) 5%), var(--bg-sidebar) 34%, color-mix(in srgb, var(--codesite-panel-surface) 94%, var(--codesite-accent-secondary) 4%))",
         color: "var(--text-primary)",
       }}
     >
       <div
-        className="shrink-0 border-b px-3 py-2 shadow-[0_10px_24px_rgba(0,0,0,0.12)]"
+        className="shrink-0 border-b px-3 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.16)]"
         style={{
           borderColor: "var(--codesite-panel-line)",
-          background: "color-mix(in srgb, var(--bg-sidebar) 96%, var(--bg-elevated) 4%)",
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-elevated) 6%), color-mix(in srgb, var(--bg-sidebar) 98%, var(--bg-editor) 2%))",
         }}
       >
         <div className="flex items-center justify-between gap-3">
@@ -7214,22 +7599,33 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   "color-mix(in srgb, var(--accent-primary) 9%, var(--bg-elevated))",
               }}
             >
-              <Radar
+              <CodeSiteIcons.control
                 className="h-4 w-4"
                 style={{ color: "var(--accent-primary)" }}
               />
             </span>
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">CodeSite</div>
+              <div className="truncate text-sm font-semibold">
+                CodeSite Operations
+              </div>
               <div
                 className="truncate text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                {compact(workspaceSlug, "No workspace")}
+                Agent work, path locks, governance, and release evidence
               </div>
             </div>
           </div>
-          <Pill tone={latestStatus}>{latestStatus}</Pill>
+          <div className="flex shrink-0 items-center gap-2">
+            <span
+              className="hidden max-w-[18rem] truncate text-[11px] sm:block"
+              style={{ color: "var(--text-muted)" }}
+              title={workspaceSlug}
+            >
+              {compact(workspaceSlug, "No workspace")}
+            </span>
+            <Pill tone={latestStatus}>{toneLabel(latestStatus)}</Pill>
+          </div>
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -7279,7 +7675,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
             disabled={!radarState.selectedProjectId || loading || acting}
             testId="codesite-export"
           >
-            <Upload className="h-3.5 w-3.5" />
+            <CodeSiteIcons.artifacts className="h-3.5 w-3.5" />
             Export
           </IconButton>
         </div>
@@ -7293,7 +7689,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
           data-testid="codesite-panel-scroll"
           className="min-h-0 flex-1 overflow-y-auto pb-16"
           tabIndex={0}
-          aria-label="CodeSite evidence sections"
+          aria-label="CodeSite coordination sections"
           style={{
             background:
               "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 20%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 14%, transparent) 1px, transparent 1px)",
@@ -7319,8 +7715,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
             >
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2 font-semibold">
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                  <span>CodeSite tower link interrupted</span>
+                  <CodeSiteIcons.conflicts className="h-3.5 w-3.5 shrink-0" />
+                  <span>CodeSite sync interrupted</span>
                 </div>
                 <div
                   className="mt-1 break-words leading-5"
@@ -7331,7 +7727,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 </div>
               </div>
               <IconButton
-                title="Retry CodeSite link"
+                title="Retry CodeSite sync"
                 onClick={() => loadRadar()}
                 disabled={loading || acting}
               >
@@ -7366,25 +7762,25 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
                         }}
                       >
-                        <Radar
+                        <CodeSiteIcons.control
                           className="h-3.5 w-3.5"
                           style={{ color: "var(--accent-primary)" }}
                         />
                       </span>
                       <div className="min-w-0">
                         <div className="text-sm font-semibold">
-                          Airspace not opened
+                          No coordination project yet
                         </div>
                         <div
                           className="mt-1 text-xs leading-5"
                           style={{ color: "var(--text-muted)" }}
                         >
-                          Start a governed construction run for this workspace.
+                          Create a governed workspace for agent workstreams, path locks, approvals, and evidence.
                         </div>
                       </div>
                     </div>
                   </div>
-                  <Pill tone="idle">awaiting clearance</Pill>
+                  <Pill tone="idle">needs setup</Pill>
                 </div>
                 <div className="flex items-end gap-2">
                   <div className="min-w-0 flex-1">
@@ -7401,7 +7797,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       onChange={(event) =>
                         setNewProjectTitle(event.target.value)
                       }
-                      placeholder="Coordination run"
+                      placeholder="Coordination project"
                       className="h-8 w-full min-w-0 rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
                       style={{
                         borderColor: "var(--border-subtle)",
@@ -7411,13 +7807,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     />
                   </div>
                   <IconButton
-                    title="Open project"
+                    title="Create project"
                     variant="primary"
                     disabled={acting || !workspaceSlug}
                     type="submit"
                   >
                     <Plus className="h-3.5 w-3.5" />
-                    Open
+                    Create
                   </IconButton>
                 </div>
               </form>
@@ -7448,7 +7844,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 >
                   <div className="min-w-0">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <Pill tone={latestStatus}>{latestStatus}</Pill>
+                      <Pill tone={latestStatus}>{toneLabel(latestStatus)}</Pill>
                       <Pill
                         tone={
                           streamStatus === "live"
@@ -7484,36 +7880,36 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     className="grid grid-cols-2 gap-2 xl:grid-cols-4"
                   >
                     <StatusRailItem
-                      label="Flights"
+                      label="Workstreams"
                       value={radarState.counts.activeFlights}
                       tone={activeFlights.length ? "active" : "idle"}
-                      icon={Activity}
+                      icon={CodeSiteIcons.agents}
                       testId="codesite-status-flights"
                     />
                     <StatusRailItem
-                      label="Required"
+                      label="Actions"
                       value={radarState.counts.requiredActions}
                       tone={radarState.counts.requiredActions ? "high" : "low"}
-                      icon={Inbox}
+                      icon={CodeSiteIcons.actions}
                       testId="codesite-status-required"
                     />
                     <StatusRailItem
-                      label="Permits"
+                      label="Approvals"
                       value={permits.length}
                       tone={permits.length ? "active" : "holding"}
-                      icon={ShieldCheck}
+                      icon={CodeSiteIcons.approvals}
                       testId="codesite-status-permits"
                     />
                     <StatusRailItem
-                      label="Reroutes"
+                      label="Plan changes"
                       value={routeRevisions.length}
                       tone={
                         routeRevisions.filter(routeRevisionCanReview).length
                           ? "warning"
                           : "active"
                       }
-                      icon={Route}
-                      testId="codesite-status-reroutes"
+                      icon={CodeSiteIcons.planChanges}
+                      testId="codesite-status-plan-changes"
                     />
                   </div>
                 </div>
@@ -7534,21 +7930,30 @@ export default function CodeSitePanel({ workspaceSlug }) {
                   onSelect={handleSelectSection}
                 />
 
+                <CodeSiteOperatingModel
+                  activeFlights={activeFlights}
+                  activeLeases={activeLeases}
+                  documents={documents}
+                  routeRevisions={routeRevisions}
+                  proofBundles={proofBundles}
+                  onSelect={handleSelectSection}
+                />
+
                 <div
                   data-testid="codesite-responsive-proof-target"
                   className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.08fr)_minmax(430px,0.92fr)] xl:items-start"
                 >
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
-                      title="Airspace Map"
-                      icon={Map}
+                      title="Workspace Graph"
+                      icon={CodeSiteIcons.workspaceGraph}
                       sectionKey="radar"
                       testId="codesite-operator-airspace-pane"
                       right={
                         <Pill>{zones.length || activeFlights.length}</Pill>
                       }
                     >
-                      <AirspaceMap
+                      <ScopeTopology
                         zones={zones}
                         noFlyZones={noFlyZones}
                         flights={activeFlights}
@@ -7564,35 +7969,41 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       className="grid grid-cols-[repeat(auto-fit,minmax(126px,1fr))] gap-2"
                     >
                       <Metric
-                        label="Flights"
+                        label="Workstreams"
                         value={radarState.counts.activeFlights}
                         testId="codesite-metric-flights"
+                        icon={CodeSiteIcons.agents}
                       />
                       <Metric
-                        label="Leases"
+                        label="Path locks"
                         value={radarState.counts.activeMutationLeases}
+                        icon={CodeSiteIcons.pathLocks}
                       />
                       <Metric
                         label="Transactions"
                         value={radarState.counts.activeTransactions}
+                        icon={CodeSiteIcons.transactions}
                       />
                       <Metric
-                        label="Required"
+                        label="Actions"
                         value={radarState.counts.requiredActions}
                         tone={
                           radarState.counts.requiredActions ? "high" : "low"
                         }
+                        icon={CodeSiteIcons.actions}
                       />
                       <Metric
-                        label="Risk"
+                        label="Conflict"
                         value={compact(collisionForecast.riskLevel, "unknown")}
                         tone={collisionForecast.riskLevel}
+                        icon={CodeSiteIcons.conflicts}
                       />
                       <Metric
-                        label="Permits"
+                        label="Approvals"
                         value={permits.length}
                         tone={permits.length ? "active" : "idle"}
                         testId="codesite-metric-permits"
+                        icon={CodeSiteIcons.approvals}
                       />
                       <Metric
                         label="Documents"
@@ -7602,23 +8013,25 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             ? "holding"
                             : "active"
                         }
+                        icon={CodeSiteIcons.files}
                       />
                       <Metric
-                        label="Reroutes"
+                        label="Plan changes"
                         value={routeRevisions.length}
                         tone={
                           routeRevisions.filter(routeRevisionCanReview).length
                             ? "holding"
                             : "idle"
                         }
+                        icon={CodeSiteIcons.planChanges}
                       />
                     </div>
                   </div>
 
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
-                      title="Tower Feed"
-                      icon={Radar}
+                      title="Activity Feed"
+                      icon={CodeSiteIcons.activity}
                       sectionKey="tower"
                       testId="codesite-operator-tower-pane"
                       right={
@@ -7644,7 +8057,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
                     <OperatorPane
                       title="Governance Console"
-                      icon={ClipboardCheck}
+                      icon={CodeSiteIcons.governance}
                       sectionKey="governance"
                       testId="codesite-operator-governance-pane"
                       right={
@@ -7690,7 +8103,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Success Metrics"
-                icon={BarChart3}
+                icon={CodeSiteIcons.metrics}
                 sectionKey="evidence"
                 right={
                   <Pill tone={metrics?.status || "pending"}>
@@ -7709,8 +8122,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Runway Occupancy"
-                icon={Route}
+                title="Path Locks"
+                icon={CodeSiteIcons.pathLocks}
                 sectionKey="runway"
                 right={
                   <Pill tone={runwayOccupancy.length ? "holding" : "active"}>
@@ -7722,8 +8135,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Pilot License Health"
-                icon={ShieldCheck}
+                title="Agent Readiness"
+                icon={CodeSiteIcons.agents}
                 right={
                   <Pill
                     tone={
@@ -7742,8 +8155,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Filesystem Boundary Proofs"
-                icon={FileSearch}
+                title="Filesystem Boundary Evidence"
+                icon={CodeSiteIcons.files}
                 right={
                   <Pill
                     tone={
@@ -7767,7 +8180,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Quarantine Review"
-                icon={FileSearch}
+                icon={CodeSiteIcons.quarantine}
                 sectionKey="quarantine"
                 right={
                   <Pill
@@ -7797,8 +8210,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Collision Forecast"
-                icon={AlertTriangle}
+                title="Conflict Forecast"
+                icon={CodeSiteIcons.conflicts}
                 right={
                   <Pill tone={riskTone(collisionForecast.riskLevel)}>
                     {compact(collisionForecast.riskLevel, "unknown")}
@@ -7806,7 +8219,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 }
               >
                 {risks.length === 0 ? (
-                  <EmptyLine>No forecasted collisions</EmptyLine>
+                  <EmptyLine>No forecasted conflicts</EmptyLine>
                 ) : (
                   <div className="space-y-2">
                     {risks.map((risk, index) => (
@@ -7842,8 +8255,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Tower Simulator"
-                icon={Activity}
+                title="Coordination Simulator"
+                icon={CodeSiteIcons.simulator}
                 sectionKey="simulator"
                 right={
                   <Pill tone={selectedUniverse?.result || simulationRun.status}>
@@ -7872,12 +8285,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Flights"
-                icon={Route}
+                title="Workstreams"
+                icon={CodeSiteIcons.agents}
                 right={<Pill>{activeFlights.length}</Pill>}
               >
                 {activeFlights.length === 0 ? (
-                  <EmptyLine>No active flights</EmptyLine>
+                  <EmptyLine>No active workstreams</EmptyLine>
                 ) : (
                   <div>
                     {activeFlights.map((plan, index) => (
@@ -7900,12 +8313,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         </div>
                         <div className="min-w-0">
                           <div className="truncate">
-                            {compact(plan.mission, "Code mutation flight")}
+                            {productCopy(plan.mission, "Code mutation workstream")}
                           </div>
                           <PathList paths={plan.route || []} />
                         </div>
                         <div className="justify-self-end">
-                          <Pill tone={plan.status}>{plan.status}</Pill>
+                          <Pill tone={plan.status}>{toneLabel(plan.status)}</Pill>
                         </div>
                       </Row>
                     ))}
@@ -7914,12 +8327,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Clearances"
-                icon={ShieldCheck}
+                title="Approvals"
+                icon={CodeSiteIcons.approvals}
                 right={<Pill>{activeLeases.length}</Pill>}
               >
                 {activeLeases.length === 0 ? (
-                  <EmptyLine>No active clearances</EmptyLine>
+                  <EmptyLine>No active approvals</EmptyLine>
                 ) : (
                   <div>
                     {activeLeases.map((lease, index) => (
@@ -7957,7 +8370,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           <TagList
                             items={[
                               lease.pilotLicenseHealth?.status
-                                ? `pilot:${lease.pilotLicenseHealth.status}`
+                                ? `agent:${lease.pilotLicenseHealth.status}`
                                 : null,
                               lease.pilotLicenseHealth?.level
                                 ? `level:${lease.pilotLicenseHealth.level}`
@@ -7970,7 +8383,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           />
                         </div>
                         <div className="justify-self-end">
-                          <Pill tone={lease.status}>{lease.status}</Pill>
+                          <Pill tone={lease.status}>{toneLabel(lease.status)}</Pill>
                         </div>
                       </Row>
                     ))}
@@ -7979,8 +8392,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Transactions And Proof"
-                icon={GitCommit}
+                title="Transactions & Evidence"
+                icon={CodeSiteIcons.transactions}
                 right={
                   <Pill>
                     {mergeTransactionSources(activeTransactions, mutationTransactions).length}/
@@ -7997,8 +8410,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Inspections And Incidents"
-                icon={Siren}
+                title="Inspections & Incidents"
+                icon={CodeSiteIcons.incidents}
                 right={
                   <Pill tone={incidents.length ? "blocked" : "active"}>
                     {incidents.length}
@@ -8025,7 +8438,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             <span className="truncate">
                               {compact(run.displayCallsign, "inspection")}
                             </span>
-                            <Pill tone={run.status}>{run.status}</Pill>
+                            <Pill tone={run.status}>{toneLabel(run.status)}</Pill>
                           </div>
                           <div className="mt-1">
                             <PathList
@@ -8071,7 +8484,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="truncate">
-                              {compact(incident.category, "incident")}
+                              {productCopy(incident.category, "incident")}
                             </span>
                             <Pill tone={incident.severity}>
                               {incident.severity}
@@ -8110,8 +8523,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Causal Replay Handover"
-                icon={ScrollText}
+                title="Replay Handover"
+                icon={CodeSiteIcons.replay}
                 sectionKey="replay"
                 right={
                   <Pill
@@ -8131,8 +8544,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Artifact Projection"
-                icon={FileJson}
+                title="Artifact Export Preview"
+                icon={CodeSiteIcons.artifacts}
                 right={<Pill>{artifacts.length}</Pill>}
               >
                 {exportResult ? (
@@ -8182,7 +8595,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           className="mb-1 flex items-center gap-2 text-[11px]"
                           style={{ color: "var(--text-muted)" }}
                         >
-                          <FileSearch className="h-3.5 w-3.5" />
+                          <CodeSiteIcons.lineage className="h-3.5 w-3.5" />
                           <span className="min-w-0 truncate">
                             {artifactContentPath}
                           </span>
@@ -8195,8 +8608,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Black Box"
-                icon={ScrollText}
+                title="Audit Event Log"
+                icon={CodeSiteIcons.activity}
                 right={<Pill>{events.length}</Pill>}
               >
                 <BlackBoxFlightRecorder events={events} />
@@ -8204,7 +8617,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Required Actions"
-                icon={Inbox}
+                icon={CodeSiteIcons.actions}
                 right={
                   <Pill
                     tone={
@@ -8286,7 +8699,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Agent Inbox"
-                icon={Inbox}
+                icon={CodeSiteIcons.files}
                 right={
                   <Pill
                     tone={
@@ -8337,7 +8750,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                                 <Pill tone="holding">response</Pill>
                               ) : null}
                               <Pill tone={item.status}>
-                                {compact(item.status, "pending")}
+                                {toneLabel(item.status)}
                               </Pill>
                             </div>
                           </div>
@@ -8357,7 +8770,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
               <Section
                 title="Inspections Queue"
-                icon={ClipboardCheck}
+                icon={CodeSiteIcons.inspections}
                 right={<Pill>{inspectionRuns.length}</Pill>}
               >
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2">
@@ -8366,18 +8779,24 @@ export default function CodeSitePanel({ workspaceSlug }) {
                     label="Incidents"
                     value={incidents.length}
                     tone={incidents.length ? "high" : "low"}
+                    icon={CodeSiteIcons.incidents}
                   />
-                  <Metric label="Events" value={radarState.counts.events} />
                   <Metric
-                    label="Proof"
+                    label="Events"
+                    value={radarState.counts.events}
+                    icon={CodeSiteIcons.activity}
+                  />
+                  <Metric
+                    label="Evidence"
                     value={radarState.counts.proofBundles}
+                    icon={CodeSiteIcons.evidence}
                   />
                 </div>
               </Section>
 
               <Section
-                title="Line Provenance"
-                icon={FileSearch}
+                title="Lineage Inspector"
+                icon={CodeSiteIcons.lineage}
                 sectionKey="lineage"
                 right={<Pill>{lineProvenance.length}</Pill>}
               >
@@ -8396,12 +8815,12 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Airspace Zones"
-                icon={Layers}
+                title="Work Scope Zones"
+                icon={CodeSiteIcons.scopes}
                 right={<Pill>{zones.length}</Pill>}
               >
                 {zones.length === 0 ? (
-                  <EmptyLine>No classified zones</EmptyLine>
+                  <EmptyLine>No classified scopes</EmptyLine>
                 ) : (
                   <div className="space-y-1">
                     {zones.slice(0, 6).map((zone, index) => (
@@ -8415,13 +8834,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       >
                         <div className="min-w-0">
                           <div className="truncate font-medium">
-                            {zoneName(zone, index)}
+                            {displayZoneName(zone, index)}
                           </div>
                           <div
                             className="text-[10px]"
                             style={{ color: "var(--text-muted)" }}
                           >
-                            Class {zoneClass(zone)}
+                            {zoneTierLabel(zone)}
                           </div>
                         </div>
                         <PathList paths={zonePaths(zone)} empty="no paths" />
@@ -8434,7 +8853,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 )}
               </Section>
 
-              <Section title="Radar Sources" icon={Activity}>
+              <Section title="Policy Inputs" icon={CodeSiteIcons.signals}>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-2 text-xs">
                   <div
                     className="rounded border px-3 py-2"

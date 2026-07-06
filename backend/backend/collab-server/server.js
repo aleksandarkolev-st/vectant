@@ -12,6 +12,11 @@ const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: ter
 const proxyService = require('./proxyService');
 const config = require('./config');
 const gitService = require('./gitService');
+const {
+  COMMAND_SCOPES,
+  authorizeCollabGatewayRequest,
+  requireCollabGatewayAuth,
+} = require('../../collab-server/collabGatewayAuth');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
@@ -41,6 +46,29 @@ if (typeof fetch === 'function') {
 const CODE_INTEL_URL = config.CODE_INTEL_URL;
 
 const PORT = config.PORT;
+
+function applyCollabGatewayAuthIdentity(parsed, auth) {
+  if (!parsed || !auth || auth.source !== 'gateway') return parsed;
+  if (auth.workspaceUserId) parsed.userId = auth.workspaceUserId;
+  if (auth.filesystemUserId) parsed.filesystemUserId = auth.filesystemUserId;
+  else if (auth.workspaceUserId && !parsed.filesystemUserId) parsed.filesystemUserId = auth.workspaceUserId;
+  if (auth.runtimeScope) parsed.runtimeScope = auth.runtimeScope;
+  if (auth.collabSessionId) parsed.collabSessionId = auth.collabSessionId;
+  return parsed;
+}
+
+function requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope = COMMAND_SCOPES.EXEC } = {}) {
+  const auth = requireCollabGatewayAuth(req, res, {
+    slug,
+    parsed,
+    requiredScope,
+    config,
+    sessionManager,
+  });
+  if (!auth) return null;
+  applyCollabGatewayAuthIdentity(parsed, auth);
+  return auth;
+}
 
 // PERF: Bounded LRU cache replaces unbounded Map to prevent memory leak and
 // GC pauses on long-running servers with many files.  1000 entries covers the
@@ -734,7 +762,7 @@ const server = http.createServer(async (req, res) => {
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-session-id, x-runtime-scope, x-runtime-fs-user-id, x-synthi-internal-token, x-collab-internal-token');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1029,6 +1057,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
       return;
     }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
 
     const command = (parsed.command || '').trim();
     if (!command) {
@@ -1210,6 +1241,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
       return;
     }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
 
     const command = (parsed.command || '').trim();
     if (!command) {
@@ -1310,6 +1344,9 @@ const server = http.createServer(async (req, res) => {
     try { parsed = JSON.parse(body); } catch (_) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
       return;
     }
 
@@ -2995,6 +3032,37 @@ server.on('upgrade', (request, socket, head) => {
       sessionWss.emit('connection', ws, request);
     });
   } else if (pathname === 'terminal') {
+    const terminalUrl = new URL(request.url || '/terminal', `http://${request.headers.host || 'localhost'}`);
+    const terminalSlug = terminalUrl.searchParams.get('workspace') || '';
+    const auth = authorizeCollabGatewayRequest({
+      req: request,
+      slug: terminalSlug,
+      requiredScope: COMMAND_SCOPES.TERMINAL,
+      config,
+      sessionManager,
+    });
+    if (!auth.ok) {
+      const status = auth.status || 401;
+      const body = JSON.stringify({ error: auth.error || 'collab_gateway_auth_failed' });
+      socket.write(
+        `HTTP/1.1 ${status} Unauthorized\r\n` +
+        'Content-Type: application/json\r\n' +
+        'Connection: close\r\n' +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n` +
+        body
+      );
+      socket.destroy();
+      return;
+    }
+    if (auth.source === 'gateway') {
+      if (auth.workspaceUserId) terminalUrl.searchParams.set('userId', auth.workspaceUserId);
+      if (auth.filesystemUserId) terminalUrl.searchParams.set('filesystemUserId', auth.filesystemUserId);
+      else if (auth.workspaceUserId) terminalUrl.searchParams.set('filesystemUserId', auth.workspaceUserId);
+      if (auth.runtimeScope) terminalUrl.searchParams.set('runtimeScope', auth.runtimeScope);
+      if (auth.collabSessionId) terminalUrl.searchParams.set('collabSessionId', auth.collabSessionId);
+      terminalUrl.searchParams.delete('token');
+      request.url = `${terminalUrl.pathname}${terminalUrl.search}`;
+    }
     // Route to terminal PTY WebSocket server
     terminalWss.handleUpgrade(request, socket, head, (ws) => {
       terminalWss.emit('connection', ws, request);
@@ -3115,4 +3183,3 @@ server.listen(PORT, '0.0.0.0', () => {
     spawner.startCuller();
   }
 });
-
