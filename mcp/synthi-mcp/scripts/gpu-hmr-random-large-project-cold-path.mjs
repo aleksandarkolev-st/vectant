@@ -62,6 +62,10 @@ const APP_HOOK_MATERIALIZATION_PLAN_SCHEMA =
   'synthi.gpu_hmr.random_cold_path_app_hook_materialization_plan.v1';
 const APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY =
   'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success';
+const RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA =
+  'synthi.gpu_hmr.random_cold_path_runtime_boundary_plan_binding.v1';
+const RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY =
+  'runtime_boundary_plan_binding_only_not_gpu_hmr_success';
 const RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_STAGE =
   'runtime_adapter_or_app_hook_contract';
 const RUNTIME_ADAPTER_OR_APP_HOOK_CONTRACT_GAP =
@@ -3766,6 +3770,141 @@ function deriveAppHookMaterializationPlan({
   };
 }
 
+function deriveRuntimeBoundaryPlanBinding({
+  runtimeProfileProofBridge = null,
+  runtimeAppHookMaterializationPlan = {},
+  sourceIntakeEvidence = {},
+} = {}) {
+  const runtimeBoundaryEventManifestSha256 = firstString(
+    runtimeProfileProofBridge?.runtimeBoundaryEventManifestSha256,
+    runtimeProfileProofBridge?.runtime_boundary_event_manifest_sha256,
+  );
+  const materializationPlanHash = firstString(
+    runtimeAppHookMaterializationPlan.materializationPlanHash,
+    runtimeAppHookMaterializationPlan.materialization_plan_hash,
+  );
+  const buildMetadataContentEvidence = firstObjectField(
+    sourceIntakeEvidence,
+    'buildMetadataContentEvidence',
+    'build_metadata_content_evidence',
+  );
+  const runtimeBoundaryExpectation = firstObjectField(
+    sourceIntakeEvidence,
+    'runtimeBoundaryExpectation',
+    'runtime_boundary_expectation',
+  );
+  const runtimeBoundaryEventManifestTemplate = firstObjectField(
+    sourceIntakeEvidence,
+    'runtimeBoundaryEventManifestTemplate',
+    'runtime_boundary_event_manifest_template',
+  );
+  const sourceListingHash = firstString(
+    sourceIntakeEvidence.sourceListingHash,
+    sourceIntakeEvidence.source_listing_hash,
+  );
+  const buildMetadataContentHash = firstString(
+    buildMetadataContentEvidence.contentEvidenceHash,
+    buildMetadataContentEvidence.content_evidence_hash,
+    runtimeAppHookMaterializationPlan.buildMetadataContentHash,
+    runtimeAppHookMaterializationPlan.build_metadata_content_hash,
+  );
+  const runtimeBoundaryExpectationHash = firstString(
+    runtimeBoundaryExpectation.expectationHash,
+    runtimeBoundaryExpectation.expectation_hash,
+    runtimeAppHookMaterializationPlan.runtimeBoundaryExpectationHash,
+    runtimeAppHookMaterializationPlan.runtime_boundary_expectation_hash,
+  );
+  const runtimeBoundaryEventManifestTemplateHash = firstString(
+    runtimeBoundaryEventManifestTemplate.templateHash,
+    runtimeBoundaryEventManifestTemplate.template_hash,
+    runtimeAppHookMaterializationPlan.runtimeBoundaryEventManifestTemplateHash,
+    runtimeAppHookMaterializationPlan.runtime_boundary_event_manifest_template_hash,
+  );
+  const requiredStages = uniqueSortedStrings([
+    ...firstArrayField(runtimeAppHookMaterializationPlan, 'requiredStages', 'required_stages'),
+  ]);
+  const stagePlans = [
+    ...firstArrayField(runtimeAppHookMaterializationPlan, 'stagePlans', 'stage_plans'),
+  ].filter((entry) => entry && typeof entry === 'object');
+  const stageTemplateHashes = uniqueSortedStrings(stagePlans
+    .map((stage) => firstString(stage.eventTemplateHash, stage.event_template_hash))
+    .filter(Boolean));
+  const bindingSeed = {
+    schemaVersion: RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA,
+    proofAuthority: RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY,
+    materializationPlanHash,
+    runtimeBoundaryEventManifestSha256,
+    sourceListingHash,
+    buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    adapterResultSha256: null,
+    proofJsonSha256: null,
+    requiredStages,
+    stageTemplateHashes,
+  };
+  const failedGates = uniqueSortedStrings([
+    materializationPlanHash ? null : 'runtime_boundary_plan_binding_materialization_plan_hash_missing',
+    runtimeBoundaryEventManifestSha256 ? null : 'runtime_boundary_plan_binding_event_manifest_hash_missing',
+    sourceListingHash ? null : 'runtime_boundary_plan_binding_source_listing_hash_missing',
+    buildMetadataContentHash ? null : 'runtime_boundary_plan_binding_build_metadata_hash_missing',
+    runtimeBoundaryExpectationHash ? null : 'runtime_boundary_plan_binding_expectation_hash_missing',
+    runtimeBoundaryEventManifestTemplateHash ? null : 'runtime_boundary_plan_binding_template_hash_missing',
+    REQUIRED_RUNTIME_BOUNDARY_EVENT_KINDS.every((kind) => requiredStages.includes(kind))
+      ? null
+      : 'runtime_boundary_plan_binding_required_stages_incomplete',
+    stageTemplateHashes.length > 0 ? null : 'runtime_boundary_plan_binding_stage_template_hashes_missing',
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    schemaVersion: RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA,
+    schema_version: RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA,
+    proofAuthority: RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY,
+    proof_authority: RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    materializationPlanHash,
+    materialization_plan_hash: materializationPlanHash,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    adapterResultSha256: null,
+    adapter_result_sha256: null,
+    proofJsonSha256: null,
+    proof_json_sha256: null,
+    requiredStages,
+    required_stages: requiredStages,
+    stageTemplateHashes,
+    stage_template_hashes: stageTemplateHashes,
+    bindingHash: contentHash(stableJson(bindingSeed)),
+    binding_hash: contentHash(stableJson(bindingSeed)),
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function parseGitLsTree(text) {
   return String(text ?? '')
     .split(/\r?\n/)
@@ -5426,6 +5565,16 @@ async function runSelectedCandidate(
       runtimeProfileProofBridge,
       sourceIntakeEvidence: sourceIntakeEvidence ?? {},
     });
+    const runtimeBoundaryPlanBinding = sourceIntakeEvidence && firstString(
+      runtimeProfileProofBridge?.runtimeBoundaryEventManifestSha256,
+      runtimeProfileProofBridge?.runtime_boundary_event_manifest_sha256,
+    )
+      ? deriveRuntimeBoundaryPlanBinding({
+        runtimeProfileProofBridge,
+        runtimeAppHookMaterializationPlan,
+        sourceIntakeEvidence,
+      })
+      : null;
     const runtimeSupportClosureGaps = uniqueSortedStrings([
       ...(Array.isArray(runtimeSupportClosureObligation.blockingGaps)
         ? runtimeSupportClosureObligation.blockingGaps
@@ -5552,6 +5701,12 @@ async function runSelectedCandidate(
         runtimeAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
       runtime_app_hook_materialization_plan_accepted:
         runtimeAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
+      runtimeBoundaryPlanBinding,
+      runtime_boundary_plan_binding: runtimeBoundaryPlanBinding,
+      runtimeBoundaryPlanBindingAccepted:
+        runtimeBoundaryPlanBinding?.acceptedAsSupportEvidence === true,
+      runtime_boundary_plan_binding_accepted:
+        runtimeBoundaryPlanBinding?.acceptedAsSupportEvidence === true,
       derivedRuntimeProfileContract,
       derived_runtime_profile_contract: derivedRuntimeProfileContract,
       derivedRuntimeProfileContractAccepted,
@@ -6666,6 +6821,8 @@ async function selfCheck() {
     || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.proofLedgerId === null
     || genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryProofAdapterAccepted !== true
     || !genericRuntimeBoundaryResult.runtimeProfileProofBridge?.runtimeBoundaryEventManifestSha256?.startsWith('sha256:')
+    || genericRuntimeBoundaryResult.runtimeBoundaryPlanBindingAccepted !== false
+    || genericRuntimeBoundaryResult.runtimeBoundaryPlanBinding !== null
     || genericRuntimeBoundaryResult.blockingGaps?.includes('same_process_loader_unproven')
     || genericRuntimeBoundaryResult.blockingGaps?.includes('epoch_publication_unproven')
     || genericRuntimeBoundaryResult.blockingGaps?.includes('dispatch_trace_unproven')
@@ -7347,6 +7504,21 @@ async function selfCheck() {
     || localResult.runtimeAppHookMaterializationPlan?.canSatisfyDispatchProof !== false
     || !localResult.runtimeAppHookMaterializationPlan?.blockingGaps
       ?.includes('app_hook_materialization_requires_observed_target_process_events')
+    || localResult.runtimeBoundaryPlanBindingAccepted !== true
+    || localResult.runtimeBoundaryPlanBinding?.schemaVersion !== RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA
+    || localResult.runtimeBoundaryPlanBinding?.proofAuthority !== RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY
+    || localResult.runtimeBoundaryPlanBinding?.acceptedForGpuHmr !== false
+    || localResult.runtimeBoundaryPlanBinding?.gpuHmrSuccess !== false
+    || localResult.runtimeBoundaryPlanBinding?.canSatisfyRuntimeProof !== false
+    || localResult.runtimeBoundaryPlanBinding?.runtimeBoundaryEventManifestSha256
+      !== localResult.runtimeProfileProofBridge?.runtimeBoundaryEventManifestSha256
+    || localResult.runtimeBoundaryPlanBinding?.materializationPlanHash
+      !== localResult.runtimeAppHookMaterializationPlan?.materializationPlanHash
+    || localResult.runtimeBoundaryPlanBinding?.sourceListingHash
+      !== localResult.sourceIntakeEvidence?.sourceListingHash
+    || localResult.runtimeBoundaryPlanBinding?.runtimeBoundaryEventManifestTemplateHash
+      !== localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.templateHash
+    || !localResult.runtimeBoundaryPlanBinding?.bindingHash?.startsWith('sha256:')
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.gpuHmrSuccess !== false
     || localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.canSatisfyRuntimeProof !== false
     || !localResult.sourceIntakeEvidence?.runtimeBoundaryEventManifestTemplate?.requiredEventKinds?.includes('dispatch_trace')

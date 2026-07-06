@@ -5172,15 +5172,18 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
 
 function randomColdRuntimeBoundaryPlanBindingFacet({
   adapterResultImport = {},
+  runtimeBoundaryPlanBinding = {},
   appHookMaterializationPlan = {},
   sourceIntake = {},
   derivedRuntimeProfileContract = {},
   coldTemplate = {},
 } = {}) {
   const adapterImport = compactObject(adapterResultImport);
-  const rawBinding = compactObject(
-    adapterImport.runtimeBoundaryPlanBinding
-    ?? adapterImport.runtime_boundary_plan_binding,
+  const rawBinding = firstCompactObject(
+    runtimeBoundaryPlanBinding
+    ?? {},
+    adapterImport.runtimeBoundaryPlanBinding,
+    adapterImport.runtime_boundary_plan_binding,
   );
   const appHookPlan = compactObject(appHookMaterializationPlan);
   const intake = compactObject(sourceIntake);
@@ -30343,6 +30346,14 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
   ));
   const randomColdRuntimeBoundaryPlanBinding = randomColdRuntimeBoundaryPlanBindingFacet({
     adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
+    runtimeBoundaryPlanBinding: firstCompactObject(
+      result.runtimeBoundaryPlanBinding,
+      result.runtime_boundary_plan_binding,
+      sourceIntake.runtimeBoundaryPlanBinding,
+      sourceIntake.runtime_boundary_plan_binding,
+      randomLargeProjectColdPath.runtimeBoundaryPlanBinding,
+      randomLargeProjectColdPath.runtime_boundary_plan_binding,
+    ),
     appHookMaterializationPlan: randomColdAppHookMaterializationPlan,
     sourceIntake: coldSourceTreeIntake,
     derivedRuntimeProfileContract: randomColdDerivedRuntimeProfileContract,
