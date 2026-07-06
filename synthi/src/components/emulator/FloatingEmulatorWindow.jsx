@@ -461,10 +461,10 @@ export default function FloatingEmulatorWindow({
             {typeof onClose === 'function' && (
               <button
                 onClick={handleClose}
-                className="absolute top-2 right-3 w-5 h-5 rounded-full bg-[#333] hover:bg-red-500/80 flex items-center justify-center transition-colors z-20"
+                className="vt-icon-button th-focus-ring absolute right-3 top-2 z-20 h-5 min-w-5 rounded-full text-[var(--accent-danger)]"
                 aria-label="Close emulator"
               >
-                <X className="w-3 h-3 text-gray-400 hover:text-white" />
+                <X className="w-3 h-3" />
               </button>
             )}
 
@@ -493,52 +493,52 @@ export default function FloatingEmulatorWindow({
             </div>
 
             {/* Bottom control area - inside the bezel */}
-<div className="absolute bottom-2 left-0 right-0 flex items-center justify-center gap-2">
+            <div className="absolute bottom-2 left-0 right-0 flex items-center justify-center gap-2">
               {/* Scale down button */}
               <button
                 onClick={handleScaleDown}
-                className="w-7 h-7 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-blue-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-7 min-w-7 rounded-full"
                 aria-label="Smaller"
                 title="Make smaller"
               >
-                <Minus className="w-3 h-3 text-gray-500 group-hover:text-blue-400" />
+                <Minus className="w-3 h-3" />
               </button>
 
               {/* Power button */}
               <button
                 onClick={handlePower}
-                className="w-8 h-8 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-8 min-w-8 rounded-full text-[var(--accent-secondary)]"
                 aria-label="Power"
               >
-                <Power className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-400" />
+                <Power className="w-3.5 h-3.5" />
               </button>
 
               {/* Home button - larger, centered */}
               <button
                 onClick={handleHome}
-                className="w-10 h-10 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border-2 border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-10 min-w-10 rounded-full text-[var(--accent-secondary)]"
                 aria-label="Home"
               >
-                <Home className="w-4 h-4 text-gray-500 group-hover:text-emerald-400" />
+                <Home className="w-4 h-4" />
               </button>
 
               {/* Rotate button */}
               <button
                 onClick={handleRotate}
-                className="w-8 h-8 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-8 min-w-8 rounded-full text-[var(--accent-secondary)]"
                 aria-label="Rotate"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-400" />
+                <RotateCcw className="w-3.5 h-3.5" />
               </button>
 
               {/* Scale up button */}
               <button
                 onClick={handleScaleUp}
-                className="w-7 h-7 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-blue-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-7 min-w-7 rounded-full"
                 aria-label="Larger"
                 title="Make larger"
               >
-                <Plus className="w-3 h-3 text-gray-500 group-hover:text-blue-400" />
+                <Plus className="w-3 h-3" />
               </button>
             </div>
 
@@ -546,12 +546,19 @@ export default function FloatingEmulatorWindow({
         </div>
 
         {/* Status indicator - small LED style */}
-        <div className={`absolute top-3 left-3 w-1.5 h-1.5 rounded-full ${
-          streamConnected ? 'bg-emerald-500 shadow-emerald-500/50 shadow-sm' : 
-          state === EMULATOR_STATES.ERROR ? 'bg-red-500 shadow-red-500/50 shadow-sm' :
-          state === EMULATOR_STATES.BOOTING ? 'bg-yellow-500 animate-pulse' :
-          'bg-gray-600'
-        }`} />
+        <div
+          className={`absolute left-3 top-3 h-1.5 w-1.5 rounded-full ${state === EMULATOR_STATES.BOOTING ? 'animate-pulse' : ''}`}
+          style={{
+            background: streamConnected
+              ? 'var(--accent-success)'
+              : state === EMULATOR_STATES.ERROR
+                ? 'var(--accent-danger)'
+                : state === EMULATOR_STATES.BOOTING
+                  ? 'var(--accent-warning)'
+                  : 'var(--text-muted)',
+            boxShadow: streamConnected ? '0 0 10px color-mix(in srgb, var(--accent-success) 60%, transparent)' : undefined,
+          }}
+        />
       </div>
     </div>
   );

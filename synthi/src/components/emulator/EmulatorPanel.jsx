@@ -367,12 +367,12 @@ export default function EmulatorPanel({
   };
 
   return (
-    <div className="h-full w-full flex flex-col bg-[#0c0c0e]">
+    <div className="vt-panel-frame flex h-full w-full flex-col rounded-none border-0">
       {/* Header */}
-      <div className="h-10 flex items-center justify-between px-3 border-b border-[#1a1a1e] bg-[#09090b]">
+      <div className="vt-panel-header h-10 justify-between px-3">
         <div className="min-w-0">
-          <div className="text-sm text-gray-200 truncate">{title}</div>
-          <div className="text-[11px] text-gray-400 truncate">{headerSubtitle}</div>
+          <div className="truncate text-sm text-[var(--text-primary)]">{title}</div>
+          <div className="truncate text-[11px] text-[var(--text-muted)]">{headerSubtitle}</div>
         </div>
 
         {/*
@@ -380,16 +380,16 @@ export default function EmulatorPanel({
           SDK status, or build controls here.
         */}
         <div className="flex items-center gap-2">
-          <div className="text-[11px] text-gray-500">
+          <div className="vt-state-pill">
             {sessionId ? (streamConnected ? 'Connected' : 'Connecting…') : 'UI-only'}
           </div>
-          {!sessionId ? <div className="text-[11px] text-gray-500">UI-only</div> : null}
+          {!sessionId ? <div className="vt-state-pill">UI-only</div> : null}
           {typeof onClose === 'function' ? (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="h-7 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+              className="th-btn-ghost h-7 border-[var(--border-subtle)]"
               onClick={onClose}
               aria-label="Close emulator preview"
             >

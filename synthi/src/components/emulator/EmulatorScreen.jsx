@@ -6,7 +6,7 @@ import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/
 
 function StatusBar() {
   return (
-    <div className="h-7 px-3 flex items-center justify-between text-[11px] text-gray-200 bg-black/40">
+    <div className="flex h-7 items-center justify-between bg-black/40 px-3 text-[11px] text-[var(--text-secondary)]">
       <div className="flex items-center gap-2">
         <div className="w-6 h-2 rounded bg-white/30" />
         <div className="w-4 h-2 rounded bg-white/20" />
@@ -22,10 +22,10 @@ function StatusBar() {
 function HomeScreenMock() {
   const icons = Array.from({ length: 12 }).map((_, idx) => idx);
   return (
-    <div className="h-full w-full bg-gradient-to-b from-[#0b0b10] to-[#050506]">
+    <div className="h-full w-full bg-gradient-to-b from-[var(--bg-editor)] to-[var(--bg-app)]">
       <StatusBar />
       <div className="p-4">
-        <div className="text-xs text-gray-300 mb-3">Synthi Android</div>
+        <div className="mb-3 text-xs text-[var(--text-secondary)]">Synthi Android</div>
         <div className="grid grid-cols-4 gap-3">
           {icons.map((i) => (
             <div key={i} className="flex flex-col items-center gap-1">
@@ -51,14 +51,14 @@ function HomeScreenMock() {
 
 function BootingScreen({ message, detail }) {
   return (
-    <div className="h-full w-full bg-black flex items-center justify-center">
+    <div className="flex h-full w-full items-center justify-center bg-[var(--bg-app)]">
       <div className="flex flex-col items-center gap-3">
         <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
-        <div className="text-xs text-gray-300 tracking-wide text-center px-4 max-w-[80%] break-words">
+        <div className="max-w-[80%] break-words px-4 text-center text-xs tracking-wide text-[var(--text-secondary)]">
           {message || 'booting…'}
         </div>
         {detail && (
-          <div className="text-[10px] text-gray-500 font-mono text-center px-4 w-full break-words opacity-80 leading-tight">
+          <div className="w-full break-words px-4 text-center font-mono text-[10px] leading-tight text-[var(--text-muted)] opacity-80">
             {detail}
           </div>
         )}
@@ -69,10 +69,10 @@ function BootingScreen({ message, detail }) {
 
 function MessageScreen({ title, subtitle }) {
   return (
-    <div className="h-full w-full bg-black flex items-center justify-center">
+    <div className="flex h-full w-full items-center justify-center bg-[var(--bg-app)]">
       <div className="px-5 text-center">
-        <div className="text-sm text-gray-200 mb-1">{title}</div>
-        {subtitle ? <div className="text-xs text-gray-400">{subtitle}</div> : null}
+        <div className="mb-1 text-sm text-[var(--text-primary)]">{title}</div>
+        {subtitle ? <div className="text-xs text-[var(--text-muted)]">{subtitle}</div> : null}
       </div>
     </div>
   );
