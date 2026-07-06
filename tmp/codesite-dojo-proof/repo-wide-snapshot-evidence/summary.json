@@ -1,0 +1,115 @@
+{
+  "generatedAt": "2026-07-04T22:43:38.184Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "head": "282de36336da",
+  "patch": "repo-wide serializable snapshot evidence",
+  "focusedVitest": {
+    "success": true,
+    "total": 114,
+    "passed": 11,
+    "failed": 0,
+    "skipped": 103,
+    "files": [
+      {
+        "name": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/artifacts.test.js",
+        "total": 9,
+        "failed": 0
+      },
+      {
+        "name": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "total": 99,
+        "failed": 0
+      },
+      {
+        "name": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/repoSnapshot.test.js",
+        "total": 6,
+        "failed": 0
+      }
+    ]
+  },
+  "fullVitestResiduals": {
+    "success": false,
+    "total": 114,
+    "passed": 105,
+    "failed": 9,
+    "skipped": 0,
+    "files": [
+      {
+        "name": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/artifacts.test.js",
+        "total": 9,
+        "failed": 0
+      },
+      {
+        "name": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "total": 99,
+        "failed": 9
+      },
+      {
+        "name": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/repoSnapshot.test.js",
+        "total": 6,
+        "failed": 0
+      }
+    ],
+    "failures": [
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation lands writeful automatic workflow plans only with durable agent evidence",
+        "message": "Error: Test timed out in 5000ms."
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation executes landing inspection commands and records durable radar evidence",
+        "message": "AssertionError: expected [ { key: 'tests', …(15) } ] to deeply equal ArrayContaining{…}"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation serializes overlapping proof-carrying commit races and blocks the stale loser",
+        "message": "AssertionError: expected [] to have a length of 1 but got +0"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation executes configured shadow runner and records execution-backed counterfactual evidence",
+        "message": "Error: shadow_runner_evidence_required"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation executes real shadow-universe repo commands in isolated worktrees",
+        "message": "AssertionError: expected { status: 'completed', …(5) } to match object { status: 'completed', …(1) }"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation blocks shadow runner absolute command paths that only match an allowed basename",
+        "message": "AssertionError: expected undefined to match object { status: 'near_miss', …(3) }"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation keeps inline shadow repo commands disabled by default",
+        "message": "AssertionError: expected undefined to match object { …(2) }"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation applies promoted counterfactual policy deltas to future tower simulation",
+        "message": "AssertionError: expected 'frontend-backend-parallel' to be 'test-first' // Object.is equality"
+      },
+      {
+        "file": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+        "name": "CodeSite control plane transaction validation treats migration-only simulator pressure as a single runway problem",
+        "message": "TypeError: Cannot read properties of undefined (reading 'map')"
+      }
+    ]
+  },
+  "behavioralAssertions": [
+    "Serializable transactions record scope=repo_wide base snapshot evidence.",
+    "Semantic dependency paths are included in the snapshot read set.",
+    "Raw filesystem drift outside the declared read set invalidates validation.",
+    "Truncated or skipped repo-wide snapshot evidence blocks serializable closeout.",
+    "Proof bundles and commit trailers expose base snapshot and evidence digests."
+  ],
+  "evidenceFiles": [
+    "tmp/codesite-dojo-proof/repo-wide-snapshot-evidence/vitest-focused.json",
+    "tmp/codesite-dojo-proof/repo-wide-snapshot-evidence/vitest-full-residual.json",
+    "tmp/codesite-dojo-proof/repo-wide-snapshot-evidence/summary.json",
+    "tmp/codesite-dojo-proof/repo-wide-snapshot-evidence/proof.html",
+    "tmp/codesite-dojo-proof/repo-wide-snapshot-evidence/proof.png"
+  ]
+}

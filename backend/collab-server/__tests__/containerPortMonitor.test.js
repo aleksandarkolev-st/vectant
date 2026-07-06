@@ -99,3 +99,42 @@ test('monitor clears ports for a container that disappeared', async () => {
   await monitor._scanOnce();                           // emits [] once
   assert.deepEqual(events, [['repo', 'u1', [3000]], ['repo', 'u1', []]]);
 });
+
+test('monitor scans overlay sessions with their runtime options and isolated baselines', async () => {
+  const events = [];
+  const calls = [];
+  const readwrite = { slug: 'repo', userId: 'u1', containerId: 'rw' };
+  const overlay = {
+    slug: 'repo',
+    userId: 'u1',
+    containerId: 'ovl',
+    runtimeOptions: { codeSiteOverlayId: 'overlay-a' },
+    runtimeIdentity: { mode: 'codesite-overlay', overlayId: 'overlay-a' },
+  };
+  let containers = [readwrite, overlay];
+  let scan = 0;
+  const monitor = createContainerPortMonitor({
+    listContainers: () => containers,
+    runOnce: async (slug, userId, _argv, runtimeOptions = {}) => {
+      calls.push([slug, userId, runtimeOptions.codeSiteOverlayId || 'readwrite']);
+      const base = PROC_BASELINE;
+      if (scan < 2) return base;
+      return runtimeOptions.codeSiteOverlayId ? `${base}\n${PROC_TCP6}` : `${base}\n${PROC_TCP}`;
+    },
+    onPortsChanged: (slug, userId, ports) => events.push([slug, userId, ports]),
+    intervalMs: 0,
+  });
+
+  await monitor._scanOnce();
+  scan = 2;
+  await monitor._scanOnce();
+  containers = [overlay];
+  await monitor._scanOnce();
+
+  assert.deepEqual(calls.map((call) => call[2]), ['readwrite', 'overlay-a', 'readwrite', 'overlay-a', 'overlay-a']);
+  assert.deepEqual(events, [
+    ['repo', 'u1', [3000]],
+    ['repo', 'u1', [5001]],
+    ['repo', 'u1', []],
+  ]);
+});

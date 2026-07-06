@@ -297,6 +297,7 @@ model CodeSiteProject {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  members            CodeSiteProjectMember[]
   agentSessions      CodeSiteAgentSession[]
   executionPlans     CodeSiteExecutionPlan[]
   mutationLeases     CodeSiteMutationLease[]
@@ -309,12 +310,39 @@ model CodeSiteProject {
   proofBundles       CodeSiteProofBundle[]
   lineProvenance     CodeSiteLineProvenance[]
   documents          CodeSiteDocument[]
+  permits            CodeSitePermit[]
+  documentReviews    CodeSiteDocumentReview[]
+  routeRevisions     CodeSiteRouteRevision[]
   counterfactualRuns CodeSiteCounterfactualRun[]
   policyDeltas       CodeSitePolicyDelta[]
   inboxItems         CodeSiteAgentInboxItem[]
 
   @@index([workspaceSlug])
   @@index([status])
+}
+
+model CodeSiteProjectMember {
+  id              String   @id @default(cuid())
+  projectId       String
+  workspaceSlug   String
+  userId          String
+  role            String
+  permissionsJson String
+  redactionPolicyJson String?
+  participationStatus String @default("enabled")
+  source          String
+  createdByUserId String?
+  revokedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([workspaceSlug, userId])
+  @@index([projectId])
+  @@index([role])
+  @@index([projectId, revokedAt])
 }
 
 model CodeSiteMutationZone {
@@ -385,6 +413,7 @@ model CodeSiteExecutionPlan {
   agentSession   CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   mutationLeases CodeSiteMutationLease[]
   inspectionRuns CodeSiteInspectionRun[]
+  routeRevisions CodeSiteRouteRevision[]
 
   @@index([projectId])
   @@index([agentSessionId])
@@ -512,7 +541,10 @@ model CodeSiteProofBundle {
   dojoEvidenceRefsJson  String?
   repoStateJson         String?
   incidentReplayDigest  String?
+  landingStatus         String?
   bundleDigest          String
+  proofSignatureJson    String?
+  signatureKeyId        String?
   createdAt             DateTime @default(now())
 
   project     CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -522,6 +554,7 @@ model CodeSiteProofBundle {
   @@index([transactionId])
   @@index([commitSha])
   @@index([bundleDigest])
+  @@index([signatureKeyId])
 }
 
 model CodeSiteLineProvenance {
@@ -607,10 +640,90 @@ model CodeSiteDocument {
 
   project    CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   inboxItems CodeSiteAgentInboxItem[]
+  reviews    CodeSiteDocumentReview[]
+  routeRevisions CodeSiteRouteRevision[]
 
   @@index([projectId])
   @@index([kind])
   @@index([status])
+}
+
+model CodeSitePermit {
+  id               String   @id @default(cuid())
+  projectId        String
+  executionPlanId  String?
+  mutationLeaseId  String?
+  documentId       String?
+  permitType       String
+  status           String
+  title            String
+  scopeJson        String
+  approvalJson     String
+  evidenceRefsJson String
+  issuedByUserId   String?
+  issuedAt         DateTime @default(now())
+  expiresAt        DateTime?
+  closedAt         DateTime?
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([mutationLeaseId])
+  @@index([documentId])
+  @@index([status])
+  @@index([permitType])
+}
+
+model CodeSiteDocumentReview {
+  id               String   @id @default(cuid())
+  projectId        String
+  documentId       String
+  reviewerUserId   String?
+  status           String
+  decision         String
+  reasonCodesJson  String
+  bodyJson         String
+  evidenceRefsJson String
+  requestedAt      DateTime @default(now())
+  reviewedAt       DateTime?
+
+  project  CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document CodeSiteDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([documentId])
+  @@index([reviewerUserId])
+  @@index([status])
+  @@index([decision])
+}
+
+model CodeSiteRouteRevision {
+  id                 String   @id @default(cuid())
+  projectId          String
+  executionPlanId    String
+  documentId         String?
+  status             String
+  previousRouteJson  String
+  proposedRouteJson  String
+  affectedLeasesJson String
+  approvalJson       String
+  evidenceRefsJson   String
+  proposedByUserId   String?
+  approvedByUserId   String?
+  appliedAt          DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan CodeSiteExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  document      CodeSiteDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([documentId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 model CodeSiteEvent {

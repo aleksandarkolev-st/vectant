@@ -5,7 +5,17 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const config = require('./config');
 const repoCache = require('./repoCache');
-const { normalizeRepoRelativePath } = require('./codesiteFs');
+const {
+    CodeSiteCommitBlockedError,
+    codeSiteCommitMessage,
+    completeCodeSiteCommitProof,
+    createCodeSiteFS,
+    normalizeRepoRelativePath,
+} = require('./codesiteFs');
+const {
+    assertCodeSiteWorkspaceMutationAllowedAsync,
+    currentCodeSiteBoundaryScope,
+} = require('./codesiteActiveBoundary');
 
 let NodeGit = null;
 let nodeGitLoadError = null;
@@ -136,6 +146,118 @@ async function hashFile(absPath) {
     } finally {
         try { stream.destroy(); } catch (_) {}
     }
+}
+
+function arrayValue(value) {
+    return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function uniqueArray(values) {
+    return [...new Set(arrayValue(values))];
+}
+
+function explicitCodeSiteContextFromOptions(options = {}) {
+    return options.codesiteContext || options.codeSiteContext || null;
+}
+
+function inheritedCodeSiteBoundaryScopeFromOptions(options = {}) {
+    if (explicitCodeSiteContextFromOptions(options)) return null;
+    const scope = currentCodeSiteBoundaryScope();
+    return scope?.context?.active ? scope : null;
+}
+
+function codeSiteContextFromOptions(options = {}) {
+    return explicitCodeSiteContextFromOptions(options) || inheritedCodeSiteBoundaryScopeFromOptions(options)?.context || null;
+}
+
+function splitTokenUserIdAndOptions(tokenUserId = null, options = {}) {
+    if (
+        tokenUserId
+        && typeof tokenUserId === 'object'
+        && !Array.isArray(tokenUserId)
+        && options
+        && Object.keys(options).length === 0
+    ) {
+        return { tokenUserId: null, options: tokenUserId };
+    }
+    return { tokenUserId, options: options || {} };
+}
+
+function codeSiteEvidenceArrays(input = {}) {
+    return {
+        evidenceRefs: arrayValue(input.evidenceRefs ?? input.evidence_refs),
+        processAncestry: arrayValue(input.processAncestry ?? input.process_ancestry),
+        lineProvenance: arrayValue(
+            input.lineProvenance
+            ?? input.line_provenance
+            ?? input.hunks
+            ?? input.lineAnchors
+            ?? input.line_anchors
+        ),
+    };
+}
+
+function mergeCodeSiteEvidence(...inputs) {
+    const evidenceRefs = [];
+    const processAncestry = [];
+    const lineProvenance = [];
+    for (const input of inputs) {
+        const evidence = codeSiteEvidenceArrays(input || {});
+        evidenceRefs.push(...evidence.evidenceRefs);
+        processAncestry.push(...evidence.processAncestry);
+        lineProvenance.push(...evidence.lineProvenance);
+    }
+    return {
+        evidenceRefs: uniqueArray(evidenceRefs),
+        processAncestry: uniqueArray(processAncestry),
+        lineProvenance,
+    };
+}
+
+function codeSiteAttempt(pathValue, kind, tool, ...evidenceInputs) {
+    const evidence = mergeCodeSiteEvidence(...evidenceInputs);
+    const attempt = { path: pathValue, kind, tool };
+    if (evidence.evidenceRefs.length) attempt.evidenceRefs = evidence.evidenceRefs;
+    if (evidence.processAncestry.length) attempt.processAncestry = evidence.processAncestry;
+    if (evidence.lineProvenance.length) attempt.lineProvenance = evidence.lineProvenance;
+    return attempt;
+}
+
+function normalizePatchHeaderPath(rawPath) {
+    let patchPath = String(rawPath || '').trim();
+    if (!patchPath || patchPath === '/dev/null') return null;
+    const tabIndex = patchPath.indexOf('\t');
+    if (tabIndex >= 0) patchPath = patchPath.slice(0, tabIndex);
+    if (patchPath.startsWith('"')) {
+        try {
+            patchPath = JSON.parse(patchPath);
+        } catch (_) {
+            // Fall back to the raw path; normalizeRepoRelativePath will reject unsafe input.
+        }
+    }
+    if (patchPath.startsWith('a/') || patchPath.startsWith('b/')) {
+        patchPath = patchPath.slice(2);
+    }
+    return normalizeRepoRelativePath(patchPath);
+}
+
+function extractUnifiedPatchPaths(patch) {
+    const paths = new Set();
+    for (const line of String(patch || '').split(/\r?\n/)) {
+        if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+            const patchPath = normalizePatchHeaderPath(line.slice(4));
+            if (patchPath) paths.add(patchPath);
+        }
+    }
+    return [...paths];
+}
+
+function assertSingleFilePatchTarget(patchPaths, expectedPath) {
+    if (patchPaths.length === 1 && patchPaths[0] === expectedPath) return;
+    const error = new Error('Patch target does not match requested file path.');
+    error.code = 'PATCH_PATH_MISMATCH';
+    error.details = { expectedPath, patchPaths };
+    throw error;
 }
 
 function languageForPath(p) {
@@ -1108,12 +1230,12 @@ class GitService {
     }
 
     // Helper to run operations with lock + repo cache acquire/release
-    async withLock(slug, operation, userId) {
+    async withLock(slug, operation, userId, options = {}) {
         const lockKey = userId ? `${slug}:${userId}` : slug;
         const releaseLock = await repoLock.acquire(lockKey);
         try {
             // Ensure working tree is materialised before the operation
-            await repoCache.acquire(slug, userId);
+            await repoCache.acquire(slug, userId, options);
             try {
                 return await operation();
             } finally {
@@ -1126,6 +1248,10 @@ class GitService {
 
     // Centralized error mapper for git errors
     mapGitError(e, slug) {
+        if (e?.code === 'CODESITE_WRITE_DENIED' || e?.code === 'CODESITE_COMMIT_BLOCKED' || e?.code === 'PATCH_PATH_MISMATCH') {
+            return e;
+        }
+
         const msg = (e.message || '').toLowerCase();
         
         if (msg.includes('repository not found') || msg.includes('remote: repository not found')) {
@@ -1157,6 +1283,97 @@ class GitService {
         
         // Return original error with structured format
         return new GitError(e.message || 'Unknown git error', 'GIT_ERROR');
+    }
+
+    _codeSiteBoundaryOptions(context, options = {}, repoPath) {
+        if (!context?.active && !options.requireCodeSiteBoundary) return null;
+        const nestedOptions = options.codesiteOptions || options.codeSiteOptions || {};
+        const requireAuthoritativeContext = options.requireAuthoritativeContext
+            ?? nestedOptions.requireAuthoritativeContext
+            ?? (context?.active ? context.mode !== 'monitor' : true);
+        const boundaryOptions = {
+            ...nestedOptions,
+            repoRoot: repoPath,
+            requireAuthoritativeContext,
+        };
+        const fetchImpl = options.fetch || options.codesiteFetch || options.codeSiteFetch;
+        if (fetchImpl) boundaryOptions.fetch = fetchImpl;
+        return boundaryOptions;
+    }
+
+    async _runCodeSiteMutationBoundary(slug, userId, options = {}, operation = {}, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        const inheritedBoundaryScope = inheritedCodeSiteBoundaryScopeFromOptions(options);
+        const context = codeSiteContextFromOptions(options);
+        const nestedOptions = options.codesiteOptions || options.codeSiteOptions || {};
+        await assertCodeSiteWorkspaceMutationAllowedAsync(slug, context, operation, {
+            surface: options.operation || operation.operation || operation.kind,
+            controlPlaneUrl: options.controlPlaneUrl || nestedOptions.controlPlaneUrl || nestedOptions.control_plane_url || context?.controlPlaneUrl,
+            controlPlaneTrusted: options.controlPlaneTrusted || nestedOptions.controlPlaneTrusted || nestedOptions.control_plane_trusted || context?.controlPlaneTrusted,
+            fetch: options.fetch || options.codesiteFetch || options.codeSiteFetch || nestedOptions.fetch || nestedOptions.codesiteFetch || nestedOptions.codeSiteFetch,
+            authToken: options.authToken || nestedOptions.authToken || nestedOptions.auth_token || context?.authToken,
+            cookie: options.cookie || nestedOptions.cookie || context?.cookie,
+        });
+        const skipNestedBoundary = Boolean(
+            inheritedBoundaryScope
+            && !options.requireCodeSiteBoundary
+            && !nestedOptions.requireCodeSiteBoundary
+        );
+        if (skipNestedBoundary) {
+            return applyFn({ repoPath: effectiveRepoPath });
+        }
+        const boundaryOptions = this._codeSiteBoundaryOptions(context, options, effectiveRepoPath);
+        if (!boundaryOptions) {
+            return applyFn({ repoPath: effectiveRepoPath });
+        }
+
+        const codesiteFs = createCodeSiteFS(context, boundaryOptions);
+        const boundary = await codesiteFs.run({
+            ...operation,
+            operation: options.operation || operation.operation || operation.kind,
+            tool: options.tool || operation.tool,
+            evidenceRefs: operation.evidenceRefs || options.evidenceRefs || options.evidence_refs,
+            processAncestry: operation.processAncestry || options.processAncestry || options.process_ancestry,
+            lineProvenance: operation.lineProvenance || options.lineProvenance || options.line_provenance,
+        }, async () => applyFn({ repoPath: effectiveRepoPath }), boundaryOptions);
+        return boundary.applyResult;
+    }
+
+    async _runCodeSiteGitWorktreeBoundary(slug, userId, options = {}, kind, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_worktree',
+            attempts: [codeSiteAttempt('**', kind, 'git_worktree', options)],
+        }, applyFn, effectiveRepoPath);
+    }
+
+    async _runCodeSiteGitIndexBoundary(slug, userId, options = {}, kind, paths = '**', applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        const attemptPaths = Array.isArray(paths) ? paths : [paths];
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_index',
+            attempts: attemptPaths.map((attemptPath) => codeSiteAttempt(attemptPath || '**', kind, 'git_index', options)),
+        }, applyFn, effectiveRepoPath);
+    }
+
+    async _runCodeSiteGitRefsBoundary(slug, userId, options = {}, kind, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_refs',
+            attempts: [codeSiteAttempt('**', kind, 'git_refs', options)],
+        }, applyFn, effectiveRepoPath);
+    }
+
+    async _runCodeSiteGitConfigBoundary(slug, userId, options = {}, kind, applyFn, repoPath = null) {
+        const effectiveRepoPath = repoPath || this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: kind,
+            tool: 'git_config',
+            attempts: [codeSiteAttempt('**', kind, 'git_config', options)],
+        }, applyFn, effectiveRepoPath);
     }
 
     /**
@@ -1467,7 +1684,10 @@ class GitService {
         return null;
     }
 
-    async initRepo(slug, remoteUrl, userId, tokenUserId = null) {
+    async initRepo(slug, remoteUrl, userId, tokenUserId = null, options = {}) {
+        const provisioningArgs = splitTokenUserIdAndOptions(tokenUserId, options);
+        tokenUserId = provisioningArgs.tokenUserId;
+        options = provisioningArgs.options;
         const initResult = await this.withLock(slug, async () => {
             // repoCache.acquire (inside withLock) already materialised files
             // from GCS if needed, so we only need to git-init if missing.
@@ -1563,18 +1783,21 @@ class GitService {
             // Defense-in-depth: hide internal artifacts from git status
             await this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
-        });
+        }, null, options);
 
         // ── Provision per-user working tree (outside slug-level lock) ────
         if (userId) {
-            const userResult = await this.ensureUserRepo(slug, userId);
+            const userResult = await this.ensureUserRepo(slug, userId, options);
             console.log(`[GitService] initRepo: per-user repo for ${slug}/${userId} (created=${userResult.created})`);
         }
 
         return initResult;
     }
 
-    async cloneRepo(slug, repoUrl, token, userId, tokenUserId = null) {
+    async cloneRepo(slug, repoUrl, token, userId, tokenUserId = null, options = {}) {
+        const provisioningArgs = splitTokenUserIdAndOptions(tokenUserId, options);
+        tokenUserId = provisioningArgs.tokenUserId;
+        options = provisioningArgs.options;
         const cloneResult = await this.withLock(slug, async () => {
             const repoPath = this.getRepoPath(slug);
             let cleanRepoUrl = repoUrl;
@@ -1790,11 +2013,11 @@ class GitService {
             this._archiveGitAsync(slug);
             
             return { success: true, path: repoPath };
-        });
+        }, null, options);
 
         // ── Provision per-user working tree (outside slug-level lock) ────
         if (userId) {
-            const userResult = await this.ensureUserRepo(slug, userId);
+            const userResult = await this.ensureUserRepo(slug, userId, options);
             console.log(`[GitService] cloneRepo: per-user repo for ${slug}/${userId} (created=${userResult.created})`);
         }
 
@@ -1861,65 +2084,76 @@ class GitService {
         }
     }
 
-    async createTag(slug, name, ref = 'HEAD', message, userId) {
-        return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
-            try {
-                if (message) {
-                    await git.tag(['-a', name, ref, '-m', message]);
-                } else {
-                    await git.tag([name, ref]);
-                }
-                return { name, ref };
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
-    }
-
-    async deleteTag(slug, name, userId) {
-        return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
-            try {
-                await git.tag(['-d', name]);
-                return { deleted: name };
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
-    }
-
-    async pushTag(slug, name, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
-        return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
-            try {
-                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
-                if (effectiveToken) {
-                    const remotes = await git.getRemotes(true);
-                    const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
-                    let authUrl = null;
-                    if (remoteUrl.startsWith('https://')) {
-                        try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
-                    }
-                    if (authUrl) {
-                        await git.raw(['push', authUrl, `refs/tags/${name}`]);
+    async createTag(slug, name, ref = 'HEAD', message, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'create-tag', async () => {
+            return this.withLock(slug, async () => {
+                const git = await this.getGit(slug, userId);
+                try {
+                    if (message) {
+                        await git.tag(['-a', name, ref, '-m', message]);
                     } else {
-                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', 'origin', `refs/tags/${name}`]);
+                        await git.tag([name, ref]);
                     }
-                } else {
-                    await git.push('origin', `refs/tags/${name}`);
+                    return { name, ref };
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
                 }
-                return { pushed: name };
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
-    async checkout(slug, branchName, create = false, userId, mode = 'normal', tokenUserId = null, tokenFallbackUserIds = []) {
+    async deleteTag(slug, name, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'delete-tag', async () => {
+            return this.withLock(slug, async () => {
+                const git = await this.getGit(slug, userId);
+                try {
+                    await git.tag(['-d', name]);
+                    return { deleted: name };
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
+                }
+            }, userId);
+        }, repoPath);
+    }
+
+    async pushTag(slug, name, userId, token, tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'push-tag', async () => {
+            return this.withLock(slug, async () => {
+                const git = await this.getGit(slug, userId);
+                try {
+                    const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
+                    if (effectiveToken) {
+                        const remotes = await git.getRemotes(true);
+                        const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
+                        let authUrl = null;
+                        if (remoteUrl.startsWith('https://')) {
+                            try { const u = new URL(remoteUrl); u.username = 'x-access-token'; u.password = effectiveToken; authUrl = u.toString(); } catch (_) {}
+                        }
+                        if (authUrl) {
+                            await git.raw(['push', authUrl, `refs/tags/${name}`]);
+                        } else {
+                            await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'push', 'origin', `refs/tags/${name}`]);
+                        }
+                    } else {
+                        await git.push('origin', `refs/tags/${name}`);
+                    }
+                    return { pushed: name };
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
+                }
+            }, userId);
+        }, repoPath);
+    }
+
+    async checkout(slug, branchName, create = false, userId, mode = 'normal', tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
             try {
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'checkout', async () => {
+                    const git = await this.getGit(slug, userId);
                 // ── Ensure we have the latest remote refs ──
                 // If the branch doesn't exist locally (e.g. a PR head branch
                 // like "MAZNA"), we need to fetch first so git knows about
@@ -2007,6 +2241,7 @@ class GitService {
                 }
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 const msg = (e.message || '').toLowerCase();
                 if (msg.includes('would be overwritten') || msg.includes('your local changes')) {
@@ -2076,10 +2311,75 @@ class GitService {
         return env;
     }
 
-    async commit(slug, message, userId, amend = false, commitIdentity = null) {
+    async _prepareCodeSiteCommitMessage(slug, userId, message, options = {}, repoPath = null) {
+        const context = codeSiteContextFromOptions(options);
+        const data = options.data || options.commitData || options.commit_data || {};
+        const explicitCodeSite = options.codesite || options.codeSite || {};
+        const payloadCodeSite = data.codesite || data.codeSite || {};
+        const proofBundle = options.proofBundle || options.proof_bundle || explicitCodeSite.proofBundle || explicitCodeSite.proof_bundle || payloadCodeSite.proofBundle || payloadCodeSite.proof_bundle;
+        const requiresProof = options.requireCodeSiteProof
+            ?? options.require_code_site_proof
+            ?? options.requireProof
+            ?? (context?.active && context.mode !== 'monitor');
+
+        const evidence = mergeCodeSiteEvidence(
+            data,
+            payloadCodeSite,
+            explicitCodeSite,
+            options,
+        );
+        const commitData = {
+            ...data,
+            evidenceRefs: evidence.evidenceRefs.length ? evidence.evidenceRefs : data.evidenceRefs,
+            processAncestry: evidence.processAncestry.length ? evidence.processAncestry : data.processAncestry,
+            codesite: {
+                ...payloadCodeSite,
+                ...explicitCodeSite,
+                ...(proofBundle ? { proofBundle } : {}),
+            },
+        };
+
+        if (!context?.active) {
+            if (proofBundle) return codeSiteCommitMessage(message, commitData);
+            return String(message || '');
+        }
+        if (!context.transactionId) {
+            if (requiresProof) {
+                throw new CodeSiteCommitBlockedError('codesite_commit_transaction_required', {
+                    reasonCodes: ['codesite_transaction_required'],
+                    context: {
+                        workspaceSlug: context.workspaceSlug || slug,
+                        agentSessionId: context.agentSessionId || null,
+                        managedAgent: Boolean(context.managedAgent),
+                    },
+                });
+            }
+            return String(message || '');
+        }
+        if (context.mode === 'monitor') {
+            return proofBundle ? codeSiteCommitMessage(message, commitData) : String(message || '');
+        }
+
+        const fetchImpl = options.fetch || options.codesiteFetch || options.codeSiteFetch;
+        const proof = await completeCodeSiteCommitProof(context, commitData, {
+            fetch: fetchImpl,
+            repoRoot: repoPath || this.getEffectiveRepoPath(slug, userId),
+            repoState: options.repoState || options.repo_state,
+        });
+        return codeSiteCommitMessage(message, {
+            ...commitData,
+            codesite: {
+                ...commitData.codesite,
+                proofBundle: proof.proofBundle,
+            },
+        });
+    }
+
+    async commit(slug, message, userId, amend = false, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
                 // Check if there are staged changes before committing
                 // (skip for amend — amend can just rewrite the message).
                 if (!amend) {
@@ -2093,11 +2393,14 @@ class GitService {
                 }
                 const env = this._buildCommitEnv(commitIdentity);
                 const gitWithEnv = git.env(env);
-                if (amend) {
-                    await gitWithEnv.commit(message, { '--amend': null });
-                } else {
-                    await gitWithEnv.commit(message);
-                }
+                const commitMessage = await this._prepareCodeSiteCommitMessage(slug, userId, message, options, repoPath);
+                await this._runCodeSiteGitRefsBoundary(slug, userId, options, 'commit', async () => {
+                    if (amend) {
+                        await gitWithEnv.commit(commitMessage, { '--amend': null });
+                    } else {
+                        await gitWithEnv.commit(commitMessage);
+                    }
+                }, repoPath);
                 await this._propagateToBare(slug, userId, git, { amend });
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
@@ -2149,11 +2452,12 @@ class GitService {
      *                                 action: 'pick'|'reword'|'squash'|'fixup'|'drop'
      * @param {string} userId
      */
-    async interactiveRebase(slug, baseCommit, operations, userId, commitIdentity = null) {
+    async interactiveRebase(slug, baseCommit, operations, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'interactive-rebase', async () => {
+                const git = await this.getGit(slug, userId);
 
                 // Build the rebase-todo script
                 const todoLines = operations.map(op => {
@@ -2220,48 +2524,61 @@ class GitService {
 
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 // If rebase fails, try to abort so we don't leave repo in bad state
-                try {
-                    const git2 = await this.getGit(slug, userId);
-                    await git2.rebase(['--abort']);
-                } catch (_) { /* already clean */ }
+                if (e?.code !== 'CODESITE_WRITE_DENIED') {
+                    try {
+                        const git2 = await this.getGit(slug, userId);
+                        await git2.rebase(['--abort']);
+                    } catch (_) { /* already clean */ }
+                }
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async rebaseAbort(slug, userId) {
+    async rebaseAbort(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.rebase(['--abort']);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'rebase-abort', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.rebase(['--abort']);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async rebaseContinue(slug, userId, commitIdentity = null) {
+    async rebaseContinue(slug, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.env(this._buildCommitEnv(commitIdentity)).rebase(['--continue']);
-                this._archiveGitAsync(slug, userId);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'rebase-continue', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.env(this._buildCommitEnv(commitIdentity)).rebase(['--continue']);
+                    this._archiveGitAsync(slug, userId);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async stageFile(slug, filePath, userId) {
+    async stageFile(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'stage', safeRel, async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.raw(['add', '--', safeRel]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2269,26 +2586,32 @@ class GitService {
     }
 
     // Stage specific lines/hunks using patch mode
-    async stageLines(slug, filePath, patch, userId) {
+    async stageLines(slug, filePath, patch, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const patchPaths = extractUnifiedPatchPaths(patch);
+                const attemptPaths = patchPaths.length ? patchPaths : [safeRel];
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'stage-lines', attemptPaths, async () => {
+                    assertSingleFilePatchTarget(patchPaths, safeRel);
+                    const git = await this.getGit(slug, userId);
 
-                // Write the patch to a temp file — simple-git's raw() passes
-                // all args as CLI arguments and does NOT support stdin piping,
-                // so we can't pass the patch content inline.
-                const tmpDir = path.join(repoPath, '.git');
-                const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
-                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
+                    // Write the patch to a temp file — simple-git's raw() passes
+                    // all args as CLI arguments and does NOT support stdin piping,
+                    // so we can't pass the patch content inline.
+                    const tmpDir = path.join(repoPath, '.git');
+                    const tmpPatch = path.join(tmpDir, `_stage_${Date.now()}.patch`);
+                    await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
-                try {
-                    await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
-                } finally {
-                    // Always clean up the temp patch file
-                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
-                }
-                return this.getStatus(slug, userId);
+                    try {
+                        await git.raw(['apply', '--cached', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                    } finally {
+                        // Always clean up the temp patch file
+                        try { await fs.promises.unlink(tmpPatch); } catch (_) {}
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2296,22 +2619,32 @@ class GitService {
     }
 
     // Discard (revert) selected lines from the working tree by reverse-applying a patch
-    async discardLines(slug, filePath, patch, userId) {
+    async discardLines(slug, filePath, patch, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const patchPaths = extractUnifiedPatchPaths(patch);
+                const attemptPaths = patchPaths.length ? patchPaths : [safeRel];
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'discard-lines',
+                    tool: 'git_worktree',
+                    attempts: attemptPaths.map((patchPath) => codeSiteAttempt(patchPath, 'discard-lines', 'git_worktree', options)),
+                }, async () => {
+                    assertSingleFilePatchTarget(patchPaths, safeRel);
+                    const git = await this.getGit(slug, userId);
 
-                const tmpDir = path.join(repoPath, '.git');
-                const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
-                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
+                    const tmpDir = path.join(repoPath, '.git');
+                    const tmpPatch = path.join(tmpDir, `_discard_${Date.now()}.patch`);
+                    await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
-                try {
-                    await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
-                } finally {
-                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
-                }
-                return this.getStatus(slug, userId);
+                    try {
+                        await git.raw(['apply', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                    } finally {
+                        try { await fs.promises.unlink(tmpPatch); } catch (_) {}
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2321,52 +2654,69 @@ class GitService {
     // Unstage specific lines/hunks from the index by reverse-applying a patch
     // with --cached (index only, no working tree changes).
     // This is the inverse of stageLines — toggling a hunk back to unstaged.
-    async unstageLines(slug, filePath, patch, userId) {
+    async unstageLines(slug, filePath, patch, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const patchPaths = extractUnifiedPatchPaths(patch);
+                const attemptPaths = patchPaths.length ? patchPaths : [safeRel];
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'unstage-lines', attemptPaths, async () => {
+                    assertSingleFilePatchTarget(patchPaths, safeRel);
+                    const git = await this.getGit(slug, userId);
 
-                const tmpDir = path.join(repoPath, '.git');
-                const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
-                await fs.promises.writeFile(tmpPatch, patch, 'utf8');
+                    const tmpDir = path.join(repoPath, '.git');
+                    const tmpPatch = path.join(tmpDir, `_unstage_${Date.now()}.patch`);
+                    await fs.promises.writeFile(tmpPatch, patch, 'utf8');
 
-                try {
-                    await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
-                } finally {
-                    try { await fs.promises.unlink(tmpPatch); } catch (_) {}
-                }
-                return this.getStatus(slug, userId);
+                    try {
+                        await git.raw(['apply', '--cached', '--reverse', '--unidiff-zero', '--recount', '--ignore-whitespace', tmpPatch]);
+                    } finally {
+                        try { await fs.promises.unlink(tmpPatch); } catch (_) {}
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async unstageFile(slug, filePath, userId) {
+    async unstageFile(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
             try {
-                await git.reset(['HEAD', filePath]);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'unstage', safeRel, async () => {
+                    const git = await this.getGit(slug, userId);
+                    try {
+                        await git.reset(['HEAD', '--', safeRel]);
+                    } catch (e) {
+                        // Fallback for initial commit or if HEAD is invalid
+                        try {
+                            await git.rm(['--cached', '--', safeRel]);
+                        } catch (e2) {
+                            throw this.mapGitError(e, slug);
+                        }
+                    }
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
-                // Fallback for initial commit or if HEAD is invalid
-                try {
-                    await git.rm(['--cached', filePath]);
-                } catch (e2) {
-                    throw this.mapGitError(e, slug);
-                }
+                throw this.mapGitError(e, slug);
             }
-            return this.getStatus(slug, userId);
         }, userId);
     }
 
     // Stage all changes
-    async stageAll(slug, userId) {
+    async stageAll(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.add('-A');
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'stage-all', '**', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.add('-A');
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2374,52 +2724,68 @@ class GitService {
     }
 
     // Unstage all staged changes
-    async unstageAll(slug, userId) {
+    async unstageAll(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
             try {
-                await git.reset(['HEAD']);
-            } catch (e) {
-                // Fallback for initial commit - reset --mixed with rm --cached for each file
-                try {
-                    const status = await git.status();
-                    for (const file of status.staged) {
-                        await git.rm(['--cached', file]);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitIndexBoundary(slug, userId, options, 'unstage-all', '**', async () => {
+                    const git = await this.getGit(slug, userId);
+                    try {
+                        await git.reset(['HEAD']);
+                    } catch (e) {
+                        // Fallback for initial commit - reset --mixed with rm --cached for each file
+                        try {
+                            const status = await git.status();
+                            for (const file of status.staged) {
+                                await git.rm(['--cached', '--', file]);
+                            }
+                        } catch (e2) {
+                            throw this.mapGitError(e, slug);
+                        }
                     }
-                } catch (e2) {
-                    throw this.mapGitError(e, slug);
-                }
-            }
-            return this.getStatus(slug, userId);
-        }, userId);
-    }
-
-    // Discard all unstaged changes
-    async discardAll(slug, userId) {
-        return this.withLock(slug, async () => {
-            try {
-                const git = await this.getGit(slug, userId);
-                const status = await git.status();
-                
-                // Checkout all modified/deleted tracked files
-                if (status.modified.length > 0 || status.deleted.length > 0) {
-                    await git.checkout(['--', '.']);
-                }
-                
-                // Clean untracked files
-                if (status.not_added.length > 0) {
-                    await git.clean('f', ['-d']);
-                }
-                
-                return this.getStatus(slug, userId);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async push(slug, userId, token, force = false, tokenUserId = null, tokenFallbackUserIds = []) {
+    // Discard all unstaged changes
+    async discardAll(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
+            try {
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'discard-all',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt('**', 'discard-all', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const status = await git.status();
+
+                    // Checkout all modified/deleted tracked files
+                    if (status.modified.length > 0 || status.deleted.length > 0) {
+                        await git.checkout(['--', '.']);
+                    }
+
+                    // Clean untracked files
+                    if (status.not_added.length > 0) {
+                        await git.clean('f', ['-d']);
+                    }
+
+                    return this.getStatus(slug, userId);
+                }, repoPath);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        }, userId);
+    }
+
+    async push(slug, userId, token, force = false, tokenUserId = null, tokenFallbackUserIds = [], options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'push', async () => {
+            return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
@@ -2457,11 +2823,14 @@ class GitService {
                         const workspaceManager = require('./workspaceManager');
                         const ws = workspaceManager.getBySlug(slug);
                         if (ws && ws.repoUrl) {
-                            await git.addRemote('origin', ws.repoUrl);
+                            await this._runCodeSiteGitConfigBoundary(slug, userId, options, 'push-add-remote', async () => {
+                                await git.addRemote('origin', ws.repoUrl);
+                            }, repoPath);
                         } else {
                             throw new RemoteNotConfiguredError();
                         }
                     } catch (inner) {
+                        if (inner?.code === 'CODESITE_WRITE_DENIED' || inner?.code === 'CODESITE_COMMIT_BLOCKED' || inner?.code === 'PATCH_PATH_MISMATCH') throw inner;
                         if (inner instanceof RemoteNotConfiguredError) throw inner;
                         throw new RemoteNotConfiguredError();
                     }
@@ -2597,12 +2966,15 @@ class GitService {
                 }
             }
             return this.getStatus(slug, userId);
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
-    async addRemote(slug, name, url, userId, explicitToken = null, tokenUserId = null) {
-        return this.withLock(slug, async () => {
-            try {
+    async addRemote(slug, name, url, userId, explicitToken = null, tokenUserId = null, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitConfigBoundary(slug, userId, options, 'add-remote', async () => {
+            return this.withLock(slug, async () => {
+                try {
                 const git = await this.getGit(slug, userId);
                 const { cleanUrl, token: urlToken } = this._extractTokenFromHttpsUrl(url);
                 // URL-embedded credentials win when present (matches the
@@ -2620,19 +2992,23 @@ class GitService {
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
-    async removeRemote(slug, name, userId) {
-        return this.withLock(slug, async () => {
-            try {
+    async removeRemote(slug, name, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitConfigBoundary(slug, userId, options, 'remove-remote', async () => {
+            return this.withLock(slug, async () => {
+                try {
                 const git = await this.getGit(slug, userId);
                 await git.removeRemote(name);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
     /**
@@ -2642,9 +3018,11 @@ class GitService {
      * to `git remote add` when the named remote doesn't yet exist, so the
      * "edit remote" UI flow doesn't require the user to pre-create one.
      */
-    async setRemoteUrl(slug, name, url, userId, explicitToken = null, tokenUserId = null) {
-        return this.withLock(slug, async () => {
-            try {
+    async setRemoteUrl(slug, name, url, userId, explicitToken = null, tokenUserId = null, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitConfigBoundary(slug, userId, options, 'set-remote-url', async () => {
+            return this.withLock(slug, async () => {
+                try {
                 const git = await this.getGit(slug, userId);
                 const { cleanUrl, token: urlToken } = this._extractTokenFromHttpsUrl(url);
                 const finalToken = (typeof urlToken === 'string' && urlToken)
@@ -2665,7 +3043,8 @@ class GitService {
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
-        }, userId);
+            }, userId);
+        }, repoPath);
     }
 
     async getRemotes(slug, userId) {
@@ -2677,10 +3056,13 @@ class GitService {
         }
     }
 
-    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
+    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
-            const git = await this.getGit(slug, userId);
+            let git;
             try {
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'pull', async () => {
+                git = await this.getGit(slug, userId);
                 const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
 
                 // Pull may produce a merge commit when the local branch has
@@ -2732,9 +3114,12 @@ class GitService {
                         deletions: pullResult.summary?.deletions || 0,
                     }
                 };
+                }, repoPath);
             } catch (e) {
                 // Archive .git even on conflict so the state is persisted
-                this._archiveGitAsync(slug, userId);
+                if (e?.code !== 'CODESITE_WRITE_DENIED') {
+                    this._archiveGitAsync(slug, userId);
+                }
                 if (e instanceof MergeConflictError) throw e;
                 
                 const msg = (e.message || '').toLowerCase();
@@ -2779,25 +3164,32 @@ class GitService {
         }, userId);
     }
 
-    async discardChange(slug, filePath, userId) {
+    async discardChange(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                // Check if file is untracked
-                const status = await git.status();
-                const fileStatus = status.files.find(f => f.path === filePath);
-                
-                if (fileStatus && fileStatus.index === '?') {
-                    // Untracked file, delete it
-                    const repoPath = this.getEffectiveRepoPath(slug, userId);
-                    const fullPath = path.join(repoPath, filePath);
-                    if (fs.existsSync(fullPath)) {
-                        await fs.promises.unlink(fullPath);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'discard',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'discard', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    // Check if file is untracked
+                    const status = await git.status();
+                    const fileStatus = status.files.find(f => f.path === safeRel);
+
+                    if (fileStatus && fileStatus.index === '?') {
+                        // Untracked file, delete it
+                        const fullPath = path.join(repoPath, safeRel);
+                        if (fs.existsSync(fullPath)) {
+                            await fs.promises.unlink(fullPath);
+                        }
+                    } else {
+                        await git.checkout(['--', safeRel]);
                     }
-                } else {
-                    await git.checkout(filePath);
-                }
-                return this.getStatus(slug, userId);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2807,13 +3199,21 @@ class GitService {
     // ===== Merge Conflict Resolution =====
     
     // Resolve conflict by accepting "ours" (current branch) version
-    async resolveConflictOurs(slug, filePath, userId) {
+    async resolveConflictOurs(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.checkout(['--ours', filePath]);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'resolve-ours',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'resolve-ours', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    await git.checkout(['--ours', safeRel]);
+                    await git.add(safeRel);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2821,13 +3221,21 @@ class GitService {
     }
 
     // Resolve conflict by accepting "theirs" (incoming) version
-    async resolveConflictTheirs(slug, filePath, userId) {
+    async resolveConflictTheirs(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.checkout(['--theirs', filePath]);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'resolve-theirs',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'resolve-theirs', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    await git.checkout(['--theirs', safeRel]);
+                    await git.add(safeRel);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2835,12 +3243,20 @@ class GitService {
     }
 
     // Mark a conflicted file as resolved (after manual edit)
-    async markResolved(slug, filePath, userId) {
+    async markResolved(slug, filePath, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.add(filePath);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                    operation: 'mark-resolved',
+                    tool: 'git_worktree',
+                    attempts: [codeSiteAttempt(filePath, 'mark-resolved', 'git_worktree', options)],
+                }, async () => {
+                    const git = await this.getGit(slug, userId);
+                    const safeRel = normalizeRepoRelativePath(filePath);
+                    await git.add(safeRel);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2848,15 +3264,18 @@ class GitService {
     }
 
     // Cherry-pick a commit onto the current branch
-    async cherryPick(slug, hash, userId, commitIdentity = null) {
+    async cherryPick(slug, hash, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                // Cherry-pick replays the original author but sets the
-                // committer to the running user — pin both via env so
-                // attribution stays with the requester.
-                await git.env(this._buildCommitEnv(commitIdentity)).raw(['cherry-pick', hash]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'cherry-pick', async () => {
+                    const git = await this.getGit(slug, userId);
+                    // Cherry-pick replays the original author but sets the
+                    // committer to the running user — pin both via env so
+                    // attribution stays with the requester.
+                    await git.env(this._buildCommitEnv(commitIdentity)).raw(['cherry-pick', hash]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2864,12 +3283,15 @@ class GitService {
     }
 
     // Revert a commit (create an inverse commit)
-    async revertCommit(slug, hash, userId, commitIdentity = null) {
+    async revertCommit(slug, hash, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.env(this._buildCommitEnv(commitIdentity)).raw(['revert', hash]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'revert', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.env(this._buildCommitEnv(commitIdentity)).raw(['revert', hash]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2932,12 +3354,15 @@ class GitService {
     }
 
     // Abort current merge (discard all merge changes)
-    async abortMerge(slug, userId) {
+    async abortMerge(slug, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.merge(['--abort']);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'abort-merge', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.merge(['--abort']);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -2955,8 +3380,10 @@ class GitService {
      * @param {string} [token]  Optional auth token for the fetch step
      * @returns {{ status, hasConflicts, conflictedFiles }}
      */
-    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
+    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
+            const repoPath = this.getEffectiveRepoPath(slug, userId);
+            return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'merge-branch', async () => {
             const git = await this.getGit(slug, userId);
 
             // Normalise: strip leading "origin/" so we always work with the
@@ -3019,6 +3446,7 @@ class GitService {
                 hasConflicts: hasConflicts || (status?.hasConflicts ?? false) || conflictedFiles.length > 0,
                 conflictedFiles,
             };
+            }, repoPath);
         }, userId);
     }
 
@@ -3311,51 +3739,63 @@ class GitService {
         }
     }
 
-    async stashPush(slug, message = '', userId, commitIdentity = null) {
+    async stashPush(slug, message = '', userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                const options = message ? ['-m', message] : [];
-                // `git stash push` builds synthetic stash + index commits;
-                // attribute them to the requester for clean ref-log history.
-                await git.env(this._buildCommitEnv(commitIdentity)).stash(['push', ...options]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'stash-push', async () => {
+                    const git = await this.getGit(slug, userId);
+                    const stashOptions = message ? ['-m', message] : [];
+                    // `git stash push` builds synthetic stash + index commits;
+                    // attribute them to the requester for clean ref-log history.
+                    await git.env(this._buildCommitEnv(commitIdentity)).stash(['push', ...stashOptions]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async stashPop(slug, index = 0, userId, commitIdentity = null) {
+    async stashPop(slug, index = 0, userId, commitIdentity = null, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.env(this._buildCommitEnv(commitIdentity)).stash(['pop', `stash@{${index}}`]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'stash-pop', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.env(this._buildCommitEnv(commitIdentity)).stash(['pop', `stash@{${index}}`]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
         }, userId);
     }
 
-    async stashDrop(slug, index = 0, userId) {
-        return this.withLock(slug, async () => {
-            try {
-                const git = await this.getGit(slug, userId);
-                await git.stash(['drop', `stash@{${index}}`]);
-                return this.stashList(slug, userId);
-            } catch (e) {
-                throw this.mapGitError(e, slug);
-            }
-        }, userId);
+    async stashDrop(slug, index = 0, userId, options = {}) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
+        return this._runCodeSiteGitRefsBoundary(slug, userId, options, 'stash-drop', async () => {
+            return this.withLock(slug, async () => {
+                try {
+                    const git = await this.getGit(slug, userId);
+                    await git.stash(['drop', `stash@{${index}}`]);
+                    return this.stashList(slug, userId);
+                } catch (e) {
+                    throw this.mapGitError(e, slug);
+                }
+            }, userId);
+        }, repoPath);
     }
 
-    async stashApply(slug, index = 0, userId) {
+    async stashApply(slug, index = 0, userId, options = {}) {
         return this.withLock(slug, async () => {
             try {
-                const git = await this.getGit(slug, userId);
-                await git.stash(['apply', `stash@{${index}}`]);
-                return this.getStatus(slug, userId);
+                const repoPath = this.getEffectiveRepoPath(slug, userId);
+                return this._runCodeSiteGitWorktreeBoundary(slug, userId, options, 'stash-apply', async () => {
+                    const git = await this.getGit(slug, userId);
+                    await git.stash(['apply', `stash@{${index}}`]);
+                    return this.getStatus(slug, userId);
+                }, repoPath);
             } catch (e) {
                 throw this.mapGitError(e, slug);
             }
@@ -3531,11 +3971,17 @@ class GitService {
         }
     }
 
-    async syncFile(slug, filePath, content, userId) {
+    async syncFile(slug, filePath, content, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = normalizeRepoRelativePath(filePath);
-        const fullPath = path.join(repoPath, safeRel);
-        await safeWriteFile(fullPath, content);
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'sync-file',
+            tool: 'file_write',
+            attempts: [codeSiteAttempt(filePath, 'sync-file', 'file_write', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(filePath);
+            const fullPath = path.join(repoPath, safeRel);
+            await safeWriteFile(fullPath, content);
+        }, repoPath);
     }
 
     /**
@@ -3545,27 +3991,42 @@ class GitService {
      * @param {string} newPath - Desired relative path
      * @returns {Promise<{success: boolean}>}
      */
-    async renameItem(slug, oldPath, newPath, userId) {
+    async renameItem(slug, oldPath, newPath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeOld = normalizeRepoRelativePath(oldPath);
-        const safeNew = normalizeRepoRelativePath(newPath);
-        const absOld = path.join(repoPath, safeOld);
-        const absNew = path.join(repoPath, safeNew);
-        // Ensure the target directory exists
-        await fs.promises.mkdir(path.dirname(absNew), { recursive: true });
-        await fs.promises.rename(absOld, absNew);
-        return { success: true };
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'rename-item',
+            tool: 'file_rename',
+            attempts: [
+                codeSiteAttempt(oldPath, 'rename-item:old', 'file_rename', options),
+                codeSiteAttempt(newPath, 'rename-item:new', 'file_rename', options),
+            ],
+        }, async () => {
+            const safeOld = normalizeRepoRelativePath(oldPath);
+            const safeNew = normalizeRepoRelativePath(newPath);
+            const absOld = path.join(repoPath, safeOld);
+            const absNew = path.join(repoPath, safeNew);
+            // Ensure the target directory exists
+            await fs.promises.mkdir(path.dirname(absNew), { recursive: true });
+            await fs.promises.rename(absOld, absNew);
+            return { success: true };
+        }, repoPath);
     }
 
-    async deleteFile(slug, filePath, userId) {
+    async deleteFile(slug, filePath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = normalizeRepoRelativePath(filePath);
-        const fullPath = path.join(repoPath, safeRel);
-        try {
-            await fs.promises.unlink(fullPath);
-        } catch (_) {
-            // ignore
-        }
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'delete-file',
+            tool: 'file_delete',
+            attempts: [codeSiteAttempt(filePath, 'delete-file', 'file_delete', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(filePath);
+            const fullPath = path.join(repoPath, safeRel);
+            try {
+                await fs.promises.unlink(fullPath);
+            } catch (_) {
+                // ignore
+            }
+        }, repoPath);
     }
     
     /**
@@ -3574,36 +4035,42 @@ class GitService {
      * @param {string} itemPath - Path to file or directory
      * @returns {Promise<{deleted: number}>} Number of items deleted
      */
-    async deleteItem(slug, itemPath, userId) {
+    async deleteItem(slug, itemPath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         // Remove trailing slash for path operations
         const cleanPath = String(itemPath || '').endsWith('/') ? String(itemPath).slice(0, -1) : itemPath;
-        const safeRel = normalizeRepoRelativePath(cleanPath);
-        const fullPath = path.join(repoPath, safeRel);
-        
-        let deleted = 0;
-        
-        try {
-            const stat = await fs.promises.stat(fullPath);
-            
-            if (stat.isDirectory()) {
-                // Recursively delete directory
-                await fs.promises.rm(fullPath, { recursive: true, force: true });
-                // Count approximate items (we'll say 1 for the dir itself)
-                deleted = 1;
-            } else {
-                await fs.promises.unlink(fullPath);
-                deleted = 1;
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'delete-item',
+            tool: 'file_delete',
+            attempts: [codeSiteAttempt(cleanPath, 'delete-item', 'file_delete', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(cleanPath);
+            const fullPath = path.join(repoPath, safeRel);
+
+            let deleted = 0;
+
+            try {
+                const stat = await fs.promises.stat(fullPath);
+
+                if (stat.isDirectory()) {
+                    // Recursively delete directory
+                    await fs.promises.rm(fullPath, { recursive: true, force: true });
+                    // Count approximate items (we'll say 1 for the dir itself)
+                    deleted = 1;
+                } else {
+                    await fs.promises.unlink(fullPath);
+                    deleted = 1;
+                }
+            } catch (e) {
+                if (e.code === 'ENOENT') {
+                    // File/folder doesn't exist - not an error
+                    return { deleted: 0, error: 'not_found' };
+                }
+                throw e;
             }
-        } catch (e) {
-            if (e.code === 'ENOENT') {
-                // File/folder doesn't exist - not an error
-                return { deleted: 0, error: 'not_found' };
-            }
-            throw e;
-        }
-        
-        return { deleted };
+
+            return { deleted };
+        }, repoPath);
     }
 
     async listFiles(slug, userId) {
@@ -3697,16 +4164,32 @@ class GitService {
         return out;
     }
 
-    async readFile(slug, filePath, userId) {
+    async readFile(slug, filePath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
         // Normalize backslashes → forward slashes and strip leading slash
         const safePath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
         const fullPath = path.join(repoPath, safePath);
-        try {
-            return await fs.promises.readFile(fullPath, 'utf-8');
-        } catch (_) {
-            throw new Error('File not found');
+        const readActualFile = async () => {
+            try {
+                return await fs.promises.readFile(fullPath, 'utf-8');
+            } catch (_) {
+                throw new Error('File not found');
+            }
+        };
+        const context = codeSiteContextFromOptions(options);
+        const boundaryOptions = this._codeSiteBoundaryOptions(context, options, repoPath);
+        if (boundaryOptions) {
+            const codesiteFs = createCodeSiteFS(context, boundaryOptions);
+            const boundary = await codesiteFs.read({
+                path: safePath,
+                kind: options.operation || 'read-file',
+                tool: options.tool || 'file_read',
+                evidenceRefs: options.evidenceRefs || options.evidence_refs,
+                processAncestry: options.processAncestry || options.process_ancestry,
+            }, readActualFile, boundaryOptions);
+            return boundary.readResult;
         }
+        return readActualFile();
     }
 
     _sanitizeRelativePath(filePath) {
@@ -3724,31 +4207,43 @@ class GitService {
         return parts.join('/');
     }
 
-    async writeFile(slug, filePath, content, userId) {
+    async writeFile(slug, filePath, content, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        let safeRel;
-        try {
-            safeRel = normalizeRepoRelativePath(filePath);
-        } catch (_) {
-            throw new Error('Invalid file path');
-        }
-        const fullPath = path.join(repoPath, safeRel);
-        try {
-            await safeWriteFile(fullPath, content);
-        } catch (e) {
-            throw new Error(`Failed to write file: ${e.message}`);
-        }
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'write-file',
+            tool: 'file_write',
+            attempts: [codeSiteAttempt(filePath, 'write-file', 'file_write', options)],
+        }, async () => {
+            let safeRel;
+            try {
+                safeRel = normalizeRepoRelativePath(filePath);
+            } catch (_) {
+                throw new Error('Invalid file path');
+            }
+            const fullPath = path.join(repoPath, safeRel);
+            try {
+                await safeWriteFile(fullPath, content);
+            } catch (e) {
+                throw new Error(`Failed to write file: ${e.message}`);
+            }
+        }, repoPath);
     }
 
-    async createDirectory(slug, dirPath, userId) {
+    async createDirectory(slug, dirPath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        const safeRel = normalizeRepoRelativePath(dirPath);
-        const fullPath = path.join(repoPath, safeRel);
-        try {
-            await fs.promises.mkdir(fullPath, { recursive: true });
-        } catch (e) {
-            throw new Error(`Failed to create directory: ${e.message}`);
-        }
+        return this._runCodeSiteMutationBoundary(slug, userId, options, {
+            operation: 'create-directory',
+            tool: 'file_write',
+            attempts: [codeSiteAttempt(dirPath, 'create-directory', 'file_write', options)],
+        }, async () => {
+            const safeRel = normalizeRepoRelativePath(dirPath);
+            const fullPath = path.join(repoPath, safeRel);
+            try {
+                await fs.promises.mkdir(fullPath, { recursive: true });
+            } catch (e) {
+                throw new Error(`Failed to create directory: ${e.message}`);
+            }
+        }, repoPath);
     }
 
     async writeFilesBatch(slug, files, options = {}) {
@@ -3761,63 +4256,69 @@ class GitService {
                 throw new Error('files must be an array');
             }
 
-            const written = [];
-            const skipped = [];
-            const errors = [];
+            return this._runCodeSiteMutationBoundary(slug, userId, options, {
+                operation: 'write-files-batch',
+                tool: 'file_write',
+                attempts: files.map((file) => codeSiteAttempt(file?.path, 'write-files-batch', 'file_write', options, file)),
+            }, async () => {
+                const written = [];
+                const skipped = [];
+                const errors = [];
 
-            for (const f of files) {
-                try {
-                    let rel;
+                for (const f of files) {
                     try {
-                        rel = normalizeRepoRelativePath(f?.path);
-                    } catch (_) {
-                        skipped.push({ path: f?.path, reason: 'invalid_path' });
-                        continue;
-                    }
-
-                    // NOTE: we intentionally do NOT allow folder markers here.
-                    if (rel.endsWith('/')) {
-                        skipped.push({ path: rel, reason: 'folders_not_supported' });
-                        continue;
-                    }
-
-                    const encoding = (f?.encoding || 'utf8').toLowerCase();
-                    const content = (typeof f?.content === 'string') ? f.content : (typeof f?.contentBase64 === 'string' ? f.contentBase64 : null);
-                    if (typeof content !== 'string') {
-                        skipped.push({ path: rel, reason: 'missing_content' });
-                        continue;
-                    }
-
-                    const fullPath = path.join(repoPath, rel);
-
-                    if (encoding === 'base64') {
-                        const buf = Buffer.from(content, 'base64');
-                        await safeWriteFile(fullPath, buf);
-                    } else {
-                        await safeWriteFile(fullPath, content);
-                    }
-
-                    written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
-
-                    if (syncToGcs && gcsSync.isGcsConfigured()) {
+                        let rel;
                         try {
-                            await gcsSync.syncFileToGcs(slug, rel, content, userId);
-                        } catch (e) {
-                            // Non-fatal: file is still written to repo, but storage may lag.
-                            errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });
+                            rel = normalizeRepoRelativePath(f?.path);
+                        } catch (_) {
+                            skipped.push({ path: f?.path, reason: 'invalid_path' });
+                            continue;
                         }
-                    }
-                } catch (e) {
-                    errors.push({ path: f?.path, stage: 'write', error: e?.message || String(e) });
-                }
-            }
 
-            return {
-                success: errors.length === 0,
-                written,
-                skipped,
-                errors,
-            };
+                        // NOTE: we intentionally do NOT allow folder markers here.
+                        if (rel.endsWith('/')) {
+                            skipped.push({ path: rel, reason: 'folders_not_supported' });
+                            continue;
+                        }
+
+                        const encoding = (f?.encoding || 'utf8').toLowerCase();
+                        const content = (typeof f?.content === 'string') ? f.content : (typeof f?.contentBase64 === 'string' ? f.contentBase64 : null);
+                        if (typeof content !== 'string') {
+                            skipped.push({ path: rel, reason: 'missing_content' });
+                            continue;
+                        }
+
+                        const fullPath = path.join(repoPath, rel);
+
+                        if (encoding === 'base64') {
+                            const buf = Buffer.from(content, 'base64');
+                            await safeWriteFile(fullPath, buf);
+                        } else {
+                            await safeWriteFile(fullPath, content);
+                        }
+
+                        written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
+
+                        if (syncToGcs && gcsSync.isGcsConfigured()) {
+                            try {
+                                await gcsSync.syncFileToGcs(slug, rel, content, userId);
+                            } catch (e) {
+                                // Non-fatal: file is still written to repo, but storage may lag.
+                                errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });
+                            }
+                        }
+                    } catch (e) {
+                        errors.push({ path: f?.path, stage: 'write', error: e?.message || String(e) });
+                    }
+                }
+
+                return {
+                    success: errors.length === 0,
+                    written,
+                    skipped,
+                    errors,
+                };
+            }, repoPath);
         }, userId);
     }
 
@@ -4532,7 +5033,7 @@ class GitService {
      * @param {string} userId — Authenticated user id
      * @returns {Promise<{ path: string, created: boolean }>}
      */
-    async ensureUserRepo(slug, userId) {
+    async ensureUserRepo(slug, userId, options = {}) {
         if (!userId) throw new GitError('userId is required', 'MISSING_USER_ID');
 
         const userRepoPath = this.getUserRepoPath(slug, userId);
@@ -4680,7 +5181,7 @@ class GitService {
                     'USER_REPO_ERROR'
                 );
             }
-        }, userId);
+        }, userId, options);
     }
 
     /**
@@ -4756,9 +5257,6 @@ gitService.MergeConflictError = MergeConflictError;
 gitService.AuthenticationError = AuthenticationError;
 gitService.RemoteNotConfiguredError = RemoteNotConfiguredError;
 
-// Expose the atomic-write helper for modules that write outside the class
-// (e.g. server.js flushDocToDisk).
-gitService.safeWriteFile = safeWriteFile;
 gitService.isBinaryExtension = isBinaryExtension;
 
 module.exports = gitService;

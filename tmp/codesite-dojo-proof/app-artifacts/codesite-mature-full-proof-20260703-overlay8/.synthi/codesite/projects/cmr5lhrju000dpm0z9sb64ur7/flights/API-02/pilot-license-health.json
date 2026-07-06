@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+  "key": "cmr5lhu5s001gpm0zzwecixke",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+  "agentSessionId": "cmr5lhu5s001gpm0zzwecixke",
+  "ownerUserId": "cmr5lhd910007pm0zart3806m",
+  "displayCallsign": "API-02",
+  "status": "active",
+  "level": "VFR",
+  "levelRank": 2,
+  "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+  "dojoLicenseRef": "schema.level_2@2026-06-25",
+  "dojoProofRef": "pcap-full-workflow-schema",
+  "dojoDecisionDigest": "sha256:a449173d3ea5f178ae1bc78a9129a194e11a9a3a813583197d60e3c0c909bd52",
+  "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+  "authorizedAirspace": [
+    "synthi/prisma/**",
+    "synthi/src/app/api/auth/**"
+  ],
+  "restrictedAirspace": [
+    "secrets/**"
+  ],
+  "requiredRadar": [
+    "typecheck",
+    "tests"
+  ],
+  "earnedBy": [
+    "dojo:full-workflow-checkride",
+    "dojo:evidence:full-workflow-checkride"
+  ],
+  "expiresAt": null,
+  "expiresOn": [],
+  "sourceDrift": {
+    "monitored": false,
+    "sourceDigest": null,
+    "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+    "expired": false
+  },
+  "landingStats": {
+    "total": 0,
+    "passed": 0,
+    "failed": 0,
+    "evidenceRefs": []
+  },
+  "violationStats": {
+    "total": 0,
+    "critical": 0,
+    "latestAt": null,
+    "evidenceRefs": []
+  },
+  "reasonCodes": [
+    "pilot_license_health_active"
+  ],
+  "requiredAction": null,
+  "evidenceRefs": [
+    "dojo:evidence:full-workflow-checkride",
+    "dojo:full-workflow-checkride",
+    "codesite:read-snapshot:sha256:545c075d34947ce9367a49eb5b26254000227718482263869c03a1d46759c48e",
+    "codesite:transaction:cmr5li2rp003gpm0zq6uupyr0",
+    "codesite:lease:cmr5li2cg003apm0zwhxi5ujs",
+    "codesite:policy-decision:cmr5li2cm003cpm0zdutl0m1t"
+  ],
+  "lifecycle": {
+    "issuedAt": "2026-07-03T23:59:28.240Z",
+    "checkedAt": "2026-07-04T00:03:08.682Z",
+    "latestLandingAt": null,
+    "latestViolationAt": null,
+    "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+  }
+}

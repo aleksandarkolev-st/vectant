@@ -1,0 +1,93 @@
+[
+  {
+    "zoneKey": "class_a",
+    "label": "Critical controlled airspace",
+    "class": "A",
+    "paths": [
+      "api/auth/**",
+      "billing/**",
+      "db/migrations/**",
+      "infra/prod/**",
+      "infra/production/**",
+      "**/.env",
+      "**/.env.*"
+    ],
+    "rules": [
+      "explicit_tower_clearance_required",
+      "licensed_pilot_required",
+      "inspector_signoff_required",
+      "black_box_required"
+    ],
+    "risk": "critical",
+    "source": "compiled_default"
+  },
+  {
+    "zoneKey": "class_b",
+    "label": "Shared contract airspace",
+    "class": "B",
+    "paths": [
+      "packages/schemas/**",
+      "openapi/**",
+      "packages/*/src/index.ts",
+      "synthi/prisma/**",
+      "backend/collab-server/permissionMiddleware.js"
+    ],
+    "rules": [
+      "flight_plan_required",
+      "downstream_notification_required",
+      "change_order_for_mutation"
+    ],
+    "risk": "high",
+    "source": "compiled_default"
+  },
+  {
+    "zoneKey": "class_c",
+    "label": "Feature implementation airspace",
+    "class": "C",
+    "paths": [
+      "apps/web/**",
+      "components/**",
+      "synthi/src/app/**",
+      "synthi/src/components/**",
+      "backend/collab-server/**"
+    ],
+    "rules": [
+      "auto_clearance_allowed",
+      "landing_inspection_required"
+    ],
+    "risk": "medium",
+    "source": "compiled_default"
+  },
+  {
+    "zoneKey": "class_d",
+    "label": "Low-risk support airspace",
+    "class": "D",
+    "paths": [
+      "docs/**",
+      "tests/**",
+      "**/__tests__/**",
+      "**/*.test.js",
+      "**/*.test.jsx",
+      "**/*.test.ts",
+      "**/*.test.tsx",
+      "**/*.md"
+    ],
+    "rules": [
+      "micro_clearance_allowed",
+      "sample_inspection"
+    ],
+    "risk": "low",
+    "source": "compiled_default"
+  },
+  {
+    "zoneKey": "schema",
+    "label": "Schema runway",
+    "class": "B",
+    "paths": [
+      "synthi/prisma/**"
+    ],
+    "rules": [],
+    "risk": "high",
+    "source": "custom"
+  }
+]

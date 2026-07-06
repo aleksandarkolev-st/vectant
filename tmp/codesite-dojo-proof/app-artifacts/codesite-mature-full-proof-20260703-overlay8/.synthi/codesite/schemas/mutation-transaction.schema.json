@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite MutationTransaction",
+  "type": "object",
+  "required": [
+    "mutationLeaseId",
+    "baseSnapshot",
+    "isolation",
+    "status"
+  ],
+  "properties": {
+    "mutationLeaseId": {
+      "type": "string"
+    },
+    "baseSnapshot": {
+      "type": "string"
+    },
+    "baseSnapshotEvidence": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "isolation": {
+      "type": "string",
+      "enum": [
+        "serializable"
+      ]
+    },
+    "status": {
+      "type": "string"
+    },
+    "readSet": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "writeSet": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "invariants": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

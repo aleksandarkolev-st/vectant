@@ -1,4 +1,5 @@
-import { asArray } from './json';
+import { asArray, parseJson } from './json';
+import { buildPilotLicenseHealthRecords } from './pilotLicense';
 
 const METRIC_SCHEMA_VERSION = 'synthi.codesite.metrics.v1';
 
@@ -43,9 +44,11 @@ const METRIC_DEFINITIONS = {
   ],
 };
 
-const NOT_INSTRUMENTED = new Set([
-  'humanReviewTimeSavedMs',
-]);
+const NOT_INSTRUMENTED = new Set();
+
+const UNHEALTHY_PILOT_LICENSE_STATUSES = new Set(['grounded', 'expired', 'suspended', 'unlicensed']);
+const BLOCKING_DECISION_STATUSES = new Set(['block', 'blocked', 'deny', 'denied', 'hold', 'holding', 'quarantine', 'quarantined']);
+const UNHEALTHY_PILOT_LICENSE_REASON_RE = /dojo_proof_required|pilot_license_(source_drift_expired|expired|suspended|grounded|unlicensed|missing|required|invalid|blocked|level_insufficient|level_required|airspace_not_authorized|scope_mismatch|critical_violation|failed_landings)/;
 
 export function buildCodeSiteMetrics({ project, controlState = null, workspaceSlug = project?.workspaceSlug } = {}) {
   const generatedAt = new Date().toISOString();
@@ -72,6 +75,7 @@ export function buildCodeSiteMetrics({ project, controlState = null, workspaceSl
       leaseStatusCounts: countBy(context.leases, (lease) => lease.status),
       inspectionStatusCounts: countBy(context.inspectionRuns, (run) => run.status),
       policyDecisionCounts: countBy(context.policyDecisions, (decision) => decision.decision),
+      pilotLicenseStatusCounts: countBy(context.pilotLicenseHealth, (record) => record.status || 'unknown'),
       reasonCodeCounts: context.reasonCodeCounts,
       dataSources: {
         events: context.events.length,
@@ -83,7 +87,9 @@ export function buildCodeSiteMetrics({ project, controlState = null, workspaceSl
         proofBundles: context.proofBundles.length,
         lineProvenance: context.lineProvenance.length,
         counterfactualRuns: context.counterfactualRuns.length,
+        documentReviews: context.documentReviews.length,
         assumptions: context.assumptions.length,
+        pilotLicenseHealth: context.pilotLicenseHealth.length,
       },
     },
   };
@@ -93,6 +99,9 @@ function normalizeMetricProject(project) {
   return {
     id: project.id,
     workspaceSlug: project.workspaceSlug,
+    zonePolicy: project.zonePolicy,
+    zonePolicyJson: project.zonePolicyJson,
+    agentSessions: asArray(project.agentSessions),
     events: asArray(project.events),
     executionPlans: asArray(project.executionPlans),
     mutationLeases: asArray(project.mutationLeases),
@@ -105,6 +114,7 @@ function normalizeMetricProject(project) {
     lineProvenance: asArray(project.lineProvenance),
     counterfactualRuns: asArray(project.counterfactualRuns),
     policyDeltas: asArray(project.policyDeltas),
+    documentReviews: asArray(project.documentReviews),
     documents: asArray(project.documents),
     inboxItems: asArray(project.inboxItems),
   };
@@ -118,12 +128,18 @@ function buildMetricContext(project, controlState, generatedAt) {
   const leases = project.mutationLeases.map(normalizeLease);
   const incidents = project.incidents.map(normalizeIncident);
   const counterfactualRuns = project.counterfactualRuns.map(normalizeCounterfactualRun);
+  const documentReviews = project.documentReviews.map(normalizeDocumentReview);
+  const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth).length
+    ? asArray(controlState.pilotLicenseHealth)
+    : buildPilotLicenseHealthRecords(project);
   const reasonCodes = [
     ...events.flatMap((event) => event.reasonCodes),
     ...policyDecisions.flatMap((decision) => decision.reasonCodes),
     ...transactions.flatMap((txn) => asArray(txn.commitDecision?.reasonCodes)),
     ...inspections.flatMap((run) => inspectionSignals(run).flatMap((signal) => asArray(signal.reasonCodes))),
     ...counterfactualRuns.flatMap((run) => counterfactualReasonCodes(run)),
+    ...documentReviews.flatMap((review) => review.reasonCodes),
+    ...pilotLicenseHealth.flatMap((record) => asArray(record.reasonCodes)),
   ];
   return {
     project,
@@ -136,9 +152,11 @@ function buildMetricContext(project, controlState, generatedAt) {
     leases,
     assumptions: project.assumptions,
     incidents,
+    pilotLicenseHealth,
     proofBundles: project.proofBundles,
     lineProvenance: project.lineProvenance,
     counterfactualRuns,
+    documentReviews,
     policyDeltas: project.policyDeltas,
     reasonCodeCounts: countBy(reasonCodes, (code) => code),
   };
@@ -224,7 +242,22 @@ function computeMetricValues(context) {
   const blackBoxScores = context.incidents
     .map((incident) => Number(incident.incidentReplay?.completeness?.score))
     .filter(Number.isFinite);
-  const pilotViolations = policyDecisionsWithReason(context, /dojo_proof_required|pilot_license|license/);
+  const pilotHealthViolations = context.pilotLicenseHealth.filter((record) => UNHEALTHY_PILOT_LICENSE_STATUSES.has(String(record.status || '').toLowerCase()));
+  const pilotWriteAttempts = uniqueBy(context.events.filter(isPilotLicenseWriteAttemptSignal), pilotLicenseViolationKey);
+  const pilotWriteViolations = context.events.filter(isPilotLicenseWriteViolationSignal);
+  const pilotViolations = [
+    ...context.policyDecisions.filter(isPilotLicenseViolationSignal),
+    ...pilotHealthViolations,
+    ...pilotWriteViolations,
+  ];
+  const pilotViolationAttempts = uniqueBy(pilotViolations, pilotLicenseViolationKey);
+  const pilotLicenseSampleSize = Math.max(
+    context.leases.length + pilotWriteAttempts.length,
+    eventsOfType(context, 'clearance_requested').length + pilotWriteAttempts.length,
+    context.pilotLicenseHealth.length + pilotWriteAttempts.length,
+    pilotViolationAttempts.length,
+  );
+  const reviewSavings = humanReviewSavings(context.documentReviews);
   const promotedNearMissRules = context.policyDeltas
     .filter((delta) => ['active', 'promoted', 'validated', 'accepted'].includes(String(delta.promotionState || '').toLowerCase()))
     .filter((delta) => asArray(delta.learnedFromIncidents).length > 0);
@@ -271,8 +304,20 @@ function computeMetricValues(context) {
     blackBoxCompletenessScore: blackBoxScores.length
       ? ratio(sum(blackBoxScores), blackBoxScores.length, evidenceIds(context.incidents))
       : notInstrumented('Incident replay completeness is available after black-box replay generation.'),
-    humanReviewTimeSavedMs: notInstrumented('Human review baseline timing is not recorded yet.'),
-    pilotLicenseViolationRate: rateOrNotInstrumented(pilotViolations.length, context.leases.length || eventsOfType(context, 'clearance_requested').length, evidenceIds(pilotViolations), 'Clearance requests or leases are required to score pilot-license violation rate.'),
+    humanReviewTimeSavedMs: reviewSavings.length
+      ? measured(sum(reviewSavings.map((sample) => sample.savedMs)), evidenceIds(reviewSavings), {
+        samples: reviewSavings.length,
+        baselineReviewTimeMs: sum(reviewSavings.map((sample) => sample.baselineReviewTimeMs)),
+        reviewTimeMs: sum(reviewSavings.map((sample) => sample.reviewTimeMs)),
+        reviewOverrunMs: sum(reviewSavings.map((sample) => sample.overrunMs)),
+      })
+      : notInstrumented('Document reviews require both baselineReviewTimeMs and reviewTimeMs before human review savings can be measured.'),
+    pilotLicenseViolationRate: rateOrNotInstrumented(
+      pilotViolationAttempts.length,
+      pilotLicenseSampleSize,
+      evidenceIds(pilotViolations),
+      'Clearance requests, leases, or pilot-license health records are required to score pilot-license violation rate.',
+    ),
     repeatedNearMissesConvertedToAirspaceRules: measured(promotedNearMissRules.length, evidenceIds(promotedNearMissRules)),
   };
 }
@@ -399,6 +444,15 @@ function normalizeCounterfactualRun(run = {}) {
   };
 }
 
+function normalizeDocumentReview(review = {}) {
+  return {
+    ...review,
+    reasonCodes: parseJson(review.reasonCodesJson, asArray(review.reasonCodes)),
+    body: parseJson(review.bodyJson, review.body || {}),
+    evidenceRefs: parseJson(review.evidenceRefsJson, asArray(review.evidenceRefs)),
+  };
+}
+
 function eventsOfType(context, eventType) {
   return context.events.filter((event) => event.eventType === eventType);
 }
@@ -516,6 +570,25 @@ function counterfactualReasonCodes(run) {
   ];
 }
 
+function humanReviewSavings(reviews) {
+  return asArray(reviews)
+    .map((review) => {
+      const baselineReviewTimeMs = Number(review?.body?.baselineReviewTimeMs ?? review?.body?.baseline_review_time_ms);
+      const reviewTimeMs = Number(review?.body?.reviewTimeMs ?? review?.body?.review_time_ms);
+      if (!Number.isFinite(baselineReviewTimeMs) || !Number.isFinite(reviewTimeMs)) return null;
+      if (baselineReviewTimeMs < 0 || reviewTimeMs < 0) return null;
+      return {
+        id: review.id ? `document-review:${review.id}` : null,
+        evidenceRefs: review.evidenceRefs,
+        baselineReviewTimeMs,
+        reviewTimeMs,
+        savedMs: Math.max(0, baselineReviewTimeMs - reviewTimeMs),
+        overrunMs: Math.max(0, reviewTimeMs - baselineReviewTimeMs),
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeEventPaths(event) {
   if (!['write_allowed', 'transaction_committed'].includes(event.eventType)) return [];
   return unique([
@@ -593,6 +666,65 @@ function noFlyViolationKey(item) {
   const mutationLeaseId = item?.mutationLeaseId || item?.decisionBody?.mutationLeaseId || '';
   if (path) return `nofly:${path}:${mutationLeaseId}`;
   return item?.id || item?.eventId || JSON.stringify(item);
+}
+
+function pilotLicenseViolationKey(item) {
+  const decisionBody = item?.decisionBody || {};
+  const healthScope = item?.scope || {};
+  const nestedHealth = decisionBody.pilotLicenseHealth || {};
+  const attemptId = item?.details?.attemptId
+    || decisionBody.attemptId
+    || decisionBody.clearanceRequestId
+    || item?.clearanceRequestId;
+  if (attemptId) return `pilot-attempt:${attemptId}`;
+  const callsign = item?.displayCallsign
+    || item?.callsign
+    || decisionBody.displayCallsign
+    || decisionBody.callsign
+    || nestedHealth.displayCallsign
+    || healthScope.displayCallsign;
+  const path = item?.details?.path
+    || item?.details?.codesiteFsEvent?.path
+    || decisionBody.path
+    || decisionBody.codesiteFsEvent?.path
+    || item?.path;
+  const leaseId = item?.mutationLeaseId
+    || decisionBody.mutationLeaseId
+    || item?.leaseId
+    || item?.latestLease?.id;
+  if (path) return `pilot-write:${callsign || leaseId || item?.actorId || 'unknown'}:${path}`;
+  if (callsign) return `pilot-callsign:${callsign}`;
+  const healthKey = item?.key
+    || item?.agentSessionId
+    || nestedHealth.key
+    || nestedHealth.agentSessionId;
+  if (healthKey) return `pilot-health:${healthKey}`;
+  if (leaseId) return `pilot-lease:${leaseId}`;
+  return item?.key || item?.id || item?.eventId || JSON.stringify(item);
+}
+
+function isPilotLicenseViolationSignal(item) {
+  const reasonCodes = asArray(item?.reasonCodes).map(String);
+  const healthStatus = String(item?.status || item?.decisionBody?.pilotLicenseHealth?.status || '').toLowerCase();
+  if (UNHEALTHY_PILOT_LICENSE_STATUSES.has(healthStatus)) return true;
+  const hasUnhealthyReason = reasonCodes.some((code) => UNHEALTHY_PILOT_LICENSE_REASON_RE.test(code));
+  if (!hasUnhealthyReason) return false;
+  const decisionStatus = String(item?.decision || item?.decisionBody?.status || '').toLowerCase();
+  if (!decisionStatus) return true;
+  return BLOCKING_DECISION_STATUSES.has(decisionStatus);
+}
+
+function isPilotLicenseWriteAttemptSignal(event) {
+  const eventType = String(event?.eventType || '').toLowerCase();
+  if (!['write_allowed', 'write_denied', 'write_quarantined'].includes(eventType)) return false;
+  return Boolean(event?.displayCallsign || event?.mutationLeaseId || event?.details?.displayCallsign || event?.details?.matchedLeaseId);
+}
+
+function isPilotLicenseWriteViolationSignal(event) {
+  if (!isPilotLicenseWriteAttemptSignal(event)) return false;
+  const eventType = String(event?.eventType || '').toLowerCase();
+  if (!['write_denied', 'write_quarantined'].includes(eventType)) return false;
+  return asArray(event?.reasonCodes).some((code) => /entered_no_fly_zone|no_fly|active_clearance_required|clearance_not_active|outside_clearance_route|tool_not_in_clearance|pilot_license/i.test(String(code)));
 }
 
 function countBy(items, selector) {

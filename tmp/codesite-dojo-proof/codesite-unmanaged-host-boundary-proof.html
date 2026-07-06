@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CodeSite Unmanaged Host Boundary Proof</title>
+<style>
+:root{color-scheme:dark;--bg:#07090f;--panel:#111823;--line:#30384a;--text:#f6f8ff;--muted:#aab5c9;--pass:#9df2bd;--fail:#ffc1c1}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+main{width:min(1180px,calc(100vw - 48px));margin:28px auto 44px;display:grid;gap:16px}
+.hero,.card{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:18px}.hero{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:start}
+.badge{display:inline-flex;align-items:center;height:25px;border-radius:5px;padding:0 10px;background:#113c28;color:var(--pass);font-size:12px;font-weight:850}
+h1{font-size:30px;line-height:1.08;margin:8px 0 10px}h2{font-size:16px;margin:0 0 10px}p{margin:0;color:var(--muted);line-height:1.55;max-width:88ch}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{border:1px solid var(--line);border-radius:8px;background:#0b1018;padding:12px;min-width:0}
+.label{font-size:12px;color:var(--muted)}.value{margin-top:7px;font-size:15px;font-weight:750;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}th,td{border-top:1px solid var(--line);padding:9px;text-align:left;vertical-align:top}th{color:var(--muted);font-size:12px}
+code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere;color:#dce5f8}.ok{color:var(--pass);font-weight:850}.bad{color:var(--fail);font-weight:850}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;border:1px solid var(--line);border-radius:8px;background:#05070c;padding:12px;color:#dce5f8;font-size:12px}
+@media(max-width:860px){main{width:min(100% - 24px,720px)}.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}h1{font-size:25px}}
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div>
+      <span class="badge">PASS</span>
+      <h1>CodeSite Unmanaged Host Boundary Proof</h1>
+      <p>Unmanaged Node and shell writes were denied before real-tree mutation by the host prewrite guard, then attempted again against a read-only Docker base with a writable transaction overlay. This proves the mature sealed-base boundary without relying on polling restoration.</p>
+    </div>
+    <span class="badge">host_prewrite_guard_plus_read_only_real_tree_with_writable_transaction_overlay</span>
+  </section>
+  <section class="grid">
+    <div class="metric"><div class="label">Docker image</div><div class="value">node:20-bookworm</div></div>
+    <div class="metric"><div class="label">Base flags</div><div class="value">ro,noatime,aname=drvfs;path=C:\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6</div></div>
+    <div class="metric"><div class="label">Overlay flags</div><div class="value">rw,noatime,aname=drvfs;path=C:\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=5,access=client,msize=65536,trans=fd,rfd=6,wfd=6</div></div>
+    <div class="metric"><div class="label">Denied base writes</div><div class="value">4/4</div></div>
+  </section>
+  <section class="card"><h2>Assertions</h2><table><tbody>
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteGuardArmed</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteExistingWriteDenied</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteCreateDenied</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteRealTreeUnchanged</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteNoPostWriteQuarantineNeeded</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>hostPrewriteGuardRestoredPermissions</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>dockerProcessExecuted</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>sourceMountedReadOnly</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>overlayMountedWritable</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>everyBaseAttemptDenied</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>everyOverlayAttemptAllowed</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>sourceDigestsUnchanged</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>overlayDigestsChanged</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>sourceGeneratedDirAbsent</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>overlayGeneratedDirPresent</td></tr>
+
+    <tr><td><span class="ok">PASS</span></td><td>overlayOnlyArtifactPresent</td></tr>
+  </tbody></table></section>
+  <section class="card"><h2>Host Prewrite Guard</h2><table><thead><tr><th>Attempt</th><th>Disposition</th><th>Code</th><th>Evidence</th></tr></thead><tbody>
+    <tr>
+      <td>overwrite</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>EACCES</code></td>
+      <td><code>EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/src/app.js&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>create</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>EACCES</code></td>
+      <td><code>EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/src/rogue.js&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>postStopWrite</td>
+      <td><span class="ok">allowed</span></td>
+      <td><code></code></td>
+      <td><code></code></td>
+    </tr>
+  </tbody></table><pre>{
+  &quot;schemaVersion&quot;: &quot;synthi.codesite.hostPrewriteBoundary.v1&quot;,
+  &quot;mode&quot;: &quot;posix_readonly_tree&quot;,
+  &quot;active&quot;: true,
+  &quot;enforcedBeforeMutation&quot;: true,
+  &quot;verification&quot;: {
+    &quot;createDenied&quot;: true,
+    &quot;code&quot;: &quot;EACCES&quot;,
+    &quot;message&quot;: &quot;EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52&#39;&quot;
+  },
+  &quot;guardedPathCount&quot;: 3,
+  &quot;guardedPathsSample&quot;: [
+    &quot;src/app.js&quot;,
+    &quot;src&quot;,
+    &quot;.&quot;
+  ],
+  &quot;armedAt&quot;: &quot;2026-07-06T01:55:18.863Z&quot;,
+  &quot;restoredAt&quot;: null,
+  &quot;restoreErrors&quot;: [],
+  &quot;reason&quot;: &quot;unmanaged_host_boundary_prewrite_probe&quot;
+}</pre></section>
+  <section class="card"><h2>Raw Process Attempts</h2><table><thead><tr><th>Attempt</th><th>Disposition</th><th>Code</th><th>Evidence</th></tr></thead><tbody>
+    <tr>
+      <td>node_write_existing_base</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>EROFS</code></td>
+      <td><code>EROFS: read-only file system, open &#39;/codesite-base/src/app.js&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>shell_redirect_existing_base</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>1</code></td>
+      <td><code>bash: line 1: /codesite-base/api/auth/signup.ts: Read-only file system
+</code></td>
+    </tr>
+
+    <tr>
+      <td>mkdir_base</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>ENOENT</code></td>
+      <td><code>ENOENT: no such file or directory, mkdir &#39;/codesite-base/generated&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>append_package_base</td>
+      <td><span class="bad">denied</span></td>
+      <td><code>EROFS</code></td>
+      <td><code>EROFS: read-only file system, open &#39;/codesite-base/package.json&#39;</code></td>
+    </tr>
+
+    <tr>
+      <td>node_write_overlay</td>
+      <td><span class="ok">allowed</span></td>
+      <td><code></code></td>
+      <td><code></code></td>
+    </tr>
+
+    <tr>
+      <td>shell_redirect_overlay</td>
+      <td><span class="ok">allowed</span></td>
+      <td><code></code></td>
+      <td><code></code></td>
+    </tr>
+
+    <tr>
+      <td>mkdir_overlay</td>
+      <td><span class="ok">allowed</span></td>
+      <td><code></code></td>
+      <td><code></code></td>
+    </tr>
+
+    <tr>
+      <td>append_overlay_package</td>
+      <td><span class="ok">allowed</span></td>
+      <td><code></code></td>
+      <td><code></code></td>
+    </tr>
+  </tbody></table></section>
+  <section class="card"><h2>Digest Evidence</h2><pre>{
+  &quot;sourceBefore&quot;: {
+    &quot;src/app.js&quot;: &quot;sha256:09c265a42d67e3495464452d3b11de61938119fd69d008d5a6f41bb76133b658&quot;,
+    &quot;api/auth/signup.ts&quot;: &quot;sha256:908992c4cb51568c9e0e682e462e0fa1862c4e6711e376857298ed1d8ab9b931&quot;,
+    &quot;package.json&quot;: &quot;sha256:8ba813510512a14f92fb83ca7b0d9f3cac962bbd39608e200a80d4a5606294d7&quot;
+  },
+  &quot;sourceAfter&quot;: {
+    &quot;src/app.js&quot;: &quot;sha256:09c265a42d67e3495464452d3b11de61938119fd69d008d5a6f41bb76133b658&quot;,
+    &quot;api/auth/signup.ts&quot;: &quot;sha256:908992c4cb51568c9e0e682e462e0fa1862c4e6711e376857298ed1d8ab9b931&quot;,
+    &quot;package.json&quot;: &quot;sha256:8ba813510512a14f92fb83ca7b0d9f3cac962bbd39608e200a80d4a5606294d7&quot;
+  },
+  &quot;overlayBefore&quot;: {
+    &quot;src/app.js&quot;: &quot;sha256:09c265a42d67e3495464452d3b11de61938119fd69d008d5a6f41bb76133b658&quot;,
+    &quot;api/auth/signup.ts&quot;: &quot;sha256:908992c4cb51568c9e0e682e462e0fa1862c4e6711e376857298ed1d8ab9b931&quot;,
+    &quot;package.json&quot;: &quot;sha256:8ba813510512a14f92fb83ca7b0d9f3cac962bbd39608e200a80d4a5606294d7&quot;
+  },
+  &quot;overlayAfter&quot;: {
+    &quot;src/app.js&quot;: &quot;sha256:24f360a90051977eedd3c9fe9ef2a34245a2e8f136ad8b4e58de3f5dd89473a3&quot;,
+    &quot;api/auth/signup.ts&quot;: &quot;sha256:45eabf819e6c14f8dc99543ae1c0d8ae65149d011d22b9118526443fd2adcdc0&quot;,
+    &quot;package.json&quot;: &quot;sha256:0a40d9eec9c99ab4c32fa2cb2f64827198c5347a7737c957d5591292b18f9c74&quot;
+  }
+}</pre></section>
+  <section class="card"><h2>Product Runtime Contract</h2><pre>{
+  &quot;activeHostShellPolicy&quot;: &quot;deny unmanaged host writes with prewrite guard or block host shell&quot;,
+  &quot;activeRuntimePolicy&quot;: &quot;mount read-only base plus writable overlay/quarantine&quot;,
+  &quot;prewriteBoundary&quot;: {
+    &quot;schemaVersion&quot;: &quot;synthi.codesite.hostPrewriteBoundary.v1&quot;,
+    &quot;mode&quot;: &quot;posix_readonly_tree&quot;,
+    &quot;active&quot;: true,
+    &quot;enforcedBeforeMutation&quot;: true,
+    &quot;verification&quot;: {
+      &quot;createDenied&quot;: true,
+      &quot;code&quot;: &quot;EACCES&quot;,
+      &quot;message&quot;: &quot;EACCES: permission denied, open &#39;/tmp/codesite-unmanaged-host-prewrite/codesite-unmanaged-host-boundary-1783302918687/source/.codesite-prewrite-create-probe-e8c79d52&#39;&quot;
+    },
+    &quot;guardedPathCount&quot;: 3,
+    &quot;guardedPathsSample&quot;: [
+      &quot;src/app.js&quot;,
+      &quot;src&quot;,
+      &quot;.&quot;
+    ],
+    &quot;armedAt&quot;: &quot;2026-07-06T01:55:18.863Z&quot;,
+    &quot;restoredAt&quot;: null,
+    &quot;restoreErrors&quot;: [],
+    &quot;reason&quot;: &quot;unmanaged_host_boundary_prewrite_probe&quot;
+  },
+  &quot;readonlyRuntimeName&quot;: &quot;workspace-runtime-codesite-unmanaged-host-boundary-1783302&quot;,
+  &quot;activeOverlayRuntimeName&quot;: &quot;workspace-runtime-codesite-unmanaged-host-bounda-codesite-4690cf37c1&quot;,
+  &quot;overlayVolumeSubpath&quot;: &quot;codesite-unmanaged-host-boundary-1783302918687/overlay&quot;
+}</pre></section>
+</main>
+</body>
+</html>

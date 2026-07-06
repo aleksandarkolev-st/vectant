@@ -1,0 +1,24 @@
+{
+  "id": "cmr8k13ui039iqg01swtnoibi",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+  "displayCallsign": "SCHEMA-01",
+  "mission": "Schema first",
+  "domain": "schema",
+  "status": "preflight",
+  "route": [
+    "synthi/prisma/**"
+  ],
+  "blockedZones": [],
+  "abortConditions": [
+    "required radar failed",
+    "tower reroute issued"
+  ],
+  "requestedTools": [
+    "file_write",
+    "npm_test"
+  ],
+  "estimatedDurationMs": null,
+  "filedAt": "2026-07-06T01:41:46.554Z",
+  "closedAt": null
+}

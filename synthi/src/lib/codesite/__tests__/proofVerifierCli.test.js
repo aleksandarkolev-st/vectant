@@ -36,11 +36,36 @@ function makeBundle() {
   });
 }
 
-function runVerifier(args) {
+const PROOF_AUTHORITY_ENV_KEYS = [
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON',
+  'SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE',
+  'SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY',
+  'AUTH_SECRET',
+  'NEXTAUTH_SECRET',
+  'NODE_ENV',
+];
+
+function runVerifier(args, envOverrides = {}) {
   const script = path.join(process.cwd(), 'scripts/codesite-proof-verify.mjs');
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries(envOverrides)) {
+    if (value == null) {
+      delete env[key];
+    } else {
+      env[key] = value;
+    }
+  }
   const result = spawnSync(process.execPath, [script, ...args], {
     cwd: process.cwd(),
     encoding: 'utf8',
+    env,
   });
   return {
     status: result.status,
@@ -48,6 +73,56 @@ function runVerifier(args) {
     stderr: result.stderr,
     json: result.stdout ? JSON.parse(result.stdout) : null,
   };
+}
+
+function runGit(repo, args) {
+  const result = spawnSync('git', ['-C', repo, ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+  expect(result.status).toBe(0);
+  return String(result.stdout || '').trim();
+}
+
+function initProofRepo(root, message) {
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo, { recursive: true });
+  runGit(repo, ['init']);
+  runGit(repo, ['config', 'user.email', 'codesite@example.test']);
+  runGit(repo, ['config', 'user.name', 'CodeSite Test']);
+  fs.writeFileSync(path.join(repo, 'proof.txt'), 'proof\n');
+  runGit(repo, ['add', 'proof.txt']);
+  runGit(repo, ['commit', '-m', message]);
+  return {
+    repo,
+    commitSha: runGit(repo, ['rev-parse', 'HEAD']),
+  };
+}
+
+function withProofAuthorityEnvCleared(callback) {
+  return withProcessEnv(Object.fromEntries(PROOF_AUTHORITY_ENV_KEYS.map((key) => [key, null])), callback);
+}
+
+function withProcessEnv(overrides, callback) {
+  const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 function legacyDateDigest(bundle) {
@@ -89,6 +164,8 @@ describe('CodeSite proof verifier CLI', () => {
     expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Flight: CODEX-04');
     expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Clearance: lease-1');
     expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Landing: landed-with-punch');
+    expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Proof-Digest: sha256:');
+    expect(fs.readFileSync(trailersPath, 'utf8')).toContain('CodeSite-Proof-Signature: hmac-sha256:');
 
     const result = runVerifier(['--bundle', bundlePath, '--trailers', trailersPath, '--require-trailers']);
 
@@ -102,9 +179,92 @@ describe('CodeSite proof verifier CLI', () => {
         'proof_bundle_schema_valid',
         'proof_bundle_required_fields_present',
         'proof_bundle_digest_valid',
+        'proof_bundle_signature_valid',
         'proof_commit_trailers_match',
       ]),
     });
+  });
+
+  it('verifies proof trailers from the actual git commit object', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-git-'));
+    roots.push(root);
+    const bundle = makeBundle();
+    const bundlePath = path.join(root, 'txn-1.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+    const message = [
+      'Land proof',
+      '',
+      formatCommitTrailers(bundle),
+    ].join('\n');
+    const { repo, commitSha } = initProofRepo(root, message);
+
+    const result = runVerifier([
+      '--bundle',
+      bundlePath,
+      '--repo',
+      repo,
+      '--commit',
+      commitSha,
+      '--require-git-commit',
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.json).toMatchObject({
+      ok: true,
+      reasonCodes: expect.arrayContaining([
+        'proof_git_commit_loaded',
+        'proof_commit_trailers_match',
+        'proof_git_commit_trailers_match',
+      ]),
+      gitCommit: {
+        commitSha,
+        requestedCommitSha: commitSha,
+        messageDigest: expect.stringMatching(/^sha256:/),
+      },
+    });
+  });
+
+  it('fails when the actual git commit trailers do not match even if a sidecar trailer file does', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-git-'));
+    roots.push(root);
+    const bundle = makeBundle();
+    const bundlePath = path.join(root, 'txn-1.proof.json');
+    const trailersPath = path.join(root, 'txn-1.trailers.txt');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+    fs.writeFileSync(trailersPath, formatCommitTrailers(bundle));
+    const { repo, commitSha } = initProofRepo(root, [
+      'Land proof without CodeSite trailers',
+      '',
+      'CodeSite-Proof-Digest: sha256:forged',
+    ].join('\n'));
+
+    const result = runVerifier([
+      '--bundle',
+      bundlePath,
+      '--trailers',
+      trailersPath,
+      '--repo',
+      repo,
+      '--commit',
+      commitSha,
+      '--require-git-commit',
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_verification_failed',
+      ]),
+      errors: expect.arrayContaining([
+        expect.stringContaining('commit trailer CodeSite-Project mismatch'),
+        expect.stringContaining('commit trailer CodeSite-Proof-Digest mismatch'),
+      ]),
+      gitCommit: {
+        commitSha,
+      },
+    });
+    expect(result.json.reasonCodes).not.toContain('proof_git_commit_trailers_match');
   });
 
   it('fails when a proof bundle digest is tampered after export', () => {
@@ -125,6 +285,226 @@ describe('CodeSite proof verifier CLI', () => {
     });
   });
 
+  it('rejects development HMAC proof authority when trusted authority is required', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const bundle = withProofAuthorityEnvCleared(() => makeBundle());
+    const bundlePath = path.join(root, 'txn-1.dev-hmac.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath, '--require-trusted-authority'], {
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_signature_trusted_authority_required',
+        'proof_bundle_verification_failed',
+      ]),
+      errors: expect.arrayContaining([
+        expect.stringContaining('trusted proof authority is required'),
+      ]),
+    });
+  });
+
+  it('refuses to sign a trusted proof bundle with application auth secret fallback', () => {
+    expect(() => withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY: '1',
+      AUTH_SECRET: 'app-session-secret',
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle())).toThrow(/trusted CodeSite proof authority requires/);
+  });
+
+  it('rejects application auth secret fallback when verifier requires a trusted authority', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const bundle = withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY: null,
+      AUTH_SECRET: 'app-session-secret',
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle());
+    const bundlePath = path.join(root, 'txn-1.auth-secret-hmac.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath, '--require-trusted-authority'], {
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      AUTH_SECRET: 'app-session-secret',
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.json).toMatchObject({
+      ok: false,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_signature_trusted_authority_required',
+        'proof_bundle_verification_failed',
+      ]),
+      errors: expect.arrayContaining([
+        expect.stringContaining('AUTH_SECRET is not an explicit proof authority'),
+      ]),
+    });
+  });
+
+  it('verifies an Ed25519 proof with a pinned trusted key without embedded-key warnings', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
+    roots.push(root);
+    const keyId = 'codesite-proof-ed25519-test';
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
+    const bundle = withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID: keyId,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: privateKeyPem,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: publicKeyPem,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle());
+    const bundlePath = path.join(root, 'txn-1.ed25519.proof.json');
+    const keysPath = path.join(root, 'trusted-keys.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+    fs.writeFileSync(keysPath, JSON.stringify({
+      [keyId]: {
+        algorithm: 'ed25519',
+        publicKeyPem,
+      },
+    }, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath, '--trusted-keys', keysPath, '--require-trusted-authority'], {
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.json).toMatchObject({
+      ok: true,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_signature_valid',
+      ]),
+      signature: {
+        publicKeySource: 'trusted_keys_file',
+      },
+    });
+    expect(result.json.reasonCodes).not.toContain('proof_bundle_warnings_present');
+    expect(result.json.warnings).not.toContain(
+      'proof signature verified with embedded public key; provide --trusted-keys for authority pinning',
+    );
+  });
+
+  it('signs and verifies an Ed25519 proof from authority file inputs', () => {
+    const repoRoot = path.basename(process.cwd()) === 'synthi' ? path.dirname(process.cwd()) : process.cwd();
+    const relativeRoot = path.join('tmp', `codesite-proof-cli-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const root = path.join(repoRoot, relativeRoot);
+    fs.mkdirSync(root, { recursive: true });
+    roots.push(root);
+    const keyId = 'codesite-proof-ed25519-file-test';
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
+    const privateKeyPath = path.join(root, 'proof-authority.private.pem');
+    const publicKeyPath = path.join(root, 'proof-authority.public.pem');
+    const publicKeysPath = path.join(root, 'trusted-proof-authorities.json');
+    const privateKeyRelativePath = path.posix.join(relativeRoot, 'proof-authority.private.pem');
+    const publicKeyRelativePath = path.posix.join(relativeRoot, 'proof-authority.public.pem');
+    const publicKeysRelativePath = path.posix.join(relativeRoot, 'trusted-proof-authorities.json');
+    fs.writeFileSync(privateKeyPath, privateKeyPem);
+    fs.writeFileSync(publicKeyPath, publicKeyPem);
+    fs.writeFileSync(publicKeysPath, JSON.stringify({
+      [keyId]: {
+        algorithm: 'ed25519',
+        publicKeyPem,
+      },
+    }, null, 2));
+
+    const bundle = withProcessEnv({
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID: keyId,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: privateKeyRelativePath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: publicKeyRelativePath,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: null,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    }, () => makeBundle());
+    const bundlePath = path.join(root, 'txn-1.ed25519-file.proof.json');
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
+
+    const result = runVerifier(['--bundle', bundlePath, '--require-trusted-authority', '--no-embedded-public-key'], {
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: publicKeysRelativePath,
+      AUTH_SECRET: null,
+      NEXTAUTH_SECRET: null,
+      NODE_ENV: 'development',
+    });
+
+    expect(bundle.proofSignature).toMatchObject({
+      algorithm: 'ed25519',
+      keyId,
+    });
+    expect(result.status).toBe(0);
+    expect(result.json).toMatchObject({
+      ok: true,
+      reasonCodes: expect.arrayContaining([
+        'proof_bundle_signature_valid',
+      ]),
+      signature: {
+        publicKeySource: 'trusted_keys_env',
+      },
+    });
+    expect(result.json.reasonCodes).not.toContain('proof_bundle_warnings_present');
+  });
+
   it('fails when portable proof fields required by the schema are missing', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
     roots.push(root);
@@ -143,7 +523,7 @@ describe('CodeSite proof verifier CLI', () => {
     });
   });
 
-  it('accepts legacy proof bundles hashed with Date-object canonicalization and warns to regenerate', () => {
+  it('fails legacy digest-only proof when the signature no longer binds the payload', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
     roots.push(root);
     const bundle = makeBundle();
@@ -155,16 +535,15 @@ describe('CodeSite proof verifier CLI', () => {
 
     const result = runVerifier(['--bundle', bundlePath, '--trailers', trailersPath, '--require-trailers']);
 
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(1);
     expect(result.json).toMatchObject({
-      ok: true,
+      ok: false,
       reasonCodes: expect.arrayContaining([
-        'proof_bundle_digest_valid',
-        'proof_bundle_legacy_date_digest_valid',
-        'proof_bundle_warnings_present',
+        'proof_bundle_signature_invalid',
+        'proof_bundle_verification_failed',
       ]),
-      warnings: expect.arrayContaining([
-        expect.stringContaining('legacy Date-object canonicalization'),
+      errors: expect.arrayContaining([
+        expect.stringContaining('proofSignature payloadDigest mismatch'),
       ]),
     });
   });

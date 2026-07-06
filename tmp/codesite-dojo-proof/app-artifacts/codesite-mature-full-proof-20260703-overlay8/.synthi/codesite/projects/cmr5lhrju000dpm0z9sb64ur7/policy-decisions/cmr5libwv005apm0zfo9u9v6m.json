@@ -1,0 +1,53 @@
+{
+  "id": "cmr5libwv005apm0zfo9u9v6m",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+  "displayCallsign": "SCHEMA-01",
+  "decision": "block",
+  "reasonCodes": [
+    "outside_clearance_route"
+  ],
+  "inputDigest": "sha256:a833d08e15a50a8a8612e39e6eb5209300f60ff16d67dd125d8bfd74a9a86e4d",
+  "decisionBody": {
+    "path": "secrets/prod.env",
+    "zone": {
+      "zoneKey": "unclassified",
+      "label": "Unclassified repo airspace",
+      "class": "C",
+      "risk": "medium",
+      "rules": [
+        "auto_clearance_allowed",
+        "landing_inspection_required"
+      ],
+      "path": "secrets/prod.env"
+    },
+    "codesiteFsEvent": {
+      "type": "write_denied",
+      "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+      "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+      "display_callsign": "SCHEMA-01",
+      "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+      "actor_user_id": null,
+      "effective_user_id": null,
+      "path": "secrets/prod.env",
+      "tool": "file_write",
+      "wall_time": "2026-07-03T23:59:50.800Z",
+      "evidence_refs": [
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "details": {
+        "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+        "reason_codes": [
+          "outside_clearance_route"
+        ],
+        "process_ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ],
+        "operation": "raw-terminal-write"
+      }
+    },
+    "towerInstruction": "Write denied for secrets/prod.env. File change order or request a new clearance."
+  },
+  "createdAt": "2026-07-03T23:59:51.248Z"
+}

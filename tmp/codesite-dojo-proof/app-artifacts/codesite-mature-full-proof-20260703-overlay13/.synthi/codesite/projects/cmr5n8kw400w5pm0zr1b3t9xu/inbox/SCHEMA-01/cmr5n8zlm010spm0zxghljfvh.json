@@ -1,0 +1,47 @@
+{
+  "id": "cmr5n8zlp010upm0zvyihneg2",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "agentSessionId": "cmr5n8n8800wypm0zhduexqy9",
+  "recipientUserId": "cmr5n8i7v00vwpm0zrdlq4nyo",
+  "eventId": "cmr5n8zlm010spm0zxghljfvh",
+  "documentId": "cmr5n8zlg010qpm0zqjb5it52",
+  "kind": "change_order",
+  "requiresResponse": false,
+  "status": "acknowledged",
+  "redactedPayload": {
+    "documentId": "cmr5n8zlg010qpm0zqjb5it52",
+    "eventId": "cmr5n8zlm010spm0zxghljfvh",
+    "kind": "change_order",
+    "title": "API flight accepts schema-first hold",
+    "body": {
+      "answerToDocumentId": "cmr5n8yh0010ipm0z88mpt3oc",
+      "decision": "accepted",
+      "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+      "routing": {
+        "fromSessionId": "cmr5n8o3x00x8pm0zpba700d2",
+        "toSessionIds": [
+          "cmr5n8n8800wypm0zhduexqy9"
+        ],
+        "projectRefs": {
+          "executionPlanId": "cmr5n8ohp00xepm0zndi5xq6o",
+          "mutationLeaseId": "cmr5n8q0i00xspm0zc16y3e69",
+          "transactionId": "cmr5n8ta300yspm0zf8blsf5p",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "contractRefs": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "inspectionRunId": null,
+          "incidentId": null
+        }
+      }
+    },
+    "redaction": {
+      "policyApplied": true,
+      "recipientSessionId": "cmr5n8n8800wypm0zhduexqy9"
+    }
+  },
+  "createdAt": "2026-07-04T00:48:34.621Z",
+  "acknowledgedAt": "2026-07-04T00:48:35.444Z"
+}

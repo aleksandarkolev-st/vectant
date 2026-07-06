@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodeSite MCP Lifecycle Proof</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090d;
+      --panel: #111820;
+      --panel-2: #0d1218;
+      --ink: #f5f7fa;
+      --muted: #9aaabe;
+      --line: rgba(255, 255, 255, 0.13);
+      --green: #41e08c;
+      --amber: #ffd166;
+      --blue: #74b9ff;
+      --red: #ff5f6d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(90deg, rgba(116, 185, 255, 0.07) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(116, 185, 255, 0.05) 1px, transparent 1px),
+        radial-gradient(circle at 85% 10%, rgba(255, 209, 102, 0.16), transparent 34rem),
+        radial-gradient(circle at 0% 0%, rgba(65, 224, 140, 0.13), transparent 32rem),
+        var(--bg);
+      background-size: 44px 44px, 44px 44px, auto, auto, auto;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    main {
+      width: min(1220px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 40px 0 48px;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 28px;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 26px;
+    }
+
+    .eyebrow {
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 10px 0 0;
+      max-width: 890px;
+      font-size: clamp(34px, 7vw, 84px);
+      line-height: 0.92;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(140px, 1fr));
+      min-width: 470px;
+      border: 1px solid var(--line);
+      background: rgba(13, 18, 24, 0.9);
+    }
+
+    .summary div {
+      padding: 18px;
+      border-left: 1px solid var(--line);
+    }
+
+    .summary div:first-child {
+      border-left: 0;
+    }
+
+    .summary span,
+    .panel h2 {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .summary b {
+      display: block;
+      margin-top: 8px;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .summary .ok b {
+      color: var(--green);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(17, 24, 32, 0.97), rgba(9, 13, 18, 0.98));
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.3);
+    }
+
+    .panel h2 {
+      margin: 0;
+      padding: 17px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line);
+    }
+
+    .cell {
+      min-height: 114px;
+      padding: 16px;
+      background: rgba(13, 18, 24, 0.96);
+    }
+
+    .cell strong {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+
+    .mark {
+      width: 10px;
+      height: 10px;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(65, 224, 140, 0.12);
+      flex: 0 0 auto;
+    }
+
+    .cell p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .flow {
+      padding: 20px;
+    }
+
+    .lane {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .lane:last-child {
+      border-bottom: 0;
+    }
+
+    .index {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(116, 185, 255, 0.44);
+      color: var(--blue);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .lane strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 15px;
+    }
+
+    .lane p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .terminal {
+      margin-top: 18px;
+      padding: 17px;
+      border: 1px solid var(--line);
+      background: #040609;
+      color: #d7e3f0;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        width: min(100vw - 24px, 680px);
+        padding: 28px 0;
+      }
+
+      .top,
+      .layout,
+      .summary,
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+
+      .summary {
+        min-width: 0;
+      }
+
+      .summary div {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .summary div:first-child {
+        border-top: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <div class="eyebrow">CodeSite MCP lifecycle proof</div>
+        <h1>Operators can now drive the full tower workflow through MCP.</h1>
+      </div>
+      <div class="summary" aria-label="Lifecycle validation summary">
+        <div>
+          <span>Tools</span>
+          <b>63</b>
+        </div>
+        <div class="ok">
+          <span>Registry drift</span>
+          <b>0</b>
+        </div>
+        <div class="ok">
+          <span>Docker tests</span>
+          <b>18</b>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <article class="panel">
+        <h2>Lifecycle parity</h2>
+        <div class="matrix">
+          <div class="cell"><strong><span class="mark"></span>Projects</strong><p>Create, list, read, zone-policy update, control-plan update.</p></div>
+          <div class="cell"><strong><span class="mark"></span>Agents</strong><p>Register provider sessions and manage project members.</p></div>
+          <div class="cell"><strong><span class="mark"></span>Governance</strong><p>Permits, document reviews, route revisions, and route application.</p></div>
+          <div class="cell"><strong><span class="mark"></span>Operations</strong><p>Active state, active transactions, abort, revoke, and policy decisions.</p></div>
+          <div class="cell"><strong><span class="mark"></span>Mayday</strong><p>Declare incidents, fetch replay, and resume after evidence.</p></div>
+          <div class="cell"><strong><span class="mark"></span>Proof</strong><p>Landing completion, artifact preview, proof-bundle fetch, and commit attachment.</p></div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Startup-style operator flow</h2>
+        <div class="flow">
+          <div class="lane"><span class="index">01</span><div><strong>Initialize tower</strong><p>Create project, apply strict zone policy, register schema/API/QA Codex sessions.</p></div></div>
+          <div class="lane"><span class="index">02</span><div><strong>Govern restricted work</strong><p>Issue permit, approve document review, reroute execution plan, then request clearance.</p></div></div>
+          <div class="lane"><span class="index">03</span><div><strong>Control incidents</strong><p>Declare mayday, inspect replay, resume with evidence, promote or reject policy deltas.</p></div></div>
+          <div class="lane"><span class="index">04</span><div><strong>Close with proof</strong><p>Complete landing, inspect artifact preview, retrieve proof bundle, attach commit trailers.</p></div></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="terminal" aria-label="Validated command">
+      Docker: node v22.23.1; npm exec vitest -- run tests/unit/codesite_tools.test.ts; result: 18 tests passed. Alignment check: 63 CodeSite tools, 0 missing from registry, 0 missing from agent manifest.
+    </section>
+  </main>
+</body>
+</html>

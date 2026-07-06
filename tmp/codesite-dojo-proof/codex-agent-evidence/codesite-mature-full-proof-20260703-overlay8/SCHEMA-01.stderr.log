@@ -1,0 +1,23 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/codesite-codex-agent-home-20260703-overlay-proof"))
+Reading additional input from stdin...
+2026-07-04T00:00:07.152913Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:07.157963Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:08.040752Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:08.134947Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.134982Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.137703Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.137730Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.140236Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.140292Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.144972Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.145005Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.147418Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.147478Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.149953Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:08.150003Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-04T00:00:09.541669Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:22.273400Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:33.903631Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:39.913119Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:00:53.819234Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-20260703-overlay-proof/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-04T00:01:06.276530Z  WARN codex_file_watcher: failed to unwatch /tmp/codesite-codex-agent-home-20260703-overlay-proof/skills/.system: No watch was found. about ["/tmp/codesite-codex-agent-home-20260703-overlay-proof/skills/.system"]

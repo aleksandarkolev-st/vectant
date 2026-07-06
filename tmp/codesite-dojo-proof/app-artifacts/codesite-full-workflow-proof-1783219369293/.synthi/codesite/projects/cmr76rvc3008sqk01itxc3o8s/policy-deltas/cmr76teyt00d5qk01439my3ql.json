@@ -1,0 +1,56 @@
+{
+  "id": "cmr76teyt00d5qk01439my3ql",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "require_test_owner_for_mutation_route",
+    "affectedRoutes": [
+      "synthi/prisma/**",
+      "synthi/src/app/api/auth/**",
+      "synthi/src/lib/codesite/__tests__/**"
+    ],
+    "expectedRiskReduction": 0.18,
+    "confidence": 0.72
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/**"
+    },
+    {
+      "path": "synthi/src/app/api/auth/**"
+    },
+    {
+      "path": "synthi/src/lib/codesite/__tests__/**"
+    }
+  ],
+  "expectedRiskReduction": 0.18,
+  "confidence": 0.72,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr76teyq00d3qk01jeexvwpo",
+    "shadow:job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+    "codesite:shadow_merge_simulator",
+    "codesite:repo-policy:sha256:6b0a73bdab9130ada048856eb6fcf89b69377e6804304ad138d49f2ac3baf8e1",
+    "codesite:collision-forecast:sha256:dbbb7416a1575b2b32d487ccb98abac384dd9f09056d9fd7d995a62c90952ca7",
+    "codesite:incident:cmr76snbq00bhqk01ohox8ez4",
+    "codesite:incident:cmr76setn00b1qk016rwy464r",
+    "codesite:policy-delta:cmr76t9bm00ctqk01nm3hvu3q",
+    "codesite:shadow-runner:sha256:45fd7f442f5f53fa3a2f861e97b42a4a5f898d6693ecfd721b753f5baf29bb9c",
+    "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+    "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+    "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+    "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53",
+    "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a",
+    "codesite:shadow-runner-input:sha256:440037e3de7ed42c8ab05473859f1eeba39c42b8ac930750d373c55ecc040a6d",
+    "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+    "codesite:shadow-runner-output-artifact:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+    "codesite:shadow-runner-output:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+    "codesite:shadow-runner-result:sha256:72e8ab967787985e8dd8e5ba0c7483efc5c4343a4eab6e2e82881e9ab8860b08",
+    "codesite:shadow-runner:sha256:31e66d516c0a99cfe78f061ec4ee170f7d53793dcaaa6ed063a3ed39988554e2"
+  ],
+  "createdAt": "2026-07-05T02:44:06.534Z",
+  "promotedAt": null
+}

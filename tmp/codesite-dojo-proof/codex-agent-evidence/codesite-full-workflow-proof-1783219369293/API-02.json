@@ -1,0 +1,347 @@
+{
+  "schemaVersion": "synthi.codesite.codexAgentExecutionEvidence.v1",
+  "callsign": "API-02",
+  "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+  "providerSessionRef": "codex-proof-api-20260705T0050",
+  "providerSessionRefSource": "codesite_registered_session",
+  "role": "backend",
+  "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+  "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+  "codexExecThreadId": "019f302b-fb63-7761-8828-3b0ad2211f79",
+  "commands": [
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 read-control-state'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_1",
+      "outputDigest": "sha256:de1a0a3756fc8dd79ca7a349685c94d5ab1a45d03ee98891af8d5b19ebfcd9fc",
+      "evidenceDigest": "sha256:19098de3029e9dc17298a3993a8a49fb5603a3b65c0dd404f07275b8ebd570ad"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 file-execution-plan'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_2",
+      "outputDigest": "sha256:db9679f7ccbc543618be9f56710a0aeec7b8ad058906e1132b1e020466789980",
+      "evidenceDigest": "sha256:25bad2f267d29c1f557f31804a172c1e8adbbb5ecfede9a8bbf05ca7fe8d9663"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 read-inbox'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_3",
+      "outputDigest": "sha256:7ae706aa2968aa1cfeb1bb1a840b9e7dabac38103a2e6718435efce30f4d9e82",
+      "evidenceDigest": "sha256:a2abf62e8f4871b05471b20ac84ffec47a4fa07d8d00e2b9c11987d86dd607d2"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 ack-inbox-event'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_4",
+      "outputDigest": "sha256:228746986b3b7dde0f61d471ae29672ebbf3b5bf0b350c7c880eed74ddfcf03c",
+      "evidenceDigest": "sha256:79a4b4c5662cf99e2c5ebe330e6bfc680e38872665fee49b873cc4f050258af9"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 file-change-order'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_5",
+      "outputDigest": "sha256:f30fc1d88c282fc5f265d219c4cb2593dbf613ed3da96a4e10fcd0a822f6e147",
+      "evidenceDigest": "sha256:5887c1a3a5bc765f6b88059e43a8314e72bacd300f25a23a5cb103f357502a3b"
+    },
+    {
+      "command": "/bin/bash -lc 'node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 abort-stale-transaction'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_6",
+      "outputDigest": "sha256:c72cd9a673b3f208203fdbdc42dedc911f6bdfd1bebf908ed1ac1b47892dee47",
+      "evidenceDigest": "sha256:44257743c5fe6653fc8108dd4b9b769eb2777ebe24dcad8b8854704a8816f4c4"
+    },
+    {
+      "command": "/bin/bash -lc 'rg -n \"api.signup.depends_on_schema.v1|auth.signup.schema.v1\" tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/.synthi/codesite/projects/cmr76rvc3008sqk01itxc3o8s/control-state.json'",
+      "executable": "/bin/bash",
+      "args": [],
+      "exitCode": 0,
+      "status": "completed",
+      "source": "codex_jsonl_command_execution",
+      "transcriptEventId": "item_7",
+      "outputDigest": "sha256:bfea2b9fa7b61b3d62dacd6766d56224947540b5e2e37e8fdb5edec9693120fa",
+      "evidenceDigest": "sha256:dbc1058b124e7a9d77807bce722c68c05e57ca48962c9c3c52f1d1aec262cafc"
+    }
+  ],
+  "reportedCommands": [
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 read-control-state",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 file-execution-plan",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 read-inbox",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 ack-inbox-event",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 file-change-order",
+    "node tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs --project cmr76rvc3008sqk01itxc3o8s --callsign API-02 abort-stale-transaction",
+    "rg -n \"api.signup.depends_on_schema.v1|auth.signup.schema.v1\" tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/.synthi/codesite/projects/cmr76rvc3008sqk01itxc3o8s/control-state.json"
+  ],
+  "workflowActions": [
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "callsign": "API-02",
+      "role": "backend",
+      "providerSessionRef": "codex-proof-api-20260705T0050",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+      "action": "read-control-state",
+      "kind": "control_state_read",
+      "tool": "synthi_codesite_get_radar",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "executionPlanId": "cmr76s11k00a1qk01eb3ut011"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-05T02:47:18.914Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:ca11b9d706947c62e9eaba5f8dface76479b82756d8af5c829ebc4421d489f47"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "callsign": "API-02",
+      "role": "backend",
+      "providerSessionRef": "codex-proof-api-20260705T0050",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+      "action": "file-execution-plan",
+      "kind": "execution_plan_filed",
+      "tool": "synthi_codesite_file_flight_plan",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "executionPlanId": "cmr76s11k00a1qk01eb3ut011"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-05T02:47:23.097Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:0a4543b951f1581e7833463e0860199af42d93764a380eeb86c34987d9374ec4"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "callsign": "API-02",
+      "role": "backend",
+      "providerSessionRef": "codex-proof-api-20260705T0050",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+      "action": "read-inbox",
+      "kind": "inbox_read",
+      "tool": "synthi_codesite_get_inbox",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+        "documentId": "cmr76tm7e00ddqk01ic8pff9a",
+        "eventId": "cmr76tm7k00dfqk017rgvfxk7"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-05T02:47:26.328Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:deee9cbfa71baa6e9096501c2a12203ee2571bb410aa0a13f546e7ad9f23a744"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "callsign": "API-02",
+      "role": "backend",
+      "providerSessionRef": "codex-proof-api-20260705T0050",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+      "action": "ack-inbox-event",
+      "kind": "inbox_event_acknowledged",
+      "tool": "synthi_codesite_ack_event",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+        "inboxItemId": "cmr76todp00dhqk01r43bhrgg",
+        "eventId": "cmr76tm7k00dfqk017rgvfxk7"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-05T02:47:29.363Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:68e63464f2ab570e3038be61e81516bf767e2a786d49cd9c18c3b753e00251d4"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "callsign": "API-02",
+      "role": "backend",
+      "providerSessionRef": "codex-proof-api-20260705T0050",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+      "action": "file-change-order",
+      "kind": "change_order_filed",
+      "tool": "synthi_codesite_file_change_order",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+        "documentId": "cmr76trqd00dlqk011lwlhv5g",
+        "answersDocumentId": "cmr76tm7e00ddqk01ic8pff9a"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-05T02:47:35.748Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:23a2f1abe0034dd318a4852809d3dd786415565bc1b6743855d46110cfdfb30d"
+    },
+    {
+      "schemaVersion": "synthi.codesite.agentActionReceipt.v1",
+      "source": "codesite_repo_local_projection_actor",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "callsign": "API-02",
+      "role": "backend",
+      "providerSessionRef": "codex-proof-api-20260705T0050",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+      "action": "abort-stale-transaction",
+      "kind": "stale_transaction_aborted",
+      "tool": "synthi_codesite_abort_transaction",
+      "surface": "repo-local-json-projection",
+      "references": {
+        "projectId": "cmr76rvc3008sqk01itxc3o8s",
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "executionPlanId": "cmr76s11k00a1qk01eb3ut011",
+        "transactionId": "cmr76t0i700c3qk01kdzofyhs",
+        "originalTransactionId": "cmr76t0i700c3qk01kdzofyhs",
+        "staleAssumptionId": "cmr76t2r400c9qk01qfeyolp9"
+      },
+      "expectedAssertions": [],
+      "projectionControlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+      "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+      "emittedAt": "2026-07-05T02:47:39.268Z",
+      "outputArtifacts": [],
+      "receiptDigest": "sha256:02a02d60786442114f0a7fd5cc22d6ee00a2471539e70e01cd3dc73b8befbfc8"
+    }
+  ],
+  "actorProjection": {
+    "surface": "repo_local_codesite_projection",
+    "runtimeControlStatePath": "tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/.synthi/codesite/projects/cmr76rvc3008sqk01itxc3o8s/control-state.json",
+    "runtimeActionScriptPath": "tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783219369293/scripts/codesite-agent-action.mjs",
+    "controlStatePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783219369293/codex-actor-control-state.json",
+    "actionScriptPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783219369293/codesite-agent-action.mjs.txt",
+    "receiptPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783219369293/API-02.actions.jsonl",
+    "controlStateSha256": "sha256:7675e7e1421e32c873c46ecfb39d2048d34b77ab2e59a41cea752acf17869a27",
+    "actionScriptSha256": "sha256:2a369aa3d279ead74d430db9073f6fc1629d99edf249dff809704c7221fb1820",
+    "receiptSha256": "sha256:901cb7c65d0eb6cf3b11068e8b8a502026865a08eefa0a666c98ec572bfa5926",
+    "requiredActions": [
+      "control_state_read",
+      "execution_plan_filed",
+      "inbox_read",
+      "inbox_event_acknowledged",
+      "change_order_filed",
+      "stale_transaction_aborted"
+    ]
+  },
+  "finalReportedWorkflowActions": [
+    {
+      "kind": "control_state_read",
+      "action": "read-control-state"
+    },
+    {
+      "kind": "execution_plan_filed",
+      "action": "file-execution-plan"
+    },
+    {
+      "kind": "inbox_read",
+      "action": "read-inbox"
+    },
+    {
+      "kind": "inbox_event_acknowledged",
+      "action": "ack-inbox-event"
+    },
+    {
+      "kind": "change_order_filed",
+      "action": "file-change-order"
+    },
+    {
+      "kind": "stale_transaction_aborted",
+      "action": "abort-stale-transaction"
+    }
+  ],
+  "finalMessageDigest": "sha256:e4290e0eb97aa595deea39b273affaf5de62bcf131ee3c7471b29738d615fcac",
+  "transcriptDigest": "sha256:ac477195c6dd096357af6d97a1b31c23d16f2c7383f900107d3246f63bcb9474",
+  "stdoutDigest": "sha256:ac477195c6dd096357af6d97a1b31c23d16f2c7383f900107d3246f63bcb9474",
+  "stderrDigest": "sha256:2246812849452af007f4a1e7e82c0b663c9746288375da9ecaa36f3757e6a854",
+  "transcript": {
+    "eventsRawPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783219369293/API-02.events.raw.jsonl",
+    "stderrPath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783219369293/API-02.stderr.log",
+    "finalMessagePath": "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783219369293/API-02.final.txt",
+    "eventCount": 19,
+    "toolEventCount": 14,
+    "threadId": "019f302b-fb63-7761-8828-3b0ad2211f79",
+    "usage": {
+      "input_tokens": 147259,
+      "cached_input_tokens": 111616,
+      "output_tokens": 2444,
+      "reasoning_output_tokens": 40
+    },
+    "stdoutDigest": "sha256:ac477195c6dd096357af6d97a1b31c23d16f2c7383f900107d3246f63bcb9474",
+    "stderrDigest": "sha256:2246812849452af007f4a1e7e82c0b663c9746288375da9ecaa36f3757e6a854",
+    "finalMessageDigest": "sha256:e4290e0eb97aa595deea39b273affaf5de62bcf131ee3c7471b29738d615fcac",
+    "eventsRawSha256": "sha256:aff448738ebe367c778777757346e42213ce099fd09cdb8d6f58bb1d5f3330b9",
+    "stderrSha256": "sha256:1fec2956cab8cb40994f68b7785d0a1c6c6b9365cdb3c22c72e227d8ce8d6e7a",
+    "finalMessageSha256": "sha256:8474b59f7846df72b6b6c41f656fb5b6211873c930d81b437355cb4090e31c56",
+    "redactionCounts": {}
+  },
+  "redactionReport": {
+    "finalPublicationSecretScanRequired": true,
+    "rawCredentialMaterialStored": "redacted_before_publication",
+    "authHomeStoredInRepo": "validated_at_publication",
+    "promptIncludedSecrets": "redacted_before_publication",
+    "counts": {},
+    "outerIsolation": "docker_playwright_sidecar_networked_with_proof_app"
+  },
+  "generatedAt": "2026-07-05T02:47:56.353Z",
+  "startedAt": "2026-07-05T02:46:56.121Z",
+  "completedAt": "2026-07-05T02:47:56.353Z"
+}

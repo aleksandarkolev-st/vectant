@@ -1,0 +1,39 @@
+{
+  "generatedAt": "2026-07-04T23:06:16.697Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "head": "79c36553f901",
+  "patch": "shadow-runner artifact chain and counterfactual memory",
+  "focusedVitest": {
+    "success": true,
+    "total": 99,
+    "passed": 14,
+    "failed": 0,
+    "skipped": 85
+  },
+  "residualVitest": {
+    "success": false,
+    "total": 114,
+    "passed": 111,
+    "failed": 3,
+    "skipped": 0,
+    "failures": [
+      "CodeSite control plane transaction validation lands writeful automatic workflow plans only with durable agent evidence",
+      "CodeSite control plane transaction validation executes landing inspection commands and records durable radar evidence",
+      "CodeSite control plane transaction validation serializes overlapping proof-carrying commit races and blocks the stale loser"
+    ]
+  },
+  "behavioralAssertions": [
+    "External shadow runner results are read from a durable JSON artifact, not only stdout tail.",
+    "Runner evidence refs include input, command, output artifact, stdout, and result digests.",
+    "Repo command universes merge per-strategy execution status back into counterfactual runs.",
+    "Promoted counterfactual policy deltas are first-class ranking signals with bounded priority.",
+    "Project relation arrays are normalized at the API boundary for sparse projections."
+  ],
+  "evidenceFiles": [
+    "tmp/codesite-dojo-proof/shadow-runner-artifact-chain/vitest-focused.json",
+    "tmp/codesite-dojo-proof/shadow-runner-artifact-chain/vitest-residual.json",
+    "tmp/codesite-dojo-proof/shadow-runner-artifact-chain/summary.json",
+    "tmp/codesite-dojo-proof/shadow-runner-artifact-chain/proof.html",
+    "tmp/codesite-dojo-proof/shadow-runner-artifact-chain/proof.png"
+  ]
+}

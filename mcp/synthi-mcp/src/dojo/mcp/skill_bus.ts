@@ -44,6 +44,7 @@ export interface DojoToolResolution {
   workflow_id?: string;
   tool_name?: string;
   tool_version?: string;
+  requested_action?: string;
   resolved_tool?: DojoResolvedMcpTool;
   api_backed_mcp_tool?: DojoApiBackedMcpTool;
   skill?: DojoSkill;
@@ -242,12 +243,17 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     const skills = await this.listSkills();
     return skills
       .filter((skill) => this.isVisibleSkill(skill, input.tenant))
-      .filter(isLicensedPublishedSkill)
+      .filter((skill) => isLicensedPublishedSkill(skill))
       .sort((a, b) => a.name.localeCompare(b.name) || a.skill_id.localeCompare(b.skill_id))
       .map((skill) => competencySummary(skill, this.env));
   }
 
-  async resolveTool(input: { tenant: DojoTenantContext; tool_name: string; tool_version?: string }): Promise<DojoToolResolution> {
+  async resolveTool(input: {
+    tenant: DojoTenantContext;
+    tool_name: string;
+    tool_version?: string;
+    requested_action?: string;
+  }): Promise<DojoToolResolution> {
     const toolName = input.tool_name.trim();
     if (!toolName) return blockedResolution("not_found", ["dojo_mcp_tool_name_required"]);
     const tenantBlockedBy = validateDojoMcpTenantContext(input.tenant);
@@ -285,12 +291,14 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         tool_version: input.tool_version,
       });
     }
-    if (!isLicensedPublishedSkill(skill)) {
+    const requestedAction = input.requested_action ?? "run_workflow";
+    if (!isLicensedPublishedSkill(skill, requestedAction)) {
       return blockedResolution("blocked", ["dojo_mcp_skill_not_published_or_licensed"], {
         skill_id: skill.skill_id,
         workflow_id: skill.workflow_id,
         tool_name: toolName,
         tool_version: input.tool_version,
+        requested_action: requestedAction,
       });
     }
     if (input.tool_version && input.tool_version !== resolvedTool.tool_version) {
@@ -799,10 +807,13 @@ function competencySummary(skill: DojoSkill, env: NodeJS.ProcessEnv): DojoCompet
   };
 }
 
-function isLicensedPublishedSkill(skill: DojoSkill): boolean {
+function isLicensedPublishedSkill(skill: DojoSkill, requestedAction = "run_workflow"): boolean {
+  const actionLicensed = skill.permission_license.allowed_actions.some((action) => action.action === requestedAction)
+    || skill.permission_license.gated_actions.some((action) => action.action === requestedAction);
+  const actionBlocked = skill.permission_license.blocked_actions.some((action) => action.action === requestedAction);
   return Boolean(skill.published_tool_name || skill.private_tool_manifest?.tool_name || (skill.published_tools ?? []).length > 0)
-    && skill.entrustment_level !== "EX"
-    && skill.permission_license.autonomy_level !== "blocked";
+    && actionLicensed
+    && !actionBlocked;
 }
 
 function skillPublishesToolName(skill: DojoSkill, toolName: string): boolean {

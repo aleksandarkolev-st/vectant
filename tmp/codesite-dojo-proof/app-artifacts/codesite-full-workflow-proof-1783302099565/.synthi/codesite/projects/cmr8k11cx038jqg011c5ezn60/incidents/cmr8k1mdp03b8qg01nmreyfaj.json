@@ -1,0 +1,1106 @@
+{
+  "id": "cmr8k1mdp03b8qg01nmreyfaj",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "severity": "warning",
+  "category": "black_box",
+  "participants": [
+    "SCHEMA-01"
+  ],
+  "affectedZones": [
+    "synthi/prisma/schema-contract-read.txt",
+    "synthi/prisma/schema.prisma"
+  ],
+  "incidentReplay": {
+    "schemaVersion": "synthi.codesite.incidentReplay.v1",
+    "incidentId": "cmr8k1mdp03b8qg01nmreyfaj",
+    "projectId": "cmr8k11cx038jqg011c5ezn60",
+    "category": "black_box",
+    "severity": "warning",
+    "summary": "Transaction cmr8k1fdc03awqg013i0nhetr black-box handover aborted.",
+    "generatedAt": "2026-07-06T01:42:11.759Z",
+    "eventRefs": [
+      "cmr8k13eh039gqg01rzqbfcst",
+      "cmr8k13un039kqg01ue94dp1m",
+      "cmr8k17f403a8qg01xj3y9rh7",
+      "cmr8k18os03aaqg01vi7iof9h",
+      "cmr8k19cc03agqg0140yd5e18",
+      "cmr8k1a6603aiqg010kas5knl",
+      "cmr8k1ayj03amqg01ta1sq6ur",
+      "cmr8k1c0c03aoqg010qr9o5q7",
+      "cmr8k1czp03aqqg01jgfekauq",
+      "cmr8k1dti03auqg01vmkohhgp",
+      "cmr8k1fdg03ayqg01r2s8z6mz",
+      "cmr8k1g2m03b0qg01em8d5ps3",
+      "cmr8k1gvk03b2qg012whcup95",
+      "cmr8k1kc003b4qg01ebughwqz",
+      "cmr8k1lea03b6qg01sddbazes",
+      "cmr8k1mdv03baqg018s59so6y"
+    ],
+    "causalEvents": [
+      {
+        "eventId": "cmr8k13eh039gqg01rzqbfcst",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transponder.update",
+        "logicalTime": 5,
+        "wallTime": "2026-07-06T01:41:45.978Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "status": "registered",
+          "provider": "codex",
+          "runtime": "tmp-codex-cli",
+          "permissions": [
+            "synthi_codesite_get_radar",
+            "synthi_codesite_open_transaction",
+            "synthi_codesite_apply_patch",
+            "synthi_codesite_record_assumption"
+          ],
+          "instruction": "SCHEMA-01 registered with tower."
+        }
+      },
+      {
+        "eventId": "cmr8k13un039kqg01ue94dp1m",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "flight_plan.filed",
+        "logicalTime": 6,
+        "wallTime": "2026-07-06T01:41:46.559Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "mission": "Schema first",
+          "route": [
+            "synthi/prisma/**"
+          ],
+          "blockedZones": []
+        }
+      },
+      {
+        "eventId": "cmr8k17f403a8qg01xj3y9rh7",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "tower.instruction",
+        "logicalTime": 11,
+        "wallTime": "2026-07-06T01:41:51.184Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:governance:full-workflow-schema-permit"
+        ],
+        "details": {
+          "permitId": "cmr8k17f003a6qg011rcu62p4",
+          "permitType": "schema_work_permit",
+          "status": "issued",
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "mutationLeaseId": null,
+          "documentId": null,
+          "scope": {
+            "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+            "mutationLeaseId": null,
+            "allowedPaths": [
+              "synthi/prisma/**"
+            ],
+            "blockedPaths": [],
+            "affectedZones": [
+              "schema"
+            ],
+            "contractRefs": [
+              "auth.signup.schema.v1"
+            ],
+            "expiresAt": null
+          },
+          "approval": {
+            "approved": true,
+            "approvedByUserId": "cmr8k10xc0386qg01sn6cm7hr",
+            "rationale": "Permit the schema-first leader to enter restricted schema airspace after tower membership and execution-plan registration.",
+            "reviewRef": null
+          }
+        }
+      },
+      {
+        "eventId": "cmr8k18os03aaqg01vi7iof9h",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "clearance.requested",
+        "logicalTime": 12,
+        "wallTime": "2026-07-06T01:41:52.829Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "requestedLease": {
+            "allowedPaths": [
+              "synthi/prisma/**"
+            ],
+            "blockedPaths": [
+              "secrets/**"
+            ],
+            "allowedTools": [
+              "file_write"
+            ],
+            "invariants": [
+              "clearance.diff.inside_route",
+              "no.secret.exposure",
+              "restricted_airspace.inspector_required"
+            ],
+            "requiredRadar": [
+              "typecheck",
+              "tests"
+            ],
+            "expiresAt": null
+          },
+          "route": [
+            "synthi/prisma/**"
+          ],
+          "blockedZones": []
+        }
+      },
+      {
+        "eventId": "cmr8k19cc03agqg0140yd5e18",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": null,
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "clearance.issued",
+        "logicalTime": 13,
+        "wallTime": "2026-07-06T01:41:53.676Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": "cmr8k19c603aeqg01q9i7q0os",
+        "evidenceRefs": [],
+        "details": {
+          "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+          "policyDecisionId": "cmr8k19c603aeqg01q9i7q0os",
+          "status": "active",
+          "reasonCodes": [
+            "restricted_airspace_requires_inspection",
+            "dojo_clearance_proof_verified",
+            "dojo_public_proof_signature_verified",
+            "schema_first_leader_clearance",
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof",
+            "pilot_license_level_authorized",
+            "governance_clearance_evidence_verified"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr8k13e8039cqg01xyi06yi0",
+            "projectId": "cmr8k11cx038jqg011c5ezn60",
+            "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+            "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+            "ownerUserId": "cmr8k117q038aqg019q7vkjbb",
+            "displayCallsign": "SCHEMA-01",
+            "status": "active",
+            "level": "IFR",
+            "levelRank": 3,
+            "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+            "dojoLicenseRef": "schema.level_2@2026-06-25",
+            "dojoProofRef": "pcap-full-workflow-schema",
+            "dojoDecisionDigest": "sha256:17ca2290a80b856c324941e896af2a8a418788f7828f5ab1db21492981041ba7",
+            "repoScope": "codesite-full-workflow-proof-1783302099565",
+            "authorizedAirspace": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "restrictedAirspace": [],
+            "requiredRadar": [
+              "typecheck",
+              "tests"
+            ],
+            "earnedBy": [
+              "dojo:full-workflow-checkride",
+              "dojo:evidence:full-workflow-checkride",
+              "full-workflow-checkride"
+            ],
+            "expiresAt": null,
+            "expiresOn": [
+              "source_drift"
+            ],
+            "sourceDrift": {
+              "monitored": true,
+              "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active",
+              "pilot_license_source_current",
+              "pilot_license_from_verified_dojo_proof"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [
+              "dojo:evidence:full-workflow-checkride",
+              "dojo:full-workflow-checkride",
+              "pcap-full-workflow-schema",
+              "schema.level_2@2026-06-25",
+              "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+              "full-workflow-checkride"
+            ],
+            "lifecycle": {
+              "issuedAt": "2026-07-06T01:41:45.968Z",
+              "checkedAt": "2026-07-06T01:41:53.656Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+              "clearanceProofCheckedAt": "2026-07-06T01:41:53.637Z"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": true,
+            "classes": [
+              "B"
+            ],
+            "minimumLevel": "IFR",
+            "minimumLevelRank": 3
+          },
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "API-02",
+                    "SCHEMA-01"
+                  ],
+                  "conflictZone": "synthi/prisma/**",
+                  "overlaps": [
+                    [
+                      "synthi/prisma/**",
+                      "synthi/prisma/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put SCHEMA-01 in holding",
+                      "Put API-02 in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+          },
+          "counterfactualPolicy": null,
+          "governancePolicy": {
+            "required": true,
+            "verified": true,
+            "restrictedZones": [
+              {
+                "zoneKey": "class_b",
+                "label": "Shared contract airspace",
+                "class": "B",
+                "path": "synthi/prisma/index.ts"
+              }
+            ],
+            "evidence": {
+              "permits": [
+                {
+                  "id": "cmr8k17f003a6qg011rcu62p4",
+                  "permitType": "schema_work_permit",
+                  "status": "issued",
+                  "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+                  "documentId": null,
+                  "evidenceRefs": [
+                    "codesite:governance:full-workflow-schema-permit"
+                  ]
+                }
+              ],
+              "routeRevisions": [],
+              "documents": []
+            },
+            "requiredRadar": [
+              "governance"
+            ],
+            "reasonCodes": [
+              "governance_clearance_evidence_verified"
+            ],
+            "towerInstruction": null
+          }
+        }
+      },
+      {
+        "eventId": "cmr8k1a6603aiqg010kas5knl",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": null,
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "near_miss.detected",
+        "logicalTime": 14,
+        "wallTime": "2026-07-06T01:41:54.751Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": "cmr8k19c603aeqg01q9i7q0os",
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr8k19c603aeqg01q9i7q0os"
+        ],
+        "details": {
+          "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+          "policyDecisionId": "cmr8k19c603aeqg01q9i7q0os",
+          "prevented": true,
+          "collisionAvoidance": {
+            "forecast": {
+              "riskLevel": "high",
+              "risks": [
+                {
+                  "risk": "contract_collision",
+                  "severity": "high",
+                  "aircraft": [
+                    "API-02",
+                    "SCHEMA-01"
+                  ],
+                  "conflictZone": "synthi/prisma/**",
+                  "overlaps": [
+                    [
+                      "synthi/prisma/**",
+                      "synthi/prisma/**"
+                    ]
+                  ],
+                  "recommendedResolution": {
+                    "action": "schema_first",
+                    "steps": [
+                      "Put SCHEMA-01 in holding",
+                      "Put API-02 in holding",
+                      "Issue schema clearance first",
+                      "Reissue downstream clearances after contract landing"
+                    ]
+                  }
+                }
+              ],
+              "runwayOccupancy": [],
+              "wakeTurbulence": []
+            },
+            "risk": null,
+            "schemaFirstLeader": true,
+            "reasonCodes": [
+              "schema_first_leader_clearance"
+            ],
+            "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+          }
+        }
+      },
+      {
+        "eventId": "cmr8k1ayj03amqg01ta1sq6ur",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1ayf03akqg013zsev75z",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transaction.opened",
+        "logicalTime": 15,
+        "wallTime": "2026-07-06T01:41:55.771Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "transactionId": "cmr8k1ayf03akqg013zsev75z",
+          "baseSnapshot": "sha256:5d489675ee28999fc6474276e279f723da5e4c93eb629e4d2e0de6224bec0d2e",
+          "baseSnapshotEvidenceDigest": null,
+          "baseSnapshotStatus": null,
+          "isolation": "serializable"
+        }
+      },
+      {
+        "eventId": "cmr8k1c0c03aoqg010qr9o5q7",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1ayf03akqg013zsev75z",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transaction.validated",
+        "logicalTime": 16,
+        "wallTime": "2026-07-06T01:41:57.132Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "transactionId": "cmr8k1ayf03akqg013zsev75z",
+          "decision": {
+            "ok": false,
+            "isolation": "serializable",
+            "reasonCodes": [
+              "repo_snapshot_not_recorded",
+              "repo_snapshot_required_for_serializable",
+              "repo_snapshot_read_set_coverage_required",
+              "repo_snapshot_repo_wide_evidence_required"
+            ],
+            "blockedWrites": [],
+            "invalidAssumptions": [],
+            "staleReads": [],
+            "repoSnapshot": {
+              "ok": false,
+              "reasonCodes": [
+                "repo_snapshot_not_recorded",
+                "repo_snapshot_required_for_serializable",
+                "repo_snapshot_read_set_coverage_required",
+                "repo_snapshot_repo_wide_evidence_required"
+              ],
+              "expected": null,
+              "current": null,
+              "driftedPaths": [],
+              "requiredReadSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "snapshotReadSet": [],
+              "missingReadSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "skippedRequiredPaths": []
+            },
+            "validatedAt": "2026-07-06T01:41:57.125Z"
+          }
+        }
+      },
+      {
+        "eventId": "cmr8k1czp03aqqg01jgfekauq",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1ayf03akqg013zsev75z",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transaction.aborted",
+        "logicalTime": 17,
+        "wallTime": "2026-07-06T01:41:58.405Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "transactionId": "cmr8k1ayf03akqg013zsev75z",
+          "reason": "serializable_snapshot_required"
+        }
+      },
+      {
+        "eventId": "cmr8k1dti03auqg01vmkohhgp",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1ayf03akqg013zsev75z",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "black_box.closed",
+        "logicalTime": 18,
+        "wallTime": "2026-07-06T01:41:59.479Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:transaction:cmr8k1ayf03akqg013zsev75z",
+          "codesite:lease:cmr8k19c003acqg01swot8vyl"
+        ],
+        "details": {
+          "transactionId": "cmr8k1ayf03akqg013zsev75z",
+          "incidentId": "cmr8k1dtd03asqg011a7ogmxh",
+          "proofBundleId": null,
+          "proofBundleDigest": null,
+          "landingStatus": "aborted",
+          "status": "aborted",
+          "readSet": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "writeSet": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "exportedPaths": [
+            "projects/cmr8k11cx038jqg011c5ezn60/handover.md",
+            "projects/cmr8k11cx038jqg011c5ezn60/events.jsonl",
+            "projects/cmr8k11cx038jqg011c5ezn60/incidents/incident-replay-<incident-id>.jsonl",
+            "projects/cmr8k11cx038jqg011c5ezn60/flights/SCHEMA-01/black-box.json",
+            "projects/cmr8k11cx038jqg011c5ezn60/flights/SCHEMA-01/transaction-cmr8k1ayf03akqg013zsev75z.json"
+          ],
+          "reason": "transaction_black_box_closeout"
+        }
+      },
+      {
+        "eventId": "cmr8k1fdg03ayqg01r2s8z6mz",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transaction.opened",
+        "logicalTime": 19,
+        "wallTime": "2026-07-06T01:42:01.492Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+          "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+          "baseSnapshotEvidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c",
+          "baseSnapshotStatus": "recorded",
+          "isolation": "serializable"
+        }
+      },
+      {
+        "eventId": "cmr8k1g2m03b0qg01em8d5ps3",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "snapshot.taken",
+        "logicalTime": 20,
+        "wallTime": "2026-07-06T01:42:02.399Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:read-snapshot:sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+        ],
+        "details": {
+          "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+          "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+          "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+          "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c",
+          "status": "recorded",
+          "readSet": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "fileCount": 1,
+          "missingPaths": [],
+          "reason": "serializable_transaction_open"
+        }
+      },
+      {
+        "eventId": "cmr8k1gvk03b2qg012whcup95",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transponder.update",
+        "logicalTime": 21,
+        "wallTime": "2026-07-06T01:42:03.440Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "type": "read_recorded",
+          "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "file_read",
+          "codesiteFsEvent": null,
+          "processAncestry": []
+        }
+      },
+      {
+        "eventId": "cmr8k1kc003b4qg01ebughwqz",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transaction.validated",
+        "logicalTime": 22,
+        "wallTime": "2026-07-06T01:42:07.920Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+          "decision": {
+            "ok": false,
+            "isolation": "serializable",
+            "reasonCodes": [
+              "repo_snapshot_stable",
+              "repo_snapshot_read_set_coverage_required",
+              "repo_snapshot_repo_wide_evidence_required"
+            ],
+            "blockedWrites": [],
+            "invalidAssumptions": [],
+            "staleReads": [],
+            "repoSnapshot": {
+              "ok": false,
+              "reasonCodes": [
+                "repo_snapshot_stable",
+                "repo_snapshot_read_set_coverage_required",
+                "repo_snapshot_repo_wide_evidence_required"
+              ],
+              "expected": {
+                "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+                "status": "recorded",
+                "scope": "read_set",
+                "readSet": [
+                  "synthi/prisma/schema-contract-read.txt"
+                ],
+                "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+                "fileDigests": [
+                  {
+                    "path": "synthi/prisma/schema-contract-read.txt",
+                    "exists": true,
+                    "size": 24,
+                    "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                  }
+                ],
+                "missingPaths": [],
+                "skippedPaths": [],
+                "truncated": false,
+                "repoManifestDigest": null,
+                "repoManifestFileCount": 0,
+                "repoManifestScannedEntries": 0,
+                "repoManifestTruncated": false,
+                "repoManifestSkippedPaths": [],
+                "repoManifestExcludedPaths": [],
+                "limits": {
+                  "maxFiles": 512,
+                  "maxFileBytes": 2097152,
+                  "maxScanEntries": 15000
+                },
+                "generatedAt": "2026-07-06T01:41:43.281Z",
+                "source": "codesite-full-workflow-proof",
+                "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+                "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+              },
+              "current": {
+                "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+                "status": "recorded",
+                "scope": "read_set",
+                "readSet": [
+                  "synthi/prisma/schema-contract-read.txt"
+                ],
+                "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+                "fileDigests": [
+                  {
+                    "path": "synthi/prisma/schema-contract-read.txt",
+                    "exists": true,
+                    "size": 24,
+                    "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                  }
+                ],
+                "missingPaths": [],
+                "skippedPaths": [],
+                "truncated": false,
+                "repoManifestDigest": null,
+                "repoManifestFileCount": 0,
+                "repoManifestScannedEntries": 0,
+                "repoManifestTruncated": false,
+                "repoManifestSkippedPaths": [],
+                "repoManifestExcludedPaths": [],
+                "limits": {
+                  "maxFiles": 512,
+                  "maxFileBytes": 2097152,
+                  "maxScanEntries": 15000
+                },
+                "generatedAt": "2026-07-06T01:42:07.899Z",
+                "source": "codesite_validation",
+                "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+                "evidenceDigest": "sha256:44b1a72ee97edc6468566e586a19b165c9ba584f9c17c3a0571909f15702dc52"
+              },
+              "driftedPaths": [],
+              "digestChanged": false,
+              "repoManifestDrifted": false,
+              "requiredReadSet": [
+                "synthi/prisma/schema-contract-read.txt",
+                "synthi/prisma/schema.prisma"
+              ],
+              "snapshotReadSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "missingReadSet": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "skippedRequiredPaths": []
+            },
+            "validatedAt": "2026-07-06T01:42:07.914Z"
+          }
+        }
+      },
+      {
+        "eventId": "cmr8k1lea03b6qg01sddbazes",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transaction.aborted",
+        "logicalTime": 23,
+        "wallTime": "2026-07-06T01:42:09.298Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+          "reason": "serializable_snapshot_undercovered"
+        }
+      },
+      {
+        "eventId": "cmr8k1mdv03baqg018s59so6y",
+        "projectId": "cmr8k11cx038jqg011c5ezn60",
+        "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+        "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "black_box.closed",
+        "logicalTime": 24,
+        "wallTime": "2026-07-06T01:42:10.579Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:transaction:cmr8k1fdc03awqg013i0nhetr",
+          "codesite:lease:cmr8k19c003acqg01swot8vyl"
+        ],
+        "details": {
+          "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+          "incidentId": "cmr8k1mdp03b8qg01nmreyfaj",
+          "proofBundleId": null,
+          "proofBundleDigest": null,
+          "landingStatus": "aborted",
+          "status": "aborted",
+          "readSet": [
+            "synthi/prisma/schema-contract-read.txt",
+            "synthi/prisma/schema.prisma"
+          ],
+          "writeSet": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "exportedPaths": [
+            "projects/cmr8k11cx038jqg011c5ezn60/handover.md",
+            "projects/cmr8k11cx038jqg011c5ezn60/events.jsonl",
+            "projects/cmr8k11cx038jqg011c5ezn60/incidents/incident-replay-<incident-id>.jsonl",
+            "projects/cmr8k11cx038jqg011c5ezn60/flights/SCHEMA-01/black-box.json",
+            "projects/cmr8k11cx038jqg011c5ezn60/flights/SCHEMA-01/transaction-cmr8k1fdc03awqg013i0nhetr.json"
+          ],
+          "reason": "transaction_black_box_closeout"
+        }
+      }
+    ],
+    "evidenceRefs": [
+      "codesite:transaction:cmr8k1fdc03awqg013i0nhetr",
+      "codesite:lease:cmr8k19c003acqg01swot8vyl",
+      "codesite:governance:full-workflow-schema-permit",
+      "codesite:policy-decision:cmr8k19c603aeqg01q9i7q0os",
+      "codesite:transaction:cmr8k1ayf03akqg013zsev75z",
+      "codesite:read-snapshot:sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+    ],
+    "routeContext": {
+      "affectedZones": [
+        "synthi/prisma/schema-contract-read.txt",
+        "synthi/prisma/schema.prisma"
+      ],
+      "zones": [
+        {
+          "zoneKey": "class_a",
+          "class": "A",
+          "label": "Critical controlled airspace",
+          "paths": [
+            "api/auth/**",
+            "billing/**",
+            "db/migrations/**",
+            "infra/prod/**",
+            "infra/production/**",
+            "**/.env",
+            "**/.env.*"
+          ],
+          "risk": "critical",
+          "rules": [
+            "explicit_tower_clearance_required",
+            "licensed_pilot_required",
+            "inspector_signoff_required",
+            "black_box_required"
+          ]
+        },
+        {
+          "zoneKey": "class_b",
+          "class": "B",
+          "label": "Shared contract airspace",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "risk": "high",
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ]
+        },
+        {
+          "zoneKey": "class_c",
+          "class": "C",
+          "label": "Feature implementation airspace",
+          "paths": [
+            "apps/web/**",
+            "components/**",
+            "synthi/src/app/**",
+            "synthi/src/components/**",
+            "backend/collab-server/**"
+          ],
+          "risk": "medium",
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ]
+        },
+        {
+          "zoneKey": "class_d",
+          "class": "D",
+          "label": "Low-risk support airspace",
+          "paths": [
+            "docs/**",
+            "tests/**",
+            "**/__tests__/**",
+            "**/*.test.js",
+            "**/*.test.jsx",
+            "**/*.test.ts",
+            "**/*.test.tsx",
+            "**/*.md"
+          ],
+          "risk": "low",
+          "rules": [
+            "micro_clearance_allowed",
+            "sample_inspection"
+          ]
+        },
+        {
+          "zoneKey": "schema",
+          "class": "B",
+          "label": "Schema runway",
+          "paths": [
+            "synthi/prisma/**"
+          ],
+          "risk": "high",
+          "rules": []
+        }
+      ],
+      "noFlyZones": [
+        "**/.env",
+        "**/.env.*",
+        "secrets/**",
+        "**/*secret*",
+        "**/*.pem",
+        "**/*.key"
+      ]
+    },
+    "participants": [
+      "SCHEMA-01"
+    ],
+    "affectedZones": [
+      "synthi/prisma/schema-contract-read.txt",
+      "synthi/prisma/schema.prisma"
+    ],
+    "policyDelta": null,
+    "completeness": {
+      "score": 1,
+      "eventScore": 1,
+      "evidenceScore": 1,
+      "requiredEventTypes": [
+        "transaction.opened",
+        "clearance.issued",
+        "black_box.closed",
+        "snapshot.taken",
+        "near_miss.detected",
+        "transaction.aborted"
+      ],
+      "presentEventTypes": [
+        "transaction.opened",
+        "clearance.issued",
+        "black_box.closed",
+        "snapshot.taken",
+        "near_miss.detected",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "requiredEvidence": [],
+      "presentEvidence": [],
+      "missingEvidence": [],
+      "observedEventTypes": [
+        "transponder.update",
+        "flight_plan.filed",
+        "tower.instruction",
+        "clearance.requested",
+        "clearance.issued",
+        "near_miss.detected",
+        "transaction.opened",
+        "transaction.validated",
+        "transaction.aborted",
+        "black_box.closed",
+        "snapshot.taken"
+      ],
+      "totalEvents": 16
+    },
+    "transaction": {
+      "id": "cmr8k1fdc03awqg013i0nhetr",
+      "projectId": "cmr8k11cx038jqg011c5ezn60",
+      "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+      "agentSessionId": "cmr8k13e8039cqg01xyi06yi0",
+      "displayCallsign": "SCHEMA-01",
+      "baseSnapshot": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "scope": "read_set",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "repoManifestDigest": null,
+        "repoManifestFileCount": 0,
+        "repoManifestScannedEntries": 0,
+        "repoManifestTruncated": false,
+        "repoManifestSkippedPaths": [],
+        "repoManifestExcludedPaths": [],
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-06T01:41:43.281Z",
+        "source": "codesite-full-workflow-proof",
+        "snapshotDigest": "sha256:46d110f91d7b61e4b1ec80b77446d5e12de245200b7f9ab7a28671cab1a6031c",
+        "evidenceDigest": "sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c"
+      },
+      "isolation": "serializable",
+      "status": "aborted",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt",
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedReadSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "assumptionRefs": [],
+      "validationDecision": {
+        "reason": "serializable_snapshot_undercovered",
+        "abortedAt": "2026-07-06T01:42:09.292Z"
+      },
+      "repoState": null,
+      "lineProvenance": null,
+      "openedAt": "2026-07-06T01:42:01.489Z",
+      "closedAt": "2026-07-06T01:42:09.292Z"
+    },
+    "transactionId": "cmr8k1fdc03awqg013i0nhetr",
+    "proofBundle": {
+      "id": null,
+      "transactionId": null,
+      "commitSha": null,
+      "readSetDigest": null,
+      "writeSetDigest": null,
+      "bundleDigest": null,
+      "incidentReplayDigest": null,
+      "evidenceRefs": [],
+      "repoState": null
+    },
+    "handover": {
+      "status": "aborted",
+      "landingStatus": "aborted",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionRuns": [],
+      "inspectionRunIds": [],
+      "repoStateDigest": null,
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "exportPaths": [
+        "projects/cmr8k11cx038jqg011c5ezn60/handover.md",
+        "projects/cmr8k11cx038jqg011c5ezn60/events.jsonl",
+        "projects/cmr8k11cx038jqg011c5ezn60/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr8k11cx038jqg011c5ezn60/flights/SCHEMA-01/black-box.json",
+        "projects/cmr8k11cx038jqg011c5ezn60/flights/SCHEMA-01/transaction-cmr8k1fdc03awqg013i0nhetr.json"
+      ]
+    }
+  },
+  "replayDigest": "sha256:5d0c5fe7807fb55afb0b0d681e94dbdb9a154753fe24a745fd965a3e7a017df1",
+  "timelineEventRefs": [
+    "cmr8k13eh039gqg01rzqbfcst",
+    "cmr8k13un039kqg01ue94dp1m",
+    "cmr8k17f403a8qg01xj3y9rh7",
+    "cmr8k18os03aaqg01vi7iof9h",
+    "cmr8k19cc03agqg0140yd5e18",
+    "cmr8k1a6603aiqg010kas5knl",
+    "cmr8k1ayj03amqg01ta1sq6ur",
+    "cmr8k1c0c03aoqg010qr9o5q7",
+    "cmr8k1czp03aqqg01jgfekauq",
+    "cmr8k1dti03auqg01vmkohhgp",
+    "cmr8k1fdg03ayqg01r2s8z6mz",
+    "cmr8k1g2m03b0qg01em8d5ps3",
+    "cmr8k1gvk03b2qg012whcup95",
+    "cmr8k1kc003b4qg01ebughwqz",
+    "cmr8k1lea03b6qg01sddbazes",
+    "cmr8k1mdv03baqg018s59so6y"
+  ],
+  "policyDelta": null,
+  "evidenceRefs": [
+    "codesite:transaction:cmr8k1fdc03awqg013i0nhetr",
+    "codesite:lease:cmr8k19c003acqg01swot8vyl"
+  ],
+  "createdAt": "2026-07-06T01:42:10.573Z"
+}

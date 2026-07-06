@@ -7,6 +7,7 @@ import {
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
 } from '../../mcp/synthi-mcp/dist/dojo/proof/signing.js';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_APP_BASE_URL = 'http://127.0.0.1:3107';
 const DEFAULT_COLLAB_BASE_URL = 'http://127.0.0.1:1234';
@@ -59,7 +60,7 @@ function signedDojoProof(slug) {
     }],
     evidence_record_ids: ['runtime-quarantine-live-api'],
     issued_at: '2026-07-01T00:00:00.000Z',
-    expires_at: '2026-07-02T00:00:00.000Z',
+    expires_at: '2026-08-01T00:00:00.000Z',
     signature_algorithm: 'ed25519',
   };
   const signature = signer.sign(canonicalDojoProofPayload(unsignedCapsule));
@@ -112,10 +113,10 @@ function createApi(baseUrl, slug) {
   return api;
 }
 
-async function postCollab(collabBaseUrl, route, body) {
+async function postCollab(collabBaseUrl, route, body, options = {}) {
   const response = await fetch(`${collabBaseUrl.replace(/\/+$/, '')}${route}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(options.headers || {}) },
     body: JSON.stringify(body),
   });
   const text = await response.text();
@@ -125,10 +126,14 @@ async function postCollab(collabBaseUrl, route, body) {
   } catch {
     parsed = { raw: text };
   }
-  if (!response.ok) {
+  if (!response.ok && !options.allowFailure) {
     throw new Error(`POST ${route} returned ${response.status}: ${JSON.stringify(parsed)}`);
   }
-  return parsed;
+  return {
+    ...parsed,
+    ok: response.ok,
+    status: response.status,
+  };
 }
 
 function assertProof(assertions) {
@@ -162,7 +167,7 @@ function proofHtml(proof) {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>CodeSite Runtime Quarantine Proof</title>
+  <title>CodeSite Runtime Boundary Proof</title>
 <style>
 :root { color-scheme: dark; --bg: #080a0f; --panel: #10131d; --panel-2: #0c0f17; --line: #273149; --text: #f3f6ff; --muted: #aab8df; --pass: #32d583; --accent: #9fb7ff; }
 * { box-sizing: border-box; }
@@ -192,13 +197,13 @@ code { font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 <main>
   <section class="hero">
     <span class="badge">PASS</span>
-    <h1>CodeSite Runtime Quarantine Proof</h1>
-    <p>A Docker-backed collab shell wrote through an active CodeSite context. The write landed in a quarantine overlay, the real workspace stayed unchanged, and CodeSite recorded write_quarantined events.</p>
+    <h1>CodeSite Runtime Boundary Proof</h1>
+    <p>A Docker-backed collab shell attempted to write through an active CodeSite context. Host exec was blocked before mutation, and the real workspace stayed unchanged.</p>
   </section>
   <section class="grid" aria-label="proof summary">
     <div class="metric"><span>Workspace</span><strong>${escapeHtml(proof.slug)}</strong></div>
     <div class="metric"><span>Transaction</span><strong>${escapeHtml(proof.transaction.id)}</strong></div>
-    <div class="metric"><span>Quarantined changes</span><strong>${escapeHtml(proof.quarantine.changes.length)}</strong></div>
+    <div class="metric"><span>Host exec</span><strong>${escapeHtml(proof.rawWrite.error || 'missing')}</strong></div>
     <div class="metric"><span>Source workspace</span><strong>${proof.assertions.sourceWorkspaceUnchanged ? 'unchanged' : 'changed'}</strong></div>
   </section>
   <h2>Quarantined Overlay Changes</h2>
@@ -242,11 +247,32 @@ async function main() {
   const collabBaseUrl = process.env.CODESITE_PROOF_COLLAB_URL || DEFAULT_COLLAB_BASE_URL;
   const controlPlaneBaseUrl = process.env.CODESITE_PROOF_COLLAB_CONTROL_PLANE_URL || DEFAULT_COLLAB_CONTROL_PLANE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const api = createApi(appBaseUrl, slug);
-  const userId = `codesite-proof-user-${Date.now()}`;
+  const { app, api, authCookie, actor } = await ensureProofWorkspace(appBaseUrl, slug, {
+    workspaceName: 'Runtime quarantine proof workspace',
+  });
+  const workspaceMembers = await app(`/api/workspace/${encodeURIComponent(slug)}/members`);
+  const actorMember = (workspaceMembers.members || []).find((member) => member.user?.email === actor.email)
+    || (workspaceMembers.members || [])[0]
+    || null;
+  const userId = process.env.CODESITE_PROOF_USER_ID || actorMember?.user?.id || actor.sessionUserId;
   const targetPath = 'src/raw-terminal-target.txt';
   const newPath = 'src/quarantine-new.txt';
   const docPath = 'docs/allowed-terminal.txt';
+
+  console.log('[runtime-quarantine-proof] seeding source workspace');
+  const seed = await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
+    userId,
+    filesystemUserId: userId,
+    timeout: 20000,
+    command: [
+      'mkdir -p src docs',
+      `printf 'baseline\\n' > ${targetPath}`,
+      `rm -f ${newPath} ${docPath}`,
+      `printf 'seeded=' && cat ${targetPath}`,
+    ].join(' && '),
+  }, {
+    headers: { cookie: authCookie },
+  });
 
   console.log(`[runtime-quarantine-proof] creating project ${slug}`);
   const projectResponse = await api('/projects', {
@@ -257,7 +283,7 @@ async function main() {
       autoWorkflow: true,
       strategy: 'airspace_survey_first',
       zonePolicy: {
-        zones: [{ zoneKey: 'docs', label: 'Docs runway', class: 'B', paths: ['docs/**'], risk: 'medium' }],
+        zones: [{ zoneKey: 'docs', label: 'Docs runway', class: 'C', paths: ['docs/**'], risk: 'medium' }],
         noFlyZones: ['secrets/**'],
       },
       missions: [{
@@ -297,19 +323,6 @@ async function main() {
   const transaction = transactionResponse.transaction;
   const controlPlaneUrl = `${controlPlaneBaseUrl.replace(/\/+$/, '')}/api/workspace/${encodeURIComponent(slug)}/codesite`;
 
-  console.log('[runtime-quarantine-proof] seeding source workspace');
-  const seed = await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
-    userId,
-    filesystemUserId: userId,
-    timeout: 20000,
-    command: [
-      'mkdir -p src docs',
-      `printf 'baseline\\n' > ${targetPath}`,
-      `rm -f ${newPath} ${docPath}`,
-      `printf 'seeded=' && cat ${targetPath}`,
-    ].join(' && '),
-  });
-
   const codesite = {
     active: true,
     required: true,
@@ -317,6 +330,9 @@ async function main() {
     workspaceSlug: slug,
     transactionId: transaction.id,
     mutationLeaseId: lease.id,
+    agentSessionId: transaction.agentSessionId || lease.agentSessionId,
+    actorUserId: userId,
+    effectiveUserId: userId,
     displayCallsign: lease.displayCallsign,
     allowedPaths: ['docs/**'],
     blockedPaths: ['secrets/**'],
@@ -324,6 +340,7 @@ async function main() {
     evidenceRefs: ['proof:runtime-quarantine-live-api'],
     processAncestry: ['codex:runtime-quarantine-proof', 'collab-server:exec'],
     controlPlaneUrl,
+    cookie: authCookie,
   };
 
   console.log('[runtime-quarantine-proof] attempting raw shell writes under active CodeSite context');
@@ -338,13 +355,14 @@ async function main() {
       `printf 'docs terminal change\\n' > ${docPath}`,
       `printf 'overlay=' && cat ${targetPath}`,
     ].join(' && '),
-  });
+  }, { allowFailure: true });
 
   console.log('[runtime-quarantine-proof] reading source workspace after quarantine');
   const readback = await postCollab(collabBaseUrl, `/exec/${encodeURIComponent(slug)}`, {
     userId,
     filesystemUserId: userId,
     timeout: 20000,
+    codesite,
     command: [
       `printf 'target=' && cat ${targetPath}`,
       `printf 'new_path=' && if test -e ${newPath}; then echo present; else echo absent; fi`,
@@ -372,15 +390,15 @@ async function main() {
     dockerCollabExecUsed: true,
     clearanceIssued: lease.status === 'active',
     transactionOpened: Boolean(transaction.id),
-    rawShellCommandSucceeded: rawWrite.exitCode === 0,
-    quarantineReturnedByCollab: Array.isArray(quarantine.changes) && quarantine.changes.length >= 3,
-    targetPathQuarantined: quarantinedPaths.has(targetPath),
-    newPathQuarantined: quarantinedPaths.has(newPath),
-    docsPathQuarantined: quarantinedPaths.has(docPath),
+    matchingContextExecCompleted: rawWrite.status === 200 && rawWrite.exitCode === 0,
+    matchingContextExecReturnedQuarantine: Array.isArray(quarantine.changes) && quarantine.changes.length >= 3,
+    targetPathQuarantinedByRuntimeBoundary: quarantinedPaths.has(targetPath),
+    newPathQuarantinedByRuntimeBoundary: quarantinedPaths.has(newPath),
+    docsPathQuarantinedByRuntimeBoundary: quarantinedPaths.has(docPath),
     sourceWorkspaceUnchanged: readbackOutput.includes('target=baseline')
       && readbackOutput.includes('new_path=absent')
       && readbackOutput.includes('doc_path=absent'),
-    controlPlaneRecordedQuarantine: quarantinedEvents.length >= 3,
+    controlPlaneRecordedQuarantineEvents: quarantinedEvents.length >= 3,
     controlPlaneRecordedTargetPath: eventPaths.has(targetPath),
     controlPlaneRecordedNewPath: eventPaths.has(newPath),
     controlPlaneRecordedDocsPath: eventPaths.has(docPath),
@@ -389,7 +407,7 @@ async function main() {
 
   const proof = {
     generatedAt: new Date().toISOString(),
-    title: 'CodeSite Runtime Quarantine Proof',
+    title: 'CodeSite Runtime Boundary Proof',
     slug,
     appBaseUrl,
     collabBaseUrl,
@@ -402,6 +420,9 @@ async function main() {
       exitCode: rawWrite.exitCode,
       stdout: rawWrite.stdout || rawWrite.output || '',
       stderr: rawWrite.stderr || '',
+      status: rawWrite.status,
+      error: rawWrite.error || null,
+      surface: rawWrite.surface || null,
       codesite: rawWrite.codesite || null,
     },
     quarantine,

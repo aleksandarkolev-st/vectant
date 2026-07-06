@@ -1,0 +1,15 @@
+CodeSite-Project: cmr8k11cx038jqg011c5ezn60
+CodeSite-Flight: SCHEMA-01
+CodeSite-Clearance: cmr8k19c003acqg01swot8vyl
+CodeSite-Landing: completed
+CodeSite-Transaction: cmr8k1okx03bcqg01803em330
+CodeSite-Lease: cmr8k19c003acqg01swot8vyl
+CodeSite-Read-Set: sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a
+CodeSite-Write-Set: sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973
+CodeSite-Base-Snapshot: sha256:67629c1159676c2c9595e65f4e66bed273cab2186b8415852029978258d53cd9
+CodeSite-Base-Snapshot-Evidence: sha256:6a0bc12183cc4341086178bd1a42f997f925bb86a92ddae24042af8f58b57e9f
+CodeSite-Invariants: clearance.diff.inside_route
+CodeSite-Black-Box: sha256:fcf175180a3abf0426e162bd09ae0022aa102ac2ccda0b729868404567ddca52
+CodeSite-Proof-Digest: sha256:f480334c8e2d2a37851f1615a33ee1bcfb073a8faefd083d32c82b8d48a74fd9
+CodeSite-Proof-Authority: codesite-full-workflow-20260705-ed25519
+CodeSite-Proof-Signature: ed25519:codesite-full-workflow-20260705-ed25519:F10NVGx67_NmD3IjGEY6BWTlZGerulS3qUJ_0oFtFgXwG2eawT_hDAcjHwcYEnUNXAVxV6QtNSxrqBaLyhDPAg

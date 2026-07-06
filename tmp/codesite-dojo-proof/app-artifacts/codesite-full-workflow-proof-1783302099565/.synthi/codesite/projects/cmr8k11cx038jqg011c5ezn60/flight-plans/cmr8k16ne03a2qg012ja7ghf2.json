@@ -1,0 +1,23 @@
+{
+  "id": "cmr8k16ne03a2qg012ja7ghf2",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "agentSessionId": "cmr8k15vq039wqg01ty20vgqu",
+  "displayCallsign": "TEST-03",
+  "mission": "Landing radar",
+  "domain": "inspection",
+  "status": "holding",
+  "route": [
+    "synthi/src/lib/codesite/__tests__/**"
+  ],
+  "blockedZones": [],
+  "abortConditions": [
+    "required radar failed",
+    "tower reroute issued"
+  ],
+  "requestedTools": [
+    "npm_test"
+  ],
+  "estimatedDurationMs": null,
+  "filedAt": "2026-07-06T01:41:50.186Z",
+  "closedAt": null
+}

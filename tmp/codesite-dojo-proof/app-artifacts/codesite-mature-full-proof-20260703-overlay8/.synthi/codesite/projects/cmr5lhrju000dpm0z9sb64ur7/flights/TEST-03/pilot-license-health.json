@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+  "key": "cmr5lhuvi001qpm0zjj2pz47d",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+  "agentSessionId": "cmr5lhuvi001qpm0zjj2pz47d",
+  "ownerUserId": "cmr5lhdri000apm0ztnpqqhzo",
+  "displayCallsign": "TEST-03",
+  "status": "active",
+  "level": "VFR",
+  "levelRank": 2,
+  "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+  "dojoLicenseRef": "schema.level_2@2026-06-25",
+  "dojoProofRef": "pcap-full-workflow-schema",
+  "dojoDecisionDigest": "sha256:0a40da4ef969f79bb7c0f81cbfc4c22db8683c846afab516c83efc825cccf964",
+  "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+  "authorizedAirspace": [
+    "synthi/src/lib/codesite/__tests__/**"
+  ],
+  "restrictedAirspace": [],
+  "requiredRadar": [
+    "tests"
+  ],
+  "earnedBy": [
+    "dojo:full-workflow-checkride",
+    "dojo:evidence:full-workflow-checkride"
+  ],
+  "expiresAt": null,
+  "expiresOn": [],
+  "sourceDrift": {
+    "monitored": false,
+    "sourceDigest": null,
+    "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+    "expired": false
+  },
+  "landingStats": {
+    "total": 0,
+    "passed": 0,
+    "failed": 0,
+    "evidenceRefs": []
+  },
+  "violationStats": {
+    "total": 0,
+    "critical": 0,
+    "latestAt": null,
+    "evidenceRefs": []
+  },
+  "reasonCodes": [
+    "pilot_license_health_active"
+  ],
+  "requiredAction": null,
+  "evidenceRefs": [
+    "dojo:evidence:full-workflow-checkride",
+    "dojo:full-workflow-checkride"
+  ],
+  "lifecycle": {
+    "issuedAt": "2026-07-03T23:59:29.167Z",
+    "checkedAt": "2026-07-04T00:03:08.683Z",
+    "latestLandingAt": null,
+    "latestViolationAt": null,
+    "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+  }
+}
