@@ -40,38 +40,38 @@ const formatTimestamp = (timestamp) => {
 const buildLanguageMeta = (filename = '') => {
     const ext = (filename.split('.').pop() || '').toLowerCase();
     const map = {
-        js: { label: 'JS', color: '#fcd34d' },
-        jsx: { label: 'JSX', color: '#fcd34d' },
-        ts: { label: 'TS', color: '#60a5fa' },
-        tsx: { label: 'TSX', color: '#60a5fa' },
-        json: { label: 'JSON', color: '#c084fc' },
-        md: { label: 'MD', color: '#a78bfa' },
-        txt: { label: 'TXT', color: '#a3a3a3' },
-        py: { label: 'PY', color: '#f59e0b' },
-        rb: { label: 'RB', color: '#ef4444' },
-        go: { label: 'GO', color: '#38bdf8' },
-        rs: { label: 'RS', color: '#f97316' },
-        java: { label: 'JAVA', color: '#ef4444' },
-        cpp: { label: 'C++', color: '#60a5fa' },
-        c: { label: 'C', color: '#60a5fa' },
-        cs: { label: 'C#', color: '#22c55e' },
-        php: { label: 'PHP', color: '#a78bfa' },
-        html: { label: 'HTML', color: '#f97316' },
-        css: { label: 'CSS', color: '#60a5fa' },
-        scss: { label: 'SCSS', color: '#ec4899' },
-        yml: { label: 'YML', color: '#cbd5e1' },
-        yaml: { label: 'YAML', color: '#cbd5e1' },
-        sql: { label: 'SQL', color: '#22c55e' },
-        prisma: { label: 'DB', color: '#22c55e' },
-        sh: { label: 'SH', color: '#4ade80' },
-        bash: { label: 'SH', color: '#4ade80' },
-        toml: { label: 'TOML', color: '#cbd5e1' },
-        xml: { label: 'XML', color: '#f97316' },
-        svg: { label: 'SVG', color: '#f97316' },
-        mjs: { label: 'MJS', color: '#fcd34d' },
-        cjs: { label: 'CJS', color: '#fcd34d' },
+        js: { label: 'JS', color: 'var(--accent-warning)' },
+        jsx: { label: 'JSX', color: 'var(--accent-warning)' },
+        ts: { label: 'TS', color: 'var(--accent-secondary)' },
+        tsx: { label: 'TSX', color: 'var(--accent-secondary)' },
+        json: { label: 'JSON', color: 'var(--attention-purple)' },
+        md: { label: 'MD', color: 'var(--accent-primary)' },
+        txt: { label: 'TXT', color: 'var(--text-muted)' },
+        py: { label: 'PY', color: 'var(--accent-warning)' },
+        rb: { label: 'RB', color: 'var(--accent-danger)' },
+        go: { label: 'GO', color: 'var(--accent-secondary)' },
+        rs: { label: 'RS', color: 'var(--accent-warning)' },
+        java: { label: 'JAVA', color: 'var(--accent-danger)' },
+        cpp: { label: 'C++', color: 'var(--accent-secondary)' },
+        c: { label: 'C', color: 'var(--accent-secondary)' },
+        cs: { label: 'C#', color: 'var(--accent-success)' },
+        php: { label: 'PHP', color: 'var(--accent-primary)' },
+        html: { label: 'HTML', color: 'var(--accent-warning)' },
+        css: { label: 'CSS', color: 'var(--accent-secondary)' },
+        scss: { label: 'SCSS', color: 'var(--attention-purple)' },
+        yml: { label: 'YML', color: 'var(--text-secondary)' },
+        yaml: { label: 'YAML', color: 'var(--text-secondary)' },
+        sql: { label: 'SQL', color: 'var(--accent-success)' },
+        prisma: { label: 'DB', color: 'var(--accent-success)' },
+        sh: { label: 'SH', color: 'var(--accent-success)' },
+        bash: { label: 'SH', color: 'var(--accent-success)' },
+        toml: { label: 'TOML', color: 'var(--text-secondary)' },
+        xml: { label: 'XML', color: 'var(--accent-warning)' },
+        svg: { label: 'SVG', color: 'var(--accent-warning)' },
+        mjs: { label: 'MJS', color: 'var(--accent-warning)' },
+        cjs: { label: 'CJS', color: 'var(--accent-warning)' },
     };
-    return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: '#9ba2b8' };
+    return map[ext] || { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', color: 'var(--text-muted)' };
 };
 
 const summarizeLog = (logs = []) => {
@@ -1188,8 +1188,8 @@ const AIChatWindow = ({
                                                                         </button>
                                                                         {/* Stats - more prominent */}
                                                                         <div className="flex items-center gap-1 flex-shrink-0">
-                                                                            <span className="font-mono text-[10px] font-semibold text-emerald-400 bg-emerald-500/15 px-1 py-px rounded">{statsAddText}</span>
-                                                                            <span className="font-mono text-[10px] font-semibold text-rose-400 bg-rose-500/15 px-1 py-px rounded">{statsRemText}</span>
+                                                                            <span className="font-mono text-[10px] font-semibold px-1 py-px rounded" style={{ color: 'var(--accent-success)', background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)' }}>{statsAddText}</span>
+                                                                            <span className="font-mono text-[10px] font-semibold px-1 py-px rounded" style={{ color: 'var(--accent-danger)', background: 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}>{statsRemText}</span>
                                                                         </div>
                                                                     </div>
                                                                     {/* Status badge */}
@@ -1251,8 +1251,15 @@ const AIChatWindow = ({
                                                                 </div>
                                                                 {/* Diff content area */}
                                                                 {suggestion.error ? (
-                                                                    <div className="text-xs font-mono text-rose-400 bg-rose-500/5 border-t border-rose-500/20 px-3 py-3">
-                                                                        <span className="text-rose-500/70">Error:</span> {suggestion.error}
+                                                                    <div
+                                                                        className="text-xs font-mono px-3 py-3"
+                                                                        style={{
+                                                                            color: 'var(--accent-danger)',
+                                                                            background: 'color-mix(in srgb, var(--accent-danger) 6%, transparent)',
+                                                                            borderTop: '1px solid color-mix(in srgb, var(--accent-danger) 22%, transparent)',
+                                                                        }}
+                                                                    >
+                                                                        <span style={{ color: 'color-mix(in srgb, var(--accent-danger) 72%, var(--text-secondary))' }}>Error:</span> {suggestion.error}
                                                                     </div>
                                                                 ) : !collapsed ? (
                                                                     <div
@@ -1274,8 +1281,8 @@ const AIChatWindow = ({
                                                             <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--accent-secondary)' }} />
                                                             <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>AI Suggestion</span>
                                                             {isLoading && (
-                                                                <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
-                                                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                                                                <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: 'var(--accent-warning)' }}>
+                                                                    <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-warning)' }}></span>
                                                                     Processing...
                                                                 </span>
                                                             )}
@@ -1472,7 +1479,10 @@ const AIChatWindow = ({
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
-                                            style={{ color: isWorkspaceFile ? '#4aba9a' : meta.color, backgroundColor: isWorkspaceFile ? '#4aba9a20' : `${meta.color}20` }}
+                                            style={{
+                                                color: isWorkspaceFile ? 'var(--accent-secondary)' : meta.color,
+                                                backgroundColor: `color-mix(in srgb, ${isWorkspaceFile ? 'var(--accent-secondary)' : meta.color} 16%, transparent)`,
+                                            }}
                                         >
                                             <FileCode className="w-3 h-3" strokeWidth={1.5} />
                                             <span className="font-semibold">{meta.label}</span>
@@ -1756,7 +1766,8 @@ const AIChatWindow = ({
                                         variant="ghost"
                                         size="sm"
                                         onClick={handleCancel}
-                                        className="text-[10px] h-5 px-1.5 text-rose-400/70 hover:text-rose-400"
+                                        className="text-[10px] h-5 px-1.5 opacity-75 hover:opacity-100"
+                                        style={{ color: 'var(--accent-danger)' }}
                                         title="Cancel generation"
                                     >
                                         Cancel
@@ -1782,7 +1793,7 @@ const AIChatWindow = ({
                                         background: isLoading
                                             ? 'var(--brand-gradient)'
                                             : (inputValue.trim() ? 'var(--brand-gradient)' : 'transparent'),
-                                        color: '#ffffff',
+                                        color: inputValue.trim() ? 'var(--bg-app)' : 'var(--text-muted)',
                                         boxShadow: inputValue.trim()
                                             ? '0 0 14px -4px color-mix(in srgb, var(--brand-stop-3) 38%, transparent)'
                                             : 'none',
