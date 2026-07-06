@@ -13,7 +13,7 @@ import {
   GitCommit,
   Inbox,
   Layers,
-  Map,
+  Network,
   Plus,
   RefreshCw,
   Route,
@@ -42,7 +42,7 @@ import {
 
 const POLL_MS = 5000;
 const MOTION_EASE = [0.16, 1, 0.3, 1];
-const RADAR_SWEEP_EASE = [0.45, 0, 0.55, 1];
+const STATUS_PULSE_EASE = [0.45, 0, 0.55, 1];
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -741,8 +741,8 @@ const TOWER_EVENT_LABELS = {
   black_box_closed: "Event recorder closed",
   tower_instruction: "Coordination instruction",
   route_deviation: "Plan change filed",
-  ground_stop: "Emergency hold issued",
-  mayday_resumed: "Emergency hold resumed",
+  ground_stop: "Recovery hold issued",
+  mayday_resumed: "Recovery resumed",
   quarantine_reviewed: "Quarantine reviewed",
   quarantine_replayed: "Quarantine replayed",
   quarantine_applied: "Quarantine applied",
@@ -1262,7 +1262,8 @@ function toneLabel(value) {
   return productCopy(compact(value, "idle").replaceAll("_", " "))
     .replace(/\bairborne\b/g, "active")
     .replace(/\bpreflight\b/g, "precheck")
-    .replace(/\bcleared\b/g, "approved");
+    .replace(/\bcleared\b/g, "approved")
+    .replace(/\bholding\b/g, "review hold");
 }
 
 function Pill({ children, tone = "idle", className = "", testId }) {
@@ -1524,10 +1525,10 @@ function TowerNowStrip({
     },
     {
       key: "mayday",
-      label: "Emergency",
-      shortLabel: "Urgent",
+      label: "Recovery review",
+      shortLabel: "Resume",
       value: maydayCount,
-      detail: maydayCount ? "Resume needs inspection evidence" : "No emergency hold",
+      detail: maydayCount ? "Resume needs inspection evidence" : "No recovery holds",
       tone: maydayCount ? "high" : "active",
       icon: Siren,
       section: "replay",
@@ -1546,7 +1547,7 @@ function TowerNowStrip({
     },
     {
       key: "proof",
-      label: "Proof",
+      label: "Evidence",
       value: proofCount,
       detail: quarantineCount
         ? `${quarantineCount} quarantine${quarantineCount === 1 ? "" : "s"} need replay`
@@ -1630,7 +1631,7 @@ function TowerNowStrip({
                   urgent && !reduceMotion
                     ? {
                         duration: 1.8,
-                        ease: RADAR_SWEEP_EASE,
+                        ease: STATUS_PULSE_EASE,
                         repeat: Infinity,
                         delay: index * 0.08,
                       }
@@ -1672,7 +1673,7 @@ function CodeSiteOperatingModel({
       label: "Work scope",
       value: `${asArray(activeFlights).length} workstream${asArray(activeFlights).length === 1 ? "" : "s"}`,
       detail: "Owned paths, risk areas, and active changes",
-      icon: Map,
+      icon: Network,
       section: "radar",
     },
     {
@@ -1693,7 +1694,7 @@ function CodeSiteOperatingModel({
     },
     {
       key: "evidence",
-      label: "Proof evidence",
+      label: "Evidence",
       value: `${asArray(proofBundles).length} bundle${asArray(proofBundles).length === 1 ? "" : "s"}`,
       detail: `${asArray(documents).length} docs / ${asArray(routeRevisions).length} plan changes`,
       icon: GitCommit,
@@ -2137,7 +2138,7 @@ function RunwayOccupancyBoard({ runways }) {
                   {compact(runway.runway, "unassigned path lock")}
                 </span>
                 <Pill tone={runway.runwayClass === "A" ? "holding" : "active"}>
-                  Class {compact(runway.runwayClass, "C")}
+                  {zoneTierLabel({ zoneClass: runway.runwayClass })}
                 </Pill>
               </div>
               <div className="mt-1 flex flex-wrap gap-1">
@@ -4386,7 +4387,7 @@ function GovernanceConsole({
           const payload = {
             title:
               permitDraft.title ||
-              `Restricted work permit for ${compact(primaryPlan.displayCallsign, "workstream")}`,
+              `Protected change approval for ${compact(primaryPlan.displayCallsign, "workstream")}`,
             permitType: permitDraft.permitType || "restricted_route",
             executionPlanId: primaryPlan.id || null,
             mutationLeaseId: lease.id || null,
@@ -4428,12 +4429,12 @@ function GovernanceConsole({
       >
         <div className="flex items-center justify-between gap-2">
           <div>
-            <div className="text-sm font-semibold">Restricted work permit</div>
+            <div className="text-sm font-semibold">Protected change approval</div>
             <div
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
-              Issue governance evidence for Class A/B paths before approval.
+              Issue review evidence for protected and shared paths before approval.
             </div>
           </div>
           <Pill tone={permits.length ? "active" : "holding"}>
@@ -5176,53 +5177,7 @@ function riskTouchesFlight(risk, flight) {
   );
 }
 
-function radarPoint(angle, radius) {
-  const radians = (angle - 90) * (Math.PI / 180);
-  return {
-    x: 50 + Math.cos(radians) * radius,
-    y: 50 + Math.sin(radians) * radius,
-  };
-}
-
-function sectorPath(index, total, outer = 45) {
-  const startAngle = (360 / total) * index;
-  const endAngle = (360 / total) * (index + 1);
-  const start = radarPoint(startAngle, outer);
-  const end = radarPoint(endAngle, outer);
-  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-  return `M 50 50 L ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${outer} ${outer} 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)} Z`;
-}
-
-function plotFlight(flight, index, zones, totalFlights) {
-  const matchedZoneIndex = zones.findIndex((zone) =>
-    zoneHasFlight(zone, flight),
-  );
-  const zoneIndex =
-    matchedZoneIndex === -1
-      ? index % Math.max(1, zones.length || totalFlights)
-      : matchedZoneIndex;
-  const baseAngle = zones.length
-    ? (360 / zones.length) * zoneIndex
-    : (360 / Math.max(1, totalFlights)) * index;
-  const angle =
-    baseAngle +
-    18 +
-    ((index * 17) %
-      Math.max(26, 360 / Math.max(1, zones.length || totalFlights)));
-  const radius = 18 + (index % 3) * 9;
-  return radarPoint(angle, radius);
-}
-
-function eventPoint(event, index, total) {
-  const seed = String(event?.eventType || event?.id || index)
-    .split("")
-    .reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  const angle = (seed + index * 29) % 360;
-  const radius = 12 + (index % Math.max(1, total)) * (34 / Math.max(1, total));
-  return radarPoint(angle, radius);
-}
-
-function radarColor(status, riskLevel = null) {
+function statusColor(status, riskLevel = null) {
   const risk = String(riskLevel || "").toLowerCase();
   if (["critical", "high"].includes(risk)) return "#ff5757";
   if (["medium", "warning"].includes(risk)) return "#fbbf24";
@@ -5250,6 +5205,14 @@ function radarColor(status, riskLevel = null) {
 
 function replayTailFromNewestFirst(events) {
   return events.slice(0, 7).reverse();
+}
+
+function zoneTierLabel(zone = {}) {
+  const risk = String(zone.risk || "").toLowerCase();
+  if (["critical", "high"].includes(risk)) return "Protected path";
+  if (["medium", "warning"].includes(risk)) return "Shared contract";
+  if (["low", "clear", "none"].includes(risk)) return "Routine path";
+  return `Policy tier ${zoneClass(zone)}`;
 }
 
 function causalReplayHandovers(incidents, proofBundles) {
@@ -5949,7 +5912,7 @@ function LineProvenanceDeck({
   );
 }
 
-function AirspaceMap({
+function ScopeTopology({
   zones,
   noFlyZones,
   flights,
@@ -5968,18 +5931,17 @@ function AirspaceMap({
           paths: flights.flatMap((flight) => asArray(flight.route)).slice(0, 4),
         },
       ];
-  const visibleFlights = flights.slice(0, condensed ? 8 : 12);
-  const visibleRisks = risks.slice(0, condensed ? 6 : 8);
-  const flightOverflow = Math.max(0, flights.length - visibleFlights.length);
+  const visibleLanes = lanes.slice(0, condensed ? 4 : 5);
+  const laneOverflow = Math.max(0, lanes.length - visibleLanes.length);
+  const visibleFlights = flights.slice(0, condensed ? 5 : 7);
+  const visibleRisks = risks.slice(0, condensed ? 4 : 6);
+  const workstreamOverflow = Math.max(0, flights.length - visibleFlights.length);
   const riskOverflow = Math.max(0, risks.length - visibleRisks.length);
   const replayEvents = replayTailFromNewestFirst(events);
-  const replayPoints = replayEvents.map((event, index) =>
-    eventPoint(event, index, replayEvents.length),
-  );
-  const replayPath = replayPoints
-    .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
-    .join(" ");
   const landingRuns = asArray(inspections).slice(-4).reverse();
+  const failedCommitChecks = landingRuns.some((run) =>
+    String(run.status || "").includes("failed"),
+  );
   const priorityFlights = flights
     .slice()
     .sort((left, right) => {
@@ -6000,11 +5962,55 @@ function AirspaceMap({
       return rightRisk - leftRisk;
     })
     .slice(0, condensed ? 4 : 6);
+  const pathNodes = visibleLanes.map((zone, index) => ({
+    id: zone.zoneKey || zone.id || `scope-${index}`,
+    zone,
+    label: displayZoneName(zone, index),
+    detail: zonePaths(zone).slice(0, 1).join(", ") || "path pending",
+    tone: risks.some((risk) => riskTouchesZone(risk, zone))
+      ? "holding"
+      : zone.risk || "active",
+  }));
+  const hasBlockedScopes = asArray(noFlyZones).length > 0;
+  const guardrailNodes = [
+    {
+      key: "conflicts",
+      label: "Conflicts",
+      value: visibleRisks.length ? `${visibleRisks.length} active` : "clear",
+      detail: riskOverflow ? `+${riskOverflow} more risks` : "risk forecast",
+      tone: visibleRisks.length ? "holding" : "active",
+      y: 22,
+    },
+    {
+      key: "checks",
+      label: "Commit checks",
+      value: landingRuns.length ? `${landingRuns.length} runs` : "none",
+      detail: failedCommitChecks ? "failed check present" : "latest validations",
+      tone: failedCommitChecks ? "failed" : landingRuns.length ? "active" : "idle",
+      y: 50,
+    },
+    {
+      key: "evidence",
+      label: "Evidence",
+      value: replayEvents.length ? `${replayEvents.length} events` : "none",
+      detail: hasBlockedScopes ? "blocked scopes tracked" : "activity history",
+      tone: hasBlockedScopes ? "warning" : replayEvents.length ? "active" : "idle",
+      y: 78,
+    },
+  ];
+  const guardrailNodeForPath = (pathNode) => {
+    if (!pathNode) return guardrailNodes[2];
+    if (risks.some((risk) => riskTouchesZone(risk, pathNode.zone))) {
+      return guardrailNodes[0];
+    }
+    if (landingRuns.length) return guardrailNodes[1];
+    return guardrailNodes[2];
+  };
 
   return (
     <div className="space-y-2">
       <div
-        data-testid="codesite-radar-graph"
+        data-testid="codesite-scope-topology"
         className={
           condensed
             ? "overflow-hidden rounded-lg border p-2"
@@ -6019,243 +6025,145 @@ function AirspaceMap({
         <div
           className={
             condensed
-              ? "grid gap-2 lg:grid-cols-[minmax(300px,0.96fr)_minmax(0,1.04fr)]"
-              : "grid gap-3 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]"
+              ? "grid gap-2 2xl:grid-cols-[minmax(300px,0.96fr)_minmax(0,1.04fr)]"
+              : "grid gap-3 2xl:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]"
           }
         >
           <div
+            data-testid="codesite-scope-matrix"
             className={
               condensed
-                ? "relative min-h-[272px] overflow-hidden rounded-lg border"
-                : "relative min-h-[340px] overflow-hidden rounded-lg border"
+                ? "overflow-hidden rounded-lg border"
+                : "overflow-hidden rounded-lg border"
             }
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
               background:
-                "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 16%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 14%, transparent) 1px, transparent 1px), radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-primary) 9%, transparent), transparent 62%), color-mix(in srgb, var(--bg-editor) 90%, transparent)",
-              backgroundSize: "20px 20px, 20px 20px, auto, auto",
+                "linear-gradient(135deg, color-mix(in srgb, var(--bg-editor) 92%, var(--accent-primary) 5%), var(--bg-editor))",
             }}
           >
-            <svg
-              className="absolute inset-0 h-full w-full"
-              viewBox="0 0 100 100"
-              role="img"
-              aria-label="CodeSite work scope graph with workstreams, risks, and replay trace"
+            <div
+              className="grid grid-cols-[minmax(0,0.86fr)_minmax(0,1.18fr)_minmax(0,0.96fr)] gap-2 border-b px-3 py-2 text-[10px] font-semibold uppercase"
+              style={{
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-muted)",
+              }}
             >
-              <defs>
-                <radialGradient
-                  id="codesite-radar-sweep"
-                  cx="50%"
-                  cy="50%"
-                  r="50%"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor="var(--accent-primary)"
-                    stopOpacity="0.18"
-                  />
-                  <stop
-                    offset="66%"
-                    stopColor="var(--accent-primary)"
-                    stopOpacity="0.04"
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="var(--accent-primary)"
-                    stopOpacity="0"
-                  />
-                </radialGradient>
-              </defs>
-              <rect
-                width="100"
-                height="100"
-                fill="url(#codesite-radar-sweep)"
-                opacity="0.72"
-              />
-              <circle
-                cx="50"
-                cy="50"
-                r="47"
-                fill="none"
-                stroke="color-mix(in srgb, var(--accent-primary) 28%, transparent)"
-                strokeWidth="0.55"
-              />
-              {[14, 27, 40].map((radius) => (
-                <circle
-                  key={radius}
-                  cx="50"
-                  cy="50"
-                  r={radius}
-                  fill="none"
-                  stroke="var(--border-subtle)"
-                  strokeWidth="0.35"
-                />
-              ))}
-              {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => {
-                const end = radarPoint(angle, 45);
-                return (
-                  <line
-                    key={angle}
-                    x1="50"
-                    y1="50"
-                    x2={end.x}
-                    y2={end.y}
-                    stroke="var(--border-subtle)"
-                    strokeWidth="0.25"
-                  />
+              <span>Agents</span>
+              <span>Owned paths</span>
+              <span>Guardrails</span>
+            </div>
+            <div className="grid gap-2 p-3">
+              {visibleLanes.map((zone, index) => {
+                const relatedFlights = visibleFlights.filter((flight) =>
+                  zoneHasFlight(zone, flight),
                 );
-              })}
-              <motion.g
-                data-testid="codesite-radar-sweep"
-                style={{ transformOrigin: "50% 50%" }}
-                animate={reduceMotion ? { rotate: 0 } : { rotate: 360 }}
-                transition={{
-                  duration: 8,
-                  repeat: reduceMotion ? 0 : Infinity,
-                  ease: RADAR_SWEEP_EASE,
-                }}
-              >
-                <path
-                  d="M 50 50 L 50 5 A 45 45 0 0 1 72 11 Z"
-                  fill="color-mix(in srgb, var(--accent-primary) 42%, transparent)"
-                  opacity="0.22"
-                />
-                <line
-                  x1="50"
-                  y1="50"
-                  x2="50"
-                  y2="5"
-                  stroke="color-mix(in srgb, var(--accent-primary) 76%, #8fd9ff)"
-                  strokeWidth="0.45"
-                />
-              </motion.g>
-              {lanes.slice(0, 6).map((zone, index) => {
                 const hasRisk = risks.some((risk) =>
                   riskTouchesZone(risk, zone),
                 );
+                const guardrail = guardrailNodeForPath(pathNodes[index]);
                 return (
-                  <path
-                    key={`sector-${zone.zoneKey || zone.id || index}`}
-                    d={sectorPath(
-                      index,
-                      Math.max(1, Math.min(6, lanes.length)),
-                    )}
-                    fill={hasRisk ? "#ff5757" : "var(--accent-primary)"}
-                    opacity={hasRisk ? "0.16" : "0.06"}
-                    stroke={hasRisk ? "#ff5757" : "var(--border-subtle)"}
-                    strokeWidth="0.35"
-                  />
-                );
-              })}
-              {visibleRisks.map((risk, index) => {
-                const angle = 24 + index * 68;
-                const left = radarPoint(angle - 13, 44);
-                const right = radarPoint(angle + 18, 44);
-                return (
-                  <path
-                    key={`risk-cone-${index}`}
-                    data-testid="codesite-risk-cone"
-                    d={`M 50 50 L ${left.x.toFixed(2)} ${left.y.toFixed(2)} L ${right.x.toFixed(2)} ${right.y.toFixed(2)} Z`}
-                    fill={radarColor(null, risk.severity || risk.riskLevel)}
-                    opacity="0.24"
-                  />
-                );
-              })}
-              {replayPoints.length > 1 ? (
-                <polyline
-                  data-testid="codesite-replay-trace"
-                  points={replayPath}
-                  fill="none"
-                  stroke="color-mix(in srgb, var(--accent-primary) 72%, #8fd9ff)"
-                  strokeWidth="0.9"
-                  strokeDasharray="2.4 1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              ) : null}
-              {visibleFlights.map((flight, index) => {
-                const point = plotFlight(
-                  flight,
-                  index,
-                  lanes,
-                  visibleFlights.length,
-                );
-                const hasRisk = risks.some((risk) =>
-                  riskTouchesFlight(risk, flight),
-                );
-                const color = radarColor(
-                  flight.status,
-                  hasRisk ? "high" : null,
-                );
-                const holding = ["holding", "blocked", "preflight"].includes(
-                  String(flight.status || "").toLowerCase(),
-                );
-                return (
-                  <motion.g
-                    key={`flight-dot-${flight.id || flight.displayCallsign || index}`}
-                    data-testid="codesite-flight-blip"
-                    initial={{ opacity: 0.72, scale: 0.96 }}
-                    animate={{ opacity: 1, scale: 1 }}
+                  <motion.div
+                    key={zone.zoneKey || zone.id || index}
+                    data-testid="codesite-scope-matrix-row"
+                    className="grid gap-2 rounded-md border p-2 text-xs md:grid-cols-[minmax(0,0.86fr)_minmax(0,1.18fr)_minmax(0,0.96fr)] md:items-start"
+                    style={{
+                      borderColor: hasRisk
+                        ? "color-mix(in srgb, #ff5757 38%, var(--border-subtle))"
+                        : "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
+                      background: hasRisk
+                        ? "color-mix(in srgb, #ff5757 10%, var(--bg-surface))"
+                        : "var(--bg-surface)",
+                    }}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
                     transition={{
                       duration: 0.24,
                       delay: reduceMotion ? 0 : index * 0.04,
                       ease: MOTION_EASE,
                     }}
-                    style={{ transformOrigin: `${point.x}px ${point.y}px` }}
                   >
-                    {holding ? (
-                      <motion.circle
-                        data-testid="codesite-holding-pattern"
-                        cx={point.x}
-                        cy={point.y}
-                        r="4.5"
-                        fill="none"
-                        stroke={color}
-                        strokeWidth="0.45"
-                        strokeDasharray="1.4 1.2"
-                        opacity="0.92"
-                        animate={reduceMotion ? { rotate: 0 } : { rotate: 360 }}
-                        transition={{
-                          duration: 3.2,
-                          repeat: reduceMotion ? 0 : Infinity,
-                          ease: RADAR_SWEEP_EASE,
-                        }}
-                        style={{ transformOrigin: `${point.x}px ${point.y}px` }}
-                      />
-                    ) : null}
-                    <circle
-                      cx={point.x}
-                      cy={point.y}
-                      r="2.2"
-                      fill={color}
-                      stroke="var(--bg-surface)"
-                      strokeWidth="0.8"
-                    />
-                    <text
-                      x={Math.min(86, point.x + 3.4)}
-                      y={Math.max(9, point.y - 2.4)}
-                      fill="var(--text-primary)"
-                      fontSize="3.1"
-                      fontFamily="monospace"
+                    <div
+                      data-testid="codesite-scope-agent-node"
+                      className="min-w-0"
                     >
-                      {compact(flight.displayCallsign, "agent").slice(0, 10)}
-                    </text>
-                  </motion.g>
+                      <div
+                        className="mb-1 text-[10px] font-medium"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        Assigned agents
+                      </div>
+                      {relatedFlights.length ? (
+                        <div className="flex min-w-0 flex-wrap gap-1">
+                          {relatedFlights.slice(0, 3).map((flight, flightIndex) => (
+                            <Pill
+                              key={
+                                flight.id ||
+                                flight.displayCallsign ||
+                                "scope-agent-" + flightIndex
+                              }
+                              tone={hasRisk ? "holding" : flight.status}
+                              className="max-w-[9rem]"
+                            >
+                              {compact(flight.displayCallsign, "agent")}
+                            </Pill>
+                          ))}
+                          {relatedFlights.length > 3 ? (
+                            <Pill tone={hasRisk ? "blocked" : "default"}>
+                              +{relatedFlights.length - 3}
+                            </Pill>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <Pill>unassigned</Pill>
+                      )}
+                    </div>
+                    <div
+                      data-testid="codesite-scope-path-node"
+                      className="min-w-0"
+                    >
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="min-w-0 break-words font-semibold leading-tight">
+                          {displayZoneName(zone, index)}
+                        </span>
+                        <Pill tone={zone.risk || (hasRisk ? "holding" : "active")}>
+                          {zoneTierLabel(zone)}
+                        </Pill>
+                      </div>
+                      <div className="mt-1">
+                        <PathList paths={zonePaths(zone)} empty="path pending" />
+                      </div>
+                    </div>
+                    <div
+                      data-testid="codesite-scope-guardrail-node"
+                      className="min-w-0"
+                    >
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <span className="truncate font-semibold">
+                          {guardrail.label}
+                        </span>
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ background: statusColor(guardrail.tone) }}
+                        />
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] leading-4">
+                        {guardrail.value}
+                      </div>
+                      <div
+                        className="text-[10px] leading-4"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        {guardrail.detail}
+                      </div>
+                    </div>
+                  </motion.div>
                 );
               })}
-              <circle cx="50" cy="50" r="1.4" fill="var(--accent-primary)" />
-            </svg>
-            <div
-              className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3 text-[10px] font-medium"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <span>Conflict area</span>
-              <span>Event trace</span>
-              <span>Blocked work</span>
             </div>
             <div
-              className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px]"
+              className="mx-3 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px]"
               style={{
                 borderColor:
                   "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
@@ -6265,19 +6173,23 @@ function AirspaceMap({
               }}
             >
               <span>
-                {visibleFlights.length} workstreams tracked
-                {flightOverflow ? ` (+${flightOverflow})` : ""}
+                {visibleFlights.length} workstreams
+                {workstreamOverflow ? " (+" + workstreamOverflow + ")" : ""}
               </span>
               <span>
-                {visibleRisks.length || "no"} active conflict areas
-                {riskOverflow ? ` (+${riskOverflow})` : ""}
+                {visibleLanes.length} path scopes
+                {laneOverflow ? " (+" + laneOverflow + ")" : ""}
+              </span>
+              <span>
+                {visibleRisks.length || "no"} active conflicts
+                {riskOverflow ? " (+" + riskOverflow + ")" : ""}
               </span>
             </div>
           </div>
 
           <div className="grid content-start gap-2">
             <div className="grid gap-1">
-              {lanes.slice(0, 4).map((zone, index) => {
+              {visibleLanes.map((zone, index) => {
                 const relatedFlights = visibleFlights.filter((flight) => {
                   return zoneHasFlight(zone, flight);
                 });
@@ -6290,7 +6202,7 @@ function AirspaceMap({
                 return (
                   <div
                     key={zone.zoneKey || zone.id || index}
-                    data-testid="codesite-airspace-lane"
+                    data-testid="codesite-scope-lane"
                     className="grid min-h-[66px] gap-2 rounded-md border px-2 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-[minmax(96px,0.72fr)_minmax(0,1.4fr)_minmax(108px,0.68fr)] sm:items-start"
                     style={{
                       borderColor: hasRisk
@@ -6309,11 +6221,11 @@ function AirspaceMap({
                         className="text-[10px]"
                         style={{ color: "var(--text-muted)" }}
                       >
-                        Class {zoneClass(zone)}
+                        {zoneTierLabel(zone)}
                       </div>
                     </div>
                     <div className="min-w-0 self-start">
-                      <PathList paths={zonePaths(zone)} empty="route pending" />
+                      <PathList paths={zonePaths(zone)} empty="path pending" />
                     </div>
                     <div className="flex min-w-0 flex-wrap gap-1 self-start sm:justify-end">
                       {relatedFlights.length ? (
@@ -6360,15 +6272,7 @@ function AirspaceMap({
             >
               <div className="mb-1 flex items-center justify-between gap-2">
                 <span className="font-medium">Commit checks</span>
-                <Pill
-                  tone={
-                    landingRuns.some((run) =>
-                      String(run.status).includes("failed"),
-                    )
-                      ? "failed"
-                      : "active"
-                  }
-                >
+                <Pill tone={failedCommitChecks ? "failed" : "active"}>
                   {landingRuns.length}
                 </Pill>
               </div>
@@ -6385,7 +6289,7 @@ function AirspaceMap({
                       className="break-words text-[10px] leading-4"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      {compact(run.status, "pending")}
+                      {toneLabel(run.status)}
                     </span>
                   </div>
                 ))
@@ -6443,7 +6347,7 @@ function AirspaceMap({
                             compact(flight.domain, "route")}
                         </span>
                         <Pill tone={hasRisk ? "holding" : flight.status}>
-                          {hasRisk ? "risk" : compact(flight.status, "active")}
+                          {hasRisk ? "risk" : toneLabel(flight.status)}
                         </Pill>
                       </div>
                     );
@@ -6486,7 +6390,7 @@ function AirspaceMap({
             background: "var(--bg-surface)",
           }}
         >
-          <div style={{ color: "var(--text-muted)" }}>Evidence layers</div>
+          <div style={{ color: "var(--text-muted)" }}>Evidence types</div>
           <div className="mt-1 flex flex-wrap gap-1">
             {["approval", "transaction", "inspection", "proof"].map(
               (layer) => (
@@ -7400,7 +7304,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 className="truncate text-[11px]"
                 style={{ color: "var(--text-muted)" }}
               >
-                Agent coordination, path locks, approvals, and proof evidence
+                Agent coordination, path locks, approvals, and evidence
               </div>
             </div>
           </div>
@@ -7412,7 +7316,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
             >
               {compact(workspaceSlug, "No workspace")}
             </span>
-            <Pill tone={latestStatus}>{latestStatus}</Pill>
+            <Pill tone={latestStatus}>{toneLabel(latestStatus)}</Pill>
           </div>
         </div>
 
@@ -7563,7 +7467,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           className="mt-1 text-xs leading-5"
                           style={{ color: "var(--text-muted)" }}
                         >
-                          Create a governed workspace for agent workstreams, path locks, approvals, and proof evidence.
+                          Create a governed workspace for agent workstreams, path locks, approvals, and evidence.
                         </div>
                       </div>
                     </div>
@@ -7632,7 +7536,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 >
                   <div className="min-w-0">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <Pill tone={latestStatus}>{latestStatus}</Pill>
+                      <Pill tone={latestStatus}>{toneLabel(latestStatus)}</Pill>
                       <Pill
                         tone={
                           streamStatus === "live"
@@ -7733,15 +7637,15 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 >
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
-                      title="Work Scope Map"
-                      icon={Map}
+                      title="Scope Topology"
+                      icon={Network}
                       sectionKey="radar"
                       testId="codesite-operator-airspace-pane"
                       right={
                         <Pill>{zones.length || activeFlights.length}</Pill>
                       }
                     >
-                      <AirspaceMap
+                      <ScopeTopology
                         zones={zones}
                         noFlyZones={noFlyZones}
                         flights={activeFlights}
@@ -8098,7 +8002,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           <PathList paths={plan.route || []} />
                         </div>
                         <div className="justify-self-end">
-                          <Pill tone={plan.status}>{plan.status}</Pill>
+                          <Pill tone={plan.status}>{toneLabel(plan.status)}</Pill>
                         </div>
                       </Row>
                     ))}
@@ -8163,7 +8067,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           />
                         </div>
                         <div className="justify-self-end">
-                          <Pill tone={lease.status}>{lease.status}</Pill>
+                          <Pill tone={lease.status}>{toneLabel(lease.status)}</Pill>
                         </div>
                       </Row>
                     ))}
@@ -8218,7 +8122,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             <span className="truncate">
                               {compact(run.displayCallsign, "inspection")}
                             </span>
-                            <Pill tone={run.status}>{run.status}</Pill>
+                            <Pill tone={run.status}>{toneLabel(run.status)}</Pill>
                           </div>
                           <div className="mt-1">
                             <PathList
@@ -8530,7 +8434,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                                 <Pill tone="holding">response</Pill>
                               ) : null}
                               <Pill tone={item.status}>
-                                {compact(item.status, "pending")}
+                                {toneLabel(item.status)}
                               </Pill>
                             </div>
                           </div>
@@ -8614,7 +8518,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                             className="text-[10px]"
                             style={{ color: "var(--text-muted)" }}
                           >
-                            Class {zoneClass(zone)}
+                            {zoneTierLabel(zone)}
                           </div>
                         </div>
                         <PathList paths={zonePaths(zone)} empty="no paths" />
