@@ -109,6 +109,19 @@ const RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES = Object.freeze({
 const BUILD_METADATA_CONTENT_MAX_FILES = 12;
 const BUILD_METADATA_CONTENT_MAX_BYTES = 128 * 1024;
 const DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT = 5;
+const IDENTITY_SORT_SELECTION_ALGORITHM = 'sha256_seed_candidate_identity_sort_v1';
+const CLASS_BUCKET_SELECTION_ALGORITHM = 'sha256_seed_class_bucket_round_robin_v1';
+const SAMPLE_POOL_COVERAGE_CONTRACT_SCHEMA =
+  'synthi.gpu_hmr.random_large_project_cold_path_sample_pool_coverage_contract.v1';
+const SAMPLE_POOL_COVERAGE_CONTRACT_AUTHORITY =
+  'sample_pool_coverage_contract_only_not_gpu_hmr_success';
+const CONFIGURED_SAMPLE_POOL_REQUIRED_BUCKETS = Object.freeze([
+  'profiled_real_rocm_project',
+  'unprofiled_large_rocm_ml',
+  'large_graphics_or_native_gpu_stack',
+  'large_engine_or_rendering_project',
+  'large_multibackend_gpu_project',
+]);
 
 const DEFAULT_CANDIDATES = [
   {
@@ -986,25 +999,306 @@ async function loadDirectCandidates({ candidatesJson, candidatesPath } = {}) {
   return out;
 }
 
-function selectCandidates({ candidates, seed, count, candidateId }) {
+function normalizedSelectionToken(value, fallback = 'unknown') {
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return text || fallback;
+}
+
+function configuredSamplePoolSelectionBucket(candidate = {}) {
+  const sizeSignals = candidate.sizeSignals ?? candidate.size_signals ?? {};
+  const classToken = normalizedSelectionToken(sizeSignals.class ?? sizeSignals.kind);
+  const backendToken = normalizedSelectionToken(candidate.backendFamily ?? candidate.backend_family);
+  const profilePath = firstString(
+    candidate.profilePath,
+    candidate.profile_path,
+    candidate.runtimeProofProfilePath,
+    candidate.runtime_proof_profile_path,
+  );
+  if (profilePath && backendToken === 'real_rocm') return 'profiled_real_rocm_project';
+  if (classToken.includes('rocm') && classToken.includes('ml')) {
+    return 'unprofiled_large_rocm_ml';
+  }
+  if (
+    classToken.includes('webgpu')
+    || classToken.includes('wgpu')
+    || classToken.includes('vulkan')
+    || classToken.includes('metal')
+  ) {
+    return 'large_graphics_or_native_gpu_stack';
+  }
+  if (classToken.includes('engine') || classToken.includes('render')) {
+    return 'large_engine_or_rendering_project';
+  }
+  if (classToken.includes('multibackend') || classToken.includes('multi_backend')) {
+    return 'large_multibackend_gpu_project';
+  }
+  return `large_${backendToken}_${classToken}`;
+}
+
+function normalizedSelectionValues(values) {
+  const source = Array.isArray(values) ? values : [values];
+  return uniqueSortedStrings(
+    source
+      .map((value) => normalizedSelectionToken(value, ''))
+      .filter(Boolean),
+  );
+}
+
+function buildFamilyTokenForPath(pathName) {
+  const normalizedPath = String(pathName ?? '').trim().replace(/\\/g, '/').toLowerCase();
+  const base = normalizedPath.split('/').filter(Boolean).pop() ?? '';
+  if (base === 'cmakelists.txt') return 'cmake';
+  if (base === 'build.gn' || base === '.gn') return 'gn';
+  if (base === 'build.bazel' || base === 'workspace' || base === 'workspace.bazel') return 'bazel';
+  if (base === 'makefile' || base === 'gnumakefile') return 'make';
+  if (base === 'cargo.toml') return 'cargo';
+  if (base === 'package.json') return 'npm';
+  if (base === 'meson.build') return 'meson';
+  if (base === 'pyproject.toml' || base === 'setup.py') return 'python';
+  return null;
+}
+
+function candidateSelectionFacets(candidate = {}) {
+  const sizeSignals = candidate.sizeSignals ?? candidate.size_signals ?? {};
+  const buildSystemHints = candidate.buildSystemHints ?? candidate.build_system_hints ?? {};
+  const runtimeBoundaryHints = candidate.runtimeBoundaryHints ?? candidate.runtime_boundary_hints ?? {};
+  const oracleHints = candidate.oracleHints ?? candidate.oracle_hints ?? {};
+  const profilePath = firstString(
+    candidate.profilePath,
+    candidate.profile_path,
+    candidate.runtimeProofProfilePath,
+    candidate.runtime_proof_profile_path,
+  );
+  const buildHintPaths = [
+    ...firstArrayField(buildSystemHints, 'expectedFiles', 'expected_files'),
+    ...firstArrayField(buildSystemHints, 'observedFiles', 'observed_files'),
+    ...firstArrayField(buildSystemHints, 'buildFiles', 'build_files'),
+  ];
+  return {
+    selectionBucket: configuredSamplePoolSelectionBucket(candidate),
+    selection_bucket: configuredSamplePoolSelectionBucket(candidate),
+    backendFamily: normalizedSelectionToken(
+      candidate.backendFamily ?? candidate.backend_family,
+      'unknown_gpu_project',
+    ),
+    backend_family: normalizedSelectionToken(
+      candidate.backendFamily ?? candidate.backend_family,
+      'unknown_gpu_project',
+    ),
+    profileMode: normalizedSelectionToken(candidate.profileMode ?? candidate.profile_mode),
+    profile_mode: normalizedSelectionToken(candidate.profileMode ?? candidate.profile_mode),
+    profileKind: profilePath ? 'profile_or_runtime_profile_declared' : 'unprofiled_cold_intake',
+    profile_kind: profilePath ? 'profile_or_runtime_profile_declared' : 'unprofiled_cold_intake',
+    sizeClass: normalizedSelectionToken(sizeSignals.class ?? sizeSignals.kind),
+    size_class: normalizedSelectionToken(sizeSignals.class ?? sizeSignals.kind),
+    coldPathKind: normalizedSelectionToken(sizeSignals.coldPathKind ?? sizeSignals.cold_path_kind),
+    cold_path_kind: normalizedSelectionToken(sizeSignals.coldPathKind ?? sizeSignals.cold_path_kind),
+    buildFamilies: uniqueSortedStrings(buildHintPaths.map(buildFamilyTokenForPath).filter(Boolean)),
+    build_families: uniqueSortedStrings(buildHintPaths.map(buildFamilyTokenForPath).filter(Boolean)),
+    runtimeBoundaryStages: normalizedSelectionValues(
+      firstArrayField(runtimeBoundaryHints, 'required', 'requiredStages', 'required_stages'),
+    ),
+    runtime_boundary_stages: normalizedSelectionValues(
+      firstArrayField(runtimeBoundaryHints, 'required', 'requiredStages', 'required_stages'),
+    ),
+    oracleKinds: normalizedSelectionValues(
+      firstArrayField(oracleHints, 'expectedKinds', 'expected_kinds'),
+    ),
+    oracle_kinds: normalizedSelectionValues(
+      firstArrayField(oracleHints, 'expectedKinds', 'expected_kinds'),
+    ),
+  };
+}
+
+function candidateFacets(candidate = {}) {
+  return candidate.selectionFacets
+    ?? candidate.selection_facets
+    ?? candidateSelectionFacets(candidate);
+}
+
+function selectionFacetSummary(candidates = []) {
+  const facets = (Array.isArray(candidates) ? candidates : []).map(candidateFacets);
+  return {
+    selectionBuckets: uniqueSortedStrings(facets.map((facet) =>
+      facet.selectionBucket ?? facet.selection_bucket)),
+    selection_buckets: uniqueSortedStrings(facets.map((facet) =>
+      facet.selectionBucket ?? facet.selection_bucket)),
+    backendFamilies: uniqueSortedStrings(facets.map((facet) =>
+      facet.backendFamily ?? facet.backend_family)),
+    backend_families: uniqueSortedStrings(facets.map((facet) =>
+      facet.backendFamily ?? facet.backend_family)),
+    profileModes: uniqueSortedStrings(facets.map((facet) =>
+      facet.profileMode ?? facet.profile_mode)),
+    profile_modes: uniqueSortedStrings(facets.map((facet) =>
+      facet.profileMode ?? facet.profile_mode)),
+    profileKinds: uniqueSortedStrings(facets.map((facet) =>
+      facet.profileKind ?? facet.profile_kind)),
+    profile_kinds: uniqueSortedStrings(facets.map((facet) =>
+      facet.profileKind ?? facet.profile_kind)),
+    sizeClasses: uniqueSortedStrings(facets.map((facet) =>
+      facet.sizeClass ?? facet.size_class)),
+    size_classes: uniqueSortedStrings(facets.map((facet) =>
+      facet.sizeClass ?? facet.size_class)),
+    coldPathKinds: uniqueSortedStrings(facets.map((facet) =>
+      facet.coldPathKind ?? facet.cold_path_kind)),
+    cold_path_kinds: uniqueSortedStrings(facets.map((facet) =>
+      facet.coldPathKind ?? facet.cold_path_kind)),
+    buildFamilies: uniqueSortedStrings(facets.flatMap((facet) =>
+      facet.buildFamilies ?? facet.build_families ?? [])),
+    build_families: uniqueSortedStrings(facets.flatMap((facet) =>
+      facet.buildFamilies ?? facet.build_families ?? [])),
+    runtimeBoundaryStages: uniqueSortedStrings(facets.flatMap((facet) =>
+      facet.runtimeBoundaryStages ?? facet.runtime_boundary_stages ?? [])),
+    runtime_boundary_stages: uniqueSortedStrings(facets.flatMap((facet) =>
+      facet.runtimeBoundaryStages ?? facet.runtime_boundary_stages ?? [])),
+    oracleKinds: uniqueSortedStrings(facets.flatMap((facet) =>
+      facet.oracleKinds ?? facet.oracle_kinds ?? [])),
+    oracle_kinds: uniqueSortedStrings(facets.flatMap((facet) =>
+      facet.oracleKinds ?? facet.oracle_kinds ?? [])),
+  };
+}
+
+function samplePoolCoverageContract({ candidates, selected, requestedCount } = {}) {
+  const candidateSummary = selectionFacetSummary(candidates);
+  const selectedSummary = selectionFacetSummary(selected);
+  const availableBuckets = candidateSummary.selectionBuckets ?? [];
+  const selectedBuckets = selectedSummary.selectionBuckets ?? [];
+  const requiredBuckets = CONFIGURED_SAMPLE_POOL_REQUIRED_BUCKETS.filter((bucket) =>
+    availableBuckets.includes(bucket));
+  const missingRequiredBuckets = requiredBuckets.filter((bucket) => !selectedBuckets.includes(bucket));
+  const countValue = Math.max(1, Number(requestedCount) || 1);
+  const coverageEnforced = requiredBuckets.length > 0 && countValue >= requiredBuckets.length;
+  const coverageLimitedByRequestedCount = requiredBuckets.length > countValue;
+  const coverageHash = contentHash(stableJson({
+    requiredBuckets,
+    availableBuckets,
+    selectedBuckets,
+    requestedCount: countValue,
+    missingRequiredBuckets,
+  }));
+  return {
+    schemaVersion: SAMPLE_POOL_COVERAGE_CONTRACT_SCHEMA,
+    schema_version: SAMPLE_POOL_COVERAGE_CONTRACT_SCHEMA,
+    proofAuthority: SAMPLE_POOL_COVERAGE_CONTRACT_AUTHORITY,
+    proof_authority: SAMPLE_POOL_COVERAGE_CONTRACT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    requiredBuckets,
+    required_buckets: requiredBuckets,
+    availableBuckets,
+    available_buckets: availableBuckets,
+    selectedBuckets,
+    selected_buckets: selectedBuckets,
+    requiredBucketCount: requiredBuckets.length,
+    required_bucket_count: requiredBuckets.length,
+    selectedBucketCount: selectedBuckets.length,
+    selected_bucket_count: selectedBuckets.length,
+    requiredBucketCoverageSatisfied: missingRequiredBuckets.length === 0,
+    required_bucket_coverage_satisfied: missingRequiredBuckets.length === 0,
+    coverageEnforced,
+    coverage_enforced: coverageEnforced,
+    coverageLimitedByRequestedCount,
+    coverage_limited_by_requested_count: coverageLimitedByRequestedCount,
+    coverageAcceptableForRequestedCount:
+      !coverageEnforced || missingRequiredBuckets.length === 0,
+    coverage_acceptable_for_requested_count:
+      !coverageEnforced || missingRequiredBuckets.length === 0,
+    missingRequiredBuckets,
+    missing_required_buckets: missingRequiredBuckets,
+    candidateFacetSummary: candidateSummary,
+    candidate_facet_summary: candidateSummary,
+    selectedFacetSummary: selectedSummary,
+    selected_facet_summary: selectedSummary,
+    coverageHash,
+    coverage_hash: coverageHash,
+    evidenceRef: `random-cold-path-sample-pool-coverage:${coverageHash}`,
+    evidence_ref: `random-cold-path-sample-pool-coverage:${coverageHash}`,
+  };
+}
+
+function candidateSelectionEntry(candidate, seed, { stratifyByClass = false } = {}) {
+  const selectionFacets = candidateSelectionFacets(candidate);
+  const selectionBucket = stratifyByClass
+    ? selectionFacets.selectionBucket
+    : 'identity_sort';
+  const selectionAlgorithm = stratifyByClass
+    ? CLASS_BUCKET_SELECTION_ALGORITHM
+    : IDENTITY_SORT_SELECTION_ALGORITHM;
+  const selectionKey = sha256(
+    `${seed}\0${selectionAlgorithm}\0${selectionBucket}\0${candidate.id}\0${candidate.sourceUrl}\0${candidate.immutableCommit}`,
+  );
+  return {
+    candidate,
+    selectionAlgorithm,
+    selectionBucket,
+    selectionFacets,
+    selectionKey,
+  };
+}
+
+function selectCandidates({ candidates, seed, count, candidateId, stratifyByClass = false }) {
   let pool = candidates;
   if (candidateId) {
     pool = candidates.filter((candidate) => candidate.id === candidateId);
     if (pool.length === 0) throw new Error(`candidate not found: ${candidateId}`);
   }
   const requestedCount = Math.max(1, Math.min(Number(count) || 1, pool.length));
-  return pool
-    .map((candidate) => ({
-      candidate,
-      selectionKey: sha256(`${seed}\0${candidate.id}\0${candidate.sourceUrl}\0${candidate.immutableCommit}`),
-    }))
-    .sort((a, b) => a.selectionKey.localeCompare(b.selectionKey))
-    .slice(0, requestedCount)
-    .map((entry, rank) => ({
-      ...entry.candidate,
-      selectionRank: rank + 1,
-      selectionKey: entry.selectionKey,
-    }));
+  const entries = pool
+    .map((candidate) => candidateSelectionEntry(candidate, seed, { stratifyByClass }))
+    .sort((a, b) => a.selectionKey.localeCompare(b.selectionKey));
+  const selectedEntries = [];
+  if (stratifyByClass && !candidateId) {
+    const buckets = new Map();
+    for (const entry of entries) {
+      const queue = buckets.get(entry.selectionBucket) ?? [];
+      queue.push(entry);
+      buckets.set(entry.selectionBucket, queue);
+    }
+    const bucketOrder = [...buckets.keys()].sort((a, b) =>
+      sha256(`${seed}\0bucket\0${a}`).localeCompare(sha256(`${seed}\0bucket\0${b}`))
+    );
+    while (selectedEntries.length < requestedCount) {
+      let advanced = false;
+      for (const bucket of bucketOrder) {
+        const queue = buckets.get(bucket) ?? [];
+        if (queue.length === 0) continue;
+        selectedEntries.push(queue.shift());
+        advanced = true;
+        if (selectedEntries.length >= requestedCount) break;
+      }
+      if (!advanced) break;
+    }
+  } else {
+    selectedEntries.push(...entries.slice(0, requestedCount));
+  }
+  return selectedEntries.map((entry, rank) => ({
+    ...entry.candidate,
+    selectionRank: rank + 1,
+    selectionKey: entry.selectionKey,
+    selection_key: entry.selectionKey,
+    selectionBucket: entry.selectionBucket,
+    selection_bucket: entry.selectionBucket,
+    selectionAlgorithm: entry.selectionAlgorithm,
+    selection_algorithm: entry.selectionAlgorithm,
+    selectionFacets: entry.selectionFacets,
+    selection_facets: entry.selectionFacets,
+  }));
 }
 
 function defaultColdPathSelectionCount({
@@ -1065,6 +1359,24 @@ function coldPathSelectionAudit({
   const backendFamilies = uniqueSortedStrings(
     candidateList.map((candidate) => candidate.backendFamily ?? candidate.backend_family),
   );
+  const selectionAlgorithms = uniqueSortedStrings(
+    selectedList.map((candidate) => candidate.selectionAlgorithm ?? candidate.selection_algorithm),
+  );
+  const selectedBuckets = uniqueSortedStrings(
+    selectedList.map((candidate) => candidate.selectionBucket ?? candidate.selection_bucket),
+  );
+  const deterministicSelectionAlgorithm =
+    selectionAlgorithms.length === 1
+      ? selectionAlgorithms[0]
+      : selectionAlgorithms.length > 1
+        ? 'mixed_selection_algorithms'
+        : IDENTITY_SORT_SELECTION_ALGORITHM;
+  const selectedFacetSummary = selectionFacetSummary(selectedList);
+  const samplePoolCoverage = samplePoolCoverageContract({
+    candidates: candidateList,
+    selected: selectedList,
+    requestedCount: count,
+  });
   const selectedResultsMatch =
     selectedIds.length === resultIds.length
     && stableJson([...selectedIds].sort()) === stableJson([...resultIds].sort());
@@ -1096,6 +1408,10 @@ function coldPathSelectionAudit({
     candidateSources,
     profileModes,
     backendFamilies,
+    selectionAlgorithms,
+    selectedBuckets,
+    selectedFacetSummary,
+    samplePoolCoverageHash: samplePoolCoverage.coverageHash,
     candidateIds: candidateList.map((candidate) => candidate.id),
     selectedIds,
   };
@@ -1110,6 +1426,12 @@ function coldPathSelectionAudit({
     (sourceModeValue === 'configured_sample_pool' || sourceModeValue === 'configured_candidate_pool')
       && samplePool !== true
       ? 'cold_path_sample_pool_mode_not_explicitly_requested'
+      : null,
+    sourceModeValue === 'configured_sample_pool'
+      && samplePool === true
+      && samplePoolCoverage.coverageEnforced === true
+      && samplePoolCoverage.coverageAcceptableForRequestedCount !== true
+      ? 'cold_path_sample_pool_required_bucket_coverage_missing'
       : null,
   ].filter(Boolean);
   const auditHash = contentHash(stableJson({
@@ -1138,8 +1460,8 @@ function coldPathSelectionAudit({
     can_satisfy_dispatch_proof: false,
     sourceMode: sourceModeValue,
     source_mode: sourceModeValue,
-    deterministicSelectionAlgorithm: 'sha256_seed_candidate_identity_sort_v1',
-    deterministic_selection_algorithm: 'sha256_seed_candidate_identity_sort_v1',
+    deterministicSelectionAlgorithm,
+    deterministic_selection_algorithm: deterministicSelectionAlgorithm,
     targetNameIndependent: true,
     target_name_independent: true,
     projectNameWhitelist: [],
@@ -1166,6 +1488,16 @@ function coldPathSelectionAudit({
     profile_modes: profileModes,
     backendFamilies,
     backend_families: backendFamilies,
+    selectionAlgorithms,
+    selection_algorithms: selectionAlgorithms,
+    selectedBuckets,
+    selected_buckets: selectedBuckets,
+    selectedBucketCount: selectedBuckets.length,
+    selected_bucket_count: selectedBuckets.length,
+    selectedFacetSummary,
+    selected_facet_summary: selectedFacetSummary,
+    samplePoolCoverageContract: samplePoolCoverage,
+    sample_pool_coverage_contract: samplePoolCoverage,
     selectedResultsMatch,
     selected_results_match: selectedResultsMatch,
     candidatePoolHash: contentHash(stableJson(candidateList.map((candidate) => ({
@@ -5020,7 +5352,13 @@ async function buildManifest({
   samplePool = false,
   runCandidate = runSelectedCandidate,
 }) {
-  const selected = selectCandidates({ candidates, seed, count, candidateId });
+  const selected = selectCandidates({
+    candidates,
+    seed,
+    count,
+    candidateId,
+    stratifyByClass: sourceMode === 'configured_sample_pool',
+  });
   const runId = makeStamp();
   const startedAt = new Date().toISOString();
   let pendingWritten = null;
@@ -5124,9 +5462,23 @@ function createManifest({
   results,
   pendingWritten = null,
 }) {
+  const selectionAlgorithms = uniqueSortedStrings(
+    selected.map((candidate) => candidate.selectionAlgorithm ?? candidate.selection_algorithm),
+  );
+  const selectedBuckets = uniqueSortedStrings(
+    selected.map((candidate) => candidate.selectionBucket ?? candidate.selection_bucket),
+  );
+  const selectionAlgorithm =
+    selectionAlgorithms.length === 1
+      ? selectionAlgorithms[0]
+      : selectionAlgorithms.length > 1
+        ? 'mixed_selection_algorithms'
+        : IDENTITY_SORT_SELECTION_ALGORITHM;
   const selectionHash = contentHash(stableJson(selected.map((candidate) => ({
     id: candidate.id,
     key: candidate.selectionKey,
+    bucket: candidate.selectionBucket ?? candidate.selection_bucket ?? null,
+    algorithm: candidate.selectionAlgorithm ?? candidate.selection_algorithm ?? null,
   }))));
   const selectionAudit = coldPathSelectionAudit({
     seed,
@@ -5170,6 +5522,14 @@ function createManifest({
       candidate_count: candidates.length,
       selectedIds: selected.map((candidate) => candidate.id),
       selected_ids: selected.map((candidate) => candidate.id),
+      selectedBuckets,
+      selected_buckets: selectedBuckets,
+      selectedBucketCount: selectedBuckets.length,
+      selected_bucket_count: selectedBuckets.length,
+      selectionAlgorithm,
+      selection_algorithm: selectionAlgorithm,
+      selectionAlgorithms,
+      selection_algorithms: selectionAlgorithms,
       selectionHash,
       selection_hash: selectionHash,
     },
@@ -5230,6 +5590,12 @@ function createManifest({
       selection_rank: candidate.selectionRank,
       selectionKey: candidate.selectionKey,
       selection_key: candidate.selectionKey,
+      selectionBucket: candidate.selectionBucket,
+      selection_bucket: candidate.selectionBucket,
+      selectionAlgorithm: candidate.selectionAlgorithm,
+      selection_algorithm: candidate.selectionAlgorithm,
+      selectionFacets: candidate.selectionFacets,
+      selection_facets: candidate.selectionFacets,
       sizeSignals: candidate.sizeSignals,
       size_signals: candidate.sizeSignals,
       buildSystemHints: candidate.buildSystemHints,
@@ -5308,6 +5674,80 @@ async function selfCheck() {
   const second = selectCandidates({ candidates, seed: 'self-check-seed', count: 2 });
   if (stableJson(first) !== stableJson(second) || first.length !== 2) {
     throw new Error('random large-project cold-path selection is not deterministic');
+  }
+  if (
+    first.some((candidate) =>
+      candidate.selectionAlgorithm !== IDENTITY_SORT_SELECTION_ALGORITHM
+      || candidate.selectionBucket !== 'identity_sort'
+    )
+  ) {
+    throw new Error('random large-project cold-path direct identity selection changed unexpectedly');
+  }
+  const stratifiedDefault = selectCandidates({
+    candidates: defaultCandidates,
+    seed: 'stratified-default-self-check-seed',
+    count: DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT,
+    stratifyByClass: true,
+  });
+  const stratifiedDefaultBuckets = uniqueSortedStrings(
+    stratifiedDefault.map((candidate) => candidate.selectionBucket),
+  );
+  const stratifiedDefaultAudit = coldPathSelectionAudit({
+    seed: 'stratified-default-self-check-seed',
+    count: DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT,
+    dryRun: true,
+    candidates: defaultCandidates,
+    selected: stratifiedDefault,
+    results: stratifiedDefault.map((candidate) => ({ candidateId: candidate.id })),
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
+  });
+  if (
+    stratifiedDefault.length !== DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT
+    || !CONFIGURED_SAMPLE_POOL_REQUIRED_BUCKETS.every((bucket) =>
+      stratifiedDefaultBuckets.includes(bucket))
+    || stratifiedDefault.some((candidate) =>
+      candidate.selectionAlgorithm !== CLASS_BUCKET_SELECTION_ALGORITHM
+      || !candidate.selectionFacets
+      || candidate.acceptedForGpuHmr === true
+      || candidate.gpuHmrSuccess === true
+      || candidate.canSatisfyRuntimeProof === true
+    )
+    || stratifiedDefaultAudit.accepted !== true
+    || stratifiedDefaultAudit.deterministicSelectionAlgorithm !== CLASS_BUCKET_SELECTION_ALGORITHM
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.schemaVersion
+      !== SAMPLE_POOL_COVERAGE_CONTRACT_SCHEMA
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.proofAuthority
+      !== SAMPLE_POOL_COVERAGE_CONTRACT_AUTHORITY
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.requiredBucketCoverageSatisfied !== true
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.acceptedForGpuHmr !== false
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.gpuHmrSuccess !== false
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.canSatisfyRuntimeProof !== false
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.projectNameWhitelist?.length !== 0
+    || stratifiedDefaultAudit.samplePoolCoverageContract?.specificTargetIdsAllowed?.length !== 0
+    || !stratifiedDefaultAudit.selectedFacetSummary?.runtimeBoundaryStages?.includes('output_oracle')
+    || !stratifiedDefaultAudit.selectedFacetSummary?.oracleKinds?.some((kind) =>
+      kind.includes('readback') || kind.includes('visual'))
+  ) {
+    throw new Error('random large-project cold-path configured sample-pool stratified coverage self-check failed');
+  }
+  const narrowStratifiedAudit = coldPathSelectionAudit({
+    seed: 'narrow-stratified-self-check-seed',
+    count: 2,
+    dryRun: true,
+    candidates: defaultCandidates,
+    selected: stratifiedDefault.slice(0, 2),
+    results: stratifiedDefault.slice(0, 2).map((candidate) => ({ candidateId: candidate.id })),
+    sourceMode: 'configured_sample_pool',
+    samplePool: true,
+  });
+  if (
+    narrowStratifiedAudit.accepted !== true
+    || narrowStratifiedAudit.samplePoolCoverageContract?.coverageLimitedByRequestedCount !== true
+    || narrowStratifiedAudit.samplePoolCoverageContract?.coverageEnforced !== false
+    || narrowStratifiedAudit.samplePoolCoverageContract?.coverageAcceptableForRequestedCount !== true
+  ) {
+    throw new Error('random large-project cold-path narrow sample-pool coverage accounting failed');
   }
   const unprofiledRocmMlCandidates = DEFAULT_CANDIDATES.filter((candidate) =>
     String(candidate.id ?? '').startsWith('unprofiled-rocm-')
@@ -5527,6 +5967,11 @@ async function selfCheck() {
     || multiResultManifest.selectionAudit?.projectNameWhitelist?.length !== 0
     || multiResultManifest.selectionAudit?.specificTargetIdsAllowed?.length !== 0
     || multiResultManifest.selectionAudit?.selectedResultsMatch !== true
+    || multiResultManifest.selection?.selectionAlgorithm !== CLASS_BUCKET_SELECTION_ALGORITHM
+    || multiResultManifest.selectionAudit?.samplePoolCoverageContract?.proofAuthority
+      !== SAMPLE_POOL_COVERAGE_CONTRACT_AUTHORITY
+    || multiResultManifest.selectionAudit?.samplePoolCoverageContract?.acceptedForGpuHmr !== false
+    || multiResultManifest.selectionAudit?.samplePoolCoverageContract?.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path multi-result manifest did not preserve one result per selected candidate');
   }
