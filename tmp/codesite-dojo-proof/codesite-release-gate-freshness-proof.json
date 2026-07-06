@@ -1,0 +1,1094 @@
+{
+  "ok": false,
+  "schemaVersion": "synthi.codesite.releaseGate.v1",
+  "generatedAt": "2026-07-04T15:13:18.556Z",
+  "proofRoot": "tmp/codesite-dojo-proof",
+  "slug": "codesite-mature-full-proof-20260703-overlay13",
+  "checks": [
+    {
+      "name": "workflowAssertions",
+      "count": 44,
+      "ok": true
+    },
+    {
+      "name": "proofGitProvenance",
+      "ok": false,
+      "proofHead": "3c41db1df4e8577602e20a2b9925fc849ff399c2",
+      "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+      "postProofChangedPathCount": 293,
+      "artifactOnlyPostProofChanges": false,
+      "samplePostProofChangedPaths": [
+        "backend/collab-server/__tests__/codesiteActiveBoundary.test.js",
+        "backend/collab-server/__tests__/codesiteActivityRegistry.test.js",
+        "backend/collab-server/__tests__/codesiteFs.test.js",
+        "backend/collab-server/__tests__/codesiteHostWriteSentinel.test.js",
+        "backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+        "backend/collab-server/codesiteActiveBoundary.js",
+        "backend/collab-server/codesiteActivityRegistry.js",
+        "backend/collab-server/codesiteFs.js",
+        "backend/collab-server/codesiteHostWriteSentinel.js",
+        "backend/collab-server/gitService.js",
+        "backend/collab-server/server.js",
+        "backend/collab-server/terminalService.js",
+        "mcp/synthi-mcp/src/tool_registry.ts",
+        "mcp/synthi-mcp/src/tools/codesite.ts",
+        "mcp/synthi-mcp/tests/unit/codesite_tools.test.ts",
+        "synthi/next.config.mjs",
+        "synthi/prisma/migrations/20260704120000_add_codesite_governance_workflows/migration.sql",
+        "synthi/prisma/schema.prisma",
+        "synthi/scripts/codesite-full-workflow-proof.mjs",
+        "synthi/scripts/codesite-proof-verify.mjs",
+        "synthi/scripts/codesite-release-gate.mjs",
+        "synthi/scripts/codesite-ui-governance-proof.mjs",
+        "synthi/src/app/api/workspace/[slug]/codesite/[[...path]]/route.js",
+        "synthi/src/components/codesite/CodeSitePanel.jsx"
+      ]
+    },
+    {
+      "name": "visualArtifacts",
+      "checked": 8,
+      "ok": true
+    },
+    {
+      "name": "runtimeMountBoundary",
+      "assertions": 10,
+      "ok": true
+    },
+    {
+      "name": "activeTransactionAuthority",
+      "assertions": 48,
+      "commands": 17,
+      "qualityCounters": 34,
+      "dockerTests": 119,
+      "visualBytes": 1012000,
+      "ok": true
+    },
+    {
+      "name": "maturePlanProofSuite",
+      "required": 37,
+      "artifacts": [
+        {
+          "name": "activeMutationBoundary",
+          "plan": "2A.1, 2B, 25.2A",
+          "assertions": 17,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 12,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "d876f8dcf69057bbe5880b2062c99c28f3abcaac",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 61,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 5,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 12,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "gitServiceBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "gitServiceIndexBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "gitServiceWorktreeBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "directGitServiceBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 27,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 10,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "17260cd34eab7e138d1c0e75aa6b5d100f37e265",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 493,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 3,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 10,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "gitProvisioningBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 12,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 12,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "repoCacheBoundary",
+          "plan": "2A.3, 2B",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 12,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "70632b69b2ef6ef6d098cd94811163086a6449c8",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 499,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 4,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 12,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "workspacePrepGuard",
+          "plan": "2A.3, 25.2C",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 10,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 10,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "runtimeFilesystemHydration",
+          "plan": "2A.3, 25.2C",
+          "assertions": 18,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 12,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 18,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "runtimeOverlay",
+          "plan": "2A.3, 25.2C",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 13,
+          "dockerCommands": 9,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 13,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "runtimeQuarantine",
+          "plan": "2A.3, 26.9",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "codesiteFsRuntimeBoundary",
+          "plan": "2A.3, 25.2C, 26.9",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "quarantineReview",
+          "plan": "2A.3, 26.9",
+          "assertions": 39,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "proofCarryingCommit",
+          "plan": "2A.4, 25.7B, 26.4",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "actualGitCommitProof",
+          "plan": "2A.4, 25.7B, 26.4",
+          "assertions": 9,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 2,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "4fb05559f4090aa2f0cbfd60823a85ea09757bee",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 43,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 7,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "proofBundleGitContext",
+          "plan": "2A.4, 25.7B, 26.4",
+          "assertions": 5,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 2,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "695d02b89562ba72c706a23ba4e813b862945e32",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 26,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 3,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "repoStateIdentity",
+          "plan": "2A.2, 2A.4, 25.7A, 26.4",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 4,
+          "dockerCommands": 4,
+          "freshness": {
+            "proofHead": "9f198089c6eae735b46c10e61e6bb8c180eb951a",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 36,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 5,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 4,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "blackBoxCompleteness",
+          "plan": "2A.5, 25.7B, 26.8",
+          "assertions": 6,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 2,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "8a839ae92d4d19d82e773843f93ebefdd0595ca0",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 30,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 3,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 2,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "lineInspector",
+          "plan": "2A.6, 25.7B, 26.10",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 2,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "lineProvenanceDiff",
+          "plan": "2A.6, 25.7B, 26.10",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 4,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "ab813ebb9ca60da71df7a0e7cca290b56398f0ce",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 47,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 5,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 4,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "shadowSimulator",
+          "plan": "2A.5, 25.4, 26.6",
+          "assertions": 13,
+          "visuals": 1,
+          "browserCaptures": 2,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "runwayOccupancy",
+          "plan": "26.2",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "counterfactualMemory",
+          "plan": "22, 25.9",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "repoPolicyCompiler",
+          "plan": "2A.7, 25.0",
+          "assertions": 10,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "repoLocalAutosync",
+          "plan": "23",
+          "assertions": 12,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "radarAdapter",
+          "plan": "8, 15, 25.3",
+          "assertions": 4,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "governanceMcpLifecycle",
+          "plan": "2C, 16, 19, 20, 21.4-21.7, 23, 25.2B",
+          "assertions": 8,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 4,
+          "dockerCommands": 4,
+          "freshness": {
+            "proofHead": "cf75ecc62046bbde2c19b9f7438eaad8023bebaf",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 16,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 2,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 4,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "radarUi",
+          "plan": "8, 25.3, 26.1",
+          "assertions": 0,
+          "visuals": 2,
+          "browserCaptures": 2,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "schemaFirstClearance",
+          "plan": "9, 17, 25.4",
+          "assertions": 4,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "metrics",
+          "plan": "27",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 5,
+          "dockerCommands": 5,
+          "freshness": {
+            "proofHead": "505daf0870ea7f1444036f22769efaacd39e72b1",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 20,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 1,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 4,
+          "metricThresholds": {
+            "requiredMeasured": 6,
+            "thresholds": 6,
+            "passed": 6
+          },
+          "ok": false
+        },
+        {
+          "name": "isolationContract",
+          "plan": "2A.1, 26.7",
+          "assertions": 9,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "serializableCommitRace",
+          "plan": "2A.1, 26.7",
+          "assertions": 14,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 4,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": "31f90d1f170d2bdf5dff209ba9bf3b9f96f451e6",
+            "currentHead": "0e2ba313a3a780b83d15757cf5d2ba665fda1ea0",
+            "postProofChangedPathCount": 51,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": 1,
+            "recordedDirtyPathsArtifactOnly": true,
+            "ok": false
+          },
+          "qualityCounters": 4,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "runtimeContext",
+          "plan": "20, 25.2C",
+          "assertions": 7,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 0,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "contextAlias",
+          "plan": "20, 25.2C",
+          "assertions": 6,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "monitorDowngrade",
+          "plan": "2A.3, 28",
+          "assertions": 5,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "pathlessRun",
+          "plan": "2A.3, 28",
+          "assertions": 5,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 0,
+          "dockerCommands": 0,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 1,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        },
+        {
+          "name": "terminalReattach",
+          "plan": "2A.3, 28",
+          "assertions": 15,
+          "visuals": 1,
+          "browserCaptures": 0,
+          "commands": 4,
+          "dockerCommands": 2,
+          "freshness": {
+            "proofHead": null,
+            "currentHead": null,
+            "postProofChangedPathCount": null,
+            "artifactOnlyPostProofChanges": false,
+            "recordedDirtyPathCount": null,
+            "recordedDirtyPathsArtifactOnly": false,
+            "ok": false
+          },
+          "qualityCounters": 7,
+          "metricThresholds": {
+            "requiredMeasured": 0,
+            "thresholds": 0,
+            "passed": 0
+          },
+          "ok": false
+        }
+      ],
+      "assertions": 428,
+      "visuals": 38,
+      "browserCaptures": 6,
+      "commands": 112,
+      "dockerCommands": 46,
+      "ok": false
+    },
+    {
+      "name": "proofBundles",
+      "found": 1,
+      "verified": 0,
+      "gitVerified": 0,
+      "ok": false
+    },
+    {
+      "name": "codexAgentEvidence",
+      "records": 3,
+      "valid": 0,
+      "ok": false
+    }
+  ],
+  "warnings": [],
+  "failures": [
+    "post-proof non-artifact changes detected after 3c41db1df4e8577602e20a2b9925fc849ff399c2: backend/collab-server/__tests__/codesiteActiveBoundary.test.js, backend/collab-server/__tests__/codesiteActivityRegistry.test.js, backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/__tests__/codesiteHostWriteSentinel.test.js, backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js, backend/collab-server/codesiteActiveBoundary.js, backend/collab-server/codesiteActivityRegistry.js, backend/collab-server/codesiteFs.js, backend/collab-server/codesiteHostWriteSentinel.js, backend/collab-server/gitService.js, backend/collab-server/server.js, backend/collab-server/terminalService.js, mcp/synthi-mcp/src/tool_registry.ts, mcp/synthi-mcp/src/tools/codesite.ts, mcp/synthi-mcp/tests/unit/codesite_tools.test.ts, synthi/next.config.mjs, synthi/prisma/migrations/20260704120000_add_codesite_governance_workflows/migration.sql, synthi/prisma/schema.prisma, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-proof-verify.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/app/api/workspace/[slug]/codesite/[[...path]]/route.js, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/components/codesite/__tests__/CodeSitePanel.test.jsx, synthi/src/components/codesite/codesiteClient.js, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/__tests__/metrics.test.js, synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js, synthi/src/lib/codesite/artifacts.js, synthi/src/lib/codesite/controlPlane.js, synthi/src/lib/codesite/metrics.js, tmp/codesite-governance-gate-proof/governance-gate-proof-mobile.png, tmp/codesite-governance-gate-proof/governance-gate-proof.html, tmp/codesite-governance-gate-proof/governance-gate-proof.json, tmp/codesite-governance-gate-proof/governance-gate-proof.png, tmp/codesite-governance-proof/governance-control-plane-proof-mobile.png, tmp/codesite-governance-proof/governance-control-plane-proof.html, tmp/codesite-governance-proof/governance-control-plane-proof.json, tmp/codesite-governance-proof/governance-control-plane-proof.png, tmp/codesite-mcp-lifecycle-proof/mcp-lifecycle-proof-desktop.png, tmp/codesite-mcp-lifecycle-proof/mcp-lifecycle-proof-mobile.png, tmp/codesite-mcp-lifecycle-proof/mcp-lifecycle-proof.html, tmp/codesite-mcp-lifecycle-proof/mcp-lifecycle-proof.json, tmp/codesite-metrics-proof/human-review-savings-proof-desktop.png, tmp/codesite-metrics-proof/human-review-savings-proof-mobile.png, tmp/codesite-metrics-proof/human-review-savings-proof.html, tmp/codesite-metrics-proof/human-review-savings-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-tower-feed.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "proof script synthi/scripts/codesite-full-workflow-proof.mjs changed after recorded proof gitHead 3c41db1df4e8577602e20a2b9925fc849ff399c2",
+    "tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json recorded dirty non-artifact paths during proof run: backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js, backend/collab-server/codesiteActiveBoundary.js, backend/collab-server/gitService.js, backend/collab-server/server.js",
+    "tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json non-artifact changes occurred after proof head d876f8dcf69057bbe5880b2062c99c28f3abcaac: backend/collab-server/__tests__/codesiteActivityRegistry.test.js, backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js, backend/collab-server/codesiteActiveBoundary.js, backend/collab-server/codesiteActivityRegistry.js, backend/collab-server/codesiteFs.js, backend/collab-server/gitService.js, backend/collab-server/server.js, mcp/synthi-mcp/src/tools/codesite.ts, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-proof-verify.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png",
+    "tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json recorded dirty non-artifact paths during proof run: backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js, backend/collab-server/gitService.js, backend/collab-server/server.js",
+    "tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json non-artifact changes occurred after proof head 17260cd34eab7e138d1c0e75aa6b5d100f37e265: backend/collab-server/.gitignore, backend/collab-server/__tests__/codesiteActiveBoundary.test.js, backend/collab-server/__tests__/codesiteActivityEndpoint.test.js, backend/collab-server/__tests__/codesiteActivityRegistry.test.js, backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/__tests__/codesiteHostWriteSentinel.test.js, backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js, backend/collab-server/__tests__/runtimeFilesystem.test.js, backend/collab-server/__tests__/terminalRouting.test.js, backend/collab-server/__tests__/workspacePrepManager.test.js, backend/collab-server/codesiteActiveBoundary.js, backend/collab-server/codesiteActivityEndpoint.js, backend/collab-server/codesiteActivityRegistry.js, backend/collab-server/codesiteControlPlaneTrust.js, backend/collab-server/codesiteFs.js, backend/collab-server/codesiteHostWriteSentinel.js, backend/collab-server/config.js, backend/collab-server/gitService.js, backend/collab-server/runtimeFilesystem.js, backend/collab-server/runtimePodTerminal.js, backend/collab-server/server.js, backend/collab-server/terminalRouting.js, backend/collab-server/terminalService.js, backend/collab-server/workspacePrepManager.js",
+    "tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json recorded dirty non-artifact paths during proof run: backend/collab-server/gitService.js, backend/collab-server/repoCache.js, backend/collab-server/server.js, backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js",
+    "tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json non-artifact changes occurred after proof head 70632b69b2ef6ef6d098cd94811163086a6449c8: backend/collab-server/.gitignore, backend/collab-server/__tests__/codesiteActiveBoundary.test.js, backend/collab-server/__tests__/codesiteActivityEndpoint.test.js, backend/collab-server/__tests__/codesiteActivityRegistry.test.js, backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/__tests__/codesiteHostWriteSentinel.test.js, backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js, backend/collab-server/__tests__/repoCacheCodesiteBoundary.test.js, backend/collab-server/__tests__/runtimeFilesystem.test.js, backend/collab-server/__tests__/terminalRouting.test.js, backend/collab-server/__tests__/workspacePrepManager.test.js, backend/collab-server/codesiteActiveBoundary.js, backend/collab-server/codesiteActivityEndpoint.js, backend/collab-server/codesiteActivityRegistry.js, backend/collab-server/codesiteControlPlaneTrust.js, backend/collab-server/codesiteFs.js, backend/collab-server/codesiteHostWriteSentinel.js, backend/collab-server/config.js, backend/collab-server/gitService.js, backend/collab-server/repoCache.js, backend/collab-server/runtimeFilesystem.js, backend/collab-server/runtimePodTerminal.js, backend/collab-server/server.js, backend/collab-server/terminalRouting.js",
+    "tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json recorded dirty non-artifact paths during proof run: mcp/synthi-mcp/src/tools/codesite.ts, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-proof-verify.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js, synthi/src/lib/codesite/controlPlane.js",
+    "tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json non-artifact changes occurred after proof head 4fb05559f4090aa2f0cbfd60823a85ea09757bee: backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/codesiteFs.js, mcp/synthi-mcp/src/tools/codesite.ts, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-proof-verify.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json recorded dirty non-artifact paths during proof run: synthi/scripts/codesite-release-gate.mjs, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js",
+    "tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json non-artifact changes occurred after proof head 695d02b89562ba72c706a23ba4e813b862945e32: synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json recorded dirty non-artifact paths during proof run: backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/codesiteFs.js, synthi/scripts/codesite-release-gate.mjs, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js",
+    "tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json non-artifact changes occurred after proof head 9f198089c6eae735b46c10e61e6bb8c180eb951a: backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/codesiteFs.js, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json recorded dirty non-artifact paths during proof run: synthi/scripts/codesite-release-gate.mjs, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js",
+    "tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json non-artifact changes occurred after proof head 8a839ae92d4d19d82e773843f93ebefdd0595ca0: synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-line-inspector-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-line-inspector-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json recorded dirty non-artifact paths during proof run: backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/codesiteFs.js, synthi/scripts/codesite-release-gate.mjs, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/controlPlane.js",
+    "tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json non-artifact changes occurred after proof head ab813ebb9ca60da71df7a0e7cca290b56398f0ce: backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/codesiteFs.js, mcp/synthi-mcp/src/tools/codesite.ts, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-proof-verify.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json recorded dirty non-artifact paths during proof run: synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-release-gate.mjs",
+    "tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json non-artifact changes occurred after proof head cf75ecc62046bbde2c19b9f7438eaad8023bebaf: synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-radar-ui-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-radar-ui-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-metrics-proof.json recorded dirty non-artifact paths during proof run: synthi/scripts/codesite-release-gate.mjs",
+    "tmp/codesite-dojo-proof/codesite-metrics-proof.json non-artifact changes occurred after proof head 505daf0870ea7f1444036f22769efaacd39e72b1: synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json non-artifact changes occurred after proof head 31f90d1f170d2bdf5dff209ba9bf3b9f96f451e6: backend/collab-server/__tests__/codesiteFs.test.js, backend/collab-server/codesiteFs.js, mcp/synthi-mcp/src/tools/codesite.ts, synthi/scripts/codesite-full-workflow-proof.mjs, synthi/scripts/codesite-proof-verify.mjs, synthi/scripts/codesite-release-gate.mjs, synthi/scripts/codesite-ui-governance-proof.mjs, synthi/src/components/codesite/CodeSitePanel.jsx, synthi/src/lib/codesite/__tests__/controlPlane.test.js, synthi/src/lib/codesite/__tests__/proofVerifierCli.test.js, synthi/src/lib/codesite/controlPlane.js, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-cockpit.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-console.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-desktop.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-mobile-shell.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.html, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-proof.json, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-reduced-motion.png, tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704150335/codesite-ui-governance-tower-feed.png",
+    "tmp/codesite-dojo-proof/codesite-runtime-context-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-runtime-context-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-context-alias-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-context-alias-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-pathless-run-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/codesite-pathless-run-proof.json commands must include at least one executable validation command",
+    "tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json missing git head provenance",
+    "tmp/codesite-dojo-proof/app-artifacts/codesite-mature-full-proof-20260703-overlay13/.synthi/codesite/projects/cmr5n8kw400w5pm0zr1b3t9xu/proof-bundles/cmr5nfxsx013mpm0z8sams7cu.proof.json failed trusted proof verification: commit trailer CodeSite-Proof-Digest mismatch: expected sha256:47239b17db4c8d30f923704b2c3f620ab1a9824e3f7dc145684aef2cca654bde, observed sha256:335215f50852a2b739a490397460eecc2e1ec8cc6e189c1e5e57d73f1be6627e; commit trailer CodeSite-Proof-Signature mismatch: expected ed25519:codesite-proof-ed25519-20260702:weYZ7jXItnIIFie-xi0-0ACemnSsCQkJkFMuVwiAn5ZW682XS8QId099xy6R7zMcSWjdI48svnYhSK5HTsVmBw, observed ed25519:codesite-proof-ed25519-20260702:vmfLoF-3WBOLZ0_6R_qr35Ayk0iqjNcAsBexgBxhr8AJfpB4dkjw4z58ofGobaIs14kbqsUz7HwRXLdSbM3XBA",
+    "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay13/API-02.json workflowActions.1 references unknown MCP tool synthi_codesite_file_execution_plan",
+    "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay13/SCHEMA-01.json workflowActions.1 references unknown MCP tool synthi_codesite_file_execution_plan",
+    "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-mature-full-proof-20260703-overlay13/TEST-03.json workflowActions.1 references unknown MCP tool synthi_codesite_file_execution_plan"
+  ]
+}

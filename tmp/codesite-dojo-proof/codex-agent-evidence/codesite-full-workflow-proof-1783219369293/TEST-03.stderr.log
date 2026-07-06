@@ -1,0 +1,24 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp" (codex_home: AbsolutePathBuf("/tmp/codesite-codex-agent-home-dev"))
+Reading additional input from stdin...
+2026-07-05T02:47:57.568855Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:47:57.569716Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:47:58.123487Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:47:58.178585Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.178621Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.180406Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.180458Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.183321Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.183358Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.188912Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.188967Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.191256Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.191284Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.192808Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:58.192823Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-05T02:47:59.971619Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:48:04.327293Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:48:12.868068Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:48:20.391961Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:48:23.548317Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:48:26.984120Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/tmp/codesite-codex-agent-home-dev/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-05T02:48:35.803139Z  WARN codex_file_watcher: failed to unwatch /tmp/codesite-codex-agent-home-dev/skills/.system: No watch was found. about ["/tmp/codesite-codex-agent-home-dev/skills/.system"]

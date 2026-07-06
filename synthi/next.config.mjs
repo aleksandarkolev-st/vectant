@@ -26,6 +26,7 @@ const contentSecurityPolicy = buildContentSecurityPolicy(
 
 /** @type {import('next').NextConfig} */
 const nextConfig = { eslint: { ignoreDuringBuilds: true },
+  devIndicators: false,
   // Produce a self-contained build in .next/standalone for Docker deployment.
   // This copies only the files needed to run the app (~150 MB vs full node_modules).
   output: 'standalone',

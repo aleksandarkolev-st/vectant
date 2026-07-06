@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3107';
 
@@ -45,6 +46,21 @@ function createApi(baseUrl, slug) {
 
 function assertProof(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function getProject(api, projectId) {
+  return (await api(`/projects/${encodeURIComponent(projectId)}`)).project;
+}
+
+function policyDeltaByRule(project, rule, replayRef = null) {
+  return (project.policyDeltas || []).find((delta) => (
+    delta.ruleCandidate?.rule === rule
+    && (!replayRef || (delta.replayRefs || []).includes(replayRef))
+  ));
+}
+
+function counterfactualRunById(project, runId) {
+  return (project.counterfactualRuns || []).find((run) => run.id === runId);
 }
 
 function repoSignals() {
@@ -188,12 +204,20 @@ pre{white-space:pre-wrap;border:1px solid #273044;border-radius:8px;background:#
 <section class="grid">
 <div class="card"><div class="label">Workspace</div><div class="value">${escapeHtml(proof.slug)}</div></div>
 <div class="card"><div class="label">Simulation project</div><div class="value">${escapeHtml(proof.simulationProject.id)}</div></div>
+<div class="card"><div class="label">Choice scene run</div><div class="value">${escapeHtml(proof.choiceSceneRun.id)}</div></div>
 <div class="card"><div class="label">Simulator delta</div><div class="value">${escapeHtml(proof.simulatorDelta.id)}</div></div>
 <div class="card"><div class="label">Lease delta</div><div class="value">${escapeHtml(proof.leaseDelta.id)}</div></div>
 </section>
 <section class="card"><h2>Before And After Tower Decision</h2><table><thead><tr><th>Run</th><th>Selected</th><th>Applied deltas</th><th>Reason codes</th></tr></thead><tbody>
 <tr><td>Before memory</td><td>${escapeHtml(proof.before.selected)}</td><td>${escapeHtml((proof.before.appliedPolicyDeltas || []).join(', ') || 'none')}</td><td>${escapeHtml((proof.before.reason.reasonCodes || []).join(', '))}</td></tr>
 <tr><td>After promoted delta</td><td>${escapeHtml(proof.after.selected)}</td><td>${escapeHtml((proof.after.appliedPolicyDeltas || []).join(', '))}</td><td>${escapeHtml((proof.after.reason.reasonCodes || []).join(', '))}</td></tr>
+</tbody></table></section>
+<section class="card"><h2>Mature Learning Signals</h2><table><tbody>
+<tr><th>Choice-scene candidates</th><td>${escapeHtml(proof.choiceSceneRun.arbiterVerdict?.counterfactualLearning?.inferredCandidateCount || 0)}</td></tr>
+<tr><th>Learning signals</th><td>${escapeHtml((proof.choiceSceneRun.arbiterVerdict?.counterfactualLearning?.learningSignals || []).join(', '))}</td></tr>
+<tr><th>Collision hints</th><td>${escapeHtml((proof.collisionForecast.regretMemoryPolicyHints || []).map((hint) => hint.rule).join(', '))}</td></tr>
+<tr><th>Incident delta</th><td>${escapeHtml(`${proof.incident.policyDelta?.id || 'missing'} / ${proof.incident.policyDelta?.ruleCandidate?.rule || 'missing'}`)}</td></tr>
+<tr><th>Manual rewrites linked</th><td>${escapeHtml((proof.updatedChoiceSceneRun?.laterManualEdits || []).filter((edit) => edit.incidentId).map((edit) => `${edit.path}:${edit.incidentId}`).join(', '))}</td></tr>
 </tbody></table></section>
 <section class="card"><h2>Lease Gate</h2><pre>${escapeHtml(JSON.stringify(proof.leaseDecision, null, 2))}</pre></section>
 <section><pre>${escapeHtml(JSON.stringify(proof.assertions, null, 2))}</pre></section>
@@ -215,7 +239,9 @@ async function main() {
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
   const dir = proofDir();
   fs.mkdirSync(dir, { recursive: true });
-  const api = createApi(baseUrl, slug);
+  const { api } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Counterfactual memory proof workspace',
+  });
 
   const simulationProject = await createCoordinationProject(api);
   const strategies = ['schema-first', 'frontend-backend-parallel', 'test-first'];
@@ -223,29 +249,97 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ strategies }),
   });
-  const proposedSimulatorDelta = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/policy-deltas`, {
+
+  const choiceSceneRun = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/counterfactual-runs`, {
     method: 'POST',
     body: JSON.stringify({
-      learnedFromIncidents: ['near-miss-signup-contract-001'],
-      ruleCandidate: {
-        rule: 'contract_churn_requires_owned_tests',
-        preferredStrategies: ['test-first'],
-        avoidStrategies: ['schema-first', 'frontend-backend-parallel'],
-        requiredTowerActions: ['run_owned_tests_before_landing'],
-      },
-      triggerConditions: [{ risk: 'semantic_collision' }, { path: 'packages/schemas/**' }],
-      expectedRiskReduction: 0.6,
-      confidence: 0.95,
-      replayRefs: [`shadow:job:${before.shadowJobRef}`],
+      shadowJobRef: before.shadowJobRef,
+      repoSnapshot: before.baseSnapshot,
+      choices: [
+        {
+          universe: 'test-first',
+          result: 'passed',
+          affectedRoutes: ['packages/schemas/auth.ts', 'app/signup/page.tsx'],
+          inspectionCost: 3,
+          staleAssumptions: 0,
+          reworkRiskReduction: 0.52,
+          evidenceRefs: ['test:auth-signup-owned'],
+        },
+        {
+          universe: 'schema-first',
+          result: 'near_miss',
+          affectedRoutes: ['packages/schemas/auth.ts'],
+          unresolvedRisks: ['semantic_collision'],
+          predictedCollisionRisk: 0.72,
+          staleAssumptions: 2,
+          incidents: ['near-miss-signup-contract-001'],
+        },
+        {
+          universe: 'frontend-backend-parallel',
+          result: 'near_miss',
+          affectedRoutes: ['app/signup/page.tsx', 'packages/schemas/auth.ts'],
+          unresolvedRisks: ['semantic_collision'],
+          predictedCollisionRisk: 0.84,
+          staleAssumptions: 3,
+          incidents: ['near-miss-signup-contract-001', 'near-miss-profile-payload-002'],
+        },
+      ],
+      arbiterVerdict: { selected: 'test-first', humanOverride: null },
+      applyResult: { result: 'applied', selected: 'test-first' },
+      nearMisses: ['near-miss-signup-contract-001', 'near-miss-profile-payload-002'],
+      laterManualEdits: [{
+        path: 'app/generated/auth-client.ts',
+        reason: 'manual rewrite refreshed downstream generated client after schema contract churn',
+        incidentRefs: ['near-miss-profile-payload-002'],
+      }],
+      airspaceClassFeedback: [{
+        path: 'packages/schemas/auth.ts',
+        outcome: 'too_loose',
+        reason: 'class mismatch allowed dependent work before schema stability',
+      }],
+      inspectionFindings: [{
+        path: 'api/auth/signup.ts',
+        adapter: 'api_contract',
+        caughtRealIssue: true,
+        status: 'blocked_regression',
+      }],
+      towerReroutes: [{
+        path: 'app/signup/page.tsx',
+        savedWork: 4,
+        reason: 'reroute avoided repeated UI rewrite',
+      }],
+      clearanceViolations: [{
+        path: 'app/signup/page.tsx',
+        callsign: 'UI-02',
+        violation: true,
+        reason: 'outside_clearance_write',
+      }],
+      blackBoxPatterns: [{
+        path: 'packages/schemas/auth.ts',
+        pattern: 'contract_escape_without_generated_client_refresh',
+        promoteToRule: true,
+      }],
+      validityStrength: 'executed',
+      evidenceRefs: [
+        `shadow:job:${before.shadowJobRef}`,
+        'replay:evidence:counterfactual-choice-scene',
+      ],
     }),
-  })).policyDelta;
+  })).counterfactualRun;
+  const projectWithInferredDeltas = await getProject(api, simulationProject.id);
+  const proposedSimulatorDelta = policyDeltaByRule(
+    projectWithInferredDeltas,
+    'flight_split_reduced_collision',
+    `codesite:counterfactual-run:${choiceSceneRun.id}`,
+  );
+  assertProof(Boolean(proposedSimulatorDelta), 'inferred flight-split policy delta was not persisted');
   const simulatorDelta = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/policy-deltas/${encodeURIComponent(proposedSimulatorDelta.id)}/promote`, {
     method: 'POST',
     body: JSON.stringify({
-      targetState: 'active',
+      targetState: 'promoted',
       validation: {
         status: 'passed',
-        replayRefs: [`shadow:job:${before.shadowJobRef}`],
+        replayRefs: [`codesite:counterfactual-run:${choiceSceneRun.id}`],
         evidenceRefs: ['replay:evidence:counterfactual-memory-simulator'],
       },
     }),
@@ -254,8 +348,56 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ strategies }),
   });
+  const collisionForecast = await api(`/projects/${encodeURIComponent(simulationProject.id)}/collision-predict`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const incident = (await api(`/projects/${encodeURIComponent(simulationProject.id)}/incidents`, {
+    method: 'POST',
+    body: JSON.stringify({
+      category: 'near_miss',
+      severity: 'high',
+      summary: 'Signup contract drift required a manual generated-client rewrite.',
+      participants: ['UI-02', 'SCHEMA-01'],
+      affectedZones: ['packages/schemas/**', 'app/generated/**'],
+      counterfactualRunId: choiceSceneRun.id,
+      evidenceRefs: [`codesite:counterfactual-run:${choiceSceneRun.id}`, 'runtime:event:signup-drift'],
+      laterManualEdits: [{
+        path: 'app/generated/auth-client.ts',
+        reason: 'manual rewrite after schema drift',
+      }],
+    }),
+  })).incident;
+  const projectAfterIncident = await getProject(api, simulationProject.id);
+  const updatedChoiceSceneRun = counterfactualRunById(projectAfterIncident, choiceSceneRun.id);
 
   const { project: leaseProject, plan } = await createLeaseGateProject(api);
+  const leaseMemoryRun = (await api(`/projects/${encodeURIComponent(leaseProject.id)}/counterfactual-runs`, {
+    method: 'POST',
+    body: JSON.stringify({
+      shadowJobRef: `lease-shadow:${choiceSceneRun.id}`,
+      repoSnapshot: `repo@lease-${choiceSceneRun.id}`,
+      choices: [
+        {
+          universe: 'sequence-after-contract-rfi',
+          result: 'passed',
+          affectedRoutes: ['src/components/SignupForm.tsx'],
+          inspectionCost: 2,
+          staleAssumptions: 0,
+        },
+        {
+          universe: 'immediate-ui-clearance',
+          result: 'near_miss',
+          affectedRoutes: ['src/components/SignupForm.tsx'],
+          incidents: ['near-miss-ui-contract-rfi-001'],
+          staleAssumptions: 2,
+        },
+      ],
+      arbiterVerdict: { selected: 'sequence-after-contract-rfi' },
+      validityStrength: 'executed',
+      evidenceRefs: ['replay:evidence:counterfactual-memory-lease'],
+    }),
+  })).counterfactualRun;
   const proposedLeaseDelta = (await api(`/projects/${encodeURIComponent(leaseProject.id)}/policy-deltas`, {
     method: 'POST',
     body: JSON.stringify({
@@ -270,16 +412,16 @@ async function main() {
       triggerConditions: [{ path: 'src/components/**' }],
       expectedRiskReduction: 0.3,
       confidence: 0.9,
-      replayRefs: [`shadow:job:${after.shadowJobRef}`],
+      replayRefs: [`codesite:counterfactual-run:${leaseMemoryRun.id}`],
     }),
   })).policyDelta;
   const leaseDelta = (await api(`/projects/${encodeURIComponent(leaseProject.id)}/policy-deltas/${encodeURIComponent(proposedLeaseDelta.id)}/promote`, {
     method: 'POST',
     body: JSON.stringify({
-      targetState: 'active',
+      targetState: 'promoted',
       validation: {
         status: 'passed',
-        replayRefs: [`shadow:job:${after.shadowJobRef}`],
+        replayRefs: [`codesite:counterfactual-run:${leaseMemoryRun.id}`],
         evidenceRefs: ['replay:evidence:counterfactual-memory-lease'],
       },
     }),
@@ -302,9 +444,17 @@ async function main() {
       && after.reason.reasonCodes.includes('learned_policy_delta_preferred_strategy'),
     simulatorEvidenceReferencesDelta: after.evidenceRefs.includes(`codesite:policy-delta:${simulatorDelta.id}`),
     governedPromotionActivatedMemory: proposedSimulatorDelta.promotionState === 'proposed'
-      && simulatorDelta.promotionState === 'active'
+      && simulatorDelta.promotionState === 'promoted'
       && simulatorDelta.ruleCandidate?.promotion?.validationStatus === 'passed'
       && leaseDelta.ruleCandidate?.promotion?.validationStatus === 'passed',
+    inferredChoiceSceneCapturedAllMatureSignals: choiceSceneRun.arbiterVerdict?.choiceScene?.choices?.length === 3
+      && choiceSceneRun.arbiterVerdict?.counterfactualLearning?.inferredCandidateCount >= 8,
+    collisionPredictionCarriesRegretMemoryHints: (collisionForecast.regretMemoryPolicyHints || [])
+      .some((hint) => hint.policyDeltaId === simulatorDelta.id),
+    nearMissIncidentCreatedGovernedDelta: incident.policyDelta?.promotionState === 'proposed'
+      && incident.policyDelta?.ruleCandidate?.rule === 'near_miss_replay_requires_airspace_rule',
+    laterManualRewriteLinkedToCounterfactualRun: (updatedChoiceSceneRun?.laterManualEdits || [])
+      .some((edit) => edit.incidentId === incident.id && edit.path === 'app/generated/auth-client.ts'),
     explicitAvoidWasNotNeutralizedByFallback: after.universes
       .find((universe) => universe.strategy === 'schema-first')
       ?.reasonCodes.includes('learned_policy_delta_avoided_strategy') === true
@@ -325,8 +475,13 @@ async function main() {
     baseUrl,
     slug,
     simulationProject: { id: simulationProject.id, title: simulationProject.title },
+    choiceSceneRun,
     simulatorDelta,
+    collisionForecast,
+    incident,
+    updatedChoiceSceneRun,
     leaseProject: { id: leaseProject.id, title: leaseProject.title },
+    leaseMemoryRun,
     leaseDelta,
     before,
     after,

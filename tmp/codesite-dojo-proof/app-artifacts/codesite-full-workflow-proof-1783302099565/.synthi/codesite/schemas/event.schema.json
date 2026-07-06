@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite Event",
+  "type": "object",
+  "required": [
+    "eventType",
+    "details"
+  ],
+  "properties": {
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "flight_plan_filed",
+        "clearance_requested",
+        "clearance_issued",
+        "transaction_opened",
+        "transaction_validated",
+        "transaction_committed",
+        "transaction_aborted",
+        "assumption_recorded",
+        "assumption_invalidated",
+        "read_observed",
+        "write_attempted",
+        "write_allowed",
+        "write_denied",
+        "write_quarantined",
+        "quarantine_reviewed",
+        "quarantine_replayed",
+        "quarantine_applied",
+        "snapshot_taken",
+        "transponder_update",
+        "route_deviation",
+        "holding_pattern",
+        "tower_instruction",
+        "rfi",
+        "change_order",
+        "mayday",
+        "ground_stop",
+        "mayday_resumed",
+        "landing_requested",
+        "radar_result",
+        "inspection_result",
+        "shadow_run",
+        "arbiter_verdict",
+        "near_miss",
+        "policy_delta_proposed",
+        "policy_delta_promoted",
+        "policy_delta_rejected",
+        "black_box_closed"
+      ]
+    },
+    "displayCallsign": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "logicalTime": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "details": {
+      "type": "object"
+    },
+    "evidenceRefs": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

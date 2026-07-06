@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "synthi.codesite.runtimeBoundaryAttestation.v1",
+  "proofId": "codesite.runtime.quarantine-overlay.current",
+  "title": "Active CodeSite managed runtime surfaces require quarantine overlay",
+  "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "transactionId": "cmr8k1okx03bcqg01803em330",
+  "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+  "displayCallsign": "SCHEMA-01",
+  "generatedAt": "2026-07-06T01:43:23.445Z",
+  "currentWorkflowRun": true,
+  "assertions": {
+    "containerTerminalUsesQuarantineRuntime": true,
+    "hybridProgramUsesQuarantineRuntime": true,
+    "runtimePodWithManagedOverlayUsesQuarantineRuntime": true,
+    "overlayShellDidNotMutateRealRepo": true,
+    "unmanagedTerminalWriteQuarantined": true
+  },
+  "evidence": {
+    "terminalContainerMode": "overlay-runtime",
+    "programHybridMode": "overlay-runtime",
+    "terminalRuntimePodWithOverlayMode": "overlay-runtime",
+    "programRuntimePodWithOverlayMode": "overlay-runtime",
+    "rawShellOverlay": {
+      "scenario": "unmanaged-terminal-write-through-quarantine-overlay",
+      "executable": "/usr/bin/node",
+      "command": "node -e fs.writeFileSync(path, content)",
+      "attemptedPath": "synthi/prisma/schema.prisma",
+      "cwd": "tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-full-workflow-proof-1783302099565/cmr8k1okx03bcqg01803em330/qtn-cmr8k1okx03bcqg01803em330-1783302202982-22a91e00",
+      "stdout": "",
+      "stderr": "",
+      "realRepoUnchangedBeforeFinalize": true,
+      "realRepoDigestBefore": "sha256:9c7f51bca346bb3fb0fb007c3e47a618ed91e1d8a909c72dc7f757d53ad2897d",
+      "realRepoDigestAfterOverlayWrite": "sha256:9c7f51bca346bb3fb0fb007c3e47a618ed91e1d8a909c72dc7f757d53ad2897d",
+      "overlayDigestAfterWrite": "sha256:36dc3ec0ffb1cfab54fe71dcb7aee256a803bc54c77d2486b1133f0ad6e1aeb1",
+      "overlayOnlyMutationObserved": true
+    },
+    "unmanagedTerminalWriteBoundary": {
+      "outcome": "quarantined_before_real_repo_mutation",
+      "attemptedPath": "synthi/prisma/schema.prisma",
+      "hostTerminalMode": "block-host",
+      "runtimeTerminalMode": "overlay-runtime",
+      "realRepoUnchangedBeforeFinalize": true,
+      "overlayOnlyMutationObserved": true
+    }
+  },
+  "attestationDigest": "sha256:c93bc9b85a36ec77d51c961de24ac260e2a2d6ef598443c666043ae792c451a8"
+}

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { addAuthCookiesToBrowserContext, ensureProofWorkspace } from './codesite-proof-api.mjs';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3107';
 
@@ -207,9 +208,11 @@ async function createMigrationProject(api) {
   return response.project;
 }
 
-async function captureTowerUi({ baseUrl, slug, screenshotPath, viewport }) {
+async function captureTowerUi({ baseUrl, slug, screenshotPath, viewport, authCookie }) {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  await addAuthCookiesToBrowserContext(context, baseUrl, authCookie);
+  const page = await context.newPage();
   const consoleErrors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
@@ -345,7 +348,9 @@ async function screenshotSummary(htmlPath, pngPath) {
 async function main() {
   const baseUrl = process.env.CODESITE_PROOF_BASE_URL || DEFAULT_BASE_URL;
   const slug = process.env.CODESITE_PROOF_WORKSPACE_SLUG || slugNow();
-  const api = createApi(baseUrl, slug);
+  const { api, authCookie } = await ensureProofWorkspace(baseUrl, slug, {
+    workspaceName: 'Shadow simulator proof workspace',
+  });
   const dir = proofDir();
   await fs.promises.mkdir(dir, { recursive: true });
 
@@ -379,12 +384,14 @@ async function main() {
       slug,
       viewport: { name: 'desktop', width: 1440, height: 1100 },
       screenshotPath: desktopShot,
+      authCookie,
     }),
     await captureTowerUi({
       baseUrl,
       slug,
       viewport: { name: 'mobile', width: 390, height: 980 },
       screenshotPath: mobileShot,
+      authCookie,
     }),
   ];
 

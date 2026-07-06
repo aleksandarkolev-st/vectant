@@ -1,0 +1,3310 @@
+{
+  "displayCallsign": "SCHEMA-01",
+  "session": {
+    "id": "cmr5lhte50016pm0zv10xqicb",
+    "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+    "ownerUserId": "cmr5lhcg90004pm0znnhyx625",
+    "agentProvider": "codex",
+    "agentRuntime": "tmp-codex-cli",
+    "providerSessionRef": "codex-SCHEMA-01-20260703-overlay",
+    "displayCallsign": "SCHEMA-01",
+    "status": "registered",
+    "permissions": [
+      "synthi_codesite_get_radar",
+      "synthi_codesite_open_transaction",
+      "synthi_codesite_apply_patch",
+      "synthi_codesite_record_assumption"
+    ],
+    "redactionPolicy": {
+      "acceptsTowerMessages": true,
+      "redactSecrets": true,
+      "redactPrivatePrompts": true,
+      "allowAttachments": false,
+      "visibleZones": [
+        "**"
+      ],
+      "allowedDocumentKinds": [
+        "rfi",
+        "change_order",
+        "inspection_request",
+        "inspection_result",
+        "mayday",
+        "handoff",
+        "stop_work",
+        "punch",
+        "tower_instruction"
+      ]
+    },
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoEvidenceRefs": [
+      "dojo:evidence:full-workflow-checkride"
+    ],
+    "dojoDecisionDigest": "sha256:1266e9e94cf45cbc3ce4681127750a9dac985ea1b9c2b44eba4f1f712bf7f1e2",
+    "pilotLicenseSnapshot": {
+      "licenseLevel": "IFR",
+      "licenseStatus": "active",
+      "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+      "authorizedAirspace": [
+        "packages/schemas/**",
+        "openapi/**",
+        "packages/*/src/index.ts",
+        "synthi/prisma/**",
+        "backend/collab-server/permissionMiddleware.js"
+      ],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride"
+      ],
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride"
+      ]
+    },
+    "createdAt": "2026-07-03T23:59:27.246Z",
+    "endedAt": null
+  },
+  "flightPlans": [
+    {
+      "id": "cmr5lhtrd001cpm0z6g20ya0l",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "displayCallsign": "SCHEMA-01",
+      "mission": "Schema first",
+      "domain": "schema",
+      "status": "preflight",
+      "route": [
+        "synthi/prisma/**"
+      ],
+      "blockedZones": [],
+      "abortConditions": [
+        "required radar failed",
+        "tower reroute issued"
+      ],
+      "requestedTools": [
+        "file_write",
+        "npm_test"
+      ],
+      "estimatedDurationMs": null,
+      "filedAt": "2026-07-03T23:59:27.722Z",
+      "closedAt": null
+    }
+  ],
+  "clearances": [
+    {
+      "id": "cmr5lhw270020pm0zv2swrhf0",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "executionPlanId": "cmr5lhtrd001cpm0z6g20ya0l",
+      "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "displayCallsign": "SCHEMA-01",
+      "status": "active",
+      "lease": {
+        "allowedPaths": [
+          "synthi/prisma/**"
+        ],
+        "blockedPaths": [
+          "secrets/**"
+        ],
+        "allowedTools": [
+          "file_write"
+        ],
+        "invariants": [
+          "clearance.diff.inside_route",
+          "no.secret.exposure",
+          "restricted_airspace.inspector_required"
+        ],
+        "requiredRadar": [
+          "typecheck",
+          "tests"
+        ],
+        "expiresAt": null,
+        "issuedBy": "codesite_policy_engine",
+        "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+        "inspectedZones": [
+          {
+            "zoneKey": "class_b",
+            "label": "Shared contract airspace",
+            "class": "B",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ],
+            "risk": "high",
+            "source": "compiled_default",
+            "path": "synthi/prisma/**"
+          }
+        ],
+        "dojoProofVerification": {
+          "ok": true,
+          "status": "verified",
+          "checkedAt": "2026-07-03T23:59:30.677Z",
+          "source": "dojo_public_proof_verifier",
+          "capsuleId": "pcap-full-workflow-schema",
+          "keyId": "dojo-full-workflow-key",
+          "proofKeyStatus": "active",
+          "proofKeyIssuer": "dojo-full-workflow-issuer",
+          "proofKeySigningProvider": "ed25519-local",
+          "proofKeyCustody": "local",
+          "signatureVerified": true,
+          "blockedBy": [],
+          "expected": {
+            "required_evidence_claims": [
+              "codesite.restricted_mutation"
+            ],
+            "ledger_checkpoint_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "requested_action": "codesite.mutation.clearance"
+          },
+          "digest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2"
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr5lhte50016pm0zv10xqicb",
+          "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+          "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+          "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+          "ownerUserId": "cmr5lhcg90004pm0znnhyx625",
+          "displayCallsign": "SCHEMA-01",
+          "status": "active",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+          "dojoLicenseRef": "schema.level_2@2026-06-25",
+          "dojoProofRef": "pcap-full-workflow-schema",
+          "dojoDecisionDigest": "sha256:1266e9e94cf45cbc3ce4681127750a9dac985ea1b9c2b44eba4f1f712bf7f1e2",
+          "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+          "authorizedAirspace": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "typecheck",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:full-workflow-checkride",
+            "dojo:evidence:full-workflow-checkride",
+            "full-workflow-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [
+            "dojo:evidence:full-workflow-checkride",
+            "dojo:full-workflow-checkride",
+            "pcap-full-workflow-schema",
+            "schema.level_2@2026-06-25",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+            "full-workflow-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-03T23:59:27.246Z",
+            "checkedAt": "2026-07-03T23:59:30.701Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+            "clearanceProofCheckedAt": "2026-07-03T23:59:30.677Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "API-02",
+                  "SCHEMA-01"
+                ],
+                "conflictZone": "synthi/prisma/**",
+                "overlaps": [
+                  [
+                    "synthi/prisma/**",
+                    "synthi/prisma/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put SCHEMA-01 in holding",
+                    "Put API-02 in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+        },
+        "counterfactualPolicy": null
+      },
+      "pilotLicenseHealth": {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr5lhte50016pm0zv10xqicb",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+        "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+        "ownerUserId": "cmr5lhcg90004pm0znnhyx625",
+        "displayCallsign": "SCHEMA-01",
+        "status": "active",
+        "level": "IFR",
+        "levelRank": 3,
+        "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+        "dojoLicenseRef": "schema.level_2@2026-06-25",
+        "dojoProofRef": "pcap-full-workflow-schema",
+        "dojoDecisionDigest": "sha256:1266e9e94cf45cbc3ce4681127750a9dac985ea1b9c2b44eba4f1f712bf7f1e2",
+        "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+        "authorizedAirspace": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "restrictedAirspace": [],
+        "requiredRadar": [
+          "typecheck",
+          "tests"
+        ],
+        "earnedBy": [
+          "dojo:full-workflow-checkride",
+          "dojo:evidence:full-workflow-checkride",
+          "full-workflow-checkride"
+        ],
+        "expiresAt": null,
+        "expiresOn": [
+          "source_drift"
+        ],
+        "sourceDrift": {
+          "monitored": true,
+          "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [
+          "dojo:evidence:full-workflow-checkride",
+          "dojo:full-workflow-checkride",
+          "pcap-full-workflow-schema",
+          "schema.level_2@2026-06-25",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+          "full-workflow-checkride"
+        ],
+        "lifecycle": {
+          "issuedAt": "2026-07-03T23:59:27.246Z",
+          "checkedAt": "2026-07-03T23:59:30.701Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+          "clearanceProofCheckedAt": "2026-07-03T23:59:30.677Z"
+        }
+      },
+      "pilotLicenseRequirement": {
+        "required": true,
+        "classes": [
+          "B"
+        ],
+        "minimumLevel": "IFR",
+        "minimumLevelRank": 3
+      },
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoEvidenceRefs": [
+        "full-workflow-checkride"
+      ],
+      "dojoLedgerCheckpointHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "dojoDecisionDigest": "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+      "implementationStatus": {
+        "executable": true,
+        "productionRuntime": true,
+        "verificationRuntime": "codesite-ed25519-proof-verifier",
+        "runtimeBoundary": "docker-full-workflow-proof"
+      },
+      "issuedAt": "2026-07-03T23:59:30.704Z",
+      "expiresAt": null,
+      "revokedAt": null
+    }
+  ],
+  "transactions": [
+    {
+      "id": "cmr5lhwil0028pm0zt2p1l5iz",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "baseSnapshot": "sha256:e9163bb10af29a8e5a375a0ff174eb68a05934cfaea5a5ea53961a447eba201c",
+      "baseSnapshotEvidence": null,
+      "isolation": "serializable",
+      "status": "aborted",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "observedReadSet": [],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "assumptionRefs": [],
+      "commitDecision": {
+        "reason": "serializable_snapshot_required",
+        "abortedAt": "2026-07-03T23:59:32.441Z"
+      },
+      "proofBundleDigest": null,
+      "openedAt": "2026-07-03T23:59:31.293Z",
+      "closedAt": "2026-07-03T23:59:32.441Z"
+    },
+    {
+      "id": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-03T23:59:07.617Z",
+        "source": "codesite-full-workflow-proof",
+        "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+      },
+      "isolation": "serializable",
+      "status": "aborted",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt",
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedReadSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "assumptionRefs": [],
+      "commitDecision": {
+        "reason": "serializable_snapshot_undercovered",
+        "abortedAt": "2026-07-03T23:59:36.632Z"
+      },
+      "proofBundleDigest": null,
+      "openedAt": "2026-07-03T23:59:33.574Z",
+      "closedAt": "2026-07-03T23:59:36.632Z"
+    },
+    {
+      "id": "cmr5li1840030pm0ziuph9b1r",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+      "baseSnapshotEvidence": {
+        "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+        "status": "recorded",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+        "fileDigests": [
+          {
+            "path": "synthi/prisma/schema-contract-read.txt",
+            "exists": true,
+            "size": 24,
+            "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+          }
+        ],
+        "missingPaths": [],
+        "skippedPaths": [],
+        "truncated": false,
+        "limits": {
+          "maxFiles": 512,
+          "maxFileBytes": 2097152,
+          "maxScanEntries": 15000
+        },
+        "generatedAt": "2026-07-03T23:59:07.617Z",
+        "source": "codesite-full-workflow-proof",
+        "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+      },
+      "isolation": "serializable",
+      "status": "committed",
+      "readSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "observedReadSet": [
+        "synthi/prisma/schema-contract-read.txt"
+      ],
+      "writeSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "observedWriteSet": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "semanticDependencyRefs": [],
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "assumptionRefs": [
+        "cmr5li1w60036pm0zwbdn7kax"
+      ],
+      "commitDecision": {
+        "ok": true,
+        "isolation": "serializable",
+        "reasonCodes": [
+          "repo_snapshot_stable",
+          "serializable_validation_passed"
+        ],
+        "blockedWrites": [],
+        "invalidAssumptions": [],
+        "staleReads": [],
+        "repoSnapshot": {
+          "ok": true,
+          "reasonCodes": [
+            "repo_snapshot_stable"
+          ],
+          "expected": {
+            "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+            "status": "recorded",
+            "readSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+            "fileDigests": [
+              {
+                "path": "synthi/prisma/schema-contract-read.txt",
+                "exists": true,
+                "size": 24,
+                "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+              }
+            ],
+            "missingPaths": [],
+            "skippedPaths": [],
+            "truncated": false,
+            "limits": {
+              "maxFiles": 512,
+              "maxFileBytes": 2097152,
+              "maxScanEntries": 15000
+            },
+            "generatedAt": "2026-07-03T23:59:07.617Z",
+            "source": "codesite-full-workflow-proof",
+            "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+            "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+          },
+          "current": {
+            "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+            "status": "recorded",
+            "readSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+            "fileDigests": [
+              {
+                "path": "synthi/prisma/schema-contract-read.txt",
+                "exists": true,
+                "size": 24,
+                "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+              }
+            ],
+            "missingPaths": [],
+            "skippedPaths": [],
+            "truncated": false,
+            "limits": {
+              "maxFiles": 512,
+              "maxFileBytes": 2097152,
+              "maxScanEntries": 15000
+            },
+            "generatedAt": "2026-07-04T00:03:05.972Z",
+            "source": "codesite_validation",
+            "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+            "evidenceDigest": "sha256:ba0a8312ecb8629be8feea037622ffd9d34fa7f5ca8bd0d0a22c402e570b835f"
+          },
+          "driftedPaths": [],
+          "digestChanged": false
+        },
+        "validatedAt": "2026-07-04T00:03:06.137Z"
+      },
+      "proofBundleDigest": "sha256:6adecd0878cc95a40b7734c4a23e8f87851fd0d2a4af81790f7488f4672950ab",
+      "openedAt": "2026-07-03T23:59:37.396Z",
+      "closedAt": "2026-07-04T00:03:06.216Z"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "cmr5li1w60036pm0zwbdn7kax",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "ownerSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "displayCallsign": "SCHEMA-01",
+      "assumptionKey": "auth.signup.schema.v1",
+      "dependsOn": [
+        {
+          "ref": "auth.signup.schema",
+          "version": "v1",
+          "path": "synthi/prisma/schema-contract-read.txt"
+        }
+      ],
+      "usedBy": [
+        "synthi/src/app/api/auth/signup.ts"
+      ],
+      "status": "active",
+      "invalidatedBy": null,
+      "invalidatedAt": null,
+      "createdAt": "2026-07-03T23:59:38.262Z"
+    }
+  ],
+  "inbox": [
+    {
+      "id": "cmr5li93g0052pm0z56f6c378",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+      "recipientUserId": "cmr5lhcg90004pm0znnhyx625",
+      "eventId": "cmr5li93a0050pm0zhxhf8wnb",
+      "documentId": "cmr5li92x004ypm0zeqwg9hzp",
+      "kind": "change_order",
+      "requiresResponse": false,
+      "status": "acknowledged",
+      "redactedPayload": {
+        "documentId": "cmr5li92x004ypm0zeqwg9hzp",
+        "eventId": "cmr5li93a0050pm0zhxhf8wnb",
+        "kind": "change_order",
+        "title": "API flight accepts schema-first hold",
+        "body": {
+          "answerToDocumentId": "cmr5li7ha004qpm0z6piq4wqm",
+          "decision": "accepted",
+          "towerInstruction": "API-02 remains holding until SCHEMA-01 proof bundle lands.",
+          "routing": {
+            "fromSessionId": "cmr5lhu5s001gpm0zzwecixke",
+            "toSessionIds": [
+              "cmr5lhte50016pm0zv10xqicb"
+            ],
+            "projectRefs": {
+              "executionPlanId": "cmr5lhui8001mpm0zxglzfp5z",
+              "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+              "transactionId": "cmr5li1840030pm0ziuph9b1r",
+              "affectedZones": [
+                "synthi/prisma/schema.prisma"
+              ],
+              "contractRefs": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "inspectionRunId": null,
+              "incidentId": null
+            }
+          }
+        },
+        "redaction": {
+          "policyApplied": true,
+          "recipientSessionId": "cmr5lhte50016pm0zv10xqicb"
+        }
+      },
+      "createdAt": "2026-07-03T23:59:47.596Z",
+      "acknowledgedAt": "2026-07-03T23:59:48.661Z"
+    }
+  ],
+  "events": [
+    {
+      "id": "cmr5lhteg001apm0zel1lboxp",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "transponder_update",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr5lhte50016pm0zv10xqicb",
+      "details": {
+        "status": "registered",
+        "provider": "codex",
+        "runtime": "tmp-codex-cli",
+        "permissions": [
+          "synthi_codesite_get_radar",
+          "synthi_codesite_open_transaction",
+          "synthi_codesite_apply_patch",
+          "synthi_codesite_record_assumption"
+        ],
+        "instruction": "SCHEMA-01 registered with tower."
+      },
+      "evidenceRefs": [],
+      "logicalTime": 5,
+      "createdAt": "2026-07-03T23:59:27.257Z"
+    },
+    {
+      "id": "cmr5lhtrj001epm0za8vppdd7",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "flight_plan_filed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr5lhte50016pm0zv10xqicb",
+      "details": {
+        "executionPlanId": "cmr5lhtrd001cpm0z6g20ya0l",
+        "mission": "Schema first",
+        "route": [
+          "synthi/prisma/**"
+        ],
+        "blockedZones": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 6,
+      "createdAt": "2026-07-03T23:59:27.728Z"
+    },
+    {
+      "id": "cmr5lhw2r0024pm0zqd8ofcgm",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "clearance_issued",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "policy_engine",
+      "actorId": "cmr5lhw2j0022pm0zzx39zy41",
+      "details": {
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "policyDecisionId": "cmr5lhw2j0022pm0zzx39zy41",
+        "status": "active",
+        "reasonCodes": [
+          "restricted_airspace_requires_inspection",
+          "dojo_clearance_proof_verified",
+          "dojo_public_proof_signature_verified",
+          "schema_first_leader_clearance",
+          "pilot_license_health_active",
+          "pilot_license_source_current",
+          "pilot_license_from_verified_dojo_proof",
+          "pilot_license_level_authorized"
+        ],
+        "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands.",
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr5lhte50016pm0zv10xqicb",
+          "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+          "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+          "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+          "ownerUserId": "cmr5lhcg90004pm0znnhyx625",
+          "displayCallsign": "SCHEMA-01",
+          "status": "active",
+          "level": "IFR",
+          "levelRank": 3,
+          "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+          "dojoLicenseRef": "schema.level_2@2026-06-25",
+          "dojoProofRef": "pcap-full-workflow-schema",
+          "dojoDecisionDigest": "sha256:1266e9e94cf45cbc3ce4681127750a9dac985ea1b9c2b44eba4f1f712bf7f1e2",
+          "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+          "authorizedAirspace": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "restrictedAirspace": [],
+          "requiredRadar": [
+            "typecheck",
+            "tests"
+          ],
+          "earnedBy": [
+            "dojo:full-workflow-checkride",
+            "dojo:evidence:full-workflow-checkride",
+            "full-workflow-checkride"
+          ],
+          "expiresAt": null,
+          "expiresOn": [
+            "source_drift"
+          ],
+          "sourceDrift": {
+            "monitored": true,
+            "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active",
+            "pilot_license_source_current",
+            "pilot_license_from_verified_dojo_proof"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [
+            "dojo:evidence:full-workflow-checkride",
+            "dojo:full-workflow-checkride",
+            "pcap-full-workflow-schema",
+            "schema.level_2@2026-06-25",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+            "full-workflow-checkride"
+          ],
+          "lifecycle": {
+            "issuedAt": "2026-07-03T23:59:27.246Z",
+            "checkedAt": "2026-07-03T23:59:30.701Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712",
+            "clearanceProofCheckedAt": "2026-07-03T23:59:30.677Z"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": true,
+          "classes": [
+            "B"
+          ],
+          "minimumLevel": "IFR",
+          "minimumLevelRank": 3
+        },
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "API-02",
+                  "SCHEMA-01"
+                ],
+                "conflictZone": "synthi/prisma/**",
+                "overlaps": [
+                  [
+                    "synthi/prisma/**",
+                    "synthi/prisma/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put SCHEMA-01 in holding",
+                    "Put API-02 in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+        },
+        "counterfactualPolicy": null
+      },
+      "evidenceRefs": [],
+      "logicalTime": 11,
+      "createdAt": "2026-07-03T23:59:30.723Z"
+    },
+    {
+      "id": "cmr5lhw2x0026pm0zl290fdst",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "near_miss",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "policy_engine",
+      "actorId": "cmr5lhw2j0022pm0zzx39zy41",
+      "details": {
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "policyDecisionId": "cmr5lhw2j0022pm0zzx39zy41",
+        "prevented": true,
+        "collisionAvoidance": {
+          "forecast": {
+            "riskLevel": "high",
+            "risks": [
+              {
+                "risk": "contract_collision",
+                "severity": "high",
+                "aircraft": [
+                  "API-02",
+                  "SCHEMA-01"
+                ],
+                "conflictZone": "synthi/prisma/**",
+                "overlaps": [
+                  [
+                    "synthi/prisma/**",
+                    "synthi/prisma/**"
+                  ]
+                ],
+                "recommendedResolution": {
+                  "action": "schema_first",
+                  "steps": [
+                    "Put SCHEMA-01 in holding",
+                    "Put API-02 in holding",
+                    "Issue schema clearance first",
+                    "Reissue downstream clearances after contract landing"
+                  ]
+                }
+              }
+            ],
+            "runwayOccupancy": [],
+            "wakeTurbulence": []
+          },
+          "risk": null,
+          "schemaFirstLeader": true,
+          "reasonCodes": [
+            "schema_first_leader_clearance"
+          ],
+          "towerInstruction": "Schema-first clearance issued for SCHEMA-01. Dependent overlapping flights remain in holding until this contract lands."
+        }
+      },
+      "evidenceRefs": [
+        "codesite:policy-decision:cmr5lhw2j0022pm0zzx39zy41"
+      ],
+      "logicalTime": 12,
+      "createdAt": "2026-07-03T23:59:30.729Z"
+    },
+    {
+      "id": "cmr5lhwj1002apm0zxh73w4fg",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_opened",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr5lhte50016pm0zv10xqicb",
+      "details": {
+        "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+        "baseSnapshot": "sha256:e9163bb10af29a8e5a375a0ff174eb68a05934cfaea5a5ea53961a447eba201c",
+        "baseSnapshotEvidenceDigest": null,
+        "baseSnapshotStatus": null,
+        "isolation": "serializable"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 13,
+      "createdAt": "2026-07-03T23:59:31.309Z"
+    },
+    {
+      "id": "cmr5lhwvl002cpm0zwi7ghklc",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_validated",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhwil0028pm0zt2p1l5iz",
+      "details": {
+        "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+        "decision": {
+          "ok": false,
+          "isolation": "serializable",
+          "reasonCodes": [
+            "repo_snapshot_not_recorded",
+            "repo_snapshot_required_for_serializable",
+            "repo_snapshot_read_set_coverage_required"
+          ],
+          "blockedWrites": [],
+          "invalidAssumptions": [],
+          "staleReads": [],
+          "repoSnapshot": {
+            "ok": false,
+            "reasonCodes": [
+              "repo_snapshot_not_recorded",
+              "repo_snapshot_required_for_serializable",
+              "repo_snapshot_read_set_coverage_required"
+            ],
+            "expected": null,
+            "current": null,
+            "driftedPaths": [],
+            "requiredReadSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "snapshotReadSet": [],
+            "missingReadSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ]
+          },
+          "validatedAt": "2026-07-03T23:59:31.748Z"
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 14,
+      "createdAt": "2026-07-03T23:59:31.762Z"
+    },
+    {
+      "id": "cmr5lhxf1002epm0zosrwtf88",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_aborted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhwil0028pm0zt2p1l5iz",
+      "details": {
+        "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+        "reason": "serializable_snapshot_required"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 15,
+      "createdAt": "2026-07-03T23:59:32.462Z"
+    },
+    {
+      "id": "cmr5lhxgc002ipm0zub312q64",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "black_box_closed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhwil0028pm0zt2p1l5iz",
+      "details": {
+        "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+        "incidentId": "cmr5lhxg0002gpm0zp2wj3fei",
+        "proofBundleId": null,
+        "proofBundleDigest": null,
+        "landingStatus": "aborted",
+        "status": "aborted",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "exportedPaths": [
+          "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5lhwil0028pm0zt2p1l5iz.json"
+        ],
+        "reason": "transaction_black_box_closeout"
+      },
+      "evidenceRefs": [
+        "codesite:transaction:cmr5lhwil0028pm0zt2p1l5iz",
+        "codesite:lease:cmr5lhw270020pm0zv2swrhf0"
+      ],
+      "logicalTime": 16,
+      "createdAt": "2026-07-03T23:59:32.508Z"
+    },
+    {
+      "id": "cmr5lhyad002mpm0z5fvqx3by",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_opened",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr5lhte50016pm0zv10xqicb",
+      "details": {
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "baseSnapshotEvidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+        "baseSnapshotStatus": "recorded",
+        "isolation": "serializable"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 17,
+      "createdAt": "2026-07-03T23:59:33.590Z"
+    },
+    {
+      "id": "cmr5lhyan002opm0zqonctnd8",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "snapshot_taken",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "details": {
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+        "status": "recorded",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "fileCount": 1,
+        "missingPaths": [],
+        "reason": "serializable_transaction_open"
+      },
+      "evidenceRefs": [
+        "codesite:read-snapshot:sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+      ],
+      "logicalTime": 18,
+      "createdAt": "2026-07-03T23:59:33.600Z"
+    },
+    {
+      "id": "cmr5lhzaf002qpm0z4deajtkr",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transponder_update",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "details": {
+        "type": "read_recorded",
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "path": "synthi/prisma/schema.prisma",
+        "tool": "file_read",
+        "codesiteFsEvent": null,
+        "processAncestry": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 19,
+      "createdAt": "2026-07-03T23:59:34.888Z"
+    },
+    {
+      "id": "cmr5li07u002spm0zf7lpk13g",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_validated",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "details": {
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "decision": {
+          "ok": false,
+          "isolation": "serializable",
+          "reasonCodes": [
+            "repo_snapshot_stable",
+            "repo_snapshot_read_set_coverage_required"
+          ],
+          "blockedWrites": [],
+          "invalidAssumptions": [],
+          "staleReads": [],
+          "repoSnapshot": {
+            "ok": false,
+            "reasonCodes": [
+              "repo_snapshot_stable",
+              "repo_snapshot_read_set_coverage_required"
+            ],
+            "expected": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-03T23:59:07.617Z",
+              "source": "codesite-full-workflow-proof",
+              "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+              "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+            },
+            "current": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-03T23:59:36.055Z",
+              "source": "codesite_validation",
+              "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+              "evidenceDigest": "sha256:ba0a8312ecb8629be8feea037622ffd9d34fa7f5ca8bd0d0a22c402e570b835f"
+            },
+            "driftedPaths": [],
+            "digestChanged": false,
+            "requiredReadSet": [
+              "synthi/prisma/schema-contract-read.txt",
+              "synthi/prisma/schema.prisma"
+            ],
+            "snapshotReadSet": [
+              "synthi/prisma/schema-contract-read.txt"
+            ],
+            "missingReadSet": [
+              "synthi/prisma/schema.prisma"
+            ]
+          },
+          "validatedAt": "2026-07-03T23:59:36.082Z"
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 20,
+      "createdAt": "2026-07-03T23:59:36.091Z"
+    },
+    {
+      "id": "cmr5li0nc002upm0zhmcgcd08",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_aborted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "details": {
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "reason": "serializable_snapshot_undercovered"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 21,
+      "createdAt": "2026-07-03T23:59:36.648Z"
+    },
+    {
+      "id": "cmr5li0o0002ypm0zgj3mulh0",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "black_box_closed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "details": {
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "incidentId": "cmr5li0ns002wpm0zmfhjhvkd",
+        "proofBundleId": null,
+        "proofBundleDigest": null,
+        "landingStatus": "aborted",
+        "status": "aborted",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt",
+          "synthi/prisma/schema.prisma"
+        ],
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "exportedPaths": [
+          "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5lhy9y002kpm0zn6k7wy4l.json"
+        ],
+        "reason": "transaction_black_box_closeout"
+      },
+      "evidenceRefs": [
+        "codesite:transaction:cmr5lhy9y002kpm0zn6k7wy4l",
+        "codesite:lease:cmr5lhw270020pm0zv2swrhf0"
+      ],
+      "logicalTime": 22,
+      "createdAt": "2026-07-03T23:59:36.673Z"
+    },
+    {
+      "id": "cmr5li18h0032pm0zpa2qcem6",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_opened",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr5lhte50016pm0zv10xqicb",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "baseSnapshotEvidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+        "baseSnapshotStatus": "recorded",
+        "isolation": "serializable"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 23,
+      "createdAt": "2026-07-03T23:59:37.410Z"
+    },
+    {
+      "id": "cmr5li18s0034pm0zs1n1sooe",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "snapshot_taken",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+        "status": "recorded",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "fileCount": 1,
+        "missingPaths": [],
+        "reason": "serializable_transaction_open"
+      },
+      "evidenceRefs": [
+        "codesite:read-snapshot:sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+      ],
+      "logicalTime": 24,
+      "createdAt": "2026-07-03T23:59:37.421Z"
+    },
+    {
+      "id": "cmr5li1wn0038pm0ziqr48sn0",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "assumption_recorded",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "assumptionId": "cmr5li1w60036pm0zwbdn7kax",
+        "assumptionKey": "auth.signup.schema.v1"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 25,
+      "createdAt": "2026-07-03T23:59:38.280Z"
+    },
+    {
+      "id": "cmr5li7ho004spm0zrl4zqi0s",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "rfi",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "document",
+      "actorId": "cmr5li7ha004qpm0z6piq4wqm",
+      "details": {
+        "documentId": "cmr5li7ha004qpm0z6piq4wqm",
+        "kind": "rfi",
+        "title": "Confirm schema-first contract before API route",
+        "blocking": true,
+        "fromSession": "cmr5lhte50016pm0zv10xqicb",
+        "toSession": "cmr5lhu5s001gpm0zzwecixke"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 41,
+      "createdAt": "2026-07-03T23:59:45.517Z"
+    },
+    {
+      "id": "cmr5li9xi0054pm0z1yz8zwmn",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "transponder_update",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "agent_session",
+      "actorId": "cmr5lhte50016pm0zv10xqicb",
+      "details": {
+        "type": "inbox_acknowledged",
+        "inboxItemId": "cmr5li93g0052pm0z56f6c378",
+        "eventId": "cmr5li93a0050pm0zhxhf8wnb",
+        "documentId": "cmr5li92x004ypm0zeqwg9hzp",
+        "status": "acknowledged"
+      },
+      "evidenceRefs": [],
+      "logicalTime": 44,
+      "createdAt": "2026-07-03T23:59:48.678Z"
+    },
+    {
+      "id": "cmr5lib340056pm0zq0q1ehlg",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "read_observed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "codesitefs",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "type": "read_recorded",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "synthi/prisma/schema-contract-read.txt",
+        "tool": "file_read",
+        "codesiteFsEvent": {
+          "type": "read_observed",
+          "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+          "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema-contract-read.txt",
+          "tool": "file_read",
+          "wall_time": "2026-07-03T23:59:49.453Z",
+          "evidence_refs": [
+            "mcp:audit:read-full-workflow"
+          ],
+          "details": {
+            "reason": "inside_repo_boundary",
+            "reason_codes": [
+              "inside_repo_boundary"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session",
+              "mcp:synthi_codesite_read_file"
+            ],
+            "operation": "schema-contract-read"
+          }
+        },
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session",
+          "mcp:synthi_codesite_read_file"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:read-full-workflow"
+      ],
+      "logicalTime": 45,
+      "createdAt": "2026-07-03T23:59:50.176Z"
+    },
+    {
+      "id": "cmr5libwl0058pm0zcfuwmbaq",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "write_attempted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "secrets/prod.env",
+        "tool": "file_write",
+        "zone": {
+          "zoneKey": "unclassified",
+          "label": "Unclassified repo airspace",
+          "class": "C",
+          "risk": "medium",
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ],
+          "path": "secrets/prod.env"
+        },
+        "codesiteFsEvent": {
+          "type": "write_denied",
+          "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+          "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "wall_time": "2026-07-03T23:59:50.800Z",
+          "evidence_refs": [
+            "mcp:audit:codesitefs-denied-full-workflow"
+          ],
+          "details": {
+            "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+            "reason_codes": [
+              "outside_clearance_route"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "operation": "raw-terminal-write"
+          }
+        },
+        "semanticDependencyRefs": [],
+        "evidenceRefs": [
+          "mcp:audit:codesitefs-denied-full-workflow"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "logicalTime": 46,
+      "createdAt": "2026-07-03T23:59:51.237Z"
+    },
+    {
+      "id": "cmr5libx0005cpm0zze7kc03q",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "write_denied",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "codesitefs",
+      "actorId": "cmr5libwv005apm0zfo9u9v6m",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "secrets/prod.env",
+        "reasonCodes": [
+          "outside_clearance_route"
+        ],
+        "policyDecisionId": "cmr5libwv005apm0zfo9u9v6m",
+        "zone": {
+          "zoneKey": "unclassified",
+          "label": "Unclassified repo airspace",
+          "class": "C",
+          "risk": "medium",
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ],
+          "path": "secrets/prod.env"
+        },
+        "codesiteFsEvent": {
+          "type": "write_denied",
+          "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+          "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "secrets/prod.env",
+          "tool": "file_write",
+          "wall_time": "2026-07-03T23:59:50.800Z",
+          "evidence_refs": [
+            "mcp:audit:codesitefs-denied-full-workflow"
+          ],
+          "details": {
+            "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+            "reason_codes": [
+              "outside_clearance_route"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "operation": "raw-terminal-write"
+          }
+        }
+      },
+      "evidenceRefs": [
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "logicalTime": 47,
+      "createdAt": "2026-07-03T23:59:51.252Z"
+    },
+    {
+      "id": "cmr5lictq005epm0z1ui3zk4c",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "write_attempted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "synthi/prisma/schema.prisma",
+        "tool": "raw_terminal",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "codesiteFsEvent": {
+          "type": "write_quarantined",
+          "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+          "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "raw_terminal",
+          "wall_time": "2026-07-03T23:59:51.825Z",
+          "evidence_refs": [
+            "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+          ],
+          "details": {
+            "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+            "reason_codes": [
+              "raw_terminal_quarantine"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "operation": "raw_terminal",
+            "quarantine_id": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+            "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260703-overlay8/cmr5li1840030pm0ziuph9b1r/qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+            "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+            "change_kind": "modified",
+            "quarantine_evidence": {
+              "path": "synthi/prisma/schema.prisma",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+              "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+              "beforeSize": 135,
+              "afterSize": 249,
+              "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+              "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 8,
+                "beforeLineCount": 3,
+                "afterLineCount": 9,
+                "truncated": false,
+                "lines": [
+                  "   email String @unique",
+                  " }",
+                  " ",
+                  "+model QuarantinedAuditEvent {",
+                  "+  id        String   @id",
+                  "+  userId    String",
+                  "+  createdAt DateTime @default(now())",
+                  "+}",
+                  "+"
+                ]
+              },
+              "digest": "sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+              "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+              "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd"
+            }
+          }
+        },
+        "semanticDependencyRefs": [],
+        "evidenceRefs": [
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ]
+      },
+      "evidenceRefs": [
+        "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+      ],
+      "logicalTime": 48,
+      "createdAt": "2026-07-03T23:59:52.431Z"
+    },
+    {
+      "id": "cmr5licty005ipm0zsuan1dmd",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "write_quarantined",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "codesitefs",
+      "actorId": "cmr5lictu005gpm0zjo9uo8ot",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "synthi/prisma/schema.prisma",
+        "reasonCodes": [
+          "raw_terminal_quarantine"
+        ],
+        "policyDecisionId": "cmr5lictu005gpm0zjo9uo8ot",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "codesiteFsEvent": {
+          "type": "write_quarantined",
+          "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+          "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "raw_terminal",
+          "wall_time": "2026-07-03T23:59:51.825Z",
+          "evidence_refs": [
+            "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+          ],
+          "details": {
+            "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+            "reason_codes": [
+              "raw_terminal_quarantine"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "operation": "raw_terminal",
+            "quarantine_id": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+            "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260703-overlay8/cmr5li1840030pm0ziuph9b1r/qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+            "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+            "change_kind": "modified",
+            "quarantine_evidence": {
+              "path": "synthi/prisma/schema.prisma",
+              "kind": "modified",
+              "beforeExists": true,
+              "afterExists": true,
+              "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+              "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+              "beforeSize": 135,
+              "afterSize": 249,
+              "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+              "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+              "textDiff": {
+                "format": "line-window-v1",
+                "startLine": 8,
+                "beforeLineCount": 3,
+                "afterLineCount": 9,
+                "truncated": false,
+                "lines": [
+                  "   email String @unique",
+                  " }",
+                  " ",
+                  "+model QuarantinedAuditEvent {",
+                  "+  id        String   @id",
+                  "+  userId    String",
+                  "+  createdAt DateTime @default(now())",
+                  "+}",
+                  "+"
+                ]
+              },
+              "digest": "sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+              "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+              "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd"
+            }
+          }
+        }
+      },
+      "evidenceRefs": [
+        "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+      ],
+      "logicalTime": 49,
+      "createdAt": "2026-07-03T23:59:52.439Z"
+    },
+    {
+      "id": "cmr5lidx7005kpm0z8eje4dch",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "write_attempted",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "synthi/prisma/schema.prisma",
+        "tool": "file_write",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "codesiteFsEvent": {
+          "type": "write_allowed",
+          "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+          "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+          "display_callsign": "SCHEMA-01",
+          "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+          "actor_user_id": null,
+          "effective_user_id": null,
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "file_write",
+          "wall_time": "2026-07-03T23:59:53.005Z",
+          "evidence_refs": [
+            "mcp:audit:write-full-workflow",
+            "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+            "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+          ],
+          "details": {
+            "reason": "inside_clearance_route",
+            "reason_codes": [
+              "inside_clearance_route"
+            ],
+            "process_ancestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "operation": "write-file",
+            "lineProvenance": [
+              {
+                "filePath": "synthi/prisma/schema.prisma",
+                "startLine": 10,
+                "endLine": 15,
+                "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+                "reasonRef": "change_order:cmr5li92x004ypm0zeqwg9hzp",
+                "evidenceRefs": [
+                  "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+                  "mcp:audit:write-full-workflow",
+                  "codesite:document:cmr5li7ha004qpm0z6piq4wqm",
+                  "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+                  "codesite:inbox:cmr5li7hu004upm0zsajvsef8",
+                  "codesite:inbox:cmr5li93g0052pm0z56f6c378",
+                  "codesite:assumption:cmr5li1w60036pm0zwbdn7kax",
+                  "codesite:assumption:cmr5li3ao003mpm0zbkt0rzak",
+                  "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+                ],
+                "processAncestry": [
+                  "mcp:synthi_codesite_apply_patch",
+                  "codex:tmp-proof-session"
+                ],
+                "promptSummary": "Land schema-first full workflow proof",
+                "dojoSourceRefs": [
+                  "dojo:proof:pcap-full-workflow-schema",
+                  "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+                  "full-workflow-checkride"
+                ]
+              }
+            ]
+          }
+        },
+        "semanticDependencyRefs": [],
+        "lineProvenance": [
+          {
+            "filePath": "synthi/prisma/schema.prisma",
+            "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+            "startLine": 10,
+            "endLine": 15,
+            "reasonRef": "change_order:cmr5li92x004ypm0zeqwg9hzp",
+            "evidenceRefs": [
+              "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+              "mcp:audit:write-full-workflow",
+              "codesite:document:cmr5li7ha004qpm0z6piq4wqm",
+              "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+              "codesite:inbox:cmr5li7hu004upm0zsajvsef8",
+              "codesite:inbox:cmr5li93g0052pm0z56f6c378",
+              "codesite:assumption:cmr5li1w60036pm0zwbdn7kax",
+              "codesite:assumption:cmr5li3ao003mpm0zbkt0rzak",
+              "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+            ],
+            "processAncestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "dojoSourceRefs": [
+              "dojo:proof:pcap-full-workflow-schema",
+              "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+              "full-workflow-checkride"
+            ],
+            "promptSummary": "Land schema-first full workflow proof"
+          }
+        ],
+        "evidenceRefs": [
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+          "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+        "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+      ],
+      "logicalTime": 50,
+      "createdAt": "2026-07-03T23:59:53.851Z"
+    },
+    {
+      "id": "cmr5lidxr005opm0zzlpvbpbf",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "write_allowed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "path": "synthi/prisma/schema.prisma",
+        "zone": {
+          "zoneKey": "class_b",
+          "label": "Shared contract airspace",
+          "class": "B",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ],
+          "risk": "high",
+          "source": "compiled_default",
+          "path": "synthi/prisma/schema.prisma"
+        },
+        "semanticDependencyRefs": [],
+        "invalidatedAssumptions": [
+          {
+            "id": "cmr5li3ao003mpm0zbkt0rzak",
+            "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+            "ownerSessionId": "cmr5lhu5s001gpm0zzwecixke",
+            "displayCallsign": "API-02",
+            "assumptionKey": "api.signup.depends_on_schema.v1",
+            "dependsOn": [
+              {
+                "ref": "auth.signup.schema",
+                "version": "v1",
+                "path": "synthi/prisma/schema.prisma"
+              }
+            ],
+            "usedBy": [
+              "synthi/src/app/api/auth/signup.ts"
+            ],
+            "status": "invalidated",
+            "invalidatedBy": "SCHEMA-01",
+            "invalidatedAt": "2026-07-03T23:59:53.862Z",
+            "createdAt": "2026-07-03T23:59:40.081Z"
+          }
+        ],
+        "lineProvenance": [
+          {
+            "filePath": "synthi/prisma/schema.prisma",
+            "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+            "startLine": 10,
+            "endLine": 15,
+            "reasonRef": "change_order:cmr5li92x004ypm0zeqwg9hzp",
+            "evidenceRefs": [
+              "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+              "mcp:audit:write-full-workflow",
+              "codesite:document:cmr5li7ha004qpm0z6piq4wqm",
+              "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+              "codesite:inbox:cmr5li7hu004upm0zsajvsef8",
+              "codesite:inbox:cmr5li93g0052pm0z56f6c378",
+              "codesite:assumption:cmr5li1w60036pm0zwbdn7kax",
+              "codesite:assumption:cmr5li3ao003mpm0zbkt0rzak",
+              "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+            ],
+            "processAncestry": [
+              "mcp:synthi_codesite_apply_patch",
+              "codex:tmp-proof-session"
+            ],
+            "dojoSourceRefs": [
+              "dojo:proof:pcap-full-workflow-schema",
+              "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+              "full-workflow-checkride"
+            ],
+            "promptSummary": "Land schema-first full workflow proof"
+          }
+        ],
+        "evidenceRefs": [
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+          "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+        ],
+        "processAncestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ]
+      },
+      "evidenceRefs": [
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+        "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+      ],
+      "logicalTime": 52,
+      "createdAt": "2026-07-03T23:59:53.872Z"
+    },
+    {
+      "id": "cmr5liges0060pm0zivijddb6",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr5liged005ypm0zxs56b0z7",
+      "details": {
+        "inspectionRunId": "cmr5liged005ypm0zxs56b0z7",
+        "status": "running",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "runtime:event:inspection-full-workflow"
+        ]
+      },
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow"
+      ],
+      "logicalTime": 55,
+      "createdAt": "2026-07-03T23:59:57.077Z"
+    },
+    {
+      "id": "cmr5ligvh0062pm0z0hij9hsk",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "radar_result",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr5liged005ypm0zxs56b0z7",
+      "details": {
+        "inspectionRunId": "cmr5liged005ypm0zxs56b0z7",
+        "status": "completed",
+        "signals": [
+          {
+            "key": "type",
+            "adapter": {
+              "key": "type",
+              "label": "Type radar",
+              "evidencePrefix": "typecheck:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "run",
+                "typecheck"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 280,
+            "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+            "evidenceRefs": [
+              "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+              "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691"
+            ],
+            "reasonCodes": [
+              "type_radar_passed",
+              "type_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-03T23:59:57.083Z",
+            "completedAt": "2026-07-03T23:59:57.363Z"
+          },
+          {
+            "key": "tests",
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "test"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 300,
+            "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+            "evidenceRefs": [
+              "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+              "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b"
+            ],
+            "reasonCodes": [
+              "tests_radar_passed",
+              "tests_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-03T23:59:57.363Z",
+            "completedAt": "2026-07-03T23:59:57.663Z"
+          }
+        ]
+      },
+      "evidenceRefs": [],
+      "logicalTime": 56,
+      "createdAt": "2026-07-03T23:59:57.677Z"
+    },
+    {
+      "id": "cmr5ligvm0064pm0zqqvyhqaj",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "inspection_result",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr5liged005ypm0zxs56b0z7",
+      "details": {
+        "inspectionRunId": "cmr5liged005ypm0zxs56b0z7",
+        "status": "completed",
+        "signals": [
+          {
+            "key": "type",
+            "adapter": {
+              "key": "type",
+              "label": "Type radar",
+              "evidencePrefix": "typecheck:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "run",
+                "typecheck"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 280,
+            "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+            "evidenceRefs": [
+              "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+              "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691"
+            ],
+            "reasonCodes": [
+              "type_radar_passed",
+              "type_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-03T23:59:57.083Z",
+            "completedAt": "2026-07-03T23:59:57.363Z"
+          },
+          {
+            "key": "tests",
+            "adapter": {
+              "key": "tests",
+              "label": "Test radar",
+              "evidencePrefix": "test:run"
+            },
+            "status": "passed",
+            "command": {
+              "executable": "npm",
+              "args": [
+                "test"
+              ],
+              "cwd": ".",
+              "timeoutMs": 60000
+            },
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 300,
+            "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+            "stderrTail": "",
+            "evidenceDigest": "sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+            "evidenceRefs": [
+              "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+              "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b"
+            ],
+            "reasonCodes": [
+              "tests_radar_passed",
+              "tests_adapter_executed"
+            ],
+            "source": "codesite_inspection_executor",
+            "startedAt": "2026-07-03T23:59:57.363Z",
+            "completedAt": "2026-07-03T23:59:57.663Z"
+          }
+        ]
+      },
+      "evidenceRefs": [],
+      "logicalTime": 57,
+      "createdAt": "2026-07-03T23:59:57.682Z"
+    },
+    {
+      "id": "cmr5lihat0068pm0zozo63bve",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "inspection",
+      "actorId": "cmr5lihai0066pm0ztoa66xwm",
+      "details": {
+        "inspectionRunId": "cmr5lihai0066pm0ztoa66xwm",
+        "status": "passed",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "codesite:landing:passed-health-proof"
+        ]
+      },
+      "evidenceRefs": [
+        "codesite:landing:passed-health-proof"
+      ],
+      "logicalTime": 58,
+      "createdAt": "2026-07-03T23:59:58.230Z"
+    },
+    {
+      "id": "cmr5lmib1007spm0z45ziqyyx",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_validated",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "decision": {
+          "ok": true,
+          "isolation": "serializable",
+          "reasonCodes": [
+            "repo_snapshot_stable",
+            "serializable_validation_passed"
+          ],
+          "blockedWrites": [],
+          "invalidAssumptions": [],
+          "staleReads": [],
+          "repoSnapshot": {
+            "ok": true,
+            "reasonCodes": [
+              "repo_snapshot_stable"
+            ],
+            "expected": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-03T23:59:07.617Z",
+              "source": "codesite-full-workflow-proof",
+              "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+              "evidenceDigest": "sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635"
+            },
+            "current": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "readSet": [
+                "synthi/prisma/schema-contract-read.txt"
+              ],
+              "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+              "fileDigests": [
+                {
+                  "path": "synthi/prisma/schema-contract-read.txt",
+                  "exists": true,
+                  "size": 24,
+                  "digest": "sha256:7f05abb6fa1ef151cb18e869affa2c7280b989f4acfe6c25acf315ad8614b03c"
+                }
+              ],
+              "missingPaths": [],
+              "skippedPaths": [],
+              "truncated": false,
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-04T00:03:05.972Z",
+              "source": "codesite_validation",
+              "snapshotDigest": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+              "evidenceDigest": "sha256:ba0a8312ecb8629be8feea037622ffd9d34fa7f5ca8bd0d0a22c402e570b835f"
+            },
+            "driftedPaths": [],
+            "digestChanged": false
+          },
+          "validatedAt": "2026-07-04T00:03:06.137Z"
+        }
+      },
+      "evidenceRefs": [],
+      "logicalTime": 71,
+      "createdAt": "2026-07-04T00:03:06.157Z"
+    },
+    {
+      "id": "cmr5lmidd007ypm0z7dlwugop",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "transaction_committed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "proofBundleId": "cmr5lmibx007upm0zz2xsky0g",
+        "proofBundleDigest": "sha256:6adecd0878cc95a40b7734c4a23e8f87851fd0d2a4af81790f7488f4672950ab",
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "repoStateDigest": "sha256:2d17f6bc39b03f4637563861493360eb1e1573aaefbf75868b59344e073b10bb",
+        "inspectionRunIds": [
+          "cmr5lihai0066pm0ztoa66xwm",
+          "cmr5liged005ypm0zxs56b0z7"
+        ],
+        "inspectionEvidenceRefs": [
+          "codesite:landing:passed-health-proof",
+          "codesite:inspection:cmr5lihai0066pm0ztoa66xwm",
+          "runtime:event:inspection-full-workflow",
+          "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+          "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+          "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+          "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+          "codesite:inspection:cmr5liged005ypm0zxs56b0z7"
+        ]
+      },
+      "evidenceRefs": [],
+      "logicalTime": 72,
+      "createdAt": "2026-07-04T00:03:06.241Z"
+    },
+    {
+      "id": "cmr5lmieg0080pm0zajfqxomb",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "black_box_closed",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "transaction",
+      "actorId": "cmr5li1840030pm0ziuph9b1r",
+      "details": {
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "incidentId": "cmr5liep0005upm0zgugnchf4",
+        "proofBundleId": "cmr5lmibx007upm0zz2xsky0g",
+        "proofBundleDigest": "sha256:6adecd0878cc95a40b7734c4a23e8f87851fd0d2a4af81790f7488f4672950ab",
+        "landingStatus": "completed",
+        "status": "committed",
+        "readSet": [
+          "synthi/prisma/schema-contract-read.txt"
+        ],
+        "writeSet": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "exportedPaths": [
+          "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5li1840030pm0ziuph9b1r.json",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/proof-bundles/cmr5lmibx007upm0zz2xsky0g.proof.json",
+          "projects/cmr5lhrju000dpm0z9sb64ur7/proof-bundles/cmr5lmibx007upm0zz2xsky0g.trailers.txt"
+        ],
+        "reason": "transaction_black_box_closeout"
+      },
+      "evidenceRefs": [
+        "mcp:audit:commit-full-workflow",
+        "git:commit:508c209b6d7184a1765809c1d1f6de8b6f75c9d1",
+        "codesite:runtime-attestation:sha256:15daad00ea7264ac84e299a3e334b2630f6b2dbf81c88c1a2b1101b10ab88555",
+        "codesite:runtime-attestation:sha256:cd594c44e0b2684807b2661d68eb073c3fb81f9c8f5f68202ac19f1e15928af9",
+        "codesite:landing:passed-health-proof",
+        "codesite:inspection:cmr5lihai0066pm0ztoa66xwm",
+        "runtime:event:inspection-full-workflow",
+        "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "codesite:inspection:cmr5liged005ypm0zxs56b0z7",
+        "codesite:repo-state:sha256:2d17f6bc39b03f4637563861493360eb1e1573aaefbf75868b59344e073b10bb",
+        "codesite:transaction:cmr5li1840030pm0ziuph9b1r",
+        "codesite:lease:cmr5lhw270020pm0zv2swrhf0",
+        "codesite:proof-bundle:cmr5lmibx007upm0zz2xsky0g"
+      ],
+      "logicalTime": 73,
+      "createdAt": "2026-07-04T00:03:06.280Z"
+    },
+    {
+      "id": "cmr5lmjtv0082pm0ztfxrucnd",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "eventType": "inspection_result",
+      "displayCallsign": "SCHEMA-01",
+      "actorType": "proof_bundle",
+      "actorId": "cmr5lmibx007upm0zz2xsky0g",
+      "details": {
+        "type": "proof_bundle_commit_attached",
+        "proofBundleId": "cmr5lmibx007upm0zz2xsky0g",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "commitSha": "65ea43f346834c29aa55106ef97aa7df89390372",
+        "trailerDigest": "sha256:1d03de9cd38b707aca7f116289e32861726c062a2ee9daca99c04fcb89e16056",
+        "evidenceRefs": [
+          "git:commit:65ea43f346834c29aa55106ef97aa7df89390372",
+          "git:trailers:sha256:1d03de9cd38b707aca7f116289e32861726c062a2ee9daca99c04fcb89e16056",
+          "git:commit:508c209b6d7184a1765809c1d1f6de8b6f75c9d1"
+        ],
+        "reasonCodes": [
+          "proof_bundle_commit_trailers_verified"
+        ]
+      },
+      "evidenceRefs": [
+        "git:commit:65ea43f346834c29aa55106ef97aa7df89390372",
+        "git:trailers:sha256:1d03de9cd38b707aca7f116289e32861726c062a2ee9daca99c04fcb89e16056",
+        "git:commit:508c209b6d7184a1765809c1d1f6de8b6f75c9d1"
+      ],
+      "logicalTime": 74,
+      "createdAt": "2026-07-04T00:03:08.131Z"
+    }
+  ],
+  "inspections": [
+    {
+      "id": "cmr5liged005ypm0zxs56b0z7",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "executionPlanId": "cmr5lhtrd001cpm0z6g20ya0l",
+      "displayCallsign": "SCHEMA-01",
+      "status": "completed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "type",
+          "adapter": {
+            "key": "type",
+            "label": "Type radar",
+            "evidencePrefix": "typecheck:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "run",
+              "typecheck"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 280,
+          "stdoutTail": "\n> typecheck\n> node scripts/typecheck-schema.mjs\n\nschema typecheck passed: AuditEvent contract is compatible with User identity schema\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+          "evidenceRefs": [
+            "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+            "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691"
+          ],
+          "reasonCodes": [
+            "type_radar_passed",
+            "type_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-03T23:59:57.083Z",
+          "completedAt": "2026-07-03T23:59:57.363Z"
+        },
+        {
+          "key": "tests",
+          "adapter": {
+            "key": "tests",
+            "label": "Test radar",
+            "evidencePrefix": "test:run"
+          },
+          "status": "passed",
+          "command": {
+            "executable": "npm",
+            "args": [
+              "test"
+            ],
+            "cwd": ".",
+            "timeoutMs": 60000
+          },
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 300,
+          "stdoutTail": "\n> test\n> node scripts/test-schema-contract.mjs\n\nschema contract tests passed: AuditEvent satisfies startup audit-log workflow\n",
+          "stderrTail": "",
+          "evidenceDigest": "sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+          "evidenceRefs": [
+            "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+            "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b"
+          ],
+          "reasonCodes": [
+            "tests_radar_passed",
+            "tests_adapter_executed"
+          ],
+          "source": "codesite_inspection_executor",
+          "startedAt": "2026-07-03T23:59:57.363Z",
+          "completedAt": "2026-07-03T23:59:57.663Z"
+        }
+      ],
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b"
+      ],
+      "requestedAt": "2026-07-03T23:59:57.062Z",
+      "completedAt": "2026-07-03T23:59:57.663Z"
+    },
+    {
+      "id": "cmr5lihai0066pm0ztoa66xwm",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "executionPlanId": "cmr5lhtrd001cpm0z6g20ya0l",
+      "displayCallsign": "SCHEMA-01",
+      "status": "passed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "landing_health",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:landing:passed-health-proof"
+          ]
+        }
+      ],
+      "evidenceRefs": [
+        "codesite:landing:passed-health-proof"
+      ],
+      "requestedAt": "2026-07-03T23:59:58.218Z",
+      "completedAt": null
+    }
+  ],
+  "pilotLicenseHealth": {
+    "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+    "key": "cmr5lhte50016pm0zv10xqicb",
+    "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+    "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+    "agentSessionId": "cmr5lhte50016pm0zv10xqicb",
+    "ownerUserId": "cmr5lhcg90004pm0znnhyx625",
+    "displayCallsign": "SCHEMA-01",
+    "status": "suspended",
+    "level": "IFR",
+    "levelRank": 3,
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoDecisionDigest": "sha256:1266e9e94cf45cbc3ce4681127750a9dac985ea1b9c2b44eba4f1f712bf7f1e2",
+    "repoScope": "codesite-mature-full-proof-20260703-overlay8",
+    "authorizedAirspace": [
+      "packages/schemas/**",
+      "openapi/**",
+      "packages/*/src/index.ts",
+      "synthi/prisma/**",
+      "backend/collab-server/permissionMiddleware.js"
+    ],
+    "restrictedAirspace": [
+      "secrets/**"
+    ],
+    "requiredRadar": [
+      "typecheck",
+      "tests"
+    ],
+    "earnedBy": [
+      "dojo:full-workflow-checkride",
+      "dojo:evidence:full-workflow-checkride"
+    ],
+    "expiresAt": null,
+    "expiresOn": [
+      "source_drift"
+    ],
+    "sourceDrift": {
+      "monitored": true,
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "expired": false
+    },
+    "landingStats": {
+      "total": 2,
+      "passed": 1,
+      "failed": 0,
+      "evidenceRefs": [
+        "runtime:event:inspection-full-workflow",
+        "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "codesite:landing:passed-health-proof"
+      ]
+    },
+    "violationStats": {
+      "total": 3,
+      "critical": 2,
+      "latestAt": "2026-07-03T23:59:51.252Z",
+      "evidenceRefs": [
+        "codesite:policy-decision:cmr5lhw2j0022pm0zzx39zy41",
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ]
+    },
+    "reasonCodes": [
+      "pilot_license_critical_violation_window"
+    ],
+    "requiredAction": "review_pilot_license:cmr5lhte50016pm0zv10xqicb",
+    "evidenceRefs": [
+      "dojo:evidence:full-workflow-checkride",
+      "dojo:full-workflow-checkride",
+      "full-workflow-checkride",
+      "runtime:event:inspection-full-workflow",
+      "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+      "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+      "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+      "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+      "codesite:landing:passed-health-proof",
+      "codesite:policy-decision:cmr5lhw2j0022pm0zzx39zy41",
+      "codesite:transaction:cmr5lhwil0028pm0zt2p1l5iz",
+      "codesite:lease:cmr5lhw270020pm0zv2swrhf0",
+      "codesite:read-snapshot:sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+      "codesite:transaction:cmr5lhy9y002kpm0zn6k7wy4l",
+      "mcp:audit:read-full-workflow",
+      "mcp:audit:codesitefs-denied-full-workflow",
+      "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+      "mcp:audit:write-full-workflow",
+      "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+      "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0",
+      "mcp:audit:commit-full-workflow",
+      "git:commit:508c209b6d7184a1765809c1d1f6de8b6f75c9d1",
+      "codesite:runtime-attestation:sha256:15daad00ea7264ac84e299a3e334b2630f6b2dbf81c88c1a2b1101b10ab88555",
+      "codesite:runtime-attestation:sha256:cd594c44e0b2684807b2661d68eb073c3fb81f9c8f5f68202ac19f1e15928af9",
+      "codesite:inspection:cmr5lihai0066pm0ztoa66xwm",
+      "codesite:inspection:cmr5liged005ypm0zxs56b0z7",
+      "codesite:repo-state:sha256:2d17f6bc39b03f4637563861493360eb1e1573aaefbf75868b59344e073b10bb",
+      "codesite:transaction:cmr5li1840030pm0ziuph9b1r",
+      "codesite:proof-bundle:cmr5lmibx007upm0zz2xsky0g",
+      "git:commit:65ea43f346834c29aa55106ef97aa7df89390372",
+      "git:trailers:sha256:1d03de9cd38b707aca7f116289e32861726c062a2ee9daca99c04fcb89e16056",
+      "codesite:policy-decision:cmr5libwv005apm0zfo9u9v6m",
+      "codesite:policy-decision:cmr5lictu005gpm0zjo9uo8ot"
+    ],
+    "lifecycle": {
+      "issuedAt": "2026-07-03T23:59:27.246Z",
+      "checkedAt": "2026-07-04T00:03:08.682Z",
+      "latestLandingAt": "2026-07-03T23:59:58.218Z",
+      "latestViolationAt": "2026-07-03T23:59:51.252Z",
+      "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+    }
+  },
+  "proofBundles": [
+    {
+      "id": "cmr5lmibx007upm0zz2xsky0g",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "transactionId": "cmr5li1840030pm0ziuph9b1r",
+      "commitSha": "65ea43f346834c29aa55106ef97aa7df89390372",
+      "readSetDigest": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
+      "writeSetDigest": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
+      "invariants": [
+        "clearance.diff.inside_route"
+      ],
+      "evidenceRefs": [
+        "mcp:audit:commit-full-workflow",
+        "git:commit:508c209b6d7184a1765809c1d1f6de8b6f75c9d1",
+        "codesite:runtime-attestation:sha256:15daad00ea7264ac84e299a3e334b2630f6b2dbf81c88c1a2b1101b10ab88555",
+        "codesite:runtime-attestation:sha256:cd594c44e0b2684807b2661d68eb073c3fb81f9c8f5f68202ac19f1e15928af9",
+        "codesite:landing:passed-health-proof",
+        "codesite:inspection:cmr5lihai0066pm0ztoa66xwm",
+        "runtime:event:inspection-full-workflow",
+        "typecheck:run:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "artifact:sha256:fc3adde5b81875296da0dc7590fab96305b27353eac623ea1bc6da4987107691",
+        "test:run:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "artifact:sha256:e660669e0332aabe4c0034930d49ca6ce502f0ece76caf6ee74124fee61ecb5b",
+        "codesite:inspection:cmr5liged005ypm0zxs56b0z7",
+        "codesite:repo-state:sha256:2d17f6bc39b03f4637563861493360eb1e1573aaefbf75868b59344e073b10bb",
+        "codesite:transaction:cmr5li1840030pm0ziuph9b1r",
+        "codesite:lease:cmr5lhw270020pm0zv2swrhf0"
+      ],
+      "dojoEvidenceRefs": [],
+      "repoState": {
+        "schemaVersion": "synthi.codesite.repoStateEvidence.v1",
+        "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+        "gitHead": "508c209b6d7184a1765809c1d1f6de8b6f75c9d1",
+        "stagedDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "worktreeDiffDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "writeFileDigests": [
+          {
+            "path": "synthi/prisma/schema.prisma",
+            "digest": "sha256:cc965a1302ccd4ef3195e0250c972005cf2e4fe75bf52a69f3462917cef9a160",
+            "size": 238,
+            "exists": true
+          }
+        ],
+        "generatedAt": "2026-07-03T23:59:56.445Z",
+        "source": "collab-server",
+        "evidenceDigest": "sha256:2d17f6bc39b03f4637563861493360eb1e1573aaefbf75868b59344e073b10bb"
+      },
+      "incidentReplayDigest": "sha256:a90b886de17a4d4db33dffa1ddec0313b201ee61b178a18c8f7e82f3cf080e0c",
+      "landingStatus": "completed",
+      "bundleDigest": "sha256:6adecd0878cc95a40b7734c4a23e8f87851fd0d2a4af81790f7488f4672950ab",
+      "proofSignature": {
+        "schemaVersion": "synthi.codesite.proofSignature.v1",
+        "algorithm": "ed25519",
+        "keyId": "codesite-proof-ed25519-20260702",
+        "authority": "CodeSite Mature Proof Authority",
+        "signedAt": "2026-07-04T00:03:06.304Z",
+        "payloadDigest": "sha256:6bcd0b5b54ae05d27e32d1cc42ce5c074ddd688d5dba3d7486d7b388a3ae8982",
+        "signature": "ed25519:codesite-proof-ed25519-20260702:uMDKkBD4AxarmwBj4F2ETFgMmXGHU7bDAWOae25G-SlUMxXrLt3hsvpfPbOrIaGMCVxrymPNWHWyFxBkQ09uAg",
+        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAyCmSzFdxRGaQvSvXXg1jm4PzivnJ9BByBdMBzP5GMnQ=\n-----END PUBLIC KEY-----"
+      },
+      "signatureKeyId": "codesite-proof-ed25519-20260702",
+      "createdAt": "2026-07-04T00:03:06.189Z",
+      "trailers": {
+        "CodeSite-Project": "cmr5lhrju000dpm0z9sb64ur7",
+        "CodeSite-Flight": "SCHEMA-01",
+        "CodeSite-Clearance": "cmr5lhw270020pm0zv2swrhf0",
+        "CodeSite-Landing": "completed",
+        "CodeSite-Transaction": "cmr5li1840030pm0ziuph9b1r",
+        "CodeSite-Lease": "cmr5lhw270020pm0zv2swrhf0",
+        "CodeSite-Read-Set": "sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a",
+        "CodeSite-Write-Set": "sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973",
+        "CodeSite-Invariants": "clearance.diff.inside_route",
+        "CodeSite-Black-Box": "sha256:a90b886de17a4d4db33dffa1ddec0313b201ee61b178a18c8f7e82f3cf080e0c",
+        "CodeSite-Proof-Digest": "sha256:de3d512b4c02e73be8aa41703b8f83cf1b8457b7d6a52733be192256670a9b63",
+        "CodeSite-Proof-Authority": "codesite-proof-ed25519-20260702",
+        "CodeSite-Proof-Signature": "ed25519:codesite-proof-ed25519-20260702:LGXSAYWg92fYE7XYi-RRGH-7jUScO1nS7AOxCg52P41AjK7eDr1a2jtu4xoqX4BCYeB24JoeFxf_OyAuNKJJAA"
+      }
+    }
+  ],
+  "quarantines": [
+    {
+      "schemaVersion": "synthi.codesite.codesitefs.quarantine.v1",
+      "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+      "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "transactionId": "cmr5li1840030pm0ziuph9b1r",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "displayCallsign": "SCHEMA-01",
+      "status": "reviewable",
+      "paths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "changes": [
+        {
+          "path": "synthi/prisma/schema.prisma",
+          "kind": "modified",
+          "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+          "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+          "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+          "currentDigest": null,
+          "expectedDigest": null,
+          "beforeSize": 135,
+          "afterSize": 249,
+          "lineProvenanceCount": 0
+        }
+      ],
+      "lifecycle": {
+        "capturedAt": "2026-07-03T23:59:52.439Z",
+        "reviewedAt": null,
+        "replayedAt": null,
+        "appliedAt": null
+      },
+      "rejected": [],
+      "applied": [],
+      "appliedPaths": [],
+      "remainingPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "latestReplayAttempt": null,
+      "replayAttempts": [],
+      "successfulReplay": null,
+      "eventRefs": [
+        "cmr5licty005ipm0zsuan1dmd"
+      ],
+      "evidenceRefs": [
+        "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+      ],
+      "symlinkSanitization": null,
+      "createdAt": "2026-07-03T23:59:52.439Z",
+      "updatedAt": "2026-07-03T23:59:52.439Z"
+    }
+  ],
+  "filesystemBoundaryProofs": [
+    {
+      "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+      "proofId": "fs-boundary-cmr5licty005ipm0zsuan1dmd",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+      "eventId": "cmr5licty005ipm0zsuan1dmd",
+      "policyDecisionId": "cmr5lictu005gpm0zjo9uo8ot",
+      "eventType": "write_quarantined",
+      "disposition": "write_quarantined",
+      "prevented": true,
+      "quarantined": true,
+      "path": "synthi/prisma/schema.prisma",
+      "transactionId": "cmr5li1840030pm0ziuph9b1r",
+      "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "requestedMutationLeaseId": null,
+      "inspectedLeases": [],
+      "displayCallsign": "SCHEMA-01",
+      "leaseState": "matched_clearance",
+      "lease": {
+        "id": "cmr5lhw270020pm0zv2swrhf0",
+        "displayCallsign": "SCHEMA-01",
+        "status": "active",
+        "allowedPaths": [
+          "synthi/prisma/**"
+        ],
+        "blockedPaths": [
+          "secrets/**"
+        ],
+        "allowedTools": [
+          "file_write"
+        ],
+        "dojoLicenseRef": "schema.level_2@2026-06-25",
+        "dojoProofRef": "pcap-full-workflow-schema"
+      },
+      "reasonCodes": [
+        "raw_terminal_quarantine"
+      ],
+      "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+      "zone": {
+        "zoneKey": "class_b",
+        "label": "Shared contract airspace",
+        "class": "B",
+        "paths": [
+          "packages/schemas/**",
+          "openapi/**",
+          "packages/*/src/index.ts",
+          "synthi/prisma/**",
+          "backend/collab-server/permissionMiddleware.js"
+        ],
+        "rules": [
+          "flight_plan_required",
+          "downstream_notification_required",
+          "change_order_for_mutation"
+        ],
+        "risk": "high",
+        "source": "compiled_default",
+        "path": "synthi/prisma/schema.prisma"
+      },
+      "boundary": {
+        "source": "codesitefs",
+        "tool": "raw_terminal",
+        "operation": "raw_terminal",
+        "actorType": "codesitefs",
+        "actorId": "cmr5lictu005gpm0zjo9uo8ot"
+      },
+      "process": {
+        "ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ],
+        "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session"
+      },
+      "evidence": {
+        "refs": [
+          "event:cmr5licty005ipm0zsuan1dmd",
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+        ],
+        "lineProvenanceCount": 0,
+        "changedLineRanges": [],
+        "dojoSourceRefs": []
+      },
+      "evidenceRefs": [
+        "event:cmr5licty005ipm0zsuan1dmd",
+        "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+      ],
+      "quarantine": {
+        "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+        "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+        "kind": "modified",
+        "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+        "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+        "symlinkSanitization": null
+      },
+      "proofComplete": true,
+      "missingProofFields": [],
+      "createdAt": "2026-07-03T23:59:52.439Z"
+    },
+    {
+      "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+      "proofId": "fs-boundary-cmr5libx0005cpm0zze7kc03q",
+      "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+      "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+      "eventId": "cmr5libx0005cpm0zze7kc03q",
+      "policyDecisionId": "cmr5libwv005apm0zfo9u9v6m",
+      "eventType": "write_denied",
+      "disposition": "write_denied",
+      "prevented": true,
+      "quarantined": false,
+      "path": "secrets/prod.env",
+      "transactionId": "cmr5li1840030pm0ziuph9b1r",
+      "mutationLeaseId": null,
+      "requestedMutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+      "inspectedLeases": [],
+      "displayCallsign": "SCHEMA-01",
+      "leaseState": "unmatched_clearance",
+      "lease": null,
+      "reasonCodes": [
+        "outside_clearance_route"
+      ],
+      "reason": "raw-terminal-write denied for secrets/prod.env: outside_clearance_route",
+      "zone": {
+        "zoneKey": "unclassified",
+        "label": "Unclassified repo airspace",
+        "class": "C",
+        "risk": "medium",
+        "rules": [
+          "auto_clearance_allowed",
+          "landing_inspection_required"
+        ],
+        "path": "secrets/prod.env"
+      },
+      "boundary": {
+        "source": "codesitefs",
+        "tool": "file_write",
+        "operation": "raw-terminal-write",
+        "actorType": "codesitefs",
+        "actorId": "cmr5libwv005apm0zfo9u9v6m"
+      },
+      "process": {
+        "ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ],
+        "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session"
+      },
+      "evidence": {
+        "refs": [
+          "event:cmr5libx0005cpm0zze7kc03q",
+          "mcp:audit:codesitefs-denied-full-workflow"
+        ],
+        "lineProvenanceCount": 0,
+        "changedLineRanges": [],
+        "dojoSourceRefs": []
+      },
+      "evidenceRefs": [
+        "event:cmr5libx0005cpm0zze7kc03q",
+        "mcp:audit:codesitefs-denied-full-workflow"
+      ],
+      "quarantine": null,
+      "proofComplete": true,
+      "missingProofFields": [],
+      "createdAt": "2026-07-03T23:59:51.252Z"
+    }
+  ],
+  "causalReplays": [
+    {
+      "incidentId": "cmr5lhxg0002gpm0zp2wj3fei",
+      "category": "black_box",
+      "severity": "warning",
+      "replayDigest": "sha256:4fabc44f206e6d1faaad4a015db9dc9bdd8def9062baa608bb49eea1d0213835",
+      "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:4fabc44f206e6d1faaad4a015db9dc9bdd8def9062baa608bb49eea1d0213835",
+      "completeness": {
+        "score": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "missingEventTypes": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "clearance.issued",
+          "near_miss.detected",
+          "transaction.opened",
+          "transaction.validated",
+          "transaction.aborted",
+          "black_box.closed"
+        ],
+        "totalEvents": 8
+      },
+      "presentEventTypes": [
+        "transaction.opened",
+        "clearance.issued",
+        "black_box.closed",
+        "near_miss.detected",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "totalEvents": 8,
+      "exportPaths": [
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-cmr5lhxg0002gpm0zp2wj3fei.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5lhwil0028pm0zt2p1l5iz.json"
+      ]
+    },
+    {
+      "incidentId": "cmr5li0ns002wpm0zmfhjhvkd",
+      "category": "black_box",
+      "severity": "warning",
+      "replayDigest": "sha256:d1e4d1e2a561f5fa7bd52dae28f44a6a49c24498dbe7339533bfbc409c73712e",
+      "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:d1e4d1e2a561f5fa7bd52dae28f44a6a49c24498dbe7339533bfbc409c73712e",
+      "completeness": {
+        "score": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "snapshot.taken",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "transaction.opened",
+          "clearance.issued",
+          "black_box.closed",
+          "snapshot.taken",
+          "near_miss.detected",
+          "transaction.aborted"
+        ],
+        "missingEventTypes": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "clearance.issued",
+          "near_miss.detected",
+          "transaction.opened",
+          "transaction.validated",
+          "transaction.aborted",
+          "black_box.closed",
+          "snapshot.taken"
+        ],
+        "totalEvents": 14
+      },
+      "presentEventTypes": [
+        "transaction.opened",
+        "clearance.issued",
+        "black_box.closed",
+        "snapshot.taken",
+        "near_miss.detected",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "totalEvents": 14,
+      "exportPaths": [
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-cmr5li0ns002wpm0zmfhjhvkd.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5lhy9y002kpm0zn6k7wy4l.json"
+      ]
+    },
+    {
+      "incidentId": "cmr5limq6007opm0zuylre7k6",
+      "category": "security",
+      "severity": "critical",
+      "replayDigest": "sha256:426f91e75a89977d184e82ccdf37d12abf585028615d6ca774a941ceb47c9544",
+      "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+      "proofBundleId": null,
+      "proofBundleDigest": null,
+      "codeSiteBlackBox": "sha256:426f91e75a89977d184e82ccdf37d12abf585028615d6ca774a941ceb47c9544",
+      "completeness": {
+        "score": 0.36,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "write.attempted",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "policy_delta.proposed"
+        ],
+        "missingEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.denied",
+          "inspection.result",
+          "near_miss.detected",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "observedEventTypes": [
+          "black_box.closed",
+          "transponder.update",
+          "snapshot.taken",
+          "policy_delta.proposed",
+          "shadow.run",
+          "arbiter.verdict",
+          "write.attempted",
+          "write.quarantined",
+          "assumption.invalidated",
+          "write.allowed",
+          "inspection.requested",
+          "flight_plan.filed",
+          "mayday.declared"
+        ],
+        "totalEvents": 26
+      },
+      "presentEventTypes": [
+        "write.attempted",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "policy_delta.proposed"
+      ],
+      "missingEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.denied",
+        "inspection.result",
+        "near_miss.detected",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "totalEvents": 26,
+      "exportPaths": [
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-cmr5limq6007opm0zuylre7k6.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md"
+      ]
+    },
+    {
+      "incidentId": "cmr5liep0005upm0zgugnchf4",
+      "category": "black_box",
+      "severity": "low",
+      "replayDigest": "sha256:a90b886de17a4d4db33dffa1ddec0313b201ee61b178a18c8f7e82f3cf080e0c",
+      "transactionId": "cmr5li1840030pm0ziuph9b1r",
+      "proofBundleId": "cmr5lmibx007upm0zz2xsky0g",
+      "proofBundleDigest": "sha256:6adecd0878cc95a40b7734c4a23e8f87851fd0d2a4af81790f7488f4672950ab",
+      "codeSiteBlackBox": "sha256:a90b886de17a4d4db33dffa1ddec0313b201ee61b178a18c8f7e82f3cf080e0c",
+      "completeness": {
+        "score": 1,
+        "requiredEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "presentEventTypes": [
+          "transaction.opened",
+          "assumption.recorded",
+          "clearance.issued",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "snapshot.taken",
+          "shadow.run",
+          "arbiter.verdict",
+          "inspection.result",
+          "near_miss.detected",
+          "policy_delta.proposed",
+          "transaction.committed",
+          "transaction.aborted"
+        ],
+        "missingEventTypes": [],
+        "observedEventTypes": [
+          "transponder.update",
+          "flight_plan.filed",
+          "clearance.issued",
+          "near_miss.detected",
+          "transaction.opened",
+          "transaction.validated",
+          "transaction.aborted",
+          "black_box.closed",
+          "snapshot.taken",
+          "assumption.recorded",
+          "policy_delta.proposed",
+          "shadow.run",
+          "arbiter.verdict",
+          "document.rfi",
+          "read.observed",
+          "write.attempted",
+          "write.denied",
+          "write.quarantined",
+          "assumption.invalidated",
+          "write.allowed",
+          "inspection.requested",
+          "radar.result",
+          "inspection.result",
+          "mayday.declared",
+          "transaction.committed"
+        ],
+        "totalEvents": 48
+      },
+      "presentEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.attempted",
+        "write.denied",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "inspection.result",
+        "near_miss.detected",
+        "policy_delta.proposed",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "missingEventTypes": [],
+      "totalEvents": 48,
+      "exportPaths": [
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-cmr5liep0005upm0zgugnchf4.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/proof-bundles/cmr5lmibx007upm0zz2xsky0g.proof.json",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/proof-bundles/cmr5lmibx007upm0zz2xsky0g.trailers.txt",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+        "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5li1840030pm0ziuph9b1r.json"
+      ]
+    }
+  ]
+}

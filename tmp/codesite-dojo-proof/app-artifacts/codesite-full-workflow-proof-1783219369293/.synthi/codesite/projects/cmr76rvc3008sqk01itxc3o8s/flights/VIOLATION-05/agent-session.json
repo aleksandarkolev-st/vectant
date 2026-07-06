@@ -1,0 +1,63 @@
+{
+  "id": "cmr76vdhk00fvqk01u45erl2g",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "ownerUserId": "cmr76rv8r008pqk01hsboray8",
+  "agentProvider": "codesite-proof-harness",
+  "agentRuntime": "pilot-license-violation-proof",
+  "providerSessionRef": "codesite-health:codesite-full-workflow-proof-1783219369293:violation",
+  "displayCallsign": "VIOLATION-05",
+  "status": "registered",
+  "permissions": [
+    "synthi_codesite_request_landing"
+  ],
+  "redactionPolicy": {
+    "acceptsTowerMessages": true,
+    "redactSecrets": true,
+    "redactPrivatePrompts": true,
+    "allowAttachments": false,
+    "visibleZones": [
+      "**"
+    ],
+    "allowedDocumentKinds": [
+      "rfi",
+      "change_order",
+      "inspection_request",
+      "inspection_result",
+      "mayday",
+      "handoff",
+      "stop_work",
+      "punch",
+      "tower_instruction"
+    ]
+  },
+  "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+  "dojoProofRef": "pcap-full-workflow-schema",
+  "dojoEvidenceRefs": [
+    "dojo:evidence:landing-health-checkride"
+  ],
+  "dojoDecisionDigest": "sha256:2bf694cefc69c1bd51bde6872ddb3c57a490a5d475852984d5a7a55cbe37a374",
+  "pilotLicenseSnapshot": {
+    "licenseLevel": "IFR",
+    "licenseStatus": "active",
+    "repoScope": "codesite-full-workflow-proof-1783219369293",
+    "authorizedAirspace": [
+      "synthi/prisma/**"
+    ],
+    "requiredRadar": [
+      "security",
+      "tests"
+    ],
+    "earnedBy": [
+      "dojo:evidence:landing-health-checkride"
+    ],
+    "expiresOn": [
+      "source_drift"
+    ],
+    "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+    "evidenceRefs": [
+      "dojo:evidence:landing-health-checkride"
+    ]
+  },
+  "createdAt": "2026-07-05T02:45:37.928Z",
+  "endedAt": null
+}

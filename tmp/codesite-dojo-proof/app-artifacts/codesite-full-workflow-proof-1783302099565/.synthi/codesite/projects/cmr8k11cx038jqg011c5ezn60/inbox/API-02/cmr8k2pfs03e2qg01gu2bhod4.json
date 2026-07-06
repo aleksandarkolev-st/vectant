@@ -1,0 +1,63 @@
+{
+  "id": "cmr8k2qrq03e4qg01f3q6ambl",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+  "recipientUserId": "cmr8k118i038dqg01ozra0m3l",
+  "eventId": "cmr8k2pfs03e2qg01gu2bhod4",
+  "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+  "kind": "rfi",
+  "requiresResponse": true,
+  "status": "acknowledged",
+  "redactedPayload": {
+    "documentId": "cmr8k2pfn03e0qg01llwk06uj",
+    "eventId": "cmr8k2pfs03e2qg01gu2bhod4",
+    "kind": "rfi",
+    "title": "Confirm schema-first contract before API route",
+    "body": {
+      "question": "Confirm API flight will hold until auth.signup.schema.v1 lands.",
+      "proposedContract": "synthi/prisma/schema-contract-read.txt",
+      "transactionId": "cmr8k1okx03bcqg01803em330",
+      "routing": {
+        "fromSessionId": "cmr8k13e8039cqg01xyi06yi0",
+        "toSessionIds": [
+          "cmr8k14ac039mqg01vcrrgs71"
+        ],
+        "projectRefs": {
+          "executionPlanId": "cmr8k13ui039iqg01swtnoibi",
+          "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+          "transactionId": "cmr8k1okx03bcqg01803em330",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "contractRefs": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "inspectionRunId": null,
+          "incidentId": null
+        }
+      }
+    },
+    "redaction": {
+      "policyApplied": true,
+      "recipientSessionId": "cmr8k14ac039mqg01vcrrgs71"
+    },
+    "delivery": {
+      "modes": [
+        "durable_inbox",
+        "sse_stream",
+        "mcp_poll",
+        "repo_local_projection"
+      ],
+      "targets": [],
+      "adapterStatus": "not_configured",
+      "recipient": {
+        "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+        "provider": "codex",
+        "runtime": "tmp-codex-cli",
+        "providerSessionRef": "codex-api-96e35fee3b"
+      }
+    }
+  },
+  "createdAt": "2026-07-06T01:43:02.918Z",
+  "acknowledgedAt": "2026-07-06T01:43:04.791Z"
+}

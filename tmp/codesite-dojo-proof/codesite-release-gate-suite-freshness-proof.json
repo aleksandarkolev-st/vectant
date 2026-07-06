@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "proofHead": "ba30e4b4990014c93598de8a705f422f1aa025d3",
+  "artifactHead": "88d654b878d2956d820e3a00db3a3b085df1d147",
+  "sourceHead": "6101147ead8384fdc8a2182900ee3042fe411833",
+  "artifactSummary": {
+    "file": "tmp/codesite-dojo-proof/codesite-mature-proof-suite-run.json",
+    "required": 38,
+    "results": 38,
+    "currentHead": "88d654b878d2956d820e3a00db3a3b085df1d147",
+    "proofHead": "ba30e4b4990014c93598de8a705f422f1aa025d3",
+    "artifactOnlyPostProofChanges": true,
+    "ok": true
+  },
+  "sourceFailures": [
+    "tmp/codesite-dojo-proof/codesite-mature-proof-suite-run.json non-artifact changes occurred after suite head ba30e4b4990014c93598de8a705f422f1aa025d3: src/change.js"
+  ],
+  "artifacts": {
+    "jsonPath": "tmp/codesite-dojo-proof/codesite-release-gate-suite-freshness-proof.json",
+    "htmlPath": "tmp/codesite-dojo-proof/codesite-release-gate-suite-freshness-proof.html",
+    "pngPath": "tmp/codesite-dojo-proof/codesite-release-gate-suite-freshness-proof.png"
+  }
+}

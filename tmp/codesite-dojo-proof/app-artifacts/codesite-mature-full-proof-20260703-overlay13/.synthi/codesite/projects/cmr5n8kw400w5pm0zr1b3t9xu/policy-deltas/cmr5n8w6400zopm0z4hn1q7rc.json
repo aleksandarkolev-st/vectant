@@ -1,0 +1,42 @@
+{
+  "id": "cmr5n8w6400zopm0z4hn1q7rc",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "learnedFromIncidents": [
+    "cmr5n8rel00y8pm0zmd8ctqbl",
+    "cmr5n8svk00yopm0zbo898qk9"
+  ],
+  "affectedZoneKey": null,
+  "ruleCandidate": {
+    "rule": "incident_weighted_preflight_hold",
+    "affectedIncidents": [
+      "cmr5n8rel00y8pm0zmd8ctqbl",
+      "cmr5n8svk00yopm0zbo898qk9"
+    ],
+    "expectedRiskReduction": 0.16,
+    "confidence": 0.68
+  },
+  "triggerConditions": [],
+  "expectedRiskReduction": 0.16,
+  "confidence": 0.68,
+  "promotionState": "proposed",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr5n8w5g00zipm0zh1ls23au",
+    "shadow:job:shadow:codesite-mature-full-proof-20260703-overlay13:schema-first",
+    "codesite:shadow_merge_simulator",
+    "codesite:repo-policy:sha256:bc2715aab8f8e5a72eeef51c13449d7cdcb1bec3f5adea6337bc567af2c794e0",
+    "codesite:collision-forecast:sha256:c9bf89261b79c37d20534b46650555861117dc92678e9bae96914a955057ea61",
+    "codesite:incident:cmr5n8rel00y8pm0zmd8ctqbl",
+    "codesite:incident:cmr5n8svk00yopm0zbo898qk9",
+    "codesite:shadow-runner:sha256:32ab57918dc395ab491e5f5d60b708fe936cd310fa67205337458a2f3f516032",
+    "codesite:shadow-universe:schema-first:sha256:4fecd8564e518baed301c61f3518de20d3d22d232fe9dcd8d5962fb55c492539",
+    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay13:schema-first",
+    "codesite:shadow-command:schema-first:schema-typecheck:sha256:afce725e4e675ef8220673ee53a26212141e4b02b887f4410cdb6904442be862",
+    "codesite:shadow-command:schema-first:schema-contract-test:sha256:e939ad79b0b3a10b265abf40aff8eb46d22a0b475cea5d4efe890f048c90c224",
+    "codesite:shadow-universe:frontend-backend-parallel:sha256:a0a08b5893bbd903132fd415d64f86ee4ff6e5e34e1ed101e3fe5cae398648ca",
+    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d5702980e6543ba2cf33f093f764a9bc7e458715749969e2a7c2a53f9997c292",
+    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dbf6816b97080a8da81d366b8b9970f3d1ab2378c399a15f392b76703869c436",
+    "codesite:shadow-runner:sha256:c2628c088367a4f9c21edf755c893113c55a1652b0886f8f5403d711511eecdb"
+  ],
+  "createdAt": "2026-07-04T00:48:30.172Z",
+  "promotedAt": null
+}

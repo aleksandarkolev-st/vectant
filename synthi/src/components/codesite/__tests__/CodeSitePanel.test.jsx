@@ -5,11 +5,20 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
+  applyCodeSiteRouteRevision: vi.fn(),
+  applyCodeSiteQuarantine: vi.fn(),
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
+  issueCodeSitePermit: vi.fn(),
+  proposeCodeSiteRouteRevision: vi.fn(),
+  replayCodeSiteQuarantine: vi.fn(),
+  resumeCodeSiteMayday: vi.fn(),
+  reviewCodeSiteDocument: vi.fn(),
+  reviewCodeSiteRouteRevision: vi.fn(),
   simulateCodeSiteShadowMerge: vi.fn(),
+  subscribeCodeSiteProjectEvents: vi.fn(),
 }));
 
 function emptyState(workspaceSlug = 'acme') {
@@ -38,12 +47,21 @@ function emptyState(workspaceSlug = 'acme') {
 }
 
 vi.mock('../codesiteClient', () => ({
+  applyCodeSiteRouteRevision: h.applyCodeSiteRouteRevision,
+  applyCodeSiteQuarantine: h.applyCodeSiteQuarantine,
   createCodeSiteProject: h.createCodeSiteProject,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
+  issueCodeSitePermit: h.issueCodeSitePermit,
+  proposeCodeSiteRouteRevision: h.proposeCodeSiteRouteRevision,
+  replayCodeSiteQuarantine: h.replayCodeSiteQuarantine,
+  resumeCodeSiteMayday: h.resumeCodeSiteMayday,
+  reviewCodeSiteDocument: h.reviewCodeSiteDocument,
+  reviewCodeSiteRouteRevision: h.reviewCodeSiteRouteRevision,
   simulateCodeSiteShadowMerge: h.simulateCodeSiteShadowMerge,
+  subscribeCodeSiteProjectEvents: h.subscribeCodeSiteProjectEvents,
 }));
 
 import CodeSitePanel from '../CodeSitePanel';
@@ -80,6 +98,22 @@ function setNativeInputValue(element, value) {
 function laneNamed(name) {
   return [...container.querySelectorAll('[data-testid="codesite-airspace-lane"]')]
     .find((lane) => lane.textContent.includes(name));
+}
+
+async function confirmGovernanceReview(rationale = 'Reviewed replay, evidence, scope, and operator impact.') {
+  const gate = container.querySelector('[data-testid="codesite-governance-review-gate"]');
+  expect(gate).toBeTruthy();
+  const textarea = gate.querySelector('[data-testid="codesite-governance-review-rationale"]');
+  const confirm = gate.querySelector('[data-testid="codesite-governance-review-confirm"]');
+  await act(async () => {
+    setNativeInputValue(textarea, rationale);
+  });
+  await flush();
+  expect(confirm.disabled).toBe(false);
+  await act(async () => {
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await flush();
 }
 
 function testRadarPoint(angle, radius) {
@@ -124,7 +158,9 @@ function radarState() {
       },
       proofBundles: [{
         id: 'proof-1',
+        transactionId: 'txn-1',
         bundleDigest: 'digest-proof-1',
+        incidentReplayDigest: 'sha256:incident',
         readSetDigest: 'digest-read',
         evidenceRefs: ['test:checkout'],
         trailers: {
@@ -133,16 +169,118 @@ function radarState() {
           'CodeSite-Clearance': 'lease-1',
           'CodeSite-Landing': 'completed',
           'CodeSite-Transaction': 'txn-1',
+          'CodeSite-Black-Box': 'sha256:incident',
         },
       }],
       incidents: [{
         id: 'incident-1',
-        category: 'near_miss',
-        severity: 'medium',
+        category: 'black_box',
+        severity: 'low',
         participants: ['ATLAS-1'],
         affectedZones: ['api/**'],
         evidenceRefs: ['incident:evidence'],
         replayDigest: 'sha256:incident',
+        createdAt: '2026-06-29T23:36:00.000Z',
+        incidentReplay: {
+          schemaVersion: 'synthi.codesite.incidentReplay.v1',
+          summary: 'Transaction txn-1 black-box handover committed.',
+          transactionId: 'txn-1',
+          transaction: {
+            id: 'txn-1',
+            mutationLeaseId: 'lease-1',
+            displayCallsign: 'ATLAS-1',
+            status: 'committed',
+            readSet: ['api/checkout/schema.ts'],
+            writeSet: ['api/checkout/route.js'],
+          },
+          proofBundle: {
+            id: 'proof-1',
+            bundleDigest: 'digest-proof-1',
+            incidentReplayDigest: 'sha256:incident',
+          },
+          handover: {
+            exportPaths: [
+              'projects/proj-1/incidents/incident-replay-incident-1.jsonl',
+              'projects/proj-1/handover.md',
+              'projects/proj-1/proof-bundles/proof-1.proof.json',
+            ],
+          },
+          completeness: {
+            score: 0.62,
+            presentEventTypes: ['transaction.committed', 'black_box.closed'],
+            missingEventTypes: ['write.denied', 'transaction.aborted'],
+          },
+          causalEvents: [
+            {
+              eventId: 'event-commit',
+              type: 'transaction.committed',
+              transactionId: 'txn-1',
+              logicalTime: 10,
+              displayCallsign: 'ATLAS-1',
+              path: 'api/checkout/route.js',
+              evidenceRefs: ['test:checkout'],
+              details: { transactionId: 'txn-1', proofBundleId: 'proof-1' },
+            },
+            {
+              eventId: 'event-close',
+              type: 'black_box.closed',
+              transactionId: 'txn-1',
+              logicalTime: 11,
+              displayCallsign: 'ATLAS-1',
+              evidenceRefs: ['incident:evidence'],
+              details: { transactionId: 'txn-1', proofBundleId: 'proof-1' },
+            },
+          ],
+        },
+      }, {
+        id: 'incident-mayday-1',
+        category: 'mayday',
+        status: 'open',
+        severity: 'high',
+        participants: ['ATLAS-1'],
+        affectedZones: ['api/checkout/**'],
+        evidenceRefs: ['incident:mayday:evidence'],
+        replayDigest: 'sha256:mayday-replay',
+        createdAt: '2026-06-29T23:38:00.000Z',
+        incidentReplay: {
+          maydayWorkflow: {
+            inspectorRunId: 'inspection-mayday-1',
+            suspendedLeases: [{ id: 'lease-1' }],
+          },
+        },
+      }],
+      documents: [{
+        id: 'doc-1',
+        kind: 'rfi',
+        title: 'Need schema owner',
+        status: 'pending',
+        bodyJson: { question: 'Who owns the checkout schema?' },
+        evidenceRefs: ['rfi:checkout-schema-owner'],
+      }],
+      permits: [{
+        id: 'permit-1',
+        permitType: 'restricted_route',
+        title: 'Checkout restricted route permit',
+        status: 'issued',
+        scope: { allowedPaths: ['api/checkout/**'], route: ['api/checkout/**'] },
+        evidenceRefs: ['permit:checkout'],
+      }],
+      routeRevisions: [{
+        id: 'route-rev-1',
+        executionPlanId: 'plan-1',
+        status: 'proposed',
+        previousRoute: ['api/checkout/**'],
+        proposedRoute: ['api/checkout/v2/**'],
+        affectedLeases: ['lease-1'],
+        evidenceRefs: ['route-revision:proposal'],
+      }, {
+        id: 'route-rev-2',
+        executionPlanId: 'plan-1',
+        status: 'approved',
+        previousRoute: ['api/checkout/**'],
+        proposedRoute: ['api/payments/**'],
+        affectedLeases: ['lease-1'],
+        evidenceRefs: ['route-revision:approved'],
       }],
       inspectionRuns: [{
         id: 'inspection-1',
@@ -151,6 +289,13 @@ function radarState() {
         changedPaths: ['api/checkout/**'],
         inspectionSignals: [{ type: 'test', status: 'passed' }],
         evidenceRefs: ['runtime:event:inspection-1', 'test:checkout'],
+      }, {
+        id: 'inspection-mayday-1',
+        displayCallsign: 'QA-MAYDAY',
+        status: 'passed',
+        changedPaths: ['api/checkout/**'],
+        inspectionSignals: [{ type: 'recovery', status: 'passed' }],
+        evidenceRefs: ['runtime:event:inspection-mayday-1', 'incident:mayday:evidence'],
       }],
       lineProvenance: [{
         id: 'line-1',
@@ -296,6 +441,12 @@ function radarState() {
         dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
         dojoLedgerCheckpointHash: 'sha256:ledger',
         dojoDecisionDigest: 'sha256:dojo-decision',
+        pilotLicenseHealth: {
+          status: 'active',
+          level: 'IFR',
+          dojoLicenseRef: 'schema.level_2@2026-06-25',
+        },
+        pilotLicenseRequirement: { minimumLevel: 'IFR' },
         expiresAt: '2026-06-29T23:59:00.000Z',
       }],
       activeTransactions: [{
@@ -306,11 +457,93 @@ function radarState() {
         openedAt: '2026-06-29T23:30:00.000Z',
       }],
       requiredActions: ['ack_event:event-1'],
+      pilotLicenseHealth: [{
+        key: 'agent-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        level: 'IFR',
+        dojoLicenseRef: 'schema.level_2@2026-06-25',
+        dojoProofRef: 'pcap-checkout-schema',
+        dojoDecisionDigest: 'sha256:dojo-decision',
+        authorizedAirspace: ['api/checkout/**'],
+        requiredRadar: ['api_contract', 'security'],
+        earnedBy: ['dojo:evidence:checkride-1'],
+        sourceDrift: {
+          monitored: true,
+          sourceDigest: 'sha256:source-v1',
+          currentSourceDigest: 'sha256:source-v1',
+          expired: false,
+        },
+        landingStats: { total: 3, passed: 3, failed: 0 },
+        violationStats: { total: 0, critical: 0 },
+        reasonCodes: ['pilot_license_health_active', 'pilot_license_source_current'],
+        requiredAction: null,
+        evidenceRefs: ['dojo:evidence:checkride-1'],
+      }],
+      filesystemBoundaryProofs: [
+        {
+          proofId: 'fs-boundary-event-denied',
+          eventId: 'event-denied',
+          eventType: 'write_denied',
+          disposition: 'write_denied',
+          prevented: true,
+          quarantined: false,
+          path: 'secrets/prod.env',
+          transactionId: 'txn-1',
+          mutationLeaseId: null,
+          requestedMutationLeaseId: null,
+          inspectedLeases: [{ mutationLeaseId: 'lease-1', displayCallsign: 'ATLAS-1', ok: false, reasonCodes: ['entered_no_fly_zone'] }],
+          displayCallsign: 'ATLAS-1',
+          leaseState: 'inspected_clearance_rejected',
+          reasonCodes: ['entered_no_fly_zone'],
+          reason: 'Write denied before repo mutation.',
+          boundary: { source: 'runtime_pod_terminal', tool: 'terminal_exec', operation: 'write' },
+          process: { ancestry: ['python', 'bash', 'codex-cli'], display: 'python <- bash <- codex-cli' },
+          evidence: { refs: ['event:event-denied', 'runtime:event:denied-write'], lineProvenanceCount: 0 },
+          evidenceRefs: ['event:event-denied', 'runtime:event:denied-write'],
+          proofComplete: true,
+          missingProofFields: [],
+          createdAt: '2026-06-29T23:33:00.000Z',
+        },
+        {
+          proofId: 'fs-boundary-event-incomplete',
+          eventId: 'event-incomplete',
+          eventType: 'write_denied',
+          disposition: 'write_denied',
+          prevented: true,
+          quarantined: false,
+          path: 'api/checkout/route.js',
+          transactionId: null,
+          mutationLeaseId: null,
+          displayCallsign: null,
+          leaseState: 'no_active_clearance',
+          reasonCodes: [],
+          reason: '',
+          boundary: { source: 'codesitefs', tool: 'file_write', operation: 'write' },
+          process: { ancestry: [], display: null },
+          evidence: { refs: ['event:event-incomplete'], lineProvenanceCount: 0 },
+          evidenceRefs: ['event:event-incomplete'],
+          proofComplete: false,
+          missingProofFields: ['reason', 'process'],
+          createdAt: '2026-06-29T23:34:00.000Z',
+        },
+      ],
       allowedPaths: ['api/checkout/**'],
       blockedPaths: ['secrets/**'],
       collisionForecast: {
         riskLevel: 'medium',
         risks: [{ risk: 'write_overlap', severity: 'medium', conflictZone: 'api/checkout/**' }],
+        runwayOccupancy: [{
+          runway: 'api/checkout/**',
+          route: ['api/checkout/**'],
+          occupiedBy: 'ATLAS-1',
+          mutationLeaseId: 'lease-1',
+          runwayClass: 'B',
+          diffPaths: ['api/checkout/route.js'],
+          pendingInspections: ['api_contract_radar', 'landing_inspection', 'inspection:QA-1'],
+          eligibleFlights: ['QA-1', 'DOCS-2'],
+        }],
       },
     },
     metrics: {
@@ -360,7 +593,86 @@ function radarState() {
         evidenceRefs: ['event:evidence:lease'],
         createdAt: '2026-06-29T23:32:00.000Z',
       },
+      {
+        id: 'event-3',
+        eventType: 'write_quarantined',
+        displayCallsign: 'ATLAS-1',
+        mutationLeaseId: 'lease-1',
+        logicalTime: 9,
+        details: {
+          transactionId: 'txn-1',
+          path: 'docs/review.md',
+          quarantineId: 'qtn-checkout-1',
+          quarantineEvidence: {
+            path: 'docs/review.md',
+            kind: 'modified',
+            beforeDigest: 'sha256:before-review',
+            afterDigest: 'sha256:after-review',
+            evidenceRef: 'codesitefs:quarantine:sha256:review',
+          },
+        },
+        evidenceRefs: ['codesitefs:quarantine:sha256:review'],
+        createdAt: '2026-06-29T23:33:00.000Z',
+      },
     ],
+    quarantines: [{
+      quarantineId: 'qtn-checkout-1',
+      status: 'reviewable',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
+      paths: ['docs/review.md', 'docs/notes.md', 'docs/escape-link.txt'],
+      changes: [
+        {
+          path: 'docs/review.md',
+          kind: 'modified',
+          quarantineEvidence: {
+            path: 'docs/review.md',
+            kind: 'modified',
+            beforeDigest: 'sha256:before-review',
+            afterDigest: 'sha256:after-review',
+            evidenceRef: 'codesitefs:quarantine:sha256:review',
+          },
+        },
+        {
+          path: 'docs/notes.md',
+          kind: 'created',
+          quarantineEvidence: {
+            path: 'docs/notes.md',
+            kind: 'created',
+            beforeDigest: null,
+            afterDigest: 'sha256:after-notes',
+            evidenceRef: 'codesitefs:quarantine:sha256:notes',
+          },
+        },
+        {
+          path: 'docs/escape-link.txt',
+          kind: 'modified',
+          quarantineEvidence: {
+            path: 'docs/escape-link.txt',
+            kind: 'modified',
+            beforeDigest: 'sha256:before-escape',
+            afterDigest: 'sha256:after-escape',
+            evidenceRef: 'codesitefs:quarantine:sha256:escape',
+          },
+        },
+      ],
+      symlinkSanitization: {
+        sanitized: [{
+          path: 'docs/escape-link.txt',
+          target: '/tmp/outside-target.txt',
+          resolvedTarget: '/tmp/outside-target.txt',
+          reason: 'quarantine_symlink_escape_replaced',
+        }],
+      },
+      evidenceRefs: ['proof:quarantine-review', 'codesitefs:quarantine:sha256:review'],
+      lifecycle: {
+        capturedAt: '2026-06-29T23:33:00.000Z',
+        reviewedAt: null,
+        replayedAt: null,
+        appliedAt: null,
+      },
+    }],
     artifactPreview: { files: [{ path: 'projects/proj-1/control-state.json', bytes: 1200, contentPreview: '{\\n  \"towerState\": \"holding\"\\n}\\n' }] },
     selectedProjectId: 'proj-1',
     counts: {
@@ -369,10 +681,11 @@ function radarState() {
       activeMutationLeases: 1,
       activeTransactions: 1,
       requiredActions: 1,
-      events: 2,
+      events: 3,
       proofBundles: 1,
       incidents: 1,
-      inspectionRuns: 1,
+      inspectionRuns: 2,
+      quarantines: 1,
     },
     collisionForecast: {
       riskLevel: 'medium',
@@ -386,6 +699,47 @@ describe('CodeSitePanel', () => {
     vi.clearAllMocks();
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
+    h.subscribeCodeSiteProjectEvents.mockImplementation((_workspaceSlug, _projectId, { onStatus } = {}) => {
+      onStatus?.('live');
+      return vi.fn();
+    });
+    h.issueCodeSitePermit.mockResolvedValue({
+      permit: { id: 'permit-2', status: 'issued' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.reviewCodeSiteDocument.mockResolvedValue({
+      document: { id: 'doc-1', status: 'approved' },
+      review: { id: 'doc-review-1', decision: 'approved' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.proposeCodeSiteRouteRevision.mockResolvedValue({
+      routeRevision: { id: 'route-rev-3', status: 'proposed' },
+      event: { eventType: 'route_deviation' },
+    });
+    h.reviewCodeSiteRouteRevision.mockResolvedValue({
+      routeRevision: { id: 'route-rev-1', status: 'approved' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.applyCodeSiteRouteRevision.mockResolvedValue({
+      routeRevision: { id: 'route-rev-2', status: 'applied' },
+      event: { eventType: 'tower_instruction' },
+    });
+    h.resumeCodeSiteMayday.mockResolvedValue({
+      incident: { id: 'incident-mayday-1', status: 'resumed' },
+      event: { eventType: 'mayday_resumed' },
+    });
+    h.replayCodeSiteQuarantine.mockResolvedValue({
+      ok: true,
+      mode: 'replay',
+      replay: [{ path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
+      rejected: [],
+      timelineEvents: { replayed: { eventType: 'quarantine_replayed' } },
+    });
+    h.applyCodeSiteQuarantine.mockResolvedValue({
+      ok: true,
+      applied: [{ path: 'docs/review.md', kind: 'modified', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
+      timelineEvent: { eventType: 'quarantine_applied' },
+    });
     h.simulateCodeSiteShadowMerge.mockResolvedValue({
       selected: 'test-first',
       universes: [{
@@ -421,7 +775,8 @@ describe('CodeSitePanel', () => {
   });
 
   it('renders the radar state and exports artifact projection', async () => {
-    h.fetchCodeSiteRadarState.mockResolvedValue(radarState());
+    const state = radarState();
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
     renderPanel();
     await flush();
 
@@ -432,6 +787,85 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
     expect(container.textContent).toContain('Airspace Map');
+    expect(container.textContent).toContain('Runway Occupancy');
+    expect(container.textContent).toContain('Pilot License Health');
+    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
+    expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
+    expect(container.textContent).toContain('pilot:active');
+    expect(container.textContent).toContain('min:IFR');
+    const replayHandover = container.querySelector('[data-testid="codesite-causal-replay-handover"]');
+    expect(replayHandover).toBeTruthy();
+    expect(replayHandover.textContent).toContain('txn-1');
+    expect(replayHandover.textContent).toContain('proof-1');
+    expect(replayHandover.textContent).toContain('sha256:incident');
+    expect(replayHandover.textContent).toContain('CodeSite-Black-Box');
+    expect(replayHandover.textContent).toContain('transaction.committed');
+    expect(replayHandover.textContent).toContain('black_box.closed');
+    expect(replayHandover.textContent).toContain('write.denied');
+    expect(replayHandover.textContent).toContain('incident-replay-incident-1.jsonl');
+    expect(container.textContent).toContain('Filesystem Boundary Proofs');
+    const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
+    expect(boundaryProof).toBeTruthy();
+    expect(boundaryProof.textContent).toContain('secrets/prod.env');
+    expect(boundaryProof.textContent).toContain('lease-1');
+    expect(boundaryProof.textContent).toContain('inspected_clearance_rejected');
+    expect(boundaryProof.textContent).toContain('entered_no_fly_zone');
+    expect(boundaryProof.textContent).toContain('python <- bash <- codex-cli');
+    expect(boundaryProof.textContent).toContain('runtime:event:denied-write');
+    expect(boundaryProof.textContent).toContain('incomplete');
+    expect(boundaryProof.textContent).toContain('missing process');
+    const runwayRow = container.querySelector('[data-testid="codesite-runway-row"]');
+    expect(runwayRow.textContent).toContain('api/checkout/**');
+    expect(runwayRow.textContent).toContain('ATLAS-1');
+    expect(runwayRow.textContent).toContain('api/checkout/route.js');
+    expect(runwayRow.textContent).toContain('api_contract_radar');
+    expect(runwayRow.textContent).toContain('inspection:QA-1');
+    expect(runwayRow.textContent).toContain('QA-1');
+    expect(container.textContent).toContain('Quarantine Review');
+    expect(container.querySelector('[data-testid="codesite-quarantine-review"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('qtn-checkout-1');
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('txn-1');
+    expect(container.textContent).toContain('docs/review.md');
+    expect(container.textContent).toContain('docs/notes.md');
+    expect(container.textContent).toContain('quarantine_symlink_escape_replaced');
+    expect(container.querySelector('[data-testid="codesite-quarantine-symlink-guard"]').textContent).toContain('/tmp/outside-target.txt');
+    expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(true);
+    const quarantineRows = [...container.querySelectorAll('[data-testid="codesite-quarantine-change-row"]')];
+    const reviewRow = quarantineRows.find((row) => row.textContent.includes('docs/review.md'));
+    const notesRow = quarantineRows.find((row) => row.textContent.includes('docs/notes.md'));
+    expect(reviewRow).toBeTruthy();
+    expect(notesRow).toBeTruthy();
+    await act(async () => {
+      reviewRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(notesRow.querySelector('[data-testid="codesite-quarantine-path-toggle"]').checked).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-quarantine-replay-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.replayCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
+      paths: ['docs/review.md'],
+    }));
+    expect(container.querySelector('[data-testid="codesite-quarantine-replay-result"]').textContent).toContain('docs/review.md');
+    expect(container.querySelector('[data-testid="codesite-quarantine-apply-button"]').disabled).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-quarantine-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.applyCodeSiteQuarantine).toHaveBeenCalledWith('acme', 'qtn-checkout-1', expect.objectContaining({
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
+      paths: ['docs/review.md'],
+    }));
+    expect(container.querySelector('[data-testid="codesite-quarantine-apply-result"]').textContent).toContain('docs/review.md');
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('partially_applied');
+    expect(container.querySelector('[data-testid="codesite-quarantine-summary"]').textContent).toContain('2 pending');
+    expect(container.querySelector('[data-testid="codesite-quarantine-timeline"]').textContent).toContain('Captured');
     expect(container.textContent).toContain('Success Metrics');
     expect(container.textContent).toContain('Collisions avoided');
     expect(container.textContent).toContain('CodeSiteFS blocked writes');
@@ -454,7 +888,7 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-radar-graph"]')).toBeTruthy();
     expect(riskCones).toHaveLength(1);
     expect(riskCones[0].getAttribute('fill')).toBe('#fbbf24');
-    expect(replayTrace.getAttribute('points').trim().split(/\s+/)).toHaveLength(2);
+    expect(replayTrace.getAttribute('points').trim().split(/\s+/)).toHaveLength(Math.min(8, state.events.length));
     expect(flightBlips).toHaveLength(1);
     expect(holdingPatterns).toHaveLength(1);
     expect(container.textContent).toContain('Landing queue');
@@ -470,11 +904,127 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('hunk:checkout');
     expect(container.textContent).toContain('Agent Inbox');
     expect(container.textContent).toContain('Need schema owner');
+    const requiredAction = container.querySelector('[data-testid="codesite-required-action-row"]');
+    expect(requiredAction).toBeTruthy();
+    expect(requiredAction.textContent).toContain('ack_event:event-1');
+    expect(requiredAction.textContent).toContain('medium');
+    expect(requiredAction.textContent).toContain('owner: event-1');
+    expect(requiredAction.querySelector('[data-testid="codesite-required-action-review"]')).toBeTruthy();
     expect(container.textContent).toContain('logicalTime');
     expect(container.textContent).toContain('event:evidence');
     expect(container.textContent).toContain('projects/proj-1/control-state.json');
     expect(container.textContent).toContain('towerState');
     expect(container.querySelector('[data-testid="codesite-metric-flights"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-metric-permits"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-responsive-proof-target"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-tower-now"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
+    expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-radar-sweep"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-tower-feed"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('EventSource live');
+    expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
+    expect(container.querySelector('[data-testid="codesite-route-revision-row"]').textContent).toContain('api/checkout/v2/**');
+    expect(container.querySelector('[data-testid="codesite-mayday-banner"]').textContent).toContain('1 open');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('mayday');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('inspection-mayday-1');
+    expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
+      'acme',
+      'proj-1',
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        onStatus: expect.any(Function),
+      }),
+    );
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-issue-permit-button"]')
+        .closest('form')
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(h.issueCodeSitePermit).not.toHaveBeenCalled();
+    await confirmGovernanceReview('Permit reviewed against route, evidence, and Class B scope.');
+    expect(h.issueCodeSitePermit).toHaveBeenCalledWith('acme', 'proj-1', expect.objectContaining({
+      permitType: 'restricted_route',
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      allowedPaths: ['api/checkout/**'],
+      route: ['api/checkout/**'],
+      scope: { allowedPaths: ['api/checkout/**'], route: ['api/checkout/**'] },
+      approval: expect.objectContaining({
+        rationale: 'Permit reviewed against route, evidence, and Class B scope.',
+      }),
+      evidenceRefs: ['codesite:ui:permit:proj-1'],
+    }));
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-document-approve-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    await confirmGovernanceReview('Document reviewed with evidence and recipient impact.');
+    expect(h.reviewCodeSiteDocument).toHaveBeenCalledWith('acme', 'doc-1', expect.objectContaining({
+      decision: 'approved',
+      summary: 'Document reviewed with evidence and recipient impact.',
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+      evidenceRefs: ['codesite:ui:document-review:doc-1'],
+    }));
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-route-propose-button"]')
+        .closest('form')
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    await confirmGovernanceReview('Route proposal reviewed for affected lease and replay evidence.');
+    expect(h.proposeCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'plan-1', expect.objectContaining({
+      proposedRoute: ['api/checkout/**'],
+      reason: 'operator_reroute: Route proposal reviewed for affected lease and replay evidence.',
+      affectedLeases: ['lease-1'],
+      evidenceRefs: ['codesite:ui:route-revision:proj-1'],
+    }));
+
+    const routeRows = [...container.querySelectorAll('[data-testid="codesite-route-revision-row"]')];
+    const proposedRouteRow = routeRows.find((row) => row.textContent.includes('api/checkout/v2/**'));
+    const approvedRouteRow = routeRows.find((row) => row.textContent.includes('api/payments/**'));
+    await act(async () => {
+      proposedRouteRow.querySelector('[data-testid="codesite-route-review-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    await confirmGovernanceReview('Route review checked scope, evidence, and downstream impact.');
+    expect(h.reviewCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-1', expect.objectContaining({
+      decision: 'approved',
+      reason: 'Route review checked scope, evidence, and downstream impact.',
+      evidenceRefs: ['codesite:ui:route-review:route-rev-1'],
+    }));
+
+    await act(async () => {
+      approvedRouteRow.querySelector('[data-testid="codesite-route-apply-button"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    await confirmGovernanceReview('Route application reviewed against active clearance and proof refs.');
+    expect(h.applyCodeSiteRouteRevision).toHaveBeenCalledWith('acme', 'route-rev-2', expect.objectContaining({
+      appliedBy: 'codesite_governance_console',
+      rationale: 'Route application reviewed against active clearance and proof refs.',
+      evidenceRefs: ['codesite:ui:route-apply:route-rev-2'],
+    }));
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-resume-mayday-submit"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    await confirmGovernanceReview('Mayday resume reviewed against recovery inspection and replay.');
+    expect(h.resumeCodeSiteMayday).toHaveBeenCalledWith('acme', 'incident-mayday-1', expect.objectContaining({
+      approved: true,
+      humanApproval: true,
+      rationale: 'Mayday resume reviewed against recovery inspection and replay.',
+      inspectionRunIds: ['inspection-mayday-1'],
+      replayRefs: ['sha256:mayday-replay'],
+      evidenceRefs: ['codesite:ui:mayday-resume:incident-mayday-1'],
+    }));
 
     h.fetchCodeSiteLineProvenance.mockResolvedValueOnce([{
       ...radarState().project.lineProvenance[0],
@@ -519,6 +1069,76 @@ describe('CodeSitePanel', () => {
     await flush();
 
     expect(h.exportCodeSiteArtifacts).toHaveBeenCalledWith('acme', 'proj-1');
+  });
+
+  it('exposes show-all controls for capped governance queues', async () => {
+    const state = radarState();
+    state.project.documents = Array.from({ length: 6 }, (_, index) => ({
+      id: `doc-${index + 1}`,
+      kind: 'rfi',
+      title: `Document ${index + 1}`,
+      status: 'pending',
+    }));
+    state.project.routeRevisions = Array.from({ length: 6 }, (_, index) => ({
+      id: `route-rev-${index + 1}`,
+      executionPlanId: 'plan-1',
+      status: index === 5 ? 'approved' : 'proposed',
+      proposedRoute: [`api/checkout/v${index + 1}/**`],
+    }));
+    state.project.incidents = [
+      ...state.project.incidents.filter((incident) => incident.category !== 'mayday'),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        id: `incident-mayday-${index + 1}`,
+        category: 'mayday',
+        status: 'open',
+        severity: 'high',
+        affectedZones: ['api/checkout/**'],
+        incidentReplay: { maydayWorkflow: { inspectorRunId: 'inspection-mayday-1' } },
+      })),
+    ];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-documents-show-all"]').textContent)
+      .toContain('Show all documents (6)');
+    expect(container.querySelector('[data-testid="codesite-route-revisions-show-all"]').textContent)
+      .toContain('Show all route revisions (6)');
+    expect(container.querySelector('[data-testid="codesite-maydays-show-all"]').textContent)
+      .toContain('Show all ground stops (4)');
+  });
+
+  it('routes structured required actions into the governance review gate', async () => {
+    const state = radarState();
+    state.controlState.requiredActions = [{
+      kind: 'review_document',
+      title: 'Review checkout schema RFI',
+      owner: 'ATLAS-1',
+      documentId: 'doc-1',
+      severity: 'high',
+      evidenceRefs: ['rfi:checkout-schema-owner'],
+      scope: ['api/checkout/**'],
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-required-action-review"]')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="codesite-governance-review-gate"]')).toBeTruthy();
+    expect(h.reviewCodeSiteDocument).not.toHaveBeenCalled();
+    await confirmGovernanceReview('Required action reviewed with evidence and scope.');
+    expect(h.reviewCodeSiteDocument).toHaveBeenCalledWith('acme', 'doc-1', expect.objectContaining({
+      decision: 'approved',
+      summary: 'Required action reviewed with evidence and scope.',
+    }));
   });
 
   it('does not draw a holding pattern for airborne flights', async () => {

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "synthi.codesite.proofRepoGitBundle.v1",
+  "slug": "codesite-full-workflow-proof-1783302099565",
+  "generatedAt": "2026-07-06T01:47:21.183Z",
+  "path": "tmp/codesite-dojo-proof/codesite-full-workflow-git-bundles/codesite-full-workflow-proof-1783302099565/proof-bundle.git.bundle",
+  "sha256": "sha256:e39294e9b6d1cdd086da6d644ca29195e21ed089bbb3cd69c172b5cd4c8aa223",
+  "commitSha": "e2f57c71ee67f018ef8bc315a0b2d4f1eb810b9d",
+  "sourceRepo": "tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+  "refs": [
+    "e2f57c71ee67f018ef8bc315a0b2d4f1eb810b9d HEAD"
+  ]
+}

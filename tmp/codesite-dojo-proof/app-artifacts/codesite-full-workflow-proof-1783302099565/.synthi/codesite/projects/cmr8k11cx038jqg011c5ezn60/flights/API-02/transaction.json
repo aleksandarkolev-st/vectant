@@ -1,0 +1,68 @@
+{
+  "id": "cmr8k1uuf03buqg01e2w9qki2",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "mutationLeaseId": "cmr8k1tma03boqg01zblb8x9s",
+  "agentSessionId": "cmr8k14ac039mqg01vcrrgs71",
+  "baseSnapshot": "sha256:b1fa939e1424e26725ecfc5633d5cc67ce164e97501cc885182548c056d596a5",
+  "baseSnapshotEvidence": {
+    "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+    "status": "recorded",
+    "scope": "repo_wide",
+    "readSet": [
+      "synthi/prisma/schema.prisma"
+    ],
+    "repoRoot": "/workspace/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-full-workflow-proof-1783302099565",
+    "fileDigests": [
+      {
+        "path": "synthi/prisma/schema.prisma",
+        "exists": true,
+        "size": 135,
+        "digest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f"
+      }
+    ],
+    "missingPaths": [],
+    "skippedPaths": [],
+    "truncated": false,
+    "repoManifestDigest": "sha256:0d5295c30c9b1ad15061bc13f499774665df3cd1d52987ab9bd138a3bb30a94b",
+    "repoManifestFileCount": 6,
+    "repoManifestScannedEntries": 10,
+    "repoManifestTruncated": false,
+    "repoManifestSkippedPaths": [],
+    "repoManifestExcludedPaths": [
+      "synthi/src/app/api/auth/signup.ts"
+    ],
+    "limits": {
+      "maxFiles": 512,
+      "maxFileBytes": 2097152,
+      "maxScanEntries": 15000
+    },
+    "generatedAt": "2026-07-06T01:42:21.477Z",
+    "source": "codesite_control_plane",
+    "snapshotDigest": "sha256:b1fa939e1424e26725ecfc5633d5cc67ce164e97501cc885182548c056d596a5",
+    "evidenceDigest": "sha256:9166298ed75a0d09daeec015fb8952b98c6a5f3438d6613223558ab831936172"
+  },
+  "isolation": "serializable",
+  "status": "aborted",
+  "readSet": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "observedReadSet": [],
+  "writeSet": [
+    "synthi/src/app/api/auth/signup.ts"
+  ],
+  "observedWriteSet": [],
+  "semanticDependencyRefs": [],
+  "invariants": [
+    "schema.assumption.refresh_before_api_landing"
+  ],
+  "assumptionRefs": [
+    "cmr8k1x3e03c0qg01vraxhie6"
+  ],
+  "commitDecision": {
+    "reason": "schema_contract_refreshed_assumption_invalidated",
+    "abortedAt": "2026-07-06T01:43:34.020Z"
+  },
+  "proofBundleDigest": null,
+  "openedAt": "2026-07-06T01:42:21.544Z",
+  "closedAt": "2026-07-06T01:43:34.020Z"
+}

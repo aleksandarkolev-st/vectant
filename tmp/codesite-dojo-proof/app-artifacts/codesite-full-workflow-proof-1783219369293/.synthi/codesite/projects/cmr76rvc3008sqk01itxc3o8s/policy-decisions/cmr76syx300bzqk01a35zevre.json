@@ -1,0 +1,137 @@
+{
+  "id": "cmr76syx300bzqk01a35zevre",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "mutationLeaseId": "cmr76sywz00bxqk01zmk2x6mw",
+  "displayCallsign": "API-02",
+  "decision": "allow",
+  "reasonCodes": [
+    "route_inside_clearance",
+    "pilot_license_not_required_for_route"
+  ],
+  "inputDigest": "sha256:100a216c3820250911857007fd5c185a813bc89babbf4cb0b15251be62630c01",
+  "decisionBody": {
+    "status": "active",
+    "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+    "inspectedZones": [
+      {
+        "zoneKey": "class_c",
+        "label": "Feature implementation airspace",
+        "class": "C",
+        "paths": [
+          "apps/web/**",
+          "components/**",
+          "synthi/src/app/**",
+          "synthi/src/components/**",
+          "backend/collab-server/**"
+        ],
+        "rules": [
+          "auto_clearance_allowed",
+          "landing_inspection_required"
+        ],
+        "risk": "medium",
+        "source": "compiled_default",
+        "path": "synthi/src/app/api/auth/**"
+      }
+    ],
+    "dojoProof": {
+      "proofRef": null,
+      "licenseRef": null,
+      "evidenceRefs": [],
+      "ledgerCheckpointHash": null,
+      "decisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+      "implementationStatus": {
+        "executable": false,
+        "productionRuntime": false
+      },
+      "verification": {
+        "ok": false,
+        "status": "blocked",
+        "checkedAt": "2026-07-05T02:43:45.708Z",
+        "source": "codesite_dojo_public_verifier",
+        "signatureVerified": false,
+        "blockedBy": [
+          "dojo_public_proof_capsule_required",
+          "dojo_public_proof_key_required"
+        ],
+        "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+      }
+    },
+    "pilotLicenseHealth": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76s0bl009vqk013j9fu23i",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "ownerUserId": "cmr76rv86008mqk012u5bt8pa",
+      "displayCallsign": "API-02",
+      "status": "active",
+      "level": "VFR",
+      "levelRank": 2,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:191636b75e25f06190592b1a363b8fdb9b2a4b2f24461c1a840bdecb22466016",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/prisma/**",
+        "synthi/src/app/api/auth/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride",
+        "dojo:evidence:full-workflow-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [],
+      "sourceDrift": {
+        "monitored": false,
+        "sourceDigest": null,
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 0,
+        "critical": 0,
+        "latestAt": null,
+        "evidenceRefs": []
+      },
+      "reasonCodes": [
+        "pilot_license_health_active"
+      ],
+      "requiredAction": null,
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride",
+        "dojo:full-workflow-checkride"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:43:00.898Z",
+        "checkedAt": "2026-07-05T02:43:45.729Z",
+        "latestLandingAt": null,
+        "latestViolationAt": null,
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    },
+    "pilotLicenseRequirement": {
+      "required": false,
+      "classes": [
+        "C"
+      ],
+      "minimumLevel": "Student",
+      "minimumLevelRank": 1
+    },
+    "collisionAvoidance": null,
+    "counterfactualPolicy": null,
+    "governancePolicy": null
+  },
+  "createdAt": "2026-07-05T02:43:45.735Z"
+}

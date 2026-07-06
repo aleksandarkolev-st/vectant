@@ -1,0 +1,20 @@
+{
+  "id": "cmr5n9c1y0134pm0zjdy4u38z",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "agentSessionId": "cmr5n9blb012ypm0zyvxhbl7l",
+  "displayCallsign": "VIOLATION-05",
+  "mission": "Exercise failed landing health",
+  "domain": "inspection",
+  "status": "holding",
+  "route": [
+    "synthi/prisma/**"
+  ],
+  "blockedZones": [],
+  "abortConditions": [],
+  "requestedTools": [
+    "npm_test"
+  ],
+  "estimatedDurationMs": null,
+  "filedAt": "2026-07-04T00:48:50.758Z",
+  "closedAt": null
+}

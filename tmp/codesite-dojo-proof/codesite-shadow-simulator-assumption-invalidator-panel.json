@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "slug": "codesite-shadow-simulator-proof-1783267103356",
+  "screenshot": "tmp/codesite-dojo-proof/codesite-shadow-simulator-assumption-invalidator-panel.png",
+  "checks": {
+    "text": "Assumption invalidatorStale reasoning is grounded before writes continue.17 paused1 stale assumptionsinvalidated by schema_airspace_firstwrites pausedAffectedAPI-02UI-03schema-firstDepends onschema_airspace_firstdownstream_assumptions_refresh_after_contractcodesite:shadow-universe:schema-first:sha256:e01532dd6740cebc2d2e96a62861cf4242e123d3f9da433776df7f4d271cd50ecodesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf4 stale assumptionsinvalidated by counterfactual route simulationwrites pausedAffectedAPI-02UI-03backend-firstDepends onbackend_route_before_uiapi_surface_stabilized_before_frontendcodesite:shadow-universe:backend-first:sha256:7feb8bee797508c24170c9292f85d7b5d2ccaaab1b2f64d9ab9ea2af59457687codesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf7 stale assumptionsinvalidated by parallelism_crosses_contract_airspacewrites pausedAffectedAPI-02UI-03frontend-backend-parallelDepends onparallelism_crosses_contract_airspacerequires_extra_assumption_refreshcodesite:shadow-universe:frontend-backend-parallel:sha256:5a5e63eeaf97d0f7760c79a7d1820de1eb2d0ef928a467e12922a3b22cf25e6ecodesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cf2 stale assumptionsinvalidated by counterfactual route simulationwrites pausedAffectedAPI-02UI-03single-fullstack-agentDepends ondependency pendingcodesite:shadow-universe:single-fullstack-agent:sha256:1cbb672f1860965ebc0bc5d8c34af39c725174293f030fdba3206efe902a04bfcodesite:shadow-job:codesite-shadow:sha256:d01c1e11ccb29774024d53633b2f97bc9ac2d73e323e76dbc91399730aab43cfShowing 4 of 5 invalidation groups; export retains the full assumption ledger.",
+    "width": 868,
+    "height": 789.953125
+  }
+}

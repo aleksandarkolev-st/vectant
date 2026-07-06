@@ -1,0 +1,753 @@
+{
+  "schemaVersion": "synthi.codesite.metrics.v1",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay13",
+  "generatedAt": "2026-07-04T00:54:01.363Z",
+  "status": "measured",
+  "sections": {
+    "atc": [
+      {
+        "key": "collisionsPredicted",
+        "label": "Collisions predicted",
+        "unit": "count",
+        "value": 16,
+        "sampleSize": 4,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8q1500xypm0zxnxtww9f",
+          "codesite:policy-decision:cmr5n8q0u00xupm0ziq8updy5",
+          "cmr5n9b33012wpm0za207u37h",
+          "codesite:policy-decision:cmr5n9b2l012spm0zjz9dmnqk"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "collisionsAvoided",
+        "label": "Collisions avoided",
+        "unit": "count",
+        "value": 4,
+        "sampleSize": 4,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8q0u00xupm0ziq8updy5",
+          "cmr5n9b2l012spm0zjz9dmnqk",
+          "cmr5n8w5g00zipm0zh1ls23au",
+          "cmr5n8y2j0108pm0z2k91d7zp"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "nearMissesReplayed",
+        "label": "Near-misses replayed",
+        "unit": "count",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "noFlyViolationsBlocked",
+        "label": "No-fly violations blocked",
+        "unit": "count",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "flightsReroutedByTower",
+        "label": "Flights rerouted by tower",
+        "unit": "count",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "flightsHeldBeforeSharedZoneConflict",
+        "label": "Flights held before shared-zone conflict",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 1,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n9b2v012upm0z2due418o"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "landingsPassedFirstTry",
+        "label": "Landings passed first try",
+        "unit": "count",
+        "value": 2,
+        "sampleSize": 10,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n96io011qpm0z8rwbzfgq",
+          "runtime:event:inspection-full-workflow",
+          "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "cmr5n99l9012cpm0zxm297b5s",
+          "codesite:landing:current-source-proof",
+          "cmr5n9cec0138pm0z6r7n9bd9",
+          "security:failed:violation-proof-1"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "goAroundRate",
+        "label": "Go-around rate",
+        "unit": "ratio",
+        "value": 0.4,
+        "sampleSize": 4,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n9cec0138pm0z6r7n9bd9",
+          "security:failed:violation-proof-1",
+          "cmr5n9cqv013cpm0zdf6yzem1",
+          "test:failed:violation-proof-2"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 2,
+          "denominator": 5
+        }
+      },
+      {
+        "key": "groundStopEvents",
+        "label": "Ground-stop events",
+        "unit": "count",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "averageTimeToClearanceMs",
+        "label": "Average time to clearance",
+        "unit": "duration_ms",
+        "value": 3667,
+        "sampleSize": 3,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8q0i00xspm0zc16y3e69",
+          "cmr5n8udo00z2pm0zdv8tlf7s",
+          "cmr5n9b2f012qpm0zaxizcpoq"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "samples": 3
+        }
+      },
+      {
+        "key": "averageTimeInHoldingMs",
+        "label": "Average time in holding",
+        "unit": "duration_ms",
+        "value": 331030,
+        "sampleSize": 3,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8ohp00xepm0zndi5xq6o",
+          "cmr5n8p9900xopm0ztc5iz0bn",
+          "cmr5n9c1y0134pm0zjdy4u38z"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "samples": 3
+        }
+      }
+    ],
+    "transaction": [
+      {
+        "key": "staleReadsDetected",
+        "label": "Stale reads detected",
+        "unit": "count",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "assumptionInvalidationsBeforeWrite",
+        "label": "Assumption invalidations before write",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 1,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8vfj00zepm0zt3l2a3la"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "serializableTransactionAbortRate",
+        "label": "Serializable transaction abort rate",
+        "unit": "ratio",
+        "value": 0.75,
+        "sampleSize": 3,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8ql900y0pm0zf0xuarrd",
+          "cmr5n8rrk00ycpm0zf2lt814t",
+          "cmr5n8v3000z8pm0z2mhu5yfx"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 3,
+          "denominator": 4
+        }
+      },
+      {
+        "key": "shadowMergeSimulatorAccuracy",
+        "label": "Shadow merge simulator accuracy",
+        "unit": "ratio",
+        "value": null,
+        "sampleSize": 0,
+        "status": "not_instrumented",
+        "evidenceRefs": [],
+        "source": "instrumentation_gap",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": "Counterfactual user-choice outcomes are required to score simulator accuracy."
+      },
+      {
+        "key": "codeSiteFsBlockedWrites",
+        "label": "CodeSiteFS blocked writes",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 2,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n92310114pm0zo1kdar8m",
+          "mcp:audit:codesitefs-denied-full-workflow"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "illegalWritesQuarantined",
+        "label": "Illegal writes quarantined",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 2,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n934u011apm0zjsl3dvdp",
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "proofBundlesVerifiedOutsideUi",
+        "label": "Proof bundles verified outside UI",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 17,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5nfxv5013spm0z5lsjjipq",
+          "mcp:audit:commit-full-workflow",
+          "git:commit:46846bdbfb56f703c696de864d8cc76b0e3045b1",
+          "codesite:runtime-attestation:sha256:1ec3047a71768b248d923647870f724c7e5eaa571421728db606ab7dd51c5e9e",
+          "codesite:runtime-attestation:sha256:82976b2e280ea89841a9a0e20008a4971c03b2f95756dabd2d401c923930f550",
+          "codesite:landing:passed-health-proof",
+          "codesite:inspection:cmr5n97nm011ypm0zril7q8l1",
+          "runtime:event:inspection-full-workflow",
+          "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "codesite:inspection:cmr5n96io011qpm0z8rwbzfgq",
+          "codesite:repo-state:sha256:c663063aead7feb49e603a0bff0fd798b2ecfd8bd9dfa2d28258500d3aef7210",
+          "codesite:transaction:cmr5n8ta300yspm0zf8blsf5p",
+          "codesite:lease:cmr5n8q0i00xspm0zc16y3e69",
+          "codesite:proof-bundle:cmr5nfxsx013mpm0z8sams7cu"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "lineProvenanceCoverage",
+        "label": "Lines with causal provenance coverage",
+        "unit": "ratio",
+        "value": 0.5,
+        "sampleSize": 14,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n9494011ipm0znphfrulp",
+          "transaction:cmr5n8ta300yspm0zf8blsf5p",
+          "event:cmr5n9490011gpm0zcpq30v2a",
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5n8zlg010qpm0zqjb5it52",
+          "codesite:counterfactual-run:cmr5n8wlm00zwpm0zqoixdsl4",
+          "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+          "codesite:document:cmr5n8yh0010ipm0z88mpt3oc",
+          "codesite:inbox:cmr5n8yhb010mpm0zunqhpi1c",
+          "codesite:inbox:cmr5n8zlp010upm0zvyihneg2",
+          "codesite:assumption:cmr5n8tqn00yypm0z9kzgl2dr",
+          "codesite:assumption:cmr5n8vfj00zepm0zt3l2a3la",
+          "cmr5nfxtp013opm0zbog63xq5",
+          "proof:cmr5nfxsx013mpm0z8sams7cu"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 1,
+          "denominator": 2
+        }
+      }
+    ],
+    "quality": [
+      {
+        "key": "mergeConflictsAvoided",
+        "label": "Merge conflicts avoided",
+        "unit": "count",
+        "value": 2,
+        "sampleSize": 28,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8w5g00zipm0zh1ls23au",
+          "codesite:shadow_merge_simulator",
+          "codesite:repo-policy:sha256:bc2715aab8f8e5a72eeef51c13449d7cdcb1bec3f5adea6337bc567af2c794e0",
+          "codesite:collision-forecast:sha256:c9bf89261b79c37d20534b46650555861117dc92678e9bae96914a955057ea61",
+          "codesite:incident:cmr5n8rel00y8pm0zmd8ctqbl",
+          "codesite:incident:cmr5n8svk00yopm0zbo898qk9",
+          "codesite:shadow-runner:sha256:32ab57918dc395ab491e5f5d60b708fe936cd310fa67205337458a2f3f516032",
+          "codesite:shadow-universe:schema-first:sha256:4fecd8564e518baed301c61f3518de20d3d22d232fe9dcd8d5962fb55c492539",
+          "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay13:schema-first",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:afce725e4e675ef8220673ee53a26212141e4b02b887f4410cdb6904442be862",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:e939ad79b0b3a10b265abf40aff8eb46d22a0b475cea5d4efe890f048c90c224",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:a0a08b5893bbd903132fd415d64f86ee4ff6e5e34e1ed101e3fe5cae398648ca",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d5702980e6543ba2cf33f093f764a9bc7e458715749969e2a7c2a53f9997c292",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dbf6816b97080a8da81d366b8b9970f3d1ab2378c399a15f392b76703869c436",
+          "codesite:shadow-runner:sha256:c2628c088367a4f9c21edf755c893113c55a1652b0886f8f5403d711511eecdb",
+          "cmr5n8wlm00zwpm0zqoixdsl4",
+          "codesite:shadow:full-workflow-counterfactual",
+          "cmr5n8y2j0108pm0z2k91d7zp",
+          "codesite:policy-delta:cmr5n8wlw00zypm0zshvzoxbh",
+          "codesite:shadow-runner:sha256:4655d4ab90b429c39c6151149ae758fefb095a3c79cc2e6252c6d1f265a56787",
+          "codesite:shadow-universe:schema-first:sha256:7eded501d452696440506657a23f4e2b2af131048f63bdbe7827ce1bbdb3e00b",
+          "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay13:learned-policy-memory",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:457512a2666aba0326714eaaa0d83db4f3103df74d1184638106e6955e3c24d0",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:60bd9a0bd0ae9343612af58096ed9617ac8c0d8c650469b81ee4bd58f164effb",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:5903d8114d6d8700748ecbc4ff8965c49f85b417a2f280a7fde3ff517f12dbf7",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:4fbbd9e9f4cb98a29f104b8b836fa7dfc9056e928ceb838d2230f362477e0b5b",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:bbeb3f3f1d4f3258aa25617c1f4128e34682656360d05729eeb29aa29559308c",
+          "codesite:shadow-runner:sha256:fd2f96e96b68146262282d66a4079ebfa3bbcf34c700f8e47e4a17a317663e27"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "contractDriftIncidents",
+        "label": "Contract drift incidents",
+        "unit": "count",
+        "value": 4,
+        "sampleSize": 27,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8rel00y8pm0zmd8ctqbl",
+          "sha256:e0588bd464652fa6bb1c49e16f7d049c489ee62993c6cb2299ee9d3da159071e",
+          "codesite:transaction:cmr5n8ql900y0pm0zf0xuarrd",
+          "codesite:lease:cmr5n8q0i00xspm0zc16y3e69",
+          "cmr5n8svk00yopm0zbo898qk9",
+          "sha256:13b8b74db1aa95d2623560a7f358ea64bebb42c6208d1fb999fe589f8ff1721c",
+          "codesite:transaction:cmr5n8rrk00ycpm0zf2lt814t",
+          "cmr5n9d7z013gpm0zum7t1rtt",
+          "sha256:070c797d2848ba0bf260614c43d7d8a080a6f6a56312c2f3604c5260ce885472",
+          "codesite:incident:critical-violation-proof",
+          "cmr5n94tn011mpm0zeee25jks",
+          "sha256:c089bae2d03c678a1f8527c390a6ade0bbaf0321a0192cecdc6b8e5fc937eee5",
+          "mcp:audit:commit-full-workflow",
+          "git:commit:46846bdbfb56f703c696de864d8cc76b0e3045b1",
+          "codesite:runtime-attestation:sha256:1ec3047a71768b248d923647870f724c7e5eaa571421728db606ab7dd51c5e9e",
+          "codesite:runtime-attestation:sha256:82976b2e280ea89841a9a0e20008a4971c03b2f95756dabd2d401c923930f550",
+          "codesite:landing:passed-health-proof",
+          "codesite:inspection:cmr5n97nm011ypm0zril7q8l1",
+          "runtime:event:inspection-full-workflow",
+          "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "codesite:inspection:cmr5n96io011qpm0z8rwbzfgq",
+          "codesite:repo-state:sha256:c663063aead7feb49e603a0bff0fd798b2ecfd8bd9dfa2d28258500d3aef7210",
+          "codesite:transaction:cmr5n8ta300yspm0zf8blsf5p",
+          "codesite:proof-bundle:cmr5nfxsx013mpm0z8sams7cu"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "migrationRollbackCoverage",
+        "label": "Migration rollback coverage",
+        "unit": "ratio",
+        "value": null,
+        "sampleSize": 0,
+        "status": "not_instrumented",
+        "evidenceRefs": [],
+        "source": "instrumentation_gap",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": "Migration rollback inspections have not run for this project."
+      },
+      {
+        "key": "securityFindingsBeforeMerge",
+        "label": "Security findings before merge",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 2,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n9cec0138pm0z6r7n9bd9:signal:1",
+          "security:failed:violation-proof-1"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "testsRedAtLanding",
+        "label": "Tests red at landing",
+        "unit": "count",
+        "value": 1,
+        "sampleSize": 2,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n9cqv013cpm0zdf6yzem1:signal:1",
+          "test:failed:violation-proof-2"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      },
+      {
+        "key": "postMergeRollbackRate",
+        "label": "Post-merge rollback rate",
+        "unit": "ratio",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      }
+    ],
+    "trust": [
+      {
+        "key": "percentageWritesWithValidClearance",
+        "label": "Writes with valid clearance",
+        "unit": "ratio",
+        "value": 0.5,
+        "sampleSize": 8,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n934a0116pm0zptsjni2h",
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+          "cmr5n934u011apm0zjsl3dvdp",
+          "cmr5n9482011cpm0zbs9ilxat",
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5n8zlg010qpm0zqjb5it52",
+          "codesite:counterfactual-run:cmr5n8wlm00zwpm0zqoixdsl4",
+          "cmr5n9490011gpm0zcpq30v2a"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 1,
+          "denominator": 2
+        }
+      },
+      {
+        "key": "blackBoxCompletenessScore",
+        "label": "Black-box completeness score",
+        "unit": "ratio",
+        "value": 0.84,
+        "sampleSize": 27,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n8rel00y8pm0zmd8ctqbl",
+          "sha256:e0588bd464652fa6bb1c49e16f7d049c489ee62993c6cb2299ee9d3da159071e",
+          "codesite:transaction:cmr5n8ql900y0pm0zf0xuarrd",
+          "codesite:lease:cmr5n8q0i00xspm0zc16y3e69",
+          "cmr5n8svk00yopm0zbo898qk9",
+          "sha256:13b8b74db1aa95d2623560a7f358ea64bebb42c6208d1fb999fe589f8ff1721c",
+          "codesite:transaction:cmr5n8rrk00ycpm0zf2lt814t",
+          "cmr5n9d7z013gpm0zum7t1rtt",
+          "sha256:070c797d2848ba0bf260614c43d7d8a080a6f6a56312c2f3604c5260ce885472",
+          "codesite:incident:critical-violation-proof",
+          "cmr5n94tn011mpm0zeee25jks",
+          "sha256:c089bae2d03c678a1f8527c390a6ade0bbaf0321a0192cecdc6b8e5fc937eee5",
+          "mcp:audit:commit-full-workflow",
+          "git:commit:46846bdbfb56f703c696de864d8cc76b0e3045b1",
+          "codesite:runtime-attestation:sha256:1ec3047a71768b248d923647870f724c7e5eaa571421728db606ab7dd51c5e9e",
+          "codesite:runtime-attestation:sha256:82976b2e280ea89841a9a0e20008a4971c03b2f95756dabd2d401c923930f550",
+          "codesite:landing:passed-health-proof",
+          "codesite:inspection:cmr5n97nm011ypm0zril7q8l1",
+          "runtime:event:inspection-full-workflow",
+          "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "codesite:inspection:cmr5n96io011qpm0z8rwbzfgq",
+          "codesite:repo-state:sha256:c663063aead7feb49e603a0bff0fd798b2ecfd8bd9dfa2d28258500d3aef7210",
+          "codesite:transaction:cmr5n8ta300yspm0zf8blsf5p",
+          "codesite:proof-bundle:cmr5nfxsx013mpm0z8sams7cu"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 3.36,
+          "denominator": 4
+        }
+      },
+      {
+        "key": "humanReviewTimeSavedMs",
+        "label": "Human review time saved",
+        "unit": "duration_ms",
+        "value": null,
+        "sampleSize": 0,
+        "status": "not_instrumented",
+        "evidenceRefs": [],
+        "source": "instrumentation_gap",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": "Human review baseline timing is not recorded yet."
+      },
+      {
+        "key": "pilotLicenseViolationRate",
+        "label": "Pilot license violation rate",
+        "unit": "ratio",
+        "value": 0.5,
+        "sampleSize": 41,
+        "status": "measured",
+        "evidenceRefs": [
+          "cmr5n9b2l012spm0zjz9dmnqk",
+          "dojo:evidence:source-drift-checkride",
+          "full-workflow-checkride",
+          "codesite:policy-decision:cmr5n9b2l012spm0zjz9dmnqk",
+          "dojo:evidence:full-workflow-checkride",
+          "dojo:full-workflow-checkride",
+          "runtime:event:inspection-full-workflow",
+          "typecheck:run:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "artifact:sha256:32f4a6805f75a2dbd59c12068983f8d4f082cb9b73d631922ec786848651126b",
+          "test:run:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "artifact:sha256:0798744e885d01fd0c4a0cc3b6beb0816a828b6f9c17d5b2b2acb888d3d0ffc4",
+          "codesite:landing:passed-health-proof",
+          "codesite:policy-decision:cmr5n8q0u00xupm0ziq8updy5",
+          "codesite:transaction:cmr5n8ql900y0pm0zf0xuarrd",
+          "codesite:lease:cmr5n8q0i00xspm0zc16y3e69",
+          "codesite:read-snapshot:sha256:9e08b75a1166be0c3f34d7122733bfc8b495de0f6a5dc6d8fec691322b161635",
+          "codesite:transaction:cmr5n8rrk00ycpm0zf2lt814t",
+          "mcp:audit:read-full-workflow",
+          "mcp:audit:codesitefs-denied-full-workflow",
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5n8zlg010qpm0zqjb5it52",
+          "codesite:counterfactual-run:cmr5n8wlm00zwpm0zqoixdsl4",
+          "mcp:audit:commit-full-workflow",
+          "git:commit:46846bdbfb56f703c696de864d8cc76b0e3045b1",
+          "codesite:runtime-attestation:sha256:1ec3047a71768b248d923647870f724c7e5eaa571421728db606ab7dd51c5e9e",
+          "codesite:runtime-attestation:sha256:82976b2e280ea89841a9a0e20008a4971c03b2f95756dabd2d401c923930f550",
+          "codesite:inspection:cmr5n97nm011ypm0zril7q8l1",
+          "codesite:inspection:cmr5n96io011qpm0z8rwbzfgq",
+          "codesite:repo-state:sha256:c663063aead7feb49e603a0bff0fd798b2ecfd8bd9dfa2d28258500d3aef7210",
+          "codesite:transaction:cmr5n8ta300yspm0zf8blsf5p",
+          "codesite:proof-bundle:cmr5nfxsx013mpm0z8sams7cu",
+          "git:commit:a102e89c243a631436ca254ed88d78d1529bf560",
+          "git:trailers:sha256:46462538eeae47acfabb0c60593bf026e0264f075d285158a1ba926e9168c3a4",
+          "codesite:policy-decision:cmr5n922x0112pm0zu68207ph",
+          "codesite:policy-decision:cmr5n934p0118pm0z86lwowa3",
+          "dojo:evidence:landing-health-checkride",
+          "security:failed:violation-proof-1",
+          "test:failed:violation-proof-2",
+          "codesite:incident:critical-violation-proof",
+          "cmr5n92310114pm0zo1kdar8m"
+        ],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z",
+        "detail": {
+          "numerator": 4,
+          "denominator": 8
+        }
+      },
+      {
+        "key": "repeatedNearMissesConvertedToAirspaceRules",
+        "label": "Repeated near-misses converted to airspace rules",
+        "unit": "count",
+        "value": 0,
+        "sampleSize": 0,
+        "status": "measured",
+        "evidenceRefs": [],
+        "source": "codesite_control_plane",
+        "generatedAt": "2026-07-04T00:54:01.363Z"
+      }
+    ]
+  },
+  "summary": {
+    "collisionsPredicted": 16,
+    "collisionsAvoided": 4,
+    "nearMissesReplayed": 0,
+    "noFlyViolationsBlocked": 0,
+    "flightsReroutedByTower": 0,
+    "flightsHeldBeforeSharedZoneConflict": 1,
+    "landingsPassedFirstTry": 2,
+    "goAroundRate": 0.4,
+    "groundStopEvents": 0,
+    "averageTimeToClearanceMs": 3667,
+    "averageTimeInHoldingMs": 331030,
+    "staleReadsDetected": 0,
+    "assumptionInvalidationsBeforeWrite": 1,
+    "serializableTransactionAbortRate": 0.75,
+    "shadowMergeSimulatorAccuracy": null,
+    "codeSiteFsBlockedWrites": 1,
+    "illegalWritesQuarantined": 1,
+    "proofBundlesVerifiedOutsideUi": 1,
+    "lineProvenanceCoverage": 0.5,
+    "mergeConflictsAvoided": 2,
+    "contractDriftIncidents": 4,
+    "migrationRollbackCoverage": null,
+    "securityFindingsBeforeMerge": 1,
+    "testsRedAtLanding": 1,
+    "postMergeRollbackRate": 0,
+    "percentageWritesWithValidClearance": 0.5,
+    "blackBoxCompletenessScore": 0.84,
+    "humanReviewTimeSavedMs": null,
+    "pilotLicenseViolationRate": 0.5,
+    "repeatedNearMissesConvertedToAirspaceRules": 0
+  },
+  "evidence": {
+    "eventTypeCounts": {
+      "tower_instruction": 4,
+      "transponder_update": 9,
+      "flight_plan_filed": 6,
+      "clearance_issued": 2,
+      "near_miss": 2,
+      "transaction_opened": 4,
+      "transaction_validated": 3,
+      "transaction_aborted": 3,
+      "black_box_closed": 5,
+      "snapshot_taken": 3,
+      "assumption_recorded": 2,
+      "policy_delta_proposed": 4,
+      "shadow_run": 3,
+      "arbiter_verdict": 3,
+      "policy_delta_promoted": 1,
+      "rfi": 1,
+      "change_order": 1,
+      "read_observed": 1,
+      "write_attempted": 3,
+      "write_denied": 1,
+      "write_quarantined": 1,
+      "assumption_invalidated": 1,
+      "write_allowed": 1,
+      "landing_requested": 5,
+      "radar_result": 1,
+      "inspection_result": 2,
+      "holding_pattern": 1,
+      "mayday": 1,
+      "transaction_committed": 1
+    },
+    "transactionStatusCounts": {
+      "aborted": 3,
+      "committed": 1
+    },
+    "leaseStatusCounts": {
+      "active": 2,
+      "blocked": 1
+    },
+    "inspectionStatusCounts": {
+      "completed": 1,
+      "passed": 2,
+      "failed": 2
+    },
+    "policyDecisionCounts": {
+      "inspect": 1,
+      "allow": 1,
+      "block": 2,
+      "quarantine": 1
+    },
+    "pilotLicenseStatusCounts": {
+      "active": 3,
+      "expired": 1,
+      "suspended": 2
+    },
+    "reasonCodeCounts": {
+      "restricted_airspace_requires_inspection": 4,
+      "dojo_clearance_proof_verified": 4,
+      "dojo_public_proof_signature_verified": 4,
+      "schema_first_leader_clearance": 4,
+      "pilot_license_health_active": 5,
+      "pilot_license_source_current": 3,
+      "pilot_license_from_verified_dojo_proof": 2,
+      "pilot_license_level_authorized": 2,
+      "repo_snapshot_not_recorded": 1,
+      "repo_snapshot_required_for_serializable": 1,
+      "repo_snapshot_read_set_coverage_required": 2,
+      "repo_snapshot_stable": 3,
+      "route_inside_clearance": 2,
+      "pilot_license_not_required_for_route": 2,
+      "outside_clearance_route": 2,
+      "raw_terminal_quarantine": 2,
+      "pilot_license_source_drift_expired": 3,
+      "pilot_license_expired": 2,
+      "pilot_license_airspace_not_authorized": 2,
+      "serializable_validation_passed": 2,
+      "proof_bundle_commit_trailers_verified": 1,
+      "type_radar_passed": 1,
+      "type_adapter_executed": 1,
+      "tests_radar_passed": 1,
+      "tests_adapter_executed": 1,
+      "schema_airspace_first": 2,
+      "downstream_assumptions_refresh_after_contract": 2,
+      "contract_collision_mitigated": 2,
+      "wake_turbulence_mitigated": 2,
+      "prior_incidents_weighted": 4,
+      "shadow_universe_executed": 4,
+      "shadow_universe_repo_commands_passed": 2,
+      "parallelism_crosses_contract_airspace": 2,
+      "requires_extra_assumption_refresh": 2,
+      "shadow_universe_repo_commands_failed": 2,
+      "avoid_parallel_schema_contract_near_miss": 1,
+      "schema_first_contract_landed": 1,
+      "parallel_schema_contract_near_miss": 1,
+      "counterfactual_policy_delta_applied": 2,
+      "learned_policy_delta_preferred_strategy": 1,
+      "learned_policy_delta_avoided_strategy": 1,
+      "pilot_license_critical_violation_window": 2
+    },
+    "dataSources": {
+      "events": 75,
+      "policyDecisions": 5,
+      "transactions": 4,
+      "mutationLeases": 3,
+      "inspectionRuns": 5,
+      "incidents": 4,
+      "proofBundles": 1,
+      "lineProvenance": 2,
+      "counterfactualRuns": 3,
+      "assumptions": 2,
+      "pilotLicenseHealth": 6
+    }
+  }
+}

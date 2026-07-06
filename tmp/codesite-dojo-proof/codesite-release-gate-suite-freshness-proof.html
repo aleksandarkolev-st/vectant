@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CodeSite Release Gate Suite Freshness Proof</title>
+  <style>
+    body { margin: 0; background: #07080d; color: #f8fafc; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    main { padding: 32px; display: grid; gap: 18px; }
+    h1 { margin: 0; font: 700 24px/1.1 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .card { border: 1px solid #293042; border-radius: 8px; background: #11131d; padding: 14px; min-height: 110px; }
+    .label { color: #a8b3cf; font: 600 11px/1.2 Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .value { margin-top: 8px; word-break: break-all; }
+    .pass { color: #86efac; }
+    .fail { color: #fca5a5; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; border: 1px solid #293042; border-radius: 8px; background: #0b0d14; padding: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>CodeSite Release Gate Suite Freshness Proof</h1>
+    <section class="grid">
+      <div class="card"><div class="label">Artifact-only suite commit</div><div class="value pass">accepted</div></div>
+      <div class="card"><div class="label">Source commit after proof</div><div class="value fail">rejected</div></div>
+      <div class="card"><div class="label">Required mature proofs</div><div class="value">38/38</div></div>
+    </section>
+    <section class="grid">
+      <div class="card"><div class="label">Proof head</div><div class="value">ba30e4b4990014c93598de8a705f422f1aa025d3</div></div>
+      <div class="card"><div class="label">Artifact head</div><div class="value">88d654b878d2956d820e3a00db3a3b085df1d147</div></div>
+      <div class="card"><div class="label">Source head</div><div class="value">6101147ead8384fdc8a2182900ee3042fe411833</div></div>
+    </section>
+    <pre>{
+  &quot;ok&quot;: true,
+  &quot;proofHead&quot;: &quot;ba30e4b4990014c93598de8a705f422f1aa025d3&quot;,
+  &quot;artifactHead&quot;: &quot;88d654b878d2956d820e3a00db3a3b085df1d147&quot;,
+  &quot;sourceHead&quot;: &quot;6101147ead8384fdc8a2182900ee3042fe411833&quot;,
+  &quot;artifactSummary&quot;: {
+    &quot;file&quot;: &quot;tmp/codesite-dojo-proof/codesite-mature-proof-suite-run.json&quot;,
+    &quot;required&quot;: 38,
+    &quot;results&quot;: 38,
+    &quot;currentHead&quot;: &quot;88d654b878d2956d820e3a00db3a3b085df1d147&quot;,
+    &quot;proofHead&quot;: &quot;ba30e4b4990014c93598de8a705f422f1aa025d3&quot;,
+    &quot;artifactOnlyPostProofChanges&quot;: true,
+    &quot;ok&quot;: true
+  },
+  &quot;sourceFailures&quot;: [
+    &quot;tmp/codesite-dojo-proof/codesite-mature-proof-suite-run.json non-artifact changes occurred after suite head ba30e4b4990014c93598de8a705f422f1aa025d3: src/change.js&quot;
+  ]
+}</pre>
+  </main>
+</body>
+</html>

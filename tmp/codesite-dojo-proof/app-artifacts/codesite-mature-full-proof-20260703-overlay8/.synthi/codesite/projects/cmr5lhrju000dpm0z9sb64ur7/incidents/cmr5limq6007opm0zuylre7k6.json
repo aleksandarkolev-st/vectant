@@ -1,0 +1,2028 @@
+{
+  "id": "cmr5limq6007opm0zuylre7k6",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "severity": "critical",
+  "category": "security",
+  "participants": [
+    "VIOLATION-05"
+  ],
+  "affectedZones": [
+    "synthi/prisma/schema.prisma"
+  ],
+  "incidentReplay": {
+    "schemaVersion": "synthi.codesite.incidentReplay.v1",
+    "incidentId": "cmr5limq6007opm0zuylre7k6",
+    "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+    "category": "security",
+    "severity": "critical",
+    "summary": "CodeSite incident",
+    "generatedAt": "2026-07-04T00:00:05.406Z",
+    "eventRefs": [
+      "cmr5lhxgc002ipm0zub312q64",
+      "cmr5lhzaf002qpm0z4deajtkr",
+      "cmr5li0o0002ypm0zgj3mulh0",
+      "cmr5li2s9003kpm0zf8amuwcs",
+      "cmr5li47i003upm0zta14lv8a",
+      "cmr5li4800040pm0ziw3oqklw",
+      "cmr5li4850042pm0za1ni1jy2",
+      "cmr5li4q10048pm0zgugonbbt",
+      "cmr5li4q5004apm0z65n9l344",
+      "cmr5li4q9004cpm0zhhgmv4zp",
+      "cmr5li6qn004kpm0z7t16gg9k",
+      "cmr5li6qt004mpm0zl6caykuz",
+      "cmr5li6qz004opm0zx5oippay",
+      "cmr5lictq005epm0z1ui3zk4c",
+      "cmr5licty005ipm0zsuan1dmd",
+      "cmr5lidx7005kpm0z8eje4dch",
+      "cmr5lidxn005mpm0zb9wqxk95",
+      "cmr5lidxr005opm0zzlpvbpbf",
+      "cmr5liges0060pm0zivijddb6",
+      "cmr5lihat0068pm0zozo63bve",
+      "cmr5liijt006mpm0zupzpr9c9",
+      "cmr5likou007apm0zvstyiqdw",
+      "cmr5lil82007epm0zbm7spy9l",
+      "cmr5lilrs007ipm0zkthcdt3r",
+      "cmr5limak007mpm0zt2spz6tj",
+      "cmr5limty007qpm0zictmb7g0"
+    ],
+    "causalEvents": [
+      {
+        "eventId": "cmr5lhxgc002ipm0zub312q64",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "black_box.closed",
+        "logicalTime": 16,
+        "wallTime": "2026-07-03T23:59:32.508Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:transaction:cmr5lhwil0028pm0zt2p1l5iz",
+          "codesite:lease:cmr5lhw270020pm0zv2swrhf0"
+        ],
+        "details": {
+          "transactionId": "cmr5lhwil0028pm0zt2p1l5iz",
+          "incidentId": "cmr5lhxg0002gpm0zp2wj3fei",
+          "proofBundleId": null,
+          "proofBundleDigest": null,
+          "landingStatus": "aborted",
+          "status": "aborted",
+          "readSet": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "writeSet": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "exportedPaths": [
+            "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5lhwil0028pm0zt2p1l5iz.json"
+          ],
+          "reason": "transaction_black_box_closeout"
+        }
+      },
+      {
+        "eventId": "cmr5lhzaf002qpm0z4deajtkr",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "transponder.update",
+        "logicalTime": 19,
+        "wallTime": "2026-07-03T23:59:34.888Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "type": "read_recorded",
+          "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "file_read",
+          "codesiteFsEvent": null,
+          "processAncestry": []
+        }
+      },
+      {
+        "eventId": "cmr5li0o0002ypm0zgj3mulh0",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "black_box.closed",
+        "logicalTime": 22,
+        "wallTime": "2026-07-03T23:59:36.673Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:transaction:cmr5lhy9y002kpm0zn6k7wy4l",
+          "codesite:lease:cmr5lhw270020pm0zv2swrhf0"
+        ],
+        "details": {
+          "transactionId": "cmr5lhy9y002kpm0zn6k7wy4l",
+          "incidentId": "cmr5li0ns002wpm0zmfhjhvkd",
+          "proofBundleId": null,
+          "proofBundleDigest": null,
+          "landingStatus": "aborted",
+          "status": "aborted",
+          "readSet": [
+            "synthi/prisma/schema-contract-read.txt",
+            "synthi/prisma/schema.prisma"
+          ],
+          "writeSet": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "exportedPaths": [
+            "projects/cmr5lhrju000dpm0z9sb64ur7/handover.md",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/events.jsonl",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/incidents/incident-replay-<incident-id>.jsonl",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/black-box.json",
+            "projects/cmr5lhrju000dpm0z9sb64ur7/flights/SCHEMA-01/transaction-cmr5lhy9y002kpm0zn6k7wy4l.json"
+          ],
+          "reason": "transaction_black_box_closeout"
+        }
+      },
+      {
+        "eventId": "cmr5li2s9003kpm0zf8amuwcs",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5li2rp003gpm0zq6uupyr0",
+        "mutationLeaseId": "cmr5li2cg003apm0zwhxi5ujs",
+        "agentSessionId": null,
+        "displayCallsign": "API-02",
+        "type": "snapshot.taken",
+        "logicalTime": 28,
+        "wallTime": "2026-07-03T23:59:39.417Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:read-snapshot:sha256:545c075d34947ce9367a49eb5b26254000227718482263869c03a1d46759c48e"
+        ],
+        "details": {
+          "transactionId": "cmr5li2rp003gpm0zq6uupyr0",
+          "baseSnapshot": "sha256:9c4a2674305e5a5c577726a671c1df106923a1a558aa0aa7df0f9eecf60ec127",
+          "snapshotDigest": "sha256:9c4a2674305e5a5c577726a671c1df106923a1a558aa0aa7df0f9eecf60ec127",
+          "evidenceDigest": "sha256:545c075d34947ce9367a49eb5b26254000227718482263869c03a1d46759c48e",
+          "status": "recorded",
+          "readSet": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "fileCount": 1,
+          "missingPaths": [],
+          "reason": "serializable_transaction_open"
+        }
+      },
+      {
+        "eventId": "cmr5li47i003upm0zta14lv8a",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "policy_delta.proposed",
+        "logicalTime": 30,
+        "wallTime": "2026-07-03T23:59:41.263Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:shadow_merge_simulator",
+          "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+          "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+          "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+          "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+          "codesite:shadow-runner:sha256:4b4fe567c851987b8739d5173c6d50c60676a72012edb3dc76539f43ae32d152",
+          "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+          "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e",
+          "codesite:shadow-runner:sha256:79836f7b373e838b651ead8ee3f3245d755c9750ea6ab1966e382fb20127edfa"
+        ],
+        "details": {
+          "policyDeltaId": "cmr5li47d003spm0z1l3034p7",
+          "counterfactualRunId": "cmr5li471003qpm0zvxzqirzs",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+          "promotionState": "proposed",
+          "confidence": 0.72,
+          "affectedZones": [
+            "synthi/prisma/**",
+            "synthi/src/app/api/auth/**",
+            "synthi/src/lib/codesite/__tests__/**"
+          ],
+          "triggerConditions": [
+            {
+              "path": "synthi/prisma/**"
+            },
+            {
+              "path": "synthi/src/app/api/auth/**"
+            },
+            {
+              "path": "synthi/src/lib/codesite/__tests__/**"
+            }
+          ],
+          "ruleCandidate": {
+            "rule": "require_test_owner_for_mutation_route",
+            "affectedRoutes": [
+              "synthi/prisma/**",
+              "synthi/src/app/api/auth/**",
+              "synthi/src/lib/codesite/__tests__/**"
+            ],
+            "expectedRiskReduction": 0.18,
+            "confidence": 0.72
+          }
+        }
+      },
+      {
+        "eventId": "cmr5li4800040pm0ziw3oqklw",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "shadow.run",
+        "logicalTime": 32,
+        "wallTime": "2026-07-03T23:59:41.280Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "counterfactualRunId": "cmr5li471003qpm0zvxzqirzs",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+          "validityStrength": "executed",
+          "affectedZones": [
+            "synthi/prisma/**",
+            "synthi/src/app/api/auth/**",
+            "synthi/src/lib/codesite/__tests__/**"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5li4850042pm0za1ni1jy2",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "arbiter.verdict",
+        "logicalTime": 33,
+        "wallTime": "2026-07-03T23:59:41.286Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:shadow_merge_simulator",
+          "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+          "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+          "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+          "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+          "codesite:shadow-runner:sha256:4b4fe567c851987b8739d5173c6d50c60676a72012edb3dc76539f43ae32d152",
+          "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+          "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e",
+          "codesite:shadow-runner:sha256:79836f7b373e838b651ead8ee3f3245d755c9750ea6ab1966e382fb20127edfa"
+        ],
+        "details": {
+          "counterfactualRunId": "cmr5li471003qpm0zvxzqirzs",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+          "arbiterVerdict": {
+            "selected": "schema-first",
+            "appliedPolicyDeltas": [],
+            "reason": {
+              "reasonCodes": [
+                "schema_airspace_first",
+                "downstream_assumptions_refresh_after_contract",
+                "contract_collision_mitigated",
+                "wake_turbulence_mitigated",
+                "prior_incidents_weighted"
+              ],
+              "staleAssumptions": 0,
+              "inspectionCost": 13,
+              "predictedCollisionRisk": 0.459,
+              "riskLevel": "high",
+              "sourceSignals": {
+                "forecastRiskCount": 3,
+                "highRiskCount": 2,
+                "contractRiskCount": 2,
+                "migrationRiskCount": 0,
+                "importGraphEdges": 0,
+                "downstreamDependents": 0,
+                "testOwners": 0,
+                "missingTestRoutes": 3,
+                "schemaOwners": 1,
+                "migrationLocks": 0,
+                "packageExports": 0,
+                "priorIncidents": 2,
+                "learnedPolicyDeltas": 0,
+                "activeLeaseLocks": 2,
+                "inspectionRuns": 0,
+                "signalStrength": "simulated"
+              },
+              "learnedPolicyDeltaRefs": [],
+              "shadowExecutionMode": "external_runner"
+            },
+            "universes": [
+              {
+                "strategy": "schema-first",
+                "result": "review",
+                "predictedCollisionRisk": 0.459,
+                "staleAssumptions": 0,
+                "inspectionCost": 13,
+                "reworkRiskReduction": 0.66,
+                "confidence": 0.53,
+                "avoidedRisks": [
+                  "contract_collision",
+                  "wake_turbulence"
+                ],
+                "unresolvedRisks": [
+                  "restricted_airspace_occupancy"
+                ],
+                "requiredTowerActions": [
+                  "schema_first",
+                  "inspect_before_landing",
+                  "hold_for_wake_turbulence",
+                  "refresh_downstream_assumptions",
+                  "run_owned_tests_before_landing"
+                ],
+                "reasonCodes": [
+                  "schema_airspace_first",
+                  "downstream_assumptions_refresh_after_contract",
+                  "contract_collision_mitigated",
+                  "wake_turbulence_mitigated",
+                  "prior_incidents_weighted",
+                  "shadow_universe_executed",
+                  "shadow_universe_repo_commands_passed"
+                ],
+                "learnedPolicyDeltaRefs": [],
+                "sourceSignals": {
+                  "forecastRiskCount": 3,
+                  "highRiskCount": 2,
+                  "contractRiskCount": 2,
+                  "migrationRiskCount": 0,
+                  "importGraphEdges": 0,
+                  "downstreamDependents": 0,
+                  "testOwners": 0,
+                  "missingTestRoutes": 3,
+                  "schemaOwners": 1,
+                  "migrationLocks": 0,
+                  "packageExports": 0,
+                  "priorIncidents": 2,
+                  "learnedPolicyDeltas": 0,
+                  "activeLeaseLocks": 2,
+                  "inspectionRuns": 0,
+                  "signalStrength": "simulated"
+                },
+                "execution": {
+                  "status": "passed",
+                  "evidenceRefs": [
+                    "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+                    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+                    "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+                    "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42"
+                  ],
+                  "command": "codesite-shadow-runner:repo-command-execution",
+                  "executionMode": "repo_command_execution",
+                  "exitCode": 0,
+                  "outputDigest": "sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a"
+                },
+                "evidenceRefs": [
+                  "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+                  "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+                  "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+                  "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42"
+                ]
+              },
+              {
+                "strategy": "frontend-backend-parallel",
+                "result": "risk",
+                "predictedCollisionRisk": 1,
+                "staleAssumptions": 2,
+                "inspectionCost": 17,
+                "reworkRiskReduction": 0,
+                "confidence": 0.53,
+                "avoidedRisks": [],
+                "unresolvedRisks": [
+                  "contract_collision",
+                  "restricted_airspace_occupancy",
+                  "wake_turbulence"
+                ],
+                "requiredTowerActions": [
+                  "schema_first",
+                  "inspect_before_landing",
+                  "hold_for_wake_turbulence",
+                  "refresh_downstream_assumptions",
+                  "run_owned_tests_before_landing"
+                ],
+                "reasonCodes": [
+                  "parallelism_crosses_contract_airspace",
+                  "requires_extra_assumption_refresh",
+                  "prior_incidents_weighted",
+                  "shadow_universe_executed",
+                  "shadow_universe_repo_commands_failed"
+                ],
+                "learnedPolicyDeltaRefs": [],
+                "sourceSignals": {
+                  "forecastRiskCount": 3,
+                  "highRiskCount": 2,
+                  "contractRiskCount": 2,
+                  "migrationRiskCount": 0,
+                  "importGraphEdges": 0,
+                  "downstreamDependents": 0,
+                  "testOwners": 0,
+                  "missingTestRoutes": 3,
+                  "schemaOwners": 1,
+                  "migrationLocks": 0,
+                  "packageExports": 0,
+                  "priorIncidents": 2,
+                  "learnedPolicyDeltas": 0,
+                  "activeLeaseLocks": 2,
+                  "inspectionRuns": 0,
+                  "signalStrength": "simulated"
+                },
+                "execution": {
+                  "status": "near_miss",
+                  "evidenceRefs": [
+                    "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+                    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+                    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+                    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e"
+                  ],
+                  "command": "codesite-shadow-runner:repo-command-execution",
+                  "executionMode": "repo_command_execution",
+                  "exitCode": 1,
+                  "outputDigest": "sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10"
+                },
+                "evidenceRefs": [
+                  "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+                  "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+                  "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+                  "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e"
+                ]
+              }
+            ],
+            "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+            "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+            "evidenceRefs": [
+              "codesite:shadow_merge_simulator",
+              "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+              "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+              "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+              "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+              "codesite:shadow-runner:sha256:4b4fe567c851987b8739d5173c6d50c60676a72012edb3dc76539f43ae32d152",
+              "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+              "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+              "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+              "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42",
+              "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+              "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+              "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e",
+              "codesite:shadow-runner:sha256:79836f7b373e838b651ead8ee3f3245d755c9750ea6ab1966e382fb20127edfa"
+            ],
+            "policyDeltaCandidates": [
+              {
+                "rule": "require_test_owner_for_mutation_route",
+                "affectedRoutes": [
+                  "synthi/prisma/**",
+                  "synthi/src/app/api/auth/**",
+                  "synthi/src/lib/codesite/__tests__/**"
+                ],
+                "expectedRiskReduction": 0.18,
+                "confidence": 0.72
+              },
+              {
+                "rule": "incident_weighted_preflight_hold",
+                "affectedIncidents": [
+                  "cmr5lhxg0002gpm0zp2wj3fei",
+                  "cmr5li0ns002wpm0zmfhjhvkd"
+                ],
+                "expectedRiskReduction": 0.16,
+                "confidence": 0.68
+              }
+            ],
+            "shadowExecution": {
+              "status": "completed",
+              "runner": "codesite-shadow-runner",
+              "executionMode": "repo_command_execution",
+              "evidenceRefs": [
+                "codesite:shadow-runner:sha256:4b4fe567c851987b8739d5173c6d50c60676a72012edb3dc76539f43ae32d152",
+                "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+                "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+                "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+                "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42",
+                "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+                "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+                "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+                "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e"
+              ],
+              "universeCount": 2,
+              "digest": "sha256:79836f7b373e838b651ead8ee3f3245d755c9750ea6ab1966e382fb20127edfa"
+            },
+            "repoSignals": {
+              "signalStrength": "simulated",
+              "planCount": 3,
+              "activeLeaseCount": 2,
+              "forecastRiskCount": 3,
+              "highRiskCount": 2,
+              "contractRiskCount": 2,
+              "migrationRiskCount": 0,
+              "classAOrBZones": 1,
+              "importGraphEdges": 0,
+              "downstreamDependents": 0,
+              "testOwners": 0,
+              "missingTestRoutes": 3,
+              "schemaOwners": 1,
+              "migrationLocks": 0,
+              "packageExports": 0,
+              "priorIncidents": 2,
+              "learnedPolicyDeltas": 0,
+              "activeLeaseLocks": 2,
+              "inspectionRuns": 0
+            }
+          },
+          "selected": "schema-first",
+          "validityStrength": "executed",
+          "affectedZones": [
+            "synthi/prisma/**",
+            "synthi/src/app/api/auth/**",
+            "synthi/src/lib/codesite/__tests__/**"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5li4q10048pm0zgugonbbt",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "policy_delta.proposed",
+        "logicalTime": 34,
+        "wallTime": "2026-07-03T23:59:41.929Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:shadow:full-workflow-counterfactual"
+        ],
+        "details": {
+          "policyDeltaId": "cmr5li4px0046pm0z805i95yj",
+          "counterfactualRunId": "cmr5li4po0044pm0z7po9wzj0",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:counterfactual-choice",
+          "promotionState": "proposed",
+          "confidence": 0.84,
+          "affectedZones": [
+            "synthi/prisma/schema.prisma",
+            "synthi/src/app/api/auth/**"
+          ],
+          "triggerConditions": [
+            {
+              "path": "synthi/prisma/schema.prisma"
+            },
+            {
+              "path": "synthi/src/app/api/auth/**"
+            }
+          ],
+          "ruleCandidate": {
+            "rule": "schema_contract_first_before_api_parallelism",
+            "preferredStrategies": [
+              "schema-first"
+            ],
+            "avoidStrategies": [
+              "frontend-backend-parallel"
+            ],
+            "affectedRoutes": [
+              "synthi/prisma/schema.prisma",
+              "synthi/src/app/api/auth/**"
+            ],
+            "requiredTowerActions": [
+              "refresh_downstream_assumptions",
+              "hold_dependent_api_until_schema_lands"
+            ],
+            "expectedRiskReduction": 0.31,
+            "confidence": 0.84
+          }
+        }
+      },
+      {
+        "eventId": "cmr5li4q5004apm0z65n9l344",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "shadow.run",
+        "logicalTime": 35,
+        "wallTime": "2026-07-03T23:59:41.934Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "counterfactualRunId": "cmr5li4po0044pm0z7po9wzj0",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:counterfactual-choice",
+          "validityStrength": "strong",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma",
+            "synthi/src/app/api/auth/**"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5li4q9004cpm0zhhgmv4zp",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "arbiter.verdict",
+        "logicalTime": 36,
+        "wallTime": "2026-07-03T23:59:41.937Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:shadow:full-workflow-counterfactual"
+        ],
+        "details": {
+          "counterfactualRunId": "cmr5li4po0044pm0z7po9wzj0",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:counterfactual-choice",
+          "arbiterVerdict": {
+            "selected": "schema-first",
+            "verdict": "schema-first",
+            "reasonCodes": [
+              "avoid_parallel_schema_contract_near_miss"
+            ],
+            "policyDeltaCandidates": [
+              {
+                "rule": "schema_contract_first_before_api_parallelism",
+                "preferredStrategies": [
+                  "schema_first"
+                ],
+                "avoidStrategies": [
+                  "frontend_backend_parallel"
+                ],
+                "affectedRoutes": [
+                  "synthi/prisma/schema.prisma",
+                  "synthi/src/app/api/auth/**"
+                ],
+                "requiredTowerActions": [
+                  "refresh_downstream_assumptions",
+                  "hold_dependent_api_until_schema_lands"
+                ],
+                "expectedRiskReduction": 0.31,
+                "confidence": 0.84
+              }
+            ]
+          },
+          "selected": "schema-first",
+          "validityStrength": "strong",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma",
+            "synthi/src/app/api/auth/**"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5li6qn004kpm0z7t16gg9k",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "policy_delta.proposed",
+        "logicalTime": 38,
+        "wallTime": "2026-07-03T23:59:44.543Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:shadow_merge_simulator",
+          "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+          "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+          "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+          "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+          "codesite:policy-delta:cmr5li4px0046pm0z805i95yj",
+          "codesite:shadow-runner:sha256:286d59feefdf3e944f44bee7bf18977e5f878629956910b080641e10cbb34872",
+          "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+          "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0",
+          "codesite:shadow-runner:sha256:65a81064b8d3961dceb864c9b9e29e8ff21be2a23fe4b1943e9d5559e601e98a"
+        ],
+        "details": {
+          "policyDeltaId": "cmr5li6qi004ipm0zhgsfopen",
+          "counterfactualRunId": "cmr5li6q3004gpm0zorne3oex",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+          "promotionState": "proposed",
+          "confidence": 0.72,
+          "affectedZones": [
+            "synthi/prisma/**",
+            "synthi/src/app/api/auth/**",
+            "synthi/src/lib/codesite/__tests__/**"
+          ],
+          "triggerConditions": [
+            {
+              "path": "synthi/prisma/**"
+            },
+            {
+              "path": "synthi/src/app/api/auth/**"
+            },
+            {
+              "path": "synthi/src/lib/codesite/__tests__/**"
+            }
+          ],
+          "ruleCandidate": {
+            "rule": "require_test_owner_for_mutation_route",
+            "affectedRoutes": [
+              "synthi/prisma/**",
+              "synthi/src/app/api/auth/**",
+              "synthi/src/lib/codesite/__tests__/**"
+            ],
+            "expectedRiskReduction": 0.18,
+            "confidence": 0.72
+          }
+        }
+      },
+      {
+        "eventId": "cmr5li6qt004mpm0zl6caykuz",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "shadow.run",
+        "logicalTime": 39,
+        "wallTime": "2026-07-03T23:59:44.549Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "counterfactualRunId": "cmr5li6q3004gpm0zorne3oex",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+          "validityStrength": "executed",
+          "affectedZones": [
+            "synthi/prisma/**",
+            "synthi/src/app/api/auth/**",
+            "synthi/src/lib/codesite/__tests__/**"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5li6qz004opm0zx5oippay",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "arbiter.verdict",
+        "logicalTime": 40,
+        "wallTime": "2026-07-03T23:59:44.556Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:shadow_merge_simulator",
+          "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+          "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+          "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+          "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+          "codesite:policy-delta:cmr5li4px0046pm0z805i95yj",
+          "codesite:shadow-runner:sha256:286d59feefdf3e944f44bee7bf18977e5f878629956910b080641e10cbb34872",
+          "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+          "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0",
+          "codesite:shadow-runner:sha256:65a81064b8d3961dceb864c9b9e29e8ff21be2a23fe4b1943e9d5559e601e98a"
+        ],
+        "details": {
+          "counterfactualRunId": "cmr5li6q3004gpm0zorne3oex",
+          "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+          "arbiterVerdict": {
+            "selected": "schema-first",
+            "appliedPolicyDeltas": [
+              "cmr5li4px0046pm0z805i95yj"
+            ],
+            "reason": {
+              "reasonCodes": [
+                "schema_airspace_first",
+                "downstream_assumptions_refresh_after_contract",
+                "contract_collision_mitigated",
+                "wake_turbulence_mitigated",
+                "prior_incidents_weighted",
+                "counterfactual_policy_delta_applied",
+                "learned_policy_delta_preferred_strategy"
+              ],
+              "staleAssumptions": 0,
+              "inspectionCost": 9,
+              "predictedCollisionRisk": 0.199,
+              "riskLevel": "high",
+              "sourceSignals": {
+                "forecastRiskCount": 3,
+                "highRiskCount": 2,
+                "contractRiskCount": 2,
+                "migrationRiskCount": 0,
+                "importGraphEdges": 0,
+                "downstreamDependents": 0,
+                "testOwners": 0,
+                "missingTestRoutes": 3,
+                "schemaOwners": 1,
+                "migrationLocks": 0,
+                "packageExports": 0,
+                "priorIncidents": 2,
+                "learnedPolicyDeltas": 1,
+                "activeLeaseLocks": 2,
+                "inspectionRuns": 0,
+                "signalStrength": "simulated"
+              },
+              "learnedPolicyDeltaRefs": [
+                "cmr5li4px0046pm0z805i95yj"
+              ],
+              "shadowExecutionMode": "external_runner"
+            },
+            "universes": [
+              {
+                "strategy": "schema-first",
+                "result": "review",
+                "predictedCollisionRisk": 0.199,
+                "staleAssumptions": 0,
+                "inspectionCost": 9,
+                "reworkRiskReduction": 0.66,
+                "confidence": 0.53,
+                "avoidedRisks": [
+                  "contract_collision",
+                  "wake_turbulence"
+                ],
+                "unresolvedRisks": [
+                  "restricted_airspace_occupancy"
+                ],
+                "requiredTowerActions": [
+                  "schema_first",
+                  "inspect_before_landing",
+                  "hold_for_wake_turbulence",
+                  "refresh_downstream_assumptions",
+                  "run_owned_tests_before_landing"
+                ],
+                "reasonCodes": [
+                  "schema_airspace_first",
+                  "downstream_assumptions_refresh_after_contract",
+                  "contract_collision_mitigated",
+                  "wake_turbulence_mitigated",
+                  "prior_incidents_weighted",
+                  "counterfactual_policy_delta_applied",
+                  "learned_policy_delta_preferred_strategy",
+                  "shadow_universe_executed",
+                  "shadow_universe_repo_commands_passed"
+                ],
+                "learnedPolicyDeltaRefs": [
+                  "cmr5li4px0046pm0z805i95yj"
+                ],
+                "sourceSignals": {
+                  "forecastRiskCount": 3,
+                  "highRiskCount": 2,
+                  "contractRiskCount": 2,
+                  "migrationRiskCount": 0,
+                  "importGraphEdges": 0,
+                  "downstreamDependents": 0,
+                  "testOwners": 0,
+                  "missingTestRoutes": 3,
+                  "schemaOwners": 1,
+                  "migrationLocks": 0,
+                  "packageExports": 0,
+                  "priorIncidents": 2,
+                  "learnedPolicyDeltas": 1,
+                  "activeLeaseLocks": 2,
+                  "inspectionRuns": 0,
+                  "signalStrength": "simulated"
+                },
+                "execution": {
+                  "status": "passed",
+                  "evidenceRefs": [
+                    "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+                    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+                    "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+                    "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40"
+                  ],
+                  "command": "codesite-shadow-runner:repo-command-execution",
+                  "executionMode": "repo_command_execution",
+                  "exitCode": 0,
+                  "outputDigest": "sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a"
+                },
+                "evidenceRefs": [
+                  "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+                  "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+                  "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+                  "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40"
+                ]
+              },
+              {
+                "strategy": "frontend-backend-parallel",
+                "result": "risk",
+                "predictedCollisionRisk": 1,
+                "staleAssumptions": 4,
+                "inspectionCost": 19,
+                "reworkRiskReduction": 0,
+                "confidence": 0.53,
+                "avoidedRisks": [],
+                "unresolvedRisks": [
+                  "contract_collision",
+                  "restricted_airspace_occupancy",
+                  "wake_turbulence"
+                ],
+                "requiredTowerActions": [
+                  "schema_first",
+                  "inspect_before_landing",
+                  "hold_for_wake_turbulence",
+                  "refresh_downstream_assumptions",
+                  "run_owned_tests_before_landing"
+                ],
+                "reasonCodes": [
+                  "parallelism_crosses_contract_airspace",
+                  "requires_extra_assumption_refresh",
+                  "prior_incidents_weighted",
+                  "counterfactual_policy_delta_applied",
+                  "learned_policy_delta_avoided_strategy",
+                  "shadow_universe_executed",
+                  "shadow_universe_repo_commands_failed"
+                ],
+                "learnedPolicyDeltaRefs": [
+                  "cmr5li4px0046pm0z805i95yj"
+                ],
+                "sourceSignals": {
+                  "forecastRiskCount": 3,
+                  "highRiskCount": 2,
+                  "contractRiskCount": 2,
+                  "migrationRiskCount": 0,
+                  "importGraphEdges": 0,
+                  "downstreamDependents": 0,
+                  "testOwners": 0,
+                  "missingTestRoutes": 3,
+                  "schemaOwners": 1,
+                  "migrationLocks": 0,
+                  "packageExports": 0,
+                  "priorIncidents": 2,
+                  "learnedPolicyDeltas": 1,
+                  "activeLeaseLocks": 2,
+                  "inspectionRuns": 0,
+                  "signalStrength": "simulated"
+                },
+                "execution": {
+                  "status": "near_miss",
+                  "evidenceRefs": [
+                    "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+                    "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+                    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+                    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0"
+                  ],
+                  "command": "codesite-shadow-runner:repo-command-execution",
+                  "executionMode": "repo_command_execution",
+                  "exitCode": 1,
+                  "outputDigest": "sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409"
+                },
+                "evidenceRefs": [
+                  "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+                  "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+                  "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+                  "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0"
+                ]
+              }
+            ],
+            "shadowJobRef": "shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+            "baseSnapshot": "sha256:3560190edab25c99eb49e054191bd19ab1096422c36a4f56c2faa39bf054d63c",
+            "evidenceRefs": [
+              "codesite:shadow_merge_simulator",
+              "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+              "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+              "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+              "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+              "codesite:policy-delta:cmr5li4px0046pm0z805i95yj",
+              "codesite:shadow-runner:sha256:286d59feefdf3e944f44bee7bf18977e5f878629956910b080641e10cbb34872",
+              "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+              "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+              "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+              "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40",
+              "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+              "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+              "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0",
+              "codesite:shadow-runner:sha256:65a81064b8d3961dceb864c9b9e29e8ff21be2a23fe4b1943e9d5559e601e98a"
+            ],
+            "policyDeltaCandidates": [
+              {
+                "rule": "require_test_owner_for_mutation_route",
+                "affectedRoutes": [
+                  "synthi/prisma/**",
+                  "synthi/src/app/api/auth/**",
+                  "synthi/src/lib/codesite/__tests__/**"
+                ],
+                "expectedRiskReduction": 0.18,
+                "confidence": 0.72
+              }
+            ],
+            "shadowExecution": {
+              "status": "completed",
+              "runner": "codesite-shadow-runner",
+              "executionMode": "repo_command_execution",
+              "evidenceRefs": [
+                "codesite:shadow-runner:sha256:286d59feefdf3e944f44bee7bf18977e5f878629956910b080641e10cbb34872",
+                "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+                "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+                "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+                "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40",
+                "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+                "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+                "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+                "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0"
+              ],
+              "universeCount": 2,
+              "digest": "sha256:65a81064b8d3961dceb864c9b9e29e8ff21be2a23fe4b1943e9d5559e601e98a"
+            },
+            "repoSignals": {
+              "signalStrength": "simulated",
+              "planCount": 3,
+              "activeLeaseCount": 2,
+              "forecastRiskCount": 3,
+              "highRiskCount": 2,
+              "contractRiskCount": 2,
+              "migrationRiskCount": 0,
+              "classAOrBZones": 1,
+              "importGraphEdges": 0,
+              "downstreamDependents": 0,
+              "testOwners": 0,
+              "missingTestRoutes": 3,
+              "schemaOwners": 1,
+              "migrationLocks": 0,
+              "packageExports": 0,
+              "priorIncidents": 2,
+              "learnedPolicyDeltas": 1,
+              "activeLeaseLocks": 2,
+              "inspectionRuns": 0
+            }
+          },
+          "selected": "schema-first",
+          "validityStrength": "executed",
+          "affectedZones": [
+            "synthi/prisma/**",
+            "synthi/src/app/api/auth/**",
+            "synthi/src/lib/codesite/__tests__/**"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5lictq005epm0z1ui3zk4c",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "write.attempted",
+        "logicalTime": 48,
+        "wallTime": "2026-07-03T23:59:52.431Z",
+        "zoneKey": "class_b",
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+        ],
+        "details": {
+          "transactionId": "cmr5li1840030pm0ziuph9b1r",
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "raw_terminal",
+          "zone": {
+            "zoneKey": "class_b",
+            "label": "Shared contract airspace",
+            "class": "B",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ],
+            "risk": "high",
+            "source": "compiled_default",
+            "path": "synthi/prisma/schema.prisma"
+          },
+          "codesiteFsEvent": {
+            "type": "write_quarantined",
+            "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+            "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+            "display_callsign": "SCHEMA-01",
+            "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+            "actor_user_id": null,
+            "effective_user_id": null,
+            "path": "synthi/prisma/schema.prisma",
+            "tool": "raw_terminal",
+            "wall_time": "2026-07-03T23:59:51.825Z",
+            "evidence_refs": [
+              "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+            ],
+            "details": {
+              "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+              "reason_codes": [
+                "raw_terminal_quarantine"
+              ],
+              "process_ancestry": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "operation": "raw_terminal",
+              "quarantine_id": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+              "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260703-overlay8/cmr5li1840030pm0ziuph9b1r/qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+              "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+              "change_kind": "modified",
+              "quarantine_evidence": {
+                "path": "synthi/prisma/schema.prisma",
+                "kind": "modified",
+                "beforeExists": true,
+                "afterExists": true,
+                "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+                "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+                "beforeSize": 135,
+                "afterSize": 249,
+                "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+                "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+                "textDiff": {
+                  "format": "line-window-v1",
+                  "startLine": 8,
+                  "beforeLineCount": 3,
+                  "afterLineCount": 9,
+                  "truncated": false,
+                  "lines": [
+                    "   email String @unique",
+                    " }",
+                    " ",
+                    "+model QuarantinedAuditEvent {",
+                    "+  id        String   @id",
+                    "+  userId    String",
+                    "+  createdAt DateTime @default(now())",
+                    "+}",
+                    "+"
+                  ]
+                },
+                "digest": "sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+                "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+                "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd"
+              }
+            }
+          },
+          "semanticDependencyRefs": [],
+          "evidenceRefs": [
+            "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+          ],
+          "processAncestry": [
+            "mcp:synthi_codesite_apply_patch",
+            "codex:tmp-proof-session"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5licty005ipm0zsuan1dmd",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "write.quarantined",
+        "logicalTime": 49,
+        "wallTime": "2026-07-03T23:59:52.439Z",
+        "zoneKey": "class_b",
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": "cmr5lictu005gpm0zjo9uo8ot",
+        "evidenceRefs": [
+          "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+        ],
+        "details": {
+          "transactionId": "cmr5li1840030pm0ziuph9b1r",
+          "path": "synthi/prisma/schema.prisma",
+          "reasonCodes": [
+            "raw_terminal_quarantine"
+          ],
+          "policyDecisionId": "cmr5lictu005gpm0zjo9uo8ot",
+          "zone": {
+            "zoneKey": "class_b",
+            "label": "Shared contract airspace",
+            "class": "B",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ],
+            "risk": "high",
+            "source": "compiled_default",
+            "path": "synthi/prisma/schema.prisma"
+          },
+          "codesiteFsEvent": {
+            "type": "write_quarantined",
+            "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+            "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+            "display_callsign": "SCHEMA-01",
+            "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+            "actor_user_id": null,
+            "effective_user_id": null,
+            "path": "synthi/prisma/schema.prisma",
+            "tool": "raw_terminal",
+            "wall_time": "2026-07-03T23:59:51.825Z",
+            "evidence_refs": [
+              "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+            ],
+            "details": {
+              "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+              "reason_codes": [
+                "raw_terminal_quarantine"
+              ],
+              "process_ancestry": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "operation": "raw_terminal",
+              "quarantine_id": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+              "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260703-overlay8/cmr5li1840030pm0ziuph9b1r/qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+              "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay8",
+              "change_kind": "modified",
+              "quarantine_evidence": {
+                "path": "synthi/prisma/schema.prisma",
+                "kind": "modified",
+                "beforeExists": true,
+                "afterExists": true,
+                "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+                "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+                "beforeSize": 135,
+                "afterSize": 249,
+                "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+                "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+                "textDiff": {
+                  "format": "line-window-v1",
+                  "startLine": 8,
+                  "beforeLineCount": 3,
+                  "afterLineCount": 9,
+                  "truncated": false,
+                  "lines": [
+                    "   email String @unique",
+                    " }",
+                    " ",
+                    "+model QuarantinedAuditEvent {",
+                    "+  id        String   @id",
+                    "+  userId    String",
+                    "+  createdAt DateTime @default(now())",
+                    "+}",
+                    "+"
+                  ]
+                },
+                "digest": "sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+                "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+                "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd"
+              }
+            }
+          }
+        }
+      },
+      {
+        "eventId": "cmr5lidx7005kpm0z8eje4dch",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "write.attempted",
+        "logicalTime": 50,
+        "wallTime": "2026-07-03T23:59:53.851Z",
+        "zoneKey": "class_b",
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+          "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+        ],
+        "details": {
+          "transactionId": "cmr5li1840030pm0ziuph9b1r",
+          "path": "synthi/prisma/schema.prisma",
+          "tool": "file_write",
+          "zone": {
+            "zoneKey": "class_b",
+            "label": "Shared contract airspace",
+            "class": "B",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ],
+            "risk": "high",
+            "source": "compiled_default",
+            "path": "synthi/prisma/schema.prisma"
+          },
+          "codesiteFsEvent": {
+            "type": "write_allowed",
+            "transaction_id": "cmr5li1840030pm0ziuph9b1r",
+            "mutation_lease_id": "cmr5lhw270020pm0zv2swrhf0",
+            "display_callsign": "SCHEMA-01",
+            "workspace_slug": "codesite-mature-full-proof-20260703-overlay8",
+            "actor_user_id": null,
+            "effective_user_id": null,
+            "path": "synthi/prisma/schema.prisma",
+            "tool": "file_write",
+            "wall_time": "2026-07-03T23:59:53.005Z",
+            "evidence_refs": [
+              "mcp:audit:write-full-workflow",
+              "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+              "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+            ],
+            "details": {
+              "reason": "inside_clearance_route",
+              "reason_codes": [
+                "inside_clearance_route"
+              ],
+              "process_ancestry": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "operation": "write-file",
+              "lineProvenance": [
+                {
+                  "filePath": "synthi/prisma/schema.prisma",
+                  "startLine": 10,
+                  "endLine": 15,
+                  "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+                  "reasonRef": "change_order:cmr5li92x004ypm0zeqwg9hzp",
+                  "evidenceRefs": [
+                    "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+                    "mcp:audit:write-full-workflow",
+                    "codesite:document:cmr5li7ha004qpm0z6piq4wqm",
+                    "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+                    "codesite:inbox:cmr5li7hu004upm0zsajvsef8",
+                    "codesite:inbox:cmr5li93g0052pm0z56f6c378",
+                    "codesite:assumption:cmr5li1w60036pm0zwbdn7kax",
+                    "codesite:assumption:cmr5li3ao003mpm0zbkt0rzak",
+                    "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+                  ],
+                  "processAncestry": [
+                    "mcp:synthi_codesite_apply_patch",
+                    "codex:tmp-proof-session"
+                  ],
+                  "promptSummary": "Land schema-first full workflow proof",
+                  "dojoSourceRefs": [
+                    "dojo:proof:pcap-full-workflow-schema",
+                    "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+                    "full-workflow-checkride"
+                  ]
+                }
+              ]
+            }
+          },
+          "semanticDependencyRefs": [],
+          "lineProvenance": [
+            {
+              "filePath": "synthi/prisma/schema.prisma",
+              "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+              "startLine": 10,
+              "endLine": 15,
+              "reasonRef": "change_order:cmr5li92x004ypm0zeqwg9hzp",
+              "evidenceRefs": [
+                "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+                "mcp:audit:write-full-workflow",
+                "codesite:document:cmr5li7ha004qpm0z6piq4wqm",
+                "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+                "codesite:inbox:cmr5li7hu004upm0zsajvsef8",
+                "codesite:inbox:cmr5li93g0052pm0z56f6c378",
+                "codesite:assumption:cmr5li1w60036pm0zwbdn7kax",
+                "codesite:assumption:cmr5li3ao003mpm0zbkt0rzak",
+                "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+              ],
+              "processAncestry": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "dojoSourceRefs": [
+                "dojo:proof:pcap-full-workflow-schema",
+                "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+                "full-workflow-checkride"
+              ],
+              "promptSummary": "Land schema-first full workflow proof"
+            }
+          ],
+          "evidenceRefs": [
+            "mcp:audit:write-full-workflow",
+            "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+            "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+          ],
+          "processAncestry": [
+            "mcp:synthi_codesite_apply_patch",
+            "codex:tmp-proof-session"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5lidxn005mpm0zb9wqxk95",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "API-02",
+        "type": "assumption.invalidated",
+        "logicalTime": 51,
+        "wallTime": "2026-07-03T23:59:53.868Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "assumptionId": "cmr5li3ao003mpm0zbkt0rzak",
+          "assumptionKey": "api.signup.depends_on_schema.v1",
+          "invalidatedBy": "SCHEMA-01",
+          "path": "synthi/prisma/schema.prisma",
+          "semanticDependencyRefs": []
+        }
+      },
+      {
+        "eventId": "cmr5lidxr005opm0zzlpvbpbf",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": "cmr5li1840030pm0ziuph9b1r",
+        "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "write.allowed",
+        "logicalTime": 52,
+        "wallTime": "2026-07-03T23:59:53.872Z",
+        "zoneKey": "class_b",
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "mcp:audit:write-full-workflow",
+          "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+          "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+        ],
+        "details": {
+          "transactionId": "cmr5li1840030pm0ziuph9b1r",
+          "path": "synthi/prisma/schema.prisma",
+          "zone": {
+            "zoneKey": "class_b",
+            "label": "Shared contract airspace",
+            "class": "B",
+            "paths": [
+              "packages/schemas/**",
+              "openapi/**",
+              "packages/*/src/index.ts",
+              "synthi/prisma/**",
+              "backend/collab-server/permissionMiddleware.js"
+            ],
+            "rules": [
+              "flight_plan_required",
+              "downstream_notification_required",
+              "change_order_for_mutation"
+            ],
+            "risk": "high",
+            "source": "compiled_default",
+            "path": "synthi/prisma/schema.prisma"
+          },
+          "semanticDependencyRefs": [],
+          "invalidatedAssumptions": [
+            {
+              "id": "cmr5li3ao003mpm0zbkt0rzak",
+              "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+              "ownerSessionId": "cmr5lhu5s001gpm0zzwecixke",
+              "displayCallsign": "API-02",
+              "assumptionKey": "api.signup.depends_on_schema.v1",
+              "dependsOn": [
+                {
+                  "ref": "auth.signup.schema",
+                  "version": "v1",
+                  "path": "synthi/prisma/schema.prisma"
+                }
+              ],
+              "usedBy": [
+                "synthi/src/app/api/auth/signup.ts"
+              ],
+              "status": "invalidated",
+              "invalidatedBy": "SCHEMA-01",
+              "invalidatedAt": "2026-07-03T23:59:53.862Z",
+              "createdAt": "2026-07-03T23:59:40.081Z"
+            }
+          ],
+          "lineProvenance": [
+            {
+              "filePath": "synthi/prisma/schema.prisma",
+              "lineAnchor": "synthi/prisma/schema.prisma#L10-L15",
+              "startLine": 10,
+              "endLine": 15,
+              "reasonRef": "change_order:cmr5li92x004ypm0zeqwg9hzp",
+              "evidenceRefs": [
+                "hunk:sha256:808ec73ec6c5c02ba93b1e5dc380a534bc1ee00435ddc7a3769c7da1d13b3eb4",
+                "mcp:audit:write-full-workflow",
+                "codesite:document:cmr5li7ha004qpm0z6piq4wqm",
+                "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+                "codesite:inbox:cmr5li7hu004upm0zsajvsef8",
+                "codesite:inbox:cmr5li93g0052pm0z56f6c378",
+                "codesite:assumption:cmr5li1w60036pm0zwbdn7kax",
+                "codesite:assumption:cmr5li3ao003mpm0zbkt0rzak",
+                "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+              ],
+              "processAncestry": [
+                "mcp:synthi_codesite_apply_patch",
+                "codex:tmp-proof-session"
+              ],
+              "dojoSourceRefs": [
+                "dojo:proof:pcap-full-workflow-schema",
+                "dojo:decision:sha256:65e0f2715f0f2517b144752743e60200ef95559f38745d79b891183a91b8aba2",
+                "full-workflow-checkride"
+              ],
+              "promptSummary": "Land schema-first full workflow proof"
+            }
+          ],
+          "evidenceRefs": [
+            "mcp:audit:write-full-workflow",
+            "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+            "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0"
+          ],
+          "processAncestry": [
+            "mcp:synthi_codesite_apply_patch",
+            "codex:tmp-proof-session"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5liges0060pm0zivijddb6",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "inspection.requested",
+        "logicalTime": 55,
+        "wallTime": "2026-07-03T23:59:57.077Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "runtime:event:inspection-full-workflow"
+        ],
+        "details": {
+          "inspectionRunId": "cmr5liged005ypm0zxs56b0z7",
+          "status": "running",
+          "changedPaths": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "inspectionEvidenceRefs": [
+            "runtime:event:inspection-full-workflow"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5lihat0068pm0zozo63bve",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "SCHEMA-01",
+        "type": "inspection.requested",
+        "logicalTime": 58,
+        "wallTime": "2026-07-03T23:59:58.230Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:landing:passed-health-proof"
+        ],
+        "details": {
+          "inspectionRunId": "cmr5lihai0066pm0ztoa66xwm",
+          "status": "passed",
+          "changedPaths": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "inspectionEvidenceRefs": [
+            "codesite:landing:passed-health-proof"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5liijt006mpm0zupzpr9c9",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "CURRENT-04",
+        "type": "inspection.requested",
+        "logicalTime": 61,
+        "wallTime": "2026-07-03T23:59:59.850Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:landing:current-source-proof"
+        ],
+        "details": {
+          "inspectionRunId": "cmr5liijh006kpm0zl2dtvbhi",
+          "status": "passed",
+          "changedPaths": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "inspectionEvidenceRefs": [
+            "codesite:landing:current-source-proof"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5likou007apm0zvstyiqdw",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "VIOLATION-05",
+        "type": "transponder.update",
+        "logicalTime": 66,
+        "wallTime": "2026-07-04T00:00:02.622Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "status": "registered",
+          "provider": "codesite-proof-harness",
+          "runtime": "pilot-license-violation-proof",
+          "permissions": [
+            "synthi_codesite_request_landing"
+          ],
+          "instruction": "VIOLATION-05 registered with tower."
+        }
+      },
+      {
+        "eventId": "cmr5lil82007epm0zbm7spy9l",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "VIOLATION-05",
+        "type": "flight_plan.filed",
+        "logicalTime": 67,
+        "wallTime": "2026-07-04T00:00:03.314Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [],
+        "details": {
+          "executionPlanId": "cmr5lil7q007cpm0znb8ocqe5",
+          "mission": "Exercise failed landing health",
+          "route": [
+            "synthi/prisma/**"
+          ],
+          "blockedZones": []
+        }
+      },
+      {
+        "eventId": "cmr5lilrs007ipm0zkthcdt3r",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "VIOLATION-05",
+        "type": "inspection.requested",
+        "logicalTime": 68,
+        "wallTime": "2026-07-04T00:00:04.024Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "security:failed:violation-proof-1"
+        ],
+        "details": {
+          "inspectionRunId": "cmr5lilrg007gpm0z88g4j5r8",
+          "status": "failed",
+          "changedPaths": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "inspectionEvidenceRefs": [
+            "security:failed:violation-proof-1"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5limak007mpm0zt2spz6tj",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": "VIOLATION-05",
+        "type": "inspection.requested",
+        "logicalTime": 69,
+        "wallTime": "2026-07-04T00:00:04.700Z",
+        "zoneKey": null,
+        "path": "synthi/prisma/schema.prisma",
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "test:failed:violation-proof-2"
+        ],
+        "details": {
+          "inspectionRunId": "cmr5lima4007kpm0zem41a5ub",
+          "status": "failed",
+          "changedPaths": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "inspectionEvidenceRefs": [
+            "test:failed:violation-proof-2"
+          ]
+        }
+      },
+      {
+        "eventId": "cmr5limty007qpm0zictmb7g0",
+        "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+        "transactionId": null,
+        "mutationLeaseId": null,
+        "agentSessionId": null,
+        "displayCallsign": null,
+        "type": "mayday.declared",
+        "logicalTime": 70,
+        "wallTime": "2026-07-04T00:00:05.398Z",
+        "zoneKey": null,
+        "path": null,
+        "policyDecisionId": null,
+        "evidenceRefs": [
+          "codesite:incident:critical-violation-proof"
+        ],
+        "details": {
+          "incidentId": "cmr5limq6007opm0zuylre7k6",
+          "severity": "critical",
+          "category": "security",
+          "replayDigest": "sha256:8f51ebbd9c504f453a24c22287b61dc107d945555b8c491d82c49f049891f48a",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ]
+        }
+      }
+    ],
+    "evidenceRefs": [
+      "codesite:incident:critical-violation-proof",
+      "codesite:transaction:cmr5lhwil0028pm0zt2p1l5iz",
+      "codesite:lease:cmr5lhw270020pm0zv2swrhf0",
+      "codesite:transaction:cmr5lhy9y002kpm0zn6k7wy4l",
+      "codesite:read-snapshot:sha256:545c075d34947ce9367a49eb5b26254000227718482263869c03a1d46759c48e",
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:549417b45fe1d0cc65c480db03a66fbd3110e251258450c6711024245152c927",
+      "codesite:collision-forecast:sha256:02e7c15f3aa6bb941980dfae3d0931eb708a973181d24857131f6e83f6cdca84",
+      "codesite:incident:cmr5lhxg0002gpm0zp2wj3fei",
+      "codesite:incident:cmr5li0ns002wpm0zmfhjhvkd",
+      "codesite:shadow-runner:sha256:4b4fe567c851987b8739d5173c6d50c60676a72012edb3dc76539f43ae32d152",
+      "codesite:shadow-universe:schema-first:sha256:a4e407e56c4ac7babd408f8d4eb10de20965449ef1c43c1cf7142788238d0a3a",
+      "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:schema-first",
+      "codesite:shadow-command:schema-first:schema-typecheck:sha256:24464db17b2ca477931b7ffbd7685d8b52fea382ebc67823f960fe603853e7ee",
+      "codesite:shadow-command:schema-first:schema-contract-test:sha256:df5c676c2c49085a70ced81a5ae724e9354655bfd5130bb9f62f4cec50522f42",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:94b23169ef887e83784527564b5ab431eb18dbcb69200d500d28ef48b32faa10",
+      "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:05f829c84b51484dc4d912cb53a0b7e1b877c8b348cc1edbf11a1429ea8deb98",
+      "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:83524b407239bd94a824a48efa3e8a41bb8dc1cf1d3b9b90f133aa1a889d754e",
+      "codesite:shadow-runner:sha256:79836f7b373e838b651ead8ee3f3245d755c9750ea6ab1966e382fb20127edfa",
+      "codesite:shadow:full-workflow-counterfactual",
+      "codesite:policy-delta:cmr5li4px0046pm0z805i95yj",
+      "codesite:shadow-runner:sha256:286d59feefdf3e944f44bee7bf18977e5f878629956910b080641e10cbb34872",
+      "codesite:shadow-universe:schema-first:sha256:f5e30610b6fd188396c17ad598a71bcbb86736de72c2e95694116480016c981a",
+      "codesite:shadow-job:shadow:codesite-mature-full-proof-20260703-overlay8:learned-policy-memory",
+      "codesite:shadow-command:schema-first:schema-typecheck:sha256:908d8d7fe25b4a8fa380caae657404e5b5bc6a9b50720fec45d8d0d784c7c76e",
+      "codesite:shadow-command:schema-first:schema-contract-test:sha256:a045923a1754d67bcda439558dc16e7ec6978377c9d00515a34424626fd3bf40",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:1ad1619047c1471539c5fbc4fd37bc7ea396e68153ba5260af7af6438dac6409",
+      "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:c51138046f78ed9003328c8c958c36b9f1c601d08bb6d9c777c04bff77d9c056",
+      "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:8886a32346d8e353bd927884915c450899d186a5d952f8003f845f4c30883ee0",
+      "codesite:shadow-runner:sha256:65a81064b8d3961dceb864c9b9e29e8ff21be2a23fe4b1943e9d5559e601e98a",
+      "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+      "mcp:audit:write-full-workflow",
+      "codesite:document:cmr5li92x004ypm0zeqwg9hzp",
+      "codesite:counterfactual-run:cmr5li4po0044pm0z7po9wzj0",
+      "runtime:event:inspection-full-workflow",
+      "codesite:landing:passed-health-proof",
+      "codesite:landing:current-source-proof",
+      "security:failed:violation-proof-1",
+      "test:failed:violation-proof-2"
+    ],
+    "routeContext": {
+      "affectedZones": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "zones": [
+        {
+          "zoneKey": "class_a",
+          "class": "A",
+          "label": "Critical controlled airspace",
+          "paths": [
+            "api/auth/**",
+            "billing/**",
+            "db/migrations/**",
+            "infra/prod/**",
+            "infra/production/**",
+            "**/.env",
+            "**/.env.*"
+          ],
+          "risk": "critical",
+          "rules": [
+            "explicit_tower_clearance_required",
+            "licensed_pilot_required",
+            "inspector_signoff_required",
+            "black_box_required"
+          ]
+        },
+        {
+          "zoneKey": "class_b",
+          "class": "B",
+          "label": "Shared contract airspace",
+          "paths": [
+            "packages/schemas/**",
+            "openapi/**",
+            "packages/*/src/index.ts",
+            "synthi/prisma/**",
+            "backend/collab-server/permissionMiddleware.js"
+          ],
+          "risk": "high",
+          "rules": [
+            "flight_plan_required",
+            "downstream_notification_required",
+            "change_order_for_mutation"
+          ]
+        },
+        {
+          "zoneKey": "class_c",
+          "class": "C",
+          "label": "Feature implementation airspace",
+          "paths": [
+            "apps/web/**",
+            "components/**",
+            "synthi/src/app/**",
+            "synthi/src/components/**",
+            "backend/collab-server/**"
+          ],
+          "risk": "medium",
+          "rules": [
+            "auto_clearance_allowed",
+            "landing_inspection_required"
+          ]
+        },
+        {
+          "zoneKey": "class_d",
+          "class": "D",
+          "label": "Low-risk support airspace",
+          "paths": [
+            "docs/**",
+            "tests/**",
+            "**/__tests__/**",
+            "**/*.test.js",
+            "**/*.test.jsx",
+            "**/*.test.ts",
+            "**/*.test.tsx",
+            "**/*.md"
+          ],
+          "risk": "low",
+          "rules": [
+            "micro_clearance_allowed",
+            "sample_inspection"
+          ]
+        },
+        {
+          "zoneKey": "schema",
+          "class": "B",
+          "label": "Schema runway",
+          "paths": [
+            "synthi/prisma/**"
+          ],
+          "risk": "high",
+          "rules": []
+        }
+      ],
+      "noFlyZones": [
+        "**/.env",
+        "**/.env.*",
+        "secrets/**",
+        "**/*secret*",
+        "**/*.pem",
+        "**/*.key"
+      ]
+    },
+    "participants": [
+      "VIOLATION-05"
+    ],
+    "affectedZones": [
+      "synthi/prisma/schema.prisma"
+    ],
+    "policyDelta": null,
+    "completeness": {
+      "score": 0.36,
+      "requiredEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.attempted",
+        "write.denied",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "inspection.result",
+        "near_miss.detected",
+        "policy_delta.proposed",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "presentEventTypes": [
+        "write.attempted",
+        "snapshot.taken",
+        "shadow.run",
+        "arbiter.verdict",
+        "policy_delta.proposed"
+      ],
+      "missingEventTypes": [
+        "transaction.opened",
+        "assumption.recorded",
+        "clearance.issued",
+        "read.observed",
+        "write.denied",
+        "inspection.result",
+        "near_miss.detected",
+        "transaction.committed",
+        "transaction.aborted"
+      ],
+      "observedEventTypes": [
+        "black_box.closed",
+        "transponder.update",
+        "snapshot.taken",
+        "policy_delta.proposed",
+        "shadow.run",
+        "arbiter.verdict",
+        "write.attempted",
+        "write.quarantined",
+        "assumption.invalidated",
+        "write.allowed",
+        "inspection.requested",
+        "flight_plan.filed",
+        "mayday.declared"
+      ],
+      "totalEvents": 26
+    }
+  },
+  "replayDigest": "sha256:426f91e75a89977d184e82ccdf37d12abf585028615d6ca774a941ceb47c9544",
+  "timelineEventRefs": [
+    "cmr5lhxgc002ipm0zub312q64",
+    "cmr5lhzaf002qpm0z4deajtkr",
+    "cmr5li0o0002ypm0zgj3mulh0",
+    "cmr5li2s9003kpm0zf8amuwcs",
+    "cmr5li47i003upm0zta14lv8a",
+    "cmr5li4800040pm0ziw3oqklw",
+    "cmr5li4850042pm0za1ni1jy2",
+    "cmr5li4q10048pm0zgugonbbt",
+    "cmr5li4q5004apm0z65n9l344",
+    "cmr5li4q9004cpm0zhhgmv4zp",
+    "cmr5li6qn004kpm0z7t16gg9k",
+    "cmr5li6qt004mpm0zl6caykuz",
+    "cmr5li6qz004opm0zx5oippay",
+    "cmr5lictq005epm0z1ui3zk4c",
+    "cmr5licty005ipm0zsuan1dmd",
+    "cmr5lidx7005kpm0z8eje4dch",
+    "cmr5lidxn005mpm0zb9wqxk95",
+    "cmr5lidxr005opm0zzlpvbpbf",
+    "cmr5liges0060pm0zivijddb6",
+    "cmr5lihat0068pm0zozo63bve",
+    "cmr5liijt006mpm0zupzpr9c9",
+    "cmr5likou007apm0zvstyiqdw",
+    "cmr5lil82007epm0zbm7spy9l",
+    "cmr5lilrs007ipm0zkthcdt3r",
+    "cmr5limak007mpm0zt2spz6tj",
+    "cmr5limty007qpm0zictmb7g0"
+  ],
+  "policyDelta": null,
+  "evidenceRefs": [
+    "codesite:incident:critical-violation-proof"
+  ],
+  "createdAt": "2026-07-04T00:00:05.263Z"
+}

@@ -82,6 +82,360 @@ describe("CodeSite MCP tool surface", () => {
     }));
   });
 
+  it("maps CodeSite project, agent session, member, policy setup, and manifest lifecycle routes", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({ projects: [{ id: "project-1" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ project: { id: "project-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ project: { id: "project-1", zonePolicy: {} } }))
+      .mockResolvedValueOnce(mockJsonResponse({ project: { id: "project-1", controlPlan: {} } }))
+      .mockResolvedValueOnce(mockJsonResponse({ agentSession: { id: "agent-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ members: [{ id: "member-1" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ member: { id: "member-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ member: { id: "member-1", status: "revoked" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ mcp_tools: ["synthi_codesite_file_flight_plan"] }))
+      .mockResolvedValueOnce(mockJsonResponse({ schemas: {} }));
+
+    await dispatchCodeSiteTool("synthi_codesite_list_projects", { workspace_slug: "acme", base_url: "http://localhost:3100/" });
+    await dispatchCodeSiteTool("synthi_codesite_create_project", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      title: "Checkout hardening",
+      request: "Coordinate schema, API, and QA agents",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_update_zone_policy", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      zonePolicy: { restrictedAirspace: ["synthi/prisma/**"] },
+    });
+    await dispatchCodeSiteTool("synthi_codesite_update_control_plan", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      controlPlan: { towerMode: "strict" },
+    });
+    await dispatchCodeSiteTool("synthi_codesite_register_agent_session", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      providerSessionRef: "codex-SCHEMA-01",
+      displayCallsign: "SCHEMA-01",
+      permissions: ["file_flight_plan", "request_clearance"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_list_project_members", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_upsert_project_member", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      userId: "user-agent",
+      role: "agent",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_revoke_project_member", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      member_id: "member-1",
+      reason: "session complete",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_get_agent_manifest", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_get_schemas", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, new URL("http://localhost:3100/api/workspace/acme/codesite/projects"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(2, new URL("http://localhost:3100/api/workspace/acme/codesite/projects"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ title: "Checkout hardening", request: "Coordinate schema, API, and QA agents" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(3, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/zone-policy"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ zonePolicy: { restrictedAirspace: ["synthi/prisma/**"] } }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(4, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/control-plan"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ controlPlan: { towerMode: "strict" } }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(5, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/agent-sessions"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        providerSessionRef: "codex-SCHEMA-01",
+        displayCallsign: "SCHEMA-01",
+        permissions: ["file_flight_plan", "request_clearance"],
+      }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(6, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/members"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(7, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/members"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ userId: "user-agent", role: "agent" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(8, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/members/member-1/revoke"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ reason: "session complete" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(9, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/agent-manifest"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(10, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/schemas"), expect.objectContaining({ method: "GET" }));
+  });
+
+  it("maps CodeSite governance permits, document reviews, and route revision workflows", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({ permits: [{ id: "permit-1" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ permit: { id: "permit-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ review: { id: "review-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ routeRevisions: [{ id: "rr-1" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ routeRevision: { id: "rr-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ routeRevision: { id: "rr-1", status: "approved" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ routeRevision: { id: "rr-1", status: "applied" } }));
+
+    await dispatchCodeSiteTool("synthi_codesite_list_permits", { workspace_slug: "acme", base_url: "http://localhost:3100/", project_id: "project-1" });
+    await dispatchCodeSiteTool("synthi_codesite_issue_permit", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      executionPlanId: "plan-1",
+      permitType: "restricted_route",
+      scope: { routes: ["synthi/prisma/**"] },
+      evidenceRefs: ["permit:evidence"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_review_document", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      document_id: "doc-1",
+      decision: "approved",
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+      evidenceRefs: ["review:evidence"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_list_route_revisions", { workspace_slug: "acme", base_url: "http://localhost:3100/", project_id: "project-1" });
+    await dispatchCodeSiteTool("synthi_codesite_propose_route_revision", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      execution_plan_id: "plan-1",
+      proposedRoute: ["synthi/src/**"],
+      reason: "handoff to API agent",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_review_route_revision", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      route_revision_id: "rr-1",
+      decision: "approved",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_apply_route_revision", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      route_revision_id: "rr-1",
+      appliedBy: "tower",
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/permits"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(2, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/permits"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        executionPlanId: "plan-1",
+        permitType: "restricted_route",
+        scope: { routes: ["synthi/prisma/**"] },
+        evidenceRefs: ["permit:evidence"],
+      }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(3, new URL("http://localhost:3100/api/workspace/acme/codesite/documents/doc-1/reviews"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        decision: "approved",
+        reviewTimeMs: 90_000,
+        baselineReviewTimeMs: 300_000,
+        evidenceRefs: ["review:evidence"],
+      }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(4, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/route-revisions"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(5, new URL("http://localhost:3100/api/workspace/acme/codesite/execution-plans/plan-1/route-revisions"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ proposedRoute: ["synthi/src/**"], reason: "handoff to API agent" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(6, new URL("http://localhost:3100/api/workspace/acme/codesite/route-revisions/rr-1/review"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ decision: "approved" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(7, new URL("http://localhost:3100/api/workspace/acme/codesite/route-revisions/rr-1/apply"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ appliedBy: "tower" }),
+    }));
+  });
+
+  it("maps CodeSite mayday, policy delta, proof bundle, landing, active-state, and artifact operator routes", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({ active: true }))
+      .mockResolvedValueOnce(mockJsonResponse({ activeTransactions: [{ id: "txn-1" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ mutationLease: { id: "lease-1", status: "revoked" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ policyDecision: { id: "decision-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ transaction: { id: "txn-1", status: "aborted" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ incident: { id: "incident-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ incidentReplay: { incidentId: "incident-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ incident: { id: "incident-1", status: "resolved" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ policyDelta: { id: "delta-1", promotionState: "proposed" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ policyDelta: { id: "delta-1", promotionState: "active" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ policyDelta: { id: "delta-2", promotionState: "rejected" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ inspectionRun: { id: "landing-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ inspectionRun: { id: "landing-1", status: "passed" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ artifacts: [{ path: "codesite/manifest.json" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ proofBundle: { id: "bundle-1" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ proofBundle: { id: "bundle-1", commitSha: "abc1234" } }));
+
+    await dispatchCodeSiteTool("synthi_codesite_get_active_state", { workspace_slug: "acme", base_url: "http://localhost:3100/" });
+    await dispatchCodeSiteTool("synthi_codesite_list_active_transactions", { workspace_slug: "acme", base_url: "http://localhost:3100/" });
+    await dispatchCodeSiteTool("synthi_codesite_revoke_clearance", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      mutation_lease_id: "lease-1",
+      reason: "operator takeover",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_record_policy_decision", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      mutation_lease_id: "lease-1",
+      decision: "hold",
+      reasonCodes: ["operator_hold"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_abort_transaction", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      transaction_id: "txn-1",
+      reason: "stale base",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_declare_mayday", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      severity: "critical",
+      summary: "Production migration drift",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_get_incident_replay", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      incident_id: "incident-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_resume_mayday", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      incident_id: "incident-1",
+      resolution: "Rollback verified",
+      replayRefs: ["replay:1"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_file_policy_delta", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      learnedFromIncidents: ["incident-1"],
+      ruleCandidate: { reasonCode: "schema_first_required" },
+    });
+    await dispatchCodeSiteTool("synthi_codesite_promote_policy_delta", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      policy_delta_id: "delta-1",
+      validationStatus: "passed",
+      replayRefs: ["replay:1"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_reject_policy_delta", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      policy_delta_id: "delta-2",
+      reason: "too broad",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_request_landing", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      executionPlanId: "plan-1",
+      changedPaths: ["synthi/src/**"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_complete_landing", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      inspection_run_id: "landing-1",
+      status: "passed",
+      evidenceRefs: ["ci:green"],
+    });
+    await dispatchCodeSiteTool("synthi_codesite_preview_artifacts", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      include: "content",
+      max_content_bytes: 4096,
+    });
+    await dispatchCodeSiteTool("synthi_codesite_get_proof_bundle", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      bundle_id: "bundle-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_attach_proof_bundle_commit", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      bundle_id: "bundle-1",
+      commitSha: "abc1234",
+      trailers: { "CodeSite-Proof": "bundle-1" },
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, new URL("http://localhost:3100/api/workspace/acme/codesite/active-state"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(2, new URL("http://localhost:3100/api/workspace/acme/codesite/transactions/active"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(3, new URL("http://localhost:3100/api/workspace/acme/codesite/mutation-leases/lease-1/revoke"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ reason: "operator takeover" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(4, new URL("http://localhost:3100/api/workspace/acme/codesite/mutation-leases/lease-1/policy-decisions"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ decision: "hold", reasonCodes: ["operator_hold"] }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(5, new URL("http://localhost:3100/api/workspace/acme/codesite/transactions/txn-1/abort"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ reason: "stale base" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(6, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/incidents"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ severity: "critical", summary: "Production migration drift", category: "mayday" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(7, new URL("http://localhost:3100/api/workspace/acme/codesite/incidents/incident-1/replay"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(8, new URL("http://localhost:3100/api/workspace/acme/codesite/incidents/incident-1/resume"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ resolution: "Rollback verified", replayRefs: ["replay:1"] }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(9, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/policy-deltas"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ learnedFromIncidents: ["incident-1"], ruleCandidate: { reasonCode: "schema_first_required" } }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(10, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/policy-deltas/delta-1/promote"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ validationStatus: "passed", replayRefs: ["replay:1"] }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(11, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/policy-deltas/delta-2/reject"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ reason: "too broad" }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(12, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/inspection-runs"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ executionPlanId: "plan-1", changedPaths: ["synthi/src/**"] }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(13, new URL("http://localhost:3100/api/workspace/acme/codesite/inspection-runs/landing-1/complete"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ status: "passed", evidenceRefs: ["ci:green"] }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(14, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/artifacts/preview?include=content&maxContentBytes=4096"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(15, new URL("http://localhost:3100/api/workspace/acme/codesite/proof-bundles/bundle-1"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(16, new URL("http://localhost:3100/api/workspace/acme/codesite/proof-bundles/bundle-1/commit"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ commitSha: "abc1234", trailers: { "CodeSite-Proof": "bundle-1" } }),
+    }));
+  });
+
   it("records write paths with product-language arguments", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
       ok: true,
@@ -277,6 +631,117 @@ describe("CodeSite MCP tool surface", () => {
       new URL("http://localhost:3100/api/workspace/acme/codesite/provenance/line?projectId=proj-1&filePath=api%2Fcheckout%2Froute.js&lineNumber=42"),
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("reviews quarantine manifests through the CodeSite control-plane facade", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({
+      quarantines: [{ quarantineId: "qtn-1", status: "reviewable" }],
+    }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_review_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      transaction_id: "txn-1",
+      status: "reviewable",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://localhost:3100/api/workspace/acme/codesite/quarantines?transactionId=txn-1&status=reviewable"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tool: "synthi_codesite_review_quarantine",
+      response: expect.objectContaining({
+        quarantines: [expect.objectContaining({ quarantineId: "qtn-1" })],
+      }),
+    }));
+  });
+
+  it("replays and applies selected quarantine paths through the CodeSite API surface", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({
+        ok: true,
+        replay: [{ path: "docs/review.md" }],
+        rejected: [],
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        ok: true,
+        applied: [{ path: "docs/review.md" }],
+      }));
+
+    const replay = await dispatchCodeSiteTool("synthi_codesite_replay_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      quarantine_id: "qtn-1",
+      transaction_id: "txn-1",
+      mutation_lease_id: "lease-1",
+      user_id: "agent-user",
+      filesystem_user_id: "runtime-user",
+      runtime_scope: "terminal",
+      selected_paths: ["docs/review.md"],
+    });
+    const apply = await dispatchCodeSiteTool("synthi_codesite_apply_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      quarantine_id: "qtn-1",
+      transaction_id: "txn-1",
+      mutation_lease_id: "lease-1",
+      user_id: "agent-user",
+      filesystem_user_id: "runtime-user",
+      runtime_scope: "terminal",
+      selected_paths: ["docs/review.md"],
+    });
+
+    expect(replay?.isError).toBeUndefined();
+    expect(apply?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/quarantines/qtn-1/replay"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          transactionId: "txn-1",
+          paths: ["docs/review.md"],
+          mutationLeaseId: "lease-1",
+          userId: "agent-user",
+          filesystemUserId: "runtime-user",
+          runtimeScope: "terminal",
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/quarantines/qtn-1/apply"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          transactionId: "txn-1",
+          paths: ["docs/review.md"],
+          mutationLeaseId: "lease-1",
+          userId: "agent-user",
+          filesystemUserId: "runtime-user",
+          runtimeScope: "terminal",
+        }),
+      }),
+    );
+  });
+
+  it("fails quarantine replay before fetch when no selected paths are provided", async () => {
+    const replay = await dispatchCodeSiteTool("synthi_codesite_replay_quarantine", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      quarantine_id: "qtn-1",
+      transaction_id: "txn-1",
+    });
+
+    expect(replay?.isError).toBe(true);
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "missing_selected_paths",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("maps RFI and mayday tools to structured document and incident routes", async () => {

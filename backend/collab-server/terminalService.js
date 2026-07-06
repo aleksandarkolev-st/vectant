@@ -39,11 +39,13 @@ const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
-const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode } = require('./terminalRouting');
+const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('./terminalRouting');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
+const { guardCodeSiteHostSurface } = require('./codesiteActiveBoundary');
 const {
   codeSiteContextFromRequest,
+  createCodeSiteOverlayWorkspace,
   createCodeSiteQuarantineWorkspace,
   codeSiteRuntimeEnv,
   codeSiteRuntimeMetadata,
@@ -1447,6 +1449,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     filesystemUserId,
     runtimeScope,
     reason: 'headless_terminal',
+    codesiteContext: codeSiteContext,
   });
   let cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
   const originalCwd = cwd;
@@ -1576,7 +1579,12 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   return { ptyProcess, shell, cwd, sessionId };
 }
 
-function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = null, flushWorkspaceDocsToDisk = null } = {}) {
+function createTerminalWSS({
+  enableContainerRuntime = false,
+  enableCodeSiteDockerRuntime = false,
+  workspaceRuntime = null,
+  flushWorkspaceDocsToDisk = null,
+} = {}) {
   // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
   // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
   const wss = new WebSocket.Server({
@@ -1622,6 +1630,28 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     const codeSiteEnv = codeSiteRuntimeEnv(codeSiteContext, {
       processAncestry: ['collab-server', 'terminal-ws'],
     });
+    try {
+      guardCodeSiteHostSurface({
+        workspaceSlug,
+        context: codeSiteContext,
+        surface: 'terminal-ws',
+        operation: {
+          operation: 'terminal-ws',
+          tool: 'raw_terminal',
+          attempts: [{ path: '**', tool: 'raw_terminal' }],
+        },
+      });
+    } catch (err) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: err.code || 'codesite_terminal_workspace_active',
+        message: err.message,
+        event: err.event || null,
+        codesite: codeSiteMetadata,
+      }));
+      ws.close(1008, 'CodeSite terminal workspace active');
+      return;
+    }
     if (codeSiteContext?.managedAgent && !codeSiteContext.transactionId) {
       ws.send(JSON.stringify({
         type: 'error',
@@ -1636,6 +1666,18 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
     if (existingSession && existingSession.pty) {
+      const reattachDecision = codeSiteTerminalReattachDecision({ codeSiteContext, existingSession });
+      if (!reattachDecision.ok) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: reattachDecision.code,
+          reason: reattachDecision.reason,
+          message: reattachDecision.message,
+          codesite: codeSiteMetadata,
+        }));
+        ws.close(1008, 'CodeSite terminal reattach denied');
+        return;
+      }
       const sessionId = requestedSessionId;
       const { pty: ptyProcess, shell, cwd } = existingSession;
       const outputBuffer = Array.isArray(existingSession.outputBuffer) ? existingSession.outputBuffer : [];
@@ -1796,6 +1838,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
         filesystemUserId: requestedFilesystemUserId,
         runtimeScope,
         reason: 'interactive_terminal',
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
       cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
     } catch (err) {
@@ -1828,31 +1871,32 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     const launchMode = codeSiteTerminalLaunchMode({
       codeSiteContext,
       usesRuntimePodTerminal: shouldUseRuntimePodTerminal(runtimeScope),
-      enableContainerRuntime,
+      enableContainerRuntime: enableContainerRuntime || enableCodeSiteDockerRuntime,
       workspaceRuntime,
       workspaceSlug,
     });
-    if (launchMode === 'block-runtime') {
+    if (launchMode === 'block-runtime' || launchMode === 'block-host') {
       ws.send(JSON.stringify({
         type: 'error',
         code: 'codesite_terminal_quarantine_unavailable',
-        message: 'CodeSite terminal blocked: this runtime terminal cannot mount a transaction quarantine workspace yet.',
+        message: launchMode === 'block-host'
+          ? 'CodeSite terminal blocked: host shells cannot provide a syscall-level transaction boundary. Enable the Docker overlay runtime.'
+          : 'CodeSite terminal blocked: this runtime terminal cannot mount a transaction overlay workspace yet.',
         codesite: codeSiteMetadata,
       }));
       ws.close(1008, 'CodeSite terminal quarantine unavailable');
       return;
     }
-    if (launchMode === 'quarantine' || launchMode === 'quarantine-runtime') {
+    if (launchMode === 'overlay-runtime') {
       try {
-        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+        codeSiteQuarantine = await createCodeSiteOverlayWorkspace(codeSiteContext, cwd, {
           operation: 'terminal-ws',
-          ...(launchMode === 'quarantine-runtime' ? { baseDir: codeSiteTerminalQuarantineBaseDir(cwd) } : {}),
+          baseDir: codeSiteTerminalQuarantineBaseDir(cwd),
         });
-        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
       } catch (err) {
-        console.error(`[Terminal] Failed to prepare CodeSite quarantine for session ${sessionId}:`, err.message);
-        ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare CodeSite quarantine: ' + err.message }));
-        ws.close(1011, 'CodeSite quarantine preparation failed');
+        console.error(`[Terminal] Failed to prepare CodeSite overlay for session ${sessionId}:`, err.message);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare CodeSite overlay: ' + err.message }));
+        ws.close(1011, 'CodeSite overlay preparation failed');
         return;
       }
     }
@@ -1870,19 +1914,32 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
     let ptyProcess, shell;
     let runtimeLaunch = null;
     let containerRuntimeOptions = null;
-    if (shouldUseContainerTerminal({ enableContainerRuntime, workspaceRuntime, workspaceSlug })) {
+    const shouldLaunchContainerTerminal = shouldUseContainerTerminal({
+      enableContainerRuntime,
+      workspaceRuntime,
+      workspaceSlug,
+    }) || Boolean(codeSiteQuarantine && workspaceRuntime && workspaceSlug);
+    if (shouldLaunchContainerTerminal) {
       const runtimeOptions = codeSiteQuarantine
         ? {
             codesiteContext: codeSiteContext,
-            codeSiteQuarantineRoot: codeSiteQuarantine.root,
-            codeSiteQuarantineId: codeSiteQuarantine.root,
+            codeSiteBaseRoot: codeSiteQuarantine.baseRoot || codeSiteQuarantine.originalCwd,
+            codeSiteOverlayRoot: codeSiteQuarantine.root,
+            codeSiteOverlayUpperRoot: codeSiteQuarantine.upperRoot,
+            codeSiteOverlayWorkRoot: codeSiteQuarantine.workRoot,
+            codeSiteOverlayId: codeSiteQuarantine.overlayId || codeSiteQuarantine.quarantineId,
           }
         : {};
       containerRuntimeOptions = runtimeOptions;
       try {
         ws.send(JSON.stringify({ type: 'status', message: 'starting runtime…' }));
         await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, requestedUserId, runtimeOptions);
-        await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId, runtimeOptions);
+        const ready = await workspaceRuntime.waitForRuntimeReady(workspaceSlug, requestedUserId, runtimeOptions);
+        if (!ready) {
+          const error = new Error('codesite_runtime_overlay_unavailable');
+          error.code = 'CODESITE_RUNTIME_OVERLAY_UNAVAILABLE';
+          throw error;
+        }
         const handle = await workspaceRuntime.execInteractiveShell(workspaceSlug, requestedUserId, {
           cols: initialCols,
           rows: initialRows,
@@ -1957,7 +2014,7 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
       workspaceRuntime: containerRuntimeOptions ? workspaceRuntime : null,
       runtimeOptions: containerRuntimeOptions,
       runtimeUserId: requestedUserId,
-      runtimeTeardownOnDispose: Boolean(containerRuntimeOptions?.codeSiteQuarantineRoot),
+      runtimeTeardownOnDispose: Boolean(containerRuntimeOptions?.codeSiteOverlayId || containerRuntimeOptions?.codeSiteQuarantineRoot),
       codesite: codeSiteMetadata,
       codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       codesiteQuarantine: codeSiteQuarantine || null,
