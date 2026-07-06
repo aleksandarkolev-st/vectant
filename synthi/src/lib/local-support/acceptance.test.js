@@ -4,6 +4,7 @@ import {
   RED_TEAM_SCENARIOS,
   RELEASE_BLOCKER_CATEGORIES,
   RELEASE_BLOCKERS,
+  UX_ACCEPTANCE_PROMPTS,
   summarizeLocalSupportReleaseReadiness,
 } from "./acceptance";
 import { readLocalSupportPolicy, validateRequestEnvelope } from "./controlPlane";
@@ -85,6 +86,22 @@ const REQUIRED_RED_TEAM_SCENARIOS = [
   "endpoint_fuzzing",
   "websocket_abuse",
   "confused_deputy_approval_flow",
+];
+
+const REQUIRED_UX_PROMPTS = [
+  "connected_workspace",
+  "sent_payloads",
+  "blocked_items",
+  "env_sent",
+  "approved_ports",
+  "ai_preview_read",
+  "support_preview_read",
+  "pause_control",
+  "disconnect_control",
+  "redactions",
+  "fast_support_auto",
+  "revoke_port",
+  "delete_history",
 ];
 
 function ids(items) {
@@ -174,6 +191,17 @@ describe("local support release acceptance evidence", () => {
     for (const scenario of RED_TEAM_SCENARIOS) {
       expect(scenario.status).toBe("covered");
       expect(scenario.evidence).toMatch(/\S/);
+    }
+  });
+
+  it("tracks every UX acceptance prompt from the plan", () => {
+    const promptIds = ids(UX_ACCEPTANCE_PROMPTS);
+    for (const requiredId of REQUIRED_UX_PROMPTS) {
+      expect(promptIds.has(requiredId), requiredId).toBe(true);
+    }
+    for (const prompt of UX_ACCEPTANCE_PROMPTS) {
+      expect(prompt.question).toMatch(/\?$/);
+      expect(prompt.answerEvidence).toMatch(/\S/);
     }
   });
 });

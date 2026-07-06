@@ -63,6 +63,9 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Red-team scenarios")).toBeVisible();
     await expect(page.getByText("Malicious website localhost attack")).toBeVisible();
     await expect(page.getByText("Confused-deputy approval flow")).toBeVisible();
+    await expect(page.getByText("UX acceptance prompts")).toBeVisible();
+    await expect(page.getByText("What workspace is connected?")).toBeVisible();
+    await expect(page.getByText("How do you delete local activity history?")).toBeVisible();
   });
 
   test("exports scrubbed history and deletes local activity", async ({ page }) => {

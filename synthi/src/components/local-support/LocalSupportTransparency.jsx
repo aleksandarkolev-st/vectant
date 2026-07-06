@@ -29,6 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   RED_TEAM_SCENARIOS,
   RELEASE_BLOCKERS,
+  UX_ACCEPTANCE_PROMPTS,
   summarizeLocalSupportReleaseReadiness,
 } from "@/lib/local-support/acceptance";
 import { cn } from "@/lib/utils";
@@ -815,6 +816,17 @@ Error: module failed to resolve`}
                         <Pill tone="good">Covered</Pill>
                       </div>
                       <div className="mt-1 font-mono text-[11px] text-zinc-500">{scenario.evidence}</div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+
+              <Panel title="UX acceptance prompts" description="Test users must answer these after onboarding. More than 10 percent failure blocks public beta.">
+                <div className="space-y-2">
+                  {UX_ACCEPTANCE_PROMPTS.map((prompt) => (
+                    <div key={prompt.id} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                      <div className="text-sm font-medium text-zinc-200">{prompt.question}</div>
+                      <div className="mt-1 text-xs leading-5 text-zinc-500">{prompt.answerEvidence}</div>
                     </div>
                   ))}
                 </div>

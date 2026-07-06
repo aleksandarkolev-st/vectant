@@ -424,6 +424,26 @@ export const RED_TEAM_SCENARIOS = [
   evidence,
 }));
 
+export const UX_ACCEPTANCE_PROMPTS = [
+  ["connected_workspace", "What workspace is connected?", "Header and Session boundary show vectant-demo and the canonical local path."],
+  ["sent_payloads", "What has Vectant seen?", "Sent payload history lists package.json and dev-server.log with actor, reason, bytes, and time."],
+  ["blocked_items", "What was blocked?", "Blocked tab lists .env, SSH key escape, and metadata-IP preview redirect with zero bytes sent."],
+  ["env_sent", "Was .env sent?", ".env is marked Blocked locally and blocked history records zero bytes sent."],
+  ["approved_ports", "Which ports are approved?", "Local ports tab shows 127.0.0.1:5173 and its preview host."],
+  ["ai_preview_read", "Can Vectant AI read the preview page?", "Capability flags and organization restrictions show AI page reading off."],
+  ["support_preview_read", "Can support staff read the preview page?", "Capability flags show support agent page reading off."],
+  ["pause_control", "How do you pause?", "Sticky header exposes Pause and changes session state to Paused."],
+  ["disconnect_control", "How do you disconnect?", "Sticky header exposes Disconnect and the permission tab includes Disconnect and revoke."],
+  ["redactions", "What was redacted?", "Review-before-send and activity log show authorization_header and database_url redactions."],
+  ["fast_support_auto", "What will happen automatically?", "Permission mode shows Balanced sends low-risk metadata only and Fast Support is disabled."],
+  ["revoke_port", "How do you revoke a port?", "Local ports tab exposes Revoke port approval and invalidates the token."],
+  ["delete_history", "How do you delete local activity history?", "Activity tab exposes Delete local history and scrubbed export."],
+].map(([id, question, answerEvidence]) => ({
+  id,
+  question,
+  answerEvidence,
+}));
+
 export function summarizeLocalSupportReleaseReadiness(blockers = RELEASE_BLOCKERS) {
   const byCategory = Object.fromEntries(RELEASE_BLOCKER_CATEGORIES.map((category) => [category, 0]));
   const byStatus = {};
