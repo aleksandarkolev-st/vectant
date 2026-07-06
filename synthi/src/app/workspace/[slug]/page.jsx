@@ -3424,9 +3424,8 @@ export default function EditorPage({ params }) {
     return (
         <DockablePanelProvider workspaceId={slug}>
             <div
-                className={cn('workspace-root vt-app-surface relative flex h-[100dvh] flex-col overflow-hidden', viewportClass)}
+                className={cn('workspace-root vt-workbench-shell relative flex h-[100dvh] flex-col overflow-hidden', viewportClass)}
                 style={{
-                    background: 'var(--bg-sidebar)',
                     color: 'var(--text-primary)',
                     '--workspace-statusbar-terminal-clearance': 'clamp(160px, 24vh, 260px)',
                 }}

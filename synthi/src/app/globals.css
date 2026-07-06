@@ -137,6 +137,19 @@
   --radius: 0.5rem;
   --radius-control: 7px;
   --radius-panel: 10px;
+  --radius-workbench: 12px;
+  --vt-chrome-height: 40px;
+  --vt-row-height: 28px;
+  --vt-bezel:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 24%, transparent);
+  --vt-row-hover: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --vt-row-selected:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 14%, transparent), transparent 72%),
+    color-mix(in srgb, var(--bg-elevated) 54%, transparent);
+  --vt-command-shadow:
+    0 22px 70px -44px rgba(0, 0, 0, 0.96),
+    inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
   --motion-fast: 160ms cubic-bezier(0.32, 0.72, 0, 1);
   --motion-mid: 220ms cubic-bezier(0.32, 0.72, 0, 1);
   --motion-slow: 420ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -1169,6 +1182,279 @@
 
 @keyframes vt-skeleton-sweep {
   to { transform: translateX(100%); }
+}
+
+/* ===== Vectant Workbench System =====
+   Product UI primitives shared by the authenticated IDE, proof routes,
+   dialogs, and tool panels. These keep the workspace closer to Cursor /
+   Linear density: calm chrome, clear state, and brand color only where the
+   user is making or reviewing work. */
+.vt-workbench-shell {
+  position: relative;
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--brand-stop-3) 9%, transparent), transparent 34rem),
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--brand-stop-4) 7%, transparent), transparent 30rem),
+    linear-gradient(180deg, var(--bg-app), color-mix(in srgb, var(--bg-editor) 78%, black 22%));
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+.vt-workbench-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, white 2.5%, transparent) 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, white 2%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+  opacity: 0.13;
+  mask-image: linear-gradient(180deg, black, transparent 72%);
+}
+
+.vt-workbench-chrome {
+  min-height: var(--vt-chrome-height);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, white 5%), color-mix(in srgb, var(--bg-app) 86%, black 14%));
+  border-color: color-mix(in srgb, var(--border-subtle) 86%, transparent);
+  box-shadow: var(--vt-bezel);
+}
+
+.vt-panel-frame {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 90%, white 3%), color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-app) 28%));
+  border-color: color-mix(in srgb, var(--border-subtle) 88%, transparent);
+  box-shadow: var(--vt-bezel);
+}
+
+.vt-panel-frame[data-panel-kind="editor"] {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 94%, white 3%), color-mix(in srgb, var(--bg-editor) 82%, black 18%));
+}
+
+.vt-panel-header {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 86%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 42%, transparent), transparent),
+    color-mix(in srgb, var(--bg-sidebar) 76%, var(--bg-panel) 24%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+
+.vt-panel-kicker {
+  color: var(--text-dim);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.vt-panel-title {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.vt-panel-subtitle {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.vt-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  background: transparent;
+  transition:
+    color var(--motion-fast),
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-icon-button:hover {
+  color: var(--text-primary);
+  background: var(--vt-row-hover);
+  border-color: color-mix(in srgb, var(--border-subtle) 82%, transparent);
+}
+
+.vt-icon-button:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.vt-file-tree {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 96%, white 2%), color-mix(in srgb, var(--bg-sidebar) 78%, var(--bg-app) 22%));
+}
+
+.vt-file-row,
+.file-item {
+  min-height: var(--vt-row-height);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-file-row:hover,
+.file-item:hover {
+  background: var(--vt-row-hover);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--border-subtle) 62%, transparent);
+}
+
+.vt-file-row[aria-selected="true"],
+.file-item[aria-selected="true"] {
+  background: var(--vt-row-selected) !important;
+  border-color: color-mix(in srgb, var(--attention-purple) 28%, transparent) !important;
+  box-shadow:
+    inset 1px 0 0 color-mix(in srgb, var(--brand-stop-3) 72%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+    0 10px 28px -24px color-mix(in srgb, var(--attention-purple) 78%, transparent) !important;
+}
+
+.vt-file-row-input {
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--attention-purple) 26%, var(--border-subtle));
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 8%, transparent), transparent 74%),
+    color-mix(in srgb, var(--bg-panel) 52%, transparent);
+}
+
+.vt-editor-pane-header {
+  min-height: var(--editor-pane-header-h);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 88%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 34%, transparent), transparent),
+    var(--bg-editor);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 3%, transparent);
+}
+
+.vt-editor-tab {
+  border-inline: 1px solid transparent;
+  border-radius: 7px 7px 0 0;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-editor-tab:hover {
+  background: color-mix(in srgb, var(--text-primary) 5.5%, transparent);
+  border-color: color-mix(in srgb, var(--border-subtle) 70%, transparent);
+}
+
+.vt-editor-tab[aria-selected="true"] {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--attention-purple) 8%, transparent), transparent),
+    color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  border-color: color-mix(in srgb, var(--border-subtle) 78%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.vt-command-popover,
+.vt-dialog-surface {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 94%, white 3%), var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--border-medium) 72%, transparent);
+  border-radius: var(--radius-workbench);
+  box-shadow: var(--vt-command-shadow);
+  color: var(--text-primary);
+}
+
+.vt-command-item {
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-command-item:hover,
+.vt-command-item[data-highlighted],
+.vt-command-item[data-state="checked"] {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.vt-command-item:active {
+  transform: translateY(1px);
+}
+
+.vt-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 78%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-app) 54%, transparent);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.vt-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent-success);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent-success) 38%, transparent);
+}
+
+.vt-agent-card {
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 82%, transparent);
+  border-radius: var(--radius-workbench);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 86%, white 3%), color-mix(in srgb, var(--bg-app) 48%, transparent));
+  box-shadow: var(--vt-bezel);
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-agent-card:hover {
+  border-color: color-mix(in srgb, var(--brand-stop-4) 24%, var(--border-subtle));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 58%, transparent), color-mix(in srgb, var(--bg-app) 46%, transparent));
+}
+
+.vt-workbench-proof-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(480px, 1.65fr) minmax(300px, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(184px, 0.34fr);
+  gap: 1px;
+}
+
+@media (max-width: 980px) {
+  .vt-workbench-proof-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto;
+  }
 }
 
 /* ===== Typography Hierarchy System ===== */

@@ -100,8 +100,7 @@ function TopNav({
 
   return (
     <div
-      className="topnav-root vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]"
-      style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+      className="topnav-root vt-workbench-chrome vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]"
     >
       {/* Vectant wordmark — left-anchored so the centered slot can host
           the lifted file-tab strip without collision. Dark theme is +2px
@@ -201,13 +200,12 @@ function TopNav({
           <PopoverContent
             align="end"
             sideOffset={6}
-            className="w-40 p-1"
-            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
+            className="vt-command-popover w-40 p-1"
           >
             <button
               type="button"
               onClick={() => handleSplit('right')}
-              className="th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              className="vt-command-item th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer"
               style={{ color: 'var(--text-secondary)' }}
             >
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -219,7 +217,7 @@ function TopNav({
             <button
               type="button"
               onClick={() => handleSplit('bottom')}
-              className="th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              className="vt-command-item th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer"
               style={{ color: 'var(--text-secondary)' }}
             >
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">

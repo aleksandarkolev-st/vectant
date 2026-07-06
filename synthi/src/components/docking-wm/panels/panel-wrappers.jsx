@@ -236,8 +236,7 @@ export const ExplorerPanelWrapper = memo(function ExplorerPanelWrapper({ data })
   return (
     <div
       data-panel-type="explorer"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame vt-file-tree h-full w-full overflow-hidden"
     >
       <FileTreeView
         onToggleOrientation={ctx?.onToggleOrientation}
@@ -262,8 +261,8 @@ export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data, tabGr
       data-panel-type="editor"
       data-pane-id={tabGroupId}
       data-pane-unfocused={unfocused ? 'true' : undefined}
-      className="h-full w-full min-w-0 overflow-hidden flex flex-col"
-      style={{ background: 'var(--bg-editor)' }}
+      className="vt-panel-frame h-full w-full min-w-0 overflow-hidden flex flex-col"
+      data-panel-kind="editor"
     >
       <EditorPaneHeader paneId={tabGroupId} filePath={data?.filePath} />
       <div className="flex-1 min-h-0 min-w-0">
@@ -288,8 +287,7 @@ export const TerminalPanelWrapper = memo(function TerminalPanelWrapper({ data })
   return (
     <div
       data-panel-type="terminal"
-      className="h-full w-full min-h-0 overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full min-h-0 overflow-hidden"
     >
       <TerminalManager
         visible={true}
@@ -311,8 +309,7 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="chat"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <AIChatWindow
         docked={true}
@@ -870,8 +867,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   return (
     <div
       data-panel-type="agent-workflows"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <AgentWorkflowPanel
         workspaceSlug={ctx?.workspaceSlug}
@@ -893,8 +889,7 @@ export const CodeSitePanelWrapper = memo(function CodeSitePanelWrapper({ data })
   return (
     <div
       data-panel-type="codesite"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <CodeSitePanel workspaceSlug={ctx?.workspaceSlug} />
     </div>
@@ -911,8 +906,7 @@ export const ProblemsPanelWrapper = memo(function ProblemsPanelWrapper({ data })
   return (
     <div
       data-panel-type="problems"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <ProblemsPanel
         diagnostics={ctx?.diagnostics || []}
@@ -937,8 +931,7 @@ export const SearchPanelWrapper = memo(function SearchPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="search"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <SearchView slug={ctx?.workspaceSlug} />
     </div>
@@ -955,8 +948,7 @@ export const GitPanelWrapper = memo(function GitPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="git"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <GitStatus
         slug={ctx?.workspaceSlug}
@@ -980,8 +972,7 @@ export const ExtensionsPanelWrapper = memo(function ExtensionsPanelWrapper({ dat
   return (
     <div
       data-panel-type="extensions"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <ExtensionSidebar {...extensionApi} />
     </div>
@@ -997,8 +988,7 @@ export const ExtensionViewPanelWrapper = memo(function ExtensionViewPanelWrapper
   return (
     <div
       data-panel-type="extension-view"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <ExtensionViewContainer
         containerId={containerId}
@@ -1024,8 +1014,7 @@ export const OutputPanelWrapper = memo(function OutputPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="output"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <OutputPanel />
     </div>
@@ -1040,8 +1029,7 @@ export const PreviewPanelWrapper = memo(function PreviewPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="preview"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-disabled)' }}>
         No preview available
@@ -1059,8 +1047,7 @@ export const SettingsPanelWrapper = memo(function SettingsPanelWrapper({ data })
   return (
     <div
       data-panel-type="settings"
-      className="h-full w-full overflow-y-auto"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-y-auto"
     >
       <SettingsPanelContent />
     </div>
@@ -1075,8 +1062,7 @@ export const ThemeEditorPanelWrapper = memo(function ThemeEditorPanelWrapper({ d
   return (
     <div
       data-panel-type="theme-editor"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <ThemeEditorPanel />
     </div>
@@ -1093,8 +1079,7 @@ export const PullRequestsPanelWrapper = memo(function PullRequestsPanelWrapper({
   return (
     <div
       data-panel-type="pullrequests"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <PullRequestsPanel
         slug={ctx?.workspaceSlug}
@@ -1113,8 +1098,7 @@ export const CommitHistoryPanelWrapper = memo(function CommitHistoryPanelWrapper
   return (
     <div
       data-panel-type="commithistory"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <CommitHistoryPanel
         slug={ctx?.workspaceSlug}
@@ -1133,8 +1117,7 @@ export const AIHealingPanelWrapper = memo(function AIHealingPanelWrapper({ data 
   return (
     <div
       data-panel-type="ai-healing"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <HealingSettingsPanel aiHealing={ctx?.aiHealing} />
     </div>
@@ -1149,8 +1132,7 @@ export const IntegrationsPanelWrapper = memo(function IntegrationsPanelWrapper({
   return (
     <div
       data-panel-type="integrations"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <ConnectedToolsPanel />
     </div>
@@ -1165,8 +1147,7 @@ export const PortsPanelWrapper = memo(function PortsPanelWrapper({ data }) {
   return (
     <div
       data-panel-type="ports"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <PortsPanel />
     </div>
@@ -1181,8 +1162,7 @@ export const ProgramsPanelWrapper = memo(function ProgramsPanelWrapper({ data })
   return (
     <div
       data-panel-type="programs"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
     >
       <ProgramsPanel />
     </div>
@@ -1195,8 +1175,8 @@ export const ProgramSessionPanelWrapper = memo(function ProgramSessionPanelWrapp
   return (
     <div
       data-panel-type="program-session"
-      className="h-full w-full overflow-hidden"
-      style={{ background: 'var(--bg-editor)' }}
+      className="vt-panel-frame h-full w-full overflow-hidden"
+      data-panel-kind="editor"
     >
       <ProgramSessionPanel
         workspaceSlug={data?.workspaceSlug || ctx?.workspaceSlug}

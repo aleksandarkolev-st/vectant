@@ -358,18 +358,13 @@ function EditorTabStripImpl() {
                   }
                 }}
                 title={file.path}
-                className="relative shrink-0 flex h-full items-center gap-1.5 px-2.5 text-[12px] cursor-pointer"
+                aria-selected={isActive ? 'true' : 'false'}
+                className="vt-editor-tab relative shrink-0 flex h-full items-center gap-1.5 px-2.5 text-[12px] cursor-pointer"
                 style={{
                   color: isActive || isHovered
                     ? 'var(--dock-tab-active-fg, var(--text-primary))'
                     : 'var(--dock-tab-fg, var(--text-muted))',
                   fontWeight: isActive ? 600 : 400,
-                  background: isActive
-                    ? 'var(--dock-tab-active-bg, color-mix(in srgb, var(--bg-elevated) 60%, transparent))'
-                    : isHovered
-                      ? 'rgba(255, 255, 255, 0.04)'
-                      : 'transparent',
-                  transition: 'background-color 0.1s, color 0.1s',
                 }}
               >
                 <span className="text-base leading-none flex-shrink-0">{icon}</span>
