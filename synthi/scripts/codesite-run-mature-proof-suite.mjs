@@ -161,6 +161,12 @@ const PROOF_SPECS = [
     generator: ['node', 'synthi/scripts/codesite-counterfactual-memory-proof.mjs'],
   },
   {
+    name: 'emergencyBroadcasts',
+    file: 'codesite-emergency-broadcasts-proof.json',
+    png: 'codesite-emergency-broadcasts-proof.png',
+    generator: ['node', 'synthi/scripts/codesite-emergency-broadcasts-proof.mjs'],
+  },
+  {
     name: 'repoPolicyCompiler',
     file: 'codesite-repo-policy-compiler-proof.json',
     png: 'codesite-repo-policy-compiler-proof.png',
