@@ -17933,6 +17933,14 @@ assert.equal(
   2,
 );
 assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.backendFamilies].sort(),
+  ['hip', 'opencl', 'vulkan', 'webgpu'],
+);
+assert.deepEqual(
+  [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.proofModes].sort(),
+  ['strict_runtime_ledger', 'webgpu_wgsl_runtime_compute'],
+);
+assert.deepEqual(
   [...broadReadinessQuery.summary.broadLibraryAgnosticReadiness.visualOracleTargets].sort(),
   ['broad-readiness-hip-visual', 'broad-readiness-vulkan-visual'],
 );

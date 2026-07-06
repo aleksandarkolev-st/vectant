@@ -683,10 +683,36 @@ function compactBroadLibraryAgnosticReadiness(readiness = {}) {
       ),
     scopedRuntimeRows: numberField(readiness.scopedRuntimeRows, readiness.scoped_runtime_rows),
     scoped_runtime_rows: numberField(readiness.scopedRuntimeRows, readiness.scoped_runtime_rows),
-    backendFamilies: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
-    backend_families: compactPrimitiveArray(readiness.backendFamilies ?? readiness.backend_families),
+    backendFamilies: compactPrimitiveArray(
+      readiness.backendFamilies
+        ?? readiness.backend_families
+        ?? readiness.backends
+        ?? broadProof.backendFamilies
+        ?? broadProof.backend_families
+        ?? broadProof.backends,
+    ),
+    backend_families: compactPrimitiveArray(
+      readiness.backendFamilies
+        ?? readiness.backend_families
+        ?? readiness.backends
+        ?? broadProof.backendFamilies
+        ?? broadProof.backend_families
+        ?? broadProof.backends,
+    ),
     acceptanceScopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
     acceptance_scopes: compactPrimitiveArray(readiness.acceptanceScopes ?? readiness.acceptance_scopes),
+    proofModes: compactPrimitiveArray(
+      readiness.proofModes
+        ?? readiness.proof_modes
+        ?? broadProof.proofModes
+        ?? broadProof.proof_modes,
+    ),
+    proof_modes: compactPrimitiveArray(
+      readiness.proofModes
+        ?? readiness.proof_modes
+        ?? broadProof.proofModes
+        ?? broadProof.proof_modes,
+    ),
     visualOracleTargets: compactPrimitiveArray(
       readiness.visualOracleTargets
         ?? readiness.visual_oracle_targets
