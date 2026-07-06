@@ -2653,7 +2653,7 @@ function proofHtml(proof) {
     ['CodeSiteFS', `${proof.codesiteFs.read.disposition}, ${proof.codesiteFs.denied.disposition}, ${proof.codesiteFs.quarantined.disposition}`],
     ['Counterfactuals', `${proof.counterfactual.projectRunCount} runs, ${proof.counterfactual.policyDeltaCount} policy deltas`],
     ['Coordination', `${proof.coordination.documentCount} documents, ${proof.coordination.inboxItemCount} inbox items`],
-    ['Line provenance', proof.lineProvenance.map((row) => `${row.filePath} ${row.lineAnchor}`).join(', ')],
+    ['Lineage inspector', proof.lineProvenance.map((row) => `${row.filePath} ${row.lineAnchor}`).join(', ')],
   ];
   return `<!doctype html>
 <html lang="en">
@@ -2682,7 +2682,7 @@ pre{white-space:pre-wrap;border:1px solid #24283a;border-radius:8px;background:#
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSite Full Workflow Proof</h1>
-<p>Live Docker workflow: schema-first clearance, serializable read-snapshot gates, CodeSiteFS denial and quarantine, transaction write with line provenance, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
+<p>Live Docker workflow: schema-first clearance, serializable read-snapshot gates, CodeSiteFS denial and quarantine, transaction write with lineage evidence, landing inspection, proof bundle, commit trailers, artifact export, and browser UI capture.</p>
 </section>
 <section class="grid">
 ${summary.map(([label, value]) => `<div class="card"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`).join('\n')}
@@ -2764,7 +2764,7 @@ async function installBrowserProofCaptureStyles(page) {
 function browserLayoutCheckScript() {
   const selectors = [
     '[data-testid="codesite-panel"]',
-    '[data-testid="codesite-line-provenance-row"]',
+    '[data-testid="codesite-lineage-row"]',
     '[data-testid="codesite-line-inspector"]',
     '[data-testid="codesite-causal-replay-handover"]',
   ];
@@ -2893,15 +2893,15 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
   });
   await installBrowserProofCaptureStyles(page);
   await page.waitForSelector('[data-testid="codesite-panel"]', { timeout: 60000 });
-  await page.waitForSelector('[data-testid="codesite-radar-graph"]', { timeout: 60000 });
+  await page.waitForSelector('[data-testid="codesite-work-graph"]', { timeout: 60000 });
   await page.waitForSelector('[data-testid="codesite-causal-replay-handover"]', { timeout: 60000 });
-  await page.waitForSelector('text=CodeSite-Black-Box', { timeout: 60000 });
+  await page.waitForSelector('text=Event evidence digest', { timeout: 60000 });
   await page.waitForSelector('text=transaction.committed', { timeout: 60000 });
   await page.waitForSelector('text=black_box.closed', { timeout: 60000 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: pngPath, fullPage: true });
   await page.waitForSelector('text=CodeSite-Transaction', { timeout: 60000 });
-  await page.waitForSelector('text=Line Provenance', { timeout: 60000 });
+  await page.waitForSelector('text=Lineage Inspector', { timeout: 60000 });
   await page.waitForSelector('text=synthi/prisma/schema.prisma', { timeout: 60000 });
   await page.getByText('CodeSite-Transaction').first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(500);
@@ -2909,14 +2909,14 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
     await page.screenshot({ path: proofSectionPngPath, fullPage: false });
   }
   await page.waitForSelector('text=Agent Inbox', { timeout: 60000 });
-  await page.waitForSelector('text=Line Provenance', { timeout: 60000 });
+  await page.waitForSelector('text=Lineage Inspector', { timeout: 60000 });
   await page.waitForSelector('text=change_order', { timeout: 60000 });
   await page.getByText('Agent Inbox').first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(500);
   if (coordinationPngPath) {
     await page.screenshot({ path: coordinationPngPath, fullPage: false });
   }
-  const firstLineRow = page.locator('[data-testid="codesite-line-provenance-row"]').first();
+  const firstLineRow = page.locator('[data-testid="codesite-lineage-row"]').first();
   await firstLineRow.scrollIntoViewIfNeeded();
   await firstLineRow.click();
   await page.waitForSelector('[data-testid="codesite-line-inspector"]', { timeout: 60000 });
@@ -2939,7 +2939,7 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
   const desktopLayout = await page.evaluate(browserLayoutCheckScript);
   const desktopChecks = await page.evaluate(() => ({
     panelVisible: Boolean(document.querySelector('[data-testid="codesite-causal-replay-handover"]')),
-    codeSiteBlackBoxVisible: Boolean(document.body.textContent.includes('CodeSite-Black-Box')),
+    eventEvidenceDigestVisible: Boolean(document.body.textContent.includes('Event evidence digest')),
     transactionCommittedVisible: Boolean(document.body.textContent.includes('transaction.committed')),
     blackBoxClosedVisible: Boolean(document.body.textContent.includes('black_box.closed')),
     agentInboxVisible: Boolean(document.body.textContent.includes('Agent Inbox')),
@@ -2975,8 +2975,8 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
     const mobileOverviewLayout = await page.evaluate(browserLayoutCheckScript);
     mobileOverviewChecks = await page.evaluate(() => ({
       panelVisible: Boolean(document.querySelector('[data-testid="codesite-panel"]')),
-      airspaceMapVisible: Boolean(document.body.textContent.includes('Airspace Map')),
-      towerFeedVisible: Boolean(document.body.textContent.includes('Tower Feed')),
+      workspaceGraphVisible: Boolean(document.body.textContent.includes('Workspace Graph')),
+      activityFeedVisible: Boolean(document.body.textContent.includes('Activity Feed')),
       governanceVisible: Boolean(document.body.textContent.includes('Governance Console')),
       proofVisible: Boolean(document.body.textContent.includes('proof bundle')),
       noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 4,
@@ -2994,7 +2994,7 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
     const mobileLayout = await page.evaluate(browserLayoutCheckScript);
     mobileChecks = await page.evaluate(() => ({
       panelVisible: Boolean(document.querySelector('[data-testid="codesite-causal-replay-handover"]')),
-      codeSiteBlackBoxVisible: Boolean(document.body.textContent.includes('CodeSite-Black-Box')),
+      eventEvidenceDigestVisible: Boolean(document.body.textContent.includes('Event evidence digest')),
       transactionCommittedVisible: Boolean(document.body.textContent.includes('transaction.committed')),
       blackBoxClosedVisible: Boolean(document.body.textContent.includes('black_box.closed')),
       noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 4,
@@ -4570,7 +4570,7 @@ async function main() {
         && browserArtifactValidation.ok === true
         && browserProof.consoleErrors.length === 0
         && browserProof.desktopChecks?.panelVisible
-        && browserProof.desktopChecks?.codeSiteBlackBoxVisible
+        && browserProof.desktopChecks?.eventEvidenceDigestVisible
         && browserProof.desktopChecks?.transactionCommittedVisible
         && browserProof.desktopChecks?.blackBoxClosedVisible
         && browserProof.desktopChecks?.agentInboxVisible
@@ -4583,8 +4583,8 @@ async function main() {
         && browserProof.desktopChecks?.devOverlayHidden
         && browserProof.desktopChecks?.lineInspectorSettled
         && browserProof.mobileOverviewChecks?.panelVisible
-        && browserProof.mobileOverviewChecks?.airspaceMapVisible
-        && browserProof.mobileOverviewChecks?.towerFeedVisible
+        && browserProof.mobileOverviewChecks?.workspaceGraphVisible
+        && browserProof.mobileOverviewChecks?.activityFeedVisible
         && browserProof.mobileOverviewChecks?.governanceVisible
         && browserProof.mobileOverviewChecks?.proofVisible
         && browserProof.mobileOverviewChecks?.noHorizontalOverflow
@@ -4593,7 +4593,7 @@ async function main() {
         && browserProof.mobileOverviewChecks?.devOverlayHidden
         && browserProof.mobileOverviewChecks?.lineInspectorSettled
         && browserProof.mobileChecks?.panelVisible
-        && browserProof.mobileChecks?.codeSiteBlackBoxVisible
+        && browserProof.mobileChecks?.eventEvidenceDigestVisible
         && browserProof.mobileChecks?.transactionCommittedVisible
         && browserProof.mobileChecks?.blackBoxClosedVisible
         && browserProof.mobileChecks?.noHorizontalOverflow

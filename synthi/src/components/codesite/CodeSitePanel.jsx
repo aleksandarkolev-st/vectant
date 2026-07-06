@@ -4186,7 +4186,7 @@ function TowerStreamPanel({ events, streamStatus, condensed = false }) {
   const rows = asArray(events).slice(0, condensed ? 5 : 8);
   return (
     <div
-      data-testid="codesite-tower-feed"
+      data-testid="codesite-activity-feed"
       className={
         condensed
           ? "grid min-w-0 gap-2"
@@ -5841,7 +5841,7 @@ function LineProvenanceDeck({
 }) {
   const provenanceRows = asArray(rows);
   if (!provenanceRows.length) {
-    return <EmptyLine>No line provenance indexed</EmptyLine>;
+    return <EmptyLine>No lineage evidence indexed</EmptyLine>;
   }
   const visibleRows = provenanceRows.slice(-10).reverse();
   const hiddenRows = provenanceRows.length - visibleRows.length;
@@ -5898,7 +5898,7 @@ function LineProvenanceDeck({
 
   return (
     <div
-      data-testid="codesite-line-provenance-deck"
+      data-testid="codesite-lineage-deck"
       className="grid min-w-0 gap-3"
     >
       <div
@@ -5909,7 +5909,7 @@ function LineProvenanceDeck({
           background: "var(--bg-surface)",
         }}
       >
-        <span className="font-semibold">Line provenance ledger</span>
+        <span className="font-semibold">Lineage evidence ledger</span>
         <div className="flex flex-wrap gap-1">
           <Pill>{provenanceRows.length} rows</Pill>
           {hiddenRows > 0 ? (
@@ -5939,7 +5939,7 @@ function LineProvenanceDeck({
                   `${row.filePath || "line"}-${index}`
                 }
                 type="button"
-                data-testid="codesite-line-provenance-row"
+                data-testid="codesite-lineage-row"
                 aria-pressed={selected}
                 onClick={() => onInspectLine(row)}
                 className="block w-full min-w-0 overflow-hidden rounded-md border px-2.5 py-2 text-left text-xs transition-colors"
@@ -7909,7 +7909,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           : "active"
                       }
                       icon={CodeSiteIcons.planChanges}
-                      testId="codesite-status-reroutes"
+                      testId="codesite-status-plan-changes"
                     />
                   </div>
                 </div>

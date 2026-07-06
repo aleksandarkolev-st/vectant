@@ -909,7 +909,7 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-scope-topology"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-tower-feed"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-activity-feed"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('Live updates connected');
     expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
@@ -1020,7 +1020,7 @@ describe('CodeSitePanel', () => {
       proofBundles: [{ id: 'proof-1', bundleDigest: 'digest-proof-1' }],
     }]);
     await act(async () => {
-      container.querySelector('[data-testid="codesite-line-provenance-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector('[data-testid="codesite-lineage-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
 
@@ -1142,7 +1142,6 @@ describe('CodeSitePanel', () => {
     expect(container.querySelectorAll('[data-testid="codesite-scope-agent-node"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).toContain('ATLAS-1');
     expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).not.toContain('holding pattern');
-    expect(container.querySelector('[data-testid="codesite-radar-sweep"]')).toBeFalsy();
   });
 
   it('summarizes the latest activity tail in the graph evidence guardrail', async () => {

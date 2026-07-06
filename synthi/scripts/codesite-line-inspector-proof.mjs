@@ -77,9 +77,9 @@ async function run(command, args, options = {}) {
 function checkoutContractLines(replacement = null) {
   const lines = Array.from({ length: 64 }, (_, index) => `line ${String(index + 1).padStart(2, '0')}: checkout contract unchanged`);
   lines[40] = 'line 41: refund window remains configurable by policy';
-  lines[41] = replacement?.[0] || 'line 42: cancellation policy pending tower decision';
-  lines[42] = replacement?.[1] || 'line 43: refund event schema pending tower decision';
-  lines[43] = replacement?.[2] || 'line 44: retry behavior pending tower decision';
+  lines[41] = replacement?.[0] || 'line 42: cancellation policy pending coordination decision';
+  lines[42] = replacement?.[1] || 'line 43: refund event schema pending coordination decision';
+  lines[43] = replacement?.[2] || 'line 44: retry behavior pending coordination decision';
   lines[44] = 'line 45: payment capture remains behind order confirmation';
   return `${lines.join('\n')}\n`;
 }
@@ -124,7 +124,7 @@ async function createPlanIfMissing(api, project) {
     body: JSON.stringify({
       agentSessionId: sessionResponse.agentSession.id,
       displayCallsign: 'LINE-INSPECT-01',
-      mission: 'Land checkout contract line provenance',
+      mission: 'Land checkout contract lineage evidence',
       domain: 'docs',
       status: 'preflight',
       route: ['docs/**'],
@@ -171,9 +171,9 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath, aut
     `,
   });
   await page.waitForSelector('[data-testid="codesite-panel"]', { timeout: 60000 });
-  await page.waitForSelector('[data-testid="codesite-line-provenance-row"]', { timeout: 60000 });
-  await page.locator('[data-testid="codesite-line-provenance-row"]').first().scrollIntoViewIfNeeded();
-  await page.locator('[data-testid="codesite-line-provenance-row"]').first().click();
+  await page.waitForSelector('[data-testid="codesite-lineage-row"]', { timeout: 60000 });
+  await page.locator('[data-testid="codesite-lineage-row"]').first().scrollIntoViewIfNeeded();
+  await page.locator('[data-testid="codesite-lineage-row"]').first().click();
   await page.waitForFunction(() => {
     const inspector = document.querySelector('[data-testid="codesite-line-inspector"]');
     const status = document.querySelector('[data-testid="codesite-line-inspector-status"]')?.textContent?.trim();
@@ -190,7 +190,7 @@ async function captureInspectorUi({ baseUrl, slug, viewport, screenshotPath, aut
   await page.waitForTimeout(450);
   await page.screenshot({ path: screenshotPath, fullPage: true });
   const checks = await page.evaluate(() => {
-    const row = document.querySelector('[data-testid="codesite-line-provenance-row"]');
+    const row = document.querySelector('[data-testid="codesite-lineage-row"]');
     const inspector = document.querySelector('[data-testid="codesite-line-inspector"]');
     const status = document.querySelector('[data-testid="codesite-line-inspector-status"]')?.textContent?.trim() || null;
     const rectOf = (node) => {
@@ -281,7 +281,7 @@ img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid #252
 <section class="hero">
 <span class="pass">PASS</span>
 <h1>CodeSite Line Inspector Proof</h1>
-<p>Live Docker workflow with a real CodeSite transaction, ranged line provenance persisted in the database, API lookup by line number, and browser-clicked causal inspector captures.</p>
+<p>Live Docker workflow with a real CodeSite transaction, ranged lineage evidence persisted in the database, API lookup by line number, and browser-clicked causal inspector captures.</p>
 </section>
 <section class="grid">
 ${rows.map(([label, value]) => `<div class="card"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`).join('\n')}
@@ -325,7 +325,7 @@ async function main() {
       missions: [{
         callsign: 'LINE-INSPECT-01',
         domain: 'docs',
-        mission: 'Land checkout contract line provenance',
+        mission: 'Land checkout contract lineage evidence',
         route: ['docs/**'],
         requestedTools: ['file_write', 'node'],
       }],
@@ -417,7 +417,7 @@ async function main() {
 
   const lineLookupResponse = await api(`/provenance/line?projectId=${encodeURIComponent(project.id)}&filePath=${encodeURIComponent(changedPath)}&lineNumber=42`);
   const lineRows = lineLookupResponse.lineProvenance || [];
-  assertProof(lineRows.length >= 1, 'line provenance lookup returned no rows');
+  assertProof(lineRows.length >= 1, 'lineage lookup returned no rows');
 
   const desktopShot = path.join(dir, 'codesite-line-inspector-ui-desktop.png');
   const mobileShot = path.join(dir, 'codesite-line-inspector-ui-mobile.png');

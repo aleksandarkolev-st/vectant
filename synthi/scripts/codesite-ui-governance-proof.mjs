@@ -444,7 +444,7 @@ async function installMockEventSource(page) {
     }
     window.EventSource = MockEventSource;
   }, [
-    { id: 'stream-1', eventType: 'tower_instruction', displayCallsign: 'TOWER', createdAt: '2026-07-04T09:05:00.000Z', details: { towerInstruction: 'Streaming tower instruction received by governance console.' } },
+    { id: 'stream-1', eventType: 'tower_instruction', displayCallsign: 'COORD', createdAt: '2026-07-04T09:05:00.000Z', details: { towerInstruction: 'Streaming coordinator instruction received by governance console.' } },
     { id: 'stream-2', eventType: 'route_deviation', displayCallsign: 'ATLAS-1', createdAt: '2026-07-04T09:06:00.000Z', details: { towerInstruction: 'Live route deviation visible without polling.' } },
     { id: 'stream-3', eventType: 'mayday_resumed', displayCallsign: 'ATLAS-1', createdAt: '2026-07-04T09:07:00.000Z', details: { towerInstruction: 'Mayday resume event name matches backend.' } },
   ]);
@@ -577,8 +577,8 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
   await page.goto(`${baseUrl}/workspace/${SLUG}/codesite`, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForSelector('[data-testid="codesite-operator-cockpit"]', { timeout: 120000 });
   await page.waitForSelector('[data-testid="codesite-governance-console"]', { timeout: 120000 });
-  await page.waitForSelector('[data-testid="codesite-tower-feed"]', { timeout: 120000 });
-  await page.waitForSelector('[data-testid="codesite-radar-sweep"]', { timeout: 120000 });
+  await page.waitForSelector('[data-testid="codesite-activity-feed"]', { timeout: 120000 });
+  await page.waitForSelector('[data-testid="codesite-scope-topology"]', { timeout: 120000 });
   await page.waitForTimeout(600);
   const selectors = [
     'codesite-panel',
@@ -591,8 +591,8 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     'codesite-operator-governance-pane',
     'codesite-metric-rail',
     'codesite-status-required',
-    'codesite-radar-sweep',
-    'codesite-tower-feed',
+    'codesite-scope-topology',
+    'codesite-activity-feed',
     'codesite-event-stream-status',
     'codesite-governance-console',
     'codesite-document-row',
@@ -638,13 +638,12 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     const operatorRects = { cockpit: cockpitRect, airspace: airspaceRect, tower: towerRect, governance: governanceRect };
     const operatorPaneGeometry = [airspaceRect, towerRect, governanceRect].every((rect) => rect && rect.width >= 280 && rect.height >= 120);
     const desktopWidth = window.innerWidth >= 1024;
-    const operatorLoopInFirstViewport = desktopWidth
-      ? [cockpitRect, airspaceRect, towerRect, governanceRect].every((rect) => rect && rect.top < window.innerHeight && rect.bottom > 0)
-      : [cockpitRect, airspaceRect].every((rect) => rect && rect.top < window.innerHeight && rect.bottom > 0);
+    const primaryOperatorSurfacesInFirstViewport = [cockpitRect, airspaceRect, towerRect]
+      .every((rect) => rect && rect.top < window.innerHeight && rect.bottom > 0);
     const singleCriticalSurfaces = [
       'codesite-responsive-proof-target',
-      'codesite-radar-graph',
-      'codesite-tower-feed',
+      'codesite-work-graph',
+      'codesite-activity-feed',
       'codesite-governance-console',
     ].every((testId) => document.querySelectorAll(`[data-testid="${testId}"]`).length === 1);
     const workflowStateChips = Array.from(document.querySelectorAll('[data-testid="codesite-document-row"], [data-testid="codesite-route-revision-row"]'))
@@ -701,6 +700,12 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
       };
     });
     const visibleMobileTabs = mobileTabs.filter((tab) => tab.visible);
+    const mobileSectionNavigationReachable = visibleMobileTabs.length >= 3
+      && visibleMobileTabs.some((tab) => tab.text === 'Graph' && tab.ariaSelected === 'true')
+      && ['Activity', 'Governance'].every((label) => visibleMobileTabs.some((tab) => tab.text === label));
+    const operatorLoopReachable = desktopWidth
+      ? primaryOperatorSurfacesInFirstViewport
+      : mobileSectionNavigationReachable;
     return {
       selectorStatus,
       selectorCounts,
@@ -708,7 +713,9 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
       missingSelectors: Object.entries(selectorStatus).filter(([, ok]) => !ok).map(([key]) => key),
       operatorRects,
       operatorPaneGeometry,
-      operatorLoopInFirstViewport,
+      operatorLoopInFirstViewport: operatorLoopReachable,
+      primaryOperatorSurfacesInFirstViewport,
+      mobileSectionNavigationReachable,
       singleCriticalSurfaces,
       workflowStateChips,
       workflowStateChipsReadable,
@@ -716,14 +723,16 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
       requiredActionsActionable: requiredActionRows.length >= 3
         && requiredActionRows.every((row) => row.hasReviewButton && row.hasSeverity && row.hasOwner && row.hasEntity),
       cappedQueuesReachable,
-      cockpitContainsLoop: cockpitText.includes('Airspace Map')
-        && cockpitText.includes('Tower Feed')
+      cockpitContainsLoop: cockpitText.includes('Workspace Graph')
+        && cockpitText.includes('Activity Feed')
         && cockpitText.includes('Governance Console')
-        && cockpitText.includes('Required')
-        && cockpitText.includes('Reroutes'),
-      towerInstructionVisible: document.body.textContent.includes('Streaming tower instruction received by governance console.'),
-      routeDeviationVisible: document.body.textContent.includes('route_deviation'),
-      maydayResumeEventVisible: document.body.textContent.includes('mayday_resumed'),
+        && cockpitText.includes('Actions')
+        && cockpitText.includes('Plan changes'),
+      coordinationInstructionVisible: document.body.textContent.includes('Streaming coordinator instruction received by governance console.'),
+      routeDeviationVisible: document.body.textContent.includes('Plan change filed')
+        && document.body.textContent.includes('Live route deviation visible without polling.'),
+      maydayResumeEventVisible: document.body.textContent.includes('Recovery resumed')
+        && document.body.textContent.includes('Paused incident resume event name matches backend.'),
       permitPathVisible: document.body.textContent.includes('synthi/prisma/**'),
       maydayInspectionVisible: document.body.textContent.includes('inspection-mayday-1'),
       noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 4,
@@ -745,7 +754,7 @@ async function captureProofPage(context, baseUrl, data, reducedMotion = false) {
     && checks.cappedQueuesReachable
     && checks.cockpitContainsLoop
     && checks.mobileTouchTargetsOk
-    && checks.towerInstructionVisible
+    && checks.coordinationInstructionVisible
     && checks.routeDeviationVisible
     && checks.maydayResumeEventVisible
     && checks.permitPathVisible
@@ -763,7 +772,7 @@ async function captureGovernanceReviewGate(page, screenshotPath) {
   const confirm = page.locator('[data-testid="codesite-governance-review-confirm"]');
   const initiallyDisabled = await confirm.isDisabled();
   await page.locator('[data-testid="codesite-governance-review-rationale"]').fill(
-    'Reviewed replay evidence, owner, target, and scope before issuing this tower action.',
+    'Reviewed replay evidence, owner, target, and scope before issuing this coordination action.',
   );
   const enabledAfterRationale = !(await confirm.isDisabled());
   await gate.screenshot({ path: screenshotPath });
@@ -793,7 +802,7 @@ async function main() {
     const desktop = await captureProofPage(desktopContext, baseUrl, data);
     const desktopPng = path.join(OUT_DIR, 'codesite-ui-governance-desktop.png');
     const cockpitPng = path.join(OUT_DIR, 'codesite-ui-governance-cockpit.png');
-    const towerPng = path.join(OUT_DIR, 'codesite-ui-governance-tower-feed.png');
+    const activityFeedPng = path.join(OUT_DIR, 'codesite-ui-governance-activity-feed.png');
     const governancePng = path.join(OUT_DIR, 'codesite-ui-governance-console.png');
     const reviewGatePng = path.join(OUT_DIR, 'codesite-ui-governance-review-gate.png');
     await desktop.page.screenshot({ path: desktopPng, fullPage: false });
@@ -808,8 +817,8 @@ async function main() {
         height: Math.min(980, Math.floor(cockpitBox.height)),
       },
     });
-    await desktop.page.locator('[data-testid="codesite-tower-feed"]').scrollIntoViewIfNeeded();
-    await desktop.page.locator('[data-testid="codesite-tower-feed"]').screenshot({ path: towerPng });
+    await desktop.page.locator('[data-testid="codesite-activity-feed"]').scrollIntoViewIfNeeded();
+    await desktop.page.locator('[data-testid="codesite-activity-feed"]').screenshot({ path: activityFeedPng });
     const reviewGate = await captureGovernanceReviewGate(desktop.page, reviewGatePng);
     await desktop.page.locator('[data-testid="codesite-governance-console"]').scrollIntoViewIfNeeded();
     await desktop.page.locator('[data-testid="codesite-governance-console"]').screenshot({ path: governancePng });
@@ -830,7 +839,7 @@ async function main() {
     await reducedContext.close();
     await browser.close();
 
-    const screenshotPaths = { desktop: desktopPng, cockpit: cockpitPng, tower: towerPng, governance: governancePng, reviewGate: reviewGatePng, mobile: mobilePng, reducedMotion: reducedPng };
+    const screenshotPaths = { desktop: desktopPng, cockpit: cockpitPng, activityFeed: activityFeedPng, governance: governancePng, reviewGate: reviewGatePng, mobile: mobilePng, reducedMotion: reducedPng };
     const screenshots = Object.fromEntries(await Promise.all(Object.entries(screenshotPaths).map(async ([key, filePath]) => [key, await describePng(filePath)])));
     const proof = {
       schemaVersion: 'synthi.codesite.uiGovernanceProof.v2',
