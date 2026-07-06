@@ -168,6 +168,7 @@ import {
   recordTransactionQuarantineEvent,
   recordTransactionWrite,
   requestMutationLease,
+  resumeMaydayIncident,
   reviewDocument,
   reviewRouteRevision,
   shadowMergeSimulate,
@@ -2178,6 +2179,165 @@ describe('CodeSite control plane transaction validation', () => {
       status: 'blocked',
     });
     expect(stopWorkBody.suspendedLeaseIds).toEqual(['lease-api']);
+  });
+
+  it('requires human approval and passed inspection evidence before resuming mayday ground stops', async () => {
+    const maydayProject = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      createdByUserId: 'user-1',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [{
+        id: 'member-tower',
+        projectId: 'project-1',
+        workspaceSlug: 'acme',
+        userId: 'reviewer-1',
+        role: 'admin',
+        permissionsJson: JSON.stringify(['project:read', 'project:write', 'mayday:resume']),
+        participationStatus: 'enabled',
+        revokedAt: null,
+      }],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [],
+      permits: [],
+      documentReviews: [],
+      routeRevisions: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    };
+    const maydayIncident = {
+      id: 'incident-mayday-1',
+      projectId: 'project-1',
+      project: maydayProject,
+      severity: 'critical',
+      category: 'mayday',
+      participantsJson: JSON.stringify(['API-01']),
+      affectedZonesJson: JSON.stringify(['api/auth/**']),
+      evidenceRefsJson: JSON.stringify(['runtime:event:mayday']),
+      timelineEventRefsJson: JSON.stringify(['event-mayday-1', 'event-ground-stop-1']),
+      policyDeltaJson: JSON.stringify(null),
+      incidentReplayJson: JSON.stringify({
+        eventRefs: ['event-mayday-1', 'event-ground-stop-1'],
+        maydayWorkflow: {
+          suspendedLeases: [{ id: 'lease-api', displayCallsign: 'API-01', status: 'suspended' }],
+          inspectorRunId: 'inspection-mayday-1',
+          stopWorkDocumentId: 'doc-stop-work-1',
+          humanResumeRequired: true,
+          resumeGate: { status: 'blocked', requiresHumanApproval: true },
+        },
+      }),
+      replayDigest: 'sha256:mayday-replay',
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+    };
+
+    prisma.codeSiteIncident.findFirst.mockResolvedValue(maydayIncident);
+    prisma.codeSiteDocument.findMany.mockResolvedValue([{
+      id: 'doc-stop-work-1',
+      projectId: 'project-1',
+      kind: 'stop_work',
+      status: 'open',
+      title: 'Ground stop: auth bypass detected',
+      bodyJson: JSON.stringify({
+        incidentId: 'incident-mayday-1',
+        suspendedLeaseIds: ['lease-api'],
+        inspectorRunId: 'inspection-mayday-1',
+        resumeGate: { status: 'blocked', requiresHumanApproval: true },
+      }),
+      blocking: true,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      resolvedAt: null,
+    }]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-mayday-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-api',
+      displayCallsign: 'SEC-01',
+      status: 'passed',
+      changedPathsJson: JSON.stringify(['api/auth/**']),
+      inspectionSignalsJson: JSON.stringify([{ key: 'security', status: 'passed' }]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-mayday-1']),
+      requestedAt: new Date('2026-06-29T23:06:00.000Z'),
+      completedAt: new Date('2026-06-29T23:07:00.000Z'),
+    }]);
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([{
+      id: 'lease-api',
+      projectId: 'project-1',
+      executionPlanId: 'plan-api',
+      agentSessionId: 'agent-api',
+      displayCallsign: 'API-01',
+      status: 'suspended',
+      leaseJson: JSON.stringify({ allowedPaths: ['api/auth/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }]);
+
+    await expect(resumeMaydayIncident('acme', 'incident-mayday-1', {
+      approved: false,
+      rationale: 'Missing explicit tower approval',
+      inspectionRunIds: ['inspection-mayday-1'],
+    }, { userId: 'reviewer-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'mayday_resume_human_approval_required',
+    });
+
+    const result = await resumeMaydayIncident('acme', 'incident-mayday-1', {
+      approved: true,
+      rationale: 'SEC-01 passed inspection and tower approves resume.',
+      inspectionRunIds: ['inspection-mayday-1'],
+      evidenceRefs: ['tower:human-resume-approval'],
+    }, { userId: 'reviewer-1' });
+
+    expect(result.ok).toBe(true);
+    expect(result.resumedLeases).toHaveLength(1);
+    expect(result.resumedLeases[0]).toMatchObject({ id: 'lease-api', status: 'active' });
+    expect(result.stopWorkDocument).toMatchObject({
+      id: 'doc-stop-work-1',
+      status: 'resolved',
+      blocking: false,
+    });
+    expect(result.stopWorkDocument.body.resumeGate).toMatchObject({
+      status: 'approved',
+      approvedByUserId: 'reviewer-1',
+      rationale: 'SEC-01 passed inspection and tower approves resume.',
+      inspectionRunIds: ['inspection-mayday-1'],
+      resumedLeaseIds: ['lease-api'],
+    });
+    expect(result.event).toMatchObject({
+      eventType: 'mayday_resumed',
+      actorType: 'human',
+      actorId: 'reviewer-1',
+    });
+    expect(result.event.evidenceRefs).toEqual(expect.arrayContaining([
+      'tower:human-resume-approval',
+      'runtime:event:inspection-mayday-1',
+      'codesite:incident:incident-mayday-1',
+      'codesite:document:doc-stop-work-1',
+    ]));
+    expect(prisma.codeSitePolicyDecision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-api',
+        decision: 'allow',
+        reasonCodesJson: expect.stringContaining('human_resume_approved'),
+      }),
+    }));
+    expect(prisma.codeSiteIncident.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: { id: 'incident-mayday-1' },
+      data: expect.objectContaining({
+        incidentReplayJson: expect.stringContaining('mayday_resumed'),
+      }),
+    }));
   });
 
   it('closes near-miss incidents as causal black-box replay packets', async () => {
