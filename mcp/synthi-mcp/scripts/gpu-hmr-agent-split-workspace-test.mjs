@@ -841,6 +841,28 @@ function normalizeDirectSourceOverride(rawManifest, {
   if (!entryFile) {
     throw new Error(`direct source manifest entryPath ${entryPath} is missing from source files`);
   }
+  const declaredVisualSceneManifestHash = profileString(
+    raw.visualSceneManifestHash
+      ?? raw.visual_scene_manifest_hash
+      ?? raw.renderSceneManifestHash
+      ?? raw.render_scene_manifest_hash
+      ?? source.visualSceneManifestHash
+      ?? source.visual_scene_manifest_hash
+      ?? source.renderSceneManifestHash
+      ?? source.render_scene_manifest_hash,
+    'directSourceManifest.visualSceneManifestHash',
+  ).toLowerCase();
+  const visualSceneManifest = normalizeAgentVisualSceneManifest(
+    raw.visualSceneManifest
+      ?? raw.visual_scene_manifest
+      ?? raw.renderSceneManifest
+      ?? raw.render_scene_manifest
+      ?? source.visualSceneManifest
+      ?? source.visual_scene_manifest
+      ?? source.renderSceneManifest
+      ?? source.render_scene_manifest,
+    declaredVisualSceneManifestHash,
+  );
   const manifestHash = sourceFilesManifestHash(files);
   const immutableCommit = declaredImmutableCommit || (
     sourceAuthority === 'direct_local_git_repo_path'
@@ -872,6 +894,12 @@ function normalizeDirectSourceOverride(rawManifest, {
     manifest_hash: manifestHash,
     contentHash: entryFile.contentHash,
     content_hash: entryFile.contentHash,
+    visualSceneManifest: visualSceneManifest?.manifest ?? null,
+    visual_scene_manifest: visualSceneManifest?.manifest ?? null,
+    visualSceneManifestHash: visualSceneManifest?.manifestHash ?? null,
+    visual_scene_manifest_hash: visualSceneManifest?.manifest_hash ?? null,
+    visualSceneManifestEvidenceRef: visualSceneManifest?.evidenceRef ?? null,
+    visual_scene_manifest_evidence_ref: visualSceneManifest?.evidence_ref ?? null,
     byteLength: entryFile.byteLength,
     byte_length: entryFile.byteLength,
     manifestPath: manifestPath ? resolveProfilePath(manifestPath) : null,
@@ -939,6 +967,14 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
   };
   profile.sourceAuthority = override.sourceAuthority;
   profile.source_authority = override.source_authority;
+  if (override.visualSceneManifest) {
+    profile.visualSceneManifest = override.visualSceneManifest;
+    profile.visual_scene_manifest = override.visual_scene_manifest;
+    profile.visualSceneManifestHash = override.visualSceneManifestHash;
+    profile.visual_scene_manifest_hash = override.visual_scene_manifest_hash;
+    profile.visualSceneManifestEvidenceRef = override.visualSceneManifestEvidenceRef;
+    profile.visual_scene_manifest_evidence_ref = override.visual_scene_manifest_evidence_ref;
+  }
   refreshAgentProfileHash(profile);
   return profile;
 }
@@ -5937,6 +5973,63 @@ function selfCheckAgentVisualProfile() {
       entryPath: multiFileProfile.source.entryPath,
     });
     const providerDiagnosticSerialized = JSON.stringify(providerDiagnostic);
+    const directSourceSceneManifest = {
+      schemaVersion: 'synthi.gpu_hmr.visual_scene_manifest.v1',
+      sceneId: 'direct-source-semantic-scene',
+      semanticProbes: [
+        {
+          id: 'direct-source-diamond-material',
+          probeClass: 'diamond_specular_material',
+          region: [0, 0, 4, 4],
+        },
+        {
+          id: 'direct-source-key-light',
+          probeClass: 'key_light_shadow_response',
+          region: [4, 0, 4, 4],
+        },
+      ],
+    };
+    const directSourceSceneManifestHash = `sha256:${sha256Hex(stableJson(directSourceSceneManifest))}`;
+    const directSourceSceneOverride = normalizeDirectSourceOverride({
+      sourceAuthority: 'user_source_files',
+      entryPath: 'src/main.cpp',
+      visualSceneManifest: directSourceSceneManifest,
+      visualSceneManifestHash: directSourceSceneManifestHash,
+      files: [
+        {
+          path: 'src/main.cpp',
+          content: multiFileEntrySource,
+        },
+      ],
+    });
+    const directSourceSceneProfile = applyDirectSourceOverride(
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-direct-source-scene-profile',
+        profileClass: 'self_check_visual_gpu_path',
+        source: {
+          entryPath: 'src/main.cpp',
+          inline: multiFileEntrySource,
+        },
+      }),
+      directSourceSceneOverride,
+    );
+    let directSourceSceneHashMismatchRejected = false;
+    try {
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'user_source_files',
+        entryPath: 'src/main.cpp',
+        visualSceneManifest: directSourceSceneManifest,
+        visualSceneManifestHash: `sha256:${'2'.repeat(64)}`,
+        files: [{
+          path: 'src/main.cpp',
+          content: multiFileEntrySource,
+        }],
+      });
+    } catch (err) {
+      directSourceSceneHashMismatchRejected =
+        String(err.message).includes('visualSceneManifestHash mismatch');
+    }
     if (
       profile.profileId !== 'self-check-visual-profile'
       || profile.source.entryPath !== 'src/main.cpp'
@@ -5979,6 +6072,14 @@ function selfCheckAgentVisualProfile() {
       || directSourceProfile.source.files.length !== 2
       || !directSourceProfile.source.manifestHash?.startsWith('sha256:')
       || !directSourceProfile.source.evidenceRef?.startsWith('evidence:agent-direct-source-manifest:sha256:')
+      || directSourceSceneOverride.visualSceneManifestHash !== directSourceSceneManifestHash
+      || directSourceSceneOverride.visualSceneManifestEvidenceRef
+        !== `evidence:agent-profile-visual-scene-manifest:${directSourceSceneManifestHash}`
+      || directSourceSceneProfile.visualSceneManifest?.sceneId !== 'direct-source-semantic-scene'
+      || directSourceSceneProfile.visualSceneManifestHash !== directSourceSceneManifestHash
+      || !directSourceSceneProfile.visualSceneManifestEvidenceRef?.includes(directSourceSceneManifestHash)
+      || directSourceSceneProfile.profileHash === directSourceProfile.profileHash
+      || !directSourceSceneHashMismatchRejected
       || directSourceResolvedSource !== multiFileEntrySource
       || directSourceInitialFiles.length !== 2
       || directSourceFixtureId !== ''
