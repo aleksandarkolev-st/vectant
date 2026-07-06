@@ -34,56 +34,19 @@ import {
 } from "@/lib/local-support/acceptance";
 import { cn } from "@/lib/utils";
 
-const inventory = [
-  { path: "src/App.tsx", type: "Source", status: "Available locally", className: "L2", sent: false },
-  { path: "package.json", type: "Dependency metadata", status: "Sent to Vectant", className: "L1", sent: true },
-  { path: "vite.config.ts", type: "Config", status: "Awaiting review", className: "L2", sent: false },
-  { path: ".env", type: "Secret file", status: "Blocked locally", className: "L4", sent: false },
-  { path: ".aws/credentials", type: "Cloud credentials", status: "Blocked locally", className: "L5", sent: false },
-];
+const inventory = [];
 
-const sentPayloads = [
-  {
-    id: "req_pkg_91",
-    actor: "Vectant AI",
-    target: "package.json",
-    bytes: "2.9 KB",
-    className: "L1",
-    redactions: 0,
-    reason: "Identify package manager and scripts",
-    at: "12:42:18",
-  },
-  {
-    id: "req_log_18",
-    actor: "Support agent",
-    target: "dev-server.log",
-    bytes: "4.1 KB redacted",
-    className: "L3",
-    redactions: 2,
-    reason: "Review startup failure",
-    at: "12:44:03",
-  },
-];
+const sentPayloads = [];
 
-const blockedItems = [
-  { target: ".env", reason: "blocked_secret_file_pattern", className: "L4", at: "12:45:12" },
-  { target: "../.ssh/id_ed25519", reason: "path_outside_workspace", className: "L5", at: "12:46:40" },
-  { target: "http://169.254.169.254/latest/meta-data/", reason: "preview_redirect_blocked", className: "L5", at: "12:48:07" },
-];
+const blockedItems = [];
 
-const activity = [
-  { kind: "Control", text: "Paired browser session with fingerprint 7f2a-b83c-19d4.", at: "12:40:02" },
-  { kind: "Data", text: "Sent package.json after local policy allowed metadata sharing.", at: "12:42:18" },
-  { kind: "Redaction", text: "Redacted authorization_header and database_url from dev-server.log.", at: "12:44:03" },
-  { kind: "Denied", text: "Blocked .env. Nothing was sent to Vectant.", at: "12:45:12" },
-  { kind: "Preview", text: "Approved browser preview for localhost:5173. AI page reading remains off.", at: "12:47:31" },
-];
+const activity = [];
 
 const exportMetadata = {
   exported_by: "local_support_app",
   export_type: "scrubbed_activity_history",
-  session_id: "sess_7K9",
-  workspace_display: "vectant-demo",
+  session_id: "not_paired",
+  workspace_display: "No workspace selected",
   policy_version: "2026.07.05",
   scanner_version: "scanner-2026.07.05",
   raw_bodies_included: false,
@@ -99,10 +62,10 @@ const orgRestrictions = [
 ];
 
 const setupChecklist = [
-  ["Workspace chosen", "C:\\Users\\alex\\projects\\vectant-demo"],
+  ["Workspace chosen", "No live local app connected"],
   ["Secret denylist active", ".env, SSH, cloud, kube, keychain patterns"],
   ["Local policy mode", "Balanced, with source and logs review-gated"],
-  ["Pairing consent", "Only this browser session and account"],
+  ["Pairing consent", "Waiting for local app pairing"],
 ];
 
 const permissionModes = [
@@ -132,29 +95,7 @@ const permissionModes = [
   },
 ];
 
-const ports = [
-  {
-    port: 5173,
-    service: "Vite dev server",
-    targetHost: "127.0.0.1",
-    previewHost: "br-local-p5173.vectant-preview.dev",
-    process: "vite dev server",
-    processHash: "sha256:9c4f...b812",
-    ttl: "Current session only",
-    token: "Short lived preview token",
-    requestRate: "60 requests per minute",
-    responseLimit: "5 MB hard cap",
-    browser: true,
-    aiRead: false,
-    supportRead: false,
-    aiInteract: false,
-    responseBodies: false,
-    screenshots: false,
-    consoleNetwork: false,
-    persistent: false,
-    methods: "GET, HEAD, OPTIONS",
-  },
-];
+const ports = [];
 
 function Pill({ tone = "neutral", children }) {
   return (
@@ -213,7 +154,17 @@ function DataTable({ columns, rows, renderRow }) {
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-white/10">{rows.map(renderRow)}</tbody>
+        <tbody className="divide-y divide-white/10">
+          {rows.length > 0 ? (
+            rows.map(renderRow)
+          ) : (
+            <tr>
+              <td className="px-4 py-6 text-sm text-zinc-500" colSpan={columns.length}>
+                No live local support records yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
       </table>
     </div>
   );
@@ -296,7 +247,7 @@ export default function LocalSupportTransparency() {
                 <Pill tone="neutral">Balanced mode</Pill>
               </div>
               <p className="mt-1 text-sm text-zinc-400">
-                Workspace: C:\Users\alex\projects\vectant-demo. Account: alex@vectant.dev. Session: sess_7K9.
+                Workspace: not selected. Account: not paired. Session: not paired.
               </p>
             </div>
           </div>
@@ -364,10 +315,10 @@ export default function LocalSupportTransparency() {
           </section>
 
           <section className="grid grid-cols-2 gap-3">
-            <Stat icon={FileCheck2} label="Sent" value="2" tone="text-emerald-200" />
-            <Stat icon={Ban} label="Blocked" value="3" tone="text-red-200" />
-            <Stat icon={Eye} label="Ports" value="1" tone="text-sky-200" />
-            <Stat icon={KeyRound} label="Redactions" value="2" tone="text-amber-200" />
+            <Stat icon={FileCheck2} label="Sent" value={String(sentPayloads.length)} tone="text-emerald-200" />
+            <Stat icon={Ban} label="Blocked" value={String(blockedItems.length)} tone="text-red-200" />
+            <Stat icon={Eye} label="Ports" value={String(ports.length)} tone="text-sky-200" />
+            <Stat icon={KeyRound} label="Redactions" value="0" tone="text-amber-200" />
           </section>
         </div>
 
@@ -394,8 +345,8 @@ export default function LocalSupportTransparency() {
             <Panel title="Session boundary" description="One support session, one selected workspace, short lived approvals, and immediate revoke controls.">
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
-                  ["Device", "DESKTOP-7K9Q", "Paired with fingerprint 7f2a-b83c-19d4"],
-                  ["Workspace", "vectant-demo", "Canonical path checked before every read"],
+                  ["Device", "Not paired", "No local device fingerprint has been confirmed"],
+                  ["Workspace", "Not selected", "Pick one workspace in the desktop app before requests can proceed"],
                   ["Policy", "2026.07.05", "Deny on uncertainty"],
                   ["Scanner", "scanner-2026.07.05", "Secrets blocked or redacted locally"],
                 ].map(([label, value, detail]) => (
@@ -428,7 +379,7 @@ export default function LocalSupportTransparency() {
             <Panel
               title="Workspace selection"
               description="Installation is not consent. Vectant can only request context from the selected workspace, and sensitive paths remain blocked inside it."
-              action={<Pill tone="good">Selected</Pill>}
+              action={<Pill tone="warn">Waiting</Pill>}
             >
               <div className="grid gap-3">
                 {setupChecklist.map(([label, value]) => (
@@ -442,34 +393,28 @@ export default function LocalSupportTransparency() {
 
             <Panel
               title="Review before send"
-              description="This approval has a redacted preview. Raw secrets never leave this computer."
-              action={<Pill tone="warn">Approval required</Pill>}
+              description="Approvals appear here only after the local app classifies a real request."
+              action={<Pill tone="neutral">No queued approvals</Pill>}
             >
               {reviewOpen ? (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-4">
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
                     <div className="flex items-start gap-3">
-                      <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-200" aria-hidden="true" />
+                      <AlertTriangle className="mt-0.5 size-5 shrink-0 text-zinc-400" aria-hidden="true" />
                       <div>
-                        <div className="font-medium text-amber-100">Support agent wants dev-server.log</div>
-                        <p className="mt-1 text-sm leading-6 text-amber-100/75">
-                          Local Support found and redacted 2 possible secrets. Approving sends only the redacted preview.
+                        <div className="font-medium text-zinc-100">No live approval request</div>
+                        <p className="mt-1 text-sm leading-6 text-zinc-400">
+                          When a file, log, or port request arrives, the desktop app must show the real target, classification, hash, redactions, actor, and reason before anything can leave this computer.
                         </p>
                       </div>
                     </div>
                   </div>
-                  <pre className="max-h-44 overflow-auto rounded-lg border border-white/10 bg-zinc-950 p-4 text-xs leading-6 text-zinc-300">
-{`[12:43:10] GET /api/start
-Authorization: [REDACTED:authorization_header]
-DATABASE_URL=[REDACTED:database_url]
-Error: module failed to resolve`}
-                  </pre>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" className="bg-emerald-300 text-zinc-950 hover:bg-emerald-200" onClick={() => setReviewOpen(false)}>
+                    <Button type="button" className="bg-emerald-300 text-zinc-950 hover:bg-emerald-200" onClick={() => setReviewOpen(false)} disabled>
                       <CheckCircle2 className="size-4" aria-hidden="true" />
                       Send redacted
                     </Button>
-                    <Button type="button" variant="outline" className="border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]" onClick={() => setReviewOpen(false)}>
+                    <Button type="button" variant="outline" className="border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]" onClick={() => setReviewOpen(false)} disabled>
                       <XCircle className="size-4" aria-hidden="true" />
                       Deny
                     </Button>
@@ -478,7 +423,7 @@ Error: module failed to resolve`}
               ) : (
                 <div className="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-300">
                   <CheckCircle2 className="size-5 text-emerald-200" aria-hidden="true" />
-                  Review closed for this mock session.
+                  Review closed.
                 </div>
               )}
             </Panel>
@@ -545,7 +490,11 @@ Error: module failed to resolve`}
           <TabsContent value="ports" className="mt-4">
             <Panel title="Local ports" description="Manual approval only. Preview is browser-only unless a separate future security review enables AI read.">
               <div className="grid gap-4">
-                {ports.map((item) => {
+                {ports.length === 0 ? (
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+                    No local ports are approved. Browser preview stays unavailable until the desktop app binds a real port approval to this session, host, token, and process identity.
+                  </div>
+                ) : ports.map((item) => {
                   const revoked = revokedPorts.includes(item.port);
                   return (
                     <div key={item.port} className="rounded-lg border border-white/10 bg-zinc-950/70">
@@ -677,7 +626,7 @@ Error: module failed to resolve`}
                     ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
                     : "border-white/10 bg-white/[0.03] text-zinc-400",
                 )}>
-                  {approvalsRevoked ? "Session approvals revoked. Future sends require review." : "No approvals revoked in this mock session."}
+                  {approvalsRevoked ? "Session approvals revoked. Future sends require review." : "No live approvals are active."}
                 </div>
               </div>
             </Panel>
@@ -696,7 +645,12 @@ Error: module failed to resolve`}
                   </div>
                 ))}
                 {historyDeleted ? (
-                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">Local activity history deleted for this mock session.</div>
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">Local activity history deleted.</div>
+                ) : null}
+                {!historyDeleted && visibleActivity.length === 0 ? (
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+                    No live local support activity has been recorded.
+                  </div>
                 ) : null}
               </div>
             </Panel>
@@ -721,7 +675,7 @@ Error: module failed to resolve`}
                   }}
                 >
                   <RotateCcw className="size-4" aria-hidden="true" />
-                  Restore demo history
+                  Restore local history view
                 </Button>
                 <Button
                   type="button"

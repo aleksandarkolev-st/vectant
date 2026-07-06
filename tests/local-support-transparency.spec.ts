@@ -17,29 +17,16 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("30 days, raw bodies never stored")).toBeVisible();
     await expect(page.getByText("Workspace selection")).toBeVisible();
     await expect(page.getByText("Installation is not consent.")).toBeVisible();
+    await expect(page.getByText("Workspace: not selected. Account: not paired. Session: not paired.")).toBeVisible();
+    await expect(page.getByText("No live approval request")).toBeVisible();
 
     await page.getByRole("tab", { name: "Inventory" }).click();
-    await expect(page.getByText(".env")).toBeVisible();
-    await expect(page.getByText("Blocked locally")).toHaveCount(2);
-    await expect(page.getByText("Sent to Vectant")).toBeVisible();
+    await expect(page.getByText("No live local support records yet.")).toBeVisible();
+    await expect(page.getByText("Sent to Vectant")).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Ports" }).click();
-    await expect(page.getByText("127.0.0.1:5173")).toBeVisible();
-    await expect(page.getByText("GET, HEAD, OPTIONS")).toBeVisible();
-    await expect(page.getByText("Current session only")).toBeVisible();
-    await expect(page.getByText("Process binding")).toBeVisible();
-    await expect(page.getByText("60 requests per minute")).toBeVisible();
-    await expect(page.getByText("5 MB hard cap")).toBeVisible();
-    await expect(page.getByText("Cookie and Authorization stripped")).toBeVisible();
-    await expect(page.getByText("Loopback only, private network blocked")).toBeVisible();
-    await expect(page.getByText("Vectant AI can read page")).toBeVisible();
-    await expect(page.getByText("Send response bodies")).toBeVisible();
-    await expect(page.getByText("Send screenshots")).toBeVisible();
-    await expect(page.getByText("Console and network summaries")).toBeVisible();
-    await expect(page.getByText("Persistent approval")).toBeVisible();
-    await page.getByRole("button", { name: "Revoke port approval" }).click();
-    await expect(page.getByText("Revoked").first()).toBeVisible();
-    await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeDisabled();
+    await expect(page.getByText("No local ports are approved.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke port approval" })).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Permission mode" }).click();
     await expect(page.getByRole("cell", { name: "Balanced mode" })).toBeVisible();
@@ -75,7 +62,7 @@ test.describe("local support transparency page", () => {
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: "Export scrubbed history" }).click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("vectant-local-support-history-sess_7K9.json");
+    expect(download.suggestedFilename()).toBe("vectant-local-support-history-not_paired.json");
 
     const stream = await download.createReadStream();
     if (!stream) throw new Error("Expected exported history download stream");
@@ -86,14 +73,14 @@ test.describe("local support transparency page", () => {
     expect(exported).toMatchObject({
       export_type: "scrubbed_activity_history",
       raw_bodies_included: false,
-      session_id: "sess_7K9",
+      session_id: "not_paired",
     });
-    expect(exported.events).toHaveLength(5);
+    expect(exported.events).toHaveLength(0);
     expect(JSON.stringify(exported)).not.toContain("DATABASE_URL=");
-    await expect(page.getByText("5 scrubbed events exported")).toBeVisible();
+    await expect(page.getByText("0 scrubbed events exported")).toBeVisible();
 
     await page.getByRole("button", { name: "Delete local history" }).click();
-    await expect(page.getByText("Local activity history deleted for this mock session.")).toBeVisible();
+    await expect(page.getByText("Local activity history deleted.")).toBeVisible();
     await expect(page.getByText("Paired browser session with fingerprint")).toHaveCount(0);
   });
 });
