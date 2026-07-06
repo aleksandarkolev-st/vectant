@@ -14,7 +14,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Wand2, Loader2, CheckCircle2, XCircle, Zap, ZapOff, RotateCcw } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Zap, ZapOff, RotateCcw, X } from 'lucide-react';
 
 /**
  * @param {Object} props
@@ -61,25 +61,29 @@ export function RuntimeHealingIndicator({ healingState }) {
 
   return (
     <div className="fixed bottom-4 right-4 z-50 max-w-sm animate-in slide-in-from-bottom-2 fade-in duration-300">
-      <div className={`
-        rounded-lg border shadow-lg backdrop-blur-sm p-3
-        ${isHealing ? 'border-purple-500/40 bg-purple-950/80' : ''}
-        ${isSuccess ? 'border-green-500/40 bg-green-950/80' : ''}
-        ${isError ? 'border-red-500/40 bg-red-950/80' : ''}
-      `}>
+      <div
+        className="vt-command-popover p-3"
+        style={{
+          borderColor: isError
+            ? 'color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle))'
+            : isSuccess
+              ? 'color-mix(in srgb, var(--accent-success) 38%, var(--border-subtle))'
+              : 'color-mix(in srgb, var(--attention-purple) 34%, var(--border-subtle))',
+        }}
+      >
         {/* Header */}
         <div className="flex items-center justify-between gap-3 mb-1">
           <div className="flex items-center gap-2">
             {isHealing && (
-              <Loader2 size={16} className="text-purple-400 animate-spin" />
+              <Loader2 size={16} className="animate-spin text-[var(--attention-purple)]" />
             )}
             {isSuccess && (
-              <CheckCircle2 size={16} className="text-green-400" />
+              <CheckCircle2 size={16} className="text-[var(--accent-success)]" />
             )}
             {isError && (
-              <XCircle size={16} className="text-red-400" />
+              <XCircle size={16} className="text-[var(--accent-danger)]" />
             )}
-            <span className="text-sm font-medium text-white">
+            <span className="text-sm font-semibold text-[var(--text-primary)]">
               {status === 'healing' && 'AI fixing errors...'}
               {status === 'applying' && 'Applying fix...'}
               {status === 'retrying' && 'Waiting for HMR...'}
@@ -90,20 +94,20 @@ export function RuntimeHealingIndicator({ healingState }) {
 
           <button
             onClick={() => setDismissed(true)}
-            className="text-gray-500 hover:text-gray-300 text-xs"
+            className="vt-icon-button th-focus-ring h-6 min-w-6"
             title="Dismiss"
           >
-            ✕
+            <X size={13} />
           </button>
         </div>
 
         {/* Progress */}
         {isHealing && (
-          <div className="flex items-center gap-2 text-xs text-gray-400 mb-2">
+          <div className="mb-2 flex items-center gap-2 text-xs text-[var(--text-muted)]">
             <span>Attempt {attempt}/{maxAttempts}</span>
-            <div className="flex-1 h-1 rounded-full bg-gray-700 overflow-hidden">
+            <div className="h-1 flex-1 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--text-primary)_8%,transparent)]">
               <div
-                className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                className="h-full rounded-full bg-[var(--attention-purple)] transition-all duration-500"
                 style={{ width: `${(attempt / maxAttempts) * 100}%` }}
               />
             </div>
@@ -112,14 +116,14 @@ export function RuntimeHealingIndicator({ healingState }) {
 
         {/* Error detail */}
         {isError && lastError && (
-          <p className="text-xs text-red-300/80 mb-2 line-clamp-2">
+          <p className="mb-2 line-clamp-2 text-xs text-[var(--accent-danger)]">
             {lastError}
           </p>
         )}
 
         {/* Success detail */}
         {isSuccess && lastResult && (
-          <p className="text-xs text-green-300/80 mb-2">
+          <p className="mb-2 text-xs text-[var(--accent-success)]">
             {lastResult.diagnosticCount} error{lastResult.diagnosticCount !== 1 ? 's' : ''} diagnosed,{' '}
             {fixCount} fix{fixCount !== 1 ? 'es' : ''} applied
           </p>
@@ -129,12 +133,7 @@ export function RuntimeHealingIndicator({ healingState }) {
         <div className="flex items-center gap-2 mt-1">
           <button
             onClick={toggleAutoHeal}
-            className={`
-              flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors
-              ${isAutoHeal
-                ? 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'
-                : 'bg-gray-700/50 text-gray-400 hover:bg-gray-700/70'}
-            `}
+            className={`th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] px-2 py-1 text-xs transition-colors ${isAutoHeal ? 'th-btn-active' : 'th-btn-ghost'}`}
             title={isAutoHeal ? 'Disable auto-heal' : 'Enable auto-heal'}
           >
             {isAutoHeal ? <Zap size={12} /> : <ZapOff size={12} />}
@@ -144,8 +143,7 @@ export function RuntimeHealingIndicator({ healingState }) {
           {isError && (
             <button
               onClick={() => resetAttempts()}
-              className="flex items-center gap-1 px-2 py-1 rounded text-xs
-                         bg-gray-700/50 text-gray-400 hover:bg-gray-700/70 transition-colors"
+              className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[var(--radius-control)] px-2 py-1 text-xs"
               title="Reset attempt counter"
             >
               <RotateCcw size={12} />

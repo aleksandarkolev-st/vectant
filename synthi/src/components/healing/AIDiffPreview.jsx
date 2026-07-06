@@ -64,33 +64,17 @@ export function AIDiffPreview({
   }, [originalCode, modifiedCode, language, inline]);
 
   return (
-    <div className="ai-diff-preview" style={{ border: '1px solid var(--border, #333)', borderRadius: 6, overflow: 'hidden' }}>
+    <div className="ai-diff-preview vt-panel-frame overflow-hidden">
       {/* Header */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '6px 10px',
-        background: 'var(--bg-secondary, #1e1e1e)',
-        borderBottom: '1px solid var(--border, #333)',
-        fontSize: 12,
-      }}>
-        <span style={{ fontWeight: 600, opacity: 0.8 }}>
+      <div className="vt-panel-header justify-between text-xs">
+        <span className="vt-panel-title">
           {title || 'AI Fix Preview'}
         </span>
         <span style={{ display: 'flex', gap: 6 }}>
           {onDismiss && (
             <button
               onClick={onDismiss}
-              style={{
-                background: 'transparent',
-                border: '1px solid #666',
-                color: '#ccc',
-                padding: '2px 10px',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontSize: 11,
-              }}
+              className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2.5 py-1 text-[11px]"
             >
               Dismiss
             </button>
@@ -98,15 +82,7 @@ export function AIDiffPreview({
           {onApply && (
             <button
               onClick={onApply}
-              style={{
-                background: '#238636',
-                border: 'none',
-                color: '#fff',
-                padding: '2px 10px',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontSize: 11,
-              }}
+              className="th-focus-ring th-btn-primary px-2.5 py-1 text-[11px]"
             >
               Apply Fix
             </button>
