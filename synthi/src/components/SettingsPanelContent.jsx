@@ -724,8 +724,8 @@ export function SettingsPanelContent() {
         </div>
       )}
       {sessionStatus === 'authenticated' && !tokenSource && (
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, #ef4444 6%, transparent)', color: 'var(--text-primary)' }}>
-          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#f87171' }} />
+        <div className="vt-workflow-alert vt-workflow-alert--danger flex items-center gap-2 px-2 py-1.5 text-xs">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 text-[var(--accent-danger)]" />
           <span>No GitHub access. Save a PAT below to enable git/PR features.</span>
         </div>
       )}
@@ -748,7 +748,7 @@ export function SettingsPanelContent() {
             className="w-full pl-7 pr-8 py-1.5 text-xs rounded border font-mono focus:outline-none transition-colors"
             style={{
               background: 'var(--bg-input, var(--bg-editor))',
-              borderColor: tokenError ? '#ef4444' : 'var(--border-subtle)',
+              borderColor: tokenError ? 'var(--accent-danger)' : 'var(--border-subtle)',
               color: 'var(--text-primary)',
             }}
             onKeyDown={e => e.key === 'Enter' && handleSaveToken()}
@@ -783,7 +783,7 @@ export function SettingsPanelContent() {
       </div>
 
       {tokenError && (
-        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: '#f87171' }}>
+        <div className="flex items-center gap-1.5 text-[11px] text-[var(--accent-danger)]">
           <AlertCircle className="w-3 h-3 flex-shrink-0" />
           {tokenError}
         </div>
@@ -821,9 +821,9 @@ export function SettingsPanelContent() {
         >
           {testResults.map((step, i) => {
             const colour =
-              step.status === 'ok' ? '#4ade80' :
-              step.status === 'warn' ? '#fbbf24' :
-              step.status === 'fail' ? '#f87171' : 'var(--text-muted)';
+              step.status === 'ok' ? 'var(--accent-success)' :
+              step.status === 'warn' ? 'var(--accent-warning)' :
+              step.status === 'fail' ? 'var(--accent-danger)' : 'var(--text-muted)';
             const glyph =
               step.status === 'ok' ? '✓' :
               step.status === 'warn' ? '!' :
