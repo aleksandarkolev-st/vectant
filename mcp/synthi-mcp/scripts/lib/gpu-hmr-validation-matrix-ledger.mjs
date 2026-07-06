@@ -9287,19 +9287,19 @@ function visualSemanticProbeClass(value) {
   const raw = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (!raw) return null;
   if (VISUAL_SEMANTIC_PROBE_ACCEPTED_CLASSES.has(raw)) return raw;
-  if (/\b(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|surface)\b/.test(raw)) {
+  if (/(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|diamond|surface|sparkle|glint|highlight|faceted|facet)/.test(raw)) {
     return 'material_response';
   }
-  if (/\b(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce)\b/.test(raw)) {
+  if (/(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce|contrast|key_light|rim_light|area_light)/.test(raw)) {
     return 'lighting_response';
   }
-  if (/\b(geometry|silhouette|edge|normal|depth|parallax|occlusion)\b/.test(raw)) {
+  if (/(geometry|silhouette|edge|normal|depth|parallax|occlusion)/.test(raw)) {
     return 'geometry_response';
   }
-  if (/\b(color|tone|albedo|hue|temperature|white_balance)\b/.test(raw)) {
+  if (/(color|tone|albedo|hue|temperature|white_balance)/.test(raw)) {
     return 'color_response';
   }
-  if (/\b(temporal|stability|convergence|accumulation)\b/.test(raw)) {
+  if (/(temporal|stability|convergence|accumulation)/.test(raw)) {
     return 'temporal_stability';
   }
   return raw;

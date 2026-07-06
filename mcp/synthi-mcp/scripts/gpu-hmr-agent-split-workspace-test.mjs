@@ -6105,13 +6105,13 @@ async function selfCheckSemanticVisualProbeEvidence() {
       semanticProbes: [
         {
           id: 'self-check-material-gem',
-          probeClass: 'material_response',
+          probeClass: 'diamond_specular_material',
           region: [0, 0, 4, 8],
           expected: 'material response changes on gem facets',
         },
         {
           id: 'self-check-light-shadow',
-          probeClass: 'lighting_response',
+          probeClass: 'caustic_lighting_response',
           region: [4, 0, 4, 8],
           expected: 'lighting response changes on shadow edge',
         },
@@ -7351,28 +7351,22 @@ function semanticProbeRegion(rawProbe) {
   return null;
 }
 
-function semanticProbeClassFromDeclaration(rawProbe, index) {
-  const explicit = String(
-    rawProbe?.probeClass
-      ?? rawProbe?.probe_class
-      ?? rawProbe?.semanticClass
-      ?? rawProbe?.semantic_class
-      ?? rawProbe?.kind
-      ?? rawProbe?.type
-      ?? '',
-  ).trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if (explicit) return explicit;
-  const text = [
-    rawProbe?.id,
-    rawProbe?.probeId,
-    rawProbe?.probe_id,
-    rawProbe?.expected,
-    rawProbe?.description,
-  ].map((value) => String(value ?? '').toLowerCase()).join(' ');
-  if (/(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|diamond|surface|sparkle|glint|highlight)/.test(text)) {
+function normalizeSemanticProbeClassToken(value) {
+  const text = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!text) return null;
+  if ([
+    'material_response',
+    'lighting_response',
+    'geometry_response',
+    'color_response',
+    'temporal_stability',
+  ].includes(text)) {
+    return text;
+  }
+  if (/(material|specular|reflection|reflectance|refraction|roughness|metal|glass|gem|diamond|surface|sparkle|glint|highlight|faceted|facet)/.test(text)) {
     return 'material_response';
   }
-  if (/(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce|contrast)/.test(text)) {
+  if (/(light|lighting|illumination|shadow|caustic|emissive|exposure|direct_lighting|bounce|contrast|key_light|rim_light|area_light)/.test(text)) {
     return 'lighting_response';
   }
   if (/(geometry|silhouette|edge|normal|depth|parallax|occlusion)/.test(text)) {
@@ -7381,7 +7375,30 @@ function semanticProbeClassFromDeclaration(rawProbe, index) {
   if (/(color|tone|albedo|hue|temperature|white_balance)/.test(text)) {
     return 'color_response';
   }
-  return index === 0 ? 'material_response' : null;
+  if (/(temporal|stability|convergence|accumulation)/.test(text)) {
+    return 'temporal_stability';
+  }
+  return null;
+}
+
+function semanticProbeClassFromDeclaration(rawProbe, index) {
+  const explicit = normalizeSemanticProbeClassToken(
+    rawProbe?.probeClass
+      ?? rawProbe?.probe_class
+      ?? rawProbe?.semanticClass
+      ?? rawProbe?.semantic_class
+      ?? rawProbe?.kind
+      ?? rawProbe?.type,
+  );
+  if (explicit) return explicit;
+  const inferred = normalizeSemanticProbeClassToken([
+    rawProbe?.id,
+    rawProbe?.probeId,
+    rawProbe?.probe_id,
+    rawProbe?.expected,
+    rawProbe?.description,
+  ].map((value) => String(value ?? '').toLowerCase()).join(' '));
+  return inferred ?? (index === 0 ? 'material_response' : null);
 }
 
 function resolveVisualArtifactPath(filePath) {
