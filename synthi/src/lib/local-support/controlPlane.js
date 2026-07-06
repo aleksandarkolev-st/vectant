@@ -332,6 +332,62 @@ export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy
   };
 }
 
+export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
+  const state = input && typeof input === "object" ? input : {};
+  const devices = Array.isArray(state.devices) ? state.devices : [];
+  const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+
+  return {
+    decision: "admin_state_ready",
+    raw_body_included: false,
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    emergency_controls: policy.emergency_controls,
+    paired_devices: devices.slice(0, 100).map((device) => ({
+      device_id: scrubTelemetryValue(device.device_id || device.id || ""),
+      account_id: scrubTelemetryValue(device.account_id || ""),
+      org_id: scrubTelemetryValue(device.org_id || ""),
+      app_version: scrubTelemetryValue(device.app_version || ""),
+      last_active_at: scrubTelemetryValue(device.last_active_at || ""),
+      policy_version: scrubTelemetryValue(device.policy_version || policy.policy_version),
+      active_sessions: clampNumber(device.active_sessions, 0, 100, 0),
+      approved_ports_count: clampNumber(device.approved_ports_count, 0, 100, 0),
+      revoked: device.revoked === true,
+    })),
+    active_sessions: sessions.slice(0, 100).map((session) => ({
+      session_id: scrubTelemetryValue(session.session_id || session.id || ""),
+      device_id: scrubTelemetryValue(session.device_id || ""),
+      account_id: scrubTelemetryValue(session.account_id || ""),
+      org_id: scrubTelemetryValue(session.org_id || ""),
+      workspace_id: scrubTelemetryValue(session.workspace_id || ""),
+      app_version: scrubTelemetryValue(session.app_version || ""),
+      policy_version: scrubTelemetryValue(session.policy_version || policy.policy_version),
+      approved_ports_count: clampNumber(session.approved_ports_count, 0, 100, 0),
+      last_active_at: scrubTelemetryValue(session.last_active_at || ""),
+      revoked: session.revoked === true,
+    })),
+  };
+}
+
+export function buildAdminRevokeDecision(input, policy = readLocalSupportPolicy()) {
+  const targetType = typeof input?.target_type === "string" ? input.target_type : "";
+  const targetId = typeof input?.target_id === "string" ? input.target_id.trim() : "";
+  if (!["device", "session"].includes(targetType) || !targetId) {
+    return deny("invalid_admin_revoke_target", "Admin revoke requires a device or session target.");
+  }
+  return {
+    decision: "revocation_required",
+    reason: `${targetType}_revocation_requested`,
+    target_type: targetType,
+    target_id: scrubTelemetryValue(targetId),
+    policy_version: policy.policy_version,
+    raw_body_included: false,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+    user_visible_message: "The local app and relay must revoke this target immediately.",
+  };
+}
+
 function deny(reason, message) {
   return {
     decision: "denied",
