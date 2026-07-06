@@ -64,7 +64,35 @@ jobs:
         run: npm ci
 
       - name: Run focused policy tests
-        run: npm run test --workspace synthi -- src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/policy/route.test.js src/app/api/local-support/security-event/route.test.js
+        run: npm run test --workspace synthi -- src/lib/local-support/acceptance.test.js src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/policy/route.test.js src/app/api/local-support/security-event/route.test.js
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Run transparency browser E2E
+        shell: pwsh
+        env:
+          VECTANT_TEST_BASE_URL: http://127.0.0.1:3000
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "local-support-next.out.log"
+          $err = Join-Path $env:RUNNER_TEMP "local-support-next.err.log"
+          $server = Start-Process -FilePath "npx.cmd" -ArgumentList @("next", "dev", "--hostname", "127.0.0.1", "--port", "3000") -WorkingDirectory "synthi" -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Hidden -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(90)
+            do {
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:3000/local-support" -UseBasicParsing -TimeoutSec 5
+                if ($response.StatusCode -lt 500) { break }
+              } catch {
+                Start-Sleep -Seconds 2
+              }
+            } while ((Get-Date) -lt $deadline)
+            npx playwright test tests/local-support-transparency.spec.ts --project=chromium --reporter=line
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            Get-Content $out -ErrorAction SilentlyContinue
+            Get-Content $err -ErrorAction SilentlyContinue
+          }
 
       - name: Audit production web dependencies
         run: npm audit --workspace synthi --omit=dev --audit-level=high
