@@ -3424,14 +3424,14 @@ export default function EditorPage({ params }) {
     return (
         <DockablePanelProvider workspaceId={slug}>
             <div
-                className={cn('workspace-root relative flex flex-col h-screen overflow-hidden', viewportClass)}
+                className={cn('workspace-root vt-app-surface relative flex h-[100dvh] flex-col overflow-hidden', viewportClass)}
                 style={{
                     background: 'var(--bg-sidebar)',
                     color: 'var(--text-primary)',
                     '--workspace-statusbar-terminal-clearance': 'clamp(160px, 24vh, 260px)',
                 }}
             >
-                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
+                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'transparent', color: 'var(--text-primary)' }}>
                     {/* Suppress native right-click menu inside the workspace
                         so the user can spam right-click to discover which
                         surfaces ship a custom menu. Skips text inputs so
@@ -3472,12 +3472,12 @@ export default function EditorPage({ params }) {
                     <GuestBanner />
 
                     {buildLogs.length > 0 && (
-                        <div className="border-b border-[#1a1a1e] bg-[#09090b]">
-                            <div className="flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wide text-[#7d7d85]">
+                        <div className="vt-ambient-bottom border-b" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 84%, transparent)' }}>
+                            <div className="flex items-center justify-between px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: 'var(--text-muted)' }}>
                                 <button
                                     type="button"
                                     onClick={() => setBuildLogsCollapsed((v) => !v)}
-                                    className="flex items-center gap-1 hover:text-[#D7DAE0]"
+                                    className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[6px] px-1.5 py-0.5"
                                     title={buildLogsCollapsed ? 'Show build logs' : 'Hide build logs'}
                                 >
                                     <span aria-hidden="true">{buildLogsCollapsed ? '▸' : '▾'}</span>
@@ -3486,14 +3486,14 @@ export default function EditorPage({ params }) {
                                 <button
                                     type="button"
                                     onClick={() => setBuildLogs([])}
-                                    className="hover:text-[#D7DAE0]"
+                                    className="th-focus-ring th-btn-ghost rounded-[6px] px-1.5 py-0.5"
                                     title="Clear build logs"
                                 >
-                                    ✕
+                                    Clear
                                 </button>
                             </div>
                             {!buildLogsCollapsed && (
-                                <div className="px-3 pb-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                                <div className="vt-mono max-h-28 overflow-auto px-3 pb-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
                                     {buildLogs.map((line, idx) => (
                                         <div key={idx} className="leading-5 whitespace-pre-wrap">
                                             {line}
