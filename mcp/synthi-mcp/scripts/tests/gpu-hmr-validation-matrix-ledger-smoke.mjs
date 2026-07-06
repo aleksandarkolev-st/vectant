@@ -2302,6 +2302,132 @@ function randomColdAppHookMaterializationPlanFixture(overrides = {}) {
   };
 }
 
+function randomColdRuntimeBoundaryPlanBindingFixture({
+  appHookMaterializationPlan,
+  sourceIntakeEvidence,
+  runtimeBoundaryEventManifestSha256,
+  adapterResultSha256,
+  proofJsonSha256,
+  overrides = {},
+} = {}) {
+  const sourceListingHash =
+    sourceIntakeEvidence.sourceListingHash
+    ?? sourceIntakeEvidence.source_listing_hash;
+  const buildMetadataContentEvidence =
+    sourceIntakeEvidence.buildMetadataContentEvidence
+    ?? sourceIntakeEvidence.build_metadata_content_evidence
+    ?? {};
+  const buildMetadataContentHash =
+    buildMetadataContentEvidence.contentEvidenceHash
+    ?? buildMetadataContentEvidence.content_evidence_hash
+    ?? sourceIntakeEvidence.buildMetadataContentHash
+    ?? sourceIntakeEvidence.build_metadata_content_hash;
+  const runtimeBoundaryExpectation =
+    sourceIntakeEvidence.runtimeBoundaryExpectation
+    ?? sourceIntakeEvidence.runtime_boundary_expectation
+    ?? {};
+  const runtimeBoundaryExpectationHash =
+    runtimeBoundaryExpectation.expectationHash
+    ?? runtimeBoundaryExpectation.expectation_hash
+    ?? sourceIntakeEvidence.runtimeBoundaryExpectationHash
+    ?? sourceIntakeEvidence.runtime_boundary_expectation_hash;
+  const runtimeBoundaryEventManifestTemplate =
+    sourceIntakeEvidence.runtimeBoundaryEventManifestTemplate
+    ?? sourceIntakeEvidence.runtime_boundary_event_manifest_template
+    ?? {};
+  const runtimeBoundaryEventManifestTemplateHash =
+    runtimeBoundaryEventManifestTemplate.templateHash
+    ?? runtimeBoundaryEventManifestTemplate.template_hash
+    ?? sourceIntakeEvidence.runtimeBoundaryEventManifestTemplateHash
+    ?? sourceIntakeEvidence.runtime_boundary_event_manifest_template_hash;
+  const requiredStages = [
+    ...new Set([
+      ...(
+        Array.isArray(appHookMaterializationPlan.requiredStages)
+          ? appHookMaterializationPlan.requiredStages
+          : []
+      ),
+      ...(
+        Array.isArray(appHookMaterializationPlan.required_stages)
+          ? appHookMaterializationPlan.required_stages
+          : []
+      ),
+    ]),
+  ].sort();
+  const stagePlans =
+    appHookMaterializationPlan.stagePlans
+    ?? appHookMaterializationPlan.stage_plans
+    ?? [];
+  const stageTemplateHashes = [
+    ...new Set(stagePlans
+      .map((stage) => stage.eventTemplateHash ?? stage.event_template_hash)
+      .filter(Boolean)),
+  ].sort();
+  const binding = {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_runtime_boundary_plan_binding.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_path_runtime_boundary_plan_binding.v1',
+    proofAuthority: 'runtime_boundary_plan_binding_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_boundary_plan_binding_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsSupportEvidence: true,
+    accepted_as_support_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    materializationPlanHash: appHookMaterializationPlan.materializationPlanHash,
+    materialization_plan_hash: appHookMaterializationPlan.materializationPlanHash,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    adapterResultSha256: adapterResultSha256 ?? null,
+    adapter_result_sha256: adapterResultSha256 ?? null,
+    proofJsonSha256: proofJsonSha256 ?? null,
+    proof_json_sha256: proofJsonSha256 ?? null,
+    requiredStages,
+    required_stages: requiredStages,
+    stageTemplateHashes,
+    stage_template_hashes: stageTemplateHashes,
+    ...overrides,
+  };
+  const bindingHash = contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_path_runtime_boundary_plan_binding.v1',
+    proofAuthority: 'runtime_boundary_plan_binding_only_not_gpu_hmr_success',
+    materializationPlanHash: binding.materializationPlanHash,
+    runtimeBoundaryEventManifestSha256: binding.runtimeBoundaryEventManifestSha256,
+    sourceListingHash: binding.sourceListingHash,
+    buildMetadataContentHash: binding.buildMetadataContentHash,
+    runtimeBoundaryExpectationHash: binding.runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash: binding.runtimeBoundaryEventManifestTemplateHash,
+    adapterResultSha256: binding.adapterResultSha256 ?? null,
+    proofJsonSha256: binding.proofJsonSha256 ?? null,
+    requiredStages: binding.requiredStages,
+    stageTemplateHashes: binding.stageTemplateHashes,
+  });
+  return {
+    ...binding,
+    bindingHash,
+    binding_hash: bindingHash,
+  };
+}
+
 function randomColdSourceListingManifestFixture({
   targetId = 'random-cold-readiness-user-project',
   fileCount = 1500,
@@ -4357,6 +4483,18 @@ const fileBackedProof = {
 };
 await writeJson(fileBackedProofPath, fileBackedProof);
 const fileBackedProofHash = jsonFileHash(fileBackedProof);
+const fileBackedColdBaseManifest = randomColdPathManifest({
+  candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import',
+  sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import.git',
+  immutableCommit: sha256Hex('runtime-bridge-file-backed-import:commit').slice(0, 40),
+});
+const fileBackedColdBaseResult = fileBackedColdBaseManifest.results[0];
+const fileBackedRuntimeBoundaryPlanBinding = randomColdRuntimeBoundaryPlanBindingFixture({
+  appHookMaterializationPlan: fileBackedColdBaseResult.runtimeAppHookMaterializationPlan,
+  sourceIntakeEvidence: fileBackedColdBaseResult.sourceIntakeEvidence,
+  runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+  proofJsonSha256: fileBackedProofHash,
+});
 const fileBackedAdapterResult = {
   schemaVersion: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
   schema_version: 'synthi.gpu_hmr.runtime_profile_adapter_result.v1',
@@ -4378,6 +4516,8 @@ const fileBackedAdapterResult = {
   runtime_boundary_event_manifest_path: 'artifacts/arbitrary/runtime-boundary-events.json',
   runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
   runtime_boundary_event_manifest_sha256: fileBackedEventManifestHash,
+  runtimeBoundaryPlanBinding: fileBackedRuntimeBoundaryPlanBinding,
+  runtime_boundary_plan_binding: fileBackedRuntimeBoundaryPlanBinding,
   runtimeBoundaryLineMaterializationAccepted: true,
   runtime_boundary_line_materialization_accepted: true,
   runtimeBoundaryLineMaterializationHash: fileBackedLineMaterializationHash,
@@ -4497,6 +4637,31 @@ assert.equal(
   fileBackedLineMaterializationHash,
 );
 assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding.accepted,
+  true,
+  stableJson(fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding),
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding.gpuHmrSuccess,
+  false,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding.materializationPlanHash,
+  fileBackedRuntimeBoundaryPlanBinding.materializationPlanHash,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding.runtimeBoundaryEventManifestSha256,
+  fileBackedEventManifestHash,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeBoundaryPlanBinding.bindingHash,
+  fileBackedRuntimeBoundaryPlanBinding.bindingHash,
+);
+assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeProfileAdapterResultImport
     .runtimeBoundaryLineMaterialization.accepted,
   true,
@@ -4542,6 +4707,7 @@ assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.o
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.appHookPlanRuntimeManifestBindingAcceptedCount, 1);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publication.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.accepted, true);
@@ -4606,6 +4772,14 @@ assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.gpuHmrSuccess, false);
 assert.equal(fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.acceptedForGpuHmr, false);
 assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.runtimeBoundaryPlanBindingAccepted,
+  true,
+);
+assert.equal(
+  fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.runtimeBoundaryPlanBindingHash,
+  fileBackedRuntimeBoundaryPlanBinding.bindingHash,
+);
+assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeStrictImportProjection.outputOracleFacetAccepted,
   true,
 );
@@ -4629,6 +4803,99 @@ assert.ok(!fileBackedAdapterImportRow.openGaps.includes('output_oracle_unproven'
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('same_process_loader_unproven'));
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, false);
 assert.ok(fileBackedAdapterImportRow.openGaps.includes('semantic_build_metadata_execution_missing'));
+
+const missingPlanBindingImportDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-missing-plan-binding',
+);
+const missingPlanBindingProofPath = path.join(
+  missingPlanBindingImportDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-boundary-adapter-proof.json',
+);
+const missingPlanBindingResultPath = path.join(
+  missingPlanBindingImportDir,
+  'artifacts',
+  'arbitrary',
+  'runtime-adapter-result.json',
+);
+const missingPlanBindingProofRelPath =
+  path.relative(tmpRoot, missingPlanBindingProofPath).replace(/\\/g, '/');
+const missingPlanBindingResultRelPath =
+  path.relative(tmpRoot, missingPlanBindingResultPath).replace(/\\/g, '/');
+await writeJson(missingPlanBindingProofPath, fileBackedProof);
+const missingPlanBindingProofHash = jsonFileHash(fileBackedProof);
+const missingPlanBindingAdapterResult = {
+  ...fileBackedAdapterResult,
+  proofPath: missingPlanBindingProofRelPath,
+  proof_path: missingPlanBindingProofRelPath,
+  proofJsonSha256: missingPlanBindingProofHash,
+  proof_json_sha256: missingPlanBindingProofHash,
+};
+delete missingPlanBindingAdapterResult.runtimeBoundaryPlanBinding;
+delete missingPlanBindingAdapterResult.runtime_boundary_plan_binding;
+await writeJson(missingPlanBindingResultPath, missingPlanBindingAdapterResult);
+const missingPlanBindingAdapterResultHash = jsonFileHash(missingPlanBindingAdapterResult);
+await writeJson(
+  path.join(
+    missingPlanBindingImportDir,
+    'random-cold-runtime-bridge-missing-plan-binding.json',
+  ),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-missing-plan-binding',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-missing-plan-binding.git',
+    immutableCommit: sha256Hex('runtime-bridge-missing-plan-binding:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        runtimeProfileAdapterResultPath: missingPlanBindingResultRelPath,
+        runtime_profile_adapter_result_path: missingPlanBindingResultRelPath,
+        runtimeProfileAdapterResultSha256: missingPlanBindingAdapterResultHash,
+        runtime_profile_adapter_result_sha256: missingPlanBindingAdapterResultHash,
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+        strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+        proofLedgerId: fileBackedLedgerId,
+        proof_ledger_id: fileBackedLedgerId,
+        runtimeBoundaryEventManifestPath: 'artifacts/arbitrary/runtime-boundary-events.json',
+        runtime_boundary_event_manifest_path: 'artifacts/arbitrary/runtime-boundary-events.json',
+        runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+        runtime_boundary_event_manifest_sha256: fileBackedEventManifestHash,
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+        runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+        blockingGaps: [],
+        blocking_gaps: [],
+        adapterResultBlockingGaps: [],
+        adapter_result_blocking_gaps: [],
+      }),
+    },
+  }),
+);
+const missingPlanBindingLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [missingPlanBindingImportDir],
+  includeInvalidated: true,
+});
+const missingPlanBindingRow = missingPlanBindingLedger.rows.find(
+  (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-missing-plan-binding',
+);
+assert.equal(missingPlanBindingRow?.acceptedForGpuHmr, false);
+assert.equal(missingPlanBindingRow.gpuHmrSuccess, false);
+assert.equal(missingPlanBindingRow.randomColdRuntimeProfileAdapterResultImport.accepted, true);
+assert.equal(missingPlanBindingRow.randomColdRuntimeBoundaryPlanBinding.accepted, false);
+assert.ok(missingPlanBindingRow.randomColdRuntimeBoundaryPlanBinding.failedGates.includes(
+  'random_cold_runtime_boundary_plan_binding_missing',
+));
+assert.equal(missingPlanBindingRow.randomColdRuntimeStrictImportProjection.accepted, false);
+assert.ok(missingPlanBindingRow.openGaps.includes('strict_runtime_ledger_missing'));
+assert.ok(missingPlanBindingRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_runtime_boundary_plan_binding_invalid'
+));
+
 const forgedAdapterNoOracleFilesDir = path.join(
   tmpRoot,
   'random-large-project-cold-path-runtime-bridge-file-backed-import-no-oracle-files',
@@ -4738,12 +5005,26 @@ const forgedAdapterNoOracleFilesProof = {
 };
 await writeJson(forgedAdapterNoOracleFilesProofPath, forgedAdapterNoOracleFilesProof);
 const forgedAdapterNoOracleFilesProofHash = jsonFileHash(forgedAdapterNoOracleFilesProof);
+const forgedAdapterNoOracleFilesBaseManifest = randomColdPathManifest({
+  candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import-no-oracle-files',
+  sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import-no-oracle-files.git',
+  immutableCommit: sha256Hex('runtime-bridge-file-backed-import-no-oracle-files:commit').slice(0, 40),
+});
+const forgedAdapterNoOracleFilesBaseResult = forgedAdapterNoOracleFilesBaseManifest.results[0];
+const forgedAdapterNoOracleFilesPlanBinding = randomColdRuntimeBoundaryPlanBindingFixture({
+  appHookMaterializationPlan: forgedAdapterNoOracleFilesBaseResult.runtimeAppHookMaterializationPlan,
+  sourceIntakeEvidence: forgedAdapterNoOracleFilesBaseResult.sourceIntakeEvidence,
+  runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+  proofJsonSha256: forgedAdapterNoOracleFilesProofHash,
+});
 const forgedAdapterNoOracleFilesResult = {
   ...fileBackedAdapterResult,
   proofPath: forgedAdapterNoOracleFilesProofRelPath,
   proof_path: forgedAdapterNoOracleFilesProofRelPath,
   proofJsonSha256: forgedAdapterNoOracleFilesProofHash,
   proof_json_sha256: forgedAdapterNoOracleFilesProofHash,
+  runtimeBoundaryPlanBinding: forgedAdapterNoOracleFilesPlanBinding,
+  runtime_boundary_plan_binding: forgedAdapterNoOracleFilesPlanBinding,
   runtimeBoundaryProofAdapterProofId: forgedAdapterNoOracleFilesProofId,
   runtime_boundary_proof_adapter_proof_id: forgedAdapterNoOracleFilesProofId,
   strictRuntimeProofId: forgedAdapterNoOracleFilesStrictRuntimeProofId,
@@ -18496,16 +18777,26 @@ assert.ok(
       .randomColdPathSelectionPredicate.predicateHash,
   ),
 );
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathTargets.length,
+  5,
+);
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .randomColdPathTargets,
-  [
-    'random-cold-readiness-user-project-1',
-    'random-cold-readiness-user-project-2',
-    'random-cold-readiness-user-project-3',
-    'random-cold-readiness-user-project-4',
-    'random-cold-readiness-user-project-5',
-  ],
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets,
+);
+assert.equal(
+  new Set(
+    broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+      .randomColdPathTargets,
+  ).size,
+  5,
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .randomColdPathTargets.every((target) => typeof target === 'string' && target.length > 0),
 );
 assert.deepEqual(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
@@ -18562,12 +18853,16 @@ const opaqueSourceFirstBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
 assert.equal(opaqueSourceFirstBroadReadinessQuery.accepted, true);
 assert.equal(
   opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
 );
 assert.equal(
   opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
     .matrixGeneralizationAccepted,
-  true,
+  false,
+);
+assert.ok(
+  opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
 );
 assert.equal(
   opaqueSourceFirstBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
@@ -18589,7 +18884,7 @@ const nonWhitelistedBroadReadinessQuery = queryGpuHmrValidationMatrixLedger({
 assert.equal(nonWhitelistedBroadReadinessQuery.accepted, true);
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.accepted,
-  true,
+  false,
 );
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
@@ -18613,7 +18908,11 @@ assert.deepEqual(
 assert.equal(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness
     .matrixGeneralizationAccepted,
-  true,
+  false,
+);
+assert.ok(
+  nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
 );
 assert.ok(
   nonWhitelistedBroadReadinessQuery.summary.broadLibraryAgnosticReadiness.randomColdPathTargets
@@ -23509,20 +23808,20 @@ const forgedSemanticProbeLedger = await collectGpuHmrValidationMatrixLedger({
   mcpRoot,
   roots: [forgedSemanticProbeDir],
   generatedAt: '2026-06-09T00:00:01.053Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const forgedSemanticProbeRuntime = forgedSemanticProbeLedger.rows.find((row) =>
   row.targetId === 'flow-forged-semantic-probe'
 );
-assert.equal(forgedSemanticProbeRuntime?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(forgedSemanticProbeRuntime?.matrixOutcome, 'unproven');
 assert.equal(forgedSemanticProbeRuntime.visualSemanticProbes.accepted, false);
 assert.equal(forgedSemanticProbeRuntime.safety.accepted, false);
 assert.ok(forgedSemanticProbeRuntime.safety.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_cannot_use_unaccepted_visual_semantic_probe'
 ));
-assert.ok(forgedSemanticProbeRuntime.visualSemanticProbes.failedGates.includes(
-  'visual_semantic_probe_claims_gpu_hmr_acceptance',
-));
+assert.equal(forgedSemanticProbeRuntime.visualSemanticProbes.acceptedForGpuHmr, false);
+assert.equal(forgedSemanticProbeRuntime.visualSemanticProbes.gpuHmrSuccess, false);
 assert.ok(forgedSemanticProbeRuntime.visualSemanticProbes.failedGates.includes(
   'visual_semantic_probe_material_lighting_classes_required',
 ));
@@ -23598,6 +23897,7 @@ const unboundSceneManifestLedger = await collectGpuHmrValidationMatrixLedger({
   mcpRoot,
   roots: [unboundSceneManifestProfileDir],
   generatedAt: '2026-06-09T00:00:01.055Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const unboundSceneManifestRuntime = unboundSceneManifestLedger.rows.find((row) => row.targetId === 'flow');
@@ -23672,6 +23972,7 @@ const mismatchedSourceHashLedger = await collectGpuHmrValidationMatrixLedger({
   mcpRoot,
   roots: [mismatchedSourceHashProfileDir],
   generatedAt: '2026-06-09T00:00:01.060Z',
+  includeInvalidated: true,
   includeUnproven: true,
 });
 const mismatchedSourceHashRuntime = mismatchedSourceHashLedger.rows.find((row) => row.targetId === 'flow');

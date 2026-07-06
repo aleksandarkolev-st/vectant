@@ -353,6 +353,10 @@ const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_profile_adapter_result_import.v1';
 const RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_AUTHORITY =
   'matrix_imported_adapter_result_bytes_only_not_gpu_hmr_success';
+const RANDOM_COLD_RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_runtime_boundary_plan_binding.v1';
+const RANDOM_COLD_RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY =
+  'runtime_boundary_plan_binding_only_not_gpu_hmr_success';
 const RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_runtime_strict_import_projection.v1';
 const RANDOM_COLD_RUNTIME_STRICT_IMPORT_PROJECTION_AUTHORITY =
@@ -4808,6 +4812,14 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     runtimeBoundaryEventManifest.manifestPath,
     runtimeBoundaryEventManifest.manifest_path,
   );
+  const runtimeBoundaryPlanBinding = compactObject(
+    adapterResult.runtimeBoundaryPlanBinding
+    ?? adapterResult.runtime_boundary_plan_binding
+    ?? proofJson.runtimeBoundaryPlanBinding
+    ?? proofJson.runtime_boundary_plan_binding
+    ?? runtimeBoundaryEventManifest.runtimeBoundaryPlanBinding
+    ?? runtimeBoundaryEventManifest.runtime_boundary_plan_binding,
+  );
   const runtimeBoundaryProofAdapterAccepted = firstBool(
     adapterResult.runtimeBoundaryProofAdapterAccepted,
     adapterResult.runtime_boundary_proof_adapter_accepted,
@@ -5121,6 +5133,8 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     runtime_boundary_event_manifest_path: runtimeBoundaryEventManifestPath,
     runtimeBoundaryEventManifestSha256,
     runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    runtimeBoundaryPlanBinding,
+    runtime_boundary_plan_binding: runtimeBoundaryPlanBinding,
     runtimeBoundaryProofAdapterAccepted,
     runtime_boundary_proof_adapter_accepted: runtimeBoundaryProofAdapterAccepted,
     runtimeBoundaryProofAdapterProofId,
@@ -5156,16 +5170,453 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
   };
 }
 
+function randomColdRuntimeBoundaryPlanBindingFacet({
+  adapterResultImport = {},
+  appHookMaterializationPlan = {},
+  sourceIntake = {},
+  derivedRuntimeProfileContract = {},
+  coldTemplate = {},
+} = {}) {
+  const adapterImport = compactObject(adapterResultImport);
+  const rawBinding = compactObject(
+    adapterImport.runtimeBoundaryPlanBinding
+    ?? adapterImport.runtime_boundary_plan_binding,
+  );
+  const appHookPlan = compactObject(appHookMaterializationPlan);
+  const intake = compactObject(sourceIntake);
+  const derivedContract = compactObject(derivedRuntimeProfileContract);
+  const template = compactObject(coldTemplate);
+  const bindingMaterial = Object.keys(rawBinding).length > 0;
+  const present =
+    bindingMaterial
+    || (
+      adapterImport.present === true
+      && (
+        firstBool(
+          adapterImport.strictRuntimeProofAccepted,
+          adapterImport.strict_runtime_proof_accepted,
+        ) === true
+        || firstBool(
+          adapterImport.runtimeBoundaryLineMaterializationAccepted,
+          adapterImport.runtime_boundary_line_materialization_accepted,
+        ) === true
+      )
+    );
+  if (!present) {
+    return {
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(rawBinding.schemaVersion, rawBinding.schema_version);
+  const proofAuthority = firstText(rawBinding.proofAuthority, rawBinding.proof_authority);
+  const acceptedAsSupportEvidence = firstBool(
+    rawBinding.acceptedAsSupportEvidence,
+    rawBinding.accepted_as_support_evidence,
+    rawBinding.accepted,
+  ) === true;
+  const acceptedForGpuHmr = firstBool(
+    rawBinding.acceptedForGpuHmr,
+    rawBinding.accepted_for_gpu_hmr,
+  );
+  const gpuHmrSuccess = firstBool(rawBinding.gpuHmrSuccess, rawBinding.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    rawBinding.canSatisfyRuntimeProof,
+    rawBinding.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    rawBinding.canSatisfyDispatchProof,
+    rawBinding.can_satisfy_dispatch_proof,
+  );
+  const targetNameIndependent = firstBool(
+    rawBinding.targetNameIndependent,
+    rawBinding.target_name_independent,
+  );
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(rawBinding.projectNameWhitelist) ? rawBinding.projectNameWhitelist : []),
+    ...(Array.isArray(rawBinding.project_name_whitelist) ? rawBinding.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(rawBinding.specificTargetIdsAllowed) ? rawBinding.specificTargetIdsAllowed : []),
+    ...(Array.isArray(rawBinding.specific_target_ids_allowed) ? rawBinding.specific_target_ids_allowed : []),
+  ]);
+  const authorityClaims = compactStringList(rawBinding.authorityClaims ?? rawBinding.authority_claims);
+  const materializationPlanHash = normalizeSha256(firstText(
+    rawBinding.materializationPlanHash,
+    rawBinding.materialization_plan_hash,
+    rawBinding.appHookMaterializationPlanHash,
+    rawBinding.app_hook_materialization_plan_hash,
+  ));
+  const expectedMaterializationPlanHash = normalizeSha256(firstText(
+    appHookPlan.materializationPlanHash,
+    appHookPlan.materialization_plan_hash,
+  ));
+  const runtimeBoundaryEventManifestSha256 = normalizeSha256(firstText(
+    rawBinding.runtimeBoundaryEventManifestSha256,
+    rawBinding.runtime_boundary_event_manifest_sha256,
+    rawBinding.eventManifestHash,
+    rawBinding.event_manifest_hash,
+  ));
+  const adapterImportEventManifestSha256 = normalizeSha256(firstText(
+    adapterImport.runtimeBoundaryEventManifestSha256,
+    adapterImport.runtime_boundary_event_manifest_sha256,
+  ));
+  const sourceListingHash = normalizeSha256(firstText(
+    rawBinding.sourceListingHash,
+    rawBinding.source_listing_hash,
+  ));
+  const expectedSourceListingHash = normalizeSha256(firstText(
+    intake.sourceListingHash,
+    intake.source_listing_hash,
+    appHookPlan.sourceListingHash,
+    appHookPlan.source_listing_hash,
+    derivedContract.sourceListingHash,
+    derivedContract.source_listing_hash,
+  ));
+  const buildMetadataContentHash = normalizeSha256(firstText(
+    rawBinding.buildMetadataContentHash,
+    rawBinding.build_metadata_content_hash,
+  ));
+  const expectedBuildMetadataContentHash = normalizeSha256(firstText(
+    intake.buildMetadataContentHash,
+    intake.build_metadata_content_hash,
+    appHookPlan.buildMetadataContentHash,
+    appHookPlan.build_metadata_content_hash,
+    derivedContract.buildMetadataContentHash,
+    derivedContract.build_metadata_content_hash,
+  ));
+  const runtimeBoundaryExpectationHash = normalizeSha256(firstText(
+    rawBinding.runtimeBoundaryExpectationHash,
+    rawBinding.runtime_boundary_expectation_hash,
+  ));
+  const expectedRuntimeBoundaryExpectationHash = normalizeSha256(firstText(
+    intake.runtimeBoundaryExpectationHash,
+    intake.runtime_boundary_expectation_hash,
+    appHookPlan.runtimeBoundaryExpectationHash,
+    appHookPlan.runtime_boundary_expectation_hash,
+    derivedContract.runtimeBoundaryExpectationHash,
+    derivedContract.runtime_boundary_expectation_hash,
+  ));
+  const runtimeBoundaryEventManifestTemplateHash = normalizeSha256(firstText(
+    rawBinding.runtimeBoundaryEventManifestTemplateHash,
+    rawBinding.runtime_boundary_event_manifest_template_hash,
+  ));
+  const expectedRuntimeBoundaryEventManifestTemplateHash = normalizeSha256(firstText(
+    template.templateHash,
+    template.template_hash,
+    appHookPlan.runtimeBoundaryEventManifestTemplateHash,
+    appHookPlan.runtime_boundary_event_manifest_template_hash,
+    derivedContract.runtimeBoundaryEventManifestTemplateHash,
+    derivedContract.runtime_boundary_event_manifest_template_hash,
+  ));
+  const adapterResultSha256 = normalizeSha256(firstText(
+    rawBinding.adapterResultSha256,
+    rawBinding.adapter_result_sha256,
+  ));
+  const expectedAdapterResultSha256 = normalizeSha256(firstText(
+    adapterImport.adapterResultSha256,
+    adapterImport.adapter_result_sha256,
+  ));
+  const proofJsonSha256 = normalizeSha256(firstText(
+    rawBinding.proofJsonSha256,
+    rawBinding.proof_json_sha256,
+  ));
+  const expectedProofJsonSha256 = normalizeSha256(firstText(
+    adapterImport.proofJsonSha256,
+    adapterImport.proof_json_sha256,
+  ));
+  const requiredStages = compactStringList([
+    ...(Array.isArray(rawBinding.requiredStages) ? rawBinding.requiredStages : []),
+    ...(Array.isArray(rawBinding.required_stages) ? rawBinding.required_stages : []),
+    ...(Array.isArray(rawBinding.requiredEventKinds) ? rawBinding.requiredEventKinds : []),
+    ...(Array.isArray(rawBinding.required_event_kinds) ? rawBinding.required_event_kinds : []),
+  ]);
+  const expectedRequiredStages = compactStringList([
+    ...(Array.isArray(appHookPlan.requiredStages) ? appHookPlan.requiredStages : []),
+    ...(Array.isArray(appHookPlan.required_stages) ? appHookPlan.required_stages : []),
+  ]);
+  const stageTemplateHashes = compactStringList([
+    ...(Array.isArray(rawBinding.stageTemplateHashes) ? rawBinding.stageTemplateHashes : []),
+    ...(Array.isArray(rawBinding.stage_template_hashes) ? rawBinding.stage_template_hashes : []),
+  ]).map(normalizeSha256).filter(isSha256);
+  const expectedStageTemplateHashes = compactStringList([
+    ...(Array.isArray(appHookPlan.stageTemplateHashes) ? appHookPlan.stageTemplateHashes : []),
+    ...(Array.isArray(appHookPlan.stage_template_hashes) ? appHookPlan.stage_template_hashes : []),
+    ...compactObjectList(appHookPlan.stagePlans ?? appHookPlan.stage_plans)
+      .map((stage) => firstText(stage.eventTemplateHash, stage.event_template_hash)),
+  ]).map(normalizeSha256).filter(isSha256);
+  const stageTemplateHashSet = new Set(stageTemplateHashes);
+  const expectedStageTemplateHashSet = new Set(expectedStageTemplateHashes);
+  const requiredStagesComplete = COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS
+    .every((stage) => requiredStages.includes(stage));
+  const expectedRequiredStagesComplete = COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS
+    .every((stage) => expectedRequiredStages.includes(stage));
+  const stageTemplateHashesMatch =
+    expectedStageTemplateHashSet.size === 0
+    || (
+      stageTemplateHashSet.size === expectedStageTemplateHashSet.size
+      && [...expectedStageTemplateHashSet].every((hash) => stageTemplateHashSet.has(hash))
+    );
+  const suppliedBindingHash = normalizeSha256(firstText(
+    rawBinding.bindingHash,
+    rawBinding.binding_hash,
+  ));
+  const recomputedBindingHash = stableJsonHash({
+    schemaVersion: RANDOM_COLD_RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY,
+    materializationPlanHash,
+    runtimeBoundaryEventManifestSha256,
+    sourceListingHash,
+    buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    adapterResultSha256,
+    proofJsonSha256,
+    requiredStages,
+    stageTemplateHashes,
+  });
+  const appHookPlanAccepted =
+    appHookPlan.accepted === true
+    || appHookPlan.acceptedAsSupportEvidence === true
+    || appHookPlan.accepted_as_support_evidence === true;
+  const failedGates = compactStringList([
+    bindingMaterial ? null : 'random_cold_runtime_boundary_plan_binding_missing',
+    schemaVersion === RANDOM_COLD_RUNTIME_BOUNDARY_PLAN_BINDING_SCHEMA_VERSION
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_schema_invalid',
+    proofAuthority === RANDOM_COLD_RUNTIME_BOUNDARY_PLAN_BINDING_AUTHORITY
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_authority_invalid',
+    acceptedAsSupportEvidence
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_not_accepted_as_support',
+    acceptedForGpuHmr === true
+      ? 'random_cold_runtime_boundary_plan_binding_claimed_gpu_hmr_acceptance'
+      : null,
+    gpuHmrSuccess === true
+      ? 'random_cold_runtime_boundary_plan_binding_claimed_gpu_hmr_success'
+      : null,
+    canSatisfyRuntimeProof === true
+      ? 'random_cold_runtime_boundary_plan_binding_claimed_runtime_authority'
+      : null,
+    canSatisfyDispatchProof === true
+      ? 'random_cold_runtime_boundary_plan_binding_claimed_dispatch_authority'
+      : null,
+    authorityClaims.length === 0
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_authority_claim_present',
+    targetNameIndependent === true
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_not_target_independent',
+    projectNameWhitelist.length === 0
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_project_whitelist_present',
+    specificTargetIdsAllowed.length === 0
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_specific_target_allowlist_present',
+    appHookPlanAccepted
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_app_hook_plan_not_accepted',
+    materializationPlanHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_materialization_plan_hash_missing',
+    expectedMaterializationPlanHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_plan_hash_missing',
+    materializationPlanHash
+      && expectedMaterializationPlanHash
+      && materializationPlanHash !== expectedMaterializationPlanHash
+      ? 'random_cold_runtime_boundary_plan_binding_materialization_plan_hash_mismatch'
+      : null,
+    runtimeBoundaryEventManifestSha256
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_event_manifest_hash_missing',
+    adapterImportEventManifestSha256
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_import_event_manifest_hash_missing',
+    runtimeBoundaryEventManifestSha256
+      && adapterImportEventManifestSha256
+      && runtimeBoundaryEventManifestSha256 !== adapterImportEventManifestSha256
+      ? 'random_cold_runtime_boundary_plan_binding_event_manifest_hash_mismatch'
+      : null,
+    sourceListingHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_source_listing_hash_missing',
+    expectedSourceListingHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_source_listing_hash_missing',
+    sourceListingHash
+      && expectedSourceListingHash
+      && sourceListingHash !== expectedSourceListingHash
+      ? 'random_cold_runtime_boundary_plan_binding_source_listing_hash_mismatch'
+      : null,
+    buildMetadataContentHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_build_metadata_hash_missing',
+    expectedBuildMetadataContentHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_build_metadata_hash_missing',
+    buildMetadataContentHash
+      && expectedBuildMetadataContentHash
+      && buildMetadataContentHash !== expectedBuildMetadataContentHash
+      ? 'random_cold_runtime_boundary_plan_binding_build_metadata_hash_mismatch'
+      : null,
+    runtimeBoundaryExpectationHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expectation_hash_missing',
+    expectedRuntimeBoundaryExpectationHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_expectation_hash_missing',
+    runtimeBoundaryExpectationHash
+      && expectedRuntimeBoundaryExpectationHash
+      && runtimeBoundaryExpectationHash !== expectedRuntimeBoundaryExpectationHash
+      ? 'random_cold_runtime_boundary_plan_binding_expectation_hash_mismatch'
+      : null,
+    runtimeBoundaryEventManifestTemplateHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_template_hash_missing',
+    expectedRuntimeBoundaryEventManifestTemplateHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_template_hash_missing',
+    runtimeBoundaryEventManifestTemplateHash
+      && expectedRuntimeBoundaryEventManifestTemplateHash
+      && runtimeBoundaryEventManifestTemplateHash !== expectedRuntimeBoundaryEventManifestTemplateHash
+      ? 'random_cold_runtime_boundary_plan_binding_template_hash_mismatch'
+      : null,
+    adapterResultSha256
+      && expectedAdapterResultSha256
+      && adapterResultSha256 !== expectedAdapterResultSha256
+      ? 'random_cold_runtime_boundary_plan_binding_adapter_result_hash_mismatch'
+      : null,
+    proofJsonSha256
+      && expectedProofJsonSha256
+      && proofJsonSha256 !== expectedProofJsonSha256
+      ? 'random_cold_runtime_boundary_plan_binding_proof_json_hash_mismatch'
+      : null,
+    requiredStagesComplete
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_required_stages_incomplete',
+    expectedRequiredStagesComplete
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_stages_incomplete',
+    expectedStageTemplateHashes.length > 0
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_expected_stage_template_hashes_missing',
+    stageTemplateHashes.length > 0
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_stage_template_hashes_missing',
+    stageTemplateHashesMatch
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_stage_template_hash_mismatch',
+    suppliedBindingHash
+      ? null
+      : 'random_cold_runtime_boundary_plan_binding_hash_missing',
+    suppliedBindingHash && !isSha256(suppliedBindingHash)
+      ? 'random_cold_runtime_boundary_plan_binding_hash_invalid'
+      : null,
+    suppliedBindingHash
+      && isSha256(suppliedBindingHash)
+      && suppliedBindingHash !== recomputedBindingHash
+      ? 'random_cold_runtime_boundary_plan_binding_hash_mismatch'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: true,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: targetNameIndependent === true,
+    target_name_independent: targetNameIndependent === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    materializationPlanHash,
+    materialization_plan_hash: materializationPlanHash,
+    expectedMaterializationPlanHash,
+    expected_materialization_plan_hash: expectedMaterializationPlanHash,
+    runtimeBoundaryEventManifestSha256,
+    runtime_boundary_event_manifest_sha256: runtimeBoundaryEventManifestSha256,
+    adapterImportEventManifestSha256,
+    adapter_import_event_manifest_sha256: adapterImportEventManifestSha256,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    expectedSourceListingHash,
+    expected_source_listing_hash: expectedSourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    expectedBuildMetadataContentHash,
+    expected_build_metadata_content_hash: expectedBuildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    expectedRuntimeBoundaryExpectationHash,
+    expected_runtime_boundary_expectation_hash: expectedRuntimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    expectedRuntimeBoundaryEventManifestTemplateHash,
+    expected_runtime_boundary_event_manifest_template_hash: expectedRuntimeBoundaryEventManifestTemplateHash,
+    adapterResultSha256,
+    adapter_result_sha256: adapterResultSha256,
+    expectedAdapterResultSha256,
+    expected_adapter_result_sha256: expectedAdapterResultSha256,
+    proofJsonSha256,
+    proof_json_sha256: proofJsonSha256,
+    expectedProofJsonSha256,
+    expected_proof_json_sha256: expectedProofJsonSha256,
+    requiredStages,
+    required_stages: requiredStages,
+    stageTemplateHashes,
+    stage_template_hashes: stageTemplateHashes,
+    expectedStageTemplateHashes,
+    expected_stage_template_hashes: expectedStageTemplateHashes,
+    suppliedBindingHash,
+    supplied_binding_hash: suppliedBindingHash,
+    bindingHash: recomputedBindingHash,
+    binding_hash: recomputedBindingHash,
+    recomputedBindingHash,
+    recomputed_binding_hash: recomputedBindingHash,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdRuntimeStrictImportProjectionFacet({
   adapterResultImport = {},
   stageEvents = {},
   appHookGate = {},
   outputOracleFacet = {},
+  runtimeBoundaryPlanBinding = {},
 } = {}) {
   const adapterImport = compactObject(adapterResultImport);
   const stages = compactObject(stageEvents);
   const hookGate = compactObject(appHookGate);
   const outputOracle = compactObject(outputOracleFacet);
+  const planBinding = compactObject(runtimeBoundaryPlanBinding);
   const present =
     adapterImport.present === true
     || stages.present === true;
@@ -5215,6 +5666,18 @@ function randomColdRuntimeStrictImportProjectionFacet({
     ...(Array.isArray(hookGate.failedGaps) ? hookGate.failedGaps : []),
     ...(Array.isArray(hookGate.failed_gaps) ? hookGate.failed_gaps : []),
   ]);
+  const planBindingFailedGates = compactStringList([
+    ...(Array.isArray(planBinding.failedGates) ? planBinding.failedGates : []),
+    ...(Array.isArray(planBinding.failed_gates) ? planBinding.failed_gates : []),
+  ]);
+  const planBindingAccepted =
+    planBinding.present === true
+    && planBinding.accepted === true
+    && (
+      planBinding.acceptedAsSupportEvidence === true
+      || planBinding.accepted_as_support_evidence === true
+    )
+    && planBindingFailedGates.length === 0;
   const strictImportAccepted =
     adapterImport.accepted === true
     && firstBool(
@@ -5237,6 +5700,7 @@ function randomColdRuntimeStrictImportProjectionFacet({
       adapterImport.runtimeBoundaryLineMaterializationAccepted,
       adapterImport.runtime_boundary_line_materialization_accepted,
     ) === true
+    && planBindingAccepted
     && importFailedGates.length === 0
     && strictGateFailures.length === 0;
   const stageEventsAccepted =
@@ -5288,6 +5752,8 @@ function randomColdRuntimeStrictImportProjectionFacet({
   const failedGates = compactStringList([
     adapterImport.present === true ? null : 'random_cold_strict_import_projection_import_missing',
     strictImportAccepted ? null : 'random_cold_strict_import_projection_import_not_strictly_accepted',
+    planBindingAccepted ? null : 'random_cold_strict_import_projection_plan_binding_not_accepted',
+    ...planBindingFailedGates.map((code) => `random_cold_strict_import_projection_${code}`),
     stageEventsAccepted ? null : 'random_cold_strict_import_projection_stage_events_not_accepted',
     appHookAccepted ? null : 'random_cold_strict_import_projection_app_hook_contract_not_accepted',
     outputOracleAccepted ? null : 'random_cold_strict_import_projection_output_oracle_artifacts_not_accepted',
@@ -5317,6 +5783,8 @@ function randomColdRuntimeStrictImportProjectionFacet({
     adapterResultSha256: adapterImport.adapterResultSha256 ?? adapterImport.adapter_result_sha256,
     proofJsonSha256: adapterImport.proofJsonSha256 ?? adapterImport.proof_json_sha256,
     strictRuntimeProofId: adapterImport.strictRuntimeProofId ?? adapterImport.strict_runtime_proof_id,
+    runtimeBoundaryPlanBindingHash: planBinding.bindingHash ?? planBinding.binding_hash ?? null,
+    runtimeBoundaryPlanBindingAccepted: planBindingAccepted,
     stageEventsFacetHash: stages.facetHash ?? stages.facet_hash,
     outputOracleFacetKind: outputOracle.kind ?? null,
     outputOracleFacetAccepted: outputOracleAccepted,
@@ -5346,6 +5814,10 @@ function randomColdRuntimeStrictImportProjectionFacet({
     stage_events_accepted: stageEventsAccepted,
     appHookAccepted,
     app_hook_accepted: appHookAccepted,
+    runtimeBoundaryPlanBindingAccepted: planBindingAccepted,
+    runtime_boundary_plan_binding_accepted: planBindingAccepted,
+    runtimeBoundaryPlanBindingHash: planBinding.bindingHash ?? planBinding.binding_hash ?? null,
+    runtime_boundary_plan_binding_hash: planBinding.bindingHash ?? planBinding.binding_hash ?? null,
     projectedGateAccepted,
     projected_gate_accepted: projectedGateAccepted,
     missingProjectedGates,
@@ -5638,6 +6110,37 @@ function randomColdAppHookMaterializationPlanFacet(raw = {}) {
     ...(Array.isArray(facet.specificTargetIdsAllowed) ? facet.specificTargetIdsAllowed : []),
     ...(Array.isArray(facet.specific_target_ids_allowed) ? facet.specific_target_ids_allowed : []),
   ]);
+  const sourceListingHash = normalizeSha256(firstText(
+    facet.sourceListingHash,
+    facet.source_listing_hash,
+  ));
+  const buildMetadataContentHash = normalizeSha256(firstText(
+    facet.buildMetadataContentHash,
+    facet.build_metadata_content_hash,
+  ));
+  const runtimeBoundaryExpectationHash = normalizeSha256(firstText(
+    facet.runtimeBoundaryExpectationHash,
+    facet.runtime_boundary_expectation_hash,
+  ));
+  const runtimeBoundaryEventManifestTemplateHash = normalizeSha256(firstText(
+    facet.runtimeBoundaryEventManifestTemplateHash,
+    facet.runtime_boundary_event_manifest_template_hash,
+  ));
+  const runtimeSupportClosureObligationHash = normalizeSha256(firstText(
+    facet.runtimeSupportClosureObligationHash,
+    facet.runtime_support_closure_obligation_hash,
+  ));
+  const derivedRuntimeProfileContractHash = normalizeSha256(firstText(
+    facet.derivedRuntimeProfileContractHash,
+    facet.derived_runtime_profile_contract_hash,
+  ));
+  const runtimeProfileProofBridgeHash = normalizeSha256(firstText(
+    facet.runtimeProfileProofBridgeHash,
+    facet.runtime_profile_proof_bridge_hash,
+  ));
+  const stageTemplateHashes = compactStringList(stagePlans.map((stage) =>
+    normalizeSha256(firstText(stage.eventTemplateHash, stage.event_template_hash))
+  )).filter(isSha256);
   const materializationPlanHash = normalizeSha256(firstText(
     facet.materializationPlanHash,
     facet.materialization_plan_hash,
@@ -5812,6 +6315,22 @@ function randomColdAppHookMaterializationPlanFacet(raw = {}) {
     project_name_whitelist: projectNameWhitelist,
     specificTargetIdsAllowed,
     specific_target_ids_allowed: specificTargetIdsAllowed,
+    sourceListingHash,
+    source_listing_hash: sourceListingHash,
+    buildMetadataContentHash,
+    build_metadata_content_hash: buildMetadataContentHash,
+    runtimeBoundaryExpectationHash,
+    runtime_boundary_expectation_hash: runtimeBoundaryExpectationHash,
+    runtimeBoundaryEventManifestTemplateHash,
+    runtime_boundary_event_manifest_template_hash: runtimeBoundaryEventManifestTemplateHash,
+    runtimeSupportClosureObligationHash,
+    runtime_support_closure_obligation_hash: runtimeSupportClosureObligationHash,
+    derivedRuntimeProfileContractHash,
+    derived_runtime_profile_contract_hash: derivedRuntimeProfileContractHash,
+    runtimeProfileProofBridgeHash,
+    runtime_profile_proof_bridge_hash: runtimeProfileProofBridgeHash,
+    stageTemplateHashes,
+    stage_template_hashes: stageTemplateHashes,
     suppliedMaterializationPlanHash: materializationPlanHash,
     supplied_materialization_plan_hash: materializationPlanHash,
     materializationPlanHash: recomputedMaterializationPlanHash,
@@ -18616,6 +19135,88 @@ function rowSafetyFailures(row, context = {}) {
         code: 'random_large_project_cold_app_hook_materialization_plan_claimed_authority',
       });
     }
+    const runtimeBoundaryPlanBindingRaw = firstCompactObject(
+      row.randomColdRuntimeBoundaryPlanBinding,
+      row.random_cold_runtime_boundary_plan_binding,
+      row.runtimeBoundaryPlanBinding,
+      row.runtime_boundary_plan_binding,
+      runtimeProfileAdapterResultImport.runtimeBoundaryPlanBinding,
+      runtimeProfileAdapterResultImport.runtime_boundary_plan_binding,
+    );
+    const runtimeBoundaryPlanBinding = randomColdRuntimeBoundaryPlanBindingFacet({
+      adapterResultImport: {
+        ...runtimeProfileAdapterResultImport,
+        runtimeBoundaryPlanBinding: runtimeBoundaryPlanBindingRaw,
+        runtime_boundary_plan_binding: runtimeBoundaryPlanBindingRaw,
+      },
+      appHookMaterializationPlan: appHookMaterialization,
+      sourceIntake: compactObject(row.coldSourceTreeIntake ?? row.cold_source_tree_intake),
+      derivedRuntimeProfileContract,
+      coldTemplate,
+    });
+    const runtimeBoundaryPlanBindingFailedGates = compactStringList([
+      ...(Array.isArray(runtimeBoundaryPlanBinding.failedGates)
+        ? runtimeBoundaryPlanBinding.failedGates
+        : []),
+      ...(Array.isArray(runtimeBoundaryPlanBinding.failed_gates)
+        ? runtimeBoundaryPlanBinding.failed_gates
+        : []),
+    ]);
+    const runtimeBoundaryPlanBindingPresent =
+      Object.keys(runtimeBoundaryPlanBindingRaw).length > 0
+      || runtimeBoundaryPlanBinding.present === true;
+    if (
+      runtimeBoundaryPlanBindingPresent
+      && runtimeBoundaryPlanBinding.accepted !== true
+    ) {
+      failures.push({ code: 'random_large_project_cold_runtime_boundary_plan_binding_invalid' });
+      failures.push(...runtimeBoundaryPlanBindingFailedGates.map((code) => ({ code })));
+    }
+    if (
+      runtimeBoundaryPlanBindingPresent
+      && (
+        firstBool(
+          runtimeBoundaryPlanBindingRaw.acceptedForGpuHmr,
+          runtimeBoundaryPlanBindingRaw.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          runtimeBoundaryPlanBindingRaw.gpuHmrSuccess,
+          runtimeBoundaryPlanBindingRaw.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          runtimeBoundaryPlanBindingRaw.canSatisfyRuntimeProof,
+          runtimeBoundaryPlanBindingRaw.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeBoundaryPlanBindingRaw.canSatisfyDispatchProof,
+          runtimeBoundaryPlanBindingRaw.can_satisfy_dispatch_proof,
+        ) === true
+        || runtimeBoundaryPlanBindingFailedGates.some((code) =>
+          code === 'random_cold_runtime_boundary_plan_binding_claimed_gpu_hmr_acceptance'
+          || code === 'random_cold_runtime_boundary_plan_binding_claimed_gpu_hmr_success'
+          || code === 'random_cold_runtime_boundary_plan_binding_claimed_runtime_authority'
+          || code === 'random_cold_runtime_boundary_plan_binding_claimed_dispatch_authority'
+          || code === 'random_cold_runtime_boundary_plan_binding_authority_claim_present'
+        )
+      )
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_runtime_boundary_plan_binding_claimed_authority',
+      });
+    }
+    if (
+      runtimeStrictImportProjectionPresent
+      && firstBool(
+        runtimeStrictImportProjection.accepted,
+        runtimeStrictImportProjection.acceptedAsSupportEvidence,
+        runtimeStrictImportProjection.accepted_as_support_evidence,
+      ) === true
+      && runtimeBoundaryPlanBinding.accepted !== true
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_strict_import_projection_without_plan_binding',
+      });
+    }
     const coldSourceIntakeRaw = compactObject(
       row.sourceIntakeEvidence
       ?? row.source_intake_evidence
@@ -29724,13 +30325,6 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
         failedGates: [{ code: 'random_cold_imported_output_oracle_material_missing' }],
         failed_gates: [{ code: 'random_cold_imported_output_oracle_material_missing' }],
       };
-  const randomColdRuntimeStrictImportProjection =
-    randomColdRuntimeStrictImportProjectionFacet({
-      adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
-      stageEvents: randomColdRuntimeAdapterStageEvents,
-      appHookGate: randomColdRuntimeAppHookContractGate,
-      outputOracleFacet: randomColdImportedOutputOracleFacet,
-    });
   const randomColdRuntimeSupportClosureObligation = randomColdAdapterClosureExpectationFacet(firstCompactObject(
     result.runtimeSupportClosureObligation,
     result.runtime_support_closure_obligation,
@@ -29747,6 +30341,21 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomLargeProjectColdPath.runtimeAppHookMaterializationPlan,
     randomLargeProjectColdPath.runtime_app_hook_materialization_plan,
   ));
+  const randomColdRuntimeBoundaryPlanBinding = randomColdRuntimeBoundaryPlanBindingFacet({
+    adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
+    appHookMaterializationPlan: randomColdAppHookMaterializationPlan,
+    sourceIntake: coldSourceTreeIntake,
+    derivedRuntimeProfileContract: randomColdDerivedRuntimeProfileContract,
+    coldTemplate: coldRuntimeBoundaryEventManifestTemplate,
+  });
+  const randomColdRuntimeStrictImportProjection =
+    randomColdRuntimeStrictImportProjectionFacet({
+      adapterResultImport: randomColdRuntimeProfileAdapterResultImport,
+      stageEvents: randomColdRuntimeAdapterStageEvents,
+      appHookGate: randomColdRuntimeAppHookContractGate,
+      outputOracleFacet: randomColdImportedOutputOracleFacet,
+      runtimeBoundaryPlanBinding: randomColdRuntimeBoundaryPlanBinding,
+    });
   const randomColdPathDirectInputEvidence =
     randomLargeProjectColdPath.directInputEvidence
     ?? randomLargeProjectColdPath.direct_input_evidence
@@ -29842,6 +30451,9 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdAppHookMaterializationPlan.present === true
       ? randomColdAppHookMaterializationPlan.failedGates
       : []),
+    ...(randomColdRuntimeBoundaryPlanBinding.present === true
+      ? randomColdRuntimeBoundaryPlanBinding.failedGates
+      : []),
     'same_process_loader_unproven',
     'epoch_publication_unproven',
     'dispatch_trace_unproven',
@@ -29915,6 +30527,8 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeAppHookContract.contract_hash,
     randomColdRuntimeStrictImportProjection.facetHash,
     randomColdRuntimeStrictImportProjection.facet_hash,
+    randomColdRuntimeBoundaryPlanBinding.bindingHash,
+    randomColdRuntimeBoundaryPlanBinding.binding_hash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
     randomColdAppHookMaterializationPlan.materializationPlanHash,
   ]);
@@ -30057,6 +30671,22 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     runtime_strict_import_projection:
       randomColdRuntimeStrictImportProjection.present === true
         ? randomColdRuntimeStrictImportProjection
+        : null,
+    randomColdRuntimeBoundaryPlanBinding:
+      randomColdRuntimeBoundaryPlanBinding.present === true
+        ? randomColdRuntimeBoundaryPlanBinding
+        : null,
+    random_cold_runtime_boundary_plan_binding:
+      randomColdRuntimeBoundaryPlanBinding.present === true
+        ? randomColdRuntimeBoundaryPlanBinding
+        : null,
+    runtimeBoundaryPlanBinding:
+      randomColdRuntimeBoundaryPlanBinding.present === true
+        ? randomColdRuntimeBoundaryPlanBinding
+        : null,
+    runtime_boundary_plan_binding:
+      randomColdRuntimeBoundaryPlanBinding.present === true
+        ? randomColdRuntimeBoundaryPlanBinding
         : null,
     randomColdImportedOutputOracleFacet: randomColdImportedOutputOracleFacet ?? null,
     random_cold_imported_output_oracle_facet: randomColdImportedOutputOracleFacet ?? null,
@@ -35802,6 +36432,12 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.runtimeAppHookMaterializationPlan
     ?? row.runtime_app_hook_materialization_plan
   );
+  const runtimeBoundaryPlanBinding = compactObject(
+    row.randomColdRuntimeBoundaryPlanBinding
+    ?? row.random_cold_runtime_boundary_plan_binding
+    ?? row.runtimeBoundaryPlanBinding
+    ?? row.runtime_boundary_plan_binding
+  );
   const runtimeChain = compactObject(
     row.realRocmRuntimeChain
     ?? row.real_rocm_runtime_chain
@@ -36010,6 +36646,13 @@ function runtimeClosureRowSignals(row = {}) {
     appHookMaterializationPlanAccepted:
       appHookMaterializationPlan.acceptedAsSupportEvidence === true
       || appHookMaterializationPlan.accepted_as_support_evidence === true,
+    appHookPlanRuntimeManifestBindingPresent: runtimeBoundaryPlanBinding.present === true,
+    appHookPlanRuntimeManifestBindingAccepted:
+      runtimeBoundaryPlanBinding.accepted === true
+      && (
+        runtimeBoundaryPlanBinding.acceptedAsSupportEvidence === true
+        || runtimeBoundaryPlanBinding.accepted_as_support_evidence === true
+      ),
     strictRuntimeProofAccepted,
     runtimeBoundaryTemplateAccepted:
       coldTemplate.acceptedAsSupportEvidence === true
@@ -36071,8 +36714,16 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     signals.filter((signal) => signal.appHookMaterializationPlanPresent).length;
   const appHookMaterializationPlanAcceptedCount =
     signals.filter((signal) => signal.appHookMaterializationPlanAccepted).length;
+  const appHookPlanRuntimeManifestBindingPresentCount =
+    signals.filter((signal) => signal.appHookPlanRuntimeManifestBindingPresent).length;
+  const appHookPlanRuntimeManifestBindingAcceptedCount =
+    signals.filter((signal) => signal.appHookPlanRuntimeManifestBindingAccepted).length;
   const strictRuntimeProofAcceptedCount =
     signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
+  const planBindingGap =
+    closureRows.length > 0 && appHookPlanRuntimeManifestBindingAcceptedCount === 0
+      ? ['large_arbitrary_project_app_hook_plan_runtime_manifest_binding_required']
+      : [];
   const status = acceptedClosureRows.length > 0
     ? 'accepted'
     : fullRuntimeClosureRows.length > 0 || refusalClosureRows.length > 0
@@ -36086,7 +36737,7 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     status,
     rows: closureRows,
     openGaps: closureRows.length > 0
-      ? [...missingGateGaps, ...singleRowClosureGap]
+      ? [...missingGateGaps, ...singleRowClosureGap, ...planBindingGap]
       : ['large_arbitrary_project_runtime_closure_rows_required'],
     schemaVersion: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION,
     schema_version: LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_SCHEMA_VERSION,
@@ -36126,6 +36777,12 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     app_hook_materialization_plan_present_count: appHookMaterializationPlanPresentCount,
     appHookMaterializationPlanAcceptedCount,
     app_hook_materialization_plan_accepted_count: appHookMaterializationPlanAcceptedCount,
+    appHookPlanRuntimeManifestBindingPresentCount,
+    app_hook_plan_runtime_manifest_binding_present_count:
+      appHookPlanRuntimeManifestBindingPresentCount,
+    appHookPlanRuntimeManifestBindingAcceptedCount,
+    app_hook_plan_runtime_manifest_binding_accepted_count:
+      appHookPlanRuntimeManifestBindingAcceptedCount,
     strictRuntimeProofAcceptedCount,
     strict_runtime_proof_accepted_count: strictRuntimeProofAcceptedCount,
     matrixRuntimeIngestionRequired:
