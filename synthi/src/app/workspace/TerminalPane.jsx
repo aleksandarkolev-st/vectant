@@ -63,6 +63,26 @@ const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
 const terminalSessionIdCache = new Map();
 
+async function fetchTerminalGatewayToken(workspaceSlug, { collabSessionId = '' } = {}) {
+  const params = new URLSearchParams({
+    workspaceSlug,
+    scopes: 'collab:terminal',
+  });
+  if (collabSessionId) params.set('collabSessionId', collabSessionId);
+
+  const res = await fetch(`/api/auth/token?${params.toString()}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  });
+  const text = await res.text().catch(() => '');
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { error: text }; }
+  if (!res.ok || !payload.token) {
+    throw new Error(payload.error || `terminal_auth_failed_${res.status}`);
+  }
+  return payload;
+}
+
 function getTerminalStorage(storageName) {
   if (typeof window === 'undefined') return null;
   try {
@@ -852,7 +872,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       stack.push(data);
     }
 
-    function connectWS(term, fitAddon) {
+    async function connectWS(term, fitAddon) {
       if (disposed) return;
 
       // Reconnect to the same PTY session. A new PTY behind an old xterm
@@ -886,6 +906,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       if (runtimeIdentity.filesystemUserId) {
         params.set('filesystemUserId', runtimeIdentity.filesystemUserId);
       }
+      if (runtimeIdentity.collabSessionId) {
+        params.set('collabSessionId', runtimeIdentity.collabSessionId);
+      }
       // Friendly project name for the PTY prompt (~/<name> $). When the
       // workspace page hasn't loaded the name yet, the backend falls back
       // to the slug, so omitting this is safe.
@@ -896,6 +919,23 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       if (shellType) {
         params.set('shell', shellType);
       }
+
+      let gateway;
+      try {
+        gateway = await fetchTerminalGatewayToken(workspaceSlug, {
+          collabSessionId: runtimeIdentity.collabSessionId || '',
+        });
+      } catch (_) {
+        if (mountedRef.current) {
+          setState('error');
+        }
+        scheduleReconnect(term, fitAddon);
+        return;
+      }
+      if (disposed) return;
+      params.set('token', gateway.token);
+      if (gateway.runtimeScope) params.set('runtimeScope', gateway.runtimeScope);
+      if (gateway.filesystemUserId) params.set('filesystemUserId', gateway.filesystemUserId);
 
       const wsUrl = `${TERMINAL_SERVER_URL}/terminal?${params}`;
       let ws;

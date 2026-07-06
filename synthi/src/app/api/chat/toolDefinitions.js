@@ -157,12 +157,14 @@ function managedAgentRequestHeaders(options = {}) {
     const provider = options.agentProvider || DEFAULT_AGENT_PROVIDER;
     const runtime = options.agentRuntime || DEFAULT_AGENT_RUNTIME;
     const sessionId = options.agentSessionId || options.chatSessionId || options.conversationId || '';
+    const internalToken = process.env.AI_BACKEND_AUTH_TOKEN || process.env.AI_ENGINE_AUTH_TOKEN || '';
     const headers = {
         'x-synthi-agent-provider': provider,
         'x-synthi-agent-runtime': runtime,
         'x-synthi-process-ancestry': runtime,
     };
     if (sessionId) headers['x-synthi-agent-session-id'] = sessionId;
+    if (internalToken) headers['x-synthi-internal-token'] = internalToken;
     return headers;
 }
 

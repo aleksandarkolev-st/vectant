@@ -73,8 +73,10 @@ metadata:
   labels:
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  # Preview subdomains must stay reachable by the hosted browser sidecar. The
-  # main beta application remains IAP-protected on its own backend configs.
+  # Preview subdomains are public ingress routes and must stay behind the same
+  # identity boundary as the main beta application.
+  iap:
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30

@@ -21,6 +21,29 @@ function parseErrorText(raw) {
     return raw;
 }
 
+async function fetchCollabGatewayToken(workspaceSlug, scopes, { collabSessionId = '' } = {}) {
+    const params = new URLSearchParams({
+        workspaceSlug,
+        scopes: Array.isArray(scopes) ? scopes.join(',') : String(scopes || ''),
+    });
+    if (collabSessionId) params.set('collabSessionId', collabSessionId);
+
+    const res = await fetch(`/api/auth/token?${params.toString()}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+    });
+    const text = await res.text().catch(() => '');
+    let payload = {};
+    try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { error: text }; }
+    if (!res.ok || !payload.token) {
+        throw new SynthiException(
+            `Failed to authorize workspace command (status ${res.status})`,
+            payload.error || 'Unable to mint a workspace command token.'
+        );
+    }
+    return payload;
+}
+
 function languageFromExtension(ext) {
     const m = {
         js: 'javascript',
@@ -321,7 +344,18 @@ export class ApiClient {
             throw new SynthiException('Missing command', 'No workspace command was provided.');
         }
 
-        const headers = await this._headers({ 'Content-Type': 'application/json' }, { workspaceSlug: slug });
+        const session = await getSession();
+        const termUserId = session?.user?.id || session?.user?.email || '';
+        const runtimeIdentity = getWorkspaceRuntimeIdentity(slug, { userId: termUserId });
+        const gateway = await fetchCollabGatewayToken(slug, ['collab:exec'], {
+            collabSessionId: runtimeIdentity.collabSessionId || '',
+        });
+        const headers = await this._headers({
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${gateway.token}`,
+        }, { workspaceSlug: slug });
+        if (gateway.runtimeScope) headers['x-runtime-scope'] = gateway.runtimeScope;
+        if (gateway.filesystemUserId) headers['x-runtime-fs-user-id'] = gateway.filesystemUserId;
         const body = JSON.stringify({
             command: trimmed,
             timeout,

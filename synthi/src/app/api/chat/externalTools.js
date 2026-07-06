@@ -68,9 +68,9 @@ function normalizeCodeSiteAuditContext(value) {
  */
 export async function buildExternalTools(scope) {
   // R1-9 defense-in-depth: only expose a workspace's tools to a member of that
-  // workspace. The chat route does not itself authorize `workspacePath`, so a
-  // forged/non-member slug must never enumerate or invoke another workspace's
-  // connections (which hold secrets). Non-members fall back to personal-only.
+  // workspace. The chat route authorizes `workspacePath` before tool discovery;
+  // keep this fallback so other callers cannot enumerate or invoke another
+  // workspace's connections (which hold secrets).
   let effectiveScope = scope;
   if (scope?.workspaceSlug) {
     let isMember = false;

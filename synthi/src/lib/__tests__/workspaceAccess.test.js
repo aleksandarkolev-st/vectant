@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const findFirst = vi.fn();
+const findUnique = vi.fn();
 const getServerSession = vi.fn();
 
 vi.mock('next-auth', () => ({
@@ -15,6 +16,7 @@ vi.mock('@/lib/prisma', () => ({
   default: {
     workspace: {
       findFirst,
+      findUnique,
     },
   },
 }));
@@ -34,6 +36,7 @@ describe('workspaceAccess runtime authorization', () => {
       },
     });
     findFirst.mockReset();
+    findUnique.mockReset();
     fetch.mockReset();
   });
 
@@ -111,6 +114,65 @@ describe('workspaceAccess runtime authorization', () => {
       ok: false,
       status: 404,
       error: 'Workspace not found',
+    });
+  });
+
+  it('requires a membership for workspace access by id', async () => {
+    findUnique.mockResolvedValueOnce({
+      id: 'workspace-1',
+      slug: 'team',
+      name: 'Team',
+      memberships: [],
+    });
+
+    const { requireWorkspaceAccessById } = await loadAccessModule();
+    const access = await requireWorkspaceAccessById('workspace-1');
+
+    expect(access).toMatchObject({
+      ok: false,
+      status: 404,
+      error: 'Workspace not found',
+    });
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'workspace-1' },
+      select: expect.objectContaining({
+        id: true,
+        slug: true,
+        memberships: expect.objectContaining({
+          where: { user: { email: 'owner@example.test' } },
+        }),
+      }),
+    });
+  });
+
+  it('allows workspace manage access by id for owners and admins only', async () => {
+    findUnique.mockResolvedValueOnce({
+      id: 'workspace-1',
+      slug: 'team',
+      name: 'Team',
+      memberships: [{ id: 'm1', role: 'owner' }],
+    });
+
+    const { requireWorkspaceManageAccessById } = await loadAccessModule();
+    const access = await requireWorkspaceManageAccessById('workspace-1');
+
+    expect(access).toMatchObject({
+      ok: true,
+      workspace: { id: 'workspace-1', slug: 'team' },
+      membership: { role: 'owner' },
+    });
+
+    findUnique.mockResolvedValueOnce({
+      id: 'workspace-1',
+      slug: 'team',
+      name: 'Team',
+      memberships: [{ id: 'm2', role: 'member' }],
+    });
+    const denied = await requireWorkspaceManageAccessById('workspace-1');
+    expect(denied).toMatchObject({
+      ok: false,
+      status: 403,
+      error: 'Only workspace owners can manage this workspace',
     });
   });
 });

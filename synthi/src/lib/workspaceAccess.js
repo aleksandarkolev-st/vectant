@@ -59,6 +59,31 @@ async function findWorkspaceWithMembership(workspaceSlug, email) {
   });
 }
 
+async function findWorkspaceWithMembershipById(workspaceId, email) {
+  return prisma.workspace.findUnique({
+    where: {
+      id: workspaceId,
+    },
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      memberships: {
+        where: {
+          user: {
+            email,
+          },
+        },
+        select: {
+          id: true,
+          role: true,
+        },
+        take: 1,
+      },
+    },
+  });
+}
+
 export async function requireWorkspaceAccess(workspaceSlug) {
   if (!workspaceSlug) {
     return { ok: false, status: 400, error: 'workspaceId is required' };
@@ -69,6 +94,28 @@ export async function requireWorkspaceAccess(workspaceSlug) {
 
   const { session, email } = authenticated;
   const workspace = await findWorkspaceWithMembership(workspaceSlug, email);
+  if (!workspace) {
+    return { ok: false, status: 404, error: 'Workspace not found' };
+  }
+
+  const membership = workspace.memberships?.[0] || null;
+  if (!membership) {
+    return { ok: false, status: 404, error: 'Workspace not found' };
+  }
+
+  return { ok: true, session, email, workspace, membership };
+}
+
+export async function requireWorkspaceAccessById(workspaceId) {
+  if (!workspaceId) {
+    return { ok: false, status: 400, error: 'workspaceId is required' };
+  }
+
+  const authenticated = await getAuthenticatedWorkspaceSession();
+  if (!authenticated.ok) return authenticated;
+
+  const { session, email } = authenticated;
+  const workspace = await findWorkspaceWithMembershipById(workspaceId, email);
   if (!workspace) {
     return { ok: false, status: 404, error: 'Workspace not found' };
   }
@@ -168,6 +215,18 @@ export async function requireWorkspaceManageAccess(workspaceSlug) {
   const role = access.membership?.role || 'member';
   if (!WORKSPACE_MANAGE_ROLES.has(role)) {
     return { ok: false, status: 403, error: 'Only workspace owners can invite members' };
+  }
+
+  return access;
+}
+
+export async function requireWorkspaceManageAccessById(workspaceId) {
+  const access = await requireWorkspaceAccessById(workspaceId);
+  if (!access.ok) return access;
+
+  const role = access.membership?.role || 'member';
+  if (!WORKSPACE_MANAGE_ROLES.has(role)) {
+    return { ok: false, status: 403, error: 'Only workspace owners can manage this workspace' };
   }
 
   return access;
