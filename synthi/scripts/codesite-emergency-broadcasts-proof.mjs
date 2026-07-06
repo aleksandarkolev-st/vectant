@@ -51,7 +51,7 @@ function parseVitestSummary(output) {
     tests: Number(testsLine?.[1] || 0),
     pass: Number(testsLine?.[1] || 0),
     fail: /failed/i.test(clean) && !/0\s+failed/i.test(clean) ? 1 : 0,
-    skipped: Number(testsLine?.[2] || 0),
+    filteredOut: Number(testsLine?.[2] || 0),
     files: Number(filesLine?.[1] || 0),
   };
 }
@@ -172,7 +172,7 @@ function buildProof(root, outRoot, dockerCommand) {
       && Number(dockerCommand.summary.tests || 0) >= 2
       && Number(dockerCommand.summary.fail || 0) === 0, {
       tests: dockerCommand.summary.tests,
-      skipped: dockerCommand.summary.skipped,
+      filteredOut: dockerCommand.summary.filteredOut,
       exitCode: dockerCommand.exitCode,
     }),
   ];
