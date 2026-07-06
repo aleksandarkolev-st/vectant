@@ -2764,12 +2764,7 @@ export default function EditorPage({ params }) {
         if (activeSessionId) {
             const result = await client.cancelBuild(activeSessionId);
             if (!result || !result.cancelled) {
-                if (typeof window !== 'undefined' && window.alert) {
-                    window.alert(
-                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
-                        `Please wait a moment and try again.`
-                    );
-                }
+                toast.error(`Build did not fully stop yet. Session ${activeSessionId} is still closing.`);
                 return;
             }
         }
@@ -2798,12 +2793,7 @@ export default function EditorPage({ params }) {
         if (activeSessionId) {
             const result = await client.cancelBuild(activeSessionId);
             if (!result || !result.cancelled) {
-                if (typeof window !== 'undefined' && window.alert) {
-                    window.alert(
-                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
-                        `Please wait a moment and try again.`
-                    );
-                }
+                toast.error(`Build did not fully stop yet. Session ${activeSessionId} is still closing.`);
                 return;
             }
         }

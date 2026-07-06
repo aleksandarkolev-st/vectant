@@ -174,6 +174,7 @@ export const useAISuggestions = ({
     aiModel = null,
     aiApiKey = null,
     aiProvider = null,
+    confirmAction = null,
 }) => {
     const clientReady = true;
     const [isLoading, setIsLoading] = useState(false);
@@ -202,6 +203,12 @@ export const useAISuggestions = ({
     const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
     const activeFileRef = useRef(activeFile);
     const chatSessionsRef = useRef(chatSessions);
+    const requestFileAction = useCallback(async (options) => {
+        if (typeof confirmAction === 'function') {
+            return Boolean(await confirmAction(options));
+        }
+        return true;
+    }, [confirmAction]);
 
     // ── Context Window ──────────────────────────────────────────────
     const {
@@ -1189,9 +1196,12 @@ export const useAISuggestions = ({
                     ),
                 }));
                 try {
-                    const allowed = typeof window !== 'undefined'
-                        ? window.confirm(`Create new ${suggestion.isFolder ? 'folder' : 'file'} "${targetPath}" from AI suggestion?`)
-                        : true;
+                    const allowed = await requestFileAction({
+                        title: `Create ${suggestion.isFolder ? 'folder' : 'file'} from AI?`,
+                        message: targetPath,
+                        confirmLabel: suggestion.isFolder ? 'Create folder' : 'Create file',
+                        tone: 'warning',
+                    });
                     if (!allowed) {
                         mutateSession(sessionId, (s) => ({
                             ...s,
@@ -1206,9 +1216,12 @@ export const useAISuggestions = ({
                 }
             }
             if (suggestion.deleteFile) {
-                const allowedDelete = typeof window !== 'undefined'
-                    ? window.confirm(`Delete file "${targetPath}" from AI suggestion?`)
-                    : true;
+                const allowedDelete = await requestFileAction({
+                    title: 'Delete file from AI suggestion?',
+                    message: targetPath,
+                    confirmLabel: 'Delete file',
+                    tone: 'danger',
+                });
                 if (!allowedDelete) {
                     mutateSession(sessionId, (s) => ({
                         ...s,
@@ -1269,9 +1282,12 @@ export const useAISuggestions = ({
             } else if (workspaceSlug && suggestion.deleteFolder) {
                 try {
                     try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
-                    const allowedDelete = typeof window !== 'undefined'
-                        ? window.confirm(`Delete folder "${targetPath}" from AI suggestion?`)
-                        : true;
+                    const allowedDelete = await requestFileAction({
+                        title: 'Delete folder from AI suggestion?',
+                        message: targetPath,
+                        confirmLabel: 'Delete folder',
+                        tone: 'danger',
+                    });
                     if (!allowedDelete) {
                         mutateSession(sessionId, (s) => ({
                             ...s,
@@ -1327,7 +1343,7 @@ export const useAISuggestions = ({
             ),
         }));
     }
-    }, [applyContentToPath, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
+    }, [applyContentToPath, mutateSession, openFileByPath, requestFileAction, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
 
     // Mark a file suggestion as rejected and notify listeners.
     const handleRejectFileSuggestion = useCallback((sessionId, path) => {

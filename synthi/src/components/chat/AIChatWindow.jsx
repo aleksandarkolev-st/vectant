@@ -29,6 +29,7 @@ import DiagnosticsDrawer from './DiagnosticsDrawer';
 import ReasoningCard from './ReasoningCard';
 import ChatRail from './ChatRail';
 import ChatSessionDropdown from './ChatSessionDropdown';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 import './chat.css';
 
 const formatTimestamp = (timestamp) => {
@@ -110,6 +111,7 @@ const AIChatWindow = ({
     const fileCacheEntriesRef = useRef([]);
     const workspaceSlug = useAppSelector((state) => state.workspace.slug);
     const rawFiles = useAppSelector((state) => state.workspace.rawFiles || []);
+    const { confirm, confirmDialog } = useConfirmDialog();
 
     useEffect(() => {
         const syncFileCacheEntries = () => {
@@ -248,6 +250,7 @@ const AIChatWindow = ({
         aiModel: effectiveModel,
         aiApiKey: effectiveApiKey,
         aiProvider: effectiveProvider,
+        confirmAction: confirm,
     });
 
     const {
@@ -1812,6 +1815,7 @@ const AIChatWindow = ({
                 </div>
             )}
             </div>
+            {confirmDialog}
         </div>
     );
 };

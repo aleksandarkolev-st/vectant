@@ -36,6 +36,7 @@ import { PROGRAM_STYLE } from './programTokens';
 import LibraryView from './library/LibraryView';
 import StoreView from './store/StoreView';
 import ConfirmDialog from './ConfirmDialog';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 
 function sessionLabel(session) {
   if (!session?.id) {
@@ -95,6 +96,7 @@ export default function ProgramsPanel() {
   const [consent, setConsent] = useState(null); // { requested, published? }
   const [busy, setBusy] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   // Members get a read-only view; owner/admin (or unknown role — the API still
   // enforces) can launch / install. 'member' is the only role denied here.
@@ -256,7 +258,13 @@ export default function ProgramsPanel() {
   const handleScaffold = useCallback(async (install) => {
     if (!workspaceSlug || !install?.id) return;
     const name = install.packageId?.split('/').pop() || 'starter';
-    if (!window.confirm(`Scaffold a "${name}" starter into this workspace? Existing files are skipped.`)) return;
+    const allowed = await confirm({
+      title: `Scaffold ${name}?`,
+      message: 'Starter files will be added to this workspace. Existing files are skipped.',
+      confirmLabel: 'Scaffold',
+      tone: 'warning',
+    });
+    if (!allowed) return;
     try {
       const result = await scaffoldProgram(workspaceSlug, install.packageId);
       toast.success(`Scaffolded ${result?.written?.length || 0} file(s)` + (result?.skipped?.length ? `, skipped ${result.skipped.length}` : ''));
@@ -264,7 +272,7 @@ export default function ProgramsPanel() {
     } catch (error) {
       toast.error(error.body?.message || error.message || 'Failed to scaffold');
     }
-  }, [handleLaunchInstall, workspaceSlug]);
+  }, [confirm, handleLaunchInstall, workspaceSlug]);
 
   const handleLaunchDetected = useCallback(async () => {
     if (!workspaceSlug) return;
@@ -389,6 +397,7 @@ export default function ProgramsPanel() {
           onCancel={() => setRemoveTarget(null)}
         />
       ) : null}
+      {confirmDialog}
     </div>
   );
 }

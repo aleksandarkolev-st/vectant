@@ -20,6 +20,8 @@ import {
 } from './gitUtils';
 import CommitGraphColumn from './CommitGraphColumn';
 import InteractiveRebasePanel from './InteractiveRebasePanel';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
+import { usePromptDialog } from '@/components/ui/usePromptDialog';
 import './scm/scm-tokens.css';
 
 /* ────────────────────────────────────────────────────────────
@@ -367,6 +369,8 @@ export default function CommitHistoryPanel({ slug }) {
   const [selectedHash, setSelectedHash] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [rebaseCommits, setRebaseCommits] = useState(null);
+  const { confirm, confirmDialog } = useConfirmDialog();
+  const { prompt, promptDialog } = usePromptDialog();
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -450,7 +454,12 @@ export default function CommitHistoryPanel({ slug }) {
         dispatch(fetchCommitDetail({ slug, hash: commit.hash }));
         break;
       case 'cherry-pick':
-        if (window.confirm(`Cherry-pick commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"`)) {
+        if (await confirm({
+          title: `Cherry-pick ${commit.hash.substring(0, 7)}?`,
+          message: commit.message,
+          confirmLabel: 'Cherry-pick',
+          tone: 'warning',
+        })) {
           const result = await dispatch(cherryPickCommit({ slug, hash: commit.hash }));
           if (cherryPickCommit.fulfilled.match(result)) {
             toast.success(`Cherry-picked ${commit.hash.substring(0, 7)}`);
@@ -460,7 +469,12 @@ export default function CommitHistoryPanel({ slug }) {
         }
         break;
       case 'revert':
-        if (window.confirm(`Revert commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"\n\nThis will create a new commit that undoes the changes.`)) {
+        if (await confirm({
+          title: `Revert ${commit.hash.substring(0, 7)}?`,
+          message: `${commit.message}\n\nThis creates a new commit that undoes the changes.`,
+          confirmLabel: 'Revert commit',
+          tone: 'danger',
+        })) {
           const result = await dispatch(revertCommit({ slug, hash: commit.hash }));
           if (revertCommit.fulfilled.match(result)) {
             toast.success(`Reverted ${commit.hash.substring(0, 7)}`);
@@ -479,9 +493,19 @@ export default function CommitHistoryPanel({ slug }) {
         break;
       }
       case 'create-tag': {
-        const tagName = window.prompt(`Create tag on ${commit.hash.substring(0, 7)}:\n\nTag name:`);
+        const tagName = await prompt({
+          title: `Create tag on ${commit.hash.substring(0, 7)}`,
+          message: commit.message,
+          placeholder: 'v1.0.0',
+          confirmLabel: 'Continue',
+        });
         if (!tagName?.trim()) break;
-        const tagMessage = window.prompt('Tag message (leave empty for lightweight tag):');
+        const tagMessage = await prompt({
+          title: 'Tag message',
+          message: 'Leave empty to create a lightweight tag.',
+          placeholder: 'Release checkpoint',
+          confirmLabel: 'Create tag',
+        });
         const result = await dispatch(createTag({ slug, name: tagName.trim(), ref: commit.hash, message: tagMessage || undefined }));
         if (createTag.fulfilled.match(result)) {
           toast.success(`Tag "${tagName.trim()}" created`);
@@ -493,7 +517,7 @@ export default function CommitHistoryPanel({ slug }) {
       default:
         break;
     }
-  }, [dispatch, slug, handleRefresh, allCommits]);
+  }, [allCommits, confirm, dispatch, handleRefresh, prompt, slug]);
 
   const handleCommitClick = useCallback((commit) => {
     if (selectedHash === commit.hash) {
@@ -818,6 +842,8 @@ export default function CommitHistoryPanel({ slug }) {
           onAction={handleContextAction}
         />
       )}
+      {confirmDialog}
+      {promptDialog}
     </div>
   );
 }

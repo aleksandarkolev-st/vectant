@@ -27,6 +27,8 @@ import {
     ContextMenu,
     useContextMenu,
 } from '@/components/docking-wm/components/ContextMenu';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
+import { usePromptDialog } from '@/components/ui/usePromptDialog';
 
 /* ─── Checkout Conflict Dialog ─────────────────────── */
 function CheckoutConflictDialog({ slug, branch, create, onClose }) {
@@ -123,6 +125,8 @@ export function BranchSelector({ slug }) {
     const dispatch = useDispatch();
     const { branches, currentBranch, loading, checkoutConflict } = useSelector(state => state.git);
     const { menuState, openMenu, closeMenu } = useContextMenu();
+    const { confirm, confirmDialog } = useConfirmDialog();
+    const { prompt, promptDialog } = usePromptDialog();
 
     useEffect(() => {
         if (slug) {
@@ -132,7 +136,12 @@ export function BranchSelector({ slug }) {
 
     const handleValueChange = useCallback(async (value) => {
         if (value === 'create-new') {
-            const branchName = prompt("Enter new branch name:");
+            const branchName = await prompt({
+                title: 'Create branch',
+                message: currentBranch ? `Base: ${currentBranch}` : 'Create a local branch in this workspace.',
+                placeholder: 'feature/workspace-update',
+                confirmLabel: 'Create branch',
+            });
             if (branchName) {
                 const result = await dispatch(checkoutBranch({ slug, branch: branchName, create: true }));
                 if (checkoutBranch.fulfilled.match(result)) {
@@ -145,7 +154,7 @@ export function BranchSelector({ slug }) {
                 dispatch(refreshWorkspaceThunk());
             }
         }
-    }, [slug, dispatch]);
+    }, [currentBranch, dispatch, prompt, slug]);
 
     const handleCloseConflictDialog = useCallback(() => {
         dispatch(clearCheckoutConflict());
@@ -223,7 +232,12 @@ export function BranchSelector({ slug }) {
                 label: `Merge into ${target}`,
                 disabled: isCurrent || !currentBranch,
                 action: async () => {
-                    const ok = window.confirm(`Merge "${branch}" into "${currentBranch}"?`);
+                    const ok = await confirm({
+                        title: 'Merge branch?',
+                        message: `"${branch}" into "${currentBranch}"`,
+                        confirmLabel: 'Merge',
+                        tone: 'warning',
+                    });
                     if (!ok) return;
                     const result = await dispatch(mergeBranchForConflicts({ slug, branch }));
                     if (mergeBranchForConflicts.fulfilled.match(result)) {
@@ -293,6 +307,8 @@ export function BranchSelector({ slug }) {
                     onClose={handleCloseConflictDialog}
                 />
             )}
+            {confirmDialog}
+            {promptDialog}
         </>
     );
 }

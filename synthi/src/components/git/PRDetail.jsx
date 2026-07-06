@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { MarkdownRenderer, MarkdownEditor, MarkdownToolbar, handleMarkdownKeyDown } from './MarkdownRenderer';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -543,6 +544,7 @@ export function PRDetail({ slug, onBack }) {
   const [newTitle, setNewTitle] = useState('');
   const [closingPR, setClosingPR] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   const { owner, repo } = githubInfo || {};
 
@@ -605,7 +607,13 @@ export function PRDetail({ slug, onBack }) {
   };
 
   const handleDeleteComment = async (commentId) => {
-    if (!confirm('Delete this comment?')) return;
+    const allowed = await confirm({
+      title: 'Delete comment?',
+      message: 'This removes the comment from the pull request conversation.',
+      confirmLabel: 'Delete comment',
+      tone: 'danger',
+    });
+    if (!allowed) return;
     const result = await dispatch(deleteComment({ owner, repo, commentId, slug }));
     // Silent on success — the comment disappears from the list. Toast
     // only on failure.
@@ -734,6 +742,7 @@ export function PRDetail({ slug, onBack }) {
         )}
         {pr && tab === 'checks' && <ChecksTab checks={prChecks} />}
       </div>
+      {confirmDialog}
     </div>
   );
 }

@@ -54,6 +54,7 @@ import {
 } from '@/components/docking-wm/state/layout-slice';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 import { getFileLanguage } from '@/utils/fileUtils';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 
 import './scm-tokens.css';
 import { BranchBridge } from './BranchBridge';
@@ -98,6 +99,7 @@ export function SourceControlPanel({ slug }) {
   const [showCloneForm, setShowCloneForm] = useState(false);
   const [cloneUrl, setCloneUrl] = useState('');
   const [ripplingPaths, setRipplingPaths] = useState(() => new Set());
+  const { confirm, confirmDialog } = useConfirmDialog();
   // Track which file is currently open in the editor pane so the row
   // can render its active-selection state.
   const activeFilePath = useSelector((s) => s.workspace.activeFile?.path) || null;
@@ -268,7 +270,15 @@ export function SourceControlPanel({ slug }) {
 
   const handlePush = useCallback(async (force = false) => {
     if (!slug) return;
-    if (force && !window.confirm('Force push will overwrite remote history. This uses --force-with-lease for safety. Continue?')) return;
+    if (force) {
+      const allowed = await confirm({
+        title: 'Force push remote branch?',
+        message: 'This can overwrite remote history. Vectant uses --force-with-lease so the push stops if the remote changed.',
+        confirmLabel: 'Force push',
+        tone: 'danger',
+      });
+      if (!allowed) return;
+    }
     const result = await dispatch(pushChanges(force ? { slug, force: true } : slug));
     if (pushChanges.fulfilled.match(result)) {
       toast.success(force ? 'Force pushed to remote' : 'Pushed to remote');
@@ -282,7 +292,7 @@ export function SourceControlPanel({ slug }) {
         toast.error(errMsg);
       }
     }
-  }, [dispatch, slug]);
+  }, [confirm, dispatch, slug]);
 
   const handleSync = useCallback(async () => {
     // "Sync" = pull then push.  Used by the diverged focal-card path.
@@ -361,21 +371,33 @@ export function SourceControlPanel({ slug }) {
   }, [dispatch, slug]);
 
   const handleDiscard = useCallback(async (file) => {
-    if (!window.confirm(`Discard changes in ${file.path}?`)) return;
+    const allowed = await confirm({
+      title: 'Discard file changes?',
+      message: file.path,
+      confirmLabel: 'Discard',
+      tone: 'danger',
+    });
+    if (!allowed) return;
     const result = await dispatch(discardChange({ slug, filePath: file.path }));
     if (discardChange.fulfilled.match(result)) {
       toast.success(`Discarded changes in ${file.path.split('/').pop()}`);
     } else {
       toast.error(`Failed to discard ${file.path.split('/').pop()}`);
     }
-  }, [dispatch, slug]);
+  }, [confirm, dispatch, slug]);
 
   const handleDiscardAll = useCallback(async () => {
-    if (!window.confirm('Discard ALL changes? This cannot be undone!')) return;
+    const allowed = await confirm({
+      title: 'Discard all working changes?',
+      message: 'This cannot be undone. Stash or commit anything you need to keep before continuing.',
+      confirmLabel: 'Discard all',
+      tone: 'danger',
+    });
+    if (!allowed) return;
     const result = await dispatch(discardAll(slug));
     if (discardAll.fulfilled.match(result)) toast.success('All changes discarded');
     else toast.error('Failed to discard all changes');
-  }, [dispatch, slug]);
+  }, [confirm, dispatch, slug]);
 
   const handleOpenDiff = useCallback((file) => {
     dispatch(openDiffThunk({
@@ -410,10 +432,16 @@ export function SourceControlPanel({ slug }) {
   }, [dispatch, status]);
 
   const handleAbortMerge = useCallback(async () => {
-    if (!window.confirm('Are you sure you want to abort the merge? All merge progress will be lost.')) return;
+    const allowed = await confirm({
+      title: 'Abort merge?',
+      message: 'All merge progress will be lost and the workspace will return to the pre-merge state.',
+      confirmLabel: 'Abort merge',
+      tone: 'danger',
+    });
+    if (!allowed) return;
     await dispatch(abortMerge(slug));
     dispatch(refreshWorkspaceThunk());
-  }, [dispatch, slug]);
+  }, [confirm, dispatch, slug]);
 
   const handleInitRepo = useCallback(async () => {
     if (!slug) return;
@@ -469,10 +497,16 @@ export function SourceControlPanel({ slug }) {
     dispatch(refreshWorkspaceThunk());
   }, [dispatch, slug]);
   const handleStashDrop = useCallback(async (index) => {
-    if (!window.confirm('Drop this stash?')) return;
+    const allowed = await confirm({
+      title: 'Drop stash?',
+      message: `Remove stash entry ${index}. This cannot be undone from Vectant.`,
+      confirmLabel: 'Drop stash',
+      tone: 'danger',
+    });
+    if (!allowed) return;
     const result = await dispatch(stashDrop({ slug, index }));
     if (stashDrop.fulfilled.match(result)) toast.success('Stash dropped');
-  }, [dispatch, slug]);
+  }, [confirm, dispatch, slug]);
   const handleStashPushWithMessage = useCallback(async (msg) => {
     const result = await dispatch(stashPush({ slug, message: msg }));
     if (stashPush.fulfilled.match(result)) toast.success('Changes stashed');
@@ -705,6 +739,7 @@ export function SourceControlPanel({ slug }) {
       {showTokenModal && (
         <GitHubTokenModal onClose={() => setShowTokenModal(false)} />
       )}
+      {confirmDialog}
     </div>
   );
 }

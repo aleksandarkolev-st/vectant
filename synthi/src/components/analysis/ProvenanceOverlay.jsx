@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 
 const DEFAULT_AI_ENGINE_BASE = '/api/provenance';
 
@@ -36,6 +37,7 @@ export function ProvenanceOverlay({
   const [actionLoading, setActionLoading] = useState(null);  // Track which action is loading
   const [actionError, setActionError] = useState(null);
   const [pinnedRecords, setPinnedRecords] = useState(new Set());
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   // ==========================================================================
   // ACTION HANDLERS - One-click rollback, pin, revert
@@ -113,13 +115,12 @@ export function ProvenanceOverlay({
   const handleRevert = useCallback(async (record) => {
     if (!record || actionLoading) return;
     
-    // Confirm before reverting
-    const confirmed = window.confirm(
-      `Revert to this version?\n\n` +
-      `This will restore the code to the state from:\n` +
-      `${record.timestamp_iso}\n\n` +
-      `Change type: ${record.change_type}`
-    );
+    const confirmed = await confirm({
+      title: 'Revert to this AI version?',
+      message: `This restores the code to ${record.timestamp_iso}.\nChange type: ${record.change_type}`,
+      confirmLabel: 'Revert version',
+      tone: 'danger',
+    });
     
     if (!confirmed) return;
     
@@ -148,7 +149,7 @@ export function ProvenanceOverlay({
     } finally {
       setActionLoading(null);
     }
-  }, [apiBaseUrl, actionLoading, onRevert]);
+  }, [apiBaseUrl, actionLoading, confirm, onRevert]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -456,6 +457,7 @@ export function ProvenanceOverlay({
           )}
         </div>
       </div>
+      {confirmDialog}
     </div>
   );
 }

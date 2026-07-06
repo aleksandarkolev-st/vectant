@@ -8,6 +8,7 @@ import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
 import { getCurrentUser } from '@/services/userIdentity';
 import getInitials from '@/utils/getInitials';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 import {
   Users, FileEdit, Globe, Loader2, UserPlus, Shield,
   Send, Check, X, Bell, Ban, MoreHorizontal, Radio, Hash, Mail
@@ -42,6 +43,7 @@ export default function WorkspaceUsersPanel({ slug }) {
   const [membershipNotice, setMembershipNotice] = useState(null);
   // Seed from service in case an invite arrived while the modal was closed
   const [pendingInvite, setPendingInvite] = useState(() => collabSessionService.pendingInvite);
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   const myUserId = getCurrentUser().id;
 
@@ -196,15 +198,18 @@ export default function WorkspaceUsersPanel({ slug }) {
   const handleBlockUser = useCallback(async (userId, userName) => {
     // Prevent self-blocking
     if (userId === myUserId) return;
-    const confirmed = window.confirm(
-      `Block ${userName || 'this user'}? They won\u2019t be able to see you in the users list or send you requests.`
-    );
+    const confirmed = await confirm({
+      title: `Block ${userName || 'this user'}?`,
+      message: 'They will disappear from your users list and cannot send collaboration requests.',
+      confirmLabel: 'Block user',
+      tone: 'danger',
+    });
     if (!confirmed) return;
     try {
       await blockUser(userId);
       refresh(); // re-fetch presence so blocked user disappears
     } catch (err) { console.warn('[Collab] blockUser:', err?.message); }
-  }, [blockUser, refresh, myUserId]);
+  }, [blockUser, confirm, refresh, myUserId]);
 
   const handleUnblockUser = useCallback(async (userId) => {
     try {
@@ -405,6 +410,7 @@ export default function WorkspaceUsersPanel({ slug }) {
           {error || membershipError}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

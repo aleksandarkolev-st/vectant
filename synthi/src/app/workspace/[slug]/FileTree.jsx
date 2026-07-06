@@ -50,6 +50,7 @@ import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import FileItem from "./FileItem";
 import { useVirtualizedTree } from "@/hooks/useVirtualizedTree";
 import { useNewProjectPicker } from "@/components/NewProjectPicker";
+import { useConfirmDialog } from "@/components/ui/useConfirmDialog";
 import { gitClient } from "@/services/gitClient";
 import collabSessionService from "@/services/collabSessionService";
 
@@ -444,6 +445,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   const { canFileOps, role } = useSessionPermissions();
   const canMutateFiles = canFileOps !== false;
   const { openPicker } = useNewProjectPicker();
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   // inputRef retained ONLY for root-level creation (target: null)
   const inputRef = useRef(null);
@@ -558,12 +560,21 @@ const FileTreeView = ({ onToggleOrientation }) => {
     } else if (action === "rename") {
       dispatch(startRename(item));
     } else if (action === "delete") {
+      const allowed = await confirm({
+        title: item?.isFolder ? `Delete folder ${item.name}?` : `Delete file ${item?.name}?`,
+        message: item?.isFolder
+          ? `${item?.path || item?.name} and all nested contents will be removed from this workspace.`
+          : `${item?.path || item?.name} will be removed from this workspace.`,
+        confirmLabel: item?.isFolder ? "Delete folder" : "Delete file",
+        tone: "danger",
+      });
+      if (!allowed) return;
       const res = await dispatch(deleteItemThunk(item));
       if (deleteItemThunk.rejected.match(res)) {
         toast.error(`Delete failed: ${res.error?.message || "Unknown error"}`);
       }
     }
-  }, [canMutateFiles, dispatch, files, openPicker]);
+  }, [canMutateFiles, confirm, dispatch, files, openPicker]);
 
   // Action handlers passed down to FileItem
   const handleKeyDown = useCallback(async (e) => {
@@ -959,6 +970,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, handleExternalFilesDrop, handleExternalFolderDragTarget, externalDropTargetFolder, canMutateFiles, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
 
   return (
+    <>
     <ContextMenu
       onOpenAutoFocus={onOpenMenu}
       onOpenChange={(open) => {
@@ -1178,7 +1190,9 @@ const FileTreeView = ({ onToggleOrientation }) => {
                     el.setAttribute("data-loading", "true");
                     const spinner = document.createElement("div");
                     spinner.className =
-                      "ml-2 h-3 w-3 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin";
+                      "ml-2 h-3 w-3 rounded-full border-2 border-t-transparent animate-spin";
+                    spinner.style.borderColor = "var(--attention-purple)";
+                    spinner.style.borderTopColor = "transparent";
                     spinner.setAttribute("data-spinner", "true");
                     const content = el.querySelector(".file-content");
                     if (content) {
@@ -1237,6 +1251,8 @@ const FileTreeView = ({ onToggleOrientation }) => {
         )}
       </ContextMenuContent>
     </ContextMenu>
+    {confirmDialog}
+    </>
   );
 };
 export default memo(FileTreeView);
