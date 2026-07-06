@@ -226,6 +226,23 @@ const ProgramSessionPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
+function PreviewEmptyState() {
+  return (
+    <div className="vt-empty-state h-full min-h-0 rounded-none border-0">
+      <div className="max-w-[260px] text-center">
+        <div className="vt-state-pill mx-auto mb-3 w-max">
+          <span className="vt-state-dot" style={{ background: 'var(--text-dim)', boxShadow: 'none' }} />
+          Preview
+        </div>
+        <div className="text-[13px] font-semibold text-[var(--text-primary)]">No preview target</div>
+        <p className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
+          Start a dev server or attach a browser workflow to inspect the running artifact.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ────────────────────────────────────────────────────────
 //  Explorer Panel Wrapper
 // ────────────────────────────────────────────────────────
@@ -1031,9 +1048,7 @@ export const PreviewPanelWrapper = memo(function PreviewPanelWrapper({ data }) {
       data-panel-type="preview"
       className="vt-panel-frame h-full w-full overflow-hidden"
     >
-      <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-disabled)' }}>
-        No preview available
-      </div>
+      <PreviewEmptyState />
     </div>
   );
 });
