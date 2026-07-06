@@ -14,20 +14,21 @@
  * ThemeProvider for CSS selectors that need to differ by base type. */
 :root {
   /* Atmospheric Depth backgrounds — deeper, less neutral, more "void" */
-  --bg-app: #06060a;
-  --bg-editor: #0a0b11;
-  --bg-sidebar: #06060a;
-  --bg-panel: #0d0e15;
-  --bg-surface: #131420;
-  --bg-elevated: #1a1c2a;
-  --border-subtle: #1a1c2a;
-  --border-medium: #2b2d3e;
-  --border-focus: #3a3d55;
-  --border-strong: #45485f;
-  --text-primary: #f4f5f8;
-  --text-secondary: #9ba2b8;
-  --text-muted: #8189a0;
-  --text-dim: #3d4256;
+  --bg-app: oklch(11.5% 0.018 284);
+  --bg-editor: oklch(13.2% 0.015 281);
+  --bg-sidebar: oklch(10.5% 0.018 284);
+  --bg-panel: oklch(16.2% 0.016 280);
+  --bg-surface: oklch(19% 0.018 279);
+  --bg-elevated: oklch(23.5% 0.021 278);
+  --bg-overlay: color-mix(in srgb, var(--bg-panel) 92%, black 8%);
+  --border-subtle: oklch(25% 0.018 278);
+  --border-medium: oklch(34% 0.022 277);
+  --border-focus: oklch(45% 0.045 285);
+  --border-strong: oklch(52% 0.038 276);
+  --text-primary: oklch(95.5% 0.008 275);
+  --text-secondary: oklch(74% 0.023 276);
+  --text-muted: oklch(61.5% 0.025 276);
+  --text-dim: oklch(39% 0.025 276);
 
   /* ── Vectant Brand Gradient ─────────────────────────────────────
      Logo gradient stops at the exact positions you specified.
@@ -66,9 +67,9 @@
   /* Calm everyday accent — slate-violet that BARELY reads as color.
      Use for ambient borders, faint hovers, neutral indicators. If
      it's grabbing your eye, it's the wrong token. */
-  --accent-primary: #6c6885;
-  --accent-secondary: #8a85a8;
-  --accent-tertiary: #4d4870;
+  --accent-primary: oklch(57% 0.056 284);
+  --accent-secondary: oklch(66% 0.061 286);
+  --accent-tertiary: oklch(44% 0.052 284);
   --accent-gradient: var(--brand-gradient);
   --accent-glow: 0 0 18px color-mix(in srgb, var(--accent-primary) 22%, transparent);
 
@@ -77,14 +78,14 @@
      the tree, toggle-ON switches, selected option pills, focused
      panel borders, status-bar pills representing a live state.
      If everything uses it, nothing does. */
-  --attention-purple: #b545ff;
+  --attention-purple: oklch(65% 0.245 305);
   --attention-glow: 0 0 22px color-mix(in srgb, var(--attention-purple) 38%, transparent);
   --attention-rim: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent),
                    0 0 16px -2px color-mix(in srgb, var(--attention-purple) 36%, transparent);
-  --accent-danger: #ff5757;
+  --accent-danger: oklch(68% 0.205 25);
   --accent-danger-soft: #ff575720;
-  --accent-success: #4ade80;
-  --accent-warning: #fbbf24;
+  --accent-success: oklch(74% 0.148 154);
+  --accent-warning: oklch(78% 0.147 79);
 
   /* Atmospheric Depth tokens — used by .vt-rim, .vt-ambient-* utilities.
      Rim-glow is a soft outer halo, ambient-haze is a 1px gradient line
@@ -129,11 +130,16 @@
   --shell-default: #888888;
 
   /* Shadows for depth */
-  --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.6);
-  --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.7);
+  --shadow-panel: 0 12px 36px -28px rgba(0, 0, 0, 0.92);
+  --shadow-dropdown: 0 20px 48px -26px rgba(0, 0, 0, 0.95);
   --shadow-glow: 0 0 18px color-mix(in srgb, var(--brand-stop-3) 18%, transparent);
 
-  --radius: 0.625rem;
+  --radius: 0.5rem;
+  --radius-control: 7px;
+  --radius-panel: 10px;
+  --motion-fast: 160ms cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-mid: 220ms cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-slow: 420ms cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Synthi Brand Font - SF Pro */
   --font-ui:
@@ -185,70 +191,70 @@
 }
 
 :root {
-  --background: #06060a;
-  --foreground: #f0f2f5;
-  --card: #0d0e15;
-  --card-foreground: #f0f2f5;
-  --popover: #0d0e15;
-  --popover-foreground: #f0f2f5;
+  --background: var(--bg-app);
+  --foreground: var(--text-primary);
+  --card: var(--bg-panel);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-overlay);
+  --popover-foreground: var(--text-primary);
   --primary: #b545ff;
   --primary-foreground: #ffffff;
-  --secondary: #1c1d26;
-  --secondary-foreground: #f0f2f5;
-  --muted: #1c1d26;
-  --muted-foreground: #a8adc0;
-  --accent: #1c1d26;
-  --accent-foreground: #f0f2f5;
-  --destructive: #ff5757;
-  --border: #1c1d26;
-  --input: #1c1d26;
+  --secondary: var(--bg-surface);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-surface);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--bg-elevated);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--accent-danger);
+  --border: var(--border-subtle);
+  --input: var(--bg-panel);
   --ring: #b545ff;
   --chart-1: #b545ff;
   --chart-2: #4ade80;
   --chart-3: #a23dff;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
-  --sidebar: #06060a;
-  --sidebar-foreground: #f0f2f5;
+  --sidebar: var(--bg-sidebar);
+  --sidebar-foreground: var(--text-primary);
   --sidebar-primary: #b545ff;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #1c1d26;
-  --sidebar-accent-foreground: #f0f2f5;
-  --sidebar-border: #1c1d26;
+  --sidebar-accent: var(--bg-surface);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border-subtle);
   --sidebar-ring: #b545ff;
 }
 
 .dark {
-  --background: #06060a;
-  --foreground: #f0f2f5;
-  --card: #0d0e15;
-  --card-foreground: #f0f2f5;
-  --popover: #0d0e15;
-  --popover-foreground: #f0f2f5;
+  --background: var(--bg-app);
+  --foreground: var(--text-primary);
+  --card: var(--bg-panel);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-overlay);
+  --popover-foreground: var(--text-primary);
   --primary: #b545ff;
   --primary-foreground: #ffffff;
-  --secondary: #1c1d26;
-  --secondary-foreground: #f0f2f5;
-  --muted: #1c1d26;
-  --muted-foreground: #a8adc0;
-  --accent: #1c1d26;
-  --accent-foreground: #f0f2f5;
-  --destructive: #ff5757;
-  --border: #1c1d26;
-  --input: #1c1d26;
+  --secondary: var(--bg-surface);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-surface);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--bg-elevated);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--accent-danger);
+  --border: var(--border-subtle);
+  --input: var(--bg-panel);
   --ring: #b545ff;
   --chart-1: #b545ff;
   --chart-2: #4ade80;
   --chart-3: #a23dff;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
-  --sidebar: #06060a;
-  --sidebar-foreground: #f0f2f5;
+  --sidebar: var(--bg-sidebar);
+  --sidebar-foreground: var(--text-primary);
   --sidebar-primary: #b545ff;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #1c1d26;
-  --sidebar-accent-foreground: #f0f2f5;
-  --sidebar-border: #1c1d26;
+  --sidebar-accent: var(--bg-surface);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border-subtle);
   --sidebar-ring: #b545ff;
 }
 
@@ -904,12 +910,17 @@
 .th-btn-ghost {
   color: var(--text-secondary);
   transition:
-    background 150ms,
-    color 150ms;
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
 }
 .th-btn-ghost:hover {
-  background: var(--bg-elevated);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
   color: var(--text-primary);
+}
+.th-btn-ghost:active {
+  transform: translateY(1px) scale(0.99);
 }
 
 /* Active / toggled button state — focal moment, uses attention purple. */
@@ -921,13 +932,45 @@
     transparent
   ) !important;
   border: 1px solid color-mix(in srgb, var(--attention-purple) 30%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 10px 26px -20px color-mix(in srgb, var(--attention-purple) 70%, transparent);
+}
+
+.th-btn-primary {
+  color: var(--primary-foreground);
+  background: var(--brand-gradient-horizontal);
+  background-size: 140% 100%;
+  border: 1px solid color-mix(in srgb, var(--brand-stop-4) 32%, transparent);
+  border-radius: var(--radius-control);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 15%, transparent),
+    0 18px 38px -28px color-mix(in srgb, var(--brand-stop-3) 70%, transparent);
+  transition:
+    background-position var(--motion-mid),
+    box-shadow var(--motion-mid),
+    transform var(--motion-fast);
+}
+.th-btn-primary:hover {
+  background-position: 100% 50%;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 24px 52px -30px color-mix(in srgb, var(--brand-stop-4) 80%, transparent);
+}
+.th-btn-primary:active {
+  transform: translateY(1px) scale(0.99);
 }
 
 /* Input field */
 .th-input {
-  background: var(--bg-panel);
+  background: color-mix(in srgb, var(--bg-panel) 86%, black 14%);
   color: var(--text-primary);
   border-color: var(--border-subtle);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+  transition:
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    background var(--motion-fast);
 }
 .th-input:focus {
   border-color: var(--attention-purple);
@@ -940,8 +983,10 @@
 
 /* Dropdown / popover surface */
 .th-surface-dropdown {
-  background: var(--bg-panel);
+  background: var(--bg-overlay);
   border-color: var(--border-subtle);
+  box-shadow: var(--shadow-dropdown);
+  backdrop-filter: blur(12px) saturate(116%);
 }
 
 /* Dropdown item */
@@ -949,7 +994,7 @@
   color: var(--text-primary);
 }
 .th-dropdown-item:hover {
-  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
 }
 
 /* Quick action row — text primary, hover accent bg+text */
@@ -996,6 +1041,134 @@
 }
 .th-bg-elevated {
   background: var(--bg-elevated);
+}
+
+.th-divider {
+  border-color: var(--border-subtle);
+}
+
+.vt-app-surface {
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--brand-stop-3) 10%, transparent), transparent 34rem),
+    radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--brand-stop-4) 8%, transparent), transparent 28rem),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
+  color: var(--text-primary);
+}
+
+.vt-shell-panel {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 96%, white 4%), var(--bg-panel)),
+    var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    var(--shadow-panel);
+}
+
+.vt-inset-panel {
+  background: color-mix(in srgb, var(--bg-app) 54%, var(--bg-panel) 46%);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 82%, transparent);
+  border-radius: calc(var(--radius-panel) - 2px);
+}
+
+.vt-section-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vt-mono {
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-sidebar-group {
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 84%, transparent);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--bg-sidebar) 82%, var(--bg-panel) 18%);
+  overflow: hidden;
+}
+
+.vt-sidebar-folder {
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 76%, transparent);
+}
+
+.vt-sidebar-folder:first-child {
+  border-top: 0;
+}
+
+.vt-sidebar-row {
+  min-height: 30px;
+  color: var(--text-secondary);
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.vt-sidebar-row:hover {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-primary);
+}
+
+.vt-sidebar-row[aria-selected="true"],
+.vt-sidebar-row.is-active {
+  color: var(--text-primary);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 16%, transparent), transparent 74%),
+    color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.vt-toolbar {
+  min-height: 36px;
+  border-bottom: 1px solid var(--border-subtle);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 96%, white 4%), var(--bg-panel));
+}
+
+.vt-command-surface {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 72%, black 28%), var(--bg-panel));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+    0 24px 70px -46px rgba(0, 0, 0, 0.95);
+}
+
+.vt-empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  padding: 24px;
+  color: var(--text-muted);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 86%, transparent), transparent),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 3%, transparent) 0 1px, transparent 1px 12px);
+  border: 1px dashed color-mix(in srgb, var(--border-medium) 72%, transparent);
+  border-radius: var(--radius-panel);
+}
+
+.vt-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.vt-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, white 10%, transparent), transparent);
+  animation: vt-skeleton-sweep 1.6s cubic-bezier(0.32, 0.72, 0, 1) infinite;
+}
+
+@keyframes vt-skeleton-sweep {
+  to { transform: translateX(100%); }
 }
 
 /* ===== Typography Hierarchy System ===== */
