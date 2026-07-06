@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
+  enforceRequestEnvelopeReplayProtection,
   readLocalSupportPolicy,
   validateRequestEnvelope,
   verifyRequestEnvelopeSignature,
@@ -30,6 +31,10 @@ export async function POST(req) {
     );
     if (signatureDecision.decision === "denied") {
       return NextResponse.json(signatureDecision, { status: 403 });
+    }
+    const replayDecision = enforceRequestEnvelopeReplayProtection(body);
+    if (replayDecision.decision === "denied") {
+      return NextResponse.json(replayDecision, { status: 409 });
     }
   }
 

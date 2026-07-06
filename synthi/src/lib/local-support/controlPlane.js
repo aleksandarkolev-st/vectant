@@ -37,6 +37,9 @@ const SECURITY_EVENT_TYPES = new Set([
   "suspicious_support_request",
 ]);
 
+const MAX_REPLAY_CACHE_ENTRIES = 5_000;
+const replayCache = new Map();
+
 export const POLICY_PRECEDENCE = [
   "hardcoded_safety_baseline",
   "emergency_remote_kill_switch",
@@ -163,6 +166,37 @@ export function verifyRequestEnvelopeSignature(envelope, secret) {
     bytes_sent: 0,
     local_enforcement_required: true,
   };
+}
+
+export function enforceRequestEnvelopeReplayProtection(envelope, nowMs = Date.now()) {
+  const requestId = typeof envelope?.request_id === "string" ? envelope.request_id.trim() : "";
+  const sessionId = typeof envelope?.session_id === "string" ? envelope.session_id.trim() : "";
+  const expiresAt = Date.parse(envelope?.expires_at || "");
+  if (!requestId || !sessionId || !Number.isFinite(expiresAt)) {
+    return deny("request_replay_identity_invalid", "Request envelope replay identity is invalid.");
+  }
+
+  pruneReplayCache(nowMs);
+  const cacheKey = `${sessionId}\0${requestId}`;
+  if (replayCache.has(cacheKey)) {
+    return deny("request_replay_detected", "This request envelope was already used.");
+  }
+  replayCache.set(cacheKey, expiresAt);
+  if (replayCache.size > MAX_REPLAY_CACHE_ENTRIES) {
+    const oldestKey = replayCache.keys().next().value;
+    replayCache.delete(oldestKey);
+  }
+  return {
+    decision: "accepted",
+    reason: "request_replay_nonce_recorded",
+    policy_version: POLICY_VERSION,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+  };
+}
+
+export function clearRequestEnvelopeReplayCache() {
+  replayCache.clear();
 }
 
 export function compareSemverLike(left, right) {
@@ -314,6 +348,14 @@ function canonicalValue(value, excludedKeys = new Set()) {
       }, {});
   }
   return value;
+}
+
+function pruneReplayCache(nowMs) {
+  for (const [key, expiresAt] of replayCache) {
+    if (expiresAt <= nowMs) {
+      replayCache.delete(key);
+    }
+  }
 }
 
 function severityForEvent(eventType, count) {

@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  clearRequestEnvelopeReplayCache,
+  enforceRequestEnvelopeReplayProtection,
   evaluatePolicyPrecedence,
   readLocalSupportPolicy,
   signRequestEnvelope,
@@ -10,6 +12,10 @@ import {
 } from "./controlPlane";
 
 const future = () => new Date(Date.now() + 60_000).toISOString();
+
+afterEach(() => {
+  clearRequestEnvelopeReplayCache();
+});
 
 function envelope(overrides = {}) {
   return {
@@ -232,6 +238,29 @@ describe("local support control plane policy", () => {
       decision: "denied",
       reason: "request_envelope_signature_invalid",
       bytes_sent: 0,
+    });
+  });
+
+  it("records request envelope nonces and rejects replay", () => {
+    const body = envelope({
+      request_id: "req_replay",
+      session_id: "sess_replay",
+      expires_at: new Date(1_000_000).toISOString(),
+    });
+
+    expect(enforceRequestEnvelopeReplayProtection(body, 900_000)).toMatchObject({
+      decision: "accepted",
+      reason: "request_replay_nonce_recorded",
+      bytes_sent: 0,
+    });
+    expect(enforceRequestEnvelopeReplayProtection(body, 900_001)).toMatchObject({
+      decision: "denied",
+      reason: "request_replay_detected",
+      bytes_sent: 0,
+    });
+    expect(enforceRequestEnvelopeReplayProtection({ ...body, request_id: "req_replay_2" }, 1_000_001)).toMatchObject({
+      decision: "accepted",
+      reason: "request_replay_nonce_recorded",
     });
   });
 

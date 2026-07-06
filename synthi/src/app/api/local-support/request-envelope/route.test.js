@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { signRequestEnvelope } from "@/lib/local-support/controlPlane";
+import { clearRequestEnvelopeReplayCache, signRequestEnvelope } from "@/lib/local-support/controlPlane";
 
 import { POST } from "./route";
 
@@ -8,6 +8,7 @@ const OLD_ENV = { ...process.env };
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
+  clearRequestEnvelopeReplayCache();
 });
 
 function request(body, init = {}) {
@@ -121,6 +122,31 @@ describe("local support request-envelope route", () => {
     expect(json).toMatchObject({
       decision: "denied",
       reason: "request_envelope_signature_invalid",
+      bytes_sent: 0,
+    });
+  });
+
+  it("rejects replayed signed request envelopes", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    const body = signedEnvelope({
+      request_id: "req_replay_route",
+      capability: "workspace.log.read",
+    });
+
+    const first = await POST(request(body));
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      decision: "approval_required",
+      bytes_sent: 0,
+    });
+
+    const replay = await POST(request(body));
+    const replayJson = await replay.json();
+    expect(replay.status).toBe(409);
+    expect(replayJson).toMatchObject({
+      decision: "denied",
+      reason: "request_replay_detected",
       bytes_sent: 0,
     });
   });
