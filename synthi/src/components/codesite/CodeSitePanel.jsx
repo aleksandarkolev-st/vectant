@@ -357,7 +357,7 @@ function transactionTowerAction(transaction = {}, events = []) {
   if (["open", "validated"].includes(status)) {
     return "observe read set until commit";
   }
-  if (status === "committed") return "proof bundle closed";
+  if (status === "committed") return "evidence bundle closed";
   return "hold for coordinator review";
 }
 
@@ -737,7 +737,7 @@ const TOWER_EVENT_LABELS = {
   transaction_validated: "Transaction validated",
   transaction_committed: "Transaction committed",
   transaction_aborted: "Transaction aborted",
-  proof_bundle_verified: "Proof bundle verified",
+  proof_bundle_verified: "Evidence bundle verified",
   black_box_closed: "Event recorder closed",
   tower_instruction: "Coordination instruction",
   route_deviation: "Plan change filed",
@@ -1182,6 +1182,35 @@ function formatTime(value) {
   });
 }
 
+function toneColor(status, riskLevel = null) {
+  const risk = String(riskLevel || "").toLowerCase();
+  if (["critical", "high"].includes(risk)) return "var(--codesite-danger)";
+  if (["medium", "warning"].includes(risk)) return "var(--codesite-warning)";
+  const normalized = String(status || "").toLowerCase();
+  if (
+    ["holding", "blocked", "denied", "mayday", "failed", "critical"].includes(
+      normalized,
+    )
+  )
+    return "var(--codesite-danger)";
+  if (
+    [
+      "pending",
+      "filed",
+      "preflight",
+      "open",
+      "running",
+      "warning",
+      "medium",
+      "partially_applied",
+    ].includes(normalized)
+  )
+    return "var(--codesite-warning)";
+  if (["idle", "unknown", "missing"].includes(normalized))
+    return "var(--codesite-muted-accent)";
+  return "var(--codesite-success)";
+}
+
 function statusTone(status) {
   const normalized = String(status || "").toLowerCase();
   if (
@@ -1190,7 +1219,8 @@ function statusTone(status) {
     )
   ) {
     return {
-      background: "color-mix(in srgb, #4ade80 16%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-success) 16%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1200,7 +1230,7 @@ function statusTone(status) {
     )
   ) {
     return {
-      background: "color-mix(in srgb, #ff5757 18%, transparent)",
+      background: "color-mix(in srgb, var(--codesite-danger) 18%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1217,7 +1247,8 @@ function statusTone(status) {
     ].includes(normalized)
   ) {
     return {
-      background: "color-mix(in srgb, #fbbf24 18%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-warning) 18%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -1228,19 +1259,21 @@ function riskTone(level) {
   const normalized = String(level || "").toLowerCase();
   if (["critical", "high"].includes(normalized)) {
     return {
-      background: "color-mix(in srgb, #ff5757 20%, transparent)",
+      background: "color-mix(in srgb, var(--codesite-danger) 20%, transparent)",
       color: "var(--text-primary)",
     };
   }
   if (["medium", "warning"].includes(normalized)) {
     return {
-      background: "color-mix(in srgb, #fbbf24 20%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-warning) 20%, transparent)",
       color: "var(--text-primary)",
     };
   }
   if (["low", "clear", "none"].includes(normalized)) {
     return {
-      background: "color-mix(in srgb, #4ade80 16%, transparent)",
+      background:
+        "color-mix(in srgb, var(--codesite-success) 16%, transparent)",
       color: "var(--text-primary)",
     };
   }
@@ -2799,7 +2832,7 @@ function SerializableIsolationDeck({
                       proofBundle?.bundleDigest,
                       ...asArray(proofBundle?.evidenceRefs),
                     ])}
-                    empty="proof pending"
+                    empty="evidence pending"
                     maxVisible={4}
                   />
                 </div>
@@ -2828,7 +2861,7 @@ function SerializableIsolationDeck({
                     className="text-[10px]"
                     style={{ color: "var(--text-muted)" }}
                   >
-                    proof bundle
+                    evidence bundle
                   </div>
                 </div>
                 <div
@@ -5178,29 +5211,7 @@ function riskTouchesFlight(risk, flight) {
 }
 
 function statusColor(status, riskLevel = null) {
-  const risk = String(riskLevel || "").toLowerCase();
-  if (["critical", "high"].includes(risk)) return "#ff5757";
-  if (["medium", "warning"].includes(risk)) return "#fbbf24";
-  const normalized = String(status || "").toLowerCase();
-  if (
-    ["holding", "blocked", "denied", "mayday", "failed", "critical"].includes(
-      normalized,
-    )
-  )
-    return "#ff5757";
-  if (
-    [
-      "pending",
-      "filed",
-      "preflight",
-      "open",
-      "running",
-      "warning",
-      "medium",
-    ].includes(normalized)
-  )
-    return "#fbbf24";
-  return "#4ade80";
+  return toneColor(status, riskLevel);
 }
 
 function replayTailFromNewestFirst(events) {
@@ -5213,6 +5224,113 @@ function zoneTierLabel(zone = {}) {
   if (["medium", "warning"].includes(risk)) return "Shared contract";
   if (["low", "clear", "none"].includes(risk)) return "Routine path";
   return `Policy tier ${zoneClass(zone)}`;
+}
+
+function graphNodeStyle(tone = "idle", depth = "surface") {
+  const color = statusColor(tone);
+  return {
+    borderColor: `color-mix(in srgb, ${color} 34%, var(--border-subtle))`,
+    background:
+      depth === "raised"
+        ? `linear-gradient(180deg, color-mix(in srgb, ${color} 11%, var(--bg-elevated)), color-mix(in srgb, var(--bg-surface) 92%, var(--bg-editor) 8%))`
+        : `linear-gradient(180deg, color-mix(in srgb, ${color} 8%, var(--bg-surface)), color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%))`,
+    boxShadow: `inset 0 1px 0 color-mix(in srgb, ${color} 18%, transparent)`,
+  };
+}
+
+function WorkGraphConnector({ tone = "active", active = false, delay = 0 }) {
+  const reduceMotion = useReducedMotion();
+  const color = statusColor(tone);
+  return (
+    <div
+      className="hidden min-w-0 items-center justify-center md:flex"
+      aria-hidden="true"
+    >
+      <div className="relative h-6 w-full min-w-[28px]">
+        <motion.span
+          className="absolute left-0 right-0 top-1/2 h-px origin-left rounded-full"
+          style={{
+            background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+          }}
+          initial={reduceMotion ? false : { scaleX: 0.15, opacity: 0.35 }}
+          animate={{ scaleX: 1, opacity: active ? 0.92 : 0.55 }}
+          transition={{
+            duration: reduceMotion ? 0 : 0.28,
+            delay: reduceMotion ? 0 : delay,
+            ease: MOTION_EASE,
+          }}
+        />
+        <motion.span
+          className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{
+            background: color,
+            boxShadow: `0 0 0 3px color-mix(in srgb, ${color} 18%, transparent)`,
+          }}
+          animate={
+            !reduceMotion && active
+              ? { opacity: [0.62, 1, 0.62], scale: [0.94, 1.16, 0.94] }
+              : { opacity: 0.7, scale: 1 }
+          }
+          transition={{
+            duration: 1.8,
+            repeat: !reduceMotion && active ? Infinity : 0,
+            ease: STATUS_PULSE_EASE,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function WorkGraphNode({
+  eyebrow,
+  title,
+  tone = "idle",
+  icon: Icon,
+  children,
+  testId,
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="min-w-0 rounded-md border px-3 py-2 text-xs"
+      style={graphNodeStyle(tone, "raised")}
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div
+            className="text-[10px] font-semibold uppercase"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {eyebrow}
+          </div>
+          <div
+            className="mt-1 min-w-0 break-words font-semibold leading-tight"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {title}
+          </div>
+        </div>
+        {Icon ? (
+          <span
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border"
+            style={{
+              borderColor:
+                "color-mix(in srgb, var(--border-subtle) 76%, var(--accent-primary) 24%)",
+              background:
+                "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
+            }}
+          >
+            <Icon
+              className="h-3.5 w-3.5"
+              style={{ color: "var(--accent-primary)" }}
+            />
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-2 min-w-0">{children}</div>
+    </div>
+  );
 }
 
 function causalReplayHandovers(incidents, proofBundles) {
@@ -5935,7 +6053,10 @@ function ScopeTopology({
   const laneOverflow = Math.max(0, lanes.length - visibleLanes.length);
   const visibleFlights = flights.slice(0, condensed ? 5 : 7);
   const visibleRisks = risks.slice(0, condensed ? 4 : 6);
-  const workstreamOverflow = Math.max(0, flights.length - visibleFlights.length);
+  const workstreamOverflow = Math.max(
+    0,
+    flights.length - visibleFlights.length,
+  );
   const riskOverflow = Math.max(0, risks.length - visibleRisks.length);
   const replayEvents = replayTailFromNewestFirst(events);
   const landingRuns = asArray(inspections).slice(-4).reverse();
@@ -5962,15 +6083,6 @@ function ScopeTopology({
       return rightRisk - leftRisk;
     })
     .slice(0, condensed ? 4 : 6);
-  const pathNodes = visibleLanes.map((zone, index) => ({
-    id: zone.zoneKey || zone.id || `scope-${index}`,
-    zone,
-    label: displayZoneName(zone, index),
-    detail: zonePaths(zone).slice(0, 1).join(", ") || "path pending",
-    tone: risks.some((risk) => riskTouchesZone(risk, zone))
-      ? "holding"
-      : zone.risk || "active",
-  }));
   const hasBlockedScopes = asArray(noFlyZones).length > 0;
   const guardrailNodes = [
     {
@@ -5985,8 +6097,14 @@ function ScopeTopology({
       key: "checks",
       label: "Commit checks",
       value: landingRuns.length ? `${landingRuns.length} runs` : "none",
-      detail: failedCommitChecks ? "failed check present" : "latest validations",
-      tone: failedCommitChecks ? "failed" : landingRuns.length ? "active" : "idle",
+      detail: failedCommitChecks
+        ? "failed check present"
+        : "latest validations",
+      tone: failedCommitChecks
+        ? "failed"
+        : landingRuns.length
+          ? "active"
+          : "idle",
       y: 50,
     },
     {
@@ -5994,18 +6112,42 @@ function ScopeTopology({
       label: "Evidence",
       value: replayEvents.length ? `${replayEvents.length} events` : "none",
       detail: hasBlockedScopes ? "blocked scopes tracked" : "activity history",
-      tone: hasBlockedScopes ? "warning" : replayEvents.length ? "active" : "idle",
+      tone: hasBlockedScopes
+        ? "warning"
+        : replayEvents.length
+          ? "active"
+          : "idle",
       y: 78,
     },
   ];
-  const guardrailNodeForPath = (pathNode) => {
-    if (!pathNode) return guardrailNodes[2];
-    if (risks.some((risk) => riskTouchesZone(risk, pathNode.zone))) {
+  const guardrailNodeForZone = (zone) => {
+    if (!zone) return guardrailNodes[2];
+    if (risks.some((risk) => riskTouchesZone(risk, zone))) {
       return guardrailNodes[0];
     }
     if (landingRuns.length) return guardrailNodes[1];
     return guardrailNodes[2];
   };
+  const graphRows = visibleLanes.map((zone, index) => {
+    const relatedFlights = visibleFlights.filter((flight) =>
+      zoneHasFlight(zone, flight),
+    );
+    const hasRisk = risks.some((risk) => riskTouchesZone(risk, zone));
+    const guardrail = guardrailNodeForZone(zone);
+    return {
+      id: zone.zoneKey || zone.id || `scope-${index}`,
+      zone,
+      relatedFlights,
+      relatedRoutes: uniqueValues(
+        relatedFlights.flatMap((flight) => asArray(flight.route)),
+      ),
+      visibleRelatedFlights: relatedFlights.slice(0, 3),
+      hiddenRelatedFlightCount: Math.max(0, relatedFlights.length - 3),
+      hasRisk,
+      guardrail,
+      tone: hasRisk ? "holding" : zone.risk || guardrail.tone || "active",
+    };
+  });
 
   return (
     <div className="space-y-2">
@@ -6019,62 +6161,104 @@ function ScopeTopology({
         style={{
           borderColor:
             "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-          background: "var(--bg-surface)",
+          background:
+            "linear-gradient(145deg, color-mix(in srgb, var(--bg-surface) 88%, var(--accent-primary) 7%), color-mix(in srgb, var(--bg-editor) 96%, var(--codesite-accent-secondary) 4%))",
         }}
       >
         <div
+          data-testid="codesite-work-graph"
           className={
             condensed
-              ? "grid gap-2 2xl:grid-cols-[minmax(300px,0.96fr)_minmax(0,1.04fr)]"
-              : "grid gap-3 2xl:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]"
+              ? "grid gap-2 2xl:grid-cols-[minmax(0,1.28fr)_minmax(270px,0.72fr)]"
+              : "grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]"
           }
         >
           <div
             data-testid="codesite-scope-matrix"
-            className={
-              condensed
-                ? "overflow-hidden rounded-lg border"
-                : "overflow-hidden rounded-lg border"
-            }
+            className="overflow-hidden rounded-lg border"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
               background:
-                "linear-gradient(135deg, color-mix(in srgb, var(--bg-editor) 92%, var(--accent-primary) 5%), var(--bg-editor))",
+                "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 88%, var(--accent-primary) 7%), color-mix(in srgb, var(--bg-editor) 94%, var(--bg-surface) 6%))",
             }}
           >
             <div
-              className="grid grid-cols-[minmax(0,0.86fr)_minmax(0,1.18fr)_minmax(0,0.96fr)] gap-2 border-b px-3 py-2 text-[10px] font-semibold uppercase"
+              className="grid gap-2 border-b px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
               style={{
                 borderColor: "var(--border-subtle)",
                 color: "var(--text-muted)",
               }}
             >
-              <span>Agents</span>
-              <span>Owned paths</span>
-              <span>Guardrails</span>
+              <div className="min-w-0">
+                <div
+                  className="text-sm font-semibold"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  Workspace Graph
+                </div>
+                <div className="mt-0.5 text-[10px] font-semibold uppercase">
+                  Paths -&gt; Agents -&gt; Checks
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 sm:justify-end">
+                <Pill tone={visibleRisks.length ? "holding" : "active"}>
+                  {visibleRisks.length || "no"} conflicts
+                </Pill>
+                <Pill
+                  tone={
+                    failedCommitChecks
+                      ? "failed"
+                      : landingRuns.length
+                        ? "active"
+                        : "idle"
+                  }
+                >
+                  {landingRuns.length} checks
+                </Pill>
+              </div>
             </div>
-            <div className="grid gap-2 p-3">
-              {visibleLanes.map((zone, index) => {
-                const relatedFlights = visibleFlights.filter((flight) =>
-                  zoneHasFlight(zone, flight),
-                );
-                const hasRisk = risks.some((risk) =>
-                  riskTouchesZone(risk, zone),
-                );
-                const guardrail = guardrailNodeForPath(pathNodes[index]);
+            <div
+              className="grid gap-2 p-3"
+              style={{
+                background:
+                  "linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 18%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--border-subtle) 12%, transparent) 1px, transparent 1px)",
+                backgroundSize: "34px 34px",
+              }}
+            >
+              <div
+                className="hidden grid-cols-[minmax(0,0.95fr)_40px_minmax(0,1.08fr)_40px_minmax(0,0.88fr)] gap-2 px-1 text-[10px] font-semibold uppercase md:grid"
+                style={{ color: "var(--text-muted)" }}
+                aria-hidden="true"
+              >
+                <span>Paths</span>
+                <span />
+                <span>Agents</span>
+                <span />
+                <span>Checks</span>
+              </div>
+              {graphRows.map((row, index) => {
+                const {
+                  zone,
+                  relatedFlights,
+                  visibleRelatedFlights,
+                  hiddenRelatedFlightCount,
+                  relatedRoutes,
+                  hasRisk,
+                  guardrail,
+                  tone,
+                } = row;
+                const connectorTone = hasRisk ? "holding" : guardrail.tone;
                 return (
                   <motion.div
-                    key={zone.zoneKey || zone.id || index}
+                    key={row.id}
                     data-testid="codesite-scope-matrix-row"
-                    className="grid gap-2 rounded-md border p-2 text-xs md:grid-cols-[minmax(0,0.86fr)_minmax(0,1.18fr)_minmax(0,0.96fr)] md:items-start"
+                    className="grid gap-2 rounded-md border p-2 text-xs md:grid-cols-[minmax(0,0.95fr)_40px_minmax(0,1.08fr)_40px_minmax(0,0.88fr)] md:items-stretch"
                     style={{
-                      borderColor: hasRisk
-                        ? "color-mix(in srgb, #ff5757 38%, var(--border-subtle))"
-                        : "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-                      background: hasRisk
-                        ? "color-mix(in srgb, #ff5757 10%, var(--bg-surface))"
-                        : "var(--bg-surface)",
+                      ...graphNodeStyle(tone),
+                      outline: hasRisk
+                        ? "1px solid color-mix(in srgb, var(--codesite-danger) 28%, transparent)"
+                        : "1px solid transparent",
                     }}
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -6084,86 +6268,118 @@ function ScopeTopology({
                       ease: MOTION_EASE,
                     }}
                   >
-                    <div
-                      data-testid="codesite-scope-agent-node"
-                      className="min-w-0"
+                    <WorkGraphNode
+                      eyebrow="Path group"
+                      title={displayZoneName(zone, index)}
+                      tone={tone}
+                      icon={Layers}
+                      testId="codesite-scope-path-node"
                     >
-                      <div
-                        className="mb-1 text-[10px] font-medium"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        Assigned agents
+                      <div className="flex min-w-0 flex-wrap gap-1">
+                        <Pill
+                          tone={zone.risk || (hasRisk ? "holding" : "active")}
+                        >
+                          {zoneTierLabel(zone)}
+                        </Pill>
+                        {hasRisk ? <Pill tone="holding">conflict</Pill> : null}
                       </div>
-                      {relatedFlights.length ? (
-                        <div className="flex min-w-0 flex-wrap gap-1">
-                          {relatedFlights.slice(0, 3).map((flight, flightIndex) => (
+                      <div className="mt-2">
+                        <PathList
+                          paths={zonePaths(zone)}
+                          empty="path pending"
+                        />
+                      </div>
+                    </WorkGraphNode>
+
+                    <WorkGraphConnector
+                      tone={connectorTone}
+                      active={hasRisk || relatedFlights.length > 0}
+                      delay={index * 0.04}
+                    />
+
+                    <WorkGraphNode
+                      eyebrow="Assigned agents"
+                      title={
+                        relatedFlights.length
+                          ? `${relatedFlights.length} active`
+                          : "Unassigned"
+                      }
+                      tone={
+                        hasRisk
+                          ? "holding"
+                          : relatedFlights[0]?.status || "idle"
+                      }
+                      icon={Activity}
+                      testId="codesite-scope-agent-node"
+                    >
+                      <div className="flex min-w-0 flex-wrap gap-1">
+                        {visibleRelatedFlights.length ? (
+                          visibleRelatedFlights.map((flight, flightIndex) => (
                             <Pill
                               key={
                                 flight.id ||
                                 flight.displayCallsign ||
-                                "scope-agent-" + flightIndex
+                                `scope-agent-${flightIndex}`
                               }
                               tone={hasRisk ? "holding" : flight.status}
                               className="max-w-[9rem]"
                             >
                               {compact(flight.displayCallsign, "agent")}
                             </Pill>
-                          ))}
-                          {relatedFlights.length > 3 ? (
-                            <Pill tone={hasRisk ? "blocked" : "default"}>
-                              +{relatedFlights.length - 3}
-                            </Pill>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <Pill>unassigned</Pill>
-                      )}
-                    </div>
-                    <div
-                      data-testid="codesite-scope-path-node"
-                      className="min-w-0"
-                    >
-                      <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="min-w-0 break-words font-semibold leading-tight">
-                          {displayZoneName(zone, index)}
-                        </span>
-                        <Pill tone={zone.risk || (hasRisk ? "holding" : "active")}>
-                          {zoneTierLabel(zone)}
-                        </Pill>
+                          ))
+                        ) : (
+                          <Pill tone="idle">ready for owner</Pill>
+                        )}
+                        {hiddenRelatedFlightCount > 0 ? (
+                          <Pill tone={hasRisk ? "blocked" : "default"}>
+                            +{hiddenRelatedFlightCount}
+                          </Pill>
+                        ) : null}
                       </div>
-                      <div className="mt-1">
-                        <PathList paths={zonePaths(zone)} empty="path pending" />
-                      </div>
-                    </div>
-                    <div
-                      data-testid="codesite-scope-guardrail-node"
-                      className="min-w-0"
-                    >
-                      <div className="flex min-w-0 items-center justify-between gap-2">
-                        <span className="truncate font-semibold">
-                          {guardrail.label}
-                        </span>
-                        <span
-                          className="h-2 w-2 shrink-0 rounded-full"
-                          style={{ background: statusColor(guardrail.tone) }}
+                      <div className="mt-2">
+                        <PathList
+                          paths={relatedRoutes}
+                          empty="no write route yet"
+                          maxVisible={2}
                         />
                       </div>
-                      <div className="mt-1 font-mono text-[11px] leading-4">
-                        {guardrail.value}
+                    </WorkGraphNode>
+
+                    <WorkGraphConnector
+                      tone={connectorTone}
+                      active={hasRisk || guardrail.tone === "active"}
+                      delay={index * 0.04 + 0.06}
+                    />
+
+                    <WorkGraphNode
+                      eyebrow="Guardrail checks"
+                      title={guardrail.label}
+                      tone={connectorTone}
+                      icon={ShieldCheck}
+                      testId="codesite-scope-guardrail-node"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ background: statusColor(connectorTone) }}
+                        />
+                        <span className="font-mono text-[11px] leading-4">
+                          {guardrail.value}
+                        </span>
                       </div>
                       <div
-                        className="text-[10px] leading-4"
+                        className="mt-1 text-[10px] leading-4"
                         style={{ color: "var(--text-muted)" }}
                       >
                         {guardrail.detail}
                       </div>
-                    </div>
+                    </WorkGraphNode>
                   </motion.div>
                 );
               })}
             </div>
             <div
-              className="mx-3 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px]"
+              className="mx-3 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-[10px]"
               style={{
                 borderColor:
                   "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
@@ -6188,122 +6404,13 @@ function ScopeTopology({
           </div>
 
           <div className="grid content-start gap-2">
-            <div className="grid gap-1">
-              {visibleLanes.map((zone, index) => {
-                const relatedFlights = visibleFlights.filter((flight) => {
-                  return zoneHasFlight(zone, flight);
-                });
-                const visibleRelatedFlights = relatedFlights.slice(0, 3);
-                const hiddenRelatedFlightCount =
-                  relatedFlights.length - visibleRelatedFlights.length;
-                const hasRisk = risks.some((risk) =>
-                  riskTouchesZone(risk, zone),
-                );
-                return (
-                  <div
-                    key={zone.zoneKey || zone.id || index}
-                    data-testid="codesite-scope-lane"
-                    className="grid min-h-[66px] gap-2 rounded-md border px-2 py-2 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-[minmax(96px,0.72fr)_minmax(0,1.4fr)_minmax(108px,0.68fr)] sm:items-start"
-                    style={{
-                      borderColor: hasRisk
-                        ? "color-mix(in srgb, #ff5757 36%, var(--border-subtle))"
-                        : "color-mix(in srgb, var(--border-subtle) 86%, var(--accent-primary) 14%)",
-                      background: hasRisk
-                        ? "color-mix(in srgb, #ff5757 12%, var(--bg-editor))"
-                        : "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 82%, var(--bg-surface) 18%))",
-                    }}
-                  >
-                    <div className="min-w-0 self-start">
-                      <div className="break-words text-[11px] font-semibold leading-tight">
-                        {displayZoneName(zone, index)}
-                      </div>
-                      <div
-                        className="text-[10px]"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        {zoneTierLabel(zone)}
-                      </div>
-                    </div>
-                    <div className="min-w-0 self-start">
-                      <PathList paths={zonePaths(zone)} empty="path pending" />
-                    </div>
-                    <div className="flex min-w-0 flex-wrap gap-1 self-start sm:justify-end">
-                      {relatedFlights.length ? (
-                        <>
-                          {visibleRelatedFlights.map((flight, flightIndex) => (
-                            <Pill
-                              key={
-                                flight.id ||
-                                flight.displayCallsign ||
-                                `related-flight-${flightIndex}`
-                              }
-                              tone={flight.status}
-                              className={
-                                hasRisk
-                                  ? "max-w-[86px] motion-safe:animate-pulse"
-                                  : "max-w-[86px]"
-                              }
-                            >
-                              {compact(flight.displayCallsign, "agent")}
-                            </Pill>
-                          ))}
-                          {hiddenRelatedFlightCount > 0 ? (
-                            <Pill tone={hasRisk ? "blocked" : "default"}>
-                              +{hiddenRelatedFlightCount}
-                            </Pill>
-                          ) : null}
-                        </>
-                      ) : (
-                        <Pill>clear</Pill>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
             <div
               className="rounded-lg border px-3 py-2 text-xs"
               style={{
                 borderColor:
                   "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
                 background:
-                  "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 84%, var(--bg-surface) 16%))",
-              }}
-            >
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-medium">Commit checks</span>
-                <Pill tone={failedCommitChecks ? "failed" : "active"}>
-                  {landingRuns.length}
-                </Pill>
-              </div>
-              {landingRuns.length ? (
-                landingRuns.map((run, runIndex) => (
-                  <div
-                    key={run.id || `commit-run-${runIndex}`}
-                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5"
-                  >
-                    <span className="min-w-0 break-words">
-                      {compact(run.displayCallsign, "inspection")}
-                    </span>
-                    <span
-                      className="break-words text-[10px] leading-4"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {toneLabel(run.status)}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div style={{ color: "var(--text-muted)" }}>No commit checks</div>
-              )}
-            </div>
-            <div
-              className="rounded-lg border px-3 py-2 text-xs"
-              style={{
-                borderColor:
-                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
-                background:
-                  "linear-gradient(180deg, var(--bg-editor), color-mix(in srgb, var(--bg-editor) 84%, var(--bg-surface) 16%))",
+                  "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 90%, var(--codesite-accent-secondary) 7%), color-mix(in srgb, var(--bg-surface) 92%, var(--bg-editor) 8%))",
               }}
             >
               <div className="mb-1 flex items-center justify-between gap-2">
@@ -6359,6 +6466,92 @@ function ScopeTopology({
                 </div>
               )}
             </div>
+            <div
+              className="rounded-lg border px-3 py-2 text-xs"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 88%, var(--accent-primary) 6%), color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%))",
+              }}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Commit checks</span>
+                <Pill
+                  tone={
+                    failedCommitChecks
+                      ? "failed"
+                      : landingRuns.length
+                        ? "active"
+                        : "idle"
+                  }
+                >
+                  {landingRuns.length}
+                </Pill>
+              </div>
+              {landingRuns.length ? (
+                landingRuns.map((run, runIndex) => (
+                  <div
+                    key={run.id || `commit-run-${runIndex}`}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5"
+                  >
+                    <span className="min-w-0 break-words">
+                      {compact(run.displayCallsign, "inspection")}
+                    </span>
+                    <span
+                      className="break-words text-[10px] leading-4"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {toneLabel(run.status)}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: "var(--text-muted)" }}>
+                  No commit checks
+                </div>
+              )}
+            </div>
+            <div
+              className="rounded-lg border px-3 py-2 text-xs"
+              style={{
+                borderColor:
+                  "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
+                background:
+                  "linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 90%, var(--codesite-muted-accent) 7%), color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%))",
+              }}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="font-medium">Recent evidence</span>
+                <Pill tone={replayEvents.length ? "active" : "idle"}>
+                  {replayEvents.length}
+                </Pill>
+              </div>
+              {replayEvents.length ? (
+                <div className="space-y-1">
+                  {replayEvents.slice(0, 4).map((event, eventIndex) => (
+                    <div
+                      key={event.id || `workspace-event-${eventIndex}`}
+                      className="grid grid-cols-[minmax(0,1fr)_auto] gap-2"
+                    >
+                      <span className="min-w-0 truncate">
+                        {towerEventKind(event)}
+                      </span>
+                      <span
+                        className="font-mono text-[10px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        {formatTime(event.createdAt) || event.logicalTime || ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: "var(--text-muted)" }}>
+                  No evidence events
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -6392,7 +6585,7 @@ function ScopeTopology({
         >
           <div style={{ color: "var(--text-muted)" }}>Evidence types</div>
           <div className="mt-1 flex flex-wrap gap-1">
-            {["approval", "transaction", "inspection", "proof"].map(
+            {["approval", "transaction", "inspection", "evidence"].map(
               (layer) => (
                 <Pill key={layer}>{layer}</Pill>
               ),
@@ -7243,7 +7436,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   }, [controlState?.towerState, currentProject?.status, error]);
   const mobileSections = useMemo(
     () => [
-      { key: "radar", label: "Scope" },
+      { key: "radar", label: "Graph" },
       { key: "tower", label: "Activity" },
       { key: "governance", label: "Governance" },
       { key: "evidence", label: "Metrics" },
@@ -7261,6 +7454,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
       data-testid="codesite-panel"
       className="flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
+        "--accent-primary": "oklch(73% 0.13 196)",
+        "--attention-purple": "oklch(73% 0.13 196)",
+        "--codesite-accent-secondary": "oklch(70% 0.13 252)",
+        "--codesite-success": "oklch(72% 0.15 155)",
+        "--codesite-warning": "oklch(80% 0.15 82)",
+        "--codesite-danger": "oklch(67% 0.19 29)",
+        "--codesite-muted-accent": "oklch(68% 0.06 235)",
         "--text-muted":
           "color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary) 22%)",
         "--codesite-panel-line":
@@ -7268,7 +7468,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
         "--codesite-panel-surface":
           "color-mix(in srgb, var(--bg-sidebar) 94%, var(--bg-editor) 6%)",
         background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 96%, var(--bg-editor) 4%), var(--bg-sidebar) 38%, var(--codesite-panel-surface))",
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 92%, var(--accent-primary) 5%), var(--bg-sidebar) 34%, color-mix(in srgb, var(--codesite-panel-surface) 94%, var(--codesite-accent-secondary) 4%))",
         color: "var(--text-primary)",
       }}
     >
@@ -7637,7 +7837,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                 >
                   <div className="grid min-w-0 content-start gap-3">
                     <OperatorPane
-                      title="Scope Topology"
+                      title="Workspace Graph"
                       icon={Network}
                       sectionKey="radar"
                       testId="codesite-operator-airspace-pane"
@@ -8076,7 +8276,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
               </Section>
 
               <Section
-                title="Transactions And Proof"
+                title="Transactions And Evidence"
                 icon={GitCommit}
                 right={
                   <Pill>

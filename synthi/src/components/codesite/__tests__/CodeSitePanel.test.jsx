@@ -96,7 +96,7 @@ function setNativeInputValue(element, value) {
 }
 
 function laneNamed(name) {
-  return [...container.querySelectorAll('[data-testid="codesite-scope-lane"]')]
+  return [...container.querySelectorAll('[data-testid="codesite-scope-matrix-row"]')]
     .find((lane) => lane.textContent.includes(name));
 }
 
@@ -762,7 +762,7 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('pcap-checkout-schema');
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
-    expect(container.textContent).toContain('Scope Topology');
+    expect(container.textContent).toContain('Workspace Graph');
     expect(container.textContent).toContain('Path Lock Occupancy');
     expect(container.textContent).toContain('Agent Readiness');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
@@ -863,9 +863,12 @@ describe('CodeSitePanel', () => {
     const pathNodes = container.querySelectorAll('[data-testid="codesite-scope-path-node"]');
     const guardrailNodes = container.querySelectorAll('[data-testid="codesite-scope-guardrail-node"]');
     expect(scopeTopology).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-work-graph"]')).toBeTruthy();
+    expect(scopeTopology.textContent).toContain('Workspace Graph');
+    expect(scopeTopology.textContent).toContain('Paths -> Agents -> Checks');
+    expect(scopeTopology.textContent).toContain('Paths');
     expect(scopeTopology.textContent).toContain('Agents');
-    expect(scopeTopology.textContent).toContain('Owned paths');
-    expect(scopeTopology.textContent).toContain('Guardrails');
+    expect(scopeTopology.textContent).toContain('Checks');
     expect(matrixRows).toHaveLength(2);
     expect(agentNodes).toHaveLength(2);
     expect(pathNodes).toHaveLength(2);
@@ -1125,7 +1128,7 @@ describe('CodeSitePanel', () => {
     }));
   });
 
-  it('shows active workstreams in the scope topology without radar markers', async () => {
+  it('shows active workstreams in the workspace graph without radar markers', async () => {
     const state = radarState();
     state.controlState.activeFlights = state.controlState.activeFlights.map((flight) => ({
       ...flight,
@@ -1142,7 +1145,7 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-radar-sweep"]')).toBeFalsy();
   });
 
-  it('summarizes the latest activity tail in the topology evidence guardrail', async () => {
+  it('summarizes the latest activity tail in the graph evidence guardrail', async () => {
     const state = radarState();
     state.project.inspectionRuns = [];
     state.collisionForecast.risks = [];
