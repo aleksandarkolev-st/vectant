@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct SessionState {
     pub session_id: String,
     pub workspace_id: String,
+    pub device_fingerprint: String,
     pub token_fingerprint: String,
     pub paused: bool,
     pub protocol_version: String,
@@ -19,6 +20,7 @@ pub struct SessionState {
 pub struct SessionGuard {
     session_id: String,
     workspace_id: String,
+    device_fingerprint: String,
     token: String,
     token_fingerprint: String,
     expires_at: Instant,
@@ -34,9 +36,11 @@ impl SessionGuard {
             .map(char::from)
             .collect();
         let token_fingerprint = fingerprint(&token);
+        let device_fingerprint = fingerprint(&format!("device:{token}"));
         Self {
             session_id: format!("sess_{}", Uuid::new_v4()),
             workspace_id: workspace_id.into(),
+            device_fingerprint,
             token,
             token_fingerprint,
             expires_at: Instant::now() + ttl,
@@ -53,10 +57,33 @@ impl SessionGuard {
         &self.session_id
     }
 
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub fn device_fingerprint(&self) -> &str {
+        &self.device_fingerprint
+    }
+
+    pub fn request_device_proof(&self, request_id: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"vectant-local-support-device-proof-v1");
+        hasher.update(b"\0");
+        hasher.update(self.token.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.session_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(request_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.device_fingerprint.as_bytes());
+        format!("sha256:{}", hex::encode(hasher.finalize()))
+    }
+
     pub fn state(&self) -> SessionState {
         SessionState {
             session_id: self.session_id.clone(),
             workspace_id: self.workspace_id.clone(),
+            device_fingerprint: self.device_fingerprint.clone(),
             token_fingerprint: self.token_fingerprint.clone(),
             paused: self.paused,
             protocol_version: crate::APP_PROTOCOL_VERSION.to_string(),

@@ -8,16 +8,19 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 
-use crate::session::SessionGuard;
-use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
 use crate::audit::{AuditClass, AuditExport, AuditLog};
 use crate::scanner::SecretScanner;
+use crate::session::SessionGuard;
+use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
 
 pub const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
 pub const DEFAULT_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub const DEFAULT_RATE_LIMIT_REQUESTS: usize = 120;
+pub const MIN_APP_VERSION: &str = "0.1.0";
+pub const VULNERABLE_APP_VERSIONS: &[&str] = &["0.0.0", "0.0.1", "0.1.1"];
 
 #[derive(Clone)]
 pub struct AppState {
@@ -148,6 +151,15 @@ async fn review_file(
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
+        let auth = LocalRequestAuthorization::from_headers(&headers)?;
+        validate_file_request_authorization(
+            &session,
+            state.workspace.as_ref(),
+            &request,
+            &auth,
+            Utc::now(),
+        )
+        .map_err(|err| denied(StatusCode::FORBIDDEN, err.as_str()))?;
         session
             .validate(token, &request.request_id)
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
@@ -345,6 +357,135 @@ fn bearer(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Val
         .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))?;
     auth.strip_prefix("Bearer ")
         .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRequestAuthorization {
+    pub app_version: String,
+    pub protocol_version: String,
+    pub policy_version: String,
+    pub device_fingerprint: String,
+    pub device_proof: String,
+}
+
+impl LocalRequestAuthorization {
+    pub fn from_headers(headers: &HeaderMap) -> Result<Self, (StatusCode, Json<serde_json::Value>)> {
+        Ok(Self {
+            app_version: required_header(headers, "x-vectant-app-version")?.to_string(),
+            protocol_version: required_header(headers, "x-vectant-protocol-version")?.to_string(),
+            policy_version: required_header(headers, "x-vectant-policy-version")?.to_string(),
+            device_fingerprint: required_header(headers, "x-vectant-device-fingerprint")?.to_string(),
+            device_proof: required_header(headers, "x-vectant-device-proof")?.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalAuthorizationError {
+    SessionMismatch,
+    WorkspaceMismatch,
+    ExpiredRequest,
+    InvalidRequestExpiry,
+    AppVersionTooOld,
+    AppVersionBlocked,
+    ProtocolVersionMismatch,
+    PolicyVersionMismatch,
+    DeviceMismatch,
+    DeviceProofInvalid,
+}
+
+impl LocalAuthorizationError {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SessionMismatch => "session_mismatch",
+            Self::WorkspaceMismatch => "workspace_mismatch",
+            Self::ExpiredRequest => "expired_request",
+            Self::InvalidRequestExpiry => "invalid_request_expiry",
+            Self::AppVersionTooOld => "app_version_too_old",
+            Self::AppVersionBlocked => "app_version_blocked",
+            Self::ProtocolVersionMismatch => "protocol_version_mismatch",
+            Self::PolicyVersionMismatch => "policy_version_mismatch",
+            Self::DeviceMismatch => "device_mismatch",
+            Self::DeviceProofInvalid => "device_proof_invalid",
+        }
+    }
+}
+
+pub fn validate_file_request_authorization(
+    session: &SessionGuard,
+    workspace: &WorkspacePolicy,
+    request: &FileReadRequest,
+    auth: &LocalRequestAuthorization,
+    now: DateTime<Utc>,
+) -> Result<(), LocalAuthorizationError> {
+    if request.session_id != session.session_id() {
+        return Err(LocalAuthorizationError::SessionMismatch);
+    }
+    if request.workspace_id != session.workspace_id() || request.workspace_id != workspace.workspace_id() {
+        return Err(LocalAuthorizationError::WorkspaceMismatch);
+    }
+    let expires_at = DateTime::parse_from_rfc3339(&request.expires_at)
+        .map_err(|_| LocalAuthorizationError::InvalidRequestExpiry)?
+        .with_timezone(&Utc);
+    if expires_at <= now {
+        return Err(LocalAuthorizationError::ExpiredRequest);
+    }
+    if compare_versions(&auth.app_version, MIN_APP_VERSION) < 0 {
+        return Err(LocalAuthorizationError::AppVersionTooOld);
+    }
+    if VULNERABLE_APP_VERSIONS
+        .iter()
+        .any(|version| *version == auth.app_version)
+    {
+        return Err(LocalAuthorizationError::AppVersionBlocked);
+    }
+    if auth.protocol_version != crate::APP_PROTOCOL_VERSION {
+        return Err(LocalAuthorizationError::ProtocolVersionMismatch);
+    }
+    if auth.policy_version != crate::POLICY_VERSION {
+        return Err(LocalAuthorizationError::PolicyVersionMismatch);
+    }
+    if auth.device_fingerprint != session.device_fingerprint() {
+        return Err(LocalAuthorizationError::DeviceMismatch);
+    }
+    if auth.device_proof != session.request_device_proof(&request.request_id) {
+        return Err(LocalAuthorizationError::DeviceProofInvalid);
+    }
+    Ok(())
+}
+
+fn required_header<'a>(
+    headers: &'a HeaderMap,
+    name: &str,
+) -> Result<&'a str, (StatusCode, Json<serde_json::Value>)> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, format!("missing_{name}")))
+}
+
+fn compare_versions(left: &str, right: &str) -> i8 {
+    let left_parts = parse_version(left);
+    let right_parts = parse_version(right);
+    for index in 0..left_parts.len().max(right_parts.len()) {
+        let left_value = *left_parts.get(index).unwrap_or(&0);
+        let right_value = *right_parts.get(index).unwrap_or(&0);
+        if left_value > right_value {
+            return 1;
+        }
+        if left_value < right_value {
+            return -1;
+        }
+    }
+    0
+}
+
+fn parse_version(value: &str) -> Vec<u32> {
+    value
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(0))
+        .collect()
 }
 
 fn denied(status: StatusCode, reason: impl ToString) -> (StatusCode, Json<serde_json::Value>) {

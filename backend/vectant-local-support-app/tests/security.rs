@@ -4,7 +4,10 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, ConsentReceipt};
-use vectant_local_support_app::http::{RateLimiter, MAX_JSON_BODY_BYTES};
+use vectant_local_support_app::http::{
+    validate_file_request_authorization, LocalAuthorizationError, LocalRequestAuthorization,
+    RateLimiter, MAX_JSON_BODY_BYTES,
+};
 use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
 use vectant_local_support_app::lifecycle::{
     disconnect_cleanup, uninstall_cleanup, PendingApprovalQueue,
@@ -39,7 +42,17 @@ fn request(path: &str) -> FileReadRequest {
         max_bytes: Some(262_144),
         reason: "Debug test".to_string(),
         actor: "vectant_ai".to_string(),
-        expires_at: "2026-07-05T12:00:00Z".to_string(),
+        expires_at: "2030-07-05T12:00:00Z".to_string(),
+    }
+}
+
+fn local_auth(session: &SessionGuard, request_id: &str) -> LocalRequestAuthorization {
+    LocalRequestAuthorization {
+        app_version: "0.1.0".to_string(),
+        protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION.to_string(),
+        policy_version: vectant_local_support_app::POLICY_VERSION.to_string(),
+        device_fingerprint: session.device_fingerprint().to_string(),
+        device_proof: session.request_device_proof(request_id),
     }
 }
 
@@ -447,6 +460,92 @@ fn local_api_rate_limiter_denies_after_window_budget() {
 #[test]
 fn local_api_body_limit_matches_file_review_cap() {
     assert_eq!(MAX_JSON_BODY_BYTES, 262_144);
+}
+
+#[test]
+fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proof() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut req = request("app.rs");
+    req.session_id = session.session_id().to_string();
+    let auth = local_auth(&session, &req.request_id);
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
+
+    let mut wrong_session = req.clone();
+    wrong_session.session_id = "sess_attacker".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_session, &auth, now),
+        Err(LocalAuthorizationError::SessionMismatch)
+    );
+
+    let mut wrong_workspace = req.clone();
+    wrong_workspace.workspace_id = "wk_other".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_workspace, &auth, now),
+        Err(LocalAuthorizationError::WorkspaceMismatch)
+    );
+
+    let mut expired = req.clone();
+    expired.expires_at = "2026-07-05T11:59:59Z".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &expired, &auth, now),
+        Err(LocalAuthorizationError::ExpiredRequest)
+    );
+
+    let mut invalid_expiry = req.clone();
+    invalid_expiry.expires_at = "not-a-date".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &invalid_expiry, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestExpiry)
+    );
+
+    let mut old_app = auth.clone();
+    old_app.app_version = "0.0.9".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &old_app, now),
+        Err(LocalAuthorizationError::AppVersionTooOld)
+    );
+
+    let mut blocked_app = auth.clone();
+    blocked_app.app_version = "0.1.1".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &blocked_app, now),
+        Err(LocalAuthorizationError::AppVersionBlocked)
+    );
+
+    let mut stale_protocol = auth.clone();
+    stale_protocol.protocol_version = "local-support-old".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &stale_protocol, now),
+        Err(LocalAuthorizationError::ProtocolVersionMismatch)
+    );
+
+    let mut stale_policy = auth.clone();
+    stale_policy.policy_version = "2026.01.01".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &stale_policy, now),
+        Err(LocalAuthorizationError::PolicyVersionMismatch)
+    );
+
+    let mut wrong_device = auth.clone();
+    wrong_device.device_fingerprint = "sha256:wrong-device".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &wrong_device, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+
+    let mut bad_proof = auth;
+    bad_proof.device_proof = "sha256:bad-proof".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &bad_proof, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
 }
 
 #[test]
