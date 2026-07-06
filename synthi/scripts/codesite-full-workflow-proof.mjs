@@ -2729,7 +2729,7 @@ async function screenshotHtml(htmlPath, pngPath, summaryPngPath = null) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 980 }, deviceScaleFactor: 1 });
   await page.goto(`file://${htmlPath}`, { waitUntil: 'load' });
   if (summaryPngPath) {
-    await page.screenshot({ path: summaryPngPath, fullPage: false });
+    await page.screenshot({ path: summaryPngPath, fullPage: true });
   }
   await page.screenshot({ path: pngPath, fullPage: true });
   await browser.close();
@@ -2899,7 +2899,7 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
   await page.waitForSelector('text=transaction.committed', { timeout: 60000 });
   await page.waitForSelector('text=black_box.closed', { timeout: 60000 });
   await page.waitForTimeout(500);
-  await page.screenshot({ path: pngPath, fullPage: false });
+  await page.screenshot({ path: pngPath, fullPage: true });
   await page.waitForSelector('text=CodeSite-Transaction', { timeout: 60000 });
   await page.waitForSelector('text=Line Provenance', { timeout: 60000 });
   await page.waitForSelector('text=synthi/prisma/schema.prisma', { timeout: 60000 });
@@ -2960,8 +2960,16 @@ async function screenshotLiveUi({ baseUrl, slug, pngPath, proofSectionPngPath, c
     await page.setViewportSize({ width: 390, height: 900 });
     await installBrowserProofCaptureStyles(page);
     const panel = page.locator('[data-testid="codesite-panel"]').first();
+    await page.evaluate(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      const panelElement = document.querySelector('[data-testid="codesite-panel"]');
+      if (panelElement) panelElement.scrollTop = 0;
+    });
     await panel.evaluate((element) => {
       element.scrollIntoView({ block: 'start', inline: 'nearest' });
+      element.scrollTop = 0;
     });
     await page.waitForTimeout(500);
     const mobileOverviewLayout = await page.evaluate(browserLayoutCheckScript);

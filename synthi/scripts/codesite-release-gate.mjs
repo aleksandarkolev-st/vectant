@@ -330,7 +330,7 @@ function releaseGateHtml(result) {
   const status = result.ok ? 'PASS' : 'FAIL';
   const cards = result.checks.map((check) => `
     <section class="card">
-      <div class="label">${escapeHtml(check.name)}</div>
+      <div class="label">${escapeHtml(humanizeCheckName(check.name))}</div>
       <div class="value ${check.ok === false ? 'bad' : 'good'}">${check.ok === false ? 'fail' : 'pass'}</div>
       <pre>${escapeHtml(JSON.stringify(check, null, 2))}</pre>
     </section>
@@ -355,7 +355,7 @@ function releaseGateHtml(result) {
     .good { color: #8dffb8; }
     .bad { color: #ff9999; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
-    pre { white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; max-height: 360px; margin: 12px 0 0; color: #d8def1; background: #070a12; border: 1px solid #202842; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.45; }
+    pre { white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; margin: 12px 0 0; color: #d8def1; background: #070a12; border: 1px solid #202842; border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.45; }
     @media (max-width: 720px) { body { padding: 12px; } .meta, .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -379,6 +379,14 @@ function releaseGateHtml(result) {
   </main>
 </body>
 </html>`;
+}
+
+function humanizeCheckName(value) {
+  return String(value || 'check')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 async function screenshotHtml(htmlPath, pngPath) {
