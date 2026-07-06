@@ -17012,6 +17012,37 @@ for (const testCase of forgedTransportFallbackCases) {
     0,
   );
 }
+const forgedRowLevelRandomColdAuthorityRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'forged-row-level-runtime-authority-random-cold',
+    sourceUrl: 'https://example.invalid/forged/row-level-runtime-authority.git',
+    immutableCommit: '3232323232323232323232323232323232323232',
+  });
+  row.canSatisfyRuntimeProof = true;
+  row.can_satisfy_runtime_proof = true;
+  row.canSatisfyDispatchProof = true;
+  row.can_satisfy_dispatch_proof = true;
+  return row;
+})());
+const forgedRowLevelRandomColdAuthorityQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    forgedRowLevelRandomColdAuthorityRow,
+  ],
+});
+assert.equal(forgedRowLevelRandomColdAuthorityQuery.accepted, false);
+assert.ok(forgedRowLevelRandomColdAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_path_row_cannot_claim_runtime_authority'
+));
+assert.ok(forgedRowLevelRandomColdAuthorityQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_path_row_cannot_claim_dispatch_authority'
+));
+assert.equal(
+  forgedRowLevelRandomColdAuthorityQuery
+    .summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
 const droppedNormalizedTransportFallbackColdRow = withQueryRecomputedRowId((() => {
   const row = randomColdReadinessMatrixRow({
     targetId: 'dropped-normalized-transport-fallback-random-cold',

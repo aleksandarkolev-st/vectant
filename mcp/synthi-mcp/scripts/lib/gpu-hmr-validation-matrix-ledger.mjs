@@ -18332,6 +18332,16 @@ function rowSafetyFailures(row, context = {}) {
     if (row.acceptedForGpuHmr === true || row.gpuHmrSuccess === true) {
       failures.push({ code: 'random_large_project_cold_path_row_cannot_claim_gpu_hmr_success' });
     }
+    if (firstBool(row.canSatisfyRuntimeProof, row.can_satisfy_runtime_proof) === true) {
+      failures.push({
+        code: 'random_large_project_cold_path_row_cannot_claim_runtime_authority',
+      });
+    }
+    if (firstBool(row.canSatisfyDispatchProof, row.can_satisfy_dispatch_proof) === true) {
+      failures.push({
+        code: 'random_large_project_cold_path_row_cannot_claim_dispatch_authority',
+      });
+    }
     if (row.matrixOutcome === 'full_runtime_gpu_hmr') {
       failures.push({ code: 'random_large_project_cold_path_row_cannot_be_full_runtime_gpu_hmr' });
     }
