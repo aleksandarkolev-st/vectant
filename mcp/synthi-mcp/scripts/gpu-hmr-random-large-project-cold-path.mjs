@@ -108,6 +108,7 @@ const RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES = Object.freeze({
 });
 const BUILD_METADATA_CONTENT_MAX_FILES = 12;
 const BUILD_METADATA_CONTENT_MAX_BYTES = 128 * 1024;
+const DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT = 5;
 
 const DEFAULT_CANDIDATES = [
   {
@@ -1004,6 +1005,18 @@ function selectCandidates({ candidates, seed, count, candidateId }) {
       selectionRank: rank + 1,
       selectionKey: entry.selectionKey,
     }));
+}
+
+function defaultColdPathSelectionCount({
+  directCandidate = null,
+  directCandidates = [],
+  samplePool = false,
+} = {}) {
+  if (directCandidate) return 1;
+  if (Array.isArray(directCandidates) && directCandidates.length > 0) {
+    return directCandidates.length;
+  }
+  return samplePool ? DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT : 1;
 }
 
 function inferColdPathSourceMode(candidates = []) {
@@ -5343,6 +5356,17 @@ async function selfCheck() {
   ) {
     throw new Error('random large-project cold-path direct/sample-pool mode parsing failed');
   }
+  if (
+    defaultColdPathSelectionCount({ samplePool: true }) !== DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT
+    || defaultColdPathSelectionCount({ samplePool: false }) !== 1
+    || defaultColdPathSelectionCount({ directCandidate: candidates[0], samplePool: true }) !== 1
+    || defaultColdPathSelectionCount({
+      directCandidates: candidates.slice(0, 3),
+      samplePool: false,
+    }) !== 3
+  ) {
+    throw new Error('random large-project cold-path default selection count self-check failed');
+  }
   let configuredPoolRejected = false;
   try {
     assertConfiguredSamplePoolExplicit({
@@ -6846,7 +6870,11 @@ async function main() {
         ? 'configured_sample_pool'
         : 'configured_candidate_pool';
   const effectiveCandidateId = directCandidate ? directCandidate.id : candidateId;
-  const defaultCount = directCandidate ? 1 : directCandidates.length > 0 ? directCandidates.length : 1;
+  const defaultCount = defaultColdPathSelectionCount({
+    directCandidate,
+    directCandidates,
+    samplePool: samplePoolModeRequested(args),
+  });
   const count = Number(args.count ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_COUNT ?? defaultCount);
   const effectiveCount = directCandidate ? 1 : count;
   const { manifest, written } = await buildManifest({
