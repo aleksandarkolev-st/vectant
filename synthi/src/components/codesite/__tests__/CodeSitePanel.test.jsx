@@ -786,12 +786,12 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('pcap-checkout-schema');
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
-    expect(container.textContent).toContain('Airspace Map');
-    expect(container.textContent).toContain('Runway Occupancy');
-    expect(container.textContent).toContain('Pilot License Health');
+    expect(container.textContent).toContain('Work Scope Map');
+    expect(container.textContent).toContain('Path Lock Occupancy');
+    expect(container.textContent).toContain('Agent Readiness');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
-    expect(container.textContent).toContain('pilot:active');
+    expect(container.textContent).toContain('agent:active');
     expect(container.textContent).toContain('min:IFR');
     const replayHandover = container.querySelector('[data-testid="codesite-causal-replay-handover"]');
     expect(replayHandover).toBeTruthy();
@@ -873,9 +873,9 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('67%');
     expect(container.textContent).toContain('Black box');
     expect(container.textContent).toContain('82%');
-    expect(container.textContent).toContain('API airspace');
+    expect(container.textContent).toContain('API work scope');
     expect(container.textContent).toContain('write_overlap');
-    expect(container.textContent).toContain('Tower Simulator');
+    expect(container.textContent).toContain('Coordination Simulator');
     expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('schema-first');
     expect(container.textContent).toContain('frontend-backend-parallel');
     expect(container.textContent).toContain('refresh_downstream_assumptions');
@@ -891,11 +891,11 @@ describe('CodeSitePanel', () => {
     expect(replayTrace.getAttribute('points').trim().split(/\s+/)).toHaveLength(Math.min(8, state.events.length));
     expect(flightBlips).toHaveLength(1);
     expect(holdingPatterns).toHaveLength(1);
-    expect(container.textContent).toContain('Landing queue');
+    expect(container.textContent).toContain('Commit checks');
     expect(container.textContent).toContain('QA-1');
     expect(container.textContent).toContain('passed');
-    expect(laneNamed('API airspace').textContent).toContain('ATLAS-1');
-    expect(laneNamed('Health API airspace').textContent).not.toContain('ATLAS-1');
+    expect(laneNamed('API work scope').textContent).toContain('ATLAS-1');
+    expect(laneNamed('Health API work scope').textContent).not.toContain('ATLAS-1');
     expect(container.textContent).toContain('CodeSite-Clearance');
     expect(container.textContent).toContain('CodeSite-Transaction');
     expect(container.textContent).toContain('Line Provenance');
@@ -928,7 +928,7 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
     expect(container.querySelector('[data-testid="codesite-route-revision-row"]').textContent).toContain('api/checkout/v2/**');
     expect(container.querySelector('[data-testid="codesite-mayday-banner"]').textContent).toContain('1 open');
-    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('mayday');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('emergency stop');
     expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('inspection-mayday-1');
     expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
       'acme',
@@ -1104,9 +1104,9 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-documents-show-all"]').textContent)
       .toContain('Show all documents (6)');
     expect(container.querySelector('[data-testid="codesite-route-revisions-show-all"]').textContent)
-      .toContain('Show all route revisions (6)');
+      .toContain('Show all plan changes (6)');
     expect(container.querySelector('[data-testid="codesite-maydays-show-all"]').textContent)
-      .toContain('Show all ground stops (4)');
+      .toContain('Show all emergency holds (4)');
   });
 
   it('routes structured required actions into the governance review gate', async () => {
