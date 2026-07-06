@@ -96,7 +96,7 @@ function setNativeInputValue(element, value) {
 }
 
 function laneNamed(name) {
-  return [...container.querySelectorAll('[data-testid="codesite-airspace-lane"]')]
+  return [...container.querySelectorAll('[data-testid="codesite-scope-matrix-row"]')]
     .find((lane) => lane.textContent.includes(name));
 }
 
@@ -114,30 +114,6 @@ async function confirmGovernanceReview(rationale = 'Reviewed replay, evidence, s
     confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
   await flush();
-}
-
-function testRadarPoint(angle, radius) {
-  const radians = (angle - 90) * (Math.PI / 180);
-  return {
-    x: 50 + Math.cos(radians) * radius,
-    y: 50 + Math.sin(radians) * radius,
-  };
-}
-
-function testEventPoint(event, index, total) {
-  const seed = String(event?.eventType || event?.id || index).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  const angle = (seed + (index * 29)) % 360;
-  const radius = 12 + ((index % Math.max(1, total)) * (34 / Math.max(1, total)));
-  return testRadarPoint(angle, radius);
-}
-
-function expectedReplayPath(events) {
-  const newestFirstEvents = events.slice(-12).reverse();
-  const replayEvents = newestFirstEvents.slice(0, 7).reverse();
-  return replayEvents
-    .map((event, index) => testEventPoint(event, index, replayEvents.length))
-    .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
-    .join(' ');
 }
 
 function radarState() {
@@ -774,7 +750,7 @@ describe('CodeSitePanel', () => {
     }
   });
 
-  it('renders the radar state and exports artifact projection', async () => {
+  it('renders the coordination state and exports artifact projection', async () => {
     const state = radarState();
     h.fetchCodeSiteRadarState.mockResolvedValue(state);
     renderPanel();
@@ -786,24 +762,24 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('pcap-checkout-schema');
     expect(container.textContent).toContain('schema.level_2@2026-06-25');
     expect(container.textContent).toContain('dojo:evidence:checkride-1');
-    expect(container.textContent).toContain('Airspace Map');
-    expect(container.textContent).toContain('Runway Occupancy');
-    expect(container.textContent).toContain('Pilot License Health');
+    expect(container.textContent).toContain('Workspace Graph');
+    expect(container.textContent).toContain('Path Locks');
+    expect(container.textContent).toContain('Agent Readiness');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('IFR');
     expect(container.querySelector('[data-testid="codesite-pilot-license-health"]').textContent).toContain('pilot_license_source_current');
-    expect(container.textContent).toContain('pilot:active');
+    expect(container.textContent).toContain('agent:active');
     expect(container.textContent).toContain('min:IFR');
     const replayHandover = container.querySelector('[data-testid="codesite-causal-replay-handover"]');
     expect(replayHandover).toBeTruthy();
     expect(replayHandover.textContent).toContain('txn-1');
     expect(replayHandover.textContent).toContain('proof-1');
     expect(replayHandover.textContent).toContain('sha256:incident');
-    expect(replayHandover.textContent).toContain('CodeSite-Black-Box');
+    expect(replayHandover.textContent).toContain('Event evidence digest');
     expect(replayHandover.textContent).toContain('transaction.committed');
     expect(replayHandover.textContent).toContain('black_box.closed');
     expect(replayHandover.textContent).toContain('write.denied');
     expect(replayHandover.textContent).toContain('incident-replay-incident-1.jsonl');
-    expect(container.textContent).toContain('Filesystem Boundary Proofs');
+    expect(container.textContent).toContain('Filesystem Boundary Evidence');
     const boundaryProof = container.querySelector('[data-testid="codesite-filesystem-boundary-proof"]');
     expect(boundaryProof).toBeTruthy();
     expect(boundaryProof.textContent).toContain('secrets/prod.env');
@@ -873,32 +849,43 @@ describe('CodeSitePanel', () => {
     expect(container.textContent).toContain('67%');
     expect(container.textContent).toContain('Black box');
     expect(container.textContent).toContain('82%');
-    expect(container.textContent).toContain('API airspace');
+    expect(container.textContent).toContain('API work scope');
     expect(container.textContent).toContain('write_overlap');
-    expect(container.textContent).toContain('Tower Simulator');
+    expect(container.textContent).toContain('Coordination Simulator');
     expect(container.querySelector('[data-testid="codesite-tower-selected"]').textContent).toContain('schema-first');
     expect(container.textContent).toContain('frontend-backend-parallel');
     expect(container.textContent).toContain('refresh_downstream_assumptions');
     expect(container.textContent).toContain('importGraphEdges:2');
     expect(container.textContent).toContain('codesite:repo-policy:checkout');
-    const riskCones = container.querySelectorAll('[data-testid="codesite-risk-cone"]');
-    const replayTrace = container.querySelector('[data-testid="codesite-replay-trace"]');
-    const flightBlips = container.querySelectorAll('[data-testid="codesite-flight-blip"]');
-    const holdingPatterns = container.querySelectorAll('[data-testid="codesite-holding-pattern"]');
-    expect(container.querySelector('[data-testid="codesite-radar-graph"]')).toBeTruthy();
-    expect(riskCones).toHaveLength(1);
-    expect(riskCones[0].getAttribute('fill')).toBe('#fbbf24');
-    expect(replayTrace.getAttribute('points').trim().split(/\s+/)).toHaveLength(Math.min(8, state.events.length));
-    expect(flightBlips).toHaveLength(1);
-    expect(holdingPatterns).toHaveLength(1);
-    expect(container.textContent).toContain('Landing queue');
+    const scopeTopology = container.querySelector('[data-testid="codesite-scope-topology"]');
+    const matrixRows = container.querySelectorAll('[data-testid="codesite-scope-matrix-row"]');
+    const agentNodes = container.querySelectorAll('[data-testid="codesite-scope-agent-node"]');
+    const pathNodes = container.querySelectorAll('[data-testid="codesite-scope-path-node"]');
+    const guardrailNodes = container.querySelectorAll('[data-testid="codesite-scope-guardrail-node"]');
+    expect(scopeTopology).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-work-graph"]')).toBeTruthy();
+    expect(scopeTopology.textContent).toContain('Workspace Graph');
+    expect(scopeTopology.textContent).toContain('Paths -> Agents -> Checks');
+    expect(scopeTopology.textContent).toContain('Paths');
+    expect(scopeTopology.textContent).toContain('Agents');
+    expect(scopeTopology.textContent).toContain('Checks');
+    expect(matrixRows).toHaveLength(2);
+    expect(agentNodes).toHaveLength(2);
+    expect(pathNodes).toHaveLength(2);
+    expect(guardrailNodes).toHaveLength(2);
+    expect(pathNodes[0].textContent).toContain('Shared contract');
+    expect(scopeTopology.textContent).toContain('Conflicts');
+    expect(scopeTopology.textContent).toContain('Commit checks');
+    expect(scopeTopology.textContent).not.toContain('Conflict area');
+    expect(scopeTopology.textContent).not.toContain('Event trace');
+    expect(container.textContent).toContain('Commit checks');
     expect(container.textContent).toContain('QA-1');
     expect(container.textContent).toContain('passed');
-    expect(laneNamed('API airspace').textContent).toContain('ATLAS-1');
-    expect(laneNamed('Health API airspace').textContent).not.toContain('ATLAS-1');
+    expect(laneNamed('API work scope').textContent).toContain('ATLAS-1');
+    expect(laneNamed('Health API work scope').textContent).not.toContain('ATLAS-1');
     expect(container.textContent).toContain('CodeSite-Clearance');
     expect(container.textContent).toContain('CodeSite-Transaction');
-    expect(container.textContent).toContain('Line Provenance');
+    expect(container.textContent).toContain('Lineage Inspector');
     expect(container.textContent).toContain('api/checkout/route.js');
     expect(container.textContent).toContain('L42-L44');
     expect(container.textContent).toContain('hunk:checkout');
@@ -921,14 +908,14 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-radar-sweep"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-tower-feed"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('EventSource live');
+    expect(container.querySelector('[data-testid="codesite-scope-topology"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-activity-feed"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-event-stream-status"]').textContent).toContain('Live updates connected');
     expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="codesite-document-row"]').textContent).toContain('Need schema owner');
     expect(container.querySelector('[data-testid="codesite-route-revision-row"]').textContent).toContain('api/checkout/v2/**');
     expect(container.querySelector('[data-testid="codesite-mayday-banner"]').textContent).toContain('1 open');
-    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('mayday');
+    expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('paused incident');
     expect(container.querySelector('[data-testid="codesite-ground-stop-row"]').textContent).toContain('inspection-mayday-1');
     expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
       'acme',
@@ -946,7 +933,7 @@ describe('CodeSitePanel', () => {
     });
     await flush();
     expect(h.issueCodeSitePermit).not.toHaveBeenCalled();
-    await confirmGovernanceReview('Permit reviewed against route, evidence, and Class B scope.');
+    await confirmGovernanceReview('Approval reviewed against route, evidence, and protected scope.');
     expect(h.issueCodeSitePermit).toHaveBeenCalledWith('acme', 'proj-1', expect.objectContaining({
       permitType: 'restricted_route',
       executionPlanId: 'plan-1',
@@ -955,7 +942,7 @@ describe('CodeSitePanel', () => {
       route: ['api/checkout/**'],
       scope: { allowedPaths: ['api/checkout/**'], route: ['api/checkout/**'] },
       approval: expect.objectContaining({
-        rationale: 'Permit reviewed against route, evidence, and Class B scope.',
+        rationale: 'Approval reviewed against route, evidence, and protected scope.',
       }),
       evidenceRefs: ['codesite:ui:permit:proj-1'],
     }));
@@ -1033,7 +1020,7 @@ describe('CodeSitePanel', () => {
       proofBundles: [{ id: 'proof-1', bundleDigest: 'digest-proof-1' }],
     }]);
     await act(async () => {
-      container.querySelector('[data-testid="codesite-line-provenance-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector('[data-testid="codesite-lineage-row"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
 
@@ -1104,9 +1091,9 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-documents-show-all"]').textContent)
       .toContain('Show all documents (6)');
     expect(container.querySelector('[data-testid="codesite-route-revisions-show-all"]').textContent)
-      .toContain('Show all route revisions (6)');
+      .toContain('Show all plan changes (6)');
     expect(container.querySelector('[data-testid="codesite-maydays-show-all"]').textContent)
-      .toContain('Show all ground stops (4)');
+      .toContain('Show all paused incidents (4)');
   });
 
   it('routes structured required actions into the governance review gate', async () => {
@@ -1141,7 +1128,7 @@ describe('CodeSitePanel', () => {
     }));
   });
 
-  it('does not draw a holding pattern for airborne flights', async () => {
+  it('shows active workstreams in the workspace graph without radar markers', async () => {
     const state = radarState();
     state.controlState.activeFlights = state.controlState.activeFlights.map((flight) => ({
       ...flight,
@@ -1152,12 +1139,16 @@ describe('CodeSitePanel', () => {
     renderPanel();
     await flush();
 
-    expect(container.querySelectorAll('[data-testid="codesite-flight-blip"]')).toHaveLength(1);
-    expect(container.querySelectorAll('[data-testid="codesite-holding-pattern"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="codesite-scope-agent-node"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).toContain('ATLAS-1');
+    expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).not.toContain('holding pattern');
   });
 
-  it('draws the replay trace from the latest event tail', async () => {
+  it('summarizes the latest activity tail in the graph evidence guardrail', async () => {
     const state = radarState();
+    state.project.inspectionRuns = [];
+    state.collisionForecast.risks = [];
+    state.controlState.collisionForecast.risks = [];
     state.events = [
       'flight_plan_filed',
       'clearance_requested',
@@ -1183,7 +1174,11 @@ describe('CodeSitePanel', () => {
     renderPanel();
     await flush();
 
-    expect(container.querySelector('[data-testid="codesite-replay-trace"]').getAttribute('points')).toBe(expectedReplayPath(state.events));
+    const guardrails = [...container.querySelectorAll('[data-testid="codesite-scope-guardrail-node"]')];
+    const evidenceGuardrail = guardrails.find((node) => node.textContent.includes('Evidence'));
+    expect(evidenceGuardrail).toBeTruthy();
+    expect(evidenceGuardrail.textContent).toContain('7 events');
+    expect(container.querySelector('[data-testid="codesite-replay-trace"]')).toBeFalsy();
   });
 
   it('opens the first project from the empty state', async () => {
