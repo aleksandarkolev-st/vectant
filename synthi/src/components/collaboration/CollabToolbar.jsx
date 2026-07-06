@@ -61,7 +61,7 @@ export default function CollabToolbar({ slug, filePath }) {
           user: {
             id: session.hostId,
             name: session.hostName || 'Host',
-            color: '#ff5757',
+            color: 'var(--accent-danger)',
             image: session.hostAvatar || null,
           },
         });
@@ -75,7 +75,7 @@ export default function CollabToolbar({ slug, filePath }) {
               user: {
                 id: g.guestId,
                 name: g.displayName || 'Guest',
-                color: '#3a8574',
+                color: 'var(--accent-secondary)',
                 image: g.avatarUrl || null,
               },
             });
@@ -133,15 +133,16 @@ export default function CollabToolbar({ slug, filePath }) {
         <div className="flex items-center gap-1.5">
           {/* LIVE badge — opens modal */}
           <button onClick={openModal}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#ff575712] border border-[#ff575730] hover:bg-[#ff575720] transition-all"
+            className="vt-workflow-chip th-focus-ring"
+            style={{ '--chip-color': 'var(--accent-danger)' }}
             title="Manage session (Ctrl+Shift+K)">
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#ff5757] opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#ff5757]" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent-danger)] opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--accent-danger)]" />
             </span>
-            <span className="text-[11px] font-bold text-[#ff5757] tracking-wide">LIVE</span>
+            <span className="text-[11px] font-bold tracking-wide">LIVE</span>
             {(guests?.length || 0) > 0 && (
-              <span className="text-[10px] text-[#ff5757] opacity-60">·{guests.length}</span>
+              <span className="text-[10px] opacity-70">·{guests.length}</span>
             )}
           </button>
 
@@ -156,11 +157,8 @@ export default function CollabToolbar({ slug, filePath }) {
         <div className="flex items-center gap-1.5">
           {/* Guest badge — opens modal */}
           <button onClick={openModal}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all ${
-              permissions?.canEdit
-                ? 'bg-[#3a857412] border-[#3a857430] text-[#3a8574] hover:bg-[#3a857420]'
-                : 'bg-[#fbbf2412] border-[#fbbf2430] text-[#fbbf24] hover:bg-[#fbbf2420]'
-            }`}
+            className="vt-workflow-chip th-focus-ring"
+            style={{ '--chip-color': permissions?.canEdit ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}
             title="Session details">
             {permissions?.canEdit ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
             <span className="text-[11px] font-semibold">{session?.hostName || 'Host'}</span>
@@ -168,7 +166,8 @@ export default function CollabToolbar({ slug, filePath }) {
 
           {/* Leave button */}
           <button onClick={leaveSession}
-            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#ff575712] border border-[#ff575730] hover:bg-[#ff575720] text-[#ff5757] transition-all text-[11px] font-medium"
+            className="vt-workflow-chip th-focus-ring text-[11px]"
+            style={{ '--chip-color': 'var(--accent-danger)' }}
             title="Leave session">
             <LogOut className="w-3 h-3" />
             Leave
@@ -235,7 +234,7 @@ function AvatarCircle({ user, size = 'sm' }) {
     <div className="relative group flex-shrink-0" title={name}>
       <div
         className={`${dim} rounded-full flex items-center justify-center border-2 overflow-hidden`}
-        style={{ borderColor: color || '#327464', background: 'var(--bg-panel)' }}
+        style={{ borderColor: color || 'var(--accent-secondary)', background: 'var(--bg-panel)' }}
       >
         {image ? (
           <img
@@ -247,7 +246,7 @@ function AvatarCircle({ user, size = 'sm' }) {
         ) : (
           <span
             className={`${textSize} font-bold leading-none select-none`}
-            style={{ color: color || '#327464' }}
+            style={{ color: color || 'var(--accent-secondary)' }}
           >
             {initials}
           </span>
@@ -273,9 +272,7 @@ function ShareButton({ onClick }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg
-                 border transition-all text-[11px] font-medium"
-      style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+      className="th-focus-ring th-btn-ghost flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2.5 py-1 text-[11px] font-medium"
       title="Start a collaboration session (Ctrl+Shift+K)"
     >
       <Share2 className="w-3.5 h-3.5" />
@@ -291,22 +288,20 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
     <Popover>
       <PopoverTrigger asChild>
         <button
-          className="relative flex items-center gap-1 px-2 py-1 rounded-lg
-                     bg-[#fbbf2412] border border-[#fbbf2430]
-                     hover:bg-[#fbbf2420] transition-all"
+          className="vt-workflow-chip th-focus-ring relative"
+          style={{ '--chip-color': 'var(--accent-warning)' }}
           title={`${knocks.length} request${knocks.length > 1 ? 's' : ''} to join`}
         >
-          <Bell className="w-3.5 h-3.5 text-[#fbbf24]" />
-          <span className="text-[11px] font-bold text-[#fbbf24]">{knocks.length}</span>
-          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#fbbf24] rounded-full animate-pulse" />
+          <Bell className="w-3.5 h-3.5" />
+          <span className="text-[11px] font-bold">{knocks.length}</span>
+          <span className="absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--accent-warning)]" />
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[280px] p-3 shadow-xl rounded-xl border"
-        style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
+        className="vt-command-popover w-[280px] p-3"
         align="end"
       >
-        <div className="text-xs text-[#fbbf24] font-semibold mb-2 flex items-center gap-1.5">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-warning)]">
           <Bell className="w-3.5 h-3.5" />
           Requesting Access
         </div>
@@ -314,14 +309,13 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
           {knocks.map((knock) => (
             <div
               key={knock.guestId}
-              className="flex items-center justify-between p-2 border rounded-lg"
-              style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+              className="vt-workflow-card flex items-center justify-between p-2"
             >
               <div className="flex items-center gap-2">
                 {knock.avatarUrl ? (
                   <img src={knock.avatarUrl} alt="" className="w-6 h-6 rounded-full" />
                 ) : (
-                  <div className="w-6 h-6 rounded-full bg-[#fbbf24] flex items-center justify-center text-[10px] font-bold" style={{ color: 'var(--bg-app)' }}>
+                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--accent-warning)] text-[10px] font-bold text-[var(--bg-app)]">
                     {knock.displayName?.[0]?.toUpperCase() || '?'}
                   </div>
                 )}
@@ -330,19 +324,19 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => onAdmit(knock.guestId)}
-                  className="p-1 rounded bg-[#4ade8020] hover:bg-[#4ade8030] transition-colors"
+                  className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-success)]"
                   aria-label={`Admit ${knock.displayName}`}
                   title="Accept"
                 >
-                  <Check className="w-3.5 h-3.5 text-[#4ade80]" />
+                  <Check className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => onDeny(knock.guestId)}
-                  className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730] transition-colors"
+                  className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-danger)]"
                   aria-label={`Deny ${knock.displayName}`}
                   title="Deny"
                 >
-                  <X className="w-3.5 h-3.5 text-[#ff5757]" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
@@ -357,16 +351,16 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
 
 function KnockingIndicator({ onCancel }) {
   return (
-    <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#fbbf2410] border border-[#fbbf2430]">
-      <div className="w-3 h-3 border-2 border-[#fbbf24] border-t-transparent rounded-full animate-spin" />
-      <span className="text-[11px] text-[#fbbf24] font-medium">Waiting…</span>
+    <div className="vt-workflow-chip flex items-center gap-2" style={{ '--chip-color': 'var(--accent-warning)' }}>
+      <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent-warning)] border-t-transparent" />
+      <span className="text-[11px] font-medium">Waiting…</span>
       <button
         onClick={onCancel}
-        className="p-0.5 rounded hover:bg-[#fbbf2420] transition-colors"
+        className="vt-icon-button th-focus-ring h-6 min-w-6"
         aria-label="Cancel knock"
         title="Cancel"
       >
-        <X className="w-3 h-3 text-[#fbbf24]" />
+        <X className="w-3 h-3" />
       </button>
     </div>
   );
