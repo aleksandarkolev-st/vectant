@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useCollabSession } from '@/hooks/useCollabSession';
@@ -52,7 +53,12 @@ export default function ShareModal({ slug, open, onClose }) {
   const [terminating, setTerminating] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joiningByCode, setJoiningByCode] = useState(false);
+  const [portalNode, setPortalNode] = useState(null);
   const modalRef = useRef(null);
+
+  useEffect(() => {
+    setPortalNode(document.body);
+  }, []);
 
   // Reset state when modal opens (clearError is stable via useCallback)
   useEffect(() => {
@@ -127,11 +133,12 @@ export default function ShareModal({ slug, open, onClose }) {
     });
   }, [createSession, slug, authSession]);
 
-  return (
+  const modal = (
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center"
+          className="fixed inset-0 flex items-center justify-center"
+          style={{ zIndex: 10000 }}
           role="dialog"
           aria-modal="true"
           aria-labelledby="share-modal-title"
@@ -308,6 +315,9 @@ export default function ShareModal({ slug, open, onClose }) {
       )}
     </AnimatePresence>
   );
+
+  if (!portalNode) return null;
+  return createPortal(modal, portalNode);
 }
 
 // ── Session Info — Host ──────────────────────────────────────────────────────
