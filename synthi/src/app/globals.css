@@ -1530,6 +1530,8 @@
 }
 
 .vt-session-modal {
+  position: relative;
+  z-index: 1;
   border-color: color-mix(in srgb, var(--accent-primary) 18%, var(--border-medium));
   background:
     linear-gradient(180deg, color-mix(in srgb, white 4%, transparent), transparent 18%),
