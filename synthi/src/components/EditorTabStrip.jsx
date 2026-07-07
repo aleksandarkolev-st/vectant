@@ -82,7 +82,7 @@ function EditorTabStripImpl() {
     const container = tabsContainerRef.current;
     if (!container) return;
 
-    const tabButtons = Array.from(container.querySelectorAll(':scope > button'));
+    const tabButtons = Array.from(container.querySelectorAll(':scope > [data-editor-tab="true"]'));
     const firstTab = tabButtons[0];
     const lastTab = tabButtons[tabButtons.length - 1];
 
@@ -337,7 +337,7 @@ function EditorTabStripImpl() {
             const attrib = showPaneAttribution ? getPanesForFile(layout, file.path) : [];
 
             return (
-              <button
+              <div
                 key={file.path}
                 ref={(element) => {
                   tabRefs.current[file.path] = element;
@@ -345,8 +345,16 @@ function EditorTabStripImpl() {
                     activeTabRef.current = element;
                   }
                 }}
-                type="button"
+                data-editor-tab="true"
+                role="tab"
+                tabIndex={isActive ? 0 : -1}
                 onClick={() => handleSelect(file)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSelect(file);
+                  }
+                }}
                 onMouseEnter={() => setHoveredTabPath(file.path)}
                 onMouseLeave={() => {
                   setHoveredTabPath((current) => (current === file.path ? null : current));
@@ -424,7 +432,7 @@ function EditorTabStripImpl() {
                     ))}
                   </span>
                 )}
-              </button>
+              </div>
             );
           })}
 
