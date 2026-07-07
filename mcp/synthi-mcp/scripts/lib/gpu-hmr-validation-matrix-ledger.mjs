@@ -18519,13 +18519,20 @@ const IDENTITY_SHORTCUT_SCAN_SKIP_KEYS = new Set([
 
 function identityShortcutAcceptanceFailures(source) {
   const failures = [];
+  const seen = new WeakSet();
   const record = (code, pathValue) => {
     if (!failures.some((failure) => failure.code === code && failure.path === pathValue)) {
       failures.push({ code, path: pathValue });
     }
   };
-  const inspectObject = (value, pathValue = '$') => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const inspectValue = (value, pathValue = '$', depth = 0) => {
+    if (!value || typeof value !== 'object') return;
+    if (seen.has(value) || depth > 12) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => inspectValue(entry, `${pathValue}[${index}]`, depth + 1));
+      return;
+    }
     for (const [key, entry] of Object.entries(value)) {
       const entryPath = `${pathValue}.${key}`;
       if (IDENTITY_SHORTCUT_LIST_KEYS.has(key)) {
@@ -18540,14 +18547,11 @@ function identityShortcutAcceptanceFailures(source) {
       ) {
         record('gpu_hmr_success_cannot_use_candidate_or_profile_identity_hint', entryPath);
       }
+      if (IDENTITY_SHORTCUT_SCAN_SKIP_KEYS.has(key)) continue;
+      inspectValue(entry, entryPath, depth + 1);
     }
   };
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return failures;
-  inspectObject(source);
-  for (const [key, entry] of Object.entries(source)) {
-    if (IDENTITY_SHORTCUT_SCAN_SKIP_KEYS.has(key)) continue;
-    inspectObject(entry, `$.${key}`);
-  }
+  inspectValue(source);
   return failures;
 }
 
@@ -34024,6 +34028,7 @@ function largeRocmMlRandomColdSourceIntakeCoverage(rows, context = {}) {
 }
 
 export const GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS = Object.freeze({
+  identityShortcutAcceptanceFailures,
   largeRocmMlRandomColdNormalizedIdentityTerm,
   largeRocmMlRandomColdSemanticTextValues,
   largeRocmMlRandomColdTextSignals,

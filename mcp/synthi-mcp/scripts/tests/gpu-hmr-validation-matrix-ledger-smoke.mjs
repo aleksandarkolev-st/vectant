@@ -13926,6 +13926,37 @@ assert.ok(identityShortcutAcceptedQuery.failedGates.some((gate) =>
 assert.ok(identityShortcutAcceptedQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_cannot_use_candidate_or_profile_identity_hint'
 ));
+const nestedIdentityShortcutAcceptedRow = withQueryRecomputedRowId((() => {
+  const row = acceptedAuthoritativeMatrixRow('accepted-row-nested-identity-shortcut');
+  row.nestedIdentityShortcutProbe = {
+    schemaVersion: 'synthi.gpu_hmr.identity_shortcut_probe.v1',
+    proofAuthority: 'test_forged_nested_identity_shortcut_not_gpu_hmr_success',
+    evidence: [
+      {
+        nested: {
+          project_name_whitelist: ['one-special-project'],
+          targetNameUsedForAcceptance: true,
+        },
+      },
+    ],
+  };
+  row.nested_identity_shortcut_probe = row.nestedIdentityShortcutProbe;
+  return row;
+})());
+const nestedIdentityShortcutAcceptedQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [nestedIdentityShortcutAcceptedRow],
+});
+assert.equal(nestedIdentityShortcutAcceptedQuery.accepted, false);
+assert.equal(nestedIdentityShortcutAcceptedQuery.summary.acceptedFullRuntimeGpuHmrRows, 0);
+assert.ok(nestedIdentityShortcutAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_project_or_target_identity_whitelist'
+  && gate.path === '$.nestedIdentityShortcutProbe.evidence[0].nested.project_name_whitelist'
+));
+assert.ok(nestedIdentityShortcutAcceptedQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_use_candidate_or_profile_identity_hint'
+  && gate.path === '$.nestedIdentityShortcutProbe.evidence[0].nested.targetNameUsedForAcceptance'
+));
 
 function scopedGeneralityClaim(acceptanceScope) {
   return {
