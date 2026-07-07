@@ -13,13 +13,13 @@ export const runtime = "nodejs";
 export async function POST(req) {
   if (!isSameOriginRequest(req)) {
     const denied = deniedJson("bad_origin", "Request origin was not accepted.");
-    return NextResponse.json(denied.body, { status: denied.status });
+    return jsonNoStore(denied.body, denied.status);
   }
 
   const bodyResult = await readBoundedJson(req);
   if (!bodyResult.ok) {
     const denied = deniedJson(bodyResult.reason, "Request body was too large.", bodyResult.status);
-    return NextResponse.json(denied.body, { status: denied.status });
+    return jsonNoStore(denied.body, denied.status);
   }
 
   const body = bodyResult.value;
@@ -30,16 +30,25 @@ export async function POST(req) {
       process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET,
     );
     if (signatureDecision.decision === "denied") {
-      return NextResponse.json({ ...signatureDecision, relay_forward: false }, { status: 403 });
+      return jsonNoStore({ ...signatureDecision, relay_forward: false }, 403);
     }
 
     const replayDecision = enforceRequestEnvelopeReplayProtection(body);
     if (replayDecision.decision === "denied") {
-      return NextResponse.json({ ...replayDecision, relay_forward: false }, { status: 409 });
+      return jsonNoStore({ ...replayDecision, relay_forward: false }, 409);
     }
   }
 
   const decision = buildRelayForwardDecision(body, policy);
   const status = decision.decision === "denied" ? 403 : 200;
-  return NextResponse.json(decision, { status });
+  return jsonNoStore(decision, status);
+}
+
+function jsonNoStore(body, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
 }

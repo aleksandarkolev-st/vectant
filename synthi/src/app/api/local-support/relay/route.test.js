@@ -54,6 +54,7 @@ describe("local support relay route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
       decision: "denied",
       reason: "feature_disabled",
@@ -118,6 +119,7 @@ describe("local support relay route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
       decision: "relay_ready",
       relay_forward: true,

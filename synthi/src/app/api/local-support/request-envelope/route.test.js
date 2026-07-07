@@ -65,6 +65,7 @@ describe("local support request-envelope route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
       decision: "denied",
       reason: "bad_origin",
@@ -94,6 +95,7 @@ describe("local support request-envelope route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
       decision: "approval_required",
       local_enforcement_required: true,
