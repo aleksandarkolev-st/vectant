@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Ban,
@@ -194,6 +194,40 @@ export default function LocalSupportTransparency() {
   const [lastExport, setLastExport] = useState(null);
   const [approvalsRevoked, setApprovalsRevoked] = useState(false);
   const [revokedPorts, setRevokedPorts] = useState([]);
+  const [policyState, setPolicyState] = useState({
+    status: "loading",
+    policy: null,
+    error: null,
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadPolicy() {
+      try {
+        const response = await fetch("/api/local-support/policy", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`policy_${response.status}`);
+        }
+        const policy = await response.json();
+        if (!controller.signal.aborted) {
+          setPolicyState({ status: "loaded", policy, error: null });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setPolicyState({
+            status: "error",
+            policy: null,
+            error: error instanceof Error ? error.message : "policy_unavailable",
+          });
+        }
+      }
+    }
+    loadPolicy();
+    return () => controller.abort();
+  }, []);
 
   const sessionState = useMemo(() => {
     if (!connected) return { label: "Disconnected", tone: "bad", Icon: XCircle };
@@ -205,10 +239,27 @@ export default function LocalSupportTransparency() {
   const visibleActivity = historyDeleted ? [] : activity;
   const releaseReadiness = summarizeLocalSupportReleaseReadiness();
   const ciRequiredBlockers = RELEASE_BLOCKERS.filter((item) => item.status === "ci_required");
+  const livePolicy = policyState.policy;
+  const liveExportMetadata = {
+    ...exportMetadata,
+    policy_version: livePolicy?.policy_version || exportMetadata.policy_version,
+    scanner_version: livePolicy?.scanner_version || exportMetadata.scanner_version,
+  };
+  const policyStatus = policyState.status === "loaded"
+    ? livePolicy?.enabled
+      ? { label: "Cloud policy enabled", tone: "good" }
+      : { label: "Cloud policy disabled", tone: "warn" }
+    : policyState.status === "error"
+      ? { label: "Policy unavailable", tone: "warn" }
+      : { label: "Checking policy", tone: "neutral" };
+  const policyMessage = livePolicy?.user_visible_message
+    || (policyState.status === "error"
+      ? "Could not load cloud policy state. The local app must fail closed for requests."
+      : "Loading cloud policy state without using cached data.");
 
   function exportScrubbedHistory() {
     const payload = {
-      ...exportMetadata,
+      ...liveExportMetadata,
       exported_at: new Date().toISOString(),
       events: visibleActivity.map((item) => ({
         at: item.at,
@@ -221,7 +272,7 @@ export default function LocalSupportTransparency() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `vectant-local-support-history-${exportMetadata.session_id}.json`;
+    link.download = `vectant-local-support-history-${liveExportMetadata.session_id}.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -245,6 +296,7 @@ export default function LocalSupportTransparency() {
                   {sessionState.label}
                 </Pill>
                 <Pill tone="neutral">Balanced mode</Pill>
+                <Pill tone={policyStatus.tone}>{policyStatus.label}</Pill>
               </div>
               <p className="mt-1 text-sm text-zinc-400">
                 Workspace: not selected. Account: not paired. Session: not paired.
@@ -356,6 +408,40 @@ export default function LocalSupportTransparency() {
                     <div className="mt-1 text-sm text-zinc-400">{detail}</div>
                   </div>
                 ))}
+              </div>
+            </Panel>
+
+            <Panel
+              title="Cloud policy state"
+              description="This is fetched live from the Local Support policy endpoint with no-store caching. The desktop app still makes the final local decision."
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                  <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">Policy route</div>
+                  <div className="mt-2">
+                    <Pill tone={policyStatus.tone}>{policyStatus.label}</Pill>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-zinc-400">{policyMessage}</p>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                  <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">Live gates</div>
+                  <dl className="mt-3 grid gap-2 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-zinc-400">Minimum app version</dt>
+                      <dd className="font-mono text-xs text-zinc-200">{livePolicy?.min_app_version || "0.1.0"}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-zinc-400">Policy version</dt>
+                      <dd className="font-mono text-xs text-zinc-200">{liveExportMetadata.policy_version}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-zinc-400">Retention</dt>
+                      <dd className="font-mono text-xs text-zinc-200">
+                        {livePolicy?.retention?.local_activity_days ?? 30} days
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
               </div>
             </Panel>
 
