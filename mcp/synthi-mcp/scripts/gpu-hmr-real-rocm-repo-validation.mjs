@@ -3236,7 +3236,9 @@ const report = {
     mode: CFG.outputOracleProfile,
     sourceDerivedCandidateCount: 0,
     selectedSource: null,
-    disabledReason: null,
+    disabledReason: outputOracleProfileModeDisabled(CFG.outputOracleProfile)
+      ? 'profile_disabled'
+      : null,
     contractPresent: CFG.outputOracleContract !== null,
     runtimeProfilePresent: false,
     runtimeProfilePath: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
