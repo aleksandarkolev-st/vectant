@@ -130,6 +130,12 @@ const CFG = {
   workerContainer: process.env.WORKER_CONTAINER ?? process.env.SYNTHI_WORKER_CONTAINER ?? null,
   workerLogPath: process.env.WORKER_LOG_PATH
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
+  workerLogTailTimeoutMs: boundedPositiveInt(
+    process.env.SYNTHI_GPU_AGENT_WORKER_LOG_TAIL_TIMEOUT_MS
+      ?? process.env.SYNTHI_GPU_HMR_WORKER_LOG_TAIL_TIMEOUT_MS,
+    10000,
+    { min: 1000, max: 120000 },
+  ),
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
     ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
@@ -1606,7 +1612,7 @@ async function readWorkerLogTail(maxBytes = 8 * 1024 * 1024, opts = {}) {
       execFile(
         'docker',
         ['logs', '--since', opts.since, CFG.workerContainer],
-        { maxBuffer: 128 * 1024 * 1024 },
+        { maxBuffer: 128 * 1024 * 1024, timeout: CFG.workerLogTailTimeoutMs },
         (err, stdout, stderr) => {
           if (err) return resolve('');
           resolve(`${stdout ?? ''}${stderr ?? ''}`);
@@ -1626,7 +1632,7 @@ async function readWorkerLogTail(maxBytes = 8 * 1024 * 1024, opts = {}) {
     return new Promise((resolve) => {
       const args = ['logs', '--tail', '6000'];
       args.push(CFG.workerContainer);
-      execFile('docker', args, { maxBuffer: 128 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile('docker', args, { maxBuffer: 128 * 1024 * 1024, timeout: CFG.workerLogTailTimeoutMs }, (err, stdout, stderr) => {
         if (err) return resolve('');
         resolve(`${stdout ?? ''}${stderr ?? ''}`);
       });
