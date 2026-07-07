@@ -1967,7 +1967,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
 
   return (
     <div
-      className="pointer-events-none absolute inset-x-3 top-3 flex justify-center lg:left-auto lg:right-3 lg:w-[404px] lg:justify-end"
+      className="pointer-events-none absolute inset-x-3 top-3 flex justify-center lg:left-auto lg:right-3 lg:w-[380px] lg:justify-end"
       style={{
         zIndex: 3,
       }}
@@ -1981,7 +1981,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
         transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: TERMINAL_MOTION_EASE }}
         className="pointer-events-auto flex flex-col overflow-hidden rounded-lg border shadow-none"
         style={{
-          width: 'min(404px, 100%)',
+          width: 'min(380px, 100%)',
           maxHeight: 'calc(100% - 24px)',
           background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 94%, var(--bg-app, #0a0b10))',
           borderColor: 'var(--border-medium, #3f3f46)',
@@ -1995,7 +1995,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           style={{ background: 'var(--brand-gradient-horizontal)' }}
         />
         <div
-          className="flex items-start gap-3 px-3.5 py-2.5 select-none"
+          className="flex items-start gap-3 px-3.5 py-2 select-none"
         >
           <div
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
@@ -2024,6 +2024,23 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
             <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
               {body}
             </p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {statusItems.map(([label, value]) => (
+                <div
+                  key={label}
+                  className="flex max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[10px]"
+                  style={{
+                    borderColor: 'var(--border-subtle, #2a2b38)',
+                    background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 70%, transparent)',
+                  }}
+                >
+                  <span style={{ color: 'var(--text-muted, #6b7089)' }}>{label}</span>
+                  <span className="truncate" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+                    {value}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
           <motion.button
             type="button"
@@ -2048,28 +2065,6 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           </motion.button>
         </div>
 
-        <div
-          className="border-t px-3.5 py-1.5"
-          style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
-        >
-          <div className="flex flex-wrap gap-1.5">
-            {statusItems.map(([label, value]) => (
-              <div
-                key={label}
-                className="flex max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[10px]"
-                style={{
-                  borderColor: 'var(--border-subtle, #2a2b38)',
-                  background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 70%, transparent)',
-                }}
-              >
-                <span style={{ color: 'var(--text-muted, #6b7089)' }}>{label}</span>
-                <span className="truncate" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-                  {value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
       </motion.div>
     </div>
   );
