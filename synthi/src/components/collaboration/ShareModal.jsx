@@ -162,13 +162,13 @@ export default function ShareModal({ slug, open, onClose }) {
             {isActive && wsStatus !== 'connected' && (
               <span className="vt-workflow-chip text-[9px]" style={{ '--chip-color': 'var(--accent-warning)' }}>
                 <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                {wsStatus === 'connecting' ? 'Reconnecting…' : 'Offline'}
+                {wsStatus === 'connecting' ? 'Reconnecting' : 'Offline'}
               </span>
             )}
             {isKnocking && (
               <span className="vt-workflow-chip text-[9px]" style={{ '--chip-color': 'var(--accent-warning)' }}>
                 <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                Connecting…
+                Connecting
               </span>
             )}
           </div>

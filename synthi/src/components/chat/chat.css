@@ -1,5 +1,5 @@
 /* =====================================================================
-   Vectant AI Chat — "Living Orb" redesign
+   Vectant Console - Living Orb redesign
    Scoped, chat-only classes. The orb itself is a WebGL canvas (see
    VectantOrb.jsx); this file styles its frame (glow, pulse, bloom),
    a no-WebGL fallback, and the surrounding chat surfaces.

@@ -442,7 +442,7 @@ export default function ExtensionViewContainer({
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
           <span className="vt-state-pill">
-            {isActive ? (isRemote ? '● Remote' : '● Active') : isPendingRemote ? '◌ Connecting…' : '◌ Inactive'}
+            {isActive ? (isRemote ? 'Remote' : 'Active') : isPendingRemote ? 'Connecting' : 'Inactive'}
           </span>
           {extInfo && (
             <span className="truncate">

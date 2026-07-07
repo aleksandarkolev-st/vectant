@@ -18,7 +18,7 @@ const statusMeta = {
     color: 'var(--accent-success)',
   },
   [GatewayStatus.CONNECTING]: {
-    label: 'Connecting…',
+    label: 'Connecting',
     color: 'var(--accent-warning)',
     pulsing: true,
   },
@@ -66,12 +66,12 @@ export function AnalysisPanel({
 
   const handleSuggestionContextMenu = (e) => {
     if (!aiSuggestion) return;
-    const markdown = `### AI Suggestion${lang ? ` (${lang})` : ''}\n\n${aiSuggestion}`;
+    const markdown = `### Model finding${lang ? ` (${lang})` : ''}\n\n${aiSuggestion}`;
     openMenu(e, [
       {
         id: 'copy',
-        label: 'Copy Suggestion',
-        action: () => copyText(aiSuggestion, 'suggestion'),
+        label: 'Copy finding',
+        action: () => copyText(aiSuggestion, 'finding'),
       },
       {
         id: 'copy-md',
@@ -151,7 +151,7 @@ export function AnalysisPanel({
         {isAnalyzing && (
           <div className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
             <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--accent-primary)' }} />
-            Running static + AI analysis…
+            Running static and model analysis
           </div>
         )}
 
@@ -184,7 +184,7 @@ export function AnalysisPanel({
         {!isAnalyzing && !error && aiSuggestion && (
           <div onContextMenu={handleSuggestionContextMenu}>
             <p className="mb-2 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-              AI Suggestion
+              Model Finding
             </p>
             <div
               className="rounded-md border p-3 text-sm leading-relaxed"

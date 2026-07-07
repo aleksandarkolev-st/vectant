@@ -122,7 +122,7 @@ function currentDojoAuditActor() {
 
 const Placeholder = () => (
   <div className="flex h-full w-full items-center justify-center text-xs" style={{ color: 'var(--text-disabled)' }}>
-    Loading…
+    Loading...
   </div>
 );
 

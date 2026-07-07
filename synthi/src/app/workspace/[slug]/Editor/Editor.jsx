@@ -4954,7 +4954,7 @@ const EditorPanel = ({
                                         window.__lastManualAiTrigger = now;
                                         requestAiCompletion();
                                     }}>
-                                        Trigger AI Suggestion
+                                        Run Model Suggestion
                                     </ContextMenuItem>
                                 </ContextMenuContent>
                             </ContextMenu>
