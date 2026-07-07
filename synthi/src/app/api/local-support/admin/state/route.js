@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   buildAdminRevokeDecision,
+  constantTimeStringEqual,
   readLocalSupportPolicy,
   summarizeAdminState,
 } from "@/lib/local-support/controlPlane";
@@ -14,7 +15,11 @@ export async function GET(req) {
   if (auth) return auth;
 
   const state = parseAdminStateEnv();
-  return NextResponse.json(summarizeAdminState(state, readLocalSupportPolicy()));
+  return NextResponse.json(summarizeAdminState(state, readLocalSupportPolicy()), {
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 export async function POST(req) {
@@ -33,7 +38,12 @@ export async function POST(req) {
 
   const decision = buildAdminRevokeDecision(bodyResult.value, readLocalSupportPolicy());
   const status = decision.decision === "denied" ? 400 : 200;
-  return NextResponse.json(decision, { status });
+  return NextResponse.json(decision, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 function authorizeAdmin(req) {
@@ -43,7 +53,7 @@ function authorizeAdmin(req) {
     return NextResponse.json(denied.body, { status: denied.status });
   }
   const actual = req.headers.get("x-vectant-admin-token") || "";
-  if (actual !== expected) {
+  if (!constantTimeStringEqual(actual, expected)) {
     const denied = deniedJson("admin_token_invalid", "Local Support admin token was not accepted.");
     return NextResponse.json(denied.body, { status: 401 });
   }

@@ -16,6 +16,7 @@ describe("local support policy route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json.enabled).toBe(false);
     expect(json.user_visible_message).toContain("disabled");
   });

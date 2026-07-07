@@ -170,6 +170,14 @@ export function verifyRequestEnvelopeSignature(envelope, secret) {
   };
 }
 
+export function constantTimeStringEqual(actual, expected) {
+  if (typeof actual !== "string" || typeof expected !== "string") return false;
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) return false;
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
 export function enforceRequestEnvelopeReplayProtection(envelope, nowMs = Date.now()) {
   const requestId = typeof envelope?.request_id === "string" ? envelope.request_id.trim() : "";
   const sessionId = typeof envelope?.session_id === "string" ? envelope.session_id.trim() : "";

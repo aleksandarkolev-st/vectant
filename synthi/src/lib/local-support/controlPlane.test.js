@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearRequestEnvelopeReplayCache,
   buildRelayForwardDecision,
+  constantTimeStringEqual,
   enforceRequestEnvelopeReplayProtection,
   evaluatePolicyPrecedence,
   readLocalSupportPolicy,
@@ -240,6 +241,13 @@ describe("local support control plane policy", () => {
       reason: "request_envelope_signature_invalid",
       bytes_sent: 0,
     });
+  });
+
+  it("compares shared control-plane secrets without accepting partial prefixes", () => {
+    expect(constantTimeStringEqual("admin-secret", "admin-secret")).toBe(true);
+    expect(constantTimeStringEqual("admin-secret", "admin-secreu")).toBe(false);
+    expect(constantTimeStringEqual("admin-secret", "admin")).toBe(false);
+    expect(constantTimeStringEqual("", "admin-secret")).toBe(false);
   });
 
   it("records request envelope nonces and rejects replay", () => {

@@ -78,6 +78,7 @@ describe("local support admin state route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
       decision: "admin_state_ready",
       raw_body_included: false,
@@ -112,6 +113,7 @@ describe("local support admin state route", () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
       decision: "revocation_required",
       reason: "session_revocation_requested",

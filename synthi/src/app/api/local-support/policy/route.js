@@ -11,5 +11,9 @@ export async function GET() {
     user_visible_message: policy.enabled
       ? "Local Support is available for this organization. The local app still enforces every request."
       : policy.disabled_reason || "Local Support is disabled by organization, emergency, or global policy.",
+  }, {
+    headers: {
+      "Cache-Control": "no-store",
+    },
   });
 }
