@@ -32742,6 +32742,14 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     random_cold_backend_evidence: randomColdBackendEvidence,
     coldSourceTreeIntake: coldSourceTreeIntakeForRow,
     cold_source_tree_intake: coldSourceTreeIntakeForRow,
+    rawSourceIntakeEvidence:
+      Object.keys(sourceIntake).length > 0
+        ? sourceIntake
+        : null,
+    raw_source_intake_evidence:
+      Object.keys(sourceIntake).length > 0
+        ? sourceIntake
+        : null,
     sourceIntakeEvidence: coldSourceTreeIntakeForRow,
     source_intake_evidence: coldSourceTreeIntakeForRow,
     sourceIntakeTransportFallback: coldSourceTreeIntake.sourceIntakeTransportFallback,
