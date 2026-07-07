@@ -2686,7 +2686,11 @@ function randomColdSourceIntakeFacetHashSeed(facet) {
   return seed;
 }
 
-function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
+function randomColdSourceIntakeSummary(
+  sourceIntake = {},
+  result = {},
+  { preserveSourceListingEntries = false } = {},
+) {
   const facet = compactObject(sourceIntake);
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
@@ -2988,8 +2992,9 @@ function randomColdSourceIntakeSummary(sourceIntake = {}, result = {}) {
     ...suppliedFailedGates,
   ]);
   const accepted = present && failedGates.length === 0;
-  const sourceListingManifestForRow =
-    randomColdSourceListingManifestRowProjection(sourceListingManifest);
+  const sourceListingManifestForRow = preserveSourceListingEntries
+    ? sourceListingManifest
+    : randomColdSourceListingManifestRowProjection(sourceListingManifest);
   return {
     present,
     accepted,
@@ -3476,6 +3481,97 @@ function randomColdBuildMetadataContentEvidenceFacet(input = {}, options = {}) {
       : 'raw_content_evidence_hash_recomputed',
     failedGates,
     failed_gates: failedGates,
+  };
+}
+
+function randomColdBroadReadinessSourceEvidenceProvenance({
+  intake = {},
+  sourceIntakeEvidence = {},
+  sourceListingManifest = {},
+  buildContentEvidence = {},
+} = {}) {
+  const failedGates = [];
+  const intakeProjectionAuthority = firstText(
+    intake.projectionAuthority,
+    intake.projection_authority,
+    sourceIntakeEvidence.projectionAuthority,
+    sourceIntakeEvidence.projection_authority,
+  );
+  const listingProjectionAuthority = firstText(
+    sourceListingManifest.projectionAuthority,
+    sourceListingManifest.projection_authority,
+    sourceIntakeEvidence.sourceListingManifest?.projectionAuthority,
+    sourceIntakeEvidence.sourceListingManifest?.projection_authority,
+    sourceIntakeEvidence.source_listing_manifest?.projectionAuthority,
+    sourceIntakeEvidence.source_listing_manifest?.projection_authority,
+  );
+  const rawSourceTreeOmitted = firstBool(
+    intake.rawSourceTreeOmitted,
+    intake.raw_source_tree_omitted,
+    sourceIntakeEvidence.rawSourceTreeOmitted,
+    sourceIntakeEvidence.raw_source_tree_omitted,
+  ) === true;
+  const rawEntriesOmitted = firstBool(
+    sourceListingManifest.rawEntriesOmitted,
+    sourceListingManifest.raw_entries_omitted,
+  ) === true;
+  const entriesTruncated = firstBool(
+    sourceListingManifest.entriesTruncatedForMatrixRow,
+    sourceListingManifest.entries_truncated_for_matrix_row,
+  ) === true;
+  const listingEntries = randomColdNormalizeSourceListingEntries(
+    sourceListingManifest.entries
+    ?? sourceListingManifest.sourceListingEntries
+    ?? sourceListingManifest.source_listing_entries
+    ?? sourceListingManifest.files,
+  );
+  const buildFiles = compactObjectList(
+    buildContentEvidence.buildFiles
+    ?? buildContentEvidence.build_files,
+  );
+  const buildVerificationMode = firstText(
+    buildContentEvidence.contentEvidenceHashVerificationMode,
+    buildContentEvidence.content_evidence_hash_verification_mode,
+  );
+  if (intakeProjectionAuthority === RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY) {
+    failedGates.push('random_cold_broad_readiness_source_intake_projection_only');
+  }
+  if (listingProjectionAuthority === RANDOM_COLD_SOURCE_LISTING_ROW_PROJECTION_AUTHORITY) {
+    failedGates.push('random_cold_broad_readiness_source_listing_projection_only');
+  }
+  if (rawSourceTreeOmitted) {
+    failedGates.push('random_cold_broad_readiness_raw_source_tree_omitted');
+  }
+  if (rawEntriesOmitted || entriesTruncated) {
+    failedGates.push('random_cold_broad_readiness_source_listing_entries_truncated');
+  }
+  if (listingEntries.length === 0) {
+    failedGates.push('random_cold_broad_readiness_source_listing_entries_missing');
+  }
+  if (buildVerificationMode === 'serialized_raw_content_verifier_output_replayed') {
+    failedGates.push('random_cold_broad_readiness_build_content_replay_only');
+  }
+  if (buildFiles.length === 0) {
+    failedGates.push('random_cold_broad_readiness_build_content_files_missing');
+  }
+  return {
+    accepted: failedGates.length === 0,
+    acceptedAsBroadReadinessSourceEvidence: failedGates.length === 0,
+    accepted_as_broad_readiness_source_evidence: failedGates.length === 0,
+    evidenceMode: failedGates.length === 0
+      ? 'full_raw_source_listing_and_build_content'
+      : 'projection_or_replay_only',
+    evidence_mode: failedGates.length === 0
+      ? 'full_raw_source_listing_and_build_content'
+      : 'projection_or_replay_only',
+    sourceListingEntryCount: listingEntries.length,
+    source_listing_entry_count: listingEntries.length,
+    buildFileCount: buildFiles.length,
+    build_file_count: buildFiles.length,
+    buildContentEvidenceHashVerificationMode: buildVerificationMode ?? null,
+    build_content_evidence_hash_verification_mode: buildVerificationMode ?? null,
+    failedGates: compactStringList(failedGates),
+    failed_gates: compactStringList(failedGates),
   };
 }
 
@@ -5186,9 +5282,19 @@ async function randomColdRuntimeProfileAdapterResultImportFacet(
     ?? runtimeBoundaryRunModeProof.runtimeProofArtifact
     ?? runtimeBoundaryRunModeProof.runtime_proof_artifact,
   );
+  const strictRuntimeProofArtifactRoots = compactStringList([
+    resolvedRepoRoot,
+    resolvedBaseDir,
+    adapterResultResolvedPath ? path.dirname(adapterResultResolvedPath) : null,
+    proofResolvedPath ? path.dirname(proofResolvedPath) : null,
+  ]);
   const strictRuntimeProofGate = runtimeProofArtifactStrictGate(
     Object.keys(runtimeProofArtifact).length > 0 ? runtimeProofArtifact : null,
-    { name: 'random_cold_adapter_result_import_runtime_proof_artifact' },
+    {
+      name: 'random_cold_adapter_result_import_runtime_proof_artifact',
+      allowedArtifactRoots: strictRuntimeProofArtifactRoots,
+      computeArtifactPathBaseRoots: strictRuntimeProofArtifactRoots,
+    },
   );
   const strictRuntimeProofGateAccepted =
     strictRuntimeProofGate.accepted === true
@@ -30895,13 +31001,32 @@ function randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow = {}, conte
       failed_gates: ['random_cold_imported_runtime_closure_source_cold_path_missing'],
     };
   }
+  const rawSourceIntakeEvidence = firstCompactObject(
+    context.rawSourceIntakeEvidence,
+    context.raw_source_intake_evidence,
+    context.sourceIntakeEvidence,
+    context.source_intake_evidence,
+  );
+  const sourceRow = Object.keys(rawSourceIntakeEvidence).length > 0
+    ? {
+        ...row,
+        rawSourceIntakeEvidence,
+        raw_source_intake_evidence: rawSourceIntakeEvidence,
+        sourceIntakeEvidence: rawSourceIntakeEvidence,
+        source_intake_evidence: rawSourceIntakeEvidence,
+        coldSourceTreeIntake: rawSourceIntakeEvidence,
+        cold_source_tree_intake: rawSourceIntakeEvidence,
+      }
+    : row;
   const coldPathFacet = compactObject(
     row.randomLargeProjectColdPath
     ?? row.random_large_project_cold_path,
   );
-  const sourceIntake = randomColdSourceIntakeForRow(row);
-  const sourceIntakeEvidence = randomColdSourceIntakeSummary(sourceIntake, row);
-  const sourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
+  const sourceIntake = randomColdSourceIntakeForRow(sourceRow);
+  const sourceIntakeEvidence = randomColdSourceIntakeSummary(sourceIntake, sourceRow, {
+    preserveSourceListingEntries: true,
+  });
+  const sourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(sourceRow);
   const selectionAudit = randomColdPathSelectionAuditFacet(firstCompactObject(
     coldPathFacet.selectionAudit,
     coldPathFacet.selection_audit,
@@ -30946,8 +31071,20 @@ function randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow = {}, conte
     repoPath,
     immutableCommit,
   });
-  const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
-  const acceptedColdPathRows = randomColdPathRowsForBroadReadiness([row], {
+  const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(sourceRow);
+  const sourceEvidenceProvenance = randomColdBroadReadinessSourceEvidenceProvenance({
+    intake: sourceIntake,
+    sourceIntakeEvidence,
+    sourceListingManifest: compactObject(
+      sourceIntakeEvidence.sourceListingManifest
+      ?? sourceIntakeEvidence.source_listing_manifest,
+    ),
+    buildContentEvidence: compactObject(
+      sourceIntakeEvidence.buildMetadataContentEvidence
+      ?? sourceIntakeEvidence.build_metadata_content_evidence,
+    ),
+  });
+  const acceptedColdPathRows = randomColdPathRowsForBroadReadiness([sourceRow], {
     ...context,
     requireLargeSourceTree: false,
   });
@@ -30992,6 +31129,15 @@ function randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow = {}, conte
     sourceContentIdentityHash
       ? null
       : 'random_cold_imported_runtime_closure_source_content_identity_missing',
+    sourceEvidenceProvenance.accepted === true
+      ? null
+      : 'random_cold_imported_runtime_closure_source_evidence_projection_or_replay_only',
+    ...(sourceEvidenceProvenance.accepted === true
+      ? []
+      : compactStringList(
+          sourceEvidenceProvenance.failedGates
+          ?? sourceEvidenceProvenance.failed_gates,
+        )),
     firstBool(row.acceptedForGpuHmr, row.accepted_for_gpu_hmr) === true
       ? 'random_cold_imported_runtime_closure_source_row_claimed_gpu_hmr_acceptance'
       : null,
@@ -31026,6 +31172,8 @@ function randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow = {}, conte
     direct_input_evidence_accepted: directInputEvidence.acceptedAsDirectInputEvidence === true,
     sourceContentIdentityHash: sourceContentIdentityHash ?? null,
     source_content_identity_hash: sourceContentIdentityHash ?? null,
+    sourceEvidenceProvenance,
+    source_evidence_provenance: sourceEvidenceProvenance,
     failedGates,
     failed_gates: failedGates,
   };
@@ -31053,6 +31201,7 @@ function randomColdImportedRuntimeClosureRow({
   targetProcessProvenance,
   sameProcessRuntimeOracle,
   sameProcessRuntimeOracleGate,
+  rawSourceIntakeEvidence,
 } = {}) {
   const record = ledgerRecordForRow({ ledger, proofLedger });
   const recordProjectId = firstText(record.projectId, record.project_id);
@@ -31061,7 +31210,10 @@ function randomColdImportedRuntimeClosureRow({
   const rowBackend = recordBackend ?? valueFieldText(backend) ?? 'unknown';
   const acceptanceScope = runtimeClosureAcceptanceScopeForBackend(rowBackend, outputOracleFacet);
   const sourceColdPath =
-    randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow, context);
+    randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow, {
+      ...context,
+      rawSourceIntakeEvidence,
+    });
   const planBindingFailedGates = compactStringList([
     ...(Array.isArray(runtimeBoundaryPlanBinding?.failedGates)
       ? runtimeBoundaryPlanBinding.failedGates
@@ -31117,7 +31269,67 @@ function randomColdImportedRuntimeClosureRow({
     && sameProcessRuntimeOracleGate?.accepted === true
     && Boolean(recordProjectId)
     && Boolean(acceptanceScope);
-  if (strictRuntimeAccepted !== true) return null;
+  const strictRuntimeAcceptanceGates = {
+    source_cold_path: sourceColdPath.accepted === true,
+    runtime_boundary_plan_binding: runtimeBoundaryPlanBindingAccepted === true,
+    strict_import_projection_support: strictImportProjectionAccepted === true,
+    adapter_result_import: runtimeProfileAdapterResultImport?.accepted === true,
+    runtime_proof_artifact: runtimeProofArtifactGate?.accepted === true,
+    recomputed_ledger:
+      ledger?.present === true
+      && ledger?.source === 'recomputed_ledger'
+      && ledger?.gpuHmrSuccess === true
+      && Array.isArray(ledger?.failedInvariants)
+      && ledger.failedInvariants.length === 0,
+    runtime_chain: runtimeChain?.accepted === true,
+    output_oracle: outputOracleFacet?.accepted === true,
+    firewall: firewall?.accepted === true,
+    stage_events:
+      stageEvents?.present === true
+      && stageEvents?.accepted === true
+      && firstBool(stageEvents.complete) === true,
+    app_hook_contract: appHookGate?.accepted === true,
+    target_process_provenance:
+      targetProcessProvenance?.present === true
+      && targetProcessProvenance?.accepted === true,
+    same_process_runtime_oracle: sameProcessRuntimeOracleGate?.accepted === true,
+    record_project_id: Boolean(recordProjectId),
+    acceptance_scope: Boolean(acceptanceScope),
+  };
+  const strictRuntimeAcceptanceFailedGates = Object.entries(strictRuntimeAcceptanceGates)
+    .filter(([, accepted]) => accepted !== true)
+    .map(([gate]) => `random_cold_imported_runtime_closure_${gate}_missing`);
+  if (strictRuntimeAccepted !== true) {
+    if (coldRow && typeof coldRow === 'object') {
+      const diagnostic = {
+        schemaVersion:
+          'synthi.gpu_hmr.random_cold_imported_runtime_closure_candidate.v1',
+        schema_version:
+          'synthi.gpu_hmr.random_cold_imported_runtime_closure_candidate.v1',
+        proofAuthority:
+          'matrix_runtime_closure_candidate_diagnostic_only_not_gpu_hmr_success',
+        proof_authority:
+          'matrix_runtime_closure_candidate_diagnostic_only_not_gpu_hmr_success',
+        present: true,
+        accepted: false,
+        acceptedForGpuHmr: false,
+        accepted_for_gpu_hmr: false,
+        gpuHmrSuccess: false,
+        gpu_hmr_success: false,
+        canSatisfyRuntimeProof: false,
+        can_satisfy_runtime_proof: false,
+        strictRuntimeAcceptanceGates,
+        strict_runtime_acceptance_gates: strictRuntimeAcceptanceGates,
+        sourceColdPath,
+        source_cold_path: sourceColdPath,
+        failedGates: strictRuntimeAcceptanceFailedGates,
+        failed_gates: strictRuntimeAcceptanceFailedGates,
+      };
+      coldRow.randomColdImportedRuntimeClosureCandidate = diagnostic;
+      coldRow.random_cold_imported_runtime_closure_candidate = diagnostic;
+    }
+    return null;
+  }
   const coldProofIds = compactStringList(coldRow?.proofIds ?? coldRow?.proof_ids);
   const runtimeProofId = firstText(
     runtimeProofArtifactGate.proofId,
@@ -32153,6 +32365,7 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     targetProcessProvenance: randomColdRuntimeBoundaryTargetProcessProvenance,
     sameProcessRuntimeOracle: randomColdSameProcessRuntimeOracle,
     sameProcessRuntimeOracleGate: randomColdSameProcessRuntimeOracleGate,
+    rawSourceIntakeEvidence: sourceIntake,
   });
   return importedRuntimeClosureRow ? [coldRow, importedRuntimeClosureRow] : coldRow;
 }
@@ -33680,6 +33893,8 @@ function sourceFirstVisualBroadReadinessPredicate() {
 
 function randomColdSourceIntakeForRow(row = {}) {
   return firstCompactObject(
+    row.rawSourceIntakeEvidence,
+    row.raw_source_intake_evidence,
     row.sourceIntakeEvidence,
     row.source_intake_evidence,
     row.coldSourceTreeIntake,
@@ -33879,7 +34094,9 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       ?? row.random_large_project_cold_path,
     );
     const intake = randomColdSourceIntakeForRow(row);
-    const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
+    const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row, {
+      preserveSourceListingEntries: true,
+    });
     const sourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
     const selectionAudit = randomColdPathSelectionAuditFacet(firstCompactObject(
       facet.selectionAudit,
@@ -34038,6 +34255,12 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       sourceIntakeEvidence.sourceListingManifest
       ?? sourceIntakeEvidence.source_listing_manifest,
     );
+    const sourceEvidenceProvenance = randomColdBroadReadinessSourceEvidenceProvenance({
+      intake,
+      sourceIntakeEvidence,
+      sourceListingManifest,
+      buildContentEvidence,
+    });
     const sourceDerivedBackendCandidates = compactStringList([
       ...(Array.isArray(sourceIntakeEvidence.backendCandidates)
         ? sourceIntakeEvidence.backendCandidates
@@ -34159,6 +34382,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
       && sourceIntakeFormConsistency.accepted === true
+      && sourceEvidenceProvenance.accepted === true
       && sourceListingManifestAccepted
       && buildMetadataAccepted
       && Boolean(sourceContentIdentityHash)
@@ -34587,7 +34811,9 @@ function largeRocmMlRandomColdRocmBackendSignals({
 function largeRocmMlRandomColdSourceIntakeFacet(row) {
   const facet = compactObject(row.randomLargeProjectColdPath ?? row.random_large_project_cold_path);
   const intake = randomColdSourceIntakeForRow(row);
-  const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row);
+  const sourceIntakeEvidence = randomColdSourceIntakeSummary(intake, row, {
+    preserveSourceListingEntries: true,
+  });
   const allowSerializedBuildContentReplay =
     firstText(intake.projectionAuthority, intake.projection_authority)
       === RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY
@@ -34606,6 +34832,12 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     sourceIntakeEvidence.sourceListingManifest
     ?? sourceIntakeEvidence.source_listing_manifest,
   );
+  const sourceEvidenceProvenance = randomColdBroadReadinessSourceEvidenceProvenance({
+    intake,
+    sourceIntakeEvidence,
+    sourceListingManifest,
+    buildContentEvidence,
+  });
   const backendEvidence = compactObject(
     row.randomColdBackendEvidence
     ?? row.random_cold_backend_evidence,
@@ -34660,6 +34892,9 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     buildContentEvidence.acceptedAsBuildMetadataContent === true
       ? null
       : 'large_rocm_ml_random_cold_source_intake_build_metadata_not_accepted',
+    sourceEvidenceProvenance.accepted === true
+      ? null
+      : 'large_rocm_ml_random_cold_source_intake_source_evidence_projection_or_replay_only',
     candidateBackendUsedForAcceptance
       ? 'large_rocm_ml_random_cold_source_intake_candidate_backend_used'
       : null,
@@ -34701,6 +34936,8 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     sourceMlSignals,
     buildMlSignals,
     unboundBuildMlSemanticSignalCount,
+    sourceEvidenceProvenance,
+    source_evidence_provenance: sourceEvidenceProvenance,
     failedGates,
   });
   return {
@@ -34739,6 +34976,8 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     build_ml_signals: buildMlSignals,
     unboundBuildMlSemanticSignalCount,
     unbound_build_ml_semantic_signal_count: unboundBuildMlSemanticSignalCount,
+    sourceEvidenceProvenance,
+    source_evidence_provenance: sourceEvidenceProvenance,
     sourceListingHash: sourceListingManifest.sourceListingHash
       ?? sourceListingManifest.source_listing_hash
       ?? null,
@@ -35070,7 +35309,9 @@ function randomColdPathSourceContentIdentityHash(row) {
     row.immutableCommit,
     row.immutable_commit,
   );
-  const sourceIntake = randomColdSourceIntakeSummary(intake, row);
+  const sourceIntake = randomColdSourceIntakeSummary(intake, row, {
+    preserveSourceListingEntries: true,
+  });
   const sourceListingHash = normalizeSha256(firstText(
     sourceIntake.sourceListingManifest?.recomputedSourceListingHash,
     sourceIntake.source_listing_manifest?.recomputed_source_listing_hash,
@@ -35095,6 +35336,16 @@ function randomColdPathSourceContentIdentityHash(row) {
     sourceIntake.buildMetadataContentEvidence
     ?? sourceIntake.build_metadata_content_evidence,
   );
+  const sourceListingManifest = compactObject(
+    sourceIntake.sourceListingManifest
+    ?? sourceIntake.source_listing_manifest,
+  );
+  const sourceEvidenceProvenance = randomColdBroadReadinessSourceEvidenceProvenance({
+    intake,
+    sourceIntakeEvidence: sourceIntake,
+    sourceListingManifest,
+    buildContentEvidence,
+  });
   const buildMetadataContentHash = normalizeSha256(firstText(
     buildContentEvidence.recomputedContentEvidenceHash,
     buildContentEvidence.recomputed_content_evidence_hash,
@@ -35123,6 +35374,7 @@ function randomColdPathSourceContentIdentityHash(row) {
   if (
     directInputEvidence.acceptedAsDirectInputEvidence !== true
     || sourceIntake.accepted !== true
+    || sourceEvidenceProvenance.accepted !== true
     || !sourceListingHash
     || !sourceIntakeFacetHash
     || !buildMetadataContentHash
@@ -35154,7 +35406,9 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     ?? row.random_large_project_cold_path,
   );
   const intake = randomColdSourceIntakeForRow(row);
-  const sourceIntake = randomColdSourceIntakeSummary(intake, row);
+  const sourceIntake = randomColdSourceIntakeSummary(intake, row, {
+    preserveSourceListingEntries: true,
+  });
   const sourceListingHash = normalizeSha256(firstText(
     sourceIntake.sourceListingManifest?.recomputedSourceListingHash,
     sourceIntake.source_listing_manifest?.recomputed_source_listing_hash,
@@ -35182,6 +35436,15 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
     sourceIntake.build_metadata_content_evidence,
   ), {
     allowSerializedVerifierOutputReplay: allowSerializedBuildContentReplay,
+  });
+  const sourceEvidenceProvenance = randomColdBroadReadinessSourceEvidenceProvenance({
+    intake,
+    sourceIntakeEvidence: sourceIntake,
+    sourceListingManifest: compactObject(
+      sourceIntake.sourceListingManifest
+      ?? sourceIntake.source_listing_manifest,
+    ),
+    buildContentEvidence,
   });
   const buildFileContentRefs = compactObjectList(
     buildContentEvidence.buildFiles
@@ -35212,6 +35475,7 @@ function randomColdPathSourceContentOnlyIdentityHash(row) {
   if (
     sourceIntake.accepted !== true
     || buildContentEvidence.acceptedAsBuildMetadataContent !== true
+    || sourceEvidenceProvenance.accepted !== true
     || !sourceListingHash
     || buildFileContentRefs.length === 0
   ) {
@@ -38088,42 +38352,33 @@ function runtimeClosureRowSignals(row = {}) {
       || compactObject(row.realRocmSourceTreeTransport ?? row.real_rocm_source_tree_transport)
         .accepted === true,
     runtime_adapter_or_app_hook_contract:
-      appHookGate.accepted === true
-      || projectedGateAccepted.runtime_adapter_or_app_hook_contract === true,
+      appHookGate.accepted === true,
     artifact_transport:
-      projectedGateAccepted.artifact_transport === true
-      || runtimeChain.accepted === true
+      runtimeChain.accepted === true
         && Boolean(firstText(runtimeChain.artifactHash, runtimeChain.artifact_hash))
         && Boolean(firstText(runtimeChain.selectedLoaderTransport, runtimeChain.selected_loader_transport)),
     epoch_publication:
-      projectedGateAccepted.epoch_publication === true
-      || runtimeChain.accepted === true
+      runtimeChain.accepted === true
       && Boolean(firstText(runtimeChain.epoch)),
     dispatch_trace:
-      projectedGateAccepted.dispatch_trace === true
-      || runtimeChain.accepted === true
+      runtimeChain.accepted === true
       && Boolean(firstText(runtimeChain.dispatchId, runtimeChain.dispatch_id)),
     host_identity:
-      projectedGateAccepted.host_identity === true
-      || runtimeChain.accepted === true
+      runtimeChain.accepted === true
       && Boolean(firstText(runtimeChain.processId, runtimeChain.process_id))
       && (
         targetProcessProvenance.accepted === true
         || sameProcessGate.accepted === true
       ),
     output_or_visual_oracle:
-      outputOracle.accepted === true
-      || projectedGateAccepted.output_or_visual_oracle === true,
+      outputOracle.accepted === true,
     cpu_gpu_firewall: firewall.accepted === true,
     same_process_runtime_oracle: sameProcessGate.accepted === true,
     runtime_chain: runtimeChain.accepted === true,
     strict_runtime_ledger: (
-      projectedGateAccepted.strict_runtime_ledger === true
-      || (
       runtimeProofArtifact.accepted === true
       && ledger.present === true
       && ledger.gpuHmrSuccess === true
-      )
     ),
   };
   const gateObserved = {
@@ -38133,6 +38388,7 @@ function runtimeClosureRowSignals(row = {}) {
       || importedRuntimeClosureSourceColdPath.present === true,
     runtime_adapter_or_app_hook_contract:
       gateAccepted.runtime_adapter_or_app_hook_contract
+      || projectedGateAccepted.runtime_adapter_or_app_hook_contract === true
       || appHookGate.required === true
       || runtimeSupportClosure.acceptedAsSupportEvidence === true
       || runtimeSupportClosure.accepted_as_support_evidence === true
@@ -38145,19 +38401,24 @@ function runtimeClosureRowSignals(row = {}) {
       || runtimeProfileBridgePresent,
     artifact_transport:
       gateAccepted.artifact_transport
+      || projectedGateAccepted.artifact_transport === true
       || runtimeClosureStageObserved(stageEvents, 'artifact_transport'),
     epoch_publication:
       gateAccepted.epoch_publication
+      || projectedGateAccepted.epoch_publication === true
       || runtimeClosureStageObserved(stageEvents, 'epoch_publication'),
     dispatch_trace:
       gateAccepted.dispatch_trace
+      || projectedGateAccepted.dispatch_trace === true
       || runtimeClosureStageObserved(stageEvents, 'dispatch_trace'),
     host_identity:
       gateAccepted.host_identity
+      || projectedGateAccepted.host_identity === true
       || runtimeClosureStageObserved(stageEvents, 'host_identity')
       || targetProcessProvenance.present === true,
     output_or_visual_oracle:
       gateAccepted.output_or_visual_oracle
+      || projectedGateAccepted.output_or_visual_oracle === true
       || runtimeClosureStageObserved(stageEvents, 'output_oracle')
       || outputOracle.present === true,
     cpu_gpu_firewall:
@@ -38171,6 +38432,7 @@ function runtimeClosureRowSignals(row = {}) {
       || Boolean(firstText(runtimeChain.schemaVersion, runtimeChain.schema_version)),
     strict_runtime_ledger:
       gateAccepted.strict_runtime_ledger
+      || projectedGateAccepted.strict_runtime_ledger === true
       || runtimeProofArtifact.present === true
       || strictRuntimeProofAccepted,
   };

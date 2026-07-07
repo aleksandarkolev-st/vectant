@@ -3644,11 +3644,16 @@ assert.ok(randomColdRow.openGaps.includes('runtime_support_closure_requires_app_
 assert.ok(randomColdRow.openGaps.includes('app_hook_materialization_requires_observed_target_process_events'));
 assert.equal(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  1,
+  0,
 );
 assert.equal(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceIdentityCount,
-  1,
+  0,
+);
+assert.ok(
+  randomColdLedger.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_random_large_project_cold_path',
+  ),
 );
 const unknownBackendColdDir = path.join(
   tmpRoot,
@@ -3768,7 +3773,12 @@ assert.deepEqual(
 );
 assert.equal(
   buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  1,
+  0,
+);
+assert.ok(
+  buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_random_large_project_cold_path',
+  ),
 );
 const mismatchedTemplateBindingColdDir = path.join(
   tmpRoot,
@@ -3926,7 +3936,12 @@ assert.equal(externalLocalColdRow.acceptedForGpuHmr, false);
 assert.equal(externalLocalColdRow.gpuHmrSuccess, false);
 assert.equal(
   externalLocalColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  1,
+  0,
+);
+assert.ok(
+  externalLocalColdLedger.summary.broadLibraryAgnosticReadiness.openGaps.includes(
+    'broad_acceptance_requires_random_large_project_cold_path',
+  ),
 );
 const forgedSelectionAuditDir = path.join(
   tmpRoot,
@@ -4616,6 +4631,8 @@ const fileBackedRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
   contractHash: hashValue('file-backed-contract'),
   runtimeBoundaryEvents: fileBackedRuntimeBoundaryEvents,
   computeOracleArtifacts: fileBackedComputeOracleArtifacts,
+  allowedArtifactRoots: [tmpRoot],
+  computeArtifactPathBaseRoots: [tmpRoot],
   metricScope: 'hot_delta_1',
   cacheState: 'compiler_cache_warm',
 });
@@ -4968,7 +4985,15 @@ assert.equal(
   false,
 );
 assert.equal(
-  fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.stageResults.output_oracle.fieldChecks.readback_or_visual_artifact,
+  (() => {
+    const stages =
+      fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.stageResults
+      ?? fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.stage_results
+      ?? {};
+    const outputStage = stages.output_oracle ?? stages.outputOracle ?? {};
+    const fieldChecks = outputStage.fieldChecks ?? outputStage.field_checks ?? {};
+    return fieldChecks.readback_or_visual_artifact;
+  })(),
   true,
 );
 assert.equal(fileBackedImportedRuntimeClosureRow?.acceptedForGpuHmr, true);
@@ -5347,8 +5372,13 @@ const forgedAdapterNoOracleFilesRunModeProof = buildRuntimeBoundaryRunModeProof(
 });
 assert.equal(
   forgedAdapterNoOracleFilesRunModeProof.accepted,
-  true,
+  false,
   forgedAdapterNoOracleFilesRunModeProof.failedGates.join(','),
+);
+assert.ok(
+  forgedAdapterNoOracleFilesRunModeProof.failedGates.includes(
+    'compute_oracle_raw_readback_bytes_unreadable',
+  ),
 );
 const forgedAdapterNoOracleFilesProofId =
   forgedAdapterNoOracleFilesRunModeProof.runtimeBoundaryProofAdapter.proofId;
@@ -5472,13 +5502,21 @@ const forgedAdapterNoOracleFilesRow = forgedAdapterNoOracleFilesLedger.rows.find
 );
 assert.equal(forgedAdapterNoOracleFilesRow?.acceptedForGpuHmr, false);
 assert.equal(forgedAdapterNoOracleFilesRow.gpuHmrSuccess, false);
-assert.equal(forgedAdapterNoOracleFilesRow.randomColdRuntimeProfileAdapterResultImport.accepted, true);
-assert.equal(forgedAdapterNoOracleFilesRow.randomColdRuntimeAdapterStageEvents.accepted, true);
-assert.equal(forgedAdapterNoOracleFilesRow.randomColdImportedOutputOracleFacet.kind, 'compute_oracle');
+assert.equal(forgedAdapterNoOracleFilesRow.randomColdRuntimeProfileAdapterResultImport.accepted, false);
+assert.ok(
+  forgedAdapterNoOracleFilesRow.randomColdRuntimeProfileAdapterResultImport.failedGates.includes(
+    'random_cold_adapter_result_import_strict_gate:compute_oracle_raw_readback_bytes_unreadable',
+  ),
+);
+assert.equal(
+  forgedAdapterNoOracleFilesRow.randomColdRuntimeAdapterStageEvents?.accepted === true,
+  false,
+);
+assert.equal(forgedAdapterNoOracleFilesRow.randomColdImportedOutputOracleFacet.kind, 'missing');
 assert.equal(forgedAdapterNoOracleFilesRow.randomColdImportedOutputOracleFacet.accepted, false);
 assert.equal(
   forgedAdapterNoOracleFilesRow.randomColdRuntimeStrictImportProjection.strictImportAccepted,
-  true,
+  false,
 );
 assert.equal(
   forgedAdapterNoOracleFilesRow.randomColdRuntimeStrictImportProjection.projectedGateAccepted.output_or_visual_oracle,
@@ -5487,12 +5525,8 @@ assert.equal(
 assert.equal(forgedAdapterNoOracleFilesRow.randomColdRuntimeStrictImportProjection.accepted, false);
 assert.ok(forgedAdapterNoOracleFilesRow.openGaps.includes('output_oracle_unproven'));
 assert.ok(forgedAdapterNoOracleFilesRow.randomColdImportedOutputOracleFacet.failedGates.some((gate) =>
-  gate.code === 'compute_oracle_artifacts_not_accepted'
-));
-assert.ok(forgedAdapterNoOracleFilesRow.randomColdImportedOutputOracleFacet.failedGates.some((gate) =>
   [
-    'compute_oracle_raw_readback_path_missing',
-    'compute_oracle_raw_readback_unreadable',
+    'random_cold_imported_output_oracle_material_missing',
   ].includes(gate.code)
 ));
 const forgedAdapterStrictShellDir = path.join(
@@ -6004,15 +6038,15 @@ const randomColdCoverage = new Map(
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status,
-  'candidate_only',
+  'diagnostic_only',
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
-  1,
+  0,
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
-  1,
+  0,
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
@@ -6020,11 +6054,7 @@ assert.equal(
 );
 assert.ok(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
-    .includes('random_large_project_cold_path_more_distinct_sources_required'),
-);
-assert.ok(
-  randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
-    .includes('random_large_project_cold_path_more_distinct_source_content_required'),
+    .includes('qualifying_direct_random_large_project_cold_path_required'),
 );
 const randomColdRuntimeClosure = randomColdCoverage.get('large_arbitrary_project_runtime_closure');
 assert.equal(randomColdRuntimeClosure?.status, 'refused');
@@ -9055,11 +9085,27 @@ const oidnDenoisedBytes = Buffer.from([1, 3, 5, 7, 9, 11, 13, 15]);
 const oidnNoisyPath = path.join(oidnOutputDir, 'noisy.bin');
 const oidnDenoisedPath = path.join(oidnOutputDir, 'denoised.bin');
 const oidnExpectedPath = path.join(oidnOutputDir, 'expected.bin');
+const oidnReadbackSchemaPath = path.join(oidnOutputDir, 'denoised.schema.json');
+const oidnRenderedCardPath = path.join(oidnOutputDir, 'denoised-card.png');
 await fs.writeFile(oidnNoisyPath, oidnNoisyBytes);
 await fs.writeFile(oidnDenoisedPath, oidnDenoisedBytes);
 await fs.writeFile(oidnExpectedPath, oidnDenoisedBytes);
 const oidnNoisyHash = `sha256:${sha256BufferHex(oidnNoisyBytes)}`;
 const oidnDenoisedHash = `sha256:${sha256BufferHex(oidnDenoisedBytes)}`;
+await writeJson(oidnReadbackSchemaPath, {
+  schemaVersion: 'synthi.gpu.hmr.compute_readback_schema.v1',
+  elementType: 'u8',
+  byteLength: oidnDenoisedBytes.length,
+  shape: [oidnDenoisedBytes.length],
+  rawReadbackHash: oidnDenoisedHash,
+  raw_readback_hash: oidnDenoisedHash,
+});
+await writeRgbaPng(oidnRenderedCardPath, 4, 4, (x, y) => [
+  oidnDenoisedBytes[(x + y) % oidnDenoisedBytes.length],
+  80 + x * 8,
+  120 + y * 8,
+  255,
+]);
 const oidnOutputOracleCommandHash = `sha256:${sha256BufferHex(Buffer.from('oidn-output-oracle-command'))}`;
 const oidnOutputManifest = {
   schemaVersion: 'synthi.gpu_hmr.oidn_output_oracle.v1',
@@ -9218,7 +9264,7 @@ const oidnRuntimeBridgeComputeOracleArtifacts = buildComputeOracleArtifactsFromB
   rawReadbackHash: oidnDenoisedHash,
   checksumBefore: oidnNoisyHash,
   checksumAfter: oidnDenoisedHash,
-  deterministicSliceHash: hashValue('oidn-runtime-boundary-deterministic-slice'),
+  deterministicSliceHash: oidnDenoisedHash,
   rawReadbackByteLength: oidnDenoisedBytes.length,
   sliceOffset: 0,
   sliceLength: oidnDenoisedBytes.length,
@@ -9231,6 +9277,12 @@ const oidnRuntimeBridgeComputeOracleArtifacts = buildComputeOracleArtifactsFromB
   expectedOutputChange: true,
   evidenceRefs: ['oidn-runtime-boundary:compute-oracle-bytes'],
 });
+oidnRuntimeBridgeComputeOracleArtifacts.raw_readback_bin = oidnDenoisedPath;
+oidnRuntimeBridgeComputeOracleArtifacts.rawReadbackBin = oidnDenoisedPath;
+oidnRuntimeBridgeComputeOracleArtifacts.readback_schema_json = oidnReadbackSchemaPath;
+oidnRuntimeBridgeComputeOracleArtifacts.readbackSchemaJson = oidnReadbackSchemaPath;
+oidnRuntimeBridgeComputeOracleArtifacts.rendered_card_png = oidnRenderedCardPath;
+oidnRuntimeBridgeComputeOracleArtifacts.renderedCardPng = oidnRenderedCardPath;
 const oidnRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
   backend: 'hip',
   projectId: 'generic-oidn-runtime-boundary-project',
@@ -9249,6 +9301,8 @@ const oidnRuntimeBoundaryRunModeProof = buildRuntimeBoundaryRunModeProof({
   contractHash: hashValue('oidn-runtime-boundary-contract'),
   runtimeBoundaryEvents: oidnRuntimeBoundaryEvents,
   computeOracleArtifacts: oidnRuntimeBridgeComputeOracleArtifacts,
+  allowedArtifactRoots: [artifactsRoot],
+  computeArtifactPathBaseRoots: [artifactsRoot],
   metricScope: 'hot_delta_1',
   cacheState: 'compiler_cache_warm',
 });
@@ -13928,12 +13982,17 @@ assert.equal(strictComputeMissingReadback.matrixOutcome, 'unproven');
 assert.equal(strictComputeMissingReadback.acceptedForGpuHmr, false);
 assert.equal(strictComputeMissingReadback.gpuHmrSuccess, false);
 assert.equal(strictComputeMissingReadback.ledger.gpuHmrSuccess, true);
-assert.equal(strictComputeMissingReadback.runtimeProofArtifact.accepted, true);
+assert.equal(strictComputeMissingReadback.runtimeProofArtifact.accepted, false);
+assert.ok(strictComputeMissingReadback.runtimeProofArtifact.failedGates.some((gate) =>
+  gate.code === 'compute_oracle_raw_readback_bytes_unreadable'
+));
 assert.equal(strictComputeMissingReadback.outputOracleFacet.kind, 'compute_oracle');
 assert.equal(strictComputeMissingReadback.outputOracleFacet.accepted, false);
 assert.equal(strictComputeMissingReadback.outputOracleFacet.compute.present, true);
 assert.equal(strictComputeMissingReadback.outputOracleFacet.compute.rawReadbackHashVerified, false);
 assert.ok(strictComputeMissingReadback.outputOracleFacet.compute.rawReadbackReadError);
+assert.ok(strictComputeMissingReadback.reasons.includes('runtime_proof_artifact_not_strictly_accepted'));
+assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_raw_readback_bytes_unreadable'));
 assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_files_not_accepted'));
 assert.ok(strictComputeMissingReadback.reasons.includes('compute_oracle_raw_readback_hash_unverified'));
 assert.ok(strictComputeMissingReadback.openGaps.includes('compute_oracle_raw_readback_unreadable'));
