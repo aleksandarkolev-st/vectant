@@ -62,16 +62,19 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
     };
 
     return (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="w-[380px] rounded-xl border shadow-none p-4" style={{ background: 'var(--bg-elevated, #18181b)', borderColor: 'var(--border-medium, #3f3f46)' }}>
+        <div
+            className="fixed inset-0 z-[80] flex items-center justify-center"
+            style={{ background: 'color-mix(in srgb, var(--bg-app) 76%, transparent)' }}
+        >
+            <div className="vt-dialog-surface w-[380px] p-4">
                 <div className="flex items-start gap-2.5 mb-3">
                     <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent-warning)' }} />
                     <div>
-                        <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
-                            Uncommitted Changes
+                        <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                            Uncommitted changes
                         </h3>
-                        <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-                            You have local changes that would be overwritten by switching to <strong className="font-mono text-[11px]" style={{ color: 'var(--text-primary, #e4e4e7)' }}>{branch}</strong>.
+                        <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                            You have local changes that would be overwritten by switching to <strong className="font-mono text-[11px]" style={{ color: 'var(--text-primary)' }}>{branch}</strong>.
                             Choose how to proceed:
                         </p>
                     </div>
@@ -89,7 +92,7 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
                         }}
                     >
                         <Archive className="w-3.5 h-3.5" />
-                        Stash &amp; Checkout
+                        Stash and checkout
                         <span className="ml-auto text-[10px] opacity-60">saves your changes</span>
                     </button>
                     <button
@@ -103,7 +106,7 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
                         }}
                     >
                         <Trash2 className="w-3.5 h-3.5" />
-                        Force Checkout
+                        Force checkout
                         <span className="ml-auto text-[10px] opacity-60">discards changes</span>
                     </button>
                 </div>
@@ -111,8 +114,8 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
                 <button
                     onClick={onClose}
                     disabled={busy}
-                    className="w-full py-1.5 rounded-lg text-xs font-medium transition-colors border"
-                    style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+                    className="th-focus-ring th-btn-ghost w-full py-1.5 rounded-lg text-xs font-medium transition-colors border"
+                    style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
                 >
                     Cancel
                 </button>

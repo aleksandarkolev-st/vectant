@@ -1416,6 +1416,11 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 30%, transparent);
 }
 
+.vt-danger-icon-hover:hover {
+  color: var(--accent-danger) !important;
+  background: color-mix(in srgb, var(--accent-danger) 18%, transparent) !important;
+}
+
 .vt-state-pill {
   display: inline-flex;
   align-items: center;

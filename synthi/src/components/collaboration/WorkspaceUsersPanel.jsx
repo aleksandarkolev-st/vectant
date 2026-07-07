@@ -230,7 +230,7 @@ export default function WorkspaceUsersPanel({ slug }) {
     return (
       <div className="flex items-center justify-center py-4 gap-2">
         <Loader2 className="w-4 h-4 animate-spin" style={{ color: T.teal }} />
-        <span className="text-xs" style={{ color: T.textMuted }}>Loading…</span>
+        <span className="text-xs" style={{ color: T.textMuted }}>Loading...</span>
       </div>
     );
   }

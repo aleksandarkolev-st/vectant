@@ -395,7 +395,8 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
             )}
             {/* Close button - appears on hover, safe position */}
             <button 
-              className="ml-0.5 w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/18 hover:text-[#ef4444] transition-all"
+              className="vt-danger-icon-hover ml-0.5 w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 transition-all"
+              style={{ color: 'var(--text-muted)' }}
               onClick={(e) => { e.stopPropagation(); closeById(t.id); }}
               title="Close Terminal"
             >
@@ -437,8 +438,9 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
           <SplitSquareHorizontal className="w-3.5 h-3.5" strokeWidth={2} />
         </button>
         <div className="w-px h-5 mx-1" style={{ background: 'var(--border-subtle)' }}></div>
-        <button 
-          className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-colors" 
+        <button
+          className="vt-danger-icon-hover w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors"
+          style={{ color: 'var(--text-secondary)' }}
           onClick={handleCloseAll} 
           title="Close Terminal Panel"
         >

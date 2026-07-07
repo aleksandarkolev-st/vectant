@@ -651,7 +651,7 @@ export function PRDetail({ slug, onBack }) {
               <span className="truncate text-xs font-medium text-[var(--text-primary)]">{pr.title}</span>
             </div>
           ) : (
-            <span className="text-xs text-[var(--text-muted)]">Loading…</span>
+            <span className="text-xs text-[var(--text-muted)]">Loading...</span>
           )}
 
           <div className="flex items-center gap-1 flex-shrink-0 ml-auto">
@@ -696,7 +696,7 @@ export function PRDetail({ slug, onBack }) {
       <div className="flex-1 min-h-0 overflow-y-auto">
         {prDetailLoading && !pr && (
           <div className="flex h-24 items-center justify-center text-xs text-[var(--text-muted)]">
-            <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
+            <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading...
           </div>
         )}
 
