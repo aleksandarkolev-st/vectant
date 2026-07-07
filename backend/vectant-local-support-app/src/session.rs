@@ -135,6 +135,9 @@ impl SessionGuard {
         if !constant_time_eq(token.as_bytes(), self.token.as_bytes()) {
             return Err(SessionError::BadToken);
         }
+        if !safe_request_id(request_id) {
+            return Err(SessionError::InvalidRequestId);
+        }
         if self.paused && !allow_paused {
             return Err(SessionError::Paused);
         }
@@ -165,6 +168,7 @@ pub enum SessionError {
     Expired,
     Paused,
     Replay,
+    InvalidRequestId,
 }
 
 fn fingerprint(token: &str) -> String {
@@ -178,4 +182,12 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn safe_request_id(value: &str) -> bool {
+    value.len() >= 3
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'))
 }

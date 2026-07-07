@@ -440,6 +440,26 @@ fn session_rejects_bad_token_replay_and_pause() {
 }
 
 #[test]
+fn session_rejects_unsafe_request_ids_before_replay_tracking() {
+    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let token = session.token_for_pairing_response().to_string();
+
+    assert_eq!(
+        session.validate("wrong", "req_bad\nheader"),
+        Err(SessionError::BadToken)
+    );
+    assert_eq!(
+        session.validate(&token, "req_bad\nheader"),
+        Err(SessionError::InvalidRequestId)
+    );
+    assert_eq!(
+        session.validate_control(&token, &"r".repeat(129)),
+        Err(SessionError::InvalidRequestId)
+    );
+    assert!(session.validate(&token, "req_after_bad_id").is_ok());
+}
+
+#[test]
 fn session_control_can_resume_from_paused_state() {
     let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
     let token = session.token_for_pairing_response().to_string();
