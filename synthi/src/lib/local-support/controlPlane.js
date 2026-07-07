@@ -353,6 +353,7 @@ export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy
   const targetHash = targetDisplay
     ? `sha256:${createHash("sha256").update(targetDisplay).digest("hex")}`
     : null;
+  const redactionCount = clampNumber(input.redaction_count, 0, 1_000, 0);
 
   return {
     decision: "relay_ready",
@@ -373,6 +374,8 @@ export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy
     target_display: targetDisplay,
     target_hash: targetHash,
     target_classification: scrubTelemetryValue(input.target_classification || "unknown"),
+    redaction_count: redactionCount,
+    scanner_version: scrubTelemetryValue(input.scanner_version || "pending_local_scan"),
     policy_version: policy.policy_version,
     protocol_version: policy.protocol_version,
     app_version: scrubTelemetryValue(input.app_version),

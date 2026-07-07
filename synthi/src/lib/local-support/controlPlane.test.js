@@ -392,6 +392,8 @@ describe("local support control plane policy", () => {
         capability: "workspace.log.read",
         target_display: "server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
         target_classification: "L3",
+        redaction_count: 2,
+        scanner_version: "scanner-2026.07.05",
       }),
       policy,
     );
@@ -409,11 +411,26 @@ describe("local support control plane policy", () => {
       device_fingerprint: "dev_fp_123",
       capability: "workspace.log.read",
       target_classification: "L3",
+      redaction_count: 2,
+      scanner_version: "scanner-2026.07.05",
       control_plane_log_class: "local_support.control",
       data_plane_log_class: "local_support.data",
     });
     expect(decision.target_hash).toMatch(/^sha256:/);
     expect(decision.target_display).toContain("authorization: [REDACTED]");
     expect(JSON.stringify(decision)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+
+    const clamped = buildRelayForwardDecision(envelope({
+      actor: "support_agent",
+      capability: "workspace.log.read",
+      redaction_count: 50_000,
+      scanner_version: "scanner Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+    }), policy);
+    expect(clamped).toMatchObject({
+      decision: "relay_ready",
+      redaction_count: 1000,
+    });
+    expect(clamped.scanner_version).toContain("authorization: [REDACTED]");
+    expect(JSON.stringify(clamped)).not.toContain("abcdefghijklmnopqrstuvwxyz");
   });
 });

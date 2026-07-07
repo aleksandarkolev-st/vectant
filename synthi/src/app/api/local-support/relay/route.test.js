@@ -24,6 +24,8 @@ function envelope(overrides = {}) {
     actor: "support_agent",
     target_display: "server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
     target_classification: "L3",
+    redaction_count: 2,
+    scanner_version: "scanner-2026.07.05",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
     app_version: "0.1.0",
     protocol_version: "local-support-mvp.1",
@@ -208,6 +210,8 @@ describe("local support relay route", () => {
       account_id: "acct_relay_123",
       org_id: "org_relay_123",
       device_fingerprint: "dev_fp_relay_123",
+      redaction_count: 2,
+      scanner_version: "scanner-2026.07.05",
     });
     expect(json.target_hash).toMatch(/^sha256:/);
     expect(json.target_display).toContain("authorization: [REDACTED]");
