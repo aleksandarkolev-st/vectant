@@ -24,8 +24,8 @@ function relativeTime(iso) {
 }
 
 const HEALTH_ICON = {
-  ok: { Icon: CheckCircle2, color: 'var(--accent-success, #4ade80)' },
-  error: { Icon: XCircle, color: 'var(--accent-danger, #ff5757)' },
+  ok: { Icon: CheckCircle2, color: 'var(--accent-success)' },
+  error: { Icon: XCircle, color: 'var(--accent-danger)' },
 };
 
 function HealthDot({ state }) {
@@ -157,13 +157,39 @@ export default function ConnectedToolsPanel() {
               {tools.length > 0 && (
                 <div className="px-2.5 pb-2 flex flex-col gap-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
                   <div className="text-[10px] uppercase tracking-wider pt-2" style={{ color: 'var(--text-muted)' }}>
-                    Tools the AI may use
+                    Tool permissions
                   </div>
                   {tools.map((t) => (
-                    <label key={t.name} className="flex items-center gap-2 text-xs cursor-pointer">
-                      <input type="checkbox" checked={allow.has(t.name)} onChange={() => onToggleTool(conn, t.name)} />
-                      <span className="font-mono">{t.name}</span>
-                    </label>
+                    <button
+                      key={t.name}
+                      type="button"
+                      role="checkbox"
+                      aria-checked={allow.has(t.name)}
+                      onClick={() => onToggleTool(conn, t.name)}
+                      className="th-focus-ring grid min-h-8 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-xs"
+                      style={{
+                        borderColor: allow.has(t.name)
+                          ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                          : 'var(--border-subtle)',
+                        background: allow.has(t.name)
+                          ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                          : 'color-mix(in srgb, var(--bg-editor) 56%, transparent)',
+                      }}
+                    >
+                      <span
+                        className="grid h-4 w-4 place-items-center rounded border"
+                        style={{
+                          borderColor: allow.has(t.name) ? 'var(--accent-primary)' : 'var(--border-medium)',
+                          color: 'var(--accent-primary)',
+                        }}
+                      >
+                        {allow.has(t.name) ? <CheckCircle2 className="h-3 w-3" /> : null}
+                      </span>
+                      <span className="truncate font-mono">{t.name}</span>
+                      <span className="text-[10px]" style={{ color: allow.has(t.name) ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
+                        {allow.has(t.name) ? 'allowed' : 'blocked'}
+                      </span>
+                    </button>
                   ))}
                 </div>
               )}

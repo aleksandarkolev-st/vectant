@@ -2,6 +2,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { GitBranch, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
 import { fetchGitProviders, addGitProviderPat, deleteGitProvider, startGitOAuth } from './integrationsClient';
 
@@ -31,10 +38,19 @@ export default function GitProvidersSection() {
         <Button variant="ghost" size="sm" onClick={() => startGitOAuth('github')}>Connect GitHub (OAuth)</Button>
       </div>
       <div className="px-2.5 pb-2 flex flex-wrap items-center gap-1.5">
-        <select value={form.providerType} onChange={(e) => setForm({ ...form, providerType: e.target.value })}
-          className="th-input rounded-[var(--radius-control)] border px-1.5 py-1 text-xs">
-          <option value="gitlab">GitLab</option><option value="github">GitHub</option><option value="generic">Generic</option>
-        </select>
+        <Select
+          value={form.providerType}
+          onValueChange={(value) => setForm({ ...form, providerType: value })}
+        >
+          <SelectTrigger className="h-8 w-[108px] px-2 py-1 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="gitlab">GitLab</SelectItem>
+            <SelectItem value="github">GitHub</SelectItem>
+            <SelectItem value="generic">Generic</SelectItem>
+          </SelectContent>
+        </Select>
         <input placeholder="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
           className="th-input w-24 rounded-[var(--radius-control)] border px-2 py-1 text-xs" />
         <input placeholder="base URL (self-hosted)" value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
