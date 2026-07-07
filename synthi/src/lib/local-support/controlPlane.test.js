@@ -26,8 +26,8 @@ function envelope(overrides = {}) {
     account_id: "acct_123",
     org_id: "org_123",
     workspace_id: "wk_123",
-    device_fingerprint: "dev_fp_123",
-    device_proof: "sha256:device-proof",
+    device_fingerprint: "sha256:1111111111111111",
+    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "workspace.file.source.read",
     actor: "vectant_ai",
     expires_at: future(),
@@ -69,7 +69,7 @@ describe("local support control plane policy", () => {
       VECTANT_LOCAL_SUPPORT_ENABLED: "true",
       VECTANT_LOCAL_SUPPORT_ACCOUNT_ID: "acct_123",
       VECTANT_LOCAL_SUPPORT_ORG_ID: "org_123",
-      VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT: "dev_fp_123",
+      VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT: "sha256:1111111111111111",
     });
 
     expect(validateRequestEnvelope(envelope({ account_id: "acct_other" }), policy)).toMatchObject({
@@ -82,9 +82,19 @@ describe("local support control plane policy", () => {
       reason: "org_mismatch",
       bytes_sent: 0,
     });
-    expect(validateRequestEnvelope(envelope({ device_fingerprint: "dev_fp_other" }), policy)).toMatchObject({
+    expect(validateRequestEnvelope(envelope({ device_fingerprint: "sha256:2222222222222222" }), policy)).toMatchObject({
       decision: "denied",
       reason: "device_mismatch",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ device_fingerprint: "device-not-valid" }), { ...policy, device_fingerprint: null })).toMatchObject({
+      decision: "denied",
+      reason: "device_fingerprint_invalid",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ device_proof: "sha256:not-hex" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "device_proof_invalid",
       bytes_sent: 0,
     });
     expect(validateRequestEnvelope(envelope({ protocol_version: "local-support-old" }), policy)).toMatchObject({
@@ -408,7 +418,7 @@ describe("local support control plane policy", () => {
       actor: "support_agent",
       account_id: "acct_123",
       org_id: "org_123",
-      device_fingerprint: "dev_fp_123",
+      device_fingerprint: "sha256:1111111111111111",
       capability: "workspace.log.read",
       target_classification: "L3",
       redaction_count: 2,

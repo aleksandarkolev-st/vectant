@@ -266,6 +266,12 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   if (policy.device_fingerprint && request.device_fingerprint !== policy.device_fingerprint) {
     return deny("device_mismatch", "This support request is not for the paired local device.");
   }
+  if (!isSha256Hex(request.device_fingerprint, 16)) {
+    return deny("device_fingerprint_invalid", "The device fingerprint was not accepted.");
+  }
+  if (!isSha256Hex(request.device_proof, 64)) {
+    return deny("device_proof_invalid", "The device proof was not accepted.");
+  }
   if (request.protocol_version !== policy.protocol_version) {
     return deny("protocol_version_mismatch", "This support request uses a stale local-support protocol.");
   }
@@ -536,6 +542,13 @@ function buildSecurityEventDedupeKey(eventType, sessionId, targetDisplay) {
     targetDisplay || "no-target",
   ].join("\0");
   return `sha256:${createHash("sha256").update(basis).digest("hex")}`;
+}
+
+function isSha256Hex(value, hexLength) {
+  const digest = typeof value === "string" && value.startsWith("sha256:")
+    ? value.slice("sha256:".length)
+    : "";
+  return digest.length === hexLength && /^[0-9a-f]+$/i.test(digest);
 }
 
 function scrubTelemetryValue(value) {

@@ -18,8 +18,8 @@ function envelope(overrides = {}) {
     account_id: "acct_relay_123",
     org_id: "org_relay_123",
     workspace_id: "wk_relay_123",
-    device_fingerprint: "dev_fp_relay_123",
-    device_proof: "sha256:device-proof",
+    device_fingerprint: "sha256:3333333333333333",
+    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "workspace.log.read",
     actor: "support_agent",
     target_display: "server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
@@ -124,7 +124,7 @@ describe("local support relay route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
     process.env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID = "acct_relay_123";
     process.env.VECTANT_LOCAL_SUPPORT_ORG_ID = "org_relay_123";
-    process.env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT = "dev_fp_relay_123";
+    process.env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT = "sha256:3333333333333333";
 
     const wrongAccount = await POST(request(signedEnvelope({ account_id: "acct_attacker" })));
     expect(wrongAccount.status).toBe(403);
@@ -149,7 +149,7 @@ describe("local support relay route", () => {
 
     const wrongDevice = await POST(request(signedEnvelope({
       request_id: "req_relay_wrong_device",
-      device_fingerprint: "dev_fp_attacker",
+      device_fingerprint: "sha256:4444444444444444",
     })));
     expect(wrongDevice.status).toBe(403);
     await expect(wrongDevice.json()).resolves.toMatchObject({
@@ -209,7 +209,7 @@ describe("local support relay route", () => {
       data_plane_log_class: "local_support.data",
       account_id: "acct_relay_123",
       org_id: "org_relay_123",
-      device_fingerprint: "dev_fp_relay_123",
+      device_fingerprint: "sha256:3333333333333333",
       redaction_count: 2,
       scanner_version: "scanner-2026.07.05",
     });
