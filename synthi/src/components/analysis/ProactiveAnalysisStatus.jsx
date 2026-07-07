@@ -25,6 +25,24 @@ import {
 import { cn } from '@/lib/utils';
 import { useProactiveAnalysisContext } from './ProactiveAnalysisProvider';
 
+const tone = {
+  success: 'var(--accent-success)',
+  warning: 'var(--accent-warning)',
+  danger: 'var(--accent-danger)',
+  info: 'var(--accent-secondary)',
+  muted: 'var(--text-muted)',
+  ai: 'var(--attention-purple)',
+};
+
+function softStyle(color, extra = {}) {
+  return {
+    borderColor: `color-mix(in srgb, ${color} 28%, transparent)`,
+    background: `color-mix(in srgb, ${color} 8%, transparent)`,
+    color,
+    ...extra,
+  };
+}
+
 /**
  * Compact status badge for status bar
  */
@@ -47,29 +65,29 @@ export function ProactiveAnalysisStatusBadge({
   
   // Determine icon and color based on state
   let Icon = CheckCircle2;
-  let iconClass = 'text-emerald-400';
-  let bgClass = 'bg-emerald-500/10';
+  let iconColor = tone.success;
+  let stateColor = tone.success;
   
   if (!enabled) {
     Icon = Zap;
-    iconClass = 'text-gray-500';
-    bgClass = 'bg-gray-500/10';
+    iconColor = tone.muted;
+    stateColor = tone.muted;
   } else if (!isConnected) {
     Icon = CloudOff;
-    iconClass = 'text-gray-500';
-    bgClass = 'bg-gray-500/10';
+    iconColor = tone.muted;
+    stateColor = tone.muted;
   } else if (isAnalyzing) {
     Icon = Loader2;
-    iconClass = 'text-blue-400 animate-spin';
-    bgClass = 'bg-blue-500/10';
+    iconColor = tone.info;
+    stateColor = tone.info;
   } else if (hasErrors) {
     Icon = AlertCircle;
-    iconClass = 'text-red-400';
-    bgClass = 'bg-red-500/10';
+    iconColor = tone.danger;
+    stateColor = tone.danger;
   } else if (hasWarnings) {
     Icon = AlertTriangle;
-    iconClass = 'text-amber-400';
-    bgClass = 'bg-amber-500/10';
+    iconColor = tone.warning;
+    stateColor = tone.warning;
   }
   
   // Check if AI tier is active
@@ -79,20 +97,16 @@ export function ProactiveAnalysisStatusBadge({
     <button
       onClick={onClick}
       className={cn(
-        'flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors',
-        'hover:bg-[#2a2a2a]',
-        bgClass,
+        'th-focus-ring flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
         className,
       )}
+      style={softStyle(stateColor)}
       title={enabled ? 'Proactive Analysis' : 'Proactive Analysis (Disabled)'}
     >
-      <Icon className={cn('h-3.5 w-3.5', iconClass)} />
+      <Icon className={cn('h-3.5 w-3.5', isAnalyzing && 'animate-spin')} style={{ color: iconColor }} />
       
       {showLabel && (
-        <span className={cn(
-          'text-gray-400',
-          !enabled && 'text-gray-600',
-        )}>
+        <span style={{ color: enabled ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
           {!enabled ? 'Off' : isAnalyzing ? 'Analyzing' : 'Analysis'}
         </span>
       )}
@@ -101,20 +115,20 @@ export function ProactiveAnalysisStatusBadge({
       {enabled && !isAnalyzing && (hasErrors || hasWarnings) && (
         <span className="flex items-center gap-1">
           {hasErrors && (
-            <span className="text-red-400 font-medium">{summary.errors}</span>
+            <span className="font-medium" style={{ color: tone.danger }}>{summary.errors}</span>
           )}
           {hasErrors && hasWarnings && (
-            <span className="text-gray-600">/</span>
+            <span style={{ color: 'var(--text-muted)' }}>/</span>
           )}
           {hasWarnings && (
-            <span className="text-amber-400 font-medium">{summary.warnings}</span>
+            <span className="font-medium" style={{ color: tone.warning }}>{summary.warnings}</span>
           )}
         </span>
       )}
       
       {/* AI indicator */}
       {aiActive && (
-        <Sparkles className="h-3 w-3 text-purple-400 animate-pulse" />
+        <Sparkles className="h-3 w-3 animate-pulse" style={{ color: tone.ai }} />
       )}
     </button>
   );
@@ -165,14 +179,18 @@ export function ProactiveAnalysisStatusFloat({
       <button
         onClick={() => setEnabled(true)}
         className={cn(
-          'fixed z-50 p-2 rounded-full bg-[#0D0E14] border border-[#2a2a2a]',
-          'shadow-lg hover:bg-[#252525] transition-colors',
+          'th-focus-ring fixed z-50 rounded-full border p-2 transition-colors',
           positionClass,
           className,
         )}
+        style={{
+          borderColor: 'var(--border-medium)',
+          background: 'color-mix(in srgb, var(--bg-panel) 84%, transparent)',
+          color: tone.muted,
+        }}
         title="Enable Proactive Analysis"
       >
-        <Zap className="h-4 w-4 text-gray-500" />
+        <Zap className="h-4 w-4" />
       </button>
     );
   }
@@ -182,28 +200,25 @@ export function ProactiveAnalysisStatusFloat({
       {/* Expanded panel */}
       {isExpanded && (
         <div className={cn(
-          'mb-2 p-3 rounded-lg bg-[#0D0E14] border border-[#2a2a2a]',
-          'shadow-xl min-w-[200px]',
+          'vt-dialog-surface mb-2 min-w-[220px] p-3',
         )}>
           {/* Header */}
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+            <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
               Analysis Status
             </span>
             <button
               onClick={() => setEnabled(false)}
-              className="text-xs text-gray-500 hover:text-gray-300"
+              className="text-xs transition-colors"
+              style={{ color: 'var(--text-muted)' }}
             >
               Disable
             </button>
           </div>
           
           {/* Connection status */}
-          <div className="flex items-center gap-2 text-xs text-gray-400 mb-2">
-            <span className={cn(
-              'w-2 h-2 rounded-full',
-              isConnected ? 'bg-emerald-500' : 'bg-red-500',
-            )} />
+          <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+            <span className="h-2 w-2 rounded-full" style={{ background: isConnected ? tone.success : tone.danger }} />
             {isConnected ? 'Connected' : 'Disconnected'}
           </div>
           
@@ -211,13 +226,16 @@ export function ProactiveAnalysisStatusFloat({
           <div className="space-y-1 mb-3">
             {Object.entries(tierStatus).map(([tier, status]) => (
               <div key={tier} className="flex items-center justify-between text-xs">
-                <span className="text-gray-400 capitalize">{tier}</span>
-                <span className={cn(
-                  status.status === 'completed' && 'text-emerald-400',
-                  status.status === 'running' && 'text-blue-400',
-                  status.status === 'error' && 'text-red-400',
-                  status.status === 'idle' && 'text-gray-600',
-                )}>
+                <span className="capitalize" style={{ color: 'var(--text-secondary)' }}>{tier}</span>
+                <span style={{
+                  color: status.status === 'completed'
+                    ? tone.success
+                    : status.status === 'running'
+                      ? tone.info
+                      : status.status === 'error'
+                        ? tone.danger
+                        : tone.muted,
+                }}>
                   {status.status}
                   {status.elapsed > 0 && ` (${Math.round(status.elapsed)}ms)`}
                 </span>
@@ -229,19 +247,19 @@ export function ProactiveAnalysisStatusFloat({
           {hasIssues && (
             <div className="flex items-center gap-2 text-xs mb-3">
               {summary.errors > 0 && (
-                <span className="flex items-center gap-1 text-red-400">
+                <span className="flex items-center gap-1" style={{ color: tone.danger }}>
                   <AlertCircle className="h-3 w-3" />
                   {summary.errors}
                 </span>
               )}
               {summary.warnings > 0 && (
-                <span className="flex items-center gap-1 text-amber-400">
+                <span className="flex items-center gap-1" style={{ color: tone.warning }}>
                   <AlertTriangle className="h-3 w-3" />
                   {summary.warnings}
                 </span>
               )}
               {summary.infos > 0 && (
-                <span className="text-gray-500">{summary.infos} info</span>
+                <span style={{ color: tone.muted }}>{summary.infos} info</span>
               )}
             </div>
           )}
@@ -251,7 +269,8 @@ export function ProactiveAnalysisStatusFloat({
             {onOpenProblems && hasIssues && (
               <button
                 onClick={onOpenProblems}
-                className="flex-1 px-2 py-1 rounded bg-[#252525] text-xs text-gray-300 hover:bg-[#2a2a2a]"
+                className="th-focus-ring flex-1 rounded-md border px-2 py-1 text-xs"
+                style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)', background: 'color-mix(in srgb, var(--bg-editor) 72%, transparent)' }}
               >
                 View Problems
               </button>
@@ -259,7 +278,8 @@ export function ProactiveAnalysisStatusFloat({
             <button
               onClick={handleRunAiAnalysis}
               disabled={isAnalyzing}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-purple-900/30 text-xs text-purple-300 hover:bg-purple-900/50 disabled:opacity-50"
+              className="th-focus-ring flex items-center gap-1 rounded-md border px-2 py-1 text-xs disabled:opacity-50"
+              style={softStyle(tone.ai)}
             >
               <Sparkles className="h-3 w-3" />
               AI
@@ -272,25 +292,29 @@ export function ProactiveAnalysisStatusFloat({
       <button
         onClick={handleToggle}
         className={cn(
-          'flex items-center gap-2 px-3 py-2 rounded-full',
-          'bg-[#0D0E14] border border-[#2a2a2a]',
-          'shadow-lg hover:bg-[#252525] transition-all',
-          isAnalyzing && 'border-blue-500/50',
-          hasIssues && summary.errors > 0 && 'border-red-500/50',
+          'th-focus-ring flex items-center gap-2 rounded-full border px-3 py-2 transition-colors',
         )}
+        style={{
+          borderColor: isAnalyzing
+            ? `color-mix(in srgb, ${tone.info} 44%, transparent)`
+            : hasIssues && summary.errors > 0
+              ? `color-mix(in srgb, ${tone.danger} 44%, transparent)`
+              : 'var(--border-medium)',
+          background: 'color-mix(in srgb, var(--bg-panel) 84%, transparent)',
+        }}
       >
         {isAnalyzing ? (
-          <Loader2 className="h-4 w-4 text-blue-400 animate-spin" />
+          <Loader2 className="h-4 w-4 animate-spin" style={{ color: tone.info }} />
         ) : summary.errors > 0 ? (
-          <AlertCircle className="h-4 w-4 text-red-400" />
+          <AlertCircle className="h-4 w-4" style={{ color: tone.danger }} />
         ) : summary.warnings > 0 ? (
-          <AlertTriangle className="h-4 w-4 text-amber-400" />
+          <AlertTriangle className="h-4 w-4" style={{ color: tone.warning }} />
         ) : (
-          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+          <CheckCircle2 className="h-4 w-4" style={{ color: tone.success }} />
         )}
         
         {hasIssues && (
-          <span className="text-xs text-gray-400">
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
             {summary.total}
           </span>
         )}
@@ -311,7 +335,7 @@ export function ProactiveAnalysisInlineStatus({ className }) {
   
   if (!enabled) {
     return (
-      <span className={cn('flex items-center gap-1 text-xs text-gray-600', className)}>
+      <span className={cn('flex items-center gap-1 text-xs', className)} style={{ color: tone.muted }}>
         <Zap className="h-3 w-3" />
         Analysis off
       </span>
@@ -320,7 +344,7 @@ export function ProactiveAnalysisInlineStatus({ className }) {
   
   if (isAnalyzing) {
     return (
-      <span className={cn('flex items-center gap-1 text-xs text-blue-400', className)}>
+      <span className={cn('flex items-center gap-1 text-xs', className)} style={{ color: tone.info }}>
         <Loader2 className="h-3 w-3 animate-spin" />
         Analyzing...
       </span>
@@ -329,7 +353,7 @@ export function ProactiveAnalysisInlineStatus({ className }) {
   
   if (summary.errors > 0) {
     return (
-      <span className={cn('flex items-center gap-1 text-xs text-red-400', className)}>
+      <span className={cn('flex items-center gap-1 text-xs', className)} style={{ color: tone.danger }}>
         <AlertCircle className="h-3 w-3" />
         {summary.errors} error{summary.errors > 1 ? 's' : ''}
       </span>
@@ -338,7 +362,7 @@ export function ProactiveAnalysisInlineStatus({ className }) {
   
   if (summary.warnings > 0) {
     return (
-      <span className={cn('flex items-center gap-1 text-xs text-amber-400', className)}>
+      <span className={cn('flex items-center gap-1 text-xs', className)} style={{ color: tone.warning }}>
         <AlertTriangle className="h-3 w-3" />
         {summary.warnings} warning{summary.warnings > 1 ? 's' : ''}
       </span>
@@ -346,7 +370,7 @@ export function ProactiveAnalysisInlineStatus({ className }) {
   }
   
   return (
-    <span className={cn('flex items-center gap-1 text-xs text-emerald-400', className)}>
+    <span className={cn('flex items-center gap-1 text-xs', className)} style={{ color: tone.success }}>
       <CheckCircle2 className="h-3 w-3" />
       No issues
     </span>

@@ -132,28 +132,37 @@ function Tile({ icon: Icon, label, description, onClick, disabled, highlight }) 
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="group flex flex-col items-start gap-2 rounded-lg border p-4 text-left transition-all duration-150 ease-out hover:-translate-y-0.5 hover:shadow-lg hover:scale-[1.015] active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100"
+      className="group flex min-h-[132px] flex-col items-start gap-2 rounded-md border p-4 text-left transition-colors duration-150 ease-out active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: highlight ? 'var(--accent-primary)' : 'var(--border-medium)',
-        background: 'var(--bg-secondary)',
+        background: highlight
+          ? 'color-mix(in srgb, var(--accent-primary) 9%, var(--bg-panel))'
+          : 'color-mix(in srgb, var(--bg-panel) 78%, var(--bg-editor) 22%)',
       }}
       onMouseEnter={(e) => {
         if (disabled) return;
         e.currentTarget.style.borderColor = 'var(--accent-primary)';
+        e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-primary) 7%, var(--bg-panel))';
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.borderColor = highlight
           ? 'var(--accent-primary)'
           : 'var(--border-medium)';
+        e.currentTarget.style.background = highlight
+          ? 'color-mix(in srgb, var(--accent-primary) 9%, var(--bg-panel))'
+          : 'color-mix(in srgb, var(--bg-panel) 78%, var(--bg-editor) 22%)';
       }}
     >
       <div
-        className="flex h-9 w-9 items-center justify-center rounded-md transition-colors duration-150 group-hover:bg-[color:var(--accent-primary)]/15"
-        style={{ background: 'var(--bg-tertiary)' }}
+        className="flex h-9 w-9 items-center justify-center rounded-md border transition-colors duration-150"
+        style={{
+          background: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)',
+          borderColor: 'color-mix(in srgb, var(--accent-primary) 24%, transparent)',
+        }}
       >
         {Icon ? (
           <Icon
-            className="h-5 w-5 transition-transform duration-150 group-hover:scale-110"
+            className="h-5 w-5"
             style={{ color: 'var(--accent-primary)' }}
           />
         ) : null}
@@ -336,7 +345,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               <button
                 type="button"
                 onClick={handleBack}
-                className="rounded p-1 hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="vt-icon-button th-focus-ring"
                 aria-label="Back"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -372,7 +381,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               <button
                 type="button"
                 onClick={handleBack}
-                className="rounded p-1 hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="vt-icon-button th-focus-ring"
                 aria-label="Back"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -423,7 +432,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               <button
                 type="button"
                 onClick={handleBack}
-                className="rounded p-1 hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="vt-icon-button th-focus-ring"
                 aria-label="Back"
               >
                 <ArrowLeft className="h-4 w-4" />

@@ -4,7 +4,7 @@
  * @fileoverview ThemeCreator
  *
  * Full-screen overlay for creating a brand-new user theme.
- * Opened from the ThemePicker via the "Create Your Own Theme" button.
+ * Opened from the ThemePicker via the custom theme action.
  *
  * Layout:
  *   ┌─────────────────────────────────────────────────────┐
@@ -570,10 +570,10 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
         >
           <Palette className="h-5 w-5" style={{ color: 'var(--accent-primary)' }} />
           <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {isEditing ? 'Edit Theme' : 'Create Your Own Theme'}
+            {isEditing ? 'Edit theme' : 'Custom theme'}
           </span>
 
-          {/* AI Generate button */}
+          {/* AI assistant button */}
           <button
             className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all ml-auto"
             style={{
@@ -586,7 +586,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
             onClick={() => setAiChatOpen((v) => !v)}
           >
             <Wand2 className="h-3.5 w-3.5" />
-            AI Generate
+            Assist
           </button>
 
           {/* Theme type toggle */}
@@ -884,7 +884,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
                     setNameError(null);
                   }
                 }}
-                placeholder="My Awesome Theme"
+                placeholder="Ops dark, Platform light, Incident review"
                 className="w-full px-2 py-1 text-xs rounded border outline-none transition-colors pr-7"
                 style={{
                   background: 'var(--bg-editor)',
@@ -921,7 +921,7 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
           )}
           {themeName.trim().length > 0 && !nameError && (
             <p className="text-[10px] mt-1 ml-[84px]" style={{ color: 'var(--accent-success)' }}>
-              Name approved by content filter
+              Name is valid
             </p>
           )}
         </div>
@@ -1053,10 +1053,10 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
               <div className="flex flex-col items-center justify-center h-full gap-2 py-8">
                 <Sparkles className="h-8 w-8" style={{ color: 'var(--border-focus)' }} />
                 <p className="text-[11px] text-center leading-relaxed px-4" style={{ color: 'var(--text-muted)' }}>
-                  Describe your ideal theme and the AI will generate all the colours for you.
+                  Describe a production interface mood or operational context.
                 </p>
                 <div className="flex flex-wrap gap-1 mt-1 justify-center">
-                  {['Monokai inspired', 'Ocean breeze', 'Warm sunset', 'Minimal grayscale'].map((suggestion) => (
+                  {['Incident review dark', 'Platform console', 'Low-glare editor', 'Audit dashboard'].map((suggestion) => (
                     <button
                       key={suggestion}
                       className="text-[9px] px-2 py-0.5 rounded-full transition-colors"
