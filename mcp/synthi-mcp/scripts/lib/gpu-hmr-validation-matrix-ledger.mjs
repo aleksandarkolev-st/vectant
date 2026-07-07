@@ -264,6 +264,10 @@ const RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_large_project_cold_path_selection_audit.v1';
 const RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_AUTHORITY =
   'random_large_project_selection_audit_only_not_gpu_hmr_success';
+const RANDOM_LARGE_PROJECT_COLD_PATH_SAMPLE_POOL_COVERAGE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_large_project_cold_path_sample_pool_coverage_contract.v1';
+const RANDOM_LARGE_PROJECT_COLD_PATH_SAMPLE_POOL_COVERAGE_AUTHORITY =
+  'sample_pool_coverage_contract_only_not_gpu_hmr_success';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_direct_source_input.v1';
 const RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY =
@@ -4320,6 +4324,146 @@ function randomColdSourceIntakeTransportFallbackEvidenceFacet(input = {}, contex
   };
 }
 
+function randomColdSamplePoolCoverageContractFacet(facet = {}, context = {}) {
+  const raw = compactObject(facet);
+  if (Object.keys(raw).length === 0) {
+    return {
+      present: false,
+      accepted: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(raw.schemaVersion, raw.schema_version, raw.schema);
+  const proofAuthority = firstText(raw.proofAuthority, raw.proof_authority, raw.authority);
+  const acceptedForGpuHmr = firstBool(raw.acceptedForGpuHmr, raw.accepted_for_gpu_hmr);
+  const gpuHmrSuccess = firstBool(raw.gpuHmrSuccess, raw.gpu_hmr_success);
+  const canSatisfyRuntimeProof = firstBool(
+    raw.canSatisfyRuntimeProof,
+    raw.can_satisfy_runtime_proof,
+  );
+  const canSatisfyDispatchProof = firstBool(
+    raw.canSatisfyDispatchProof,
+    raw.can_satisfy_dispatch_proof,
+  );
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(raw.projectNameWhitelist) ? raw.projectNameWhitelist : []),
+    ...(Array.isArray(raw.project_name_whitelist) ? raw.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(raw.specificTargetIdsAllowed) ? raw.specificTargetIdsAllowed : []),
+    ...(Array.isArray(raw.specific_target_ids_allowed) ? raw.specific_target_ids_allowed : []),
+  ]);
+  const requiredBuckets = compactStringList(
+    Array.isArray(raw.requiredBuckets) ? raw.requiredBuckets : raw.required_buckets,
+  );
+  const availableBuckets = compactStringList(
+    Array.isArray(raw.availableBuckets) ? raw.availableBuckets : raw.available_buckets,
+  );
+  const selectedBuckets = compactStringList(
+    Array.isArray(raw.selectedBuckets) ? raw.selectedBuckets : raw.selected_buckets,
+  );
+  const missingRequiredBuckets = compactStringList(
+    Array.isArray(raw.missingRequiredBuckets)
+      ? raw.missingRequiredBuckets
+      : raw.missing_required_buckets,
+  );
+  const requestedCount = Math.max(
+    1,
+    finiteNumber(raw.requestedCount ?? raw.requested_count)
+      ?? finiteNumber(context.requestedCount ?? context.requested_count)
+      ?? 1,
+  );
+  const coverageHash = normalizeSha256(firstText(raw.coverageHash, raw.coverage_hash));
+  const recomputedCoverageHash = `sha256:${sha256Hex(stableJson({
+    requiredBuckets,
+    availableBuckets,
+    selectedBuckets,
+    requestedCount,
+    missingRequiredBuckets,
+  }))}`;
+  const coverageAcceptableForRequestedCount =
+    firstBool(raw.coverageAcceptableForRequestedCount, raw.coverage_acceptable_for_requested_count) === true;
+  const failedGates = compactStringList([
+    schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SAMPLE_POOL_COVERAGE_SCHEMA_VERSION
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_schema_invalid',
+    proofAuthority === RANDOM_LARGE_PROJECT_COLD_PATH_SAMPLE_POOL_COVERAGE_AUTHORITY
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_authority_invalid',
+    acceptedForGpuHmr === false
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_claimed_gpu_hmr_acceptance',
+    gpuHmrSuccess === false
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_claimed_gpu_hmr_success',
+    canSatisfyRuntimeProof === false
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_claimed_runtime_authority',
+    canSatisfyDispatchProof === false
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_claimed_dispatch_authority',
+    firstBool(raw.targetNameIndependent, raw.target_name_independent) === true
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_target_name_dependent',
+    projectNameWhitelist.length === 0
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_project_whitelist_present',
+    specificTargetIdsAllowed.length === 0
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_target_whitelist_present',
+    coverageAcceptableForRequestedCount
+      ? null
+      : 'random_large_project_cold_path_sample_pool_coverage_missing_required_bucket',
+    coverageHash ? null : 'random_large_project_cold_path_sample_pool_coverage_hash_missing',
+    coverageHash && coverageHash === recomputedCoverageHash
+      ? null
+      : coverageHash
+        ? 'random_large_project_cold_path_sample_pool_coverage_hash_mismatch'
+        : null,
+  ]);
+  return {
+    present: true,
+    accepted: failedGates.length === 0,
+    schemaVersion,
+    schema_version: schemaVersion,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: firstBool(raw.targetNameIndependent, raw.target_name_independent) === true,
+    target_name_independent: firstBool(raw.targetNameIndependent, raw.target_name_independent) === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    requiredBuckets,
+    required_buckets: requiredBuckets,
+    availableBuckets,
+    available_buckets: availableBuckets,
+    selectedBuckets,
+    selected_buckets: selectedBuckets,
+    missingRequiredBuckets,
+    missing_required_buckets: missingRequiredBuckets,
+    requestedCount,
+    requested_count: requestedCount,
+    coverageHash,
+    coverage_hash: coverageHash,
+    recomputedCoverageHash,
+    recomputed_coverage_hash: recomputedCoverageHash,
+    coverageAcceptableForRequestedCount,
+    coverage_acceptable_for_requested_count: coverageAcceptableForRequestedCount,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
   const raw = compactObject(facet);
   if (Object.keys(raw).length === 0) {
@@ -4377,6 +4521,10 @@ function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
     raw.samplePoolExplicitlyRequested,
     raw.sample_pool_explicitly_requested,
   );
+  const samplePoolCoverageContract = randomColdSamplePoolCoverageContractFacet(firstCompactObject(
+    raw.samplePoolCoverageContract,
+    raw.sample_pool_coverage_contract,
+  ), { requestedCount: selectedCount });
   const failedGates = compactStringList([
     schemaVersion === RANDOM_LARGE_PROJECT_COLD_PATH_SELECTION_AUDIT_SCHEMA_VERSION
       ? null
@@ -4427,6 +4575,12 @@ function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
     sourceMode === 'configured_sample_pool' && samplePoolExplicitlyRequested !== true
       ? 'random_large_project_cold_path_selection_audit_sample_pool_not_explicit'
       : null,
+    sourceMode === 'configured_sample_pool' && samplePoolCoverageContract.accepted !== true
+      ? 'random_large_project_cold_path_selection_audit_sample_pool_coverage_invalid'
+      : null,
+    ...(sourceMode === 'configured_sample_pool'
+      ? samplePoolCoverageContract.failedGates
+      : []),
   ]);
   return {
     present: true,
@@ -4467,6 +4621,8 @@ function randomColdPathSelectionAuditFacet(facet = {}, context = {}) {
     direct_user_source_count: directUserSourceCount ?? null,
     configuredPoolCount: finiteNumber(raw.configuredPoolCount ?? raw.configured_pool_count) ?? null,
     configured_pool_count: finiteNumber(raw.configuredPoolCount ?? raw.configured_pool_count) ?? null,
+    samplePoolCoverageContract,
+    sample_pool_coverage_contract: samplePoolCoverageContract,
     selectedCount: selectedCount ?? null,
     selected_count: selectedCount ?? null,
     resultCount: resultCount ?? null,
@@ -19427,21 +19583,23 @@ function rowSafetyFailures(row, context = {}) {
         coldTemplate,
         runtimeProfileBridge,
       });
+    const derivedRuntimeProfileContractFailedGates = compactStringList([
+      ...(Array.isArray(derivedRuntimeProfileContract.failedGates)
+        ? derivedRuntimeProfileContract.failedGates
+        : []),
+      ...(Array.isArray(derivedRuntimeProfileContract.failed_gates)
+        ? derivedRuntimeProfileContract.failed_gates
+        : []),
+    ]);
     if (
       derivedRuntimeProfileContract.present === true
       && derivedRuntimeProfileContract.accepted !== true
+      && derivedRuntimeProfileContractFailedGates.length > 0
     ) {
       failures.push({
         code: 'random_large_project_cold_derived_runtime_profile_contract_invalid',
       });
-      failures.push(...compactStringList([
-        ...(Array.isArray(derivedRuntimeProfileContract.failedGates)
-          ? derivedRuntimeProfileContract.failedGates
-          : []),
-        ...(Array.isArray(derivedRuntimeProfileContract.failed_gates)
-          ? derivedRuntimeProfileContract.failed_gates
-          : []),
-      ]).map((code) => ({ code })));
+      failures.push(...derivedRuntimeProfileContractFailedGates.map((code) => ({ code })));
     }
     if (
       derivedRuntimeProfileContract.present === true
@@ -19599,22 +19757,44 @@ function rowSafetyFailures(row, context = {}) {
         || code.endsWith('proof_hash_missing')
         || code.endsWith('proof_path_missing')
       );
+      const importClaimsRuntimeBoundaryClosure =
+        firstBool(
+          runtimeProfileAdapterResultImport.strictRuntimeProofAccepted,
+          runtimeProfileAdapterResultImport.strict_runtime_proof_accepted,
+        ) === true
+        || firstBool(
+          runtimeProfileAdapterResultImport.runtimeBoundaryProofAdapterAccepted,
+          runtimeProfileAdapterResultImport.runtime_boundary_proof_adapter_accepted,
+        ) === true
+        || (finiteNumber(
+          runtimeProfileAdapterResultImport.runtimeBoundaryLineCount
+          ?? runtimeProfileAdapterResultImport.runtime_boundary_line_count,
+        ) ?? 0) > 0
+        || (finiteNumber(
+          runtimeProfileAdapterResultImport.adapterRuntimeBoundaryLineCount
+          ?? runtimeProfileAdapterResultImport.adapter_runtime_boundary_line_count,
+        ) ?? 0) > 0;
       const importShapeFailed = importFailedGates.some((code) =>
         code.includes('schema')
         || code.includes('authority')
         || code.includes('claimed')
         || code.includes('outside_repo')
         || code.includes('hash_invalid')
-        || code.includes('hash_mismatch')
+        || (!importTransportOrByteMissing && code.includes('hash_mismatch'))
         || code.includes('line_hash_mismatch')
         || code.includes('strict_gate:')
         || code.includes('runtime_proof_artifact_not_strictly_accepted')
         || code.includes('strict_runtime_acceptance_mismatch')
-        || code.includes('proof_id_mismatch')
+        || (!importTransportOrByteMissing && code.includes('proof_id_mismatch'))
         || code.includes('ledger_id_mismatch')
-        || code.includes('event_manifest_hash_mismatch')
-        || code.includes('adapter_proof_acceptance_mismatch')
-        || (!importTransportOrByteMissing && code.includes('boundary_line_materialization'))
+        || (!importTransportOrByteMissing && code.includes('event_manifest_hash_mismatch'))
+        || (!importTransportOrByteMissing && code.includes('adapter_proof_acceptance_mismatch'))
+        || (!importTransportOrByteMissing && code.includes('adapter_proof_id_mismatch'))
+        || (
+          !importTransportOrByteMissing
+          && importClaimsRuntimeBoundaryClosure
+          && code.includes('boundary_line_materialization')
+        )
       );
       if (importSchema !== RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION) {
         failures.push({
@@ -19981,9 +20161,24 @@ function rowSafetyFailures(row, context = {}) {
     const runtimeBoundaryPlanBindingPresent =
       Object.keys(runtimeBoundaryPlanBindingRaw).length > 0
       || runtimeBoundaryPlanBinding.present === true;
+    const runtimeBoundaryPlanBindingShapeFailed = runtimeBoundaryPlanBindingFailedGates.some((code) =>
+      code.includes('schema')
+      || code.includes('authority')
+      || code.includes('claimed')
+      || code.includes('hash_invalid')
+      || code.includes('hash_mismatch')
+    );
     if (
       runtimeBoundaryPlanBindingPresent
       && runtimeBoundaryPlanBinding.accepted !== true
+      && (
+        firstBool(
+          runtimeProfileAdapterResultImport.accepted,
+          runtimeProfileAdapterResultImport.acceptedAsSupportEvidence,
+          runtimeProfileAdapterResultImport.accepted_as_support_evidence,
+        ) === true
+        || runtimeBoundaryPlanBindingShapeFailed
+      )
     ) {
       failures.push({ code: 'random_large_project_cold_runtime_boundary_plan_binding_invalid' });
       failures.push(...runtimeBoundaryPlanBindingFailedGates.map((code) => ({ code })));
@@ -34314,12 +34509,25 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && directInputEvidence.projectNameWhitelist.length === 0
       && directInputEvidence.specificTargetIdsAllowed.length === 0
       && directInputEvidence.sourceIdentityHashMatchesContext === true;
+    const samplePoolCoverageAccepted =
+      selectionAudit.sourceMode === 'configured_sample_pool'
+      && selectionAudit.samplePoolExplicitlyRequested === true
+      && selectionAudit.samplePoolCoverageContract?.accepted === true
+      && selectionAudit.samplePoolCoverageContract?.targetNameIndependent === true
+      && selectionAudit.samplePoolCoverageContract?.projectNameWhitelist?.length === 0
+      && selectionAudit.samplePoolCoverageContract?.specificTargetIdsAllowed?.length === 0;
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
       && localRepoPathOrigin.accepted === true
       && directSourceUrlOrigin.accepted === true
       && directInputModeProven
       && directInputEvidenceAccepted
+      && Boolean(immutableCommit)
+      && Boolean(sourceUrl || repoPath);
+    const configuredSamplePoolColdIntake =
+      profileMode === 'unprofiled_arbitrary_project_cold_intake'
+      && candidateSource === 'configured_candidate_pool'
+      && samplePoolCoverageAccepted
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
     const candidateBackendUsedForAcceptance = firstBool(
@@ -34467,7 +34675,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && finalizedActualAttempt
       && selectionAudit.present === true
       && selectionAudit.accepted === true
-      && arbitraryColdIntake
+      && (arbitraryColdIntake || configuredSamplePoolColdIntake)
       && sourceDerivedProjectEvidenceObserved
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
