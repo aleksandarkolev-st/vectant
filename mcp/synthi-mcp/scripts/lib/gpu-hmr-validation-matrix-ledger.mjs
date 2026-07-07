@@ -282,6 +282,8 @@ const RANDOM_COLD_SOURCE_LISTING_MANIFEST_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_source_listing_manifest.v1';
 const RANDOM_COLD_SOURCE_LISTING_MANIFEST_AUTHORITY =
   'source_listing_entries_only_not_gpu_hmr_success';
+const RANDOM_COLD_SOURCE_LISTING_MANIFEST_COMPLETENESS_AUTHORITY =
+  'producer_listing_completeness_only_not_gpu_hmr_success';
 const RANDOM_COLD_SOURCE_LISTING_ROW_PROJECTION_AUTHORITY =
   'matrix_verified_source_listing_projection_only_not_raw_source_listing';
 const RANDOM_COLD_SOURCE_INTAKE_ROW_PROJECTION_AUTHORITY =
@@ -2366,6 +2368,12 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
   );
   const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
   const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const listingComplete = firstBool(facet.listingComplete, facet.listing_complete);
+  const listingTruncated = firstBool(facet.listingTruncated, facet.listing_truncated);
+  const listingCompletenessAuthority = firstText(
+    facet.listingCompletenessAuthority,
+    facet.listing_completeness_authority,
+  );
   const listingIdentity = entries
     .map((entry) => {
       const identity = {
@@ -2424,6 +2432,15 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
       : null,
     present && proofAuthority !== RANDOM_COLD_SOURCE_LISTING_MANIFEST_AUTHORITY
       ? 'random_cold_source_listing_manifest_authority_invalid'
+      : null,
+    present && listingCompletenessAuthority !== RANDOM_COLD_SOURCE_LISTING_MANIFEST_COMPLETENESS_AUTHORITY
+      ? 'random_cold_source_listing_manifest_completeness_authority_invalid'
+      : null,
+    present && listingComplete !== true
+      ? 'random_cold_source_listing_manifest_completeness_missing_or_false'
+      : null,
+    present && listingTruncated === true
+      ? 'random_cold_source_listing_manifest_truncated'
       : null,
     present && entries.length === 0
       ? 'random_cold_source_listing_manifest_entries_missing'
@@ -2486,6 +2503,12 @@ function randomColdSourceListingManifestSummary(manifest = {}, sourceIntake = {}
     schema_version: schemaVersion ?? null,
     proofAuthority: proofAuthority ?? null,
     proof_authority: proofAuthority ?? null,
+    listingComplete,
+    listing_complete: listingComplete,
+    listingTruncated,
+    listing_truncated: listingTruncated,
+    listingCompletenessAuthority: listingCompletenessAuthority ?? null,
+    listing_completeness_authority: listingCompletenessAuthority ?? null,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
@@ -33347,6 +33370,9 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
     const sourceListingManifestAccepted =
       sourceListingManifest.acceptedAsSourceListingEvidence === true
       && sourceListingManifest.recomputedSourceListingHash === sourceListingManifest.sourceListingHash
+      && sourceListingManifest.listingComplete === true
+      && sourceListingManifest.listingTruncated !== true
+      && sourceListingManifest.listingCompletenessAuthority === RANDOM_COLD_SOURCE_LISTING_MANIFEST_COMPLETENESS_AUTHORITY
       && sourceListingManifest.acceptedForGpuHmr === false
       && sourceListingManifest.gpuHmrSuccess === false;
     const fileCount = sourceListingManifest.fileCount ?? 0;
@@ -34001,6 +34027,7 @@ export const GPU_HMR_VALIDATION_MATRIX_LEDGER_TEST_HOOKS = Object.freeze({
   largeRocmMlRandomColdNormalizedIdentityTerm,
   largeRocmMlRandomColdSemanticTextValues,
   largeRocmMlRandomColdTextSignals,
+  randomColdSourceListingManifestSummary,
   validationProfileEvidenceBindingFacet,
 });
 

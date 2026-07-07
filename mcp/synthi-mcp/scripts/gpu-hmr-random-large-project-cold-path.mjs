@@ -119,6 +119,7 @@ const RUNTIME_BOUNDARY_ADAPTER_INPUT_FIELD_ALIASES = Object.freeze({
 });
 const BUILD_METADATA_CONTENT_MAX_FILES = 12;
 const BUILD_METADATA_CONTENT_MAX_BYTES = 128 * 1024;
+const DEFAULT_SOURCE_LISTING_STDOUT_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_CONFIGURED_SAMPLE_POOL_COUNT = 5;
 const IDENTITY_SORT_SELECTION_ALGORITHM = 'sha256_seed_candidate_identity_sort_v1';
 const CLASS_BUCKET_SELECTION_ALGORITHM = 'sha256_seed_class_bucket_round_robin_v1';
@@ -1734,6 +1735,8 @@ function runProcess(command, args, options) {
     }
     let stdout = '';
     let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let timedOut = false;
     let timeoutKillAttempted = false;
     let settled = false;
@@ -1763,6 +1766,10 @@ function runProcess(command, args, options) {
       if (timeoutFinalizeTimer) clearTimeout(timeoutFinalizeTimer);
       resolve({
         ...payload,
+        stdoutTruncated,
+        stdout_truncated: stdoutTruncated,
+        stderrTruncated,
+        stderr_truncated: stderrTruncated,
         timedOut,
         timeoutMs: Number(timeoutMs) || 0,
         timeoutKillAttempted,
@@ -1773,12 +1780,16 @@ function runProcess(command, args, options) {
     };
     child.stdout?.on('data', (chunk) => {
       const text = String(chunk);
-      stdout = tail(stdout + text, stdoutMax);
+      const next = stdout + text;
+      stdoutTruncated = stdoutTruncated || Buffer.byteLength(next, 'utf8') > stdoutMax;
+      stdout = tail(next, stdoutMax);
       if (streamOutput) process.stdout.write(text);
     });
     child.stderr?.on('data', (chunk) => {
       const text = String(chunk);
-      stderr = tail(stderr + text, stderrMax);
+      const next = stderr + text;
+      stderrTruncated = stderrTruncated || Buffer.byteLength(next, 'utf8') > stderrMax;
+      stderr = tail(next, stderrMax);
       if (streamOutput) process.stderr.write(text);
     });
     child.on('error', (error) => {
@@ -1788,6 +1799,12 @@ function runProcess(command, args, options) {
       finish({ exitCode, signal, error: null, stdout, stderr });
     });
   });
+}
+
+function sourceListingStdoutMaxBytes() {
+  const raw = Number(process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return DEFAULT_SOURCE_LISTING_STDOUT_MAX_BYTES;
 }
 
 function sourceIntakePathForCandidate(candidate) {
@@ -4252,6 +4269,10 @@ async function fetchGitHubTreeListing(candidate, { sourceIntakeTimeoutMs }) {
       githubApiAuthentication: githubApi.authEvidence,
       github_api_authentication: githubApi.authEvidence,
       transport: 'github_git_tree_api_recursive',
+      listingComplete: true,
+      listing_complete: true,
+      listingTruncated: false,
+      listing_truncated: false,
       files,
       startedAt,
       started_at: startedAt,
@@ -4416,7 +4437,7 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
   const baseRunOptions = {
     cwd: REPO_ROOT,
     timeoutMs: Math.min(sourceIntakeTimeoutMs, 60000),
-    stdoutMax: 8 * 1024 * 1024,
+    stdoutMax: 64000,
     stderrMax: 64000,
     streamOutput: false,
   };
@@ -4495,7 +4516,10 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
     noSizeListing
       ? ['-C', resolvedTopLevel, 'ls-tree', '-r', '--full-tree', candidate.immutableCommit]
       : ['-C', resolvedTopLevel, 'ls-tree', '-r', '-l', '--full-tree', candidate.immutableCommit],
-    baseRunOptions,
+    {
+      ...baseRunOptions,
+      stdoutMax: sourceListingStdoutMaxBytes(),
+    },
   );
   if (lsTree.exitCode !== 0 || lsTree.timedOut || lsTree.error) {
     return {
@@ -4509,6 +4533,28 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
       resolved_top_level: resolvedTopLevel,
       lsTree,
       ls_tree: lsTree,
+      startedAt,
+      started_at: startedAt,
+      finishedAt: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+    };
+  }
+  if (lsTree.stdoutTruncated === true || lsTree.stdout_truncated === true) {
+    return {
+      attempted: true,
+      accepted: false,
+      status: 'source_intake_local_git_listing_truncated',
+      reason: 'source_tree_local_git_listing_truncated',
+      repoPath,
+      repo_path: repoPath,
+      resolvedTopLevel,
+      resolved_top_level: resolvedTopLevel,
+      lsTree,
+      ls_tree: lsTree,
+      listingComplete: false,
+      listing_complete: false,
+      listingTruncated: true,
+      listing_truncated: true,
       startedAt,
       started_at: startedAt,
       finishedAt: new Date().toISOString(),
@@ -4537,6 +4583,10 @@ async function readLocalGitTreeListing(candidate, { sourceIntakeTimeoutMs }) {
     dirty_status_tail: dirtyWorktreeObserved ? tail(dirtyStatus, 4000) : null,
     listingMode: noSizeListing ? 'git_ls_tree_no_size' : 'git_ls_tree_with_size',
     listing_mode: noSizeListing ? 'git_ls_tree_no_size' : 'git_ls_tree_with_size',
+    listingComplete: true,
+    listing_complete: true,
+    listingTruncated: false,
+    listing_truncated: false,
     byteLengthMode: noSizeListing ? 'unknown_avoids_blob_fetch' : 'declared_from_git_ls_tree_l',
     byte_length_mode: noSizeListing ? 'unknown_avoids_blob_fetch' : 'declared_from_git_ls_tree_l',
     files: parseGitLsTree(lsTree.stdout),
@@ -4559,6 +4609,13 @@ async function buildAcceptedSourceIntakeFacet({
   const totalKnownBytes = files.reduce((sum, file) => sum + (Number.isFinite(file.byteLength) ? file.byteLength : 0), 0);
   const listingClassification = classifySourceListing(files);
   const sourceListingHash = contentHash(stableJson(listingIdentity));
+  const listingComplete =
+    transportEvidence?.listingComplete !== false
+    && transportEvidence?.listing_complete !== false
+    && transportEvidence?.listingTruncated !== true
+    && transportEvidence?.listing_truncated !== true;
+  const listingCompletenessAuthority =
+    'producer_listing_completeness_only_not_gpu_hmr_success';
   const sourceListingManifest = {
     schemaVersion: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
     schema_version: 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1',
@@ -4574,6 +4631,12 @@ async function buildAcceptedSourceIntakeFacet({
     can_satisfy_dispatch_proof: false,
     sourceListingHash,
     source_listing_hash: sourceListingHash,
+    listingComplete,
+    listing_complete: listingComplete,
+    listingTruncated: !listingComplete,
+    listing_truncated: !listingComplete,
+    listingCompletenessAuthority,
+    listing_completeness_authority: listingCompletenessAuthority,
     entries: listingIdentity,
     fileCount: files.length,
     file_count: files.length,
@@ -4813,6 +4876,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         dirty_status_tail: localGitListing.dirty_status_tail,
         listingMode: localGitListing.listingMode,
         listing_mode: localGitListing.listing_mode,
+        listingComplete: localGitListing.listingComplete,
+        listing_complete: localGitListing.listing_complete,
+        listingTruncated: localGitListing.listingTruncated,
+        listing_truncated: localGitListing.listing_truncated,
         byteLengthMode: localGitListing.byteLengthMode,
         byte_length_mode: localGitListing.byte_length_mode,
         startedAt: localGitListing.startedAt,
@@ -4929,6 +4996,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
           api_url: githubTree.api_url,
           githubApiAuthentication: githubTree.githubApiAuthentication,
           github_api_authentication: githubTree.github_api_authentication,
+          listingComplete: githubTree.listingComplete,
+          listing_complete: githubTree.listing_complete,
+          listingTruncated: githubTree.listingTruncated,
+          listing_truncated: githubTree.listing_truncated,
           startedAt: githubTree.startedAt,
           started_at: githubTree.started_at,
           finishedAt: githubTree.finishedAt,
@@ -5022,7 +5093,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     {
       cwd: REPO_ROOT,
       timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
-      stdoutMax: 8 * 1024 * 1024,
+      stdoutMax: sourceListingStdoutMaxBytes(),
       stderrMax: 64000,
       streamOutput: false,
     },
@@ -5036,6 +5107,16 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       listing_result: lsTree,
       sourceIntakeProcessCleanup,
       source_intake_process_cleanup: sourceIntakeProcessCleanup,
+    });
+  }
+  if (lsTree.stdoutTruncated === true || lsTree.stdout_truncated === true) {
+    return fail('source_intake_git_listing_truncated', 'source_tree_git_listing_truncated', {
+      listingResult: lsTree,
+      listing_result: lsTree,
+      listingComplete: false,
+      listing_complete: false,
+      listingTruncated: true,
+      listing_truncated: true,
     });
   }
   const files = parseGitLsTree(lsTree.stdout);
@@ -5070,6 +5151,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         : bloblessSizeListing
         ? 'git_ls_tree_with_size_blobless_opt_in'
         : 'git_ls_tree_no_size_blobless',
+      listingComplete: true,
+      listing_complete: true,
+      listingTruncated: false,
+      listing_truncated: false,
       byteLengthMode: fullGitFallbackEnabled
         ? 'declared_from_git_ls_tree_l_full_fetch'
         : bloblessSizeListing
@@ -7702,6 +7787,10 @@ async function selfCheck() {
       !== 'synthi.gpu_hmr.random_cold_source_listing_manifest.v1'
     || localResult.sourceIntakeEvidence?.sourceListingManifest?.proofAuthority
       !== 'source_listing_entries_only_not_gpu_hmr_success'
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.listingComplete !== true
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.listingTruncated !== false
+    || localResult.sourceIntakeEvidence?.sourceListingManifest?.listingCompletenessAuthority
+      !== 'producer_listing_completeness_only_not_gpu_hmr_success'
     || localResult.sourceIntakeEvidence?.sourceListingManifest?.sourceListingHash
       !== localResult.sourceIntakeEvidence?.sourceListingHash
     || localResult.sourceIntakeEvidence?.sourceListingManifest?.entries?.length !== 2
@@ -7804,6 +7893,32 @@ async function selfCheck() {
     || localResult.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path local git source intake self-check failed');
+  }
+  const previousSourceListingStdoutMax = process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES;
+  process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES = '64';
+  try {
+    const truncatedLocalIntake = await runUnprofiledSourceIntake(localCandidate, {
+      sourceIntakeTimeoutMs: 30000,
+    });
+    if (
+      truncatedLocalIntake.acceptedAsIntakeEvidence !== false
+      || truncatedLocalIntake.status !== 'source_intake_local_git_listing_truncated'
+      || !truncatedLocalIntake.blockingGaps?.includes('source_tree_local_git_listing_truncated')
+      || truncatedLocalIntake.localGitListing?.listingComplete !== false
+      || truncatedLocalIntake.localGitListing?.listingTruncated !== true
+      || truncatedLocalIntake.localGitListing?.lsTree?.stdoutTruncated !== true
+      || truncatedLocalIntake.acceptedForGpuHmr !== false
+      || truncatedLocalIntake.gpuHmrSuccess !== false
+      || truncatedLocalIntake.canSatisfyRuntimeProof !== false
+    ) {
+      throw new Error('random large-project cold-path truncated local git listing self-check failed');
+    }
+  } finally {
+    if (previousSourceListingStdoutMax === undefined) {
+      delete process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES;
+    } else {
+      process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES = previousSourceListingStdoutMax;
+    }
   }
   const fallbackContentRead = await readBuildFileContent({
     candidate: localCandidate,

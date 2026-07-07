@@ -2638,6 +2638,12 @@ function randomColdSourceListingManifestFixture({
     can_satisfy_dispatch_proof: false,
     sourceListingHash,
     source_listing_hash: sourceListingHash,
+    listingComplete: true,
+    listing_complete: true,
+    listingTruncated: false,
+    listing_truncated: false,
+    listingCompletenessAuthority: 'producer_listing_completeness_only_not_gpu_hmr_success',
+    listing_completeness_authority: 'producer_listing_completeness_only_not_gpu_hmr_success',
     entries,
     fileCount,
     file_count: fileCount,
@@ -17648,6 +17654,49 @@ assert.ok(parentOnlySourceListingHashColdQuery.failedGates.some((gate) =>
 ));
 assert.equal(
   parentOnlySourceListingHashColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
+  0,
+);
+const truncatedSourceListingColdRow = withQueryRecomputedRowId((() => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: 'truncated-source-listing-random-cold',
+    sourceUrl: 'https://example.invalid/forged/truncated-source-listing.git',
+    immutableCommit: '2929292929292929292929292929292929292929',
+  });
+  for (const intake of [row.coldSourceTreeIntake, row.cold_source_tree_intake]) {
+    for (const manifest of [intake.sourceListingManifest, intake.source_listing_manifest]) {
+      manifest.listingComplete = false;
+      manifest.listing_complete = false;
+      manifest.listingTruncated = true;
+      manifest.listing_truncated = true;
+      manifest.listingCompletenessAuthority =
+        'producer_listing_completeness_only_not_gpu_hmr_success';
+      manifest.listing_completeness_authority =
+        'producer_listing_completeness_only_not_gpu_hmr_success';
+    }
+    intake.facetHash = sourceIntakeFacetHashFor(intake);
+    intake.facet_hash = intake.facetHash;
+  }
+  return row;
+})());
+const truncatedSourceListingColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    truncatedSourceListingColdRow,
+  ],
+});
+assert.equal(truncatedSourceListingColdQuery.accepted, false);
+assert.ok(truncatedSourceListingColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_source_intake_invalid'
+));
+assert.ok(truncatedSourceListingColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_completeness_missing_or_false'
+));
+assert.ok(truncatedSourceListingColdQuery.failedGates.some((gate) =>
+  gate.code === 'random_cold_source_listing_manifest_truncated'
+));
+assert.equal(
+  truncatedSourceListingColdQuery.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   0,
 );
 const forgedSourceIntakeAuthorityColdRow = withQueryRecomputedRowId((() => {
