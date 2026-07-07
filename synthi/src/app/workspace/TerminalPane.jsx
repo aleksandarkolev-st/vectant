@@ -1995,10 +1995,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           style={{ background: 'var(--brand-gradient-horizontal)' }}
         />
         <div
-          className="flex items-start gap-3 border-b px-3.5 py-2.5 select-none"
-          style={{
-            borderColor: 'var(--border-subtle, #2a2b38)',
-          }}
+          className="flex items-start gap-3 px-3.5 py-2.5 select-none"
         >
           <div
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
@@ -2028,9 +2025,33 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
               {body}
             </p>
           </div>
+          <motion.button
+            type="button"
+            whileTap={reduceMotion ? undefined : { scale: 0.97 }}
+            onClick={actionHandler}
+            disabled={repairing}
+            aria-label={actionLabel}
+            className="th-focus-ring flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
+            style={{
+              background: 'var(--text-primary, #f4f5f8)',
+              color: 'var(--bg-app, #0a0b10)',
+            }}
+          >
+            {repairing ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : isClosed ? (
+              <RefreshCw className="h-3.5 w-3.5" />
+            ) : (
+              <Wrench className="h-3.5 w-3.5" />
+            )}
+            {actionLabel}
+          </motion.button>
         </div>
 
-        <div className="px-3.5 py-2">
+        <div
+          className="border-t px-3.5 py-1.5"
+          style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
+        >
           <div className="flex flex-wrap gap-1.5">
             {statusItems.map(([label, value]) => (
               <div
@@ -2048,36 +2069,6 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
               </div>
             ))}
           </div>
-        </div>
-
-        <div
-          className="flex items-center justify-between gap-3 border-t px-3.5 py-2"
-          style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
-        >
-          <span className="text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
-            Workspace stays editable
-          </span>
-          <motion.button
-            type="button"
-            whileTap={reduceMotion ? undefined : { scale: 0.97 }}
-            onClick={actionHandler}
-            disabled={repairing}
-            aria-label={actionLabel}
-            className="th-focus-ring flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
-            style={{
-              background: 'var(--text-primary, #f4f5f8)',
-              color: 'var(--bg-app, #0a0b10)',
-            }}
-          >
-            {repairing ? (
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-            ) : isClosed ? (
-              <RefreshCw className="h-3.5 w-3.5" />
-            ) : (
-              <Wrench className="h-3.5 w-3.5" />
-            )}
-            {actionLabel}
-          </motion.button>
         </div>
       </motion.div>
     </div>
