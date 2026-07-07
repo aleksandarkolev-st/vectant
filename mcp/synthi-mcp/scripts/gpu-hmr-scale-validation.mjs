@@ -72,6 +72,8 @@ function defaultGpuDeltaModel() {
     ?? 'gemini-3.1-flash-lite';
 }
 
+const scaleRequireFullRuntimeProofEnv = process.env.SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF;
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -102,7 +104,9 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
-  requireGpuFullRuntimeProof: process.env.SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF !== '0',
+  requireGpuFullRuntimeProof: scaleRequireFullRuntimeProofEnv !== '0',
+  runtimeProofDowngradeRequested: scaleRequireFullRuntimeProofEnv === '0',
+  runtimeProofDowngradeEnvValue: scaleRequireFullRuntimeProofEnv ?? null,
   hmrRequiredGpuProofState: (process.env.SYNTHI_SCALE_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   hmrDeltaMode: normalizeHmrDeltaMode(process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta'),
   validationProfile: (process.env.SYNTHI_SCALE_VALIDATION_PROFILE ?? 'full').toLowerCase().replace(/[-\s]+/g, '_'),
@@ -296,6 +300,7 @@ const report = {
   cmake_target_mode: CFG.cmakeTargetMode,
   hmr_delta_mode: CFG.hmrDeltaMode,
   validation_profile: CFG.validationProfile,
+  strict_runtime_proof_policy: null,
   source_file_mix: {},
   template_evidence_mode: CFG.templateEvidenceMode,
   workspace_file_count: 0,
@@ -331,6 +336,34 @@ function record(name, status, detail = '') {
 function fail(message) {
   record('fatal', 'fail', message);
   throw new Error(message);
+}
+
+function scaleStrictRuntimeProofPolicy() {
+  const blockingGaps = [];
+  if (CFG.runtimeProofDowngradeRequested) {
+    blockingGaps.push('scale_full_runtime_proof_disable_env_forbidden');
+  }
+  return {
+    schemaVersion: 'synthi.gpu_hmr.scale_strict_runtime_proof_policy.v1',
+    schema_version: 'synthi.gpu_hmr.scale_strict_runtime_proof_policy.v1',
+    proofAuthority: 'scale_strict_runtime_proof_policy_gate_not_gpu_hmr_success',
+    proof_authority: 'scale_strict_runtime_proof_policy_gate_not_gpu_hmr_success',
+    accepted: blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    requireGpuFullRuntimeProof: CFG.requireGpuFullRuntimeProof,
+    require_gpu_full_runtime_proof: CFG.requireGpuFullRuntimeProof,
+    runtimeProofDowngradeRequested: CFG.runtimeProofDowngradeRequested,
+    runtime_proof_downgrade_requested: CFG.runtimeProofDowngradeRequested,
+    runtimeProofDowngradeEnvValue: CFG.runtimeProofDowngradeEnvValue,
+    runtime_proof_downgrade_env_value: CFG.runtimeProofDowngradeEnvValue,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
 }
 
 async function httpJson(method, url, body, headers = {}) {
@@ -3376,6 +3409,15 @@ async function run() {
   if (!SUPPORTED_VALIDATION_PROFILES.has(CFG.validationProfile)) {
     fail(`unsupported SYNTHI_SCALE_VALIDATION_PROFILE=${CFG.validationProfile}; expected ${[...SUPPORTED_VALIDATION_PROFILES].join(', ')}`);
   }
+  report.strict_runtime_proof_policy = scaleStrictRuntimeProofPolicy();
+  record(
+    'scale strict runtime proof policy',
+    report.strict_runtime_proof_policy.accepted ? 'pass' : 'fail',
+    JSON.stringify(report.strict_runtime_proof_policy),
+  );
+  if (!report.strict_runtime_proof_policy.accepted) {
+    fail('scale validation requires strict full-runtime GPU proof; SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF=0 is refusal-only');
+  }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
   const vendor = await detectVendor();
@@ -4063,6 +4105,7 @@ async function run() {
 
 function runSelfCheck() {
   const modelEnv = mcpModelEnv();
+  const strictRuntimeProofPolicy = scaleStrictRuntimeProofPolicy();
   const failures = [];
   if (!CFG.gpuSplitModel) failures.push('gpu_split_model_missing');
   if (!CFG.gpuDeltaModel) failures.push('gpu_delta_model_missing');
@@ -4078,10 +4121,14 @@ function runSelfCheck() {
   if (report.model_roles.gpu_split !== CFG.gpuSplitModel || report.model_roles.gpu_delta !== CFG.gpuDeltaModel) {
     failures.push('report_model_roles_mismatch');
   }
+  if (!strictRuntimeProofPolicy.accepted) {
+    failures.push(...strictRuntimeProofPolicy.blockingGaps);
+  }
   const result = {
     ok: failures.length === 0,
     modelRoles: report.model_roles,
     mcpModelEnv: modelEnv,
+    strictRuntimeProofPolicy,
     failures,
   };
   console.log(JSON.stringify(result, null, 2));
