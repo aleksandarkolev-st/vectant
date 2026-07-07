@@ -169,6 +169,69 @@ describe("local support preview-gateway route", () => {
     }
   });
 
+  it("classifies preview redirects without proxying unsafe targets", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const loopback = await POST(request(signedEnvelope({
+      request_id: "req_preview_redirect_loopback",
+      preview_path: "/docs/index.html",
+      redirect_location: "http://127.0.0.1:3000/ok?x=1",
+    })));
+    expect(loopback.status).toBe(200);
+    await expect(loopback.json()).resolves.toMatchObject({
+      decision: "preview_redirect_rewrite",
+      preview_forward: true,
+      redirect_rewrite_path: "/ok?x=1",
+      response_body_included: false,
+      bytes_sent: 0,
+    });
+
+    const relative = await POST(request(signedEnvelope({
+      request_id: "req_preview_redirect_relative",
+      preview_path: "/docs/index.html",
+      redirect_location: "next.html",
+    })));
+    expect(relative.status).toBe(200);
+    await expect(relative.json()).resolves.toMatchObject({
+      decision: "preview_redirect_rewrite",
+      redirect_rewrite_path: "/docs/next.html",
+      bytes_sent: 0,
+    });
+
+    for (const [location, reason] of [
+      ["http://169.254.169.254/latest/meta-data/", "preview_redirect_target_not_loopback"],
+      ["http://192.168.1.1/admin", "preview_redirect_target_not_loopback"],
+      ["file:///etc/passwd", "preview_redirect_custom_scheme_blocked"],
+      ["http://user:pass@127.0.0.1:3000/secret", "preview_redirect_userinfo_blocked"],
+      ["http://127.0.0.1:3001/wrong-port", "preview_redirect_target_not_loopback"],
+    ]) {
+      const response = await POST(request(signedEnvelope({
+        request_id: `req_${reason}_${location.length}`,
+        redirect_location: location,
+      })));
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        decision: "denied",
+        reason,
+        preview_forward: false,
+        bytes_sent: 0,
+      });
+    }
+
+    const external = await POST(request(signedEnvelope({
+      request_id: "req_preview_redirect_external",
+      redirect_location: "https://example.com/docs",
+    })));
+    expect(external.status).toBe(200);
+    await expect(external.json()).resolves.toMatchObject({
+      decision: "preview_external_navigation",
+      preview_forward: false,
+      external_navigation: true,
+      bytes_sent: 0,
+    });
+  });
+
   it("rejects malformed JSON at the shared HTTP boundary", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";

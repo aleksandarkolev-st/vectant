@@ -611,6 +611,37 @@ export function buildPreviewGatewayDecision(input, policy = readLocalSupportPoli
     return previewDeny(headerDecision, "Preview request headers were not accepted.", policy);
   }
 
+  const redirectLocation = typeof input.redirect_location === "string" ? input.redirect_location.trim() : "";
+  if (redirectLocation) {
+    const redirectDecision = classifyPreviewRedirect(
+      redirectLocation,
+      path,
+      previewHost,
+      port,
+      policy,
+    );
+    if (redirectDecision.decision === "denied") {
+      return redirectDecision;
+    }
+    return {
+      ...redirectDecision,
+      request_id: scrubTelemetryValue(input.request_id),
+      session_id: scrubTelemetryValue(input.session_id),
+      workspace_id: scrubTelemetryValue(input.workspace_id),
+      account_id: scrubTelemetryValue(input.account_id),
+      org_id: scrubTelemetryValue(input.org_id),
+      device_fingerprint: scrubTelemetryValue(input.device_fingerprint),
+      capability: "localhost.preview.browser",
+      actor: "user_browser",
+      preview_host: scrubTelemetryValue(previewHost),
+      approved_port: port,
+      policy_version: policy.policy_version,
+      protocol_version: policy.protocol_version,
+      control_plane_log_class: "local_support.control",
+      data_plane_log_class: "local_support.preview",
+    };
+  }
+
   return {
     decision: "preview_gateway_ready",
     reason: "browser_only_loopback_preview_authorized",
@@ -940,6 +971,109 @@ function validatePreviewRequestHeaderSummary(headers) {
     }
   }
   return null;
+}
+
+function classifyPreviewRedirect(location, currentPath, previewHost, approvedPort, policy) {
+  if (!location || /[\u0000-\u001F\u007F]/.test(location)) {
+    return previewDeny("preview_redirect_invalid", "Preview redirect was not accepted.", policy);
+  }
+  if (location.startsWith("/")) {
+    if (!isSafePreviewPath(location)) {
+      return previewDeny("preview_redirect_invalid", "Preview redirect path was not accepted.", policy);
+    }
+    return previewRedirectRewrite(location, previewHost, approvedPort);
+  }
+  if (!location.includes("://")) {
+    if (location.includes(":")) {
+      return previewDeny("preview_redirect_custom_scheme_blocked", "Preview redirect scheme was blocked.", policy);
+    }
+    const rewrittenPath = resolvePreviewRelativeRedirect(currentPath, location);
+    if (!isSafePreviewPath(rewrittenPath)) {
+      return previewDeny("preview_redirect_invalid", "Preview redirect path was not accepted.", policy);
+    }
+    return previewRedirectRewrite(rewrittenPath, previewHost, approvedPort);
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(location);
+  } catch {
+    return previewDeny("preview_redirect_invalid", "Preview redirect was not accepted.", policy);
+  }
+  if (parsed.username || parsed.password) {
+    return previewDeny("preview_redirect_userinfo_blocked", "Preview redirect userinfo was blocked.", policy);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return previewDeny("preview_redirect_custom_scheme_blocked", "Preview redirect scheme was blocked.", policy);
+  }
+  if (hasForbiddenNumericHostForm(parsed.hostname)) {
+    return previewDeny("preview_redirect_target_not_loopback", "Preview redirect target was blocked.", policy);
+  }
+  const redirectPort = parsed.port ? Number(parsed.port) : (parsed.protocol === "https:" ? 443 : 80);
+  if (isLoopbackTargetHost(parsed.hostname) && redirectPort === approvedPort) {
+    return previewRedirectRewrite(`${parsed.pathname}${parsed.search}`, previewHost, approvedPort);
+  }
+  if (isPrivateOrMetadataHost(parsed.hostname) || parsed.protocol === "http:") {
+    return previewDeny("preview_redirect_target_not_loopback", "Preview redirect target was blocked.", policy);
+  }
+  return {
+    decision: "preview_external_navigation",
+    reason: "safe_external_navigation_not_proxied",
+    preview_forward: false,
+    browser_stream_only: true,
+    external_navigation: true,
+    redirect_location: scrubTelemetryValue(location),
+    raw_body_included: false,
+    response_body_included: false,
+    bytes_sent: 0,
+    user_visible_message: "Safe external navigation is not proxied through Local Support preview.",
+  };
+}
+
+function previewRedirectRewrite(path, previewHost, approvedPort) {
+  return {
+    decision: "preview_redirect_rewrite",
+    reason: "approved_loopback_redirect_rewritten",
+    preview_forward: true,
+    browser_stream_only: true,
+    external_navigation: false,
+    redirect_rewrite_path: path,
+    redirect_preview_host: previewHost,
+    approved_port: approvedPort,
+    raw_body_included: false,
+    response_body_included: false,
+    bytes_sent: 0,
+    user_visible_message: "Redirect stayed inside the approved loopback preview service.",
+  };
+}
+
+function resolvePreviewRelativeRedirect(currentPath, location) {
+  const base = String(currentPath || "/").split("?")[0];
+  const slash = base.lastIndexOf("/");
+  const directory = slash <= 0 ? "/" : base.slice(0, slash + 1);
+  return `${directory}${location}`;
+}
+
+function hasForbiddenNumericHostForm(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host.startsWith("0x")
+    || host.split(".").some((part) => part.startsWith("0x"))
+    || host.split(".").some((part) => part.length > 1 && part.startsWith("0") && /^[0-9]+$/.test(part))
+    || (/^[0-9]+$/.test(host) && host.length > 3);
+}
+
+function isPrivateOrMetadataHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  if (host === "169.254.169.254" || host.endsWith(".local")) return true;
+  const parts = host.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first, second] = parts;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 169 && second === 254);
 }
 
 function buildScrubbedAuditActivityChain(activity) {
