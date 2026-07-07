@@ -48,6 +48,13 @@ import {
   simulateCodeSiteShadowMerge,
   subscribeCodeSiteProjectEvents,
 } from "./codesiteClient";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const POLL_MS = 5000;
 const MOTION_EASE = [0.16, 1, 0.3, 1];
@@ -1669,7 +1676,7 @@ function TowerNowStrip({
   return (
     <div
       data-testid="codesite-tower-now"
-      className="grid grid-cols-2 gap-1.5 rounded-lg border p-1.5 sm:grid-cols-3 xl:grid-cols-6"
+      className="flex gap-1.5 overflow-x-auto rounded-[var(--radius-panel)] border p-1.5"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 62%, var(--accent-primary) 38%)",
@@ -1690,7 +1697,7 @@ function TowerNowStrip({
             data-testid={`codesite-tower-now-${card.key}`}
             aria-label={`${card.label}: ${card.value}. ${card.detail}`}
             onClick={() => onSelect?.(card.section)}
-            className="group min-w-0 rounded-md border px-2.5 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
+            className="group min-w-[9.25rem] flex-1 rounded-[var(--radius-control)] border px-2.5 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 78%, var(--text-primary) 10%)",
@@ -2377,7 +2384,7 @@ function TowerSimulatorDeck({
           className="rounded border px-2 py-1 text-[11px]"
           style={{
             borderColor:
-              "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+              "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
             color: "var(--text-primary)",
           }}
         >
@@ -2617,9 +2624,9 @@ function AssumptionInvalidatorPanel({
       className="grid min-w-0 gap-2 rounded-lg border p-3 text-xs"
       style={{
         borderColor:
-          "color-mix(in srgb, #fbbf24 34%, var(--border-subtle))",
+          "color-mix(in srgb, var(--accent-warning) 34%, var(--border-subtle))",
         background:
-          "linear-gradient(180deg, color-mix(in srgb, #fbbf24 8%, var(--bg-surface)), var(--bg-editor))",
+          "linear-gradient(180deg, color-mix(in srgb, var(--accent-warning) 8%, var(--bg-surface)), var(--bg-editor))",
       }}
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -2763,7 +2770,7 @@ function SerializableIsolationDeck({
             style={{
               borderColor:
                 result === "aborted"
-                  ? "color-mix(in srgb, #ff5757 42%, var(--border-subtle))"
+                  ? "color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle))"
                   : "var(--border-subtle)",
               background: "var(--bg-surface)",
             }}
@@ -2950,7 +2957,7 @@ function SerializableIsolationDeck({
                     className="h-4 w-4"
                     style={{
                       color:
-                        "color-mix(in srgb, #4ade80 70%, var(--text-primary))",
+                        "color-mix(in srgb, var(--accent-success) 70%, var(--text-primary))",
                     }}
                   />
                 </div>
@@ -3072,7 +3079,7 @@ function PilotLicenseHealthPanel({ records }) {
               />
             </div>
             <div className="min-w-0">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-wrap gap-2">
                 {[
                   [
                     "Commits",
@@ -3096,7 +3103,7 @@ function PilotLicenseHealthPanel({ records }) {
                 ].map(([label, value, tone]) => (
                   <div
                     key={label}
-                    className="min-w-0 border-t pt-1"
+                    className="min-w-[5.75rem] flex-1 border-l pl-2"
                     style={{ borderColor: "var(--border-subtle)" }}
                   >
                     <div
@@ -3435,7 +3442,7 @@ function QuarantineReviewPanel({
         data-testid="codesite-quarantine-fetch-error"
         className="rounded border px-3 py-2 text-xs"
         style={{
-          borderColor: "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+          borderColor: "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
           background: "var(--bg-surface)",
         }}
       >
@@ -3599,14 +3606,14 @@ function QuarantineReviewPanel({
                   className="h-2.5 w-2.5 rounded-full border"
                   style={{
                     borderColor: value
-                      ? "color-mix(in srgb, #4ade80 72%, var(--border-subtle))"
+                      ? "color-mix(in srgb, var(--accent-success) 72%, var(--border-subtle))"
                       : "var(--border-subtle)",
                     background: value
-                      ? "color-mix(in srgb, #4ade80 34%, transparent)"
+                      ? "color-mix(in srgb, var(--accent-success) 34%, transparent)"
                       : "var(--bg-editor)",
                     boxShadow:
                       value && index === selectedTraceSteps.length - 1
-                        ? "0 0 0 4px color-mix(in srgb, #4ade80 12%, transparent)"
+                        ? "0 0 0 4px color-mix(in srgb, var(--accent-success) 12%, transparent)"
                         : "none",
                   }}
                 />
@@ -3733,7 +3740,7 @@ function QuarantineReviewPanel({
                 className="rounded border px-2 py-1 text-[11px]"
                 style={{
                   borderColor:
-                    "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+                    "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
                 }}
               >
                 {reviewMessage}
@@ -3748,10 +3755,14 @@ function QuarantineReviewPanel({
                 const path = quarantinePath(change);
                 const checked = selectedSet.has(path);
                 return (
-                  <label
+                  <button
                     key={`${selected.quarantineId}-${path}-${quarantineEvidenceRef(change)}`}
                     data-testid="codesite-quarantine-change-row"
-                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded border px-2 py-1.5"
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    onClick={() => onTogglePath(path)}
+                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded-[var(--radius-control)] border px-2 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
                     style={{
                       borderColor: checked
                         ? "color-mix(in srgb, var(--accent-primary) 44%, var(--border-subtle))"
@@ -3761,13 +3772,26 @@ function QuarantineReviewPanel({
                         : "var(--bg-editor)",
                     }}
                   >
-                    <input
+                    <span
                       data-testid="codesite-quarantine-path-toggle"
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => onTogglePath(path)}
-                      className="mt-1 h-4 w-4"
-                    />
+                      className="mt-1 grid h-4 w-4 place-items-center rounded border"
+                      style={{
+                        borderColor: checked
+                          ? "color-mix(in srgb, var(--accent-primary) 66%, var(--border-subtle))"
+                          : "var(--border-medium)",
+                        background: checked
+                          ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
+                          : "color-mix(in srgb, var(--bg-panel) 70%, transparent)",
+                      }}
+                    >
+                      {checked ? (
+                        <CheckCircle2
+                          aria-hidden="true"
+                          className="h-3 w-3"
+                          style={{ color: "var(--accent-primary)" }}
+                        />
+                      ) : null}
+                    </span>
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-1">
                         <code
@@ -3802,7 +3826,7 @@ function QuarantineReviewPanel({
                         />
                       </div>
                     </div>
-                  </label>
+                  </button>
                 );
               })}
             </div>
@@ -3813,7 +3837,7 @@ function QuarantineReviewPanel({
                 className="rounded border px-3 py-2"
                 style={{
                   borderColor:
-                    "color-mix(in srgb, #fbbf24 36%, var(--border-subtle))",
+                    "color-mix(in srgb, var(--accent-warning) 36%, var(--border-subtle))",
                   background: "var(--bg-editor)",
                 }}
               >
@@ -3874,7 +3898,7 @@ function QuarantineReviewPanel({
                         className="grid gap-2 rounded border px-2 py-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
                         style={{
                           borderColor:
-                            "color-mix(in srgb, #ff5757 36%, var(--border-subtle))",
+                            "color-mix(in srgb, var(--accent-danger) 36%, var(--border-subtle))",
                         }}
                       >
                         <code
@@ -3905,7 +3929,7 @@ function QuarantineReviewPanel({
                 className="rounded border px-3 py-2"
                 style={{
                   borderColor:
-                    "color-mix(in srgb, #4ade80 36%, var(--border-subtle))",
+                    "color-mix(in srgb, var(--accent-success) 36%, var(--border-subtle))",
                   background: "var(--bg-editor)",
                 }}
               >
@@ -4969,10 +4993,10 @@ function GovernanceConsole({
           className="rounded-lg border p-3"
           style={{
             borderColor: maydayIncidents.length
-              ? "color-mix(in srgb, #ff5757 42%, var(--border-subtle))"
+              ? "color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle))"
               : "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
             background: maydayIncidents.length
-              ? "linear-gradient(180deg, color-mix(in srgb, #ff5757 10%, var(--bg-surface)), var(--bg-surface))"
+              ? "linear-gradient(180deg, color-mix(in srgb, var(--accent-danger) 10%, var(--bg-surface)), var(--bg-surface))"
               : "var(--bg-surface)",
           }}
         >
@@ -5025,7 +5049,7 @@ function GovernanceConsole({
                         style={{
                           color: inspectionRunIds.length
                             ? "var(--text-muted)"
-                            : "#ff8f8f",
+                            : "var(--accent-danger)",
                         }}
                       >
                         {inspectionRunIds.length
@@ -5106,8 +5130,8 @@ function GovernanceConsole({
             className="rounded border px-3 py-2 text-xs"
             style={{
               borderColor: actionState.error
-                ? "color-mix(in srgb, #ff5757 40%, var(--border-subtle))"
-                : "color-mix(in srgb, #4ade80 40%, var(--border-subtle))",
+                ? "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))"
+                : "color-mix(in srgb, var(--accent-success) 40%, var(--border-subtle))",
               background: "var(--bg-surface)",
             }}
           >
@@ -6122,7 +6146,7 @@ function LineProvenanceDeck({
                     className="rounded border px-2 py-1 text-[11px]"
                     style={{
                       borderColor:
-                        "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+                        "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
                       color: "var(--text-primary)",
                     }}
                   >
@@ -7634,29 +7658,32 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <label htmlFor="codesite-project-select" className="sr-only">
                 CodeSite project
               </label>
-              <select
-                id="codesite-project-select"
-                data-testid="codesite-project-select"
-                value={radarState.selectedProjectId || ""}
-                onChange={(event) =>
-                  setSelectedProjectId(event.target.value || null)
-                }
-                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
-                style={{
-                  borderColor: "var(--border-subtle)",
-                  background: "var(--bg-elevated)",
-                  color: "var(--text-primary)",
-                }}
+              <Select
+                value={radarState.selectedProjectId ? String(radarState.selectedProjectId) : undefined}
+                onValueChange={(value) => setSelectedProjectId(value || null)}
               >
-                {radarState.projects.map((project, index) => (
-                  <option
-                    key={project.id || project.slug || `project-${index}`}
-                    value={project.id}
-                  >
-                    {project.title}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  id="codesite-project-select"
+                  data-testid="codesite-project-select"
+                  className="h-11 w-full min-w-0 truncate text-xs"
+                  aria-label="CodeSite project"
+                >
+                  <SelectValue placeholder="Select operation" />
+                </SelectTrigger>
+                <SelectContent align="start" className="min-w-[220px]">
+                  {radarState.projects.map((project, index) => {
+                    const value = String(project.id || project.slug || `project-${index}`);
+                    return (
+                      <SelectItem
+                        key={value}
+                        value={value}
+                      >
+                        {project.title}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
 
@@ -7707,10 +7734,10 @@ export default function CodeSitePanel({ workspaceSlug }) {
               className="m-3 grid gap-3 rounded-lg border px-3 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
               style={{
                 borderColor:
-                  "color-mix(in srgb, #ff5757 38%, var(--border-subtle))",
+                  "color-mix(in srgb, var(--accent-danger) 38%, var(--border-subtle))",
                 color: "var(--text-primary)",
                 background:
-                  "color-mix(in srgb, var(--bg-surface) 90%, #ff5757 4%)",
+                  "color-mix(in srgb, var(--bg-surface) 90%, var(--accent-danger) 4%)",
               }}
             >
               <div className="min-w-0">
@@ -8478,7 +8505,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           className="rounded border px-3 py-2 text-xs"
                           style={{
                             borderColor:
-                              "color-mix(in srgb, #ff5757 36%, var(--border-subtle))",
+                              "color-mix(in srgb, var(--accent-danger) 36%, var(--border-subtle))",
                             background: "var(--bg-surface)",
                           }}
                         >

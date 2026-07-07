@@ -6,7 +6,7 @@ import { Bookmark, CheckCircle2, Loader2, RotateCcw, Undo2, X, XCircle } from 'l
 
 const DEFAULT_AI_ENGINE_BASE = '/api/provenance';
 
-const cardStyle = {
+const sectionStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 78%, transparent)',
 };
@@ -40,9 +40,9 @@ function badgeStyle(accent) {
 }
 
 /**
- * AI Change Provenance Overlay
+ * Change Provenance Overlay
  * 
- * Displays provenance information for AI-generated changes including:
+ * Displays provenance information for generated changes including:
  * - Prompt used
  * - Model information
  * - Verification status
@@ -150,7 +150,7 @@ export function ProvenanceOverlay({
     if (!record || actionLoading) return;
     
     const confirmed = await confirm({
-      title: 'Revert to this AI version?',
+      title: 'Revert to this version?',
       message: `This restores the code to ${record.timestamp_iso}.\nChange type: ${record.change_type}`,
       confirmLabel: 'Revert version',
       tone: 'danger',
@@ -237,14 +237,14 @@ export function ProvenanceOverlay({
         <div className="flex items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-              AI change provenance
+              Change provenance
             </h2>
             <p className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
               {filePath || selectedRecord?.target_file || 'Workspace change ledger'}
             </p>
           </div>
-          <span
-            className="rounded-md border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+              <span
+                className="rounded-[var(--radius-control)] border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
             style={badgeStyle('var(--attention-purple)')}
           >
             audit trail
@@ -262,19 +262,19 @@ export function ProvenanceOverlay({
           {loading && (
             <div className="flex items-center justify-center gap-2 py-10" style={{ color: 'var(--text-secondary)' }}>
               <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-xs">Loading provenance...</span>
+              <span className="text-xs">Opening audit ledger...</span>
             </div>
           )}
 
           {error && (
-            <div className="rounded-md border p-3" style={badgeStyle('var(--accent-danger)')}>
+            <div className="rounded-[var(--radius-panel)] border p-3" style={badgeStyle('var(--accent-danger)')}>
               <p className="text-xs font-medium">{error}</p>
             </div>
           )}
 
           {!loading && !error && records.length === 0 && (
-            <div className="rounded-md border px-4 py-10 text-center text-xs" style={mutedCardStyle}>
-              No provenance records found
+            <div className="vt-empty-state rounded-[var(--radius-panel)] border px-4 py-10 text-center text-xs" style={mutedCardStyle}>
+              No recorded changes for this scope.
             </div>
           )}
 
@@ -286,7 +286,7 @@ export function ProvenanceOverlay({
                     <button
                       key={record.record_id}
                       onClick={() => setSelectedRecord(record)}
-                      className="th-focus-ring rounded-md border px-3 py-1.5 text-[11px] font-medium whitespace-nowrap"
+                      className="th-focus-ring rounded-[var(--radius-control)] border px-3 py-1.5 text-[11px] font-medium whitespace-nowrap"
                       style={selectedRecord.record_id === record.record_id
                         ? badgeStyle('var(--accent-primary)')
                         : { borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)', background: 'transparent' }}
@@ -297,7 +297,7 @@ export function ProvenanceOverlay({
                 </div>
               )}
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid overflow-hidden rounded-[var(--radius-panel)] border sm:grid-cols-2 lg:grid-cols-4" style={mutedCardStyle}>
                 <InfoCard title="Change Type" value={selectedRecord.change_type} />
                 <InfoCard title="Language" value={selectedRecord.target_language} />
                 <InfoCard title="Target File" value={selectedRecord.target_file || 'N/A'} />
@@ -305,9 +305,9 @@ export function ProvenanceOverlay({
               </div>
 
               {selectedRecord.model_info && (
-                <div className="rounded-md border p-4" style={cardStyle}>
+                <div className="rounded-[var(--radius-panel)] border border-l-2 p-4" style={{ ...sectionStyle, borderLeftColor: 'var(--accent-primary)' }}>
                   <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
-                    Model
+                    Runtime
                   </h3>
                   <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
                     <div>
@@ -331,19 +331,19 @@ export function ProvenanceOverlay({
               )}
 
               {selectedRecord.verifier_info && (
-                <div className="rounded-md border p-4" style={cardStyle}>
+                <div className="rounded-[var(--radius-panel)] border border-l-2 p-4" style={{ ...sectionStyle, borderLeftColor: statusTone(selectedRecord.verifier_info.status) }}>
                   <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
                     Verification
                   </h3>
                   <div className="flex items-center gap-2 mb-2">
                     <span
-                      className="rounded-md border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide"
+                      className="rounded-[var(--radius-control)] border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide"
                       style={badgeStyle(statusTone(selectedRecord.verifier_info.status))}
                     >
                       {selectedRecord.verifier_info.status.toUpperCase()}
                     </span>
                     {selectedRecord.verifier_info.auto_repaired && (
-                      <span className="rounded-md border px-2 py-1 text-[11px] font-semibold" style={badgeStyle('var(--accent-secondary)')}>
+                      <span className="rounded-[var(--radius-control)] border px-2 py-1 text-[11px] font-semibold" style={badgeStyle('var(--accent-secondary)')}>
                         Auto-repaired
                       </span>
                     )}
@@ -363,7 +363,7 @@ export function ProvenanceOverlay({
                     </div>
                   )}
 
-                  <div className="mt-3 grid gap-1 rounded-md border p-2 text-[11px] font-mono" style={mutedCardStyle}>
+                  <div className="mt-3 grid gap-1 rounded-[var(--radius-control)] border p-2 text-[11px] font-mono" style={mutedCardStyle}>
                     <div>Original: {selectedRecord.verifier_info.original_hash}</div>
                     <div>Verified: {selectedRecord.verifier_info.verified_hash}</div>
                   </div>
@@ -371,14 +371,14 @@ export function ProvenanceOverlay({
               )}
 
               {selectedRecord.prompt_info && (
-                <div className="rounded-md border p-4" style={cardStyle}>
+                <div className="rounded-[var(--radius-panel)] border border-l-2 p-4" style={{ ...sectionStyle, borderLeftColor: 'var(--attention-purple)' }}>
                   <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
-                    Prompt
+                    Request context
                   </h3>
                   {selectedRecord.prompt_info.user_prompt_preview && (
                     <div className="mb-2">
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>User prompt preview</p>
-                      <p className="mt-1 rounded-md border p-2 text-xs font-mono" style={mutedCardStyle}>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Operator request preview</p>
+                      <p className="mt-1 rounded-[var(--radius-control)] border p-2 text-xs font-mono" style={mutedCardStyle}>
                         {selectedRecord.prompt_info.user_prompt_preview}...
                       </p>
                     </div>
@@ -418,7 +418,7 @@ export function ProvenanceOverlay({
                 <button
                   onClick={() => handleRollback(selectedRecord)}
                   disabled={actionLoading !== null || selectedRecord.rolled_back}
-                  className="th-focus-ring flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                  className="th-focus-ring flex h-8 items-center gap-2 rounded-[var(--radius-control)] border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                   style={badgeStyle('var(--accent-danger)')}
                 >
                   {actionLoading === 'rollback' ? (
@@ -432,7 +432,7 @@ export function ProvenanceOverlay({
                 <button
                   onClick={() => handlePin(selectedRecord)}
                   disabled={actionLoading !== null || isPinned(selectedRecord)}
-                  className="th-focus-ring flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                  className="th-focus-ring flex h-8 items-center gap-2 rounded-[var(--radius-control)] border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                   style={isPinned(selectedRecord) ? badgeStyle('var(--accent-warning)') : { borderColor: 'var(--border-medium)', color: 'var(--text-secondary)', background: 'transparent' }}
                 >
                   {actionLoading === 'pin' ? (
@@ -446,7 +446,7 @@ export function ProvenanceOverlay({
                 <button
                   onClick={() => handleRevert(selectedRecord)}
                   disabled={actionLoading !== null}
-                  className="th-focus-ring flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                  className="th-focus-ring flex h-8 items-center gap-2 rounded-[var(--radius-control)] border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                   style={badgeStyle('var(--accent-secondary)')}
                 >
                   {actionLoading === 'revert' ? (
@@ -459,7 +459,7 @@ export function ProvenanceOverlay({
               </div>
 
               {actionError && (
-                <div className="mt-2 rounded-md border p-3" style={badgeStyle('var(--accent-danger)')}>
+                <div className="mt-2 rounded-[var(--radius-panel)] border p-3" style={badgeStyle('var(--accent-danger)')}>
                   <p className="text-xs">
                     <strong>Action failed:</strong> {actionError}
                   </p>
@@ -476,7 +476,7 @@ export function ProvenanceOverlay({
 
 function InfoCard({ title, value }) {
   return (
-    <div className="rounded-md border p-3" style={cardStyle}>
+    <div className="min-w-0 border-b border-r p-3 last:border-r-0 sm:[&:nth-child(2n)]:border-r-0 lg:[&:nth-child(2n)]:border-r lg:[&:nth-child(4n)]:border-r-0 lg:border-b-0" style={{ borderColor: 'var(--border-subtle)' }}>
       <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{title}</p>
       <p className="mt-1 truncate text-xs font-mono" style={{ color: 'var(--text-primary)' }}>{value}</p>
     </div>
