@@ -132,8 +132,15 @@ describe("local support transparency state route", () => {
       ],
       export_metadata: {
         raw_bodies_included: false,
+        audit_chain_verified: true,
       },
     });
+    expect(json.activity[0]).toMatchObject({
+      chain_index: 0,
+      previous_event_hash: "sha256:genesis",
+    });
+    expect(json.activity[0].event_hash).toMatch(/^sha256:/);
+    expect(json.export_metadata.audit_chain_head).toBe(json.activity[0].event_hash);
     expect(serialized).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(serialized).not.toContain("postgres://user:pass");
     expect(serialized).not.toContain("raw-preview-token");

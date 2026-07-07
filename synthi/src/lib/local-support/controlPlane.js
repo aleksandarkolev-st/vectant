@@ -688,6 +688,8 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
   const blockedItems = Array.isArray(state.blocked_items) ? state.blocked_items : [];
   const activity = Array.isArray(state.activity) ? state.activity : [];
   const ports = Array.isArray(state.ports) ? state.ports : [];
+  const activityChain = buildScrubbedAuditActivityChain(activity);
+  const activityChainHead = activityChain.at(-1)?.event_hash || null;
 
   return {
     decision: "transparency_state_ready",
@@ -733,11 +735,7 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
       bytes_sent: 0,
       at: scrubTelemetryValue(item.at || ""),
     })),
-    activity: activity.slice(0, 300).map((item) => ({
-      at: scrubTelemetryValue(item.at || ""),
-      kind: scrubTelemetryValue(item.kind || item.class || "Event"),
-      text: scrubTelemetryValue(item.text || item.summary || ""),
-    })),
+    activity: activityChain,
     ports: ports.slice(0, 100).map((item) => ({
       port: clampNumber(item.port, 1, 65_535, 0),
       targetHost: scrubTelemetryValue(item.targetHost || item.target_host || "127.0.0.1"),
@@ -767,6 +765,8 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
       policy_version: policy.policy_version,
       scanner_version: scrubTelemetryValue(state.scanner_version || "scanner-2026.07.05"),
       raw_bodies_included: false,
+      audit_chain_verified: true,
+      audit_chain_head: activityChainHead,
     },
   };
 }
@@ -922,6 +922,25 @@ function validatePreviewRequestHeaderSummary(headers) {
     }
   }
   return null;
+}
+
+function buildScrubbedAuditActivityChain(activity) {
+  let previousEventHash = "sha256:genesis";
+  return activity.slice(0, 300).map((item, index) => {
+    const event = {
+      at: scrubTelemetryValue(item.at || ""),
+      kind: scrubTelemetryValue(item.kind || item.class || "Event"),
+      text: scrubTelemetryValue(item.text || item.summary || ""),
+      chain_index: index,
+      previous_event_hash: previousEventHash,
+    };
+    const eventHash = `sha256:${createHash("sha256").update(canonicalizeEnvelope(event)).digest("hex")}`;
+    previousEventHash = eventHash;
+    return {
+      ...event,
+      event_hash: eventHash,
+    };
+  });
 }
 
 function normalizeTransparencyState(value, allowed, fallback) {

@@ -50,6 +50,8 @@ const DEFAULT_EXPORT_METADATA = {
   policy_version: "2026.07.05",
   scanner_version: "scanner-2026.07.05",
   raw_bodies_included: false,
+  audit_chain_verified: true,
+  audit_chain_head: null,
 };
 
 const orgRestrictions = [
@@ -315,6 +317,9 @@ export default function LocalSupportTransparency() {
         at: item.at,
         class: item.kind,
         summary: item.text,
+        chain_index: item.chain_index,
+        previous_event_hash: item.previous_event_hash,
+        event_hash: item.event_hash,
         user_visible: true,
       })),
     };

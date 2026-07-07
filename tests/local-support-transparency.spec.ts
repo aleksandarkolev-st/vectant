@@ -72,6 +72,8 @@ test.describe("local support transparency page", () => {
       export_type: "scrubbed_activity_history",
       raw_bodies_included: false,
       session_id: "not_paired",
+      audit_chain_verified: true,
+      audit_chain_head: null,
     });
     expect(exported.events).toHaveLength(0);
     expect(JSON.stringify(exported)).not.toContain("DATABASE_URL=");

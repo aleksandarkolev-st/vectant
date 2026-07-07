@@ -598,6 +598,18 @@ describe("local support control plane policy", () => {
             screenshots: true,
           },
         ],
+        activity: [
+          {
+            at: "2026-07-07T10:00:00.000Z",
+            class: "Denied",
+            summary: "Blocked Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+          },
+          {
+            at: "2026-07-07T10:01:00.000Z",
+            kind: "Redaction",
+            text: "Redacted postgres://user:pass@localhost/db",
+          },
+        ],
       },
       policy,
     );
@@ -622,9 +634,21 @@ describe("local support control plane policy", () => {
           token_state: "present_hidden_from_renderer",
         }),
       ],
+      export_metadata: {
+        audit_chain_verified: true,
+      },
     });
+    expect(state.activity).toHaveLength(2);
+    expect(state.activity[0]).toMatchObject({
+      chain_index: 0,
+      previous_event_hash: "sha256:genesis",
+    });
+    expect(state.activity[0].event_hash).toMatch(/^sha256:/);
+    expect(state.activity[1].previous_event_hash).toBe(state.activity[0].event_hash);
+    expect(state.export_metadata.audit_chain_head).toBe(state.activity[1].event_hash);
     expect(state.workspace.display).toContain("authorization: [REDACTED]");
     expect(JSON.stringify(state)).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(JSON.stringify(state)).not.toContain("secret-preview-token");
+    expect(JSON.stringify(state)).not.toContain("postgres://user:pass");
   });
 });
