@@ -6444,6 +6444,38 @@ async function selfCheck() {
       },
     }),
   ];
+  const renamedDirectSourceCandidates = [
+    directCandidateFromInput({
+      sourceUrl: 'https://example.invalid/arbitrary-user-project.git',
+      immutableCommit: '1111111111111111111111111111111111111111',
+      sourceId: 'plain-user-project',
+      backendFamily: 'unknown_gpu_project',
+      inputChannels: ['cli_arg_source_url', 'cli_arg_commit'],
+    }),
+    directCandidateFromInput({
+      sourceUrl: 'https://example.invalid/arbitrary-user-project.git',
+      immutableCommit: '1111111111111111111111111111111111111111',
+      sourceId: 'miopen-hipblaslt-rocm-gemm-looking-label',
+      backendFamily: 'unknown_gpu_project',
+      inputChannels: ['cli_arg_source_url', 'cli_arg_commit'],
+    }),
+  ];
+  if (
+    renamedDirectSourceCandidates.some((candidate) =>
+      candidate.acceptedForGpuHmr === true
+      || candidate.gpuHmrSuccess === true
+      || candidate.canSatisfyRuntimeProof === true
+      || candidate.directInputEvidence?.targetNameIndependent !== true
+      || candidate.directInputEvidence?.projectNameWhitelist?.length !== 0
+      || candidate.directInputEvidence?.specificTargetIdsAllowed?.length !== 0
+    )
+    || renamedDirectSourceCandidates[0].directInputEvidence?.sourceIdentityHash
+      !== renamedDirectSourceCandidates[1].directInputEvidence?.sourceIdentityHash
+    || renamedDirectSourceCandidates[0].directInputEvidence?.evidenceHash
+      !== renamedDirectSourceCandidates[1].directInputEvidence?.evidenceHash
+  ) {
+    throw new Error('random large-project cold-path direct source identity depended on project/target label');
+  }
   const first = selectCandidates({ candidates, seed: 'self-check-seed', count: 2 });
   const second = selectCandidates({ candidates, seed: 'self-check-seed', count: 2 });
   if (stableJson(first) !== stableJson(second) || first.length !== 2) {
@@ -7365,6 +7397,27 @@ async function selfCheck() {
     classification: openclOnlyClassification,
     buildMetadataDiscovery: openclOnlyBuildDiscovery,
   });
+  const namePoisonedCandidate = cleanCandidate({
+    id: 'miopen-hipblaslt-rocm-gemm-name-only',
+    sourceUrl: 'https://example.invalid/miopen-hipblaslt-rocm-gemm-name-only.git',
+    immutableCommit: '1414141414141414141414141414141414141414',
+  });
+  const namePoisonedListing = parseGitLsTree([
+    '100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 12\tREADME.md',
+    '100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 34\tdocs/overview.md',
+    '100644 blob cccccccccccccccccccccccccccccccccccccccc 56\tsrc/text_report.cpp',
+  ].join('\n'));
+  const namePoisonedClassification = classifySourceListing(namePoisonedListing);
+  const namePoisonedBuildDiscovery = discoverBuildMetadata({
+    candidate: namePoisonedCandidate,
+    files: namePoisonedListing,
+    classification: namePoisonedClassification,
+  });
+  const namePoisonedRuntimeExpectation = deriveRuntimeBoundaryExpectation({
+    candidate: namePoisonedCandidate,
+    classification: namePoisonedClassification,
+    buildMetadataDiscovery: namePoisonedBuildDiscovery,
+  });
   const outputOracleTemplate = runtimeEventTemplate.eventObjectTemplates
     ?.find((entry) => entry.eventKind === 'output_oracle');
   const parsedNoSizeListing = parseGitLsTree(
@@ -7456,6 +7509,14 @@ async function selfCheck() {
     || !forgedOracleHintExpectation.candidateDeclaredOracleKinds.includes('deterministic_visual_oracle')
     || forgedOracleHintExpectation.acceptableOracleKinds.includes('deterministic_visual_oracle')
     || !forgedOracleHintExpectation.acceptableOracleKinds.includes('compute_readback')
+    || namePoisonedClassification.backendCandidates.length !== 0
+    || namePoisonedClassification.gpuSourceSignalCount !== 0
+    || namePoisonedBuildDiscovery.acceptedAsBuildMetadataDiscovery !== false
+    || !namePoisonedBuildDiscovery.blockingGaps.includes('build_metadata_not_detected')
+    || namePoisonedRuntimeExpectation.acceptedAsRuntimeBoundaryExpectation !== false
+    || !namePoisonedRuntimeExpectation.blockingGaps.includes('runtime_backend_candidate_missing')
+    || namePoisonedRuntimeExpectation.gpuHmrSuccess !== false
+    || namePoisonedRuntimeExpectation.canSatisfyRuntimeProof !== false
     || buildDiscovery.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path source listing classifier self-check failed');
