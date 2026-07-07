@@ -1,12 +1,12 @@
-// UI-only emulator state machine primitives.
-// This is intentionally fake: no Android SDK, no APKs, no processes.
+// Mobile runtime state primitives. Local standby mode uses these until a
+// worker-backed stream takes over.
 
 export const EMULATOR_STATES = Object.freeze({
   OFF: 'OFF',
   BOOTING: 'BOOTING',
   IDLE: 'IDLE',
   NO_APP: 'NO_APP',
-  STREAMING: 'STREAMING', // placeholder for future WebRTC/video injection
+  STREAMING: 'STREAMING',
   ERROR: 'ERROR',
 });
 

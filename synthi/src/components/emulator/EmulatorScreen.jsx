@@ -1,48 +1,94 @@
 'use client';
 
 import React from 'react';
+import { BatteryMedium, RadioTower, Signal, Smartphone, TerminalSquare, Wifi } from 'lucide-react';
 import { EMULATOR_STATES } from './emulatorStates';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 
 function StatusBar() {
   return (
-    <div className="flex h-7 items-center justify-between bg-black/40 px-3 text-[11px] text-[var(--text-secondary)]">
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-2 rounded bg-white/30" />
-        <div className="w-4 h-2 rounded bg-white/20" />
+    <div
+      className="flex h-7 items-center justify-between border-b px-3 font-mono text-[10px]"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 72%, transparent)',
+        background: 'color-mix(in srgb, var(--bg-editor) 82%, black 18%)',
+        color: 'var(--text-muted)',
+      }}
+    >
+      <div className="flex items-center gap-1.5">
+        <Smartphone size={12} aria-hidden="true" />
+        <span>VD-01</span>
       </div>
       <div className="flex items-center gap-2">
-        <div className="w-4 h-2 rounded bg-white/20" />
-        <div className="w-5 h-2 rounded bg-white/30" />
+        <Signal size={12} aria-hidden="true" />
+        <Wifi size={12} aria-hidden="true" />
+        <BatteryMedium size={13} aria-hidden="true" />
       </div>
     </div>
   );
 }
 
-function HomeScreenMock() {
-  const icons = Array.from({ length: 12 }).map((_, idx) => idx);
+function StandbyScreen() {
+  const steps = ['Worker ready', 'Build artifact pending', 'Stream handoff idle'];
   return (
-    <div className="h-full w-full bg-gradient-to-b from-[var(--bg-editor)] to-[var(--bg-app)]">
+    <div
+      className="relative h-full w-full overflow-hidden"
+      style={{
+        background:
+          'radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--attention-purple) 15%, transparent), transparent 38%), linear-gradient(180deg, var(--bg-editor), var(--bg-app))',
+      }}
+    >
       <StatusBar />
-      <div className="p-4">
-        <div className="mb-3 text-xs text-[var(--text-secondary)]">Synthi Android</div>
-        <div className="grid grid-cols-4 gap-3">
-          {icons.map((i) => (
-            <div key={i} className="flex flex-col items-center gap-1">
-              <div className="w-10 h-10 rounded-xl bg-white/10 border border-white/10" />
-              <div className="h-2 w-8 rounded bg-white/10" />
+      <div className="flex h-[calc(100%-28px)] flex-col justify-between p-4">
+        <div className="grid gap-3">
+          <div className="flex items-center gap-2">
+            <div
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-control)] border"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--attention-purple) 28%, transparent)',
+                background: 'color-mix(in srgb, var(--attention-purple) 12%, transparent)',
+              }}
+            >
+              <TerminalSquare size={15} aria-hidden="true" />
             </div>
-          ))}
-        </div>
-      </div>
+            <div className="min-w-0">
+              <div className="truncate text-xs font-semibold">Mobile runtime</div>
+              <div className="truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>Awaiting app launch</div>
+            </div>
+          </div>
 
-      {/* Dock */}
-      <div className="absolute bottom-0 left-0 right-0 p-3">
-        <div className="mx-auto max-w-[220px] bg-white/5 border border-white/10 rounded-2xl p-2 flex items-center justify-between">
-          <div className="w-8 h-8 rounded-xl bg-white/10" />
-          <div className="w-8 h-8 rounded-xl bg-white/10" />
-          <div className="w-8 h-8 rounded-xl bg-white/10" />
-          <div className="w-8 h-8 rounded-xl bg-white/10" />
+          <div
+            className="rounded-[var(--radius-control)] border p-3"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+              background: 'color-mix(in srgb, var(--bg-panel) 58%, transparent)',
+            }}
+          >
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+              <RadioTower size={14} aria-hidden="true" />
+              Stream checkpoint
+            </div>
+            <div className="grid gap-1.5">
+              {steps.map((step, index) => (
+                <div key={step} className="flex items-center gap-2 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ background: index === 0 ? 'var(--accent-success)' : 'var(--border-medium)' }}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{step}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-1.5">
+          <div className="h-px" style={{ background: 'color-mix(in srgb, var(--border-subtle) 72%, transparent)' }} />
+          <div className="flex items-center justify-between font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            <span>input bridge</span>
+            <span>armed</span>
+          </div>
         </div>
       </div>
     </div>
@@ -51,11 +97,20 @@ function HomeScreenMock() {
 
 function BootingScreen({ message, detail }) {
   return (
-    <div className="flex h-full w-full items-center justify-center bg-[var(--bg-app)]">
+    <div
+      className="flex h-full w-full items-center justify-center"
+      style={{ background: 'linear-gradient(180deg, var(--bg-editor), var(--bg-app))' }}
+    >
       <div className="flex flex-col items-center gap-3">
-        <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
+        <div
+          className="h-10 w-10 animate-spin rounded-full border-2"
+          style={{
+            borderColor: 'color-mix(in srgb, var(--text-primary) 12%, transparent)',
+            borderTopColor: 'var(--attention-purple)',
+          }}
+        />
         <div className="max-w-[80%] break-words px-4 text-center text-xs tracking-wide text-[var(--text-secondary)]">
-          {message || 'booting…'}
+          {message || 'Booting runtime'}
         </div>
         {detail && (
           <div className="w-full break-words px-4 text-center font-mono text-[10px] leading-tight text-[var(--text-muted)] opacity-80">
@@ -69,9 +124,12 @@ function BootingScreen({ message, detail }) {
 
 function MessageScreen({ title, subtitle }) {
   return (
-    <div className="flex h-full w-full items-center justify-center bg-[var(--bg-app)]">
+    <div
+      className="flex h-full w-full items-center justify-center"
+      style={{ background: 'linear-gradient(180deg, var(--bg-editor), var(--bg-app))' }}
+    >
       <div className="px-5 text-center">
-        <div className="mb-1 text-sm text-[var(--text-primary)]">{title}</div>
+        <div className="mb-1 text-sm font-semibold text-[var(--text-primary)]">{title}</div>
         {subtitle ? <div className="text-xs text-[var(--text-muted)]">{subtitle}</div> : null}
       </div>
     </div>
@@ -93,13 +151,14 @@ function Ripple({ x, y, onComplete }) {
 
   return (
     <div
-      className="absolute bg-white/30 rounded-full pointer-events-none animate-ping origin-center"
+      className="pointer-events-none absolute animate-ping rounded-full"
       style={{
         left: x,
         top: y,
         width: 40,
         height: 40,
         transform: 'translate(-50%, -50%)',
+        background: 'color-mix(in srgb, var(--attention-purple) 34%, transparent)',
       }}
     />
   );
@@ -197,7 +256,7 @@ export default function EmulatorScreen({
 
   // Early return for OFF state
   if (state === EMULATOR_STATES.OFF) {
-    return <div className="h-full w-full bg-black" />;
+    return <div className="h-full w-full" style={{ background: 'var(--bg-editor)' }} />;
   }
 
   const emitInput = (payload) => {
@@ -466,7 +525,7 @@ export default function EmulatorScreen({
   }
 
   if (state === EMULATOR_STATES.IDLE) {
-    return <HomeScreenMock />;
+    return <StandbyScreen />;
   }
 
   if (state === EMULATOR_STATES.NO_APP) {
@@ -484,16 +543,22 @@ export default function EmulatorScreen({
     return (
       <div
         ref={containerRef}
-        className="h-full w-full bg-black relative flex items-center justify-center outline-none focus:ring-1 focus:ring-green-500/50"
+        className="relative flex h-full w-full items-center justify-center outline-none focus:ring-1"
+        style={{
+          background: 'var(--bg-editor)',
+          '--tw-ring-color': 'color-mix(in srgb, var(--attention-purple) 42%, transparent)',
+        }}
         tabIndex={0}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        onClick={onContainerClick}        onWheel={onWheel}
-        onContextMenu={onContextMenu}      >
+        onClick={onContainerClick}
+        onWheel={onWheel}
+        onContextMenu={onContextMenu}
+      >
         {/* Video element - uses flex centering and max dimensions to strictly match aspect ratio without math */}
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "max-w-full max-h-full touch-none" : "hidden"}
+          className={hasVideoTrack ? 'max-h-full max-w-full touch-none' : 'hidden'}
           style={{ display: hasVideoTrack ? 'block' : 'none' }}
           muted
           playsInline
@@ -505,7 +570,7 @@ export default function EmulatorScreen({
 
         {!hasVideoTrack && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <MessageScreen title="Waiting for device stream…" subtitle="No video track yet." />
+            <MessageScreen title="Waiting for device stream" subtitle="No video track yet." />
           </div>
         )}
 
