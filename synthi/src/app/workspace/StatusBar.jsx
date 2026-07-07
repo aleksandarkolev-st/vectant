@@ -1103,7 +1103,7 @@ function StatusBarInner({
           {deferredIsAnalyzing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-secondary)' }} strokeWidth={2} />
-              <span style={{ color: 'var(--text-secondary)' }}>Analyzing</span>
+              <span className="status-island-label" style={{ color: 'var(--text-secondary)' }}>Analyzing</span>
             </>
           ) : (
             <>

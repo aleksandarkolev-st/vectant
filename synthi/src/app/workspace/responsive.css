@@ -194,6 +194,34 @@
     display: inline !important;
 }
 
+.vp-mobile .status-island .status-island-label,
+.vp-mobile .status-island .status-island-cursor,
+.vp-mobile .status-island .status-island-branch button > span,
+.vp-mobile .status-island .status-island-branch button > svg:last-child {
+    max-width: 0 !important;
+    opacity: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+.vp-mobile .status-island .status-island-branch button {
+    gap: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+.vp-mobile .status-island .status-island-row {
+    gap: 4px !important;
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+}
+
+.vp-mobile .status-island .status-island-zone {
+    gap: 2px !important;
+}
+
 /* On mobile the island hovers OVER the editor (user-requested) — no bottom
  * padding is reserved for it. The activity bar (also fixed) does need its
  * 48px of clearance so its taps don't fight with editor content under it. */
