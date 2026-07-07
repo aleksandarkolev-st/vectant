@@ -558,6 +558,90 @@ export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy
   };
 }
 
+export function buildPreviewGatewayDecision(input, policy = readLocalSupportPolicy()) {
+  const envelopeDecision = validateRequestEnvelope(input, policy);
+  if (envelopeDecision.decision === "denied") {
+    return {
+      ...envelopeDecision,
+      preview_forward: false,
+      browser_stream_only: false,
+      raw_body_included: false,
+      response_body_included: false,
+    };
+  }
+
+  if (input.capability !== "localhost.preview.browser") {
+    return previewDeny("preview_capability_required", "Preview gateway only accepts browser preview envelopes.", policy);
+  }
+  if (input.actor !== "user_browser") {
+    return previewDeny("browser_only_preview_required", "Preview gateway responses may stream only to the user's browser.", policy);
+  }
+
+  const method = String(input.preview_method || input.method || "").toUpperCase();
+  if (!["GET", "HEAD"].includes(method)) {
+    return previewDeny("preview_method_not_allowed", "Preview gateway allows only GET and HEAD requests.", policy);
+  }
+
+  const port = clampNumber(input.approved_port ?? input.port, 1, 65_535, 0);
+  if (port <= 0) {
+    return previewDeny("preview_port_invalid", "Preview port was not accepted.", policy);
+  }
+  const requestedPort = clampNumber(input.requested_port ?? input.target_port ?? port, 1, 65_535, 0);
+  if (requestedPort !== port) {
+    return previewDeny("preview_port_mismatch", "Preview request was not for the approved port.", policy);
+  }
+
+  const previewHost = String(input.preview_host || "").toLowerCase();
+  if (!isSafePreviewHost(previewHost, port)) {
+    return previewDeny("preview_host_mismatch", "Preview host was not bound to the approved port.", policy);
+  }
+
+  const targetHost = String(input.target_host || input.target_ip || "").trim().toLowerCase();
+  if (!isLoopbackTargetHost(targetHost)) {
+    return previewDeny("preview_target_not_loopback", "Preview target must be a loopback service.", policy);
+  }
+
+  const path = String(input.preview_path || input.path || "/");
+  if (!isSafePreviewPath(path)) {
+    return previewDeny("preview_path_invalid", "Preview path was not accepted.", policy);
+  }
+
+  const headerDecision = validatePreviewRequestHeaderSummary(input.request_headers || input.headers || {});
+  if (headerDecision) {
+    return previewDeny(headerDecision, "Preview request headers were not accepted.", policy);
+  }
+
+  return {
+    decision: "preview_gateway_ready",
+    reason: "browser_only_loopback_preview_authorized",
+    preview_forward: true,
+    browser_stream_only: true,
+    support_read_allowed: false,
+    ai_read_allowed: false,
+    response_body_included: false,
+    raw_body_included: false,
+    bytes_sent: 0,
+    request_id: scrubTelemetryValue(input.request_id),
+    session_id: scrubTelemetryValue(input.session_id),
+    workspace_id: scrubTelemetryValue(input.workspace_id),
+    account_id: scrubTelemetryValue(input.account_id),
+    org_id: scrubTelemetryValue(input.org_id),
+    device_fingerprint: scrubTelemetryValue(input.device_fingerprint),
+    capability: "localhost.preview.browser",
+    actor: "user_browser",
+    preview_host: scrubTelemetryValue(previewHost),
+    target_host: scrubTelemetryValue(targetHost),
+    approved_port: port,
+    method,
+    path: scrubTelemetryValue(path),
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    control_plane_log_class: "local_support.control",
+    data_plane_log_class: "local_support.preview",
+    user_visible_message: "Preview may stream to the user's browser only. Vectant AI and support receive no page body.",
+  };
+}
+
 export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
   const state = input && typeof input === "object" ? input : {};
   const devices = Array.isArray(state.devices) ? state.devices : [];
@@ -771,6 +855,73 @@ function isSessionRevoked(sessionId, policy) {
 
 function isDeviceRevoked(deviceFingerprint, policy) {
   return revokedDevices.has(deviceFingerprint) || policy.revoked_devices?.includes(deviceFingerprint);
+}
+
+function previewDeny(reason, message, policy) {
+  return {
+    decision: "denied",
+    reason,
+    policy_version: policy.policy_version,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+    user_visible_message: message,
+    preview_forward: false,
+    browser_stream_only: false,
+    raw_body_included: false,
+    response_body_included: false,
+  };
+}
+
+function isSafePreviewHost(host, port) {
+  return host === `br-local-p${port}.vectant-preview.dev`;
+}
+
+function isLoopbackTargetHost(host) {
+  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) return true;
+  if (/^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(host)) {
+    return host.split(".").every((part) => Number(part) >= 0 && Number(part) <= 255);
+  }
+  return false;
+}
+
+function isSafePreviewPath(path) {
+  return typeof path === "string"
+    && path.startsWith("/")
+    && !path.startsWith("//")
+    && !path.includes("\\")
+    && !/[\u0000-\u001F\u007F]/.test(path)
+    && !/^\/(?:\.{1,2})(?:\/|$)/.test(path)
+    && !/^\/service-worker\.js(?:[?#]|$)/i.test(path)
+    && !/^\/sw\.js(?:[?#]|$)/i.test(path)
+    && path.length <= 2048;
+}
+
+function validatePreviewRequestHeaderSummary(headers) {
+  const pairs = Array.isArray(headers)
+    ? headers
+    : headers && typeof headers === "object"
+      ? Object.entries(headers)
+      : [];
+  for (const [name, value] of pairs) {
+    const lower = String(name || "").toLowerCase();
+    const stringValue = String(value || "");
+    if (["cookie", "authorization", "proxy-authorization"].includes(lower)) {
+      return "preview_credentials_header_blocked";
+    }
+    if (lower === "upgrade" && stringValue.toLowerCase().includes("websocket")) {
+      return "preview_websocket_blocked";
+    }
+    if (lower.startsWith("sec-websocket")) {
+      return "preview_websocket_blocked";
+    }
+    if (lower === "service-worker") {
+      return "preview_service_worker_blocked";
+    }
+    if (lower === "content-length" && Number(stringValue) > 0) {
+      return "preview_request_body_blocked";
+    }
+  }
+  return null;
 }
 
 function normalizeTransparencyState(value, allowed, fallback) {

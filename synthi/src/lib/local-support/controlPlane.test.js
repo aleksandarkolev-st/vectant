@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
+  buildPreviewGatewayDecision,
   buildRelayForwardDecision,
   constantTimeStringEqual,
   enforceRequestEnvelopeReplayProtection,
@@ -486,6 +487,92 @@ describe("local support control plane policy", () => {
     });
     expect(clamped.scanner_version).toContain("authorization: [REDACTED]");
     expect(JSON.stringify(clamped)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("authorizes browser-only localhost preview and blocks SSRF or support reads", () => {
+    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const previewEnvelope = envelope({
+      actor: "user_browser",
+      capability: "localhost.preview.browser",
+      request_id: "req_preview",
+      preview_host: "br-local-p3000.vectant-preview.dev",
+      target_host: "127.0.0.1",
+      approved_port: 3000,
+      requested_port: 3000,
+      preview_method: "GET",
+      preview_path: "/dashboard",
+      request_headers: {
+        accept: "text/html",
+      },
+    });
+
+    expect(buildPreviewGatewayDecision(previewEnvelope, policy)).toMatchObject({
+      decision: "preview_gateway_ready",
+      preview_forward: true,
+      browser_stream_only: true,
+      support_read_allowed: false,
+      ai_read_allowed: false,
+      response_body_included: false,
+      raw_body_included: false,
+      bytes_sent: 0,
+      actor: "user_browser",
+      approved_port: 3000,
+    });
+
+    expect(buildPreviewGatewayDecision({
+      ...previewEnvelope,
+      request_id: "req_preview_support",
+      actor: "support_agent",
+    }, policy)).toMatchObject({
+      decision: "denied",
+      reason: "browser_only_preview_required",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision({
+      ...previewEnvelope,
+      request_id: "req_preview_metadata",
+      target_host: "169.254.169.254",
+    }, policy)).toMatchObject({
+      decision: "denied",
+      reason: "preview_target_not_loopback",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision({
+      ...previewEnvelope,
+      request_id: "req_preview_cookie",
+      request_headers: { cookie: "sid=secret" },
+    }, policy)).toMatchObject({
+      decision: "denied",
+      reason: "preview_credentials_header_blocked",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision({
+      ...previewEnvelope,
+      request_id: "req_preview_ws",
+      request_headers: { upgrade: "websocket" },
+    }, policy)).toMatchObject({
+      decision: "denied",
+      reason: "preview_websocket_blocked",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision({
+      ...previewEnvelope,
+      request_id: "req_preview_host",
+      preview_host: "br-local-p3001.vectant-preview.dev",
+    }, policy)).toMatchObject({
+      decision: "denied",
+      reason: "preview_host_mismatch",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
   });
 
   it("builds scrubbed transparency state without renderer secrets", () => {
