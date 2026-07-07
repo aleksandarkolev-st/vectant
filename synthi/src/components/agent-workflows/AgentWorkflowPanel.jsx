@@ -788,6 +788,56 @@ function ReadinessRow({ row }) {
   );
 }
 
+function WorkflowCommandStrip({ items, activeId, onSelect }) {
+  return (
+    <div
+      data-testid="agent-workflow-command-strip"
+      className="grid gap-1 rounded-md border p-1 sm:grid-cols-4"
+      style={{
+        borderColor: 'var(--border-subtle)',
+        background: 'color-mix(in srgb, var(--bg-panel) 72%, transparent)',
+      }}
+      role="tablist"
+      aria-label="Workflow sections"
+    >
+      {items.map((item) => {
+        const active = activeId === item.id;
+        const Icon = item.icon || Workflow;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className="th-focus-ring grid min-h-11 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
+            style={{
+              borderColor: active
+                ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                : 'color-mix(in srgb, var(--border-subtle) 74%, transparent)',
+              background: active
+                ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                : 'color-mix(in srgb, var(--bg-app) 34%, transparent)',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            }}
+            onClick={() => onSelect?.(item.id)}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+            <span className="min-w-0">
+              <span className="block truncate font-semibold">{item.label}</span>
+              <span className="block truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                {item.detail}
+              </span>
+            </span>
+            <span className="font-mono text-[10px]" style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
+              {item.count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ActionButton({
   action,
   label,
@@ -894,14 +944,34 @@ function ProfileField({ label, value, onChange, multiline = false }) {
   );
 }
 
-function WorkflowStage({ stage, onAction, isBusy = false }) {
+function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSelect }) {
   const Icon = STAGE_ICONS[stage.id] || Workflow;
   const style = toneStyle(stage.tone);
   const disabled = isBusy || !stage.actionEnabled;
   const disabledMessage = disabled ? (stage.disabledReason || (isBusy ? 'Workflow action in progress...' : undefined)) : undefined;
 
   return (
-    <div className="grid min-h-16 grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div
+      role="button"
+      tabIndex={0}
+      className="grid min-h-16 w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2 text-left transition-[background,border-color] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]"
+      style={{
+        borderColor: selected
+          ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+          : 'var(--border-subtle)',
+        background: selected
+          ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)'
+          : 'transparent',
+      }}
+      aria-pressed={selected}
+      onClick={() => onSelect?.(stage.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect?.(stage.id);
+        }
+      }}
+    >
       <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
         <Icon className="h-3.5 w-3.5" strokeWidth={2} />
       </div>
@@ -920,12 +990,54 @@ function WorkflowStage({ stage, onAction, isBusy = false }) {
         style={{ ...style, minWidth: 64 }}
         disabled={disabled}
         title={disabledMessage}
-        onClick={() => onAction?.(stage.action, { stageId: stage.id })}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAction?.(stage.action, { stageId: stage.id });
+        }}
       >
         {stage.action === WORKFLOW_ACTIONS.END_TEACH ? <Square className="h-3.5 w-3.5" strokeWidth={2} /> : <Play className="h-3.5 w-3.5" strokeWidth={2} />}
         <span className="truncate">{stage.actionLabel}</span>
       </button>
     </div>
+  );
+}
+
+function WorkflowStageInspector({ stage, onAction, isBusy }) {
+  if (!stage) return null;
+  const Icon = STAGE_ICONS[stage.id] || Workflow;
+  return (
+    <section
+      data-testid="agent-workflow-stage-inspector"
+      className="mt-3 rounded-md border px-3 py-3"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--accent-primary) 30%, var(--border-subtle))',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--accent-primary) 6%), color-mix(in srgb, var(--bg-app) 70%, transparent))',
+      }}
+    >
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border" style={toneStyle(stage.tone)}>
+            <Icon className="h-4 w-4" strokeWidth={2} />
+          </span>
+          <div className="min-w-0">
+            <div className="vt-panel-kicker">{stage.label}</div>
+            <h4 className="mt-0.5 truncate text-sm font-semibold">{stage.title}</h4>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
+              {stage.detail}
+            </p>
+          </div>
+        </div>
+        <ActionButton
+          action={stage.action}
+          label={stage.actionLabel}
+          enabled={stage.actionEnabled}
+          disabledReason={stage.disabledReason}
+          icon={stage.id}
+          isBusy={isBusy}
+          onAction={(action) => onAction?.(action, { stageId: stage.id, source: 'stage-inspector' })}
+        />
+      </div>
+    </section>
   );
 }
 
@@ -1004,7 +1116,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
   const blocked = dojo.skillCard?.willNotDo?.length ? dojo.skillCard.willNotDo : dojo.license?.blockedActions || [];
 
   return (
-    <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-dojo">
+    <section className="mt-3 scroll-mt-4 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-dojo" data-workflow-section="dojo">
       <div className="flex items-center justify-between gap-3 px-3 py-2">
         <div className="min-w-0">
           <h3 className="truncate text-xs font-semibold">Dojo Skill</h3>
@@ -1448,6 +1560,8 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   isBusy = false,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
+  const [activeWorkflowSection, setActiveWorkflowSection] = useState('runbook');
+  const [selectedStageId, setSelectedStageId] = useState('');
 
   useEffect(() => {
     const externalTeachState = workflowState?.teach?.state;
@@ -1481,6 +1595,25 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   const headerTone = summary.blockerCount > 0 ? 'warn' : hasGeneratedScript(model) ? 'ok' : 'neutral';
   const headerLabel = localRecording ? 'Teaching' : model.workflow?.label || 'Workflow draft';
   const traceReady = hasRecordedTrace(model);
+  const selectedStage = useMemo(() => (
+    model.stages.find((stage) => stage.id === selectedStageId) || model.stages[0] || null
+  ), [model.stages, selectedStageId]);
+  const workflowSections = useMemo(() => ([
+    { id: 'runbook', label: 'Runbook', detail: headerLabel, count: model.stages.length, icon: Workflow },
+    { id: 'trace', label: 'Trace', detail: traceReady ? 'Captured' : 'Waiting', count: summary.stepCount, icon: Route },
+    { id: 'hardening', label: 'Hardening', detail: summary.blockerCount ? 'Needs review' : 'Clear', count: summary.blockerCount, icon: ShieldCheck },
+    { id: 'dojo', label: 'Dojo', detail: model.dojo?.published ? 'Licensed' : model.dojo?.status || 'Draft', count: model.dojo?.readinessLevel ?? 0, icon: BadgeCheck },
+  ]), [headerLabel, model.dojo?.published, model.dojo?.readinessLevel, model.dojo?.status, model.stages.length, summary.blockerCount, summary.stepCount, traceReady]);
+
+  useEffect(() => {
+    if (!model.stages.length) {
+      setSelectedStageId('');
+      return;
+    }
+    setSelectedStageId((current) => (
+      model.stages.some((stage) => stage.id === current) ? current : model.stages[0].id
+    ));
+  }, [model.stages]);
 
   const emitWorkflowAction = useCallback((action, payload = {}) => {
     if (!action) return;
@@ -1499,6 +1632,13 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
       window.dispatchEvent(new CustomEvent('synthi:agent-workflow-action', { detail }));
     }
   }, [onWorkflowAction, workspaceSlug]);
+
+  const selectWorkflowSection = useCallback((sectionId) => {
+    setActiveWorkflowSection(sectionId);
+    if (typeof document === 'undefined') return;
+    const target = document.querySelector(`[data-workflow-section="${sectionId}"]`);
+    target?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   return (
     <section
@@ -1528,7 +1668,15 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           ))}
         </div>
 
-        <section className="vt-shell-panel mt-4">
+        <div className="mt-3">
+          <WorkflowCommandStrip
+            items={workflowSections}
+            activeId={activeWorkflowSection}
+            onSelect={selectWorkflowSection}
+          />
+        </div>
+
+        <section className="vt-shell-panel mt-4 scroll-mt-4" data-workflow-section="runbook">
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="min-w-0">
               <h3 className="truncate text-xs font-semibold">{model.workflow.title}</h3>
@@ -1541,14 +1689,25 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
             />
           </div>
 
+          <div className="px-3 pb-2">
+            <WorkflowStageInspector stage={selectedStage} onAction={emitWorkflowAction} isBusy={isBusy} />
+          </div>
+
           <div data-testid="agent-workflow-stages">
             {model.stages.map((stage) => (
-              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} isBusy={isBusy} />
+              <WorkflowStage
+                key={stage.id}
+                stage={stage}
+                selected={selectedStage?.id === stage.id}
+                onSelect={setSelectedStageId}
+                onAction={emitWorkflowAction}
+                isBusy={isBusy}
+              />
             ))}
           </div>
         </section>
 
-        <section className="vt-shell-panel mt-3" data-testid="agent-workflow-steps">
+        <section className="vt-shell-panel mt-3 scroll-mt-4" data-testid="agent-workflow-steps" data-workflow-section="trace">
           <div className="flex items-center gap-2 px-3 py-2">
             <Route className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--text-muted)' }} />
             <h3 className="truncate text-xs font-semibold">Recorded Trace</h3>
@@ -1560,11 +1719,13 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           </ol>
         </section>
 
-        <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+        <div className="scroll-mt-4" data-workflow-section="hardening">
+          <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+          {shouldShowIsolationProfile(model) ? (
+            <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
+          ) : null}
+        </div>
         <DojoSkillCredential dojo={model.dojo} traceReady={traceReady} onAction={emitWorkflowAction} workspaceSlug={workspaceSlug} />
-        {shouldShowIsolationProfile(model) ? (
-          <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
-        ) : null}
         <HistoryList history={model.history} />
       </div>
 
