@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
   buildRelayForwardDecision,
   constantTimeStringEqual,
@@ -17,6 +18,7 @@ import {
 const future = () => new Date(Date.now() + 60_000).toISOString();
 
 afterEach(() => {
+  clearAdminRevocationStore();
   clearRequestEnvelopeReplayCache();
 });
 
@@ -150,6 +152,28 @@ describe("local support control plane policy", () => {
     expect(validateRequestEnvelope(envelope({ app_version: "0.1.2" }), requestsEnabled)).toMatchObject({
       decision: "denied",
       reason: "app_version_blocked",
+    });
+  });
+
+  it("denies revoked sessions and devices from env or admin state", () => {
+    const policy = readLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+      VECTANT_LOCAL_SUPPORT_REVOKED_SESSIONS: "sess_123",
+      VECTANT_LOCAL_SUPPORT_REVOKED_DEVICES: "sha256:2222222222222222",
+    });
+
+    expect(validateRequestEnvelope(envelope(), policy)).toMatchObject({
+      decision: "denied",
+      reason: "session_revoked",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({
+      session_id: "sess_ok",
+      device_fingerprint: "sha256:2222222222222222",
+    }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "device_revoked",
+      bytes_sent: 0,
     });
   });
 

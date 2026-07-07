@@ -42,6 +42,8 @@ const SECURITY_EVENT_TYPES = new Set([
 const MAX_REPLAY_CACHE_ENTRIES = 5_000;
 const replayCache = new Map();
 const pairingSessions = new Map();
+const revokedSessions = new Set();
+const revokedDevices = new Set();
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 const MAX_PAIRING_ATTEMPTS = 5;
 
@@ -70,6 +72,8 @@ export function readLocalSupportPolicy(env = process.env) {
   const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED === "true";
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
   const vulnerableVersions = parseCsv(env.VECTANT_LOCAL_SUPPORT_VULNERABLE_VERSIONS);
+  const revokedSessionIds = parseCsv(env.VECTANT_LOCAL_SUPPORT_REVOKED_SESSIONS);
+  const revokedDeviceFingerprints = parseCsv(env.VECTANT_LOCAL_SUPPORT_REVOKED_DEVICES);
   const noRetention = env.VECTANT_LOCAL_SUPPORT_NO_RETENTION === "true";
   const retentionDays = noRetention
     ? 0
@@ -86,6 +90,8 @@ export function readLocalSupportPolicy(env = process.env) {
     org_id: allowedOrgId,
     device_fingerprint: allowedDeviceFingerprint,
     vulnerable_versions: vulnerableVersions,
+    revoked_sessions: revokedSessionIds,
+    revoked_devices: revokedDeviceFingerprints,
     policy_version: POLICY_VERSION,
     protocol_version: LOCAL_SUPPORT_PROTOCOL,
     retention: {
@@ -102,6 +108,8 @@ export function readLocalSupportPolicy(env = process.env) {
       pairing_disabled: pairingDisabled,
       agent_access_disabled: true,
       vulnerable_version_blocklist: vulnerableVersions,
+      revoked_sessions: revokedSessionIds,
+      revoked_devices: revokedDeviceFingerprints,
       update_revocation_supported: true,
     },
     mvp: {
@@ -222,6 +230,11 @@ export function clearPairingChallengeStore() {
   pairingSessions.clear();
 }
 
+export function clearAdminRevocationStore() {
+  revokedSessions.clear();
+  revokedDevices.clear();
+}
+
 export function compareSemverLike(left, right) {
   const parse = (value) => String(value || "0")
     .split(".")
@@ -280,6 +293,12 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   }
   if (policy.device_fingerprint && request.device_fingerprint !== policy.device_fingerprint) {
     return deny("device_mismatch", "This support request is not for the paired local device.");
+  }
+  if (isSessionRevoked(request.session_id, policy)) {
+    return deny("session_revoked", "This support session was revoked.");
+  }
+  if (isDeviceRevoked(request.device_fingerprint, policy)) {
+    return deny("device_revoked", "This local support device was revoked.");
   }
   if (!isSha256Hex(request.device_fingerprint, 16)) {
     return deny("device_fingerprint_invalid", "The device fingerprint was not accepted.");
@@ -687,6 +706,25 @@ export function buildAdminRevokeDecision(input, policy = readLocalSupportPolicy(
   };
 }
 
+export function recordAdminRevocation(input, policy = readLocalSupportPolicy()) {
+  const decision = buildAdminRevokeDecision(input, policy);
+  if (decision.decision === "denied") {
+    return decision;
+  }
+  if (decision.target_type === "session") {
+    revokedSessions.add(decision.target_id);
+  }
+  if (decision.target_type === "device") {
+    revokedDevices.add(decision.target_id);
+  }
+  return {
+    ...decision,
+    revocation_recorded: true,
+    revoked_sessions_count: revokedSessions.size,
+    revoked_devices_count: revokedDevices.size,
+  };
+}
+
 function deny(reason, message) {
   return {
     decision: "denied",
@@ -725,6 +763,14 @@ function normalizePolicyLayer(value) {
     };
   }
   return { decision: "allow" };
+}
+
+function isSessionRevoked(sessionId, policy) {
+  return revokedSessions.has(sessionId) || policy.revoked_sessions?.includes(sessionId);
+}
+
+function isDeviceRevoked(deviceFingerprint, policy) {
+  return revokedDevices.has(deviceFingerprint) || policy.revoked_devices?.includes(deviceFingerprint);
 }
 
 function normalizeTransparencyState(value, allowed, fallback) {

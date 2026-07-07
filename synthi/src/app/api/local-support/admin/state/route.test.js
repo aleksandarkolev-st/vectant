@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  clearAdminRevocationStore,
+  clearRequestEnvelopeReplayCache,
+  signRequestEnvelope,
+} from "@/lib/local-support/controlPlane";
+import { POST as REQUEST_ENVELOPE_POST } from "@/app/api/local-support/request-envelope/route";
+
 import { GET, POST } from "./route";
 
 const OLD_ENV = { ...process.env };
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
+  clearAdminRevocationStore();
+  clearRequestEnvelopeReplayCache();
 });
 
 function adminGet(headers = {}) {
@@ -25,6 +34,40 @@ function adminPost(body, headers = {}) {
     },
     body: JSON.stringify(body),
   });
+}
+
+function requestEnvelope(body) {
+  return new Request("https://beta.vectant.dev/api/local-support/request-envelope", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://beta.vectant.dev",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function signedEnvelope(overrides = {}) {
+  const body = {
+    request_id: "req_admin_revoke",
+    session_id: "sess_123",
+    account_id: "acct_123",
+    org_id: "org_123",
+    workspace_id: "wk_123",
+    device_fingerprint: "sha256:1111111111111111",
+    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    capability: "workspace.log.read",
+    actor: "support_agent",
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    app_version: "0.1.0",
+    protocol_version: "local-support-mvp.1",
+    policy_version: "2026.07.05",
+    ...overrides,
+  };
+  return {
+    ...body,
+    signature: signRequestEnvelope(body, "test-envelope-secret"),
+  };
 }
 
 describe("local support admin state route", () => {
@@ -144,6 +187,7 @@ describe("local support admin state route", () => {
       reason: "session_revocation_requested",
       target_type: "session",
       target_id: "sess_123",
+      revocation_recorded: true,
       bytes_sent: 0,
       raw_body_included: false,
       local_enforcement_required: true,
@@ -159,6 +203,39 @@ describe("local support admin state route", () => {
     await expect(invalid.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "invalid_admin_revoke_target",
+      bytes_sent: 0,
+    });
+  });
+
+  it("admin session revoke immediately denies signed request envelopes", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const before = await REQUEST_ENVELOPE_POST(requestEnvelope(signedEnvelope({ request_id: "req_before_revoke" })));
+    expect(before.status).toBe(200);
+    await expect(before.json()).resolves.toMatchObject({
+      decision: "approval_required",
+      bytes_sent: 0,
+    });
+
+    const revoke = await POST(
+      adminPost(
+        { target_type: "session", target_id: "sess_123" },
+        { "x-vectant-admin-token": "admin-secret" },
+      ),
+    );
+    expect(revoke.status).toBe(200);
+    await expect(revoke.json()).resolves.toMatchObject({
+      decision: "revocation_required",
+      revocation_recorded: true,
+    });
+
+    const after = await REQUEST_ENVELOPE_POST(requestEnvelope(signedEnvelope({ request_id: "req_after_revoke" })));
+    expect(after.status).toBe(403);
+    await expect(after.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "session_revoked",
       bytes_sent: 0,
     });
   });

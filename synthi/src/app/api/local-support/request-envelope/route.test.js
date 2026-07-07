@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { clearRequestEnvelopeReplayCache, signRequestEnvelope } from "@/lib/local-support/controlPlane";
+import {
+  clearAdminRevocationStore,
+  clearRequestEnvelopeReplayCache,
+  signRequestEnvelope,
+} from "@/lib/local-support/controlPlane";
 
 import { POST } from "./route";
 
@@ -8,6 +12,7 @@ const OLD_ENV = { ...process.env };
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
+  clearAdminRevocationStore();
   clearRequestEnvelopeReplayCache();
 });
 

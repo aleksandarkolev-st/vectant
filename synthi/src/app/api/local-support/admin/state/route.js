@@ -5,6 +5,7 @@ import {
   buildAdminRevokeDecision,
   constantTimeStringEqual,
   readLocalSupportPolicy,
+  recordAdminRevocation,
   summarizeAdminState,
 } from "@/lib/local-support/controlPlane";
 
@@ -32,7 +33,7 @@ export async function POST(req) {
     return jsonNoStore(denied.body, denied.status);
   }
 
-  const decision = buildAdminRevokeDecision(bodyResult.value, readLocalSupportPolicy());
+  const decision = recordAdminRevocation(bodyResult.value, readLocalSupportPolicy());
   const status = decision.decision === "denied" ? 400 : 200;
   return jsonNoStore(decision, status);
 }
