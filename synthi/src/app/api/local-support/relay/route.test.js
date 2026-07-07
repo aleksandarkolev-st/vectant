@@ -87,6 +87,21 @@ describe("local support relay route", () => {
     });
   });
 
+  it("denies cross-site fetch metadata before relay signature checks", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const response = await POST(request(signedEnvelope(), { headers: { "sec-fetch-site": "cross-site" } }));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "bad_origin",
+      bytes_sent: 0,
+    });
+  });
+
   it("requires signed envelopes and rejects replay before relay forwarding", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";

@@ -19,6 +19,9 @@ export async function readBoundedJson(req, maxBytes = MAX_LOCAL_SUPPORT_CONTROL_
 }
 
 export function isSameOriginRequest(req) {
+  const fetchSite = req.headers.get("sec-fetch-site");
+  if (fetchSite === "cross-site") return false;
+
   const origin = req.headers.get("origin");
   if (!origin) return true;
   const url = new URL(req.url);

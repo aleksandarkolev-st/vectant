@@ -43,6 +43,29 @@ describe("local support security event route", () => {
     });
   });
 
+  it("rejects cross-site fetch metadata telemetry submissions", async () => {
+    vi.stubEnv("VECTANT_LOCAL_SUPPORT_ENABLED", "true");
+    const { POST } = await import("./route");
+
+    const response = await POST(new Request("http://localhost:3000/api/local-support/security-event", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "http://localhost:3000",
+        "sec-fetch-site": "cross-site",
+      },
+      body: JSON.stringify({ event_type: "bad_origin" }),
+    }));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "bad_origin",
+      bytes_sent: 0,
+    });
+  });
+
   it("records scrubbed security events", async () => {
     vi.stubEnv("VECTANT_LOCAL_SUPPORT_ENABLED", "true");
     const { POST } = await import("./route");

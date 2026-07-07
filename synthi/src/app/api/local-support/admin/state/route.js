@@ -15,11 +15,7 @@ export async function GET(req) {
   if (auth) return auth;
 
   const state = parseAdminStateEnv();
-  return NextResponse.json(summarizeAdminState(state, readLocalSupportPolicy()), {
-    headers: {
-      "Cache-Control": "no-store",
-    },
-  });
+  return jsonNoStore(summarizeAdminState(state, readLocalSupportPolicy()));
 }
 
 export async function POST(req) {
@@ -27,37 +23,41 @@ export async function POST(req) {
   if (auth) return auth;
   if (!isSameOriginRequest(req)) {
     const denied = deniedJson("bad_origin", "Request origin was not accepted.");
-    return NextResponse.json(denied.body, { status: denied.status });
+    return jsonNoStore(denied.body, denied.status);
   }
 
   const bodyResult = await readBoundedJson(req);
   if (!bodyResult.ok) {
     const denied = deniedJson(bodyResult.reason, "Request body was too large.", bodyResult.status);
-    return NextResponse.json(denied.body, { status: denied.status });
+    return jsonNoStore(denied.body, denied.status);
   }
 
   const decision = buildAdminRevokeDecision(bodyResult.value, readLocalSupportPolicy());
   const status = decision.decision === "denied" ? 400 : 200;
-  return NextResponse.json(decision, {
-    status,
-    headers: {
-      "Cache-Control": "no-store",
-    },
-  });
+  return jsonNoStore(decision, status);
 }
 
 function authorizeAdmin(req) {
   const expected = process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN;
   if (!expected) {
     const denied = deniedJson("admin_token_unconfigured", "Local Support admin access is not configured.");
-    return NextResponse.json(denied.body, { status: denied.status });
+    return jsonNoStore(denied.body, denied.status);
   }
   const actual = req.headers.get("x-vectant-admin-token") || "";
   if (!constantTimeStringEqual(actual, expected)) {
     const denied = deniedJson("admin_token_invalid", "Local Support admin token was not accepted.");
-    return NextResponse.json(denied.body, { status: 401 });
+    return jsonNoStore(denied.body, 401);
   }
   return null;
+}
+
+function jsonNoStore(body, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 function parseAdminStateEnv() {

@@ -32,6 +32,7 @@ describe("local support admin state route", () => {
     delete process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN;
     let response = await GET(adminGet());
     expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     await expect(response.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "admin_token_unconfigured",
@@ -41,9 +42,33 @@ describe("local support admin state route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
     response = await GET(adminGet({ "x-vectant-admin-token": "wrong" }));
     expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     await expect(response.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "admin_token_invalid",
+      bytes_sent: 0,
+    });
+  });
+
+  it("denies cross-site fetch metadata for admin revocation", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+
+    const response = await POST(
+      adminPost(
+        { target_type: "session", target_id: "sess_123" },
+        {
+          "x-vectant-admin-token": "admin-secret",
+          "sec-fetch-site": "cross-site",
+        },
+      ),
+    );
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "bad_origin",
       bytes_sent: 0,
     });
   });
