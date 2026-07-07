@@ -644,7 +644,7 @@ export default function LocalSupportTransparency() {
                               ["Allowed methods", item.methods],
                               ["Request rate", item.requestRate],
                               ["Response size", item.responseLimit],
-                              ["Preview token", revoked ? "Revoked" : item.token],
+                              ["Preview token", revoked ? "Revoked" : "Present, hidden from renderer"],
                               ["Credential headers", "Cookie and Authorization stripped"],
                               ["Redirects", "Loopback only, private network blocked"],
                               ["Service workers", "Blocked"],
