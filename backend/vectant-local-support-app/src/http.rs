@@ -554,6 +554,9 @@ pub fn validate_file_request_authorization(
     if request.workspace_id != session.workspace_id() || request.workspace_id != workspace.workspace_id() {
         return Err(LocalAuthorizationError::WorkspaceMismatch);
     }
+    if request.device_fingerprint != auth.device_fingerprint {
+        return Err(LocalAuthorizationError::DeviceMismatch);
+    }
     let expires_at = DateTime::parse_from_rfc3339(&request.expires_at)
         .map_err(|_| LocalAuthorizationError::InvalidRequestExpiry)?
         .with_timezone(&Utc);

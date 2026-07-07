@@ -41,6 +41,7 @@ fn request(path: &str) -> FileReadRequest {
         account_id: "acct_local".to_string(),
         org_id: "org_local".to_string(),
         workspace_id: "wk_123".to_string(),
+        device_fingerprint: "sha256:pending".to_string(),
         capability: "workspace.file.source.read".to_string(),
         path: path.to_string(),
         max_bytes: Some(262_144),
@@ -174,6 +175,9 @@ fn approval_queue_keeps_review_content_local_until_approval() {
     let mut req = request("server.log");
     req.capability = "workspace.log.read".to_string();
     req.session_id = "sess_queue".to_string();
+    req.account_id = "acct_queue".to_string();
+    req.org_id = "org_queue".to_string();
+    req.device_fingerprint = "sha256:queue-device".to_string();
     let local_review = policy.read_file_for_review(&req);
     assert!(local_review.content.is_some());
 
@@ -193,6 +197,10 @@ fn approval_queue_keeps_review_content_local_until_approval() {
     assert_eq!(receipt.approval_id, approval_id);
     assert_eq!(receipt.request_id, req.request_id);
     assert_eq!(receipt.session_id, "sess_queue");
+    assert_eq!(receipt.account_id, "acct_queue");
+    assert_eq!(receipt.org_id, "org_queue");
+    assert_eq!(receipt.workspace_id, "wk_123");
+    assert_eq!(receipt.device_fingerprint, "sha256:queue-device");
     assert_eq!(receipt.capability, "workspace.log.read");
     assert_eq!(receipt.scope, "once");
 }
@@ -596,6 +604,7 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
     let mut req = request("app.rs");
     req.session_id = session.session_id().to_string();
     let auth = local_auth(&session, &req.request_id);
+    req.device_fingerprint = auth.device_fingerprint.clone();
     let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -628,6 +637,13 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
     assert_eq!(
         validate_file_request_authorization(&session, &policy, &wrong_workspace, &auth, now),
         Err(LocalAuthorizationError::WorkspaceMismatch)
+    );
+
+    let mut mismatched_body_device = req.clone();
+    mismatched_body_device.device_fingerprint = "sha256:bodybad0".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &mismatched_body_device, &auth, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
     );
 
     let mut expired = req.clone();
@@ -1152,6 +1168,10 @@ fn audit_export_contains_consent_receipts_and_detects_tampering() {
         approval_id: "appr_123".to_string(),
         request_id: "req_log".to_string(),
         session_id: "sess_123".to_string(),
+        account_id: "acct_123".to_string(),
+        org_id: "org_123".to_string(),
+        workspace_id: "wk_123".to_string(),
+        device_fingerprint: "sha256:device12345678".to_string(),
         actor: "support_agent".to_string(),
         capability: "workspace.log.read".to_string(),
         target_display: "dev-server.log".to_string(),

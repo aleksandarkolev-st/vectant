@@ -18,6 +18,7 @@ pub struct FileReadRequest {
     pub account_id: String,
     pub org_id: String,
     pub workspace_id: String,
+    pub device_fingerprint: String,
     pub capability: String,
     pub path: String,
     pub max_bytes: Option<u64>,
