@@ -535,6 +535,10 @@ function contentHash(value) {
   return `sha256:${sha256(value)}`;
 }
 
+function byteContentHash(value) {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
 function gitBlobObjectId(bytes) {
   const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   return createHash('sha1')
@@ -6994,6 +6998,26 @@ async function selfCheck() {
   const runtimeHashC = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
   const runtimeHashD = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
   const runtimeHashE = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const runtimeRawReadbackBytes = Buffer.from(Array.from({ length: 128 }, (_, index) =>
+    (index * 13 + 7) % 256
+  ));
+  const runtimeRawReadbackPath = path.join(runtimeBoundaryBridgeDir, 'raw-readback.bin');
+  const runtimeReadbackSchemaBytes = Buffer.from(`${stableJson({
+    byteLength: runtimeRawReadbackBytes.length,
+    format: 'bytes',
+    outputTargetId: 'allocation-1',
+  })}\n`);
+  const runtimeReadbackSchemaPath = path.join(runtimeBoundaryBridgeDir, 'readback-schema.json');
+  const runtimeComputeProofCardBytes = Buffer.from('random cold runtime boundary compute proof card\n');
+  const runtimeComputeProofCardPath = path.join(runtimeBoundaryBridgeDir, 'compute-proof-card.txt');
+  await writeFile(runtimeRawReadbackPath, runtimeRawReadbackBytes);
+  await writeFile(runtimeReadbackSchemaPath, runtimeReadbackSchemaBytes);
+  await writeFile(runtimeComputeProofCardPath, runtimeComputeProofCardBytes);
+  const runtimeRawReadbackHash = byteContentHash(runtimeRawReadbackBytes);
+  const runtimeReadbackSchemaHash = byteContentHash(runtimeReadbackSchemaBytes);
+  const runtimeComputeProofCardHash = byteContentHash(runtimeComputeProofCardBytes);
+  const runtimeDeterministicSliceBytes = runtimeRawReadbackBytes.subarray(0, 64);
+  const runtimeDeterministicSliceHash = byteContentHash(runtimeDeterministicSliceBytes);
   const genericBoundaryEvents = [
     {
       kind: 'artifact_transport',
@@ -7090,35 +7114,37 @@ async function selfCheck() {
     cacheState: 'compiler_cache_warm',
     runtimeBoundaryEvents: genericBoundaryEvents,
     computeOracleArtifacts: {
-      raw_readback_bin: 'runtime-boundary://raw-readback',
-      readback_schema_json: 'runtime-boundary://readback-schema',
+      raw_readback_bin: repoRelativePath(runtimeRawReadbackPath),
+      readback_schema_json: repoRelativePath(runtimeReadbackSchemaPath),
       checksum_before: runtimeHashA,
-      checksum_after: runtimeHashB,
+      checksum_after: runtimeRawReadbackHash,
       expected_output_change: true,
       expected_output_verified: true,
-      expected_output_hash: runtimeHashB,
+      expected_output_hash: runtimeRawReadbackHash,
       deterministic_slice: {
         offset: 0,
-        length: 64,
+        length: runtimeDeterministicSliceBytes.length,
         format: 'bytes',
-        hash: runtimeHashC,
+        hash: runtimeDeterministicSliceHash,
       },
-      raw_readback_hash: runtimeHashB,
+      raw_readback_hash: runtimeRawReadbackHash,
       raw_readback_hash_verified: true,
-      raw_readback_byte_length: 128,
+      raw_readback_byte_length: runtimeRawReadbackBytes.length,
       raw_readback_source: 'runtime_raw_readback',
-      deterministic_slice_hash: runtimeHashC,
+      deterministic_slice_hash: runtimeDeterministicSliceHash,
       deterministic_slice_hash_verified: true,
       raw_readback_verification: {
         hash_verified: true,
-        byte_length: 128,
-        deterministic_slice_hash: runtimeHashC,
+        byte_length: runtimeRawReadbackBytes.length,
+        deterministic_slice_hash: runtimeDeterministicSliceHash,
         deterministic_slice_hash_verified: true,
         expected_output_verified: true,
         slice_bounds_verified: true,
       },
       oracle_code_hash: runtimeHashC,
-      rendered_card_png: 'runtime-boundary://compute-proof-card.png',
+      readback_schema_hash: runtimeReadbackSchemaHash,
+      rendered_card_png: repoRelativePath(runtimeComputeProofCardPath),
+      rendered_card_hash: runtimeComputeProofCardHash,
       producer: 'random_cold_runtime_boundary_profile_self_check',
       timestamp_after_dispatch: 400,
       epoch: 'epoch-7',
