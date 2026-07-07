@@ -4414,6 +4414,17 @@ const fileBackedBoundaryLines = [
   `[gpu-runtime-boundary] host_identity role=stream_context ptr=0x3001 aux=7 generation=2 runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} device_uuid=device:file-backed context_id=context:file-backed queue_id=queue:file-backed timestamp_monotonic_ns=360`,
   `[gpu-runtime-boundary] output_oracle after_dispatch_id=${fileBackedDispatchId} output_target_id=${fileBackedOutputTargetId} raw_readback_hash=${fileBackedRawReadbackHash} runtime_session=${fileBackedRuntimeSession} process_id=${fileBackedProcessId} dispatch_table_entry_id=${fileBackedDispatchTableEntryId} timestamp_monotonic_ns=400`,
 ];
+const fileBackedRuntimeBoundaryTargetEnvironment =
+  runtimeBoundaryTargetEnvironmentFixture('random-cold-file-backed-import', {
+    runtimeSession: fileBackedRuntimeSession,
+    runtime_session: fileBackedRuntimeSession,
+  });
+const fileBackedRuntimeBoundaryTargetProcessProvenance =
+  runtimeBoundaryTargetProcessProvenanceFixture(
+    'random-cold-file-backed-import',
+    fileBackedBoundaryLines,
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  );
 const fileBackedLineHashes = fileBackedBoundaryLines.map(hashValue);
 const fileBackedLineSourceEventHashes = fileBackedBoundaryLines.map((_, index) =>
   hashValue(`file-backed-adapter-import:source-event:${index}`)
@@ -4624,6 +4635,25 @@ const fileBackedAdapterResultPath = path.join(
 const fileBackedProofRelPath = path.relative(tmpRoot, fileBackedProofPath).replace(/\\/g, '/');
 const fileBackedAdapterResultRelPath =
   path.relative(tmpRoot, fileBackedAdapterResultPath).replace(/\\/g, '/');
+const fileBackedRuntimeProofArtifactWithTargetProcess = {
+  ...fileBackedRuntimeBoundaryRunModeProof.runtimeProofArtifact,
+  realRocmRuntimeBoundaryTargetEnvironment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  real_rocm_runtime_boundary_target_environment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  runtimeBoundaryTargetEnvironment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  runtime_boundary_target_environment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  realRocmRuntimeBoundaryTargetProcessProvenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  real_rocm_runtime_boundary_target_process_provenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  runtimeBoundaryTargetProcessProvenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  runtime_boundary_target_process_provenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+};
 const fileBackedProof = {
   schemaVersion: 'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1',
   schema_version: 'synthi.gpu_hmr.runtime_profile_boundary_adapter_proof.v1',
@@ -4694,8 +4724,24 @@ const fileBackedProof = {
     runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
     runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
   },
-  runtimeProofArtifact: fileBackedRuntimeBoundaryRunModeProof.runtimeProofArtifact,
-  runtime_proof_artifact: fileBackedRuntimeBoundaryRunModeProof.runtimeProofArtifact,
+  realRocmRuntimeBoundaryTargetEnvironment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  real_rocm_runtime_boundary_target_environment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  runtimeBoundaryTargetEnvironment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  runtime_boundary_target_environment:
+    fileBackedRuntimeBoundaryTargetEnvironment,
+  realRocmRuntimeBoundaryTargetProcessProvenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  real_rocm_runtime_boundary_target_process_provenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  runtimeBoundaryTargetProcessProvenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  runtime_boundary_target_process_provenance:
+    fileBackedRuntimeBoundaryTargetProcessProvenance,
+  runtimeProofArtifact: fileBackedRuntimeProofArtifactWithTargetProcess,
+  runtime_proof_artifact: fileBackedRuntimeProofArtifactWithTargetProcess,
   proofLedger: fileBackedRuntimeBoundaryRunModeProof.proofLedger,
   proof_ledger: fileBackedRuntimeBoundaryRunModeProof.proofLedger,
 };
@@ -4806,6 +4852,9 @@ const fileBackedAdapterImportLedger = await collectGpuHmrValidationMatrixLedger(
 const fileBackedAdapterImportRow = fileBackedAdapterImportLedger.rows.find(
   (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-file-backed-import',
 );
+const fileBackedImportedRuntimeClosureRow = fileBackedAdapterImportLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_imported_runtime_closure',
+);
 assert.equal(fileBackedAdapterImportRow?.acceptedForGpuHmr, false);
 assert.equal(fileBackedAdapterImportRow.gpuHmrSuccess, false);
 assert.equal(
@@ -4912,12 +4961,55 @@ assert.equal(
   fileBackedAdapterImportRow.randomColdRuntimeAdapterStageEvents.stageResults.output_oracle.fieldChecks.readback_or_visual_artifact,
   true,
 );
+assert.equal(fileBackedImportedRuntimeClosureRow?.acceptedForGpuHmr, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.gpuHmrSuccess, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.acceptanceScope,
+  'rocm_hip_declared_runtime_profile',
+);
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.accepted,
+  true,
+  stableJson(fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath),
+);
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.acceptedForGpuHmr,
+  false,
+);
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.gpuHmrSuccess,
+  false,
+);
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.randomColdImportedRuntimeClosureSourceColdPath.canSatisfyRuntimeProof,
+  false,
+);
+assert.equal(fileBackedImportedRuntimeClosureRow.runtimeProofArtifact.accepted, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.ledger.gpuHmrSuccess, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.runtimeChain.accepted, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.outputOracleFacet.accepted, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.outputOracleFacet.kind, 'compute_oracle');
+assert.equal(fileBackedImportedRuntimeClosureRow.realRocmFirewall.accepted, true);
+assert.equal(fileBackedImportedRuntimeClosureRow.realRocmSameProcessRuntimeOracleGate.accepted, true);
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.targetId,
+  'generic-random-large-runtime-bridge-project',
+);
+assert.equal(
+  fileBackedImportedRuntimeClosureRow.safety.accepted,
+  true,
+  stableJson(fileBackedImportedRuntimeClosureRow.safety),
+);
 const fileBackedAdapterImportCoverage = new Map(
   fileBackedAdapterImportLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
 );
 const fileBackedAdapterImportRuntimeClosure =
   fileBackedAdapterImportCoverage.get('large_arbitrary_project_runtime_closure');
-assert.equal(fileBackedAdapterImportRuntimeClosure?.acceptedForGpuHmr, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure?.status, 'accepted');
+assert.deepEqual(fileBackedAdapterImportRuntimeClosure.openGaps, []);
+assert.equal(fileBackedAdapterImportRuntimeClosure.completeClosureRowCount, 1);
+assert.equal(fileBackedAdapterImportRuntimeClosure.acceptedForGpuHmr, false);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gpuHmrSuccess, false);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publication.observed, true);
@@ -4944,13 +5036,13 @@ assert.equal(
 );
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.strict_runtime_ledger.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cpu_gpu_firewall.accepted, true);
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, false);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, true);
 assert.equal(
   fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_chain.accepted,
   true,
   stableJson(fileBackedAdapterImportRow.realRocmRuntimeChain),
 );
-assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.matrixRuntimeIngestionRequired, false);
 assert.equal(fileBackedAdapterImportRow.realRocmFirewall.accepted, true);
 assert.equal(fileBackedAdapterImportRow.realRocmFirewall.cpuHmrUsed, false);
 assert.equal(fileBackedAdapterImportRow.realRocmFirewall.fullRebuildUsed, false);
@@ -5019,8 +5111,74 @@ assert.ok(!fileBackedAdapterImportRow.openGaps.includes('dispatch_trace_unproven
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('host_identity_unproven'));
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('output_oracle_unproven'));
 assert.ok(!fileBackedAdapterImportRow.openGaps.includes('same_process_loader_unproven'));
-assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.same_process_runtime_oracle.accepted, false);
 assert.ok(fileBackedAdapterImportRow.openGaps.includes('semantic_build_metadata_execution_missing'));
+
+const forgedColdIntakeImportedRuntimeDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-bridge-forged-cold-intake',
+);
+const forgedColdIntakeHash = hashValue('forged-cold-intake-direct-source-identity');
+await writeJson(
+  path.join(forgedColdIntakeImportedRuntimeDir, 'random-cold-runtime-bridge-forged-cold-intake.json'),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-bridge-forged-cold-intake',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-forged-cold-intake.git',
+    immutableCommit: sha256Hex('runtime-bridge-forged-cold-intake:commit').slice(0, 40),
+    directInputEvidenceOverrides: {
+      sourceIdentityHash: forgedColdIntakeHash,
+      source_identity_hash: forgedColdIntakeHash,
+      evidenceHash: forgedColdIntakeHash,
+      evidence_hash: forgedColdIntakeHash,
+    },
+    resultOverrides: {
+      runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
+        runtimeProfileAdapterResultPath: fileBackedAdapterResultRelPath,
+        runtime_profile_adapter_result_path: fileBackedAdapterResultRelPath,
+        runtimeProfileAdapterResultSha256: fileBackedAdapterResultHash,
+        runtime_profile_adapter_result_sha256: fileBackedAdapterResultHash,
+        strictRuntimeProofAccepted: true,
+        strict_runtime_proof_accepted: true,
+        strictRuntimeProofId: fileBackedStrictRuntimeProofId,
+        strict_runtime_proof_id: fileBackedStrictRuntimeProofId,
+        proofLedgerId: fileBackedLedgerId,
+        proof_ledger_id: fileBackedLedgerId,
+        runtimeBoundaryEventManifestPath: 'artifacts/arbitrary/runtime-boundary-events.json',
+        runtime_boundary_event_manifest_path: 'artifacts/arbitrary/runtime-boundary-events.json',
+        runtimeBoundaryEventManifestSha256: fileBackedEventManifestHash,
+        runtime_boundary_event_manifest_sha256: fileBackedEventManifestHash,
+        runtimeBoundaryProofAdapterAccepted: true,
+        runtime_boundary_proof_adapter_accepted: true,
+        runtimeBoundaryProofAdapterProofId: fileBackedAdapterProofId,
+        runtime_boundary_proof_adapter_proof_id: fileBackedAdapterProofId,
+        blockingGaps: [],
+        blocking_gaps: [],
+        adapterResultBlockingGaps: [],
+        adapter_result_blocking_gaps: [],
+      }),
+    },
+  }),
+);
+const forgedColdIntakeImportedRuntimeLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedColdIntakeImportedRuntimeDir],
+  includeInvalidated: true,
+});
+const forgedColdIntakeImportedRuntimeColdRow =
+  forgedColdIntakeImportedRuntimeLedger.rows.find(
+    (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-forged-cold-intake',
+  );
+const forgedColdIntakeImportedRuntimeClosureRow =
+  forgedColdIntakeImportedRuntimeLedger.rows.find(
+    (row) => row.proofMode === 'random_large_project_imported_runtime_closure',
+  );
+assert.equal(forgedColdIntakeImportedRuntimeColdRow?.acceptedForGpuHmr, false);
+assert.equal(forgedColdIntakeImportedRuntimeColdRow.gpuHmrSuccess, false);
+assert.equal(forgedColdIntakeImportedRuntimeColdRow.safety.accepted, false);
+assert.ok(forgedColdIntakeImportedRuntimeColdRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_direct_input_source_identity_hash_mismatch'
+));
+assert.equal(forgedColdIntakeImportedRuntimeClosureRow, undefined);
 
 const missingPlanBindingImportDir = path.join(
   tmpRoot,
@@ -5101,6 +5259,9 @@ const missingPlanBindingLedger = await collectGpuHmrValidationMatrixLedger({
 const missingPlanBindingRow = missingPlanBindingLedger.rows.find(
   (row) => row.targetId === 'direct-random-arbitrary-runtime-bridge-missing-plan-binding',
 );
+const missingPlanBindingImportedRuntimeClosureRow = missingPlanBindingLedger.rows.find(
+  (row) => row.proofMode === 'random_large_project_imported_runtime_closure',
+);
 assert.equal(missingPlanBindingRow?.acceptedForGpuHmr, false);
 assert.equal(missingPlanBindingRow.gpuHmrSuccess, false);
 assert.equal(missingPlanBindingRow.randomColdRuntimeProfileAdapterResultImport.accepted, true);
@@ -5113,6 +5274,7 @@ assert.ok(missingPlanBindingRow.openGaps.includes('strict_runtime_ledger_missing
 assert.ok(missingPlanBindingRow.safety.failedGates.some((gate) =>
   gate.code === 'random_large_project_cold_runtime_boundary_plan_binding_invalid'
 ));
+assert.equal(missingPlanBindingImportedRuntimeClosureRow, undefined);
 
 const forgedAdapterNoOracleFilesDir = path.join(
   tmpRoot,

@@ -18601,6 +18601,45 @@ function rowSafetyFailures(row, context = {}) {
     if (row.runtimeProofArtifact?.accepted !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
     }
+    if (firstText(row.proofMode, row.proof_mode) === 'random_large_project_imported_runtime_closure') {
+      const sourceColdPath = compactObject(
+        row.randomColdImportedRuntimeClosureSourceColdPath
+        ?? row.random_cold_imported_runtime_closure_source_cold_path,
+      );
+      const sourceColdPathAuthority = firstText(
+        sourceColdPath.proofAuthority,
+        sourceColdPath.proof_authority,
+      );
+      if (sourceColdPath.accepted !== true) {
+        failures.push({
+          code: 'gpu_hmr_success_requires_accepted_random_cold_source_intake',
+        });
+        failures.push(...compactStringList(
+          sourceColdPath.failedGates
+          ?? sourceColdPath.failed_gates,
+        ).map((code) => ({ code })));
+      }
+      if (
+        sourceColdPathAuthority
+        !== 'matrix_recomputed_source_cold_path_intake_only_not_runtime_authority'
+      ) {
+        failures.push({
+          code: 'gpu_hmr_success_requires_random_cold_source_intake_authority',
+        });
+      }
+      if (
+        firstBool(sourceColdPath.acceptedForGpuHmr, sourceColdPath.accepted_for_gpu_hmr) === true
+        || firstBool(sourceColdPath.gpuHmrSuccess, sourceColdPath.gpu_hmr_success) === true
+        || firstBool(
+          sourceColdPath.canSatisfyRuntimeProof,
+          sourceColdPath.can_satisfy_runtime_proof,
+        ) === true
+      ) {
+        failures.push({
+          code: 'random_cold_source_intake_facet_cannot_claim_gpu_hmr_authority',
+        });
+      }
+    }
     const runtimeTargetIdentity = compactObject(
       row.runtimeTargetIdentity ?? row.runtime_target_identity,
     );
@@ -30802,9 +30841,475 @@ async function randomLargeProjectColdPathRow(json, filePath, context) {
 }
 
 async function randomLargeProjectColdPathRows(json, filePath, context) {
-  return Promise.all(randomColdManifestResults(json).map((result) =>
+  const rows = await Promise.all(randomColdManifestResults(json).map((result) =>
     randomLargeProjectColdPathResultRow(json, filePath, context, result)
   ));
+  return rows.flatMap((row) => (Array.isArray(row) ? row : [row]));
+}
+
+function runtimeClosureAcceptanceScopeForBackend(backend, outputOracleFacet = {}) {
+  const normalizedBackend = valueFieldText(backend);
+  const oracleKind = firstText(
+    outputOracleFacet.kind,
+    outputOracleFacet.oracleKind,
+    outputOracleFacet.oracle_kind,
+  );
+  const computeOracle = oracleKind === 'compute_oracle';
+  const visualOracle = oracleKind === 'visual_oracle' || oracleKind === 'runtime_visual_oracle';
+  if (normalizedBackend === 'hip') {
+    return computeOracle || visualOracle ? 'rocm_hip_declared_runtime_profile' : null;
+  }
+  if (normalizedBackend === 'hiprt') return visualOracle ? 'hiprt_declared_visual_profile' : null;
+  if (normalizedBackend === 'opencl') return computeOracle ? 'opencl_declared_compute_readback' : null;
+  if (normalizedBackend === 'vulkan') return visualOracle ? 'vulkan_declared_pipeline_visual' : null;
+  if (normalizedBackend === 'webgpu') {
+    if (computeOracle) return 'webgpu_declared_compute_readback';
+    if (visualOracle) return 'webgpu_declared_pipeline_visual';
+    return null;
+  }
+  return null;
+}
+
+function randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow = {}, context = {}) {
+  const row = compactObject(coldRow);
+  const present = Object.keys(row).length > 0;
+  if (!present) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.random_cold_imported_runtime_closure_source_cold_path.v1',
+      schema_version: 'synthi.gpu_hmr.random_cold_imported_runtime_closure_source_cold_path.v1',
+      proofAuthority: 'matrix_recomputed_source_cold_path_intake_only_not_runtime_authority',
+      proof_authority: 'matrix_recomputed_source_cold_path_intake_only_not_runtime_authority',
+      present: false,
+      accepted: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      failedGates: ['random_cold_imported_runtime_closure_source_cold_path_missing'],
+      failed_gates: ['random_cold_imported_runtime_closure_source_cold_path_missing'],
+    };
+  }
+  const coldPathFacet = compactObject(
+    row.randomLargeProjectColdPath
+    ?? row.random_large_project_cold_path,
+  );
+  const sourceIntake = randomColdSourceIntakeForRow(row);
+  const sourceIntakeEvidence = randomColdSourceIntakeSummary(sourceIntake, row);
+  const sourceIntakeFormConsistency = randomColdSourceIntakeFormConsistency(row);
+  const selectionAudit = randomColdPathSelectionAuditFacet(firstCompactObject(
+    coldPathFacet.selectionAudit,
+    coldPathFacet.selection_audit,
+    row.randomColdPathSelectionAudit,
+    row.random_cold_path_selection_audit,
+    row.selectionAudit,
+    row.selection_audit,
+  ), {
+    selectedCount: finiteNumber(coldPathFacet.selectedCount ?? coldPathFacet.selected_count ?? 1),
+    resultCount: finiteNumber(coldPathFacet.resultCount ?? coldPathFacet.result_count ?? 1),
+  });
+  const sourceUrl = firstText(
+    coldPathFacet.sourceUrl,
+    coldPathFacet.source_url,
+    row.sourceUrl,
+    row.source_url,
+  );
+  const repoPath = firstText(
+    coldPathFacet.repoPath,
+    coldPathFacet.repo_path,
+    coldPathFacet.localRepoPath,
+    coldPathFacet.local_repo_path,
+    row.repoPath,
+    row.repo_path,
+    row.localRepoPath,
+    row.local_repo_path,
+  );
+  const immutableCommit = firstText(
+    coldPathFacet.immutableCommit,
+    coldPathFacet.immutable_commit,
+    row.immutableCommit,
+    row.immutable_commit,
+  );
+  const directInputEvidence = randomColdDirectSourceInputEvidenceFacet(firstCompactObject(
+    coldPathFacet.directInputEvidence,
+    coldPathFacet.direct_input_evidence,
+    row.randomColdPathDirectInputEvidence,
+    row.random_cold_path_direct_input_evidence,
+  ), {
+    requireSourceIdentityHash: true,
+    sourceUrl,
+    repoPath,
+    immutableCommit,
+  });
+  const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
+  const acceptedColdPathRows = randomColdPathRowsForBroadReadiness([row], {
+    ...context,
+    requireLargeSourceTree: false,
+  });
+  const rowAcceptedAsDirectColdInput = acceptedColdPathRows.length === 1;
+  const failedGates = compactStringList([
+    row.proofMode === 'random_large_project_cold_path'
+      ? null
+      : 'random_cold_imported_runtime_closure_source_row_mode_invalid',
+    row.matrixOutcome === 'refusal_proven'
+      ? null
+      : 'random_cold_imported_runtime_closure_source_row_not_refusal_evidence',
+    rowAcceptedAsDirectColdInput
+      ? null
+      : 'random_cold_imported_runtime_closure_source_row_not_direct_arbitrary_cold_intake',
+    sourceIntakeEvidence.accepted === true
+      ? null
+      : 'random_cold_imported_runtime_closure_source_intake_invalid',
+    ...(sourceIntakeEvidence.accepted === true
+      ? []
+      : compactStringList(sourceIntakeEvidence.failedGates ?? sourceIntakeEvidence.failed_gates)),
+    sourceIntakeFormConsistency.accepted === true
+      ? null
+      : 'random_cold_imported_runtime_closure_source_intake_form_invalid',
+    ...(sourceIntakeFormConsistency.accepted === true
+      ? []
+      : compactStringList(
+          sourceIntakeFormConsistency.failedGates
+          ?? sourceIntakeFormConsistency.failed_gates,
+        )),
+    selectionAudit.present === true && selectionAudit.accepted === true
+      ? null
+      : 'random_cold_imported_runtime_closure_selection_audit_invalid',
+    ...(selectionAudit.present === true && selectionAudit.accepted === true
+      ? []
+      : compactStringList(selectionAudit.failedGates ?? selectionAudit.failed_gates)),
+    directInputEvidence.acceptedAsDirectInputEvidence === true
+      ? null
+      : 'random_cold_imported_runtime_closure_direct_input_evidence_invalid',
+    ...(directInputEvidence.acceptedAsDirectInputEvidence === true
+      ? []
+      : compactStringList(directInputEvidence.failedGates ?? directInputEvidence.failed_gates)),
+    sourceContentIdentityHash
+      ? null
+      : 'random_cold_imported_runtime_closure_source_content_identity_missing',
+    firstBool(row.acceptedForGpuHmr, row.accepted_for_gpu_hmr) === true
+      ? 'random_cold_imported_runtime_closure_source_row_claimed_gpu_hmr_acceptance'
+      : null,
+    firstBool(row.gpuHmrSuccess, row.gpu_hmr_success) === true
+      ? 'random_cold_imported_runtime_closure_source_row_claimed_gpu_hmr_success'
+      : null,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.random_cold_imported_runtime_closure_source_cold_path.v1',
+    schema_version: 'synthi.gpu_hmr.random_cold_imported_runtime_closure_source_cold_path.v1',
+    proofAuthority: 'matrix_recomputed_source_cold_path_intake_only_not_runtime_authority',
+    proof_authority: 'matrix_recomputed_source_cold_path_intake_only_not_runtime_authority',
+    present: true,
+    accepted: failedGates.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    rowId: firstText(row.rowId, row.row_id),
+    row_id: firstText(row.rowId, row.row_id),
+    rowAcceptedAsDirectColdInput,
+    row_accepted_as_direct_cold_input: rowAcceptedAsDirectColdInput,
+    sourceIntakeAccepted: sourceIntakeEvidence.accepted === true,
+    source_intake_accepted: sourceIntakeEvidence.accepted === true,
+    sourceIntakeFormAccepted: sourceIntakeFormConsistency.accepted === true,
+    source_intake_form_accepted: sourceIntakeFormConsistency.accepted === true,
+    selectionAuditAccepted: selectionAudit.present === true && selectionAudit.accepted === true,
+    selection_audit_accepted: selectionAudit.present === true && selectionAudit.accepted === true,
+    directInputEvidenceAccepted: directInputEvidence.acceptedAsDirectInputEvidence === true,
+    direct_input_evidence_accepted: directInputEvidence.acceptedAsDirectInputEvidence === true,
+    sourceContentIdentityHash: sourceContentIdentityHash ?? null,
+    source_content_identity_hash: sourceContentIdentityHash ?? null,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function randomColdImportedRuntimeClosureRow({
+  coldRow,
+  filePath,
+  context,
+  backend,
+  result,
+  runtimeProfileAdapterResultImport,
+  runtimeProofArtifactGate,
+  ledger,
+  proofLedger,
+  runtimeChain,
+  outputOracleFacet,
+  firewall,
+  stageEvents,
+  appHookContract,
+  appHookGate,
+  runtimeBoundaryPlanBinding,
+  strictImportProjection,
+  targetEnvironment,
+  targetProcessProvenance,
+  sameProcessRuntimeOracle,
+  sameProcessRuntimeOracleGate,
+} = {}) {
+  const record = ledgerRecordForRow({ ledger, proofLedger });
+  const recordProjectId = firstText(record.projectId, record.project_id);
+  const recordEditId = firstText(record.editId, record.edit_id);
+  const recordBackend = valueFieldText(record.backend);
+  const rowBackend = recordBackend ?? valueFieldText(backend) ?? 'unknown';
+  const acceptanceScope = runtimeClosureAcceptanceScopeForBackend(rowBackend, outputOracleFacet);
+  const sourceColdPath =
+    randomColdImportedRuntimeClosureSourceColdPathFacet(coldRow, context);
+  const planBindingFailedGates = compactStringList([
+    ...(Array.isArray(runtimeBoundaryPlanBinding?.failedGates)
+      ? runtimeBoundaryPlanBinding.failedGates
+      : []),
+    ...(Array.isArray(runtimeBoundaryPlanBinding?.failed_gates)
+      ? runtimeBoundaryPlanBinding.failed_gates
+      : []),
+  ]);
+  const strictImportProjectionFailedGates = compactStringList([
+    ...(Array.isArray(strictImportProjection?.failedGates)
+      ? strictImportProjection.failedGates
+      : []),
+    ...(Array.isArray(strictImportProjection?.failed_gates)
+      ? strictImportProjection.failed_gates
+      : []),
+  ]);
+  const runtimeBoundaryPlanBindingAccepted =
+    runtimeBoundaryPlanBinding?.present === true
+    && runtimeBoundaryPlanBinding.accepted === true
+    && (
+      runtimeBoundaryPlanBinding.acceptedAsSupportEvidence === true
+      || runtimeBoundaryPlanBinding.accepted_as_support_evidence === true
+    )
+    && planBindingFailedGates.length === 0;
+  const strictImportProjectionAccepted =
+    strictImportProjection?.present === true
+    && strictImportProjection.accepted === true
+    && (
+      strictImportProjection.acceptedAsSupportEvidence === true
+      || strictImportProjection.accepted_as_support_evidence === true
+    )
+    && strictImportProjectionFailedGates.length === 0;
+  const strictRuntimeAccepted =
+    sourceColdPath.accepted === true
+    && runtimeBoundaryPlanBindingAccepted === true
+    && strictImportProjectionAccepted === true
+    && runtimeProfileAdapterResultImport?.accepted === true
+    && runtimeProofArtifactGate?.accepted === true
+    && ledger?.present === true
+    && ledger?.source === 'recomputed_ledger'
+    && ledger?.gpuHmrSuccess === true
+    && Array.isArray(ledger?.failedInvariants)
+    && ledger.failedInvariants.length === 0
+    && runtimeChain?.accepted === true
+    && outputOracleFacet?.accepted === true
+    && firewall?.accepted === true
+    && stageEvents?.present === true
+    && stageEvents?.accepted === true
+    && firstBool(stageEvents.complete) === true
+    && appHookGate?.accepted === true
+    && targetProcessProvenance?.present === true
+    && targetProcessProvenance?.accepted === true
+    && sameProcessRuntimeOracleGate?.accepted === true
+    && Boolean(recordProjectId)
+    && Boolean(acceptanceScope);
+  if (strictRuntimeAccepted !== true) return null;
+  const coldProofIds = compactStringList(coldRow?.proofIds ?? coldRow?.proof_ids);
+  const runtimeProofId = firstText(
+    runtimeProofArtifactGate.proofId,
+    runtimeProofArtifactGate.proof_id,
+    runtimeProfileAdapterResultImport.strictRuntimeProofId,
+    runtimeProfileAdapterResultImport.strict_runtime_proof_id,
+  );
+  const ledgerProofId = firstText(ledger.proofId, ledger.proof_id, record.proofId, record.proof_id);
+  const proofIds = compactStringList([
+    ...coldProofIds,
+    runtimeProofId,
+    ledgerProofId,
+    runtimeProfileAdapterResultImport.proofLedgerId,
+    runtimeProfileAdapterResultImport.proof_ledger_id,
+    runtimeProfileAdapterResultImport.runtimeBoundaryProofAdapterProofId,
+    runtimeProfileAdapterResultImport.runtime_boundary_proof_adapter_proof_id,
+    runtimeBoundaryPlanBinding.bindingHash,
+    runtimeBoundaryPlanBinding.binding_hash,
+    strictImportProjection.facetHash,
+    strictImportProjection.facet_hash,
+    sameProcessRuntimeOracle.oracleHash,
+    sameProcessRuntimeOracle.oracle_hash,
+  ]);
+  const artifactAfterHash = firstText(
+    record.artifactAfterHash,
+    record.artifact_after_hash,
+    runtimeChain.artifactHash,
+    runtimeChain.artifact_hash,
+  );
+  const artifactBeforeHash = firstText(record.artifactBeforeHash, record.artifact_before_hash);
+  const contractHash = firstText(record.contractHash, record.contract_hash);
+  const sourceInputIdentityHash = randomColdPathSourceIdentityHash(coldRow);
+  const sourceContentIdentityHash = firstText(
+    sourceColdPath.sourceContentIdentityHash,
+    sourceColdPath.source_content_identity_hash,
+  );
+  const importedRuntimeClosureEditHash = stableJsonHash({
+    schemaVersion: 'synthi.gpu_hmr.random_cold_imported_runtime_closure_edit_identity.v1',
+    sourceInputIdentityHash: sourceInputIdentityHash ?? null,
+    sourceContentIdentityHash: sourceContentIdentityHash ?? null,
+    projectId: recordProjectId,
+    editId: recordEditId ?? null,
+    runtimeProofId: runtimeProofId ?? null,
+    ledgerProofId: ledgerProofId ?? null,
+    artifactAfterHash: artifactAfterHash ?? null,
+  });
+  return finalizeRow({
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: rowBackend,
+    targetId: recordProjectId,
+    target_id: recordProjectId,
+    profileId: firstText(
+      runtimeProfileAdapterResultImport.runtimeProfileId,
+      runtimeProfileAdapterResultImport.runtime_profile_id,
+      coldRow?.profileId,
+      coldRow?.profile_id,
+      recordProjectId,
+    ),
+    profile_id: firstText(
+      runtimeProfileAdapterResultImport.runtimeProfileId,
+      runtimeProfileAdapterResultImport.runtime_profile_id,
+      coldRow?.profileId,
+      coldRow?.profile_id,
+      recordProjectId,
+    ),
+    projectId: recordProjectId,
+    project_id: recordProjectId,
+    editId: recordEditId ?? null,
+    edit_id: recordEditId ?? null,
+    editHash: importedRuntimeClosureEditHash,
+    edit_hash: importedRuntimeClosureEditHash,
+    sourceIdentityHash: sourceInputIdentityHash ?? null,
+    source_identity_hash: sourceInputIdentityHash ?? null,
+    sourceContentIdentityHash: sourceContentIdentityHash ?? null,
+    source_content_identity_hash: sourceContentIdentityHash ?? null,
+    sourceIdentityAuthority:
+      'matrix_derived_from_accepted_random_cold_source_intake_and_runtime_ledger',
+    source_identity_authority:
+      'matrix_derived_from_accepted_random_cold_source_intake_and_runtime_ledger',
+    proofMode: 'random_large_project_imported_runtime_closure',
+    proof_mode: 'random_large_project_imported_runtime_closure',
+    sourceProofMode: 'random_large_project_cold_path',
+    source_proof_mode: 'random_large_project_cold_path',
+    evidenceKind: firstText(
+      outputOracleFacet.kind,
+      outputOracleFacet.oracleKind,
+      outputOracleFacet.oracle_kind,
+      'runtime_closure',
+    ),
+    evidence_kind: firstText(
+      outputOracleFacet.kind,
+      outputOracleFacet.oracleKind,
+      outputOracleFacet.oracle_kind,
+      'runtime_closure',
+    ),
+    matrixOutcome: 'full_runtime_gpu_hmr',
+    matrix_outcome: 'full_runtime_gpu_hmr',
+    acceptanceClass: 'full_runtime_gpu_hmr',
+    acceptance_class: 'full_runtime_gpu_hmr',
+    acceptanceScope,
+    acceptance_scope: acceptanceScope,
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    refusalProven: false,
+    refusal_proven: false,
+    proofChainAccepted: true,
+    proof_chain_accepted: true,
+    proofChain: 'random_large_project_imported_strict_runtime_closure',
+    proof_chain: 'random_large_project_imported_strict_runtime_closure',
+    proofIds,
+    proof_ids: proofIds,
+    sourceColdPathRowId: coldRow?.rowId ?? coldRow?.row_id ?? null,
+    source_cold_path_row_id: coldRow?.rowId ?? coldRow?.row_id ?? null,
+    randomColdImportedRuntimeClosureSourceColdPath: sourceColdPath,
+    random_cold_imported_runtime_closure_source_cold_path: sourceColdPath,
+    runtimeProfileAdapterResultImport,
+    runtime_profile_adapter_result_import: runtimeProfileAdapterResultImport,
+    randomColdRuntimeProfileAdapterResultImport: runtimeProfileAdapterResultImport,
+    random_cold_runtime_profile_adapter_result_import: runtimeProfileAdapterResultImport,
+    randomColdRuntimeAdapterStageEvents: stageEvents,
+    random_cold_runtime_adapter_stage_events: stageEvents,
+    realRocmRuntimeAdapterStageEvents: stageEvents,
+    real_rocm_runtime_adapter_stage_events: stageEvents,
+    runtimeAdapterStageEvents: stageEvents,
+    runtime_adapter_stage_events: stageEvents,
+    randomColdRuntimeAppHookContract: appHookContract,
+    random_cold_runtime_app_hook_contract: appHookContract,
+    realRocmAppHookContract: appHookContract,
+    real_rocm_app_hook_contract: appHookContract,
+    realRocmAppHookContractGate: appHookGate,
+    real_rocm_app_hook_contract_gate: appHookGate,
+    appHookContractGate: appHookGate,
+    app_hook_contract_gate: appHookGate,
+    randomColdRuntimeBoundaryPlanBinding: runtimeBoundaryPlanBinding,
+    random_cold_runtime_boundary_plan_binding: runtimeBoundaryPlanBinding,
+    runtimeBoundaryPlanBinding,
+    runtime_boundary_plan_binding: runtimeBoundaryPlanBinding,
+    randomColdRuntimeStrictImportProjection: strictImportProjection,
+    random_cold_runtime_strict_import_projection: strictImportProjection,
+    runtimeStrictImportProjection: strictImportProjection,
+    runtime_strict_import_projection: strictImportProjection,
+    runtimeProofArtifact: runtimeProofArtifactGate,
+    runtime_proof_artifact: runtimeProofArtifactGate,
+    ledger,
+    proofLedger,
+    proof_ledger: proofLedger,
+    acceptanceContract: compactObject(
+      runtimeProofArtifactGate.acceptanceContract
+      ?? runtimeProofArtifactGate.acceptance_contract
+    ),
+    acceptance_contract: compactObject(
+      runtimeProofArtifactGate.acceptanceContract
+      ?? runtimeProofArtifactGate.acceptance_contract
+    ),
+    artifactAfterHash,
+    artifact_after_hash: artifactAfterHash,
+    artifactBeforeHash,
+    artifact_before_hash: artifactBeforeHash,
+    contractHash,
+    contract_hash: contractHash,
+    outputOracleFacet,
+    output_oracle_facet: outputOracleFacet,
+    realRocmFirewall: firewall,
+    real_rocm_firewall: firewall,
+    realRocmRuntimeChain: runtimeChain,
+    real_rocm_runtime_chain: runtimeChain,
+    runtimeChain,
+    runtime_chain: runtimeChain,
+    realRocmRuntimeBoundaryTargetEnvironment: targetEnvironment,
+    real_rocm_runtime_boundary_target_environment: targetEnvironment,
+    runtimeBoundaryTargetEnvironment: targetEnvironment,
+    runtime_boundary_target_environment: targetEnvironment,
+    realRocmRuntimeBoundaryTargetProcessProvenance: targetProcessProvenance,
+    real_rocm_runtime_boundary_target_process_provenance: targetProcessProvenance,
+    runtimeBoundaryTargetProcessProvenance: targetProcessProvenance,
+    runtime_boundary_target_process_provenance: targetProcessProvenance,
+    realRocmSameProcessRuntimeOracle: sameProcessRuntimeOracle,
+    real_rocm_same_process_runtime_oracle: sameProcessRuntimeOracle,
+    sameProcessRuntimeOracle,
+    same_process_runtime_oracle: sameProcessRuntimeOracle,
+    realRocmSameProcessRuntimeOracleGate: sameProcessRuntimeOracleGate,
+    real_rocm_same_process_runtime_oracle_gate: sameProcessRuntimeOracleGate,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    runMode: timingEvidence(record, compactObject(result?.timings ?? result?.timingMetrics)),
+    run_mode: timingEvidence(record, compactObject(result?.timings ?? result?.timingMetrics)),
+    reasons: [],
+    openGaps: [],
+  });
 }
 
 async function randomLargeProjectColdPathResultRow(json, filePath, context, result) {
@@ -31284,7 +31789,7 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeSupportClosureObligation.obligationHash,
     randomColdAppHookMaterializationPlan.materializationPlanHash,
   ]);
-  return finalizeRow({
+  const coldRow = finalizeRow({
     artifactPath: relPath(filePath, context.repoRoot),
     updatedAt: context.updatedAt,
     backend,
@@ -31622,6 +32127,30 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     actualAttempt,
     actual_attempt: actualAttempt,
   });
+  const importedRuntimeClosureRow = randomColdImportedRuntimeClosureRow({
+    coldRow,
+    filePath,
+    context,
+    backend,
+    result,
+    runtimeProfileAdapterResultImport: randomColdRuntimeProfileAdapterResultImport,
+    runtimeProofArtifactGate: randomColdRuntimeProofArtifactGate,
+    ledger: randomColdRecomputedLedger,
+    proofLedger: randomColdImportedProofLedger,
+    runtimeChain: randomColdRealRocmRuntimeChain,
+    outputOracleFacet: randomColdImportedOutputOracleFacet,
+    firewall: randomColdRealRocmFirewall,
+    stageEvents: randomColdRuntimeAdapterStageEvents,
+    appHookContract: randomColdRuntimeAppHookContract,
+    appHookGate: randomColdRuntimeAppHookContractGate,
+    runtimeBoundaryPlanBinding: randomColdRuntimeBoundaryPlanBinding,
+    strictImportProjection: randomColdRuntimeStrictImportProjection,
+    targetEnvironment: randomColdRuntimeBoundaryTargetEnvironment,
+    targetProcessProvenance: randomColdRuntimeBoundaryTargetProcessProvenance,
+    sameProcessRuntimeOracle: randomColdSameProcessRuntimeOracle,
+    sameProcessRuntimeOracleGate: randomColdSameProcessRuntimeOracleGate,
+  });
+  return importedRuntimeClosureRow ? [coldRow, importedRuntimeClosureRow] : coldRow;
 }
 
 async function classifyJsonArtifact(json, filePath, context) {
@@ -37224,10 +37753,16 @@ function runtimeClosureStageObserved(stageEvents, stage) {
 function runtimeClosureRowSignals(row = {}) {
   const proofMode = firstText(row.proofMode, row.proof_mode);
   const randomColdPath = proofMode === 'random_large_project_cold_path';
+  const randomColdImportedRuntimeClosure =
+    proofMode === 'random_large_project_imported_runtime_closure';
   const realRocmRepo = proofMode === 'real_rocm_repo_validation';
   const coldSourceTreeIntake = compactObject(
     row.coldSourceTreeIntake
     ?? row.cold_source_tree_intake
+  );
+  const importedRuntimeClosureSourceColdPath = compactObject(
+    row.randomColdImportedRuntimeClosureSourceColdPath
+    ?? row.random_cold_imported_runtime_closure_source_cold_path
   );
   const coldTemplate = compactObject(
     row.coldRuntimeBoundaryEventManifestTemplate
@@ -37367,11 +37902,31 @@ function runtimeClosureRowSignals(row = {}) {
     fullRuntimeAccepted
     || realRocmRepo
     || randomColdPath
+    || randomColdImportedRuntimeClosure
     || runtimeProfileBridgePresent
     || firstBool(row.actualAttempt, row.actual_attempt) === true;
   const gateAccepted = {
     cold_source_intake:
       coldSourceTreeIntake.accepted === true
+      || (
+        importedRuntimeClosureSourceColdPath.accepted === true
+        && firstText(
+          importedRuntimeClosureSourceColdPath.proofAuthority,
+          importedRuntimeClosureSourceColdPath.proof_authority,
+        ) === 'matrix_recomputed_source_cold_path_intake_only_not_runtime_authority'
+        && firstBool(
+          importedRuntimeClosureSourceColdPath.acceptedForGpuHmr,
+          importedRuntimeClosureSourceColdPath.accepted_for_gpu_hmr,
+        ) !== true
+        && firstBool(
+          importedRuntimeClosureSourceColdPath.gpuHmrSuccess,
+          importedRuntimeClosureSourceColdPath.gpu_hmr_success,
+        ) !== true
+        && firstBool(
+          importedRuntimeClosureSourceColdPath.canSatisfyRuntimeProof,
+          importedRuntimeClosureSourceColdPath.can_satisfy_runtime_proof,
+        ) !== true
+      )
       || compactObject(row.realRocmSourceTreeTransport ?? row.real_rocm_source_tree_transport)
         .accepted === true,
     runtime_adapter_or_app_hook_contract:
@@ -37416,7 +37971,8 @@ function runtimeClosureRowSignals(row = {}) {
   const gateObserved = {
     cold_source_intake:
       gateAccepted.cold_source_intake
-      || coldSourceTreeIntake.present === true,
+      || coldSourceTreeIntake.present === true
+      || importedRuntimeClosureSourceColdPath.present === true,
     runtime_adapter_or_app_hook_contract:
       gateAccepted.runtime_adapter_or_app_hook_contract
       || appHookGate.required === true
@@ -37463,6 +38019,7 @@ function runtimeClosureRowSignals(row = {}) {
   return {
     row,
     randomColdPath,
+    randomColdImportedRuntimeClosure,
     realRocmRepo,
     runtimeClosureAttempted,
     runtimeProfileBridgePresent,
@@ -37496,6 +38053,7 @@ function runtimeClosureRowSignals(row = {}) {
 function largeArbitraryProjectRuntimeClosureCoverage(rows) {
   const closureRows = rows.filter((row) =>
     row.proofMode === 'random_large_project_cold_path'
+    || row.proofMode === 'random_large_project_imported_runtime_closure'
     || row.proofMode === 'real_rocm_repo_validation'
   );
   const signals = closureRows.map(runtimeClosureRowSignals);
@@ -37590,6 +38148,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     complete_closure_row_count: acceptedClosureRows.length,
     randomColdPathRowCount: signals.filter((signal) => signal.randomColdPath).length,
     random_cold_path_row_count: signals.filter((signal) => signal.randomColdPath).length,
+    randomColdImportedRuntimeClosureRowCount:
+      signals.filter((signal) => signal.randomColdImportedRuntimeClosure).length,
+    random_cold_imported_runtime_closure_row_count:
+      signals.filter((signal) => signal.randomColdImportedRuntimeClosure).length,
     realRocmRowCount: signals.filter((signal) => signal.realRocmRepo).length,
     real_rocm_row_count: signals.filter((signal) => signal.realRocmRepo).length,
     runtimeProfileBridgePresentCount,
