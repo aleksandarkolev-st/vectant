@@ -26,7 +26,8 @@ export default function DojoShell({
   const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
   const [loading, setLoading] = useState(autoLoad && !initialSummary);
   const [error, setError] = useState('');
-  const [activeNavLabel, setActiveNavLabel] = useState('Overview');
+  const [currentNavLabel, setCurrentNavLabel] = useState('Overview');
+  const [previewNavLabel, setPreviewNavLabel] = useState('');
   const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
@@ -65,7 +66,9 @@ export default function DojoShell({
     { label: 'Case Law', href: `${baseHref}/case-law`, icon: Scale, detail: 'Binding outcomes' },
     { label: 'Governance', href: `${baseHref}/governance`, icon: Workflow, detail: `${metrics.guardrailCount || 0} guardrails` },
   ], [baseHref, metrics.artifactCount, metrics.guardrailCount, metrics.scenarioCount, metrics.skillCount, selectedSkill, selectedSkillHref]);
-  const activeNavItem = navItems.find((item) => item.label === activeNavLabel) || navItems[0];
+  const previewNavItem = navItems.find((item) => item.label === previewNavLabel)
+    || navItems.find((item) => item.label === currentNavLabel)
+    || navItems[0];
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -73,7 +76,7 @@ export default function DojoShell({
     const match = [...navItems]
       .sort((a, b) => b.href.length - a.href.length)
       .find((item) => path === item.href || path.startsWith(`${item.href}/`));
-    if (match) setActiveNavLabel(match.label);
+    if (match) setCurrentNavLabel(match.label);
   }, [navItems]);
   const scopeRows = useMemo(() => {
     if (!selectedSkill) return [];
@@ -163,13 +166,13 @@ export default function DojoShell({
                   data-testid="dojo-nav-preview"
                 >
                   <div className="vt-panel-kicker">Focus</div>
-                  <div className="mt-1 truncate text-xs font-semibold">{activeNavItem.label}</div>
+                  <div className="mt-1 truncate text-xs font-semibold">{previewNavItem.label}</div>
                   <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                    {activeNavItem.detail}
+                    {previewNavItem.detail}
                   </div>
                 </div>
                 {navItems.map(({ label, href, icon: Icon, detail }) => {
-                  const active = activeNavLabel === label;
+                  const active = currentNavLabel === label;
                   return (
                   <motion.a
                     key={label}
@@ -182,8 +185,10 @@ export default function DojoShell({
                     }}
                     aria-current={active ? 'page' : undefined}
                     title={detail}
-                    onMouseEnter={() => setActiveNavLabel(label)}
-                    onFocus={() => setActiveNavLabel(label)}
+                    onMouseEnter={() => setPreviewNavLabel(label)}
+                    onMouseLeave={() => setPreviewNavLabel('')}
+                    onFocus={() => setPreviewNavLabel(label)}
+                    onBlur={() => setPreviewNavLabel('')}
                     whileHover={prefersReducedMotion ? undefined : { x: 2 }}
                     transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
                   >
