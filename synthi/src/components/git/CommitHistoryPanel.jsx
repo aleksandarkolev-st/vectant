@@ -260,6 +260,32 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
 
 /* ─── Filter bar ────────────────────────────────────── */
 
+function DateFilterInput({ label, value, onChange }) {
+  const handleChange = (event) => {
+    const next = event.target.value.replace(/[^\d-]/g, '').slice(0, 10);
+    onChange(next);
+  };
+
+  return (
+    <label className="flex items-center gap-1.5">
+      <span>{label}</span>
+      <span className="flex h-7 items-center rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2">
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="\\d{4}-\\d{2}-\\d{2}"
+          value={value}
+          onChange={handleChange}
+          placeholder="YYYY-MM-DD"
+          aria-label={`${label} date`}
+          className="w-[82px] bg-transparent font-mono text-[10px] outline-none placeholder:text-[var(--text-dim)]"
+          style={{ color: 'var(--text-secondary)' }}
+        />
+      </span>
+    </label>
+  );
+}
+
 function FilterBar({
   searchQuery, onSearchChange,
   authorFilter, onAuthorChange,
@@ -310,30 +336,8 @@ function FilterBar({
       </div>
       <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
         <Calendar className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
-        <span>From</span>
-        <input
-          type="date"
-          value={dateFrom}
-          onChange={(e) => onDateFromChange(e.target.value)}
-          className="rounded px-1 py-0.5 text-[10px] focus:outline-none th-focus-ring"
-          style={{
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-secondary)',
-          }}
-        />
-        <span>To</span>
-        <input
-          type="date"
-          value={dateTo}
-          onChange={(e) => onDateToChange(e.target.value)}
-          className="rounded px-1 py-0.5 text-[10px] focus:outline-none th-focus-ring"
-          style={{
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-secondary)',
-          }}
-        />
+        <DateFilterInput label="From" value={dateFrom} onChange={onDateFromChange} />
+        <DateFilterInput label="To" value={dateTo} onChange={onDateToChange} />
         {(dateFrom || dateTo) && (
           <button
             onClick={() => { onDateFromChange(''); onDateToChange(''); }}
