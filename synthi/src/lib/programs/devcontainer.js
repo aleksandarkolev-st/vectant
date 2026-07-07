@@ -13,6 +13,7 @@
 
 import { coerceManifestObject, parseProgramManifest, ProgramManifestError, normalizeWorkingDir } from './manifest';
 import { workspaceMountFlags } from './workspaceMount';
+import { HOST_ESCAPE_FLAG_RE, DOCKER_SOCK_RE } from './hostEscape';
 
 /** Env key prefixes mirrored from the runtime scrub denylist (transparency only). */
 const BLOCKED_ENV_PREFIXES = [
@@ -80,7 +81,9 @@ function assertNoHostEscape(dc) {
 
   if (Array.isArray(dc.runArgs)) {
     const joined = dc.runArgs.join(' ');
-    if (/--privileged|--security-opt|docker\.sock|(^|\s)-v(\s|$)|--device|--cap-add/i.test(joined)) {
+    // (^|\s)-v(\s|$) keeps the devcontainer-specific "any -v in runArgs" rule;
+    // the flag/sock rules come from the shared ruleset so both paths stay in sync.
+    if (HOST_ESCAPE_FLAG_RE.test(joined) || DOCKER_SOCK_RE.test(joined) || /(^|\s)-v(\s|$)/i.test(joined)) {
       throw new ProgramManifestError('host_escape', 'runArgs request host access', 'runArgs');
     }
   }

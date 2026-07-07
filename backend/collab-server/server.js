@@ -54,7 +54,6 @@ const {
   trustedControlPlaneBaseUrl,
 } = require('./codesiteControlPlaneTrust');
 const {
-  codeSiteActivityInternalToken,
   handleCodeSiteActivityRequest,
 } = require('./codesiteActivityEndpoint');
 const {
@@ -474,9 +473,6 @@ function enforceOrigin(req, res) {
     // Allow if an explicit cross-service bypass header is configured, to
     // support service-to-service calls in trusted networks.
     if (hasTrustedInternalToken(req, { config })) {
-    const internalToken = req.headers['x-collab-internal-token'];
-    const expectedInternalToken = codeSiteActivityInternalToken();
-    if (internalToken && expectedInternalToken && internalToken === expectedInternalToken) {
       return true;
     }
     // When no allowlist is configured we keep legacy permissive behaviour.
@@ -3111,7 +3107,26 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}] }
+  // GET /program-runtime/:slug/context → { files:{name:contents} }
+  // Curated, read-only workspace files for AI manifest generation (allow-listed).
+  const contextMatch = /^\/program-runtime\/([^/]+)\/context$/.exec(programRuntimeUrl.pathname);
+  if (contextMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(contextMatch[1]);
+    const ctxUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const { readContextFiles } = require('./contextFiles');
+      const cwd = await resolveWorkspaceCwd(slug, ctxUserId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ files: readContextFiles(cwd) }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'context failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}], overwrite? }
   // Writes starter files into the workspace dir, ONLY when missing. Path-guarded.
   const scaffoldMatch = /^\/program-runtime\/([^/]+)\/scaffold$/.exec(programRuntimeUrl.pathname);
   if (scaffoldMatch && req.method === 'POST') {
@@ -3151,7 +3166,7 @@ const server = http.createServer(async (req, res) => {
         operation: 'program-scaffold',
         tool: 'file_write',
         attempts: scaffoldAttempts,
-      }, async () => applyScaffoldFiles(cwd, parsed.files || []), { repoRoot: cwd });
+      }, async () => applyScaffoldFiles(cwd, parsed.files || [], { overwrite: parsed.overwrite === true }), { repoRoot: cwd });
       const result = boundary.applyResult;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));

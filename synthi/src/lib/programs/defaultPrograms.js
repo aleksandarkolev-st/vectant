@@ -223,6 +223,10 @@ export async function ensureDefaultPrograms(prisma) {
         displayName: config.displayName,
         description: config.description || null,
         latestVersion: config.version,
+        // Built-in defaults are pre-approved/direct-published — mark the version
+        // live so the marketplace lists them (listPublishedPrograms requires
+        // publishedVersion != null).
+        publishedVersion: config.version,
       },
       create: {
         packageId,
@@ -231,6 +235,7 @@ export async function ensureDefaultPrograms(prisma) {
         displayName: config.displayName,
         description: config.description || null,
         latestVersion: config.version,
+        publishedVersion: config.version,
         publishedByUserId: null,
       },
     });

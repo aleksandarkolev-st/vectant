@@ -17,6 +17,11 @@ const h = vi.hoisted(() => ({
   stopProgramSession: vi.fn(),
   restartProgramSession: vi.fn(),
   publishWorkspaceProgram: vi.fn(),
+  submitForReview: vi.fn(),
+  fetchMySubmissions: vi.fn(),
+  unpublishProgram: vi.fn(),
+  generateManifest: vi.fn(),
+  saveWorkspaceManifest: vi.fn(),
   fetchMarketplace: vi.fn(),
   installPublishedProgram: vi.fn(),
   toastSuccess: vi.fn(),
@@ -40,6 +45,11 @@ vi.mock('../programsClient', () => ({
   stopProgramSession: h.stopProgramSession,
   restartProgramSession: h.restartProgramSession,
   publishWorkspaceProgram: h.publishWorkspaceProgram,
+  submitForReview: h.submitForReview,
+  fetchMySubmissions: h.fetchMySubmissions,
+  unpublishProgram: h.unpublishProgram,
+  generateManifest: h.generateManifest,
+  saveWorkspaceManifest: h.saveWorkspaceManifest,
   fetchMarketplace: h.fetchMarketplace,
   installPublishedProgram: h.installPublishedProgram,
   scaffoldProgram: h.scaffoldProgram,
@@ -91,6 +101,7 @@ describe('ProgramsPanel — cli/tui programs route to the integrated terminal', 
     h.fetchInstalledPrograms.mockResolvedValue([]);
     h.fetchMarketplace.mockResolvedValue([]);
     h.fetchDetectedProgram.mockResolvedValue(null);
+    h.fetchMySubmissions.mockResolvedValue([]);
     dispatchEventSpy = vi.spyOn(window, 'dispatchEvent');
     container = document.createElement('div');
     document.body.appendChild(container);

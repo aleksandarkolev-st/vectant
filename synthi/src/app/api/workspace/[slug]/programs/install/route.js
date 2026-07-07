@@ -12,6 +12,7 @@ import {
 } from '@/lib/programs/store';
 import { discoverManifest } from '@/lib/programs/runtimeClient';
 import { normalizeGrantScopes, PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
+import { evaluatePaywall, paywallDenial } from '@/lib/programs/paidGate';
 
 export const runtime = 'nodejs';
 
@@ -77,6 +78,13 @@ export async function POST(req, { params }) {
     const { program } = await upsertLocalProgram({ workspaceSlug: slug, config });
     localProgram = program;
     programId = program.id;
+  }
+
+  // Paywall: a paid marketplace app requires the installer to hold an active
+  // entitlement. Free apps (and workspace-local recipes) pass straight through.
+  if (publishedProgramId) {
+    const denial = paywallDenial(await evaluatePaywall({ programId: publishedProgramId, subjectId: actor.userId }));
+    if (denial) return NextResponse.json(denial.body, { status: denial.status });
   }
 
   const requiredScopes = Array.isArray(config.permissions) && config.permissions.length
