@@ -13,7 +13,7 @@ export async function POST(req) {
 
   const bodyResult = await readBoundedJson(req);
   if (!bodyResult.ok) {
-    const denied = deniedJson(bodyResult.reason, "Request body was too large.", bodyResult.status);
+    const denied = deniedJson(bodyResult.reason, bodyResult.message || "Request body was not accepted.", bodyResult.status);
     return jsonNoStore(denied.body, denied.status);
   }
 
