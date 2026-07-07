@@ -1697,33 +1697,46 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           <pre
             className="mb-2 max-h-[220px] overflow-auto rounded-md border p-2 font-mono text-[11px] leading-5 whitespace-pre"
             style={{
-              background: 'var(--bg-app, #0a0b10)',
-              borderColor: 'var(--border-subtle, #2a2b38)',
-              color: 'var(--text-primary, #e4e4e7)',
+              background: 'var(--bg-app)',
+              borderColor: 'var(--border-subtle)',
+              color: 'var(--text-primary)',
             }}
           >
             {preview}
           </pre>
 
           {truncated && (
-            <p className="mb-2 text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+            <p className="mb-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
               Preview truncated. The full payload will still be pasted.
             </p>
           )}
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <label
-              className="flex items-center gap-2 text-[11px] cursor-pointer select-none"
-              style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoApprove}
+              onClick={() => setAutoApprove((value) => !value)}
+              className="th-focus-ring flex items-center gap-2 rounded-[var(--radius-control)] border px-2 py-1 text-left text-[11px]"
+              style={{
+                borderColor: autoApprove
+                  ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                  : 'var(--border-subtle)',
+                background: autoApprove
+                  ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                  : 'transparent',
+                color: 'var(--text-secondary)',
+              }}
             >
-              <input
-                type="checkbox"
-                checked={autoApprove}
-                onChange={(e) => setAutoApprove(e.target.checked)}
-                className="cursor-pointer"
+              <span
+                className="grid h-4 w-4 place-items-center rounded border"
+                style={{
+                  borderColor: autoApprove ? 'var(--accent-primary)' : 'var(--border-medium)',
+                  background: autoApprove ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'transparent',
+                }}
               />
               Trust multi-line pastes for this page session
-            </label>
+            </button>
 
             <div className="flex items-center justify-end gap-2">
               <button
@@ -1731,7 +1744,7 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
                 onClick={onCancel}
                 autoFocus
                 className="h-8 rounded-md border px-3 text-xs font-medium transition-colors hover:bg-white/[0.04]"
-                style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+                style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
               >
                 Cancel
                 <span className="ml-1.5 text-[10px] opacity-60">Esc</span>

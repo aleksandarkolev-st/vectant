@@ -9,6 +9,13 @@ import {
   Tag, ChevronDown, RefreshCw, ArrowRight
 } from 'lucide-react';
 import { MarkdownEditor } from './MarkdownRenderer';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 /**
  * Form for creating a new Pull Request.
@@ -221,18 +228,32 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           </div>
         )}
 
-        {/* Draft checkbox */}
-        <label className="flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={draft}
-            onChange={e => setDraft(e.target.checked)}
-            className="rounded"
+        <button
+          type="button"
+          role="switch"
+          aria-checked={draft}
+          onClick={() => setDraft((value) => !value)}
+          className="th-focus-ring flex items-center gap-2 rounded-[var(--radius-control)] border px-2 py-1 text-left"
+          style={{
+            borderColor: draft
+              ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+              : 'var(--border-subtle)',
+            background: draft
+              ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+              : 'transparent',
+          }}
+        >
+          <span
+            className="h-4 w-4 rounded border"
+            style={{
+              borderColor: draft ? 'var(--accent-primary)' : 'var(--border-medium)',
+              background: draft ? 'var(--accent-primary)' : 'transparent',
+            }}
           />
           <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
             Create as draft
           </span>
-        </label>
+        </button>
 
         {/* Error */}
         {createPRError && (
@@ -248,7 +269,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           disabled={createPRLoading || !title.trim() || !head || !base || head === base}
           className="th-focus-ring th-btn-primary w-full py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {createPRLoading ? 'Creating…' : 'Create Pull Request'}
+          {createPRLoading ? 'Creating...' : 'Create Pull Request'}
         </button>
       </form>
     </div>
@@ -257,16 +278,15 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
 
 function BranchSelect({ value, onChange, branches, placeholder, loading }) {
   return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      disabled={loading}
-      className="th-input w-full rounded-[var(--radius-control)] border px-2 py-1.5 text-xs outline-none transition disabled:opacity-50"
-    >
-      {!value && <option value="">{loading ? 'Loading…' : placeholder}</option>}
-      {branches.map(b => (
-        <option key={b} value={b}>{b}</option>
-      ))}
-    </select>
+    <Select value={value || undefined} onValueChange={onChange} disabled={loading}>
+      <SelectTrigger className="h-8 w-full text-xs">
+        <SelectValue placeholder={loading ? 'Loading...' : placeholder} />
+      </SelectTrigger>
+      <SelectContent align="start">
+        {branches.map(b => (
+          <SelectItem key={b} value={b}>{b}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

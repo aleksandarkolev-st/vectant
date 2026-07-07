@@ -60,19 +60,19 @@ const DEFAULT_WORKSPACE_LABEL = 'Current workspace';
 
 const STATUS_STYLES = {
   ok: {
-    color: 'var(--success-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--success, #238636) 14%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--success, #238636) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-success) 34%, var(--border-subtle))',
   },
   warn: {
-    color: 'var(--warning-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--warning, #b7791f) 13%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--warning, #b7791f) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-warning) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-warning) 34%, var(--border-subtle))',
   },
   danger: {
-    color: 'var(--error-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--error, #d73a49) 13%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--error, #d73a49) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-danger) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-danger) 34%, var(--border-subtle))',
   },
   neutral: {
     color: 'var(--text-muted)',
@@ -977,7 +977,7 @@ function ReviewQueue({ items, blockers }) {
   return (
     <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-review">
       <div className="flex items-center gap-2 px-3 py-2">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--warning, #b7791f)' }} />
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--accent-warning)' }} />
         <h3 className="truncate text-xs font-semibold">Publish Hardening</h3>
       </div>
       <ul>
@@ -1363,14 +1363,37 @@ function IsolationProfileCard({ isolation, traceReady, onAction }) {
           </div>
           <ProfileField label="Working directory" value={form.workingDirectory} onChange={updateForm('workingDirectory')} />
           <ProfileField label="Auth provider" value={form.authProviderId} onChange={updateForm('authProviderId')} />
-          <label className="flex min-h-8 items-center gap-2 text-[11px]">
-            <input
-              type="checkbox"
-              checked={form.allowMutationReplay}
-              onChange={(event) => updateForm('allowMutationReplay')(event.target.checked)}
-            />
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.allowMutationReplay}
+            onClick={() => updateForm('allowMutationReplay')(!form.allowMutationReplay)}
+            className="th-focus-ring flex min-h-8 items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-[11px]"
+            style={{
+              borderColor: form.allowMutationReplay
+                ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                : 'var(--border-subtle)',
+              background: form.allowMutationReplay
+                ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                : 'transparent',
+            }}
+          >
+            <span
+              className="grid h-4 w-7 rounded-full border p-0.5"
+              style={{
+                borderColor: form.allowMutationReplay ? 'var(--accent-primary)' : 'var(--border-medium)',
+              }}
+            >
+              <span
+                className="h-2.5 w-2.5 rounded-full transition-transform"
+                style={{
+                  transform: form.allowMutationReplay ? 'translateX(12px)' : 'translateX(0)',
+                  background: form.allowMutationReplay ? 'var(--accent-primary)' : 'var(--text-muted)',
+                }}
+              />
+            </span>
             <span>Allow mutation replay in isolated CI</span>
-          </label>
+          </button>
           <div className="flex gap-2">
             <button
               type="submit"

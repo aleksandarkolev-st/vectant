@@ -22,6 +22,13 @@ import CommitGraphColumn from './CommitGraphColumn';
 import InteractiveRebasePanel from './InteractiveRebasePanel';
 import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
 import { usePromptDialog } from '@/components/ui/usePromptDialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import './scm/scm-tokens.css';
 
 /* ────────────────────────────────────────────────────────────
@@ -280,21 +287,17 @@ function FilterBar({
           autoFocus
         />
         {authors.length > 0 && (
-          <select
-            value={authorFilter}
-            onChange={(e) => onAuthorChange(e.target.value)}
-            className="rounded px-1.5 py-0.5 text-[10px] focus:outline-none th-focus-ring"
-            style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            <option value="">All authors</option>
-            {authors.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
-          </select>
+          <Select value={authorFilter || 'all'} onValueChange={(value) => onAuthorChange(value === 'all' ? '' : value)}>
+            <SelectTrigger className="h-7 w-[132px] px-2 py-0.5 text-[10px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="all">All authors</SelectItem>
+              {authors.map((a) => (
+                <SelectItem key={a} value={a}>{a}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
         <button
           onClick={onClose}

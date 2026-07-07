@@ -438,18 +438,30 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
                         const locked = LOCKED_ITEM_IDS.has(item.id);
                         const ItemIcon = item.Icon;
                         return (
-                          <label key={item.id} className="vt-sidebar-row flex cursor-pointer items-center gap-2 px-2.5 py-2 text-[12px]">
-                            <input
-                              type="checkbox"
-                              className="accent-[var(--attention-purple)]"
-                              checked={checked}
-                              disabled={locked}
-                              onChange={(event) => setItemHidden(item.id, !event.target.checked)}
-                            />
-                            <ItemIcon className="size-3.5 shrink-0" strokeWidth={1.6} />
-                            <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                            {locked ? <span className="vt-mono text-[10px] text-[var(--text-muted)]">fixed</span> : null}
-                          </label>
+	                          <button
+	                            key={item.id}
+	                            type="button"
+	                            role="checkbox"
+	                            aria-checked={checked}
+	                            disabled={locked}
+	                            onClick={() => setItemHidden(item.id, checked)}
+	                            className="vt-sidebar-row th-focus-ring flex w-full cursor-pointer items-center gap-2 px-2.5 py-2 text-left text-[12px] disabled:cursor-not-allowed disabled:opacity-65"
+	                          >
+	                            <span
+	                              className="grid h-4 w-4 place-items-center rounded border"
+	                              style={{
+	                                borderColor: checked ? 'var(--attention-purple)' : 'var(--border-medium)',
+	                                background: checked
+	                                  ? 'color-mix(in srgb, var(--attention-purple) 18%, transparent)'
+	                                  : 'transparent',
+	                              }}
+	                            >
+	                              {checked ? <span className="h-1.5 w-1.5 rounded-full bg-[var(--attention-purple)]" /> : null}
+	                            </span>
+	                            <ItemIcon className="size-3.5 shrink-0" strokeWidth={1.6} />
+	                            <span className="min-w-0 flex-1 truncate">{item.label}</span>
+	                            {locked ? <span className="vt-mono text-[10px] text-[var(--text-muted)]">fixed</span> : null}
+	                          </button>
                         );
                       })}
                     </div>
