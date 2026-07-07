@@ -1146,7 +1146,7 @@ function WorkflowStageInspector({ stage, onAction, isBusy }) {
         background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--accent-primary) 6%), color-mix(in srgb, var(--bg-app) 70%, transparent))',
       }}
     >
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+      <div className="grid gap-3">
         <div className="flex min-w-0 items-start gap-2.5">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border" style={toneStyle(stage.tone)}>
             <Icon className="h-4 w-4" strokeWidth={2} />
