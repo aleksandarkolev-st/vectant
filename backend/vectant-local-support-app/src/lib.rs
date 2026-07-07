@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod approval;
+pub mod desktop;
 pub mod http;
 pub mod ipc;
 pub mod lifecycle;

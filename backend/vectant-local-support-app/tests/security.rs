@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
 use vectant_local_support_app::approval::{ApprovalQueue, ApprovalStatus};
+use vectant_local_support_app::desktop::{inspect_tauri_config, renderer_command_can_access_secret};
 use vectant_local_support_app::http::{
     validate_file_request_authorization, LocalAuthorizationError, LocalRequestAuthorization,
     RateLimiter, MAX_JSON_BODY_BYTES,
@@ -503,6 +504,48 @@ fn desktop_ipc_allows_only_narrow_commands() {
         });
         assert_eq!(denied.decision, "deny");
         assert_eq!(denied.user_visible, true);
+    }
+}
+
+#[test]
+fn desktop_tauri_config_keeps_renderer_unprivileged() {
+    let config = include_str!("../desktop/tauri.conf.json");
+    let report = inspect_tauri_config(config).unwrap();
+
+    assert!(report.csp_restrictive);
+    assert!(report.fs_scope_empty);
+    assert!(report.shell_open_disabled);
+    assert!(report.clipboard_disabled);
+    assert!(report.devtools_disabled);
+    assert!(report.renderer_token_access_blocked);
+}
+
+#[test]
+fn desktop_ipc_blocks_renderer_secret_and_device_key_access() {
+    for command in [
+        "session.token.read",
+        "pairing.bearer.export",
+        "device_private_key.read",
+        "keychain.entry.get",
+        "credentials.dump",
+        "local_log.read",
+        "audit_raw.export",
+        "approval.file.review;fs.readFile",
+        "workspace.pick/../../secret",
+    ] {
+        assert!(
+            renderer_command_can_access_secret(command)
+                || command.contains(';')
+                || command.contains('/'),
+            "test command should model a dangerous renderer action: {command}"
+        );
+        let denied = decide_ipc_request(&IpcRequest {
+            command: command.to_string(),
+            request_id: format!("req_{command}"),
+            session_id: "sess_123".to_string(),
+        });
+        assert_eq!(denied.decision, "deny", "{command} must be denied");
+        assert!(denied.user_visible);
     }
 }
 

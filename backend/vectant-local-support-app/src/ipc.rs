@@ -42,6 +42,14 @@ const DANGEROUS_COMMAND_FRAGMENTS: &[&str] = &[
     "clipboard",
     "screen",
     "accessibility",
+    "token",
+    "bearer",
+    "device_private",
+    "private_key",
+    "credential",
+    "secret",
+    "local_log",
+    "audit_raw",
 ];
 
 pub fn decide_ipc_request(request: &IpcRequest) -> IpcDecision {
@@ -49,6 +57,13 @@ pub fn decide_ipc_request(request: &IpcRequest) -> IpcDecision {
         return deny("invalid_schema");
     }
     let normalized = request.command.trim().to_ascii_lowercase();
+    if normalized.len() > 80
+        || !normalized
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.')
+    {
+        return deny("invalid_schema");
+    }
     if DANGEROUS_COMMAND_FRAGMENTS
         .iter()
         .any(|fragment| normalized.contains(fragment))
