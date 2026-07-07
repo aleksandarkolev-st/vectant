@@ -112,8 +112,8 @@ export default function DojoShell({
               <div
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-[var(--radius-control)] border"
                 style={{
-                  borderColor: 'color-mix(in srgb, var(--attention-purple) 28%, transparent)',
-                  background: 'linear-gradient(135deg, color-mix(in srgb, var(--attention-purple) 18%, transparent), color-mix(in srgb, var(--bg-app) 68%, transparent))',
+                  borderColor: 'color-mix(in srgb, var(--border-medium) 78%, transparent)',
+                  background: 'color-mix(in srgb, var(--bg-panel) 82%, transparent)',
                   color: 'var(--text-primary)',
                 }}
                 aria-hidden="true"
@@ -219,42 +219,31 @@ export default function DojoShell({
                     </div>
                   </div>
 
-                  <div className="mt-6 border-y border-[color-mix(in_srgb,var(--border-subtle)_82%,transparent)] py-4">
-                    <div className="mb-2 flex items-center justify-between gap-3 text-xs">
-                      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Coverage</span>
-                      <span className="font-mono font-semibold">{coverage}%</span>
-                    </div>
-                    <div
-                      className="h-2 overflow-hidden rounded-full"
-                      style={{ background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}
-                      aria-label={`Coverage ${coverage}%`}
-                    >
-                      <motion.div
-                        className="h-full rounded-full"
-                        style={{
-                          background: 'linear-gradient(90deg, var(--attention-purple), var(--accent-secondary))',
-                          boxShadow: '0 0 18px color-mix(in srgb, var(--attention-purple) 36%, transparent)',
-                        }}
-                        initial={prefersReducedMotion ? false : { width: 0 }}
-                        animate={{ width: `${coverage}%` }}
-                        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-                      />
-                    </div>
-                  </div>
+                  <CapabilityRegistryTable skill={selectedSkill} coverage={coverage} />
 
-                  <div className="grid flex-1 gap-0 border-b border-[color-mix(in_srgb,var(--border-subtle)_82%,transparent)] md:grid-cols-3">
-                    <DetailCell label="Coverage" value={`${coverage}%`} />
-                    <DetailCell label="Proof" value={selectedSkill.proofRequired ? 'Required' : 'Optional'} />
-                    <DetailCell label="MCP tool" value={selectedSkill.publishedToolName || 'Not published'} />
-                  </div>
-
-                  <div className="mt-4 grid gap-2 text-xs">
-                    <div className="vt-panel-kicker">Promotion path</div>
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <WorkflowStep label="Practice" value={`${selectedSkill.scenarioCount || 0} scenarios`} active />
-                      <WorkflowStep label="Review" value={selectedSkill.proofRequired ? 'Proof Required' : 'Proof Optional'} active={selectedSkill.proofRequired} />
-                      <WorkflowStep label="Publish" value={selectedSkill.publishedToolName || 'Pending MCP'} active={Boolean(selectedSkill.publishedToolName)} />
-                    </div>
+                  <div className="mt-4 grid gap-3 text-xs xl:grid-cols-[minmax(0,1fr)_280px]">
+                    <section className="rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--border-subtle)_82%,transparent)]">
+                      <div className="flex items-center justify-between gap-3 border-b border-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)] px-3 py-2">
+                        <div>
+                          <div className="vt-panel-kicker">Audit sequence</div>
+                          <h3 className="mt-0.5 font-semibold">Promotion controls</h3>
+                        </div>
+                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>3 gates</span>
+                      </div>
+                      <div className="grid divide-y divide-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)]">
+                        <WorkflowStep label="Practice" value={`${selectedSkill.scenarioCount || 0} scenarios`} active />
+                        <WorkflowStep label="Review" value={selectedSkill.proofRequired ? 'Proof Required' : 'Proof Optional'} active={selectedSkill.proofRequired} />
+                        <WorkflowStep label="Publish" value={selectedSkill.publishedToolName || 'Pending MCP'} active={Boolean(selectedSkill.publishedToolName)} />
+                      </div>
+                    </section>
+                    <section className="rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--border-subtle)_82%,transparent)] px-3 py-3">
+                      <div className="vt-panel-kicker">Policy matrix</div>
+                      <div className="mt-3 grid gap-2">
+                        <MatrixRow label="Can run alone" value={selectedSkill.allowedActions?.length || 0} />
+                        <MatrixRow label="Needs approval" value={selectedSkill.gatedActions?.length || 0} />
+                        <MatrixRow label="Blocked" value={selectedSkill.blockedActions?.length || 0} tone="danger" />
+                      </div>
+                    </section>
                   </div>
                 </div>
               ) : (
@@ -317,26 +306,78 @@ function Badge({ label, icon: Icon }) {
   );
 }
 
-function DetailCell({ label, value }) {
+function CapabilityRegistryTable({ skill, coverage }) {
   return (
-    <div className="min-w-0 border-r border-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)] px-3 py-4 last:border-r-0">
-      <div className="vt-panel-kicker">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold">{value}</div>
-    </div>
+    <section className="mt-6 overflow-hidden rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--border-subtle)_82%,transparent)]" data-testid="dojo-capability-registry">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)] px-3 py-2">
+        <div>
+          <div className="vt-panel-kicker">Capability registry</div>
+          <h3 className="mt-0.5 text-xs font-semibold">Licensed workflow inventory</h3>
+        </div>
+        <span className="rounded-md border px-2 py-1 font-mono text-[10px]" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+          saved view / active
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[720px] w-full border-collapse text-left text-xs">
+          <thead style={{ color: 'var(--text-muted)' }}>
+            <tr className="border-b border-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)]">
+              <th className="px-3 py-2 font-medium">Skill</th>
+              <th className="px-3 py-2 font-medium">License</th>
+              <th className="px-3 py-2 font-medium">SRL</th>
+              <th className="px-3 py-2 font-medium">Coverage</th>
+              <th className="px-3 py-2 font-medium">Proof</th>
+              <th className="px-3 py-2 font-medium">MCP tool</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td className="max-w-[220px] px-3 py-3">
+                <div className="truncate font-semibold">{skill.title}</div>
+                <div className="mt-1 truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{skill.skillId}</div>
+              </td>
+              <td className="px-3 py-3">{skill.licenseStatus || 'draft'}</td>
+              <td className="px-3 py-3">SRL {skill.readinessLevel ?? 0}</td>
+              <td className="px-3 py-3 font-mono">{coverage}%</td>
+              <td className="px-3 py-3">{skill.proofRequired ? 'Required' : 'Optional'}</td>
+              <td className="max-w-[200px] truncate px-3 py-3 font-mono text-[11px]">{skill.publishedToolName || 'Not published'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
 function WorkflowStep({ label, value, active = false }) {
   return (
     <div
-      className="min-w-0 rounded-[var(--radius-control)] border px-3 py-2"
+      className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2"
       style={{
-        borderColor: active ? 'color-mix(in srgb, var(--attention-purple) 28%, var(--border-subtle))' : 'color-mix(in srgb, var(--border-subtle) 80%, transparent)',
-        background: active ? 'color-mix(in srgb, var(--attention-purple) 8%, transparent)' : 'color-mix(in srgb, var(--text-primary) 3%, transparent)',
+        background: active ? 'color-mix(in srgb, var(--primary) 7%, transparent)' : 'transparent',
       }}
     >
-      <div className="truncate font-semibold">{label}</div>
-      <div className="mt-1 truncate font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{value}</div>
+      <div className="min-w-0">
+        <div className="truncate font-semibold">{label}</div>
+        <div className="mt-1 truncate font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{value}</div>
+      </div>
+      <span
+        className="h-2 w-2 rounded-full"
+        style={{
+          background: active ? 'var(--primary)' : 'var(--text-dim)',
+        }}
+        aria-hidden="true"
+      />
+    </div>
+  );
+}
+
+function MatrixRow({ label, value, tone = 'neutral' }) {
+  const color = tone === 'danger' ? 'var(--accent-danger)' : value > 0 ? 'var(--primary)' : 'var(--text-dim)';
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-2.5 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 72%, transparent)' }}>
+      <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+      <span className="font-mono font-semibold" style={{ color }}>{value}</span>
     </div>
   );
 }
