@@ -4113,7 +4113,7 @@ function DesktopSectionRail({ sections, activeSection, onSelect, status, streamS
                 aria-controls={`codesite-section-${section.key}`}
                 data-testid="codesite-desktop-section-tab"
                 onClick={() => onSelect(section.key)}
-                className="relative inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-2.5 text-[11px] font-semibold transition-[background,border-color,transform] hover:-translate-y-px"
+                className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,transform] hover:-translate-y-px"
                 style={{
                   borderColor: active
                     ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
@@ -6983,9 +6983,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
           });
           return;
         }
-        const stickyTabs = scrollContainer.querySelector(
+        const stickyHeight = [
           '[data-testid="codesite-mobile-section-tabs"]',
-        );
+          '[data-testid="codesite-desktop-section-rail"]',
+        ].reduce((height, selector) => {
+          const rail = scrollContainer.querySelector(selector);
+          return height + (rail?.getBoundingClientRect().height || 0);
+        }, 0);
         if (typeof scrollContainer.scrollTo !== "function") {
           target?.scrollIntoView?.({
             behavior: reduceMotion ? "auto" : "smooth",
@@ -6995,7 +6999,6 @@ export default function CodeSitePanel({ workspaceSlug }) {
         }
         const containerRect = scrollContainer.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
-        const stickyHeight = stickyTabs?.getBoundingClientRect().height || 0;
         scrollContainer.scrollTo({
           top: Math.max(
             0,
