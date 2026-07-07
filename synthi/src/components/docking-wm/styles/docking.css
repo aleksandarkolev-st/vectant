@@ -409,6 +409,7 @@
 .dock-tab-group--collapsed > * {
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
 }
 
 .dock-tab-group[data-sidebar-edge="left"].dock-tab-group--collapsed > * {

@@ -139,6 +139,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
     isFocused,
     activeTabId: node?.activeTabId,
     sidebarEdge,
+    nodeId,
   });
 
   const autoCollapseEnabled = useSelector(selectSidebarAutoCollapseEnabled);
