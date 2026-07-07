@@ -58,7 +58,7 @@ impl ApprovalQueue {
     }
 
     pub fn approve(&mut self, approval_id: &str) -> Option<(FileReadResponse, ConsentReceipt)> {
-        let queued = self.pending.get_mut(approval_id)?;
+        let mut queued = self.pending.remove(approval_id)?;
         if queued.status != ApprovalStatus::Pending {
             return None;
         }

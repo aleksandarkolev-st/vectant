@@ -203,6 +203,9 @@ fn approval_queue_keeps_review_content_local_until_approval() {
     assert_eq!(receipt.device_fingerprint, "sha256:queue-device");
     assert_eq!(receipt.capability, "workspace.log.read");
     assert_eq!(receipt.scope, "once");
+    assert!(queue.get(&approval_id).is_none());
+    assert_eq!(queue.pending_len(), 0);
+    assert!(queue.approve(&approval_id).is_none());
 }
 
 #[test]
