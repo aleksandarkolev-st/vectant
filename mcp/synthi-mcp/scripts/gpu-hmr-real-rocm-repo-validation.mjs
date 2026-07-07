@@ -5269,12 +5269,63 @@ function runtimeBoundaryLinesFromRunLog(runLog = '') {
   );
 }
 
+function runtimeBoundaryEvidenceSourceRecords({ runLog = '', evidenceSources = [] } = {}) {
+  const sources = [
+    { kind: 'upstream_run_log', text: runLog },
+    ...(Array.isArray(evidenceSources) ? evidenceSources : []),
+  ];
+  return sources.map((source, index) => {
+    if (typeof source === 'string') {
+      return {
+        kind: `additional_runtime_evidence_${index}`,
+        text: source,
+      };
+    }
+    const record = source && typeof source === 'object' && !Array.isArray(source)
+      ? source
+      : {};
+    const rawKind = stringField(record, ['kind', 'source', 'sourceKind', 'source_kind']);
+    const linesText = Array.isArray(record.lines) ? record.lines.join('\n') : '';
+    return {
+      kind: cleanIdentifier(rawKind || `additional_runtime_evidence_${index}`),
+      text: String(record.text ?? record.log ?? linesText ?? ''),
+    };
+  }).filter((source) => source.kind && source.text.trim());
+}
+
+function runtimeBoundaryLinesFromEvidenceSources(sources = []) {
+  const sourceLineCounts = {};
+  const source_line_counts = {};
+  const sourceKinds = [];
+  const allLines = [];
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const kind = cleanIdentifier(source?.kind || 'runtime_evidence_source');
+    const lines = runtimeBoundaryLinesFromRunLog(source?.text ?? '');
+    if (!kind || lines.length === 0) continue;
+    sourceKinds.push(kind);
+    sourceLineCounts[kind] = lines.length;
+    source_line_counts[kind] = lines.length;
+    allLines.push(...lines);
+  }
+  return {
+    runtimeBoundaryLines: compactStringList(allLines),
+    runtime_boundary_lines: compactStringList(allLines),
+    sourceKinds: compactStringList(sourceKinds),
+    source_kinds: compactStringList(sourceKinds),
+    sourceLineCounts,
+    source_line_counts,
+  };
+}
+
 function runtimeBoundaryEventManifestFromRunLog({
   runLog = '',
+  evidenceSources = [],
   adapter = CFG.runtimeAdapter,
   profileId = CFG.realRocmProfile.id,
 } = {}) {
-  const runtimeBoundaryLines = runtimeBoundaryLinesFromRunLog(runLog);
+  const sourceRecords = runtimeBoundaryEvidenceSourceRecords({ runLog, evidenceSources });
+  const sourceEvidence = runtimeBoundaryLinesFromEvidenceSources(sourceRecords);
+  const runtimeBoundaryLines = sourceEvidence.runtimeBoundaryLines;
   const coverage = runtimeAdapterBoundaryCoverage(runtimeBoundaryLines);
   const missingStageGaps = coverage.missingEventKinds
     .map((kind) => `runtime_boundary_event_manifest_${proofSchedulingGapToken(kind)}_missing`);
@@ -5314,6 +5365,16 @@ function runtimeBoundaryEventManifestFromRunLog({
     proof_ledger_present: false,
     materializedFromRunLog: true,
     materialized_from_run_log: true,
+    materializedFromEvidenceSources: sourceEvidence.sourceKinds.some((kind) =>
+      kind !== 'upstream_run_log'
+    ),
+    materialized_from_evidence_sources: sourceEvidence.sourceKinds.some((kind) =>
+      kind !== 'upstream_run_log'
+    ),
+    runtimeBoundarySourceKinds: sourceEvidence.sourceKinds,
+    runtime_boundary_source_kinds: sourceEvidence.sourceKinds,
+    runtimeBoundarySourceLineCounts: sourceEvidence.sourceLineCounts,
+    runtime_boundary_source_line_counts: sourceEvidence.source_line_counts,
     runtimeBoundaryLineCount: runtimeBoundaryLines.length,
     runtime_boundary_line_count: runtimeBoundaryLines.length,
     runtimeBoundaryLines,
@@ -5350,6 +5411,7 @@ function runtimeBoundaryEventManifestFromRunLog({
 async function materializeRuntimeBoundaryEventManifestFromRunLog({
   access = runtimeWorkerContainerAccess(),
   runLog = report.logs?.upstream_run ?? '',
+  workerServiceEvidence = [],
 } = {}) {
   if (!report.evidence || typeof report.evidence !== 'object' || Array.isArray(report.evidence)) {
     report.evidence = {};
@@ -5438,12 +5500,22 @@ async function materializeRuntimeBoundaryEventManifestFromRunLog({
       }
       const manifest = runtimeBoundaryEventManifestFromRunLog({
         runLog: effectiveRunLog,
+        evidenceSources: [
+          {
+            kind: 'scoped_worker_service_runtime_evidence',
+            lines: Array.isArray(workerServiceEvidence) ? workerServiceEvidence : [],
+          },
+        ],
         adapter,
       });
       facet.runtimeBoundaryLineCount = manifest.runtimeBoundaryLineCount;
       facet.runtime_boundary_line_count = manifest.runtimeBoundaryLineCount;
       facet.runtimeBoundaryLineHashes = manifest.runtimeBoundaryLineHashes;
       facet.runtime_boundary_line_hashes = manifest.runtimeBoundaryLineHashes;
+      facet.runtimeBoundarySourceKinds = manifest.runtimeBoundarySourceKinds;
+      facet.runtime_boundary_source_kinds = manifest.runtimeBoundarySourceKinds;
+      facet.runtimeBoundarySourceLineCounts = manifest.runtimeBoundarySourceLineCounts;
+      facet.runtime_boundary_source_line_counts = manifest.runtimeBoundarySourceLineCounts;
       facet.adapterBoundaryCoverage = manifest.adapterBoundaryCoverage;
       facet.adapter_boundary_coverage = manifest.adapterBoundaryCoverage;
       facet.evidenceRefs.push(...manifest.evidenceRefs, manifest.manifestHash);
@@ -20686,6 +20758,17 @@ async function selfCheckRuntimeDispatchEvidence() {
       adapter: logHarvestEventManifestRuntimeAdapter,
       profileId: 'log-harvest-event-manifest-self-check',
     });
+    const materializedScopedWorkerManifest = runtimeBoundaryEventManifestFromRunLog({
+      runLog: 'ordinary upstream output line without boundary evidence',
+      evidenceSources: [
+        {
+          kind: 'scoped_worker_service_runtime_evidence',
+          lines: completeAdapterRuntimeBoundaryLines,
+        },
+      ],
+      adapter: logHarvestEventManifestRuntimeAdapter,
+      profileId: 'log-harvest-event-manifest-self-check',
+    });
     const materializedPartialRunLogManifest = runtimeBoundaryEventManifestFromRunLog({
       runLog: completeAdapterRuntimeBoundaryLines.slice(0, 2).join('\n'),
       adapter: logHarvestEventManifestRuntimeAdapter,
@@ -20707,6 +20790,11 @@ async function selfCheckRuntimeDispatchEvidence() {
         !== completeAdapterRuntimeBoundaryLines[0]
       || materializedCompleteRunLogManifest.adapterRuntimeBoundaryLines.at(-1)
         !== completeAdapterRuntimeBoundaryLines.at(-1)
+      || !materializedCompleteRunLogManifest.runtimeBoundarySourceKinds.includes(
+        'upstream_run_log',
+      )
+      || materializedCompleteRunLogManifest.runtimeBoundarySourceLineCounts.upstream_run_log
+        !== completeAdapterRuntimeBoundaryLines.length
       || materializedCompleteRunLogManifest.adapterBoundaryCoverage.missingEventKinds.length !== 0
       || materializedCompleteRunLogManifest.acceptedAsSupportEvidence !== true
       || materializedCompleteRunLogManifest.acceptedForGpuHmr !== false
@@ -20715,6 +20803,23 @@ async function selfCheckRuntimeDispatchEvidence() {
       || materializedCompleteRunLogManifest.canSatisfyDispatchProof !== false
     ) {
       throw new Error('runtime boundary event manifest materializer self-check failed complete run log');
+    }
+    if (
+      materializedScopedWorkerManifest.runtimeBoundaryLineCount
+        !== completeAdapterRuntimeBoundaryLines.length
+      || materializedScopedWorkerManifest.acceptedAsSupportEvidence !== true
+      || materializedScopedWorkerManifest.materializedFromEvidenceSources !== true
+      || !materializedScopedWorkerManifest.runtimeBoundarySourceKinds.includes(
+        'scoped_worker_service_runtime_evidence',
+      )
+      || materializedScopedWorkerManifest.runtimeBoundarySourceLineCounts
+        .scoped_worker_service_runtime_evidence
+        !== completeAdapterRuntimeBoundaryLines.length
+      || materializedScopedWorkerManifest.acceptedForGpuHmr !== false
+      || materializedScopedWorkerManifest.gpuHmrSuccess !== false
+      || materializedScopedWorkerManifest.canSatisfyRuntimeProof !== false
+    ) {
+      throw new Error('runtime boundary event manifest materializer self-check dropped scoped worker evidence');
     }
     if (
       materializedPartialRunLogManifest.runtimeBoundaryLineCount !== 2
@@ -25592,6 +25697,7 @@ async function collectRuntimeEvidence(context = runtimeEvidenceContext) {
     await materializeRuntimeBoundaryEventManifestFromRunLog({
       access: workerAccess,
       runLog: report.logs.upstream_run,
+      workerServiceEvidence: scopedWorkerEvidence,
     });
     await transportRuntimeAdapterResultFromWorker(workerAccess);
     await transportRuntimeAdapterEventManifestFromWorker(workerAccess);
