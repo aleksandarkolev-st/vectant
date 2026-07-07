@@ -531,6 +531,34 @@ function normalizeAgentVisualSceneManifest(rawValue, declaredHash = '') {
   };
 }
 
+function normalizeAgentDeviceEditSpecs(raw, field = 'deviceEdits') {
+  return [
+    ...profileArray(raw.deviceEdits ?? raw.device_edits, `${field}.deviceEdits`),
+    ...profileArray(raw.hotDeltas ?? raw.hot_deltas, `${field}.hotDeltas`),
+  ].map((entry, index) => {
+    const spec = profileObject(entry, `${field}[${index}]`);
+    const runMode = profileString(
+      spec.runMode ?? spec.run_mode ?? spec.metricScope ?? spec.metric_scope,
+      `${field}[${index}].runMode`,
+    );
+    const find = profileString(spec.find, `${field}[${index}].find`);
+    const regex = profileString(spec.regex, `${field}[${index}].regex`);
+    const replace = profileString(spec.replace, `${field}[${index}].replace`, { required: true });
+    if (!find && !regex) {
+      throw new Error(`invalid agent visual profile ${field}[${index}]: expected find or regex`);
+    }
+    return {
+      runMode,
+      run_mode: runMode,
+      find,
+      regex,
+      flags: profileString(spec.flags, `${field}[${index}].flags`),
+      replace,
+      label: profileString(spec.label, `${field}[${index}].label`) || runMode || `edit-${index + 1}`,
+    };
+  });
+}
+
 function agentProfileSourceForHash(source) {
   return {
     entryPath: source.entryPath,
@@ -912,6 +940,12 @@ function normalizeDirectSourceOverride(rawManifest, {
       ?? source.render_scene_manifest,
     declaredVisualSceneManifestHash,
   );
+  const editSpecs = normalizeAgentDeviceEditSpecs(raw, 'directSourceManifest');
+  const requireDeclaredEdits = profileBoolean(
+    raw.requireDeclaredEdits ?? raw.require_declared_edits,
+    'directSourceManifest.requireDeclaredEdits',
+    editSpecs.length > 0,
+  );
   const manifestHash = sourceFilesManifestHash(files);
   const immutableCommit = declaredImmutableCommit || (
     sourceAuthority === 'direct_local_git_repo_path'
@@ -949,6 +983,10 @@ function normalizeDirectSourceOverride(rawManifest, {
     visual_scene_manifest_hash: visualSceneManifest?.manifest_hash ?? null,
     visualSceneManifestEvidenceRef: visualSceneManifest?.evidenceRef ?? null,
     visual_scene_manifest_evidence_ref: visualSceneManifest?.evidence_ref ?? null,
+    deviceEdits: editSpecs,
+    device_edits: editSpecs,
+    requireDeclaredEdits,
+    require_declared_edits: requireDeclaredEdits,
     byteLength: entryFile.byteLength,
     byte_length: entryFile.byteLength,
     manifestPath: manifestPath ? resolveProfilePath(manifestPath) : null,
@@ -1016,6 +1054,16 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
   };
   profile.sourceAuthority = override.sourceAuthority;
   profile.source_authority = override.source_authority;
+  const overrideDeviceEdits = Array.isArray(override.deviceEdits)
+    ? override.deviceEdits
+    : [];
+  const overrideRequiresDeclaredEdits =
+    overrideDeviceEdits.length > 0
+    && override.requireDeclaredEdits === true;
+  profile.deviceEdits = overrideDeviceEdits;
+  profile.device_edits = overrideDeviceEdits;
+  profile.requireDeclaredEdits = overrideRequiresDeclaredEdits;
+  profile.require_declared_edits = overrideRequiresDeclaredEdits;
   if (override.visualSceneManifest) {
     profile.visualSceneManifest = override.visualSceneManifest;
     profile.visual_scene_manifest = override.visual_scene_manifest;
@@ -1023,6 +1071,13 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     profile.visual_scene_manifest_hash = override.visual_scene_manifest_hash;
     profile.visualSceneManifestEvidenceRef = override.visualSceneManifestEvidenceRef;
     profile.visual_scene_manifest_evidence_ref = override.visual_scene_manifest_evidence_ref;
+  } else {
+    profile.visualSceneManifest = null;
+    profile.visual_scene_manifest = null;
+    profile.visualSceneManifestHash = null;
+    profile.visual_scene_manifest_hash = null;
+    profile.visualSceneManifestEvidenceRef = null;
+    profile.visual_scene_manifest_evidence_ref = null;
   }
   refreshAgentProfileHash(profile);
   return profile;
@@ -1092,28 +1147,7 @@ function normalizeAgentVisualProfile(rawProfile, { profilePath = '' } = {}) {
   }
   const source = profileObject(raw.source, 'source');
   const compile = profileObject(raw.compile, 'compile');
-  const editSpecs = [
-    ...profileArray(raw.deviceEdits ?? raw.device_edits, 'deviceEdits'),
-    ...profileArray(raw.hotDeltas ?? raw.hot_deltas, 'hotDeltas'),
-  ].map((entry, index) => {
-    const spec = profileObject(entry, `deviceEdits[${index}]`);
-    const runMode = profileString(spec.runMode ?? spec.run_mode ?? spec.metricScope ?? spec.metric_scope, `deviceEdits[${index}].runMode`);
-    const find = profileString(spec.find, `deviceEdits[${index}].find`);
-    const regex = profileString(spec.regex, `deviceEdits[${index}].regex`);
-    const replace = profileString(spec.replace, `deviceEdits[${index}].replace`, { required: true });
-    if (!find && !regex) {
-      throw new Error(`invalid agent visual profile deviceEdits[${index}]: expected find or regex`);
-    }
-    return {
-      runMode,
-      run_mode: runMode,
-      find,
-      regex,
-      flags: profileString(spec.flags, `deviceEdits[${index}].flags`),
-      replace,
-      label: profileString(spec.label, `deviceEdits[${index}].label`) || runMode || `edit-${index + 1}`,
-    };
-  });
+  const editSpecs = normalizeAgentDeviceEditSpecs(raw);
   const profileDir = profilePath ? path.dirname(resolveProfilePath(profilePath)) : process.cwd();
   const profileId = profileString(raw.profileId ?? raw.profile_id ?? raw.id, 'profileId', { required: true });
   const entryPath = cleanRel(source.entryPath ?? source.entry_path ?? raw.entryPath ?? raw.entry_path ?? 'main.cpp');
@@ -5647,6 +5681,17 @@ function selfCheckAgentVisualProfile() {
           minChangedRatio: 0.02,
           minMeanAbs: 1.5,
         },
+        visualSceneManifest: {
+          schemaVersion: 'synthi.gpu_hmr.visual_scene_manifest.v1',
+          sceneId: 'inherited-profile-scene-must-not-survive-direct-source',
+          semanticProbes: [
+            {
+              id: 'inherited-profile-probe',
+              probeClass: 'fixture_specific_probe',
+              region: [0, 0, 2, 2],
+            },
+          ],
+        },
         deviceEdits: [{
           runMode: 'hot_delta_1',
           find: 'kSceneLight * kExposure',
@@ -6063,6 +6108,49 @@ function selfCheckAgentVisualProfile() {
       }),
       directSourceSceneOverride,
     );
+    const directSourceOwnEditSource = [
+      'extern "C" __global__ void render(unsigned int* pixels) {',
+      '  const float ownedGain = 2.0f;',
+      '  pixels[0] = (unsigned int)(ownedGain);',
+      '}',
+      '',
+    ].join('\n');
+    const directSourceOwnEditProfile = applyDirectSourceOverride(
+      normalizeAgentVisualProfile({
+        schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
+        profileId: 'self-check-direct-source-own-edit-profile',
+        profileClass: 'self_check_visual_gpu_path',
+        source: {
+          entryPath: 'src/main.cpp',
+          inline: directSourceOwnEditSource,
+        },
+        deviceEdits: [{
+          runMode: 'hot_delta_1',
+          find: 'ownedGain',
+          replace: 'inheritedFixtureToken',
+        }],
+      }),
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'user_source_files',
+        entryPath: 'src/main.cpp',
+        files: [
+          {
+            path: 'src/main.cpp',
+            content: directSourceOwnEditSource,
+          },
+        ],
+        deviceEdits: [{
+          runMode: 'hot_delta_1',
+          find: 'const float ownedGain = 2.0f;',
+          replace: 'const float ownedGain = 3.0f;',
+        }],
+      }),
+    );
+    ACTIVE_AGENT_PROFILE = directSourceOwnEditProfile;
+    const directSourceOwnEdit = deviceEditForRun(
+      directSourceOwnEditSource,
+      { attempt: 0, runMode: 'hot_delta_1' },
+    );
     let directSourceSceneHashMismatchRejected = false;
     try {
       normalizeDirectSourceOverride({
@@ -6110,6 +6198,10 @@ function selfCheckAgentVisualProfile() {
       || multiFileProfile.sourceAuthority !== 'profile_source_files'
       || directSourceProfile.sourceAuthority !== 'user_source_files'
       || directSourceProfile.source.fixture !== ''
+      || directSourceProfile.deviceEdits.length !== 0
+      || directSourceProfile.requireDeclaredEdits !== false
+      || directSourceProfile.visualSceneManifest !== null
+      || directSourceProfile.visualSceneManifestHash !== null
       || directBootstrapProfile.sourceAuthority !== 'user_source_files'
       || directBootstrapProfile.source.fixture !== ''
       || directBootstrapProfile.profileId === 'flow'
@@ -6128,6 +6220,11 @@ function selfCheckAgentVisualProfile() {
       || directSourceSceneProfile.visualSceneManifestHash !== directSourceSceneManifestHash
       || !directSourceSceneProfile.visualSceneManifestEvidenceRef?.includes(directSourceSceneManifestHash)
       || directSourceSceneProfile.profileHash === directSourceProfile.profileHash
+      || directSourceOwnEditProfile.deviceEdits.length !== 1
+      || directSourceOwnEditProfile.requireDeclaredEdits !== true
+      || directSourceOwnEdit.mutation?.kind !== 'profile_declared_source_edit'
+      || !directSourceOwnEdit.edited.includes('const float ownedGain = 3.0f;')
+      || directSourceOwnEdit.edited.includes('inheritedFixtureToken')
       || !directSourceSceneHashMismatchRejected
       || directSourceResolvedSource !== multiFileEntrySource
       || directSourceInitialFiles.length !== 2
