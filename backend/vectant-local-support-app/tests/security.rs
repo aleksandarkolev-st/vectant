@@ -355,6 +355,30 @@ fn blocks_archive_binary_and_huge_files() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn blocks_sparse_files_even_when_logical_size_is_under_cap() {
+    use std::io::Write;
+
+    let dir = tempdir().unwrap();
+    let sparse_path = dir.path().join("sparse.log");
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&sparse_path)
+        .unwrap();
+    file.write_all(b"start").unwrap();
+    file.set_len(128 * 1024).unwrap();
+    drop(file);
+
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let response = policy.read_file_for_review(&request("sparse.log"));
+
+    assert_eq!(response.decision, "denied");
+    assert_eq!(response.bytes_sent, 0);
+    assert!(response.content.is_none());
+}
+
 #[test]
 fn scanner_redacts_required_secret_fixtures() {
     let scanner = SecretScanner::default();

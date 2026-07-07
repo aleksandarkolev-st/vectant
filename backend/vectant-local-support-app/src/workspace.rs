@@ -190,15 +190,25 @@ impl WorkspacePolicy {
         if before.len() > max_bytes.min(MAX_FILE_BYTES) {
             return Err(anyhow!("file exceeds size cap"));
         }
+        if is_sparse_metadata(&before) {
+            return Err(anyhow!("sparse file blocked"));
+        }
 
         let mut file = File::open(&resolved).context("open failed")?;
         let after = file.metadata().context("metadata after open failed")?;
         if !same_file_identity(&before, &after) {
             return Err(anyhow!("file changed during open"));
         }
+        if is_sparse_metadata(&after) {
+            return Err(anyhow!("sparse file blocked"));
+        }
 
         let mut bytes = Vec::with_capacity(before.len() as usize);
         file.read_to_end(&mut bytes).context("read failed")?;
+        let after_read = file.metadata().context("metadata after read failed")?;
+        if !same_file_identity(&before, &after_read) || is_sparse_metadata(&after_read) {
+            return Err(anyhow!("file changed during read"));
+        }
         if bytes.contains(&0) {
             return Err(anyhow!("binary file blocked"));
         }
@@ -367,7 +377,10 @@ fn is_archive_path(path: &str) -> bool {
 #[cfg(unix)]
 fn same_file_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino() && a.len() == b.len()
+    a.dev() == b.dev()
+        && a.ino() == b.ino()
+        && a.len() == b.len()
+        && same_modified_time(a, b)
 }
 
 #[cfg(windows)]
@@ -376,11 +389,34 @@ fn same_file_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     a.file_index() == b.file_index()
         && a.volume_serial_number() == b.volume_serial_number()
         && a.file_size() == b.file_size()
+        && same_modified_time(a, b)
 }
 
 #[cfg(not(any(unix, windows)))]
 fn same_file_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    a.len() == b.len() && a.modified().ok() == b.modified().ok()
+    a.len() == b.len() && same_modified_time(a, b)
+}
+
+#[cfg(unix)]
+fn is_sparse_metadata(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.len() > 0 && metadata.blocks().saturating_mul(512) < metadata.len()
+}
+
+#[cfg(windows)]
+fn is_sparse_metadata(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x0000_0200;
+    metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE != 0
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_sparse_metadata(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+fn same_modified_time(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    a.modified().ok() == b.modified().ok()
 }
 
 pub fn scan_for_secrets(content: &str) -> ScanReport {
