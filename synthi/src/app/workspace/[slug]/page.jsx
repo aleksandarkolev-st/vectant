@@ -34,8 +34,13 @@ import dynamic from 'next/dynamic';
 const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
     ssr: false,
     loading: () => (
-        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#18181b]">
-            <div className="h-full w-full bg-[#18181b]" />
+        <ResizablePanel
+            defaultSize={76}
+            minSize={20}
+            className="min-w-0"
+            style={{ background: 'var(--bg-editor, var(--bg-panel))' }}
+        >
+            <div className="h-full w-full" style={{ background: 'var(--bg-editor, var(--bg-panel))' }} />
         </ResizablePanel>
     ),
 });
@@ -3183,7 +3188,13 @@ export default function EditorPage({ params }) {
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#1a1a1e] bg-[#09090b] min-w-0">
+        <ResizablePanel
+            defaultSize={24}
+            minSize={20}
+            maxSize={45}
+            className="min-w-0 border-l"
+            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+        >
             <AIChatWindow
                 docked={true}
                 isVisible={floatingChatVisible}
@@ -3543,13 +3554,13 @@ export default function EditorPage({ params }) {
                                         <>
                                             {EditorPanelComponent}
 
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                            <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
 
                                             {FileTreePanel}
 
                                             {floatingChatVisible && (
                                                 <>
-                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
                                                     {ChatPanel}
                                                 </>
                                             )}
@@ -3558,13 +3569,13 @@ export default function EditorPage({ params }) {
                                         <>
                                             {FileTreePanel}
 
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                            <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
 
                                             {EditorPanelComponent}
 
                                             {floatingChatVisible && (
                                                 <>
-                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
                                                     {ChatPanel}
                                                 </>
                                             )}
@@ -3579,7 +3590,7 @@ export default function EditorPage({ params }) {
                             className={cn(
                                 "!pointer-events-auto h-px z-50 transition-all duration-300",
                                 showProblemsPanel && isProblemsPanelDocked
-                                    ? "bg-[#1a1a1e] hover:bg-[#3A7AFE]"
+                                    ? "vt-workspace-resize-handle"
                                     : "opacity-0 pointer-events-none"
                             )}
                         />
@@ -3602,7 +3613,7 @@ export default function EditorPage({ params }) {
                                         ? "opacity-100 transition-opacity duration-200 delay-100"
                                         : "opacity-0 transition-opacity duration-150"
                                 )}
-                                style={{ borderColor: 'var(--border-medium, #1a1a1e)' }}
+                                style={{ borderColor: 'var(--border-medium)' }}
                                 id="problems-panel-dock-slot"
                             />
                         </ResizablePanel>

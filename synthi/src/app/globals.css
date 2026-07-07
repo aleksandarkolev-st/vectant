@@ -1401,6 +1401,21 @@
   transform: translateY(1px);
 }
 
+.vt-workspace-resize-handle {
+  background: var(--border-subtle);
+  transition:
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.vt-workspace-resize-handle:hover,
+.vt-workspace-resize-handle:focus-visible,
+.vt-workspace-resize-handle[data-resize-handle-state="drag"] {
+  background: var(--attention-purple);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 30%, transparent);
+}
+
 .vt-state-pill {
   display: inline-flex;
   align-items: center;
