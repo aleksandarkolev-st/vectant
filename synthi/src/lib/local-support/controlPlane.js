@@ -646,6 +646,14 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
   const state = input && typeof input === "object" ? input : {};
   const devices = Array.isArray(state.devices) ? state.devices : [];
   const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+  const revokedSessionIds = uniqueStrings([
+    ...(policy.revoked_sessions || []),
+    ...revokedSessions,
+  ]).slice(0, 500);
+  const revokedDeviceFingerprints = uniqueStrings([
+    ...(policy.revoked_devices || []),
+    ...revokedDevices,
+  ]).slice(0, 500);
 
   return {
     decision: "admin_state_ready",
@@ -653,6 +661,12 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
     policy_version: policy.policy_version,
     protocol_version: policy.protocol_version,
     emergency_controls: policy.emergency_controls,
+    revocations: {
+      revoked_sessions_count: revokedSessionIds.length,
+      revoked_devices_count: revokedDeviceFingerprints.length,
+      revoked_sessions: revokedSessionIds.map(scrubTelemetryValue),
+      revoked_devices: revokedDeviceFingerprints.map(scrubTelemetryValue),
+    },
     paired_devices: devices.slice(0, 100).map((device) => ({
       device_id: scrubTelemetryValue(device.device_id || device.id || ""),
       account_id: scrubTelemetryValue(device.account_id || ""),
@@ -825,6 +839,10 @@ function parseCsv(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))];
 }
 
 function clampNumber(value, min, max, fallback) {

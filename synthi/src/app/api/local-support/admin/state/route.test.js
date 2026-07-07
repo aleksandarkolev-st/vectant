@@ -239,4 +239,33 @@ describe("local support admin state route", () => {
       bytes_sent: 0,
     });
   });
+
+  it("admin state exposes scrubbed env and runtime revocations", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+    process.env.VECTANT_LOCAL_SUPPORT_REVOKED_DEVICES = "sha256:2222222222222222";
+
+    const revoke = await POST(
+      adminPost(
+        { target_type: "session", target_id: "sess_runtime" },
+        { "x-vectant-admin-token": "admin-secret" },
+      ),
+    );
+    expect(revoke.status).toBe(200);
+
+    const response = await GET(adminGet({ "x-vectant-admin-token": "admin-secret" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      decision: "admin_state_ready",
+      raw_body_included: false,
+      revocations: {
+        revoked_sessions_count: 1,
+        revoked_devices_count: 1,
+        revoked_sessions: ["sess_runtime"],
+        revoked_devices: ["sha256:2222222222222222"],
+      },
+    });
+  });
 });
