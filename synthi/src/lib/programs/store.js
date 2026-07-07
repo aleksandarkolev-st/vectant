@@ -257,6 +257,10 @@ export async function listPublishedPrograms({ q = '', limit = 50 } = {}) {
   const rows = await prisma.marketplaceProgram.findMany({
     where: {
       publisher: { not: 'local' },
+      // Only programs with a live (last-approved) version are listed — a fresh
+      // submission or an in-review update has publishedVersion = null until it
+      // reaches `published`.
+      publishedVersion: { not: null },
       ...(trimmed
         ? {
             OR: [
@@ -273,6 +277,44 @@ export async function listPublishedPrograms({ q = '', limit = 50 } = {}) {
   return rows.map(toPublicMarketplaceProgram);
 }
 
+/** The marketplace program row by packageId (or null). Used by pricing/checkout. */
+export async function getMarketplaceProgramByPackageId(packageId) {
+  return prisma.marketplaceProgram.findUnique({ where: { packageId } });
+}
+
+/** Pricing rows for a set of programs (batched — avoids N+1 in the catalog). */
+export async function listPricingForPrograms(programIds) {
+  if (!Array.isArray(programIds) || programIds.length === 0) return [];
+  return prisma.programPricing.findMany({ where: { programId: { in: programIds } } });
+}
+
+/** The subset of `programIds` the subject holds an ACTIVE entitlement for. */
+export async function listActiveEntitlementProgramIds({ subjectType = 'user', subjectId, programIds }) {
+  if (!subjectId || !Array.isArray(programIds) || programIds.length === 0) return [];
+  const rows = await prisma.entitlement.findMany({
+    where: { subjectType, subjectId, status: 'active', programId: { in: programIds } },
+    select: { programId: true },
+  });
+  return rows.map((r) => r.programId);
+}
+
+/**
+ * Record a payment webhook event exactly once (idempotency via the unique
+ * eventId). Returns true if newly recorded, false if this event was already
+ * processed (a Stripe retry / replay).
+ */
+export async function recordWebhookEventOnce({ eventId, type, reference, payloadJson }) {
+  try {
+    await prisma.paymentWebhookEvent.create({
+      data: { eventId, type, reference: reference || '', payloadJson: payloadJson || '' },
+    });
+    return true;
+  } catch (err) {
+    if (err?.code === 'P2002') return false; // duplicate eventId
+    throw err;
+  }
+}
+
 /** Resolve a published program + version + parsed manifest config (or null). */
 export async function getPublishedProgramVersion(packageId, version) {
   const program = await prisma.marketplaceProgram.findUnique({ where: { packageId } });
@@ -281,6 +323,12 @@ export async function getPublishedProgramVersion(packageId, version) {
     where: { programId_version: { programId: program.id, version } },
   });
   if (!versionRow || !versionRow.manifestJson) return null;
+  // Never serve an unreviewed / superseded digest: installers only ever resolve
+  // a version that is currently in the `published` state.
+  if (versionRow.reviewState !== 'published') return null;
+  // Only the currently-live version is installable — unpublish / supersede takes
+  // effect immediately; no resurrecting an old reviewed digest.
+  if (program.publishedVersion && program.publishedVersion !== version) return null;
   const config = parseJsonText(versionRow.manifestJson, null);
   if (!config) return null;
   return { program, version: versionRow, config };
@@ -350,5 +398,138 @@ export function toPublicInstall(row) {
     updatedAt: row.updatedAt,
     packageId: program ? program.packageId : null,
     publisher: program ? program.publisher : null,
+  };
+}
+
+// ── Community-app submission + review gate (Phase 1) ──
+
+/**
+ * Create (or re-submit) a community-app version in `submitted` state. Upserts the
+ * MarketplaceProgram (publisher = slug, packageId = @slug/<name>) and creates a
+ * new version row carrying the publisher's sourceImageRef + the submitted manifest.
+ * Writes the initial null→submitted audit event. Does NOT change the program's
+ * live publishedVersion (an update stays invisible until it is approved).
+ */
+export async function createSubmission({ workspaceSlug, config, sourceImageRef = null, submittedByUserId }) {
+  const packageId = publishedPackageId(workspaceSlug, config.packageId);
+  const program = await prisma.marketplaceProgram.upsert({
+    where: { packageId },
+    update: { latestVersion: config.version, displayName: config.displayName || config.packageId, description: config.description || null, publishedByUserId: submittedByUserId },
+    create: { packageId, publisher: workspaceSlug, verified: false, latestVersion: config.version, displayName: config.displayName || config.packageId, description: config.description || null, publishedByUserId: submittedByUserId },
+  });
+  const version = await prisma.programVersion.create({
+    data: {
+      programId: program.id,
+      version: config.version,
+      manifestJson: JSON.stringify(config),
+      requiredTools: [],
+      ports: (config.ports || []).map((p) => String(p)),
+      reviewState: 'submitted',
+      sourceImageRef,
+      submittedByUserId,
+    },
+  });
+  await prisma.programReviewEvent.create({
+    data: { versionId: version.id, fromState: null, toState: 'submitted', actorUserId: submittedByUserId, reasonJson: null },
+  });
+  return { program, version };
+}
+
+/** Fetch a version (with its program) for review/orchestration. */
+export async function getReviewVersionById(versionId) {
+  return prisma.programVersion.findUnique({ where: { id: versionId }, include: { program: true } });
+}
+
+/** List versions awaiting manual review, newest first, with their program. */
+export async function listPendingReview() {
+  return prisma.programVersion.findMany({
+    where: { reviewState: 'pending_review' },
+    orderBy: { submittedAt: 'desc' },
+    include: { program: true },
+  });
+}
+
+/** Take a published program down: clear its live pointer (drops from marketplace). */
+export async function unpublishProgram(packageId) {
+  return prisma.marketplaceProgram.update({
+    where: { packageId },
+    data: { publishedVersion: null, publishedDigest: null },
+  });
+}
+
+/** Non-terminal submissions for the autonomous sweep (bounded, oldest-first). */
+export async function listProcessableSubmissions(limit = 50) {
+  return prisma.programVersion.findMany({
+    where: { reviewState: { in: ['submitted', 'scanning', 'ai_review'] } },
+    orderBy: { submittedAt: 'asc' },
+    take: limit,
+  });
+}
+
+/** List a workspace's submitted versions (any review state) for the status view. */
+export async function listSubmissionsForWorkspace(workspaceSlug) {
+  return prisma.programVersion.findMany({
+    where: { program: { publisher: workspaceSlug } },
+    orderBy: { submittedAt: 'desc' },
+    include: { program: true },
+  });
+}
+
+/**
+ * Guarded state transition + audit. Updates only if the row is still in
+ * `fromState` (idempotent/resumable). Returns true if it transitioned.
+ * `patch` carries extra column writes (scanReportJson, reviewNotes, reviewedByUserId…).
+ */
+export async function transitionReview(versionId, { fromState, toState, actorUserId = null, reason = null, patch = {} }) {
+  const data = { reviewState: toState, ...patch };
+  if (actorUserId && (toState === 'approved' || toState === 'rejected' || toState === 'published')) {
+    data.reviewedByUserId = actorUserId;
+    data.reviewedAt = new Date();
+  }
+  const res = await prisma.programVersion.updateMany({ where: { id: versionId, reviewState: fromState }, data });
+  if (!res.count) return false;
+  await prisma.programReviewEvent.create({
+    data: { versionId, fromState, toState, actorUserId, reasonJson: reason == null ? null : JSON.stringify(reason) },
+  });
+  return true;
+}
+
+/**
+ * Flip an approved+rehosted version to `published` and point the program's live
+ * version/digest at it (the previously-live version stays untouched until now).
+ */
+export async function publishApprovedVersion(versionId, { programId, version, actorUserId, hostedImageDigest, publishedManifestJson }) {
+  const ok = await transitionReview(versionId, {
+    fromState: 'rehosting', toState: 'published', actorUserId,
+    patch: { hostedImageDigest, manifestJson: publishedManifestJson },
+  });
+  if (!ok) return false;
+  await prisma.marketplaceProgram.update({
+    where: { id: programId },
+    data: { publishedVersion: version, publishedDigest: hostedImageDigest, latestVersion: version },
+  });
+  return true;
+}
+
+/** Admin-queue projection: allow-listed fields + parsed scan summary, never the raw manifest. */
+export function toReviewQueueItem(row) {
+  if (!row) return row;
+  return {
+    versionId: row.id,
+    version: row.version,
+    reviewState: row.reviewState,
+    submittedByUserId: row.submittedByUserId ?? null,
+    sourceImageRef: row.sourceImageRef ?? null,
+    submittedAt: row.submittedAt ?? null,
+    scanSummary: parseJsonText(row.scanReportJson, null),
+    aiSummary: (() => {
+      // Redacted: expose only the AI risk score + flags, never the raw provider
+      // rationale text (allow-list serialization, like toPublicInstall).
+      const ai = parseJsonText(row.aiRiskJson, null);
+      return ai ? { riskScore: ai.riskScore ?? null, flags: Array.isArray(ai.flags) ? ai.flags : [] } : null;
+    })(),
+    packageId: row.program ? row.program.packageId : null,
+    publisher: row.program ? row.program.publisher : null,
+    displayName: row.program ? (row.program.displayName ?? null) : null,
   };
 }

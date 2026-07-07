@@ -1,0 +1,45 @@
+name: CI
+
+# Lightweight test CI. The only other workflow (deploy-prod.yml) just ships images
+# on push to main; this runs unit tests on branches/PRs. Scoped by path so it only
+# fires for the programs-mcp package and the backend files its drift guard mirrors.
+on:
+  push:
+    paths:
+      - 'packages/programs-mcp/**'
+      - 'synthi/src/lib/programs/hostEscape.js'
+      - 'synthi/src/lib/programs/manifest.js'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'packages/programs-mcp/**'
+      - 'synthi/src/lib/programs/hostEscape.js'
+      - 'synthi/src/lib/programs/manifest.js'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  programs-mcp:
+    name: programs-mcp tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Install only this package's deps (SDK + vitest), standalone — not the
+      # Monaco-heavy monorepo. --workspaces=false stops npm from resolving the
+      # whole workspace graph. The drift guard reads backend files by path (they
+      # are pure ESM, no install needed) from the full checkout.
+      - name: Install deps (isolated)
+        working-directory: packages/programs-mcp
+        run: npm install --no-audit --no-fund --no-package-lock --include-workspace-root=false --workspaces=false
+
+      - name: Test
+        working-directory: packages/programs-mcp
+        run: npm test

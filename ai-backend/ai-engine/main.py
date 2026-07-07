@@ -41,6 +41,8 @@ from analyzer import get_analyzer
 from analyzer import supported_languages
 
 from llm.providers import get_provider
+from program_review import assess_program_risk
+from program_manifest_gen import generate_manifest
 from llm.prompts import SPLIT_GUI_PROMPT, UNIVERSAL_SPLIT_PROMPT
 from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
@@ -4618,6 +4620,40 @@ def root():
             "agentic_self_healing",
         ],
     }
+
+
+class ProgramRiskRequest(BaseModel):
+    manifest: dict
+    scan_summary: Optional[dict] = None
+    source_image_ref: Optional[str] = None
+    description: Optional[str] = None
+
+
+@app.post("/programs/risk-review")
+async def programs_risk_review(req: ProgramRiskRequest):
+    """Advisory residual-risk score for a community-app submission that already
+    passed the Phase-1 hard gates + CVE scan. Returns {risk_score, flags, rationale};
+    fail-closed (max risk) inside assess_program_risk on any provider/parse failure.
+    Never a load-bearing security control — the orchestrator only uses it to decide
+    auto-approve vs. manual review among already-clean submissions."""
+    return await assess_program_risk({
+        "manifest": req.manifest,
+        "scan_summary": req.scan_summary,
+        "source_image_ref": req.source_image_ref,
+        "description": req.description,
+    })
+
+
+class ProgramManifestGenRequest(BaseModel):
+    files: dict
+    workspace_name: Optional[str] = None
+
+
+@app.post("/programs/generate-manifest")
+async def programs_generate_manifest(req: ProgramManifestGenRequest):
+    """Draft a vectant.programs.json from the workspace's key files. Fail-closed
+    inside generate_manifest; the Next.js caller re-validates before offering/saving."""
+    return await generate_manifest({"files": req.files, "workspace_name": req.workspace_name})
 
 
 @app.get("/health")
