@@ -61,9 +61,38 @@ describe("local support security event route", () => {
       decision: "recorded",
       event_type: "preview_redirect_blocked",
       severity: "high",
+      alert: true,
+      alert_route: "local_support.security.high",
       raw_body_included: false,
     });
+    expect(json.dedupe_key).toMatch(/^sha256:/);
     expect(json.target_display).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
+
+  it("routes traffic spike alerts without raw local content", async () => {
+    vi.stubEnv("VECTANT_LOCAL_SUPPORT_ENABLED", "true");
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({
+        event_type: "traffic_spike",
+        count: 9,
+        session_id: "sess_ops",
+        target: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+      }),
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      decision: "recorded",
+      event_type: "traffic_spike",
+      severity: "high",
+      alert_route: "local_support.security.high",
+      raw_body_included: false,
+    });
+    expect(json.dedupe_key).toMatch(/^sha256:/);
+    expect(JSON.stringify(json)).not.toContain("abcdefghijklmnopqrstuvwxyz");
   });
 
   it("denies oversized security event bodies", async () => {

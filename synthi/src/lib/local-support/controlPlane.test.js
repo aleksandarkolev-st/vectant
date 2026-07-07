@@ -284,11 +284,49 @@ describe("local support control plane policy", () => {
       event_type: "denied_secret_request",
       severity: "critical",
       alert: true,
+      alert_route: "local_support.security.critical",
       raw_body_included: false,
     });
+    expect(event.dedupe_key).toMatch(/^sha256:/);
     expect(event.target_display).toContain("[REDACTED:database_url]");
     expect(event.target_display).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(event.target_display).not.toContain("postgres://user:pass");
+  });
+
+  it("routes required operational security alerts by severity without raw bodies", () => {
+    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const cases = [
+      ["bad_origin", 10, "high", "local_support.security.high"],
+      ["old_version", 1, "medium", "local_support.security.watch"],
+      ["app_version_too_old", 1, "medium", "local_support.security.watch"],
+      ["traffic_spike", 5, "high", "local_support.security.high"],
+      ["scanner_failure", 1, "critical", "local_support.security.critical"],
+      ["rate_limit_exceeded", 5, "high", "local_support.security.high"],
+      ["pairing_failed", 5, "high", "local_support.security.high"],
+      ["suspicious_support_request", 5, "high", "local_support.security.high"],
+      ["preview_redirect_blocked", 1, "high", "local_support.security.high"],
+      ["path_traversal", 1, "high", "local_support.security.high"],
+    ];
+
+    for (const [eventType, count, severity, route] of cases) {
+      const event = summarizeSecurityEvent(
+        {
+          event_type: eventType,
+          count,
+          session_id: "sess_alert",
+          target: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        },
+        policy,
+      );
+      expect(event).toMatchObject({
+        decision: "recorded",
+        severity,
+        alert_route: route,
+        raw_body_included: false,
+      });
+      expect(event.dedupe_key).toMatch(/^sha256:/);
+      expect(JSON.stringify(event)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    }
   });
 
   it("builds minimized relay forwarding decisions without raw local bodies", () => {

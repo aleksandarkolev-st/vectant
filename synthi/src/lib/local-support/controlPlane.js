@@ -32,9 +32,11 @@ const SECURITY_EVENT_TYPES = new Set([
   "pairing_failed",
   "preview_redirect_blocked",
   "app_version_too_old",
+  "old_version",
   "rate_limit_exceeded",
   "scanner_failure",
   "suspicious_support_request",
+  "traffic_spike",
 ]);
 
 const MAX_REPLAY_CACHE_ENTRIES = 5_000;
@@ -279,6 +281,8 @@ export function summarizeSecurityEvent(input, policy = readLocalSupportPolicy())
     event_type: eventType,
     severity,
     alert: severity === "high" || severity === "critical",
+    alert_route: alertRouteForSeverity(severity),
+    dedupe_key: buildSecurityEventDedupeKey(eventType, event.session_id || "", target),
     count,
     policy_version: policy.policy_version,
     raw_body_included: false,
@@ -461,10 +465,28 @@ function severityForEvent(eventType, count) {
   if (["path_traversal", "denied_secret_request", "preview_redirect_blocked"].includes(eventType)) {
     return count >= 3 ? "critical" : "high";
   }
-  if (["rate_limit_exceeded", "suspicious_support_request", "pairing_failed"].includes(eventType)) {
+  if (["rate_limit_exceeded", "suspicious_support_request", "pairing_failed", "traffic_spike"].includes(eventType)) {
     return count >= 5 ? "high" : "medium";
   }
+  if (["app_version_too_old", "old_version"].includes(eventType)) return "medium";
+  if (eventType === "bad_origin") return count >= 10 ? "high" : "medium";
   return "low";
+}
+
+function alertRouteForSeverity(severity) {
+  if (severity === "critical") return "local_support.security.critical";
+  if (severity === "high") return "local_support.security.high";
+  if (severity === "medium") return "local_support.security.watch";
+  return "local_support.security.info";
+}
+
+function buildSecurityEventDedupeKey(eventType, sessionId, targetDisplay) {
+  const basis = [
+    eventType,
+    scrubTelemetryValue(sessionId || "no-session"),
+    targetDisplay || "no-target",
+  ].join("\0");
+  return `sha256:${createHash("sha256").update(basis).digest("hex")}`;
 }
 
 function scrubTelemetryValue(value) {
