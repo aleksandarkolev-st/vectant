@@ -171,6 +171,8 @@ describe("local support release acceptance evidence", () => {
             account_id: "acct_acceptance",
             org_id: "org_acceptance",
             workspace_id: "wk_acceptance",
+            device_fingerprint: "dev_fp_acceptance",
+            device_proof: "sha256:device-proof",
             capability,
             actor: "support_agent",
             expires_at: new Date(Date.now() + 60_000).toISOString(),

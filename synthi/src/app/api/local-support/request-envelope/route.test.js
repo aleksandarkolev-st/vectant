@@ -42,6 +42,8 @@ function envelope(overrides = {}) {
     account_id: "acct_123",
     org_id: "org_123",
     workspace_id: "wk_123",
+    device_fingerprint: "dev_fp_123",
+    device_proof: "sha256:device-proof",
     capability: "workspace.file.source.read",
     actor: "support_agent",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -112,6 +114,7 @@ describe("local support request-envelope route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
     process.env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID = "acct_123";
     process.env.VECTANT_LOCAL_SUPPORT_ORG_ID = "org_123";
+    process.env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT = "dev_fp_123";
 
     const wrongAccount = await POST(request(signedEnvelope({ account_id: "acct_attacker" })));
     expect(wrongAccount.status).toBe(403);
@@ -129,6 +132,17 @@ describe("local support request-envelope route", () => {
     await expect(wrongOrg.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "org_mismatch",
+      bytes_sent: 0,
+    });
+
+    const wrongDevice = await POST(request(signedEnvelope({
+      request_id: "req_wrong_device",
+      device_fingerprint: "dev_fp_attacker",
+    })));
+    expect(wrongDevice.status).toBe(403);
+    await expect(wrongDevice.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "device_mismatch",
       bytes_sent: 0,
     });
   });

@@ -62,6 +62,7 @@ export function readLocalSupportPolicy(env = process.env) {
   const minAppVersion = env.VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION || DEFAULT_MIN_APP_VERSION;
   const allowedAccountId = env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID || null;
   const allowedOrgId = env.VECTANT_LOCAL_SUPPORT_ORG_ID || null;
+  const allowedDeviceFingerprint = env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT || null;
   const disabledReason = env.VECTANT_LOCAL_SUPPORT_DISABLED_REASON || null;
   const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED === "true";
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
@@ -80,6 +81,7 @@ export function readLocalSupportPolicy(env = process.env) {
     min_app_version: minAppVersion,
     account_id: allowedAccountId,
     org_id: allowedOrgId,
+    device_fingerprint: allowedDeviceFingerprint,
     vulnerable_versions: vulnerableVersions,
     policy_version: POLICY_VERSION,
     protocol_version: LOCAL_SUPPORT_PROTOCOL,
@@ -241,6 +243,8 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
     "account_id",
     "org_id",
     "workspace_id",
+    "device_fingerprint",
+    "device_proof",
     "capability",
     "actor",
     "expires_at",
@@ -258,6 +262,9 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   }
   if (policy.org_id && request.org_id !== policy.org_id) {
     return deny("org_mismatch", "This support request is not for the paired organization.");
+  }
+  if (policy.device_fingerprint && request.device_fingerprint !== policy.device_fingerprint) {
+    return deny("device_mismatch", "This support request is not for the paired local device.");
   }
   if (request.protocol_version !== policy.protocol_version) {
     return deny("protocol_version_mismatch", "This support request uses a stale local-support protocol.");
@@ -360,6 +367,7 @@ export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy
     session_id: scrubTelemetryValue(input.session_id),
     account_id: scrubTelemetryValue(input.account_id),
     org_id: scrubTelemetryValue(input.org_id),
+    device_fingerprint: scrubTelemetryValue(input.device_fingerprint),
     workspace_id: scrubTelemetryValue(input.workspace_id),
     capability: scrubTelemetryValue(input.capability),
     target_display: targetDisplay,

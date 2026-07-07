@@ -26,6 +26,8 @@ function envelope(overrides = {}) {
     account_id: "acct_123",
     org_id: "org_123",
     workspace_id: "wk_123",
+    device_fingerprint: "dev_fp_123",
+    device_proof: "sha256:device-proof",
     capability: "workspace.file.source.read",
     actor: "vectant_ai",
     expires_at: future(),
@@ -67,6 +69,7 @@ describe("local support control plane policy", () => {
       VECTANT_LOCAL_SUPPORT_ENABLED: "true",
       VECTANT_LOCAL_SUPPORT_ACCOUNT_ID: "acct_123",
       VECTANT_LOCAL_SUPPORT_ORG_ID: "org_123",
+      VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT: "dev_fp_123",
     });
 
     expect(validateRequestEnvelope(envelope({ account_id: "acct_other" }), policy)).toMatchObject({
@@ -77,6 +80,11 @@ describe("local support control plane policy", () => {
     expect(validateRequestEnvelope(envelope({ org_id: "org_other" }), policy)).toMatchObject({
       decision: "denied",
       reason: "org_mismatch",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ device_fingerprint: "dev_fp_other" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "device_mismatch",
       bytes_sent: 0,
     });
     expect(validateRequestEnvelope(envelope({ protocol_version: "local-support-old" }), policy)).toMatchObject({
@@ -259,6 +267,8 @@ describe("local support control plane policy", () => {
       actor: body.actor,
       capability: body.capability,
       workspace_id: body.workspace_id,
+      device_proof: body.device_proof,
+      device_fingerprint: body.device_fingerprint,
       org_id: body.org_id,
       account_id: body.account_id,
       session_id: body.session_id,
@@ -396,6 +406,7 @@ describe("local support control plane policy", () => {
       actor: "support_agent",
       account_id: "acct_123",
       org_id: "org_123",
+      device_fingerprint: "dev_fp_123",
       capability: "workspace.log.read",
       target_classification: "L3",
       control_plane_log_class: "local_support.control",
