@@ -190,6 +190,11 @@ function RuntimeSummary({ skill, graph }) {
 function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSelectNode, statusChips }) {
   const [legendOpen, setLegendOpen] = useState(false);
   const [viewMode, setViewMode] = useState('focus');
+  const nodeRail = useMemo(() => {
+    const nodes = graph?.nodes || [];
+    const important = nodes.filter((node) => isImportantNode(node));
+    return [...important, ...nodes.filter((node) => !important.includes(node))].slice(0, 8);
+  }, [graph?.nodes]);
 
   return (
     <section
@@ -244,6 +249,11 @@ function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSe
             <Legend label="Expired / Recertify" tone="expired" />
           </div>
         ) : null}
+        <GraphNodeRail
+          nodes={nodeRail}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={onSelectNode}
+        />
         <GraphCanvas
           graph={graph}
           selectedNodeId={selectedNodeId}
@@ -255,6 +265,54 @@ function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSe
         <CortexNodeInspector node={selectedNode} graph={graph} skill={skill} />
       </div>
     </section>
+  );
+}
+
+function GraphNodeRail({ nodes, selectedNodeId, onSelectNode }) {
+  if (!nodes?.length) return null;
+  return (
+    <div
+      data-testid="cortex-node-rail"
+      className="mb-2 flex min-w-0 gap-1 overflow-x-auto rounded-lg border p-1"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+        background: 'color-mix(in srgb, var(--bg-app) 40%, transparent)',
+      }}
+      aria-label="Cortex node rail"
+    >
+      {nodes.map((node) => {
+        const active = selectedNodeId === node.id;
+        const tone = nodeTone(node);
+        return (
+          <button
+            key={node.id}
+            type="button"
+            className="th-focus-ring inline-flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
+            style={{
+              borderColor: active
+                ? tone.color
+                : 'color-mix(in srgb, var(--border-subtle) 72%, transparent)',
+              background: active
+                ? 'color-mix(in srgb, var(--accent-primary) 11%, var(--bg-panel))'
+                : 'color-mix(in srgb, var(--bg-panel) 66%, transparent)',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            }}
+            aria-pressed={active}
+            onClick={() => onSelectNode?.(node.id)}
+            title={`${node.kind}: ${node.label || node.id}`}
+          >
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                background: tone.color,
+                boxShadow: active ? `0 0 10px ${tone.color}` : 'none',
+              }}
+            />
+            <span className="max-w-36 truncate">{node.label || node.id}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

@@ -26,6 +26,7 @@ export default function DojoShell({
   const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
   const [loading, setLoading] = useState(autoLoad && !initialSummary);
   const [error, setError] = useState('');
+  const [activeNavLabel, setActiveNavLabel] = useState('Overview');
   const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
@@ -52,18 +53,28 @@ export default function DojoShell({
   const coverage = selectedSkill ? Math.round(selectedSkill.coverageScore * 100) : 0;
   const baseHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
   const selectedSkillHref = selectedSkill?.skillId ? encodeURIComponent(selectedSkill.skillId) : '';
-  const navItems = [
-    ['Overview', baseHref, Activity],
-    ['Skills', `${baseHref}/skills`, ShieldCheck],
-    ['Passport', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref, FileCheck2],
-    ['Cortex', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref, GitBranch],
-    ['Practice', `${baseHref}/practice`, BookOpenCheck],
-    ['Source/API', `${baseHref}/source`, Braces],
-    ['Debugger', `${baseHref}/debug/time-machine`, History],
-    ['Evidence', `${baseHref}/evidence`, DatabaseZap],
-    ['Case Law', `${baseHref}/case-law`, Scale],
-    ['Governance', `${baseHref}/governance`, Workflow],
-  ];
+  const navItems = useMemo(() => [
+    { label: 'Overview', href: baseHref, icon: Activity, detail: 'Registry health' },
+    { label: 'Skills', href: `${baseHref}/skills`, icon: ShieldCheck, detail: `${metrics.skillCount || 0} licensed paths` },
+    { label: 'Passport', href: selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref, icon: FileCheck2, detail: selectedSkill ? 'Credential scope' : 'Select a skill' },
+    { label: 'Cortex', href: selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref, icon: GitBranch, detail: selectedSkill ? 'Runtime graph' : 'No graph yet' },
+    { label: 'Practice', href: `${baseHref}/practice`, icon: BookOpenCheck, detail: `${metrics.scenarioCount || 0} scenarios` },
+    { label: 'Source/API', href: `${baseHref}/source`, icon: Braces, detail: 'Affordance bridge' },
+    { label: 'Debugger', href: `${baseHref}/debug/time-machine`, icon: History, detail: 'Replay variables' },
+    { label: 'Evidence', href: `${baseHref}/evidence`, icon: DatabaseZap, detail: `${metrics.artifactCount || 0} artifacts` },
+    { label: 'Case Law', href: `${baseHref}/case-law`, icon: Scale, detail: 'Binding outcomes' },
+    { label: 'Governance', href: `${baseHref}/governance`, icon: Workflow, detail: `${metrics.guardrailCount || 0} guardrails` },
+  ], [baseHref, metrics.artifactCount, metrics.guardrailCount, metrics.scenarioCount, metrics.skillCount, selectedSkill, selectedSkillHref]);
+  const activeNavItem = navItems.find((item) => item.label === activeNavLabel) || navItems[0];
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const path = window.location.pathname;
+    const match = [...navItems]
+      .sort((a, b) => b.href.length - a.href.length)
+      .find((item) => path === item.href || path.startsWith(`${item.href}/`));
+    if (match) setActiveNavLabel(match.label);
+  }, [navItems]);
   const scopeRows = useMemo(() => {
     if (!selectedSkill) return [];
     return [
@@ -143,11 +154,36 @@ export default function DojoShell({
                 <div className="vt-panel-kicker">Sections</div>
               </div>
               <div className="grid gap-1">
-                {navItems.map(([label, href, Icon], index) => (
+                <div
+                  className="mb-2 rounded-[var(--radius-control)] border px-2.5 py-2"
+                  style={{
+                    borderColor: 'color-mix(in srgb, var(--border-subtle) 72%, transparent)',
+                    background: 'color-mix(in srgb, var(--bg-app) 46%, transparent)',
+                  }}
+                  data-testid="dojo-nav-preview"
+                >
+                  <div className="vt-panel-kicker">Focus</div>
+                  <div className="mt-1 truncate text-xs font-semibold">{activeNavItem.label}</div>
+                  <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    {activeNavItem.detail}
+                  </div>
+                </div>
+                {navItems.map(({ label, href, icon: Icon, detail }) => {
+                  const active = activeNavLabel === label;
+                  return (
                   <motion.a
                     key={label}
                     href={href}
-                    className={`vt-command-item th-focus-ring flex h-9 items-center gap-2 px-2.5 text-xs ${index === 0 ? 'text-[var(--text-primary)]' : ''}`}
+                    className="vt-command-item th-focus-ring flex h-9 items-center gap-2 px-2.5 text-xs"
+                    style={{
+                      color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      background: active ? 'color-mix(in srgb, var(--accent-primary) 10%, transparent)' : undefined,
+                      border: active ? '1px solid color-mix(in srgb, var(--accent-primary) 30%, var(--border-subtle))' : '1px solid transparent',
+                    }}
+                    aria-current={active ? 'page' : undefined}
+                    title={detail}
+                    onMouseEnter={() => setActiveNavLabel(label)}
+                    onFocus={() => setActiveNavLabel(label)}
                     whileHover={prefersReducedMotion ? undefined : { x: 2 }}
                     transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
                   >
@@ -155,7 +191,8 @@ export default function DojoShell({
                     <span className="min-w-0 flex-1 truncate">{label}</span>
                     <ArrowUpRight size={12} aria-hidden="true" />
                   </motion.a>
-                ))}
+                  );
+                })}
               </div>
             </nav>
 
