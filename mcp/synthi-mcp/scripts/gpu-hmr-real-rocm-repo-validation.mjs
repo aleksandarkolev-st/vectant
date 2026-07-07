@@ -9478,6 +9478,10 @@ async function prepareUpstreamBuild() {
     runtimeBoundaryTargetEnvironment.blockingGaps.length === 0 ? 'pass' : 'warn',
     `status=${runtimeBoundaryTargetEnvironment.status} exported=${runtimeBoundaryTargetEnvironment.exportedToUpstreamRun} vars=${runtimeBoundaryTargetEnvironment.exportedVariableNames.length} gaps=${runtimeBoundaryTargetEnvironment.blockingGaps.join(',') || 'none'}`,
   );
+  writeEmergencyRetainedCheckpointSync({
+    label: 'after-runtime-boundary-target-environment',
+    reason: 'after_generic_runtime_boundary_target_environment_before_upstream_lifecycle',
+  });
 
   const cmakeExtraArgs = CFG.cmakeArgs.length
     ? ` ${CFG.cmakeArgs.map((arg) => shQuote(arg)).join(' ')}`
