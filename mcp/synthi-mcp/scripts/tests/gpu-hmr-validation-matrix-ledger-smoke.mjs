@@ -3646,6 +3646,11 @@ assert.equal(
   'random_cold_runtime_boundary_closure_checklist_only_not_gpu_hmr_success',
 );
 assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.acceptedAsSupportEvidence, true);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.supportOnly, true);
+assert.equal(
+  randomColdRow.randomColdRuntimeBoundaryClosureChecklist.authorityScope,
+  'support_only',
+);
 assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.acceptedForGpuHmr, false);
 assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.gpuHmrSuccess, false);
 assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.canSatisfyRuntimeProof, false);
@@ -19122,6 +19127,15 @@ assert.equal(
   broadReadinessCoverage.get('large_rocm_ml_random_cold_source_intake')
     ?.distinctSourceContentOnlyIdentityCount,
   5,
+);
+assert.ok(
+  broadReadinessCoverage.get('large_rocm_ml_random_cold_source_intake')
+    ?.sampleFacets.every((facet) =>
+      facet.supportOnly === true
+      && facet.authorityScope === 'source_intake_support_only'
+      && facet.acceptedForGpuHmr === false
+      && facet.gpuHmrSuccess === false
+    ),
 );
 assert.equal(
   broadReadinessCoverage.get('source_first_uncompiled_project_validation')?.status,
