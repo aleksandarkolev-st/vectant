@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink, PanelLeft } from 'lucide-react';
+import { Send, X, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink, PanelLeft, Check } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -951,7 +951,7 @@ const AIChatWindow = ({
                         )}
                         <VectantOrb state={orbState} size={24} paused={!isVisible} />
                         {chatMode === 'wide' ? (
-                            <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
+                            <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant Console</span>
                         ) : (
                             <ChatSessionDropdown
                                 sessions={chatSessions}
@@ -1282,7 +1282,7 @@ const AIChatWindow = ({
                                                     <div className="flex items-center justify-between px-2 py-1.5" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--bg-elevated)' }}>
                                                         <div className="flex items-center gap-1.5">
                                                             <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--accent-secondary)' }} />
-                                                            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>AI Suggestion</span>
+                                                            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>Agent change</span>
                                                             {isLoading && (
                                                                 <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: 'var(--accent-warning)' }}>
                                                                     <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-warning)' }}></span>
@@ -1478,7 +1478,7 @@ const AIChatWindow = ({
                                                 : 'var(--bg-elevated)',
                                             opacity: isDetachedContext ? 0.4 : 1,
                                         }}
-                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context — click link to detach)` : `${chip.name} (not attached — click link to attach as context)`) : (chip.path || chip.name)}
+                                        title={chip.isContext ? (contextFileAttached ? `${chip.name} (attached as context - click link to detach)` : `${chip.name} (not attached - click link to attach as context)`) : (chip.path || chip.name)}
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -1565,7 +1565,7 @@ const AIChatWindow = ({
                                         title="Agent mode"
                                     >
                                         <span className="flex items-center gap-1.5">
-                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto Agent' : agentMode === 'plan' ? 'Plan Agent' : 'Research'}
+                                            {agentMode === 'direct' ? 'Agent' : agentMode === 'auto' ? 'Auto agent' : agentMode === 'plan' ? 'Plan agent' : 'Research'}
                                             <ChevronDown className={`w-3 h-3 transition-transform duration-300 ${agentMenuOpen ? 'rotate-180' : 'rotate-0'}`} />
                                         </span>
                                     </Button>
@@ -1579,7 +1579,7 @@ const AIChatWindow = ({
                                     <p className="text-[9px] uppercase tracking-wider mb-1 px-1" style={{ color: 'var(--text-muted)' }}>Agent Mode</p>
                                     {[
                                         { key: 'direct', label: 'Direct', desc: 'Single LLM call, no agents' },
-                                        { key: 'auto', label: 'Auto Agent', desc: 'AI decides when to use sub-agents' },
+                                        { key: 'auto', label: 'Auto agent', desc: 'Router decides when to use sub-agents' },
                                         { key: 'plan', label: 'Plan & Execute', desc: 'Plan changes, then execute step-by-step' },
                                         { key: 'research', label: 'Research', desc: 'Multi-step search and file reading' },
                                     ].map((mode) => (
@@ -1599,7 +1599,8 @@ const AIChatWindow = ({
                                     {activePipeline && activePipeline.status !== 'completed' && activePipeline.status !== 'failed' && (
                                         <button
                                             onClick={() => { cancelPipeline(); setAgentMenuOpen(false); }}
-                                            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-400 transition-colors mt-1"
+                                            className="vt-danger-icon-hover th-focus-ring th-btn-ghost mt-1 w-full rounded-[var(--radius-control)] px-2 py-1.5 text-left text-xs transition-colors"
+                                            style={{ color: 'var(--accent-danger)' }}
                                         >
                                             Cancel running pipeline
                                         </button>
@@ -1620,7 +1621,7 @@ const AIChatWindow = ({
                                         size="sm"
                                         className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors"
                                         style={{ color: 'var(--text-secondary)' }}
-                                        title="Switch AI provider / model"
+                                        title="Switch model provider"
                                     >
                                         <span className="flex items-center gap-1.5">
                                             <activeProviderMeta.Logo size={13} color={activeProviderMeta.accent} />
@@ -1688,7 +1689,7 @@ const AIChatWindow = ({
                                                             }
                                                         >
                                                             <span className="font-mono text-[11px]">{m.label}</span>
-                                                            {selected && <span className="text-[9px] opacity-70">✓</span>}
+                                                            {selected && <Check className="h-3 w-3 opacity-70" aria-hidden="true" />}
                                                         </button>
                                                     );
                                                 })}
@@ -1756,7 +1757,7 @@ const AIChatWindow = ({
                                         style={contextFileAttached
                                             ? { color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 22%, transparent)' }
                                             : { color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border-medium)' }}
-                                        title={contextFileAttached ? `${fname} included as context — click to exclude` : `Include ${fname} as context`}
+                                        title={contextFileAttached ? `${fname} included as context - click to exclude` : `Include ${fname} as context`}
                                     >
                                         <FileCode className="w-3 h-3 flex-shrink-0" strokeWidth={2} style={{ color: contextFileAttached ? 'var(--accent-secondary)' : fmeta.color }} />
                                         <span className="truncate">{fname}</span>
