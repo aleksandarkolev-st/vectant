@@ -257,6 +257,14 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
       return deny("invalid_schema", `${field} is required.`);
     }
   }
+  for (const field of ["request_id", "session_id", "account_id", "org_id", "workspace_id"]) {
+    if (!isSafeEnvelopeIdentifier(request[field])) {
+      return deny("invalid_schema", `${field} is not an accepted identifier.`);
+    }
+  }
+  if (!isSemverLike(request.app_version)) {
+    return deny("invalid_schema", "app_version is not an accepted version.");
+  }
   if (policy.account_id && request.account_id !== policy.account_id) {
     return deny("account_mismatch", "This support request is not for the paired account.");
   }
@@ -549,6 +557,19 @@ function isSha256Hex(value, hexLength) {
     ? value.slice("sha256:".length)
     : "";
   return digest.length === hexLength && /^[0-9a-f]+$/i.test(digest);
+}
+
+function isSafeEnvelopeIdentifier(value) {
+  return typeof value === "string"
+    && value.length >= 3
+    && value.length <= 128
+    && /^[A-Za-z0-9._:-]+$/.test(value);
+}
+
+function isSemverLike(value) {
+  return typeof value === "string"
+    && value.length <= 32
+    && /^\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9._-]+)?$/.test(value);
 }
 
 function scrubTelemetryValue(value) {

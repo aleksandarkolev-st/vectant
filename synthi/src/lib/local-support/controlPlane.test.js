@@ -109,6 +109,25 @@ describe("local support control plane policy", () => {
     });
   });
 
+  it("rejects unsafe envelope identifiers and malformed app versions", () => {
+    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    expect(validateRequestEnvelope(envelope({ request_id: "req_123\nx" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "invalid_schema",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ session_id: "s".repeat(129) }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "invalid_schema",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ app_version: "next-release" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "invalid_schema",
+      bytes_sent: 0,
+    });
+  });
+
   it("exposes emergency controls and blocks revoked versions", () => {
     const policy = readLocalSupportPolicy({
       VECTANT_LOCAL_SUPPORT_ENABLED: "true",

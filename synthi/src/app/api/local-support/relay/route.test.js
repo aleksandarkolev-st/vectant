@@ -160,6 +160,25 @@ describe("local support relay route", () => {
     });
   });
 
+  it("refuses relay forwarding for signed envelopes with unsafe identity fields", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const response = await POST(request(signedEnvelope({
+      session_id: "s".repeat(129),
+      request_id: "req_relay_unsafe_identity",
+    })));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "invalid_schema",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
+  });
+
   it("does not consume relay replay nonces for policy-denied envelopes", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";

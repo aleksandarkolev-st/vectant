@@ -172,6 +172,24 @@ describe("local support request-envelope route", () => {
     });
   });
 
+  it("denies signed envelopes with unsafe identifiers before local approval", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const response = await POST(request(signedEnvelope({
+      request_id: "req_unsafe\nheader",
+      capability: "workspace.log.read",
+    })));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "invalid_schema",
+      bytes_sent: 0,
+    });
+  });
+
   it("rejects replayed signed request envelopes", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
