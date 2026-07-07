@@ -15,6 +15,8 @@ function envelope(overrides = {}) {
   return {
     request_id: "req_relay_123",
     session_id: "sess_relay_123",
+    account_id: "acct_relay_123",
+    org_id: "org_relay_123",
     workspace_id: "wk_relay_123",
     capability: "workspace.log.read",
     actor: "support_agent",
@@ -22,6 +24,8 @@ function envelope(overrides = {}) {
     target_classification: "L3",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
     app_version: "0.1.0",
+    protocol_version: "local-support-mvp.1",
+    policy_version: "2026.07.05",
     ...overrides,
   };
 }
@@ -129,6 +133,8 @@ describe("local support relay route", () => {
       target_classification: "L3",
       control_plane_log_class: "local_support.control",
       data_plane_log_class: "local_support.data",
+      account_id: "acct_relay_123",
+      org_id: "org_relay_123",
     });
     expect(json.target_hash).toMatch(/^sha256:/);
     expect(json.target_display).toContain("authorization: [REDACTED]");

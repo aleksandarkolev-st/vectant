@@ -60,6 +60,8 @@ export function readLocalSupportPolicy(env = process.env) {
   const previewGatewayDisabled = env.VECTANT_LOCAL_SUPPORT_PREVIEW_GATEWAY_DISABLED === "true";
   const pairingDisabled = env.VECTANT_LOCAL_SUPPORT_PAIRING_DISABLED === "true";
   const minAppVersion = env.VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION || DEFAULT_MIN_APP_VERSION;
+  const allowedAccountId = env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID || null;
+  const allowedOrgId = env.VECTANT_LOCAL_SUPPORT_ORG_ID || null;
   const disabledReason = env.VECTANT_LOCAL_SUPPORT_DISABLED_REASON || null;
   const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED === "true";
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
@@ -76,6 +78,8 @@ export function readLocalSupportPolicy(env = process.env) {
     pairing_disabled: pairingDisabled,
     disabled_reason: disabledReason,
     min_app_version: minAppVersion,
+    account_id: allowedAccountId,
+    org_id: allowedOrgId,
     vulnerable_versions: vulnerableVersions,
     policy_version: POLICY_VERSION,
     protocol_version: LOCAL_SUPPORT_PROTOCOL,
@@ -231,11 +235,35 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   if (!policy.enabled) {
     return deny("feature_disabled", "Local Support is disabled by policy.");
   }
-  const required = ["request_id", "session_id", "workspace_id", "capability", "actor", "expires_at", "app_version"];
+  const required = [
+    "request_id",
+    "session_id",
+    "account_id",
+    "org_id",
+    "workspace_id",
+    "capability",
+    "actor",
+    "expires_at",
+    "app_version",
+    "protocol_version",
+    "policy_version",
+  ];
   for (const field of required) {
     if (!request[field] || typeof request[field] !== "string") {
       return deny("invalid_schema", `${field} is required.`);
     }
+  }
+  if (policy.account_id && request.account_id !== policy.account_id) {
+    return deny("account_mismatch", "This support request is not for the paired account.");
+  }
+  if (policy.org_id && request.org_id !== policy.org_id) {
+    return deny("org_mismatch", "This support request is not for the paired organization.");
+  }
+  if (request.protocol_version !== policy.protocol_version) {
+    return deny("protocol_version_mismatch", "This support request uses a stale local-support protocol.");
+  }
+  if (request.policy_version !== policy.policy_version) {
+    return deny("policy_version_mismatch", "This support request was signed for a different policy version.");
   }
   if (compareSemverLike(request.app_version, policy.min_app_version) < 0) {
     return deny("app_version_too_old", "Update required before pairing or requests can continue.");
@@ -330,6 +358,8 @@ export function buildRelayForwardDecision(input, policy = readLocalSupportPolicy
     actor: scrubTelemetryValue(input.actor),
     request_id: scrubTelemetryValue(input.request_id),
     session_id: scrubTelemetryValue(input.session_id),
+    account_id: scrubTelemetryValue(input.account_id),
+    org_id: scrubTelemetryValue(input.org_id),
     workspace_id: scrubTelemetryValue(input.workspace_id),
     capability: scrubTelemetryValue(input.capability),
     target_display: targetDisplay,

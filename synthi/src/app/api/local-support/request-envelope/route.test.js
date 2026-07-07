@@ -39,11 +39,15 @@ function envelope(overrides = {}) {
   return {
     request_id: "req_123",
     session_id: "sess_123",
+    account_id: "acct_123",
+    org_id: "org_123",
     workspace_id: "wk_123",
     capability: "workspace.file.source.read",
     actor: "support_agent",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
     app_version: "0.1.0",
+    protocol_version: "local-support-mvp.1",
+    policy_version: "2026.07.05",
     ...overrides,
   };
 }

@@ -23,11 +23,15 @@ function envelope(overrides = {}) {
   return {
     request_id: "req_123",
     session_id: "sess_123",
+    account_id: "acct_123",
+    org_id: "org_123",
     workspace_id: "wk_123",
     capability: "workspace.file.source.read",
     actor: "vectant_ai",
     expires_at: future(),
     app_version: "0.1.0",
+    protocol_version: "local-support-mvp.1",
+    policy_version: "2026.07.05",
     ...overrides,
   };
 }
@@ -56,6 +60,35 @@ describe("local support control plane policy", () => {
     });
     expect(validateRequestEnvelope(envelope({ app_version: "0.1.9" }), policy).reason).toBe("app_version_too_old");
     expect(validateRequestEnvelope(envelope({ app_version: "0.2.0", expires_at: "2020-01-01T00:00:00Z" }), policy).reason).toBe("expired_request");
+  });
+
+  it("binds envelopes to account organization protocol and policy versions", () => {
+    const policy = readLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+      VECTANT_LOCAL_SUPPORT_ACCOUNT_ID: "acct_123",
+      VECTANT_LOCAL_SUPPORT_ORG_ID: "org_123",
+    });
+
+    expect(validateRequestEnvelope(envelope({ account_id: "acct_other" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "account_mismatch",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ org_id: "org_other" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "org_mismatch",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ protocol_version: "local-support-old" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "protocol_version_mismatch",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({ policy_version: "2025.01.01" }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "policy_version_mismatch",
+      bytes_sent: 0,
+    });
   });
 
   it("exposes emergency controls and blocks revoked versions", () => {
@@ -220,10 +253,14 @@ describe("local support control plane policy", () => {
     const body = envelope({ capability: "workspace.log.read" });
     const reordered = {
       app_version: body.app_version,
+      protocol_version: body.protocol_version,
+      policy_version: body.policy_version,
       expires_at: body.expires_at,
       actor: body.actor,
       capability: body.capability,
       workspace_id: body.workspace_id,
+      org_id: body.org_id,
+      account_id: body.account_id,
       session_id: body.session_id,
       request_id: body.request_id,
     };
@@ -357,6 +394,8 @@ describe("local support control plane policy", () => {
       response_body_included: false,
       bytes_sent: 0,
       actor: "support_agent",
+      account_id: "acct_123",
+      org_id: "org_123",
       capability: "workspace.log.read",
       target_classification: "L3",
       control_plane_log_class: "local_support.control",
