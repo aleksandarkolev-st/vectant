@@ -25033,6 +25033,41 @@ function oidnOutputOracleCommandExecutionFacet(input = {}) {
   };
 }
 
+function runtimeProofArtifactComputeArtifactRoots(runtimeProofArtifact = {}, proofLedger = {}) {
+  const artifact = compactObject(runtimeProofArtifact);
+  const ledgers = [
+    proofLedger,
+    artifact.proofLedger,
+    artifact.proof_ledger,
+  ].map(compactObject).filter((entry) => Object.keys(entry).length > 0);
+  const artifactPaths = [];
+  for (const ledger of ledgers) {
+    for (const record of ledgerRecordsFromValue(ledger)) {
+      const computeArtifacts = ledgerRecordComputeOracleArtifacts(record);
+      artifactPaths.push(
+        computeArtifacts.raw_readback_bin,
+        computeArtifacts.rawReadbackBin,
+        computeArtifacts.before_raw_readback_bin,
+        computeArtifacts.beforeRawReadbackBin,
+        computeArtifacts.readback_schema_json,
+        computeArtifacts.readbackSchemaJson,
+        computeArtifacts.rendered_card_png,
+        computeArtifacts.renderedCardPng,
+        computeArtifacts.raw_readback_cas_manifest,
+        computeArtifacts.rawReadbackCasManifest,
+        computeArtifacts.readback_schema_cas_manifest,
+        computeArtifacts.readbackSchemaCasManifest,
+        computeArtifacts.rendered_card_cas_manifest,
+        computeArtifacts.renderedCardCasManifest,
+      );
+    }
+  }
+  return compactStringList(artifactPaths
+    .map((artifactPath) => firstText(artifactPath))
+    .filter((artifactPath) => artifactPath && path.isAbsolute(artifactPath))
+    .map((artifactPath) => path.dirname(path.resolve(artifactPath))));
+}
+
 function oidnRuntimeBoundaryBridgeFacet(input = {}, { outputOracleFacet = {} } = {}) {
   const facet = compactObject(input);
   const present = Object.keys(facet).length > 0;
@@ -25095,9 +25130,21 @@ function oidnRuntimeBoundaryBridgeFacet(input = {}, { outputOracleFacet = {} } =
     ?? runtimeProofArtifact.proof_ledger_query
     ?? proofLedger.query,
   );
+  const strictRuntimeProofArtifactRoots = runtimeProofArtifactComputeArtifactRoots(
+    runtimeProofArtifact,
+    proofLedger,
+  );
   const runtimeProofArtifactStrictGateResult = runtimeProofArtifactStrictGate(
     Object.keys(runtimeProofArtifact).length > 0 ? runtimeProofArtifact : null,
-    { name: 'oidn_runtime_boundary_bridge_runtime_proof_artifact' },
+    {
+      name: 'oidn_runtime_boundary_bridge_runtime_proof_artifact',
+      ...(strictRuntimeProofArtifactRoots.length > 0
+        ? {
+          allowedArtifactRoots: strictRuntimeProofArtifactRoots,
+          computeArtifactPathBaseRoots: strictRuntimeProofArtifactRoots,
+        }
+        : {}),
+    },
   );
   const runtimeProofArtifactStrictFailures = compactStringList(
     runtimeProofArtifactStrictGateResult.failures,
