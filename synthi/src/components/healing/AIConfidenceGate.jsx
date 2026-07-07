@@ -2,10 +2,10 @@
 // Confidence-gated fix display.
 //
 // Wraps a fix presentation and shows different UIs based on confidence:
-//   ≥ autoAcceptThreshold  → auto-applied (green badge, no prompt)
-//   ≥ minConfidence        → normal display with Apply/Dismiss
-//   ≥ maybeThreshold       → soft warning: "Low confidence — review carefully"
-//   < maybeThreshold       → hidden entirely
+//   >= autoAcceptThreshold -> auto-applied (badge, no prompt)
+//   >= minConfidence       -> normal display with Apply/Dismiss
+//   >= maybeThreshold      -> soft warning: "Low confidence - review carefully"
+//   < maybeThreshold       -> hidden entirely
 
 import React from 'react';
 
@@ -55,8 +55,9 @@ export function AIConfidenceGate({
             position: 'absolute',
             top: 4,
             right: 4,
-            background: '#238636',
-            color: '#fff',
+            background: 'color-mix(in srgb, var(--accent-success) 16%, var(--bg-panel))',
+            border: '1px solid color-mix(in srgb, var(--accent-success) 34%, transparent)',
+            color: 'var(--accent-success)',
             fontSize: 10,
             fontWeight: 700,
             padding: '1px 6px',
@@ -72,16 +73,16 @@ export function AIConfidenceGate({
       {isLowConfidence && (
         <div
           style={{
-            background: 'rgba(227, 179, 65, 0.15)',
-            borderLeft: '3px solid #e3b341',
+            background: 'color-mix(in srgb, var(--accent-warning) 12%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--accent-warning) 28%, transparent)',
             padding: '4px 8px',
             marginBottom: 4,
             fontSize: 11,
-            color: '#e3b341',
-            borderRadius: '0 4px 4px 0',
+            color: 'var(--accent-warning)',
+            borderRadius: 'var(--radius-control)',
           }}
         >
-          ⚠ Low confidence ({Math.round(confidence * 100)}%) — review carefully
+          Low confidence ({Math.round(confidence * 100)}%). Review carefully.
         </div>
       )}
 

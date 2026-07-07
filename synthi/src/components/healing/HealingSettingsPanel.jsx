@@ -558,7 +558,7 @@ export function HealingSettingsPanel() {
             {/* Throttle */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <span className="text-sm">Max AI calls per minute</span>
+                <span className="text-sm">Max model calls per minute</span>
                 <span
                   className="text-xs font-mono"
                   style={{ color: 'var(--text-muted)' }}

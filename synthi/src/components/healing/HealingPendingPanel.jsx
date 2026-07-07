@@ -144,7 +144,7 @@ export function HealingPendingPanel({ editorRef }) {
         className="flex items-center justify-between px-3 py-1.5 text-xs font-semibold"
         style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)' }}
       >
-        <span>🩹 Pending Fixes ({fixList.length})</span>
+        <span>Pending fixes ({fixList.length})</span>
         <div className="flex items-center gap-2">
           <button
             onClick={handleApplyAll}

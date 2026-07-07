@@ -4,13 +4,12 @@
 // Actions: Apply, Dismiss.
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Check,
   X,
   ChevronDown,
   ChevronUp,
-  Sparkles,
   ShieldAlert,
   AlertTriangle,
   Info,
@@ -22,11 +21,11 @@ import { AIDiffPreview } from './AIDiffPreview';
 
 // ── Severity config ───────────────────────────────────────────────────
 const SEVERITY_META = {
-  critical: { icon: ShieldAlert, color: 'text-red-500', bg: 'bg-red-500/10', border: 'border-red-500/30', label: 'Critical' },
-  high:     { icon: AlertTriangle, color: 'text-orange-400', bg: 'bg-orange-400/10', border: 'border-orange-400/30', label: 'High' },
-  moderate: { icon: AlertTriangle, color: 'text-yellow-400', bg: 'bg-yellow-400/10', border: 'border-yellow-400/30', label: 'Medium' },
-  low:      { icon: Info, color: 'text-blue-400', bg: 'bg-blue-400/10', border: 'border-blue-400/30', label: 'Low' },
-  trivial:  { icon: Info, color: 'text-gray-400', bg: 'bg-gray-400/10', border: 'border-gray-400/30', label: 'Trivial' },
+  critical: { icon: ShieldAlert, token: 'var(--accent-danger)', label: 'Critical' },
+  high:     { icon: AlertTriangle, token: 'var(--brand-stop-2)', label: 'High' },
+  moderate: { icon: AlertTriangle, token: 'var(--accent-warning)', label: 'Medium' },
+  low:      { icon: Info, token: 'var(--accent-info)', label: 'Low' },
+  trivial:  { icon: Info, token: 'var(--text-muted)', label: 'Trivial' },
 };
 
 function getSeverityMeta(severity) {
@@ -58,13 +57,14 @@ function formatCategory(cat) {
 // ── Confidence bar ────────────────────────────────────────────────────
 function ConfidenceBadge({ confidence }) {
   const pct = Math.round((confidence ?? 0) * 100);
-  const color =
-    pct >= 85 ? 'text-green-400' :
-    pct >= 65 ? 'text-yellow-400' :
-    'text-red-400';
+  const color = pct >= 85
+    ? 'var(--accent-success)'
+    : pct >= 65
+      ? 'var(--accent-warning)'
+      : 'var(--accent-danger)';
 
   return (
-    <span className={`text-xs font-mono ${color}`} title={`AI confidence: ${pct}%`}>
+    <span className="font-mono text-xs" style={{ color }} title={`Confidence: ${pct}%`}>
       {pct}%
     </span>
   );
@@ -117,22 +117,34 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
 
   return (
     <div
-      className={`rounded-md border ${meta.border} ${meta.bg} p-3 mb-2 transition-all ${applied ? 'heal-applied-flash' : ''}`}
+      className={`vt-command-surface mb-2 p-3 transition-all ${applied ? 'heal-applied-flash' : ''}`}
+      style={{
+        borderColor: `color-mix(in srgb, ${meta.token} 30%, var(--border-medium))`,
+        background: `linear-gradient(135deg, color-mix(in srgb, ${meta.token} 8%, transparent), transparent 48%), var(--bg-panel)`,
+      }}
       role="listitem"
     >
       {/* ── Header ──────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <SevIcon size={14} className={meta.color} />
-          <span className="text-xs text-white/50 font-mono">{lineLabel}</span>
-          <span className="text-sm text-white/90 truncate">
-            {fix.description || 'AI-detected issue'}
+          <SevIcon size={14} style={{ color: meta.token }} />
+          <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{lineLabel}</span>
+          <span className="truncate text-sm" style={{ color: 'var(--text-primary)' }}>
+            {fix.description || 'Detected issue'}
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <ConfidenceBadge confidence={confidence} />
           {isSafe && (
-            <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded" title="Safe to auto-apply">
+            <span
+              className="vt-state-pill h-[18px] px-1.5"
+              style={{
+                color: 'var(--accent-success)',
+                borderColor: 'color-mix(in srgb, var(--accent-success) 34%, transparent)',
+                background: 'color-mix(in srgb, var(--accent-success) 10%, transparent)',
+              }}
+              title="Safe to auto-apply"
+            >
               safe
             </span>
           )}
@@ -141,11 +153,17 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
 
       {/* ── Category + rule ─────────────────────────────────────── */}
       <div className="flex items-center gap-2 mt-1.5">
-        <span className={`text-[10px] ${meta.color} bg-white/5 px-1.5 py-0.5 rounded`}>
+        <span
+          className="rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px]"
+          style={{
+            color: meta.token,
+            background: `color-mix(in srgb, ${meta.token} 8%, transparent)`,
+          }}
+        >
           {formatCategory(fix.category)}
         </span>
         {ruleId && (
-          <span className="text-[10px] text-white/30 font-mono">
+          <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
             {ruleId}
           </span>
         )}
@@ -156,7 +174,7 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
         <div className="flex items-center gap-2 mt-2">
           <button
             onClick={toggleExpand}
-            className="flex items-center gap-1 text-[11px] text-white/40 hover:text-white/70 transition-colors"
+            className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[var(--radius-control)] px-1.5 py-0.5 text-[11px] transition-colors"
           >
             {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             {expanded ? 'Hide diff' : 'Show diff'}
@@ -164,7 +182,7 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
           {expanded && (
             <button
               onClick={() => setRichDiff((r) => !r)}
-              className="flex items-center gap-1 text-[11px] text-white/30 hover:text-white/60 transition-colors"
+              className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[var(--radius-control)] px-1.5 py-0.5 text-[11px] transition-colors"
               title={richDiff ? 'Switch to text diff' : 'Switch to Monaco diff'}
             >
               <Columns size={10} />
@@ -177,14 +195,26 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
       {expanded && !richDiff && (
         <div className="mt-2 space-y-1 text-xs font-mono">
           {originalText && (
-            <div className="bg-red-500/10 text-red-300/80 p-1.5 rounded overflow-x-auto">
-              <span className="select-none text-red-500/50 mr-1">−</span>
+            <div
+              className="overflow-x-auto rounded-[var(--radius-control)] p-1.5"
+              style={{
+                color: 'var(--accent-danger)',
+                background: 'color-mix(in srgb, var(--accent-danger) 9%, transparent)',
+              }}
+            >
+              <span className="mr-1 select-none" style={{ color: 'color-mix(in srgb, var(--accent-danger) 65%, transparent)' }}>-</span>
               {originalText}
             </div>
           )}
           {replacementText && (
-            <div className="bg-green-500/10 text-green-300/80 p-1.5 rounded overflow-x-auto">
-              <span className="select-none text-green-500/50 mr-1">+</span>
+            <div
+              className="overflow-x-auto rounded-[var(--radius-control)] p-1.5"
+              style={{
+                color: 'var(--accent-success)',
+                background: 'color-mix(in srgb, var(--accent-success) 9%, transparent)',
+              }}
+            >
+              <span className="mr-1 select-none" style={{ color: 'color-mix(in srgb, var(--accent-success) 65%, transparent)' }}>+</span>
               {replacementText}
             </div>
           )}
@@ -211,7 +241,12 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
         <button
           onClick={handleApply}
           disabled={applied}
-          className="flex items-center gap-1 text-xs bg-green-600/30 hover:bg-green-600/50 text-green-300 px-2.5 py-1 rounded transition-colors disabled:cursor-default"
+          className="th-focus-ring flex items-center gap-1 rounded-[var(--radius-control)] border px-2.5 py-1 text-xs transition-colors disabled:cursor-default"
+          style={{
+            color: 'var(--accent-success)',
+            background: 'color-mix(in srgb, var(--accent-success) 12%, transparent)',
+            borderColor: 'color-mix(in srgb, var(--accent-success) 28%, transparent)',
+          }}
           title="Apply this fix"
         >
           {applied ? (
@@ -237,7 +272,7 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
         </button>
         <button
           onClick={handleDismiss}
-          className="flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/70 px-2.5 py-1 rounded transition-colors"
+          className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[var(--radius-control)] px-2.5 py-1 text-xs transition-colors"
           title="Dismiss (reject) this fix"
         >
           <X size={12} />
@@ -246,8 +281,8 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
         {ruleId && onSuppressRule && (
           <button
             onClick={handleSuppressRule}
-            className="flex items-center gap-1 text-xs bg-white/5 hover:bg-red-500/20 text-white/30 hover:text-red-300 px-2.5 py-1 rounded transition-colors ml-auto"
-            title={`Suppress rule "${ruleId}" — hide all future matches`}
+            className="vt-danger-icon-hover th-focus-ring th-btn-ghost ml-auto flex items-center gap-1 rounded-[var(--radius-control)] px-2.5 py-1 text-xs transition-colors"
+            title={`Suppress rule "${ruleId}" - hide all future matches`}
           >
             <EyeOff size={12} />
             Suppress

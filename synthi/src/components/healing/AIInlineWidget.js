@@ -15,11 +15,11 @@
  * Severity → inline hint styling.
  */
 const SEVERITY_STYLE = {
-  critical: { color: '#f87171', bg: 'rgba(248,113,113,0.12)', icon: '🔴' },
-  high:     { color: '#fb923c', bg: 'rgba(251,146,60,0.12)',  icon: '🟠' },
-  moderate: { color: '#facc15', bg: 'rgba(250,204,21,0.12)',  icon: '🟡' },
-  low:      { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)',  icon: '🔵' },
-  trivial:  { color: '#9ca3af', bg: 'rgba(156,163,175,0.10)', icon: '⚪' },
+  critical: { color: 'var(--accent-danger)', bg: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)', label: 'Critical' },
+  high:     { color: 'var(--brand-stop-2)', bg: 'color-mix(in srgb, var(--brand-stop-2) 12%, transparent)', label: 'High' },
+  moderate: { color: 'var(--accent-warning)', bg: 'color-mix(in srgb, var(--accent-warning) 12%, transparent)', label: 'Medium' },
+  low:      { color: 'var(--accent-info)', bg: 'color-mix(in srgb, var(--accent-info) 12%, transparent)', label: 'Low' },
+  trivial:  { color: 'var(--text-muted)', bg: 'color-mix(in srgb, var(--text-muted) 10%, transparent)', label: 'Trivial' },
 };
 
 function getSevStyle(severity) {
@@ -86,7 +86,7 @@ export function createAIInlineWidgets(editor, fixes, { onApply, onDismiss } = {}
     const count = groupFixes.length;
     const primary = groupFixes[0];
     const desc = count === 1
-      ? (primary.description || 'AI-detected issue')
+      ? (primary.description || 'Detected issue')
       : `${count} issues on this line`;
     const confidence = Math.round((primary.confidence ?? 0) * 100);
     const id = `ai-inline-L${line}`;
@@ -115,10 +115,10 @@ export function createAIInlineWidgets(editor, fixes, { onApply, onDismiss } = {}
     `;
     if (count === 1) {
       node.title = `${desc}\nConfidence: ${confidence}%\nClick to expand`;
-      node.textContent = `${sev.icon} ${desc} (${confidence}%)`;
+      node.textContent = `${sev.label}: ${desc} (${confidence}%)`;
     } else {
-      node.title = `${count} AI-detected issues on this line — click to review`;
-      node.textContent = `${sev.icon} ${count} issues — click to review`;
+      node.title = `${count} issues on this line - click to review`;
+      node.textContent = `${sev.label}: ${count} issues`;
     }
 
     node.addEventListener('mouseenter', () => { node.style.opacity = '1'; });
@@ -175,18 +175,18 @@ function _showGroupPopover(editor, groupFixes, anchorNode, { onApply, onDismiss 
   popover.className = 'ai-fix-popover';
   popover.style.cssText = `
     position: absolute;
-    z-index: 1000;
-    background: #1e1e2e;
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 6px;
+    z-index: 80;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-workbench);
     padding: 8px;
     min-width: 320px;
     max-width: 560px;
     max-height: 400px;
     overflow-y: auto;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    box-shadow: var(--vt-command-shadow);
     font-size: 12px;
-    color: #ccc;
+    color: var(--text-primary);
   `;
 
   const rect = anchorNode.getBoundingClientRect();
@@ -194,8 +194,8 @@ function _showGroupPopover(editor, groupFixes, anchorNode, { onApply, onDismiss 
   popover.style.top = `${rect.bottom + 4}px`;
 
   const header = document.createElement('div');
-  header.style.cssText = 'font-weight: 500; color: #eee; margin-bottom: 6px;';
-  header.textContent = `${groupFixes.length} AI-detected issues on this line`;
+  header.style.cssText = 'font-weight: 600; color: var(--text-primary); margin-bottom: 6px;';
+  header.textContent = `${groupFixes.length} issues on this line`;
   popover.appendChild(header);
 
   for (const fix of groupFixes) {
@@ -215,15 +215,15 @@ function _showGroupPopover(editor, groupFixes, anchorNode, { onApply, onDismiss 
     top.style.cssText = 'display: flex; justify-content: space-between; gap: 8px; align-items: center;';
     const label = document.createElement('div');
     label.style.cssText = `color: ${sev.color}; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
-    label.textContent = `${sev.icon} ${fix.description || 'AI-detected issue'} (${confidence}%)`;
+    label.textContent = `${sev.label}: ${fix.description || 'Detected issue'} (${confidence}%)`;
     top.appendChild(label);
 
     const btns = document.createElement('div');
     btns.style.cssText = 'display: flex; gap: 4px; flex-shrink: 0;';
     const apply = document.createElement('button');
-    apply.textContent = '✓';
+    apply.textContent = 'Apply';
     apply.title = 'Apply';
-    apply.style.cssText = 'background: rgba(34,197,94,0.25); color: #86efac; border: none; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;';
+    apply.style.cssText = 'background: color-mix(in srgb, var(--accent-success) 14%, transparent); color: var(--accent-success); border: 1px solid color-mix(in srgb, var(--accent-success) 28%, transparent); padding: 2px 8px; border-radius: var(--radius-control); cursor: pointer; font-size: 11px;';
     apply.addEventListener('click', (e) => {
       e.stopPropagation();
       onApply?.(fix);
@@ -231,9 +231,9 @@ function _showGroupPopover(editor, groupFixes, anchorNode, { onApply, onDismiss 
       if (popover.querySelectorAll('.ai-fix-row').length === 0) popover.remove();
     });
     const dismiss = document.createElement('button');
-    dismiss.textContent = '✕';
+    dismiss.textContent = 'Dismiss';
     dismiss.title = 'Dismiss';
-    dismiss.style.cssText = 'background: rgba(255,255,255,0.05); color: #999; border: none; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;';
+    dismiss.style.cssText = 'background: color-mix(in srgb, var(--text-primary) 5%, transparent); color: var(--text-muted); border: 1px solid var(--border-subtle); padding: 2px 8px; border-radius: var(--radius-control); cursor: pointer; font-size: 11px;';
     dismiss.addEventListener('click', (e) => {
       e.stopPropagation();
       onDismiss?.(fix);
@@ -279,16 +279,16 @@ function _showFixPopover(editor, fix, anchorNode, { onApply, onDismiss }) {
   popover.className = 'ai-fix-popover';
   popover.style.cssText = `
     position: absolute;
-    z-index: 1000;
-    background: #1e1e2e;
+    z-index: 80;
+    background: var(--bg-elevated);
     border: 1px solid ${sev.color}44;
-    border-radius: 6px;
+    border-radius: var(--radius-workbench);
     padding: 10px;
     min-width: 280px;
     max-width: 500px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    box-shadow: var(--vt-command-shadow);
     font-size: 12px;
-    color: #ccc;
+    color: var(--text-primary);
   `;
 
   // Position near the anchor
@@ -298,8 +298,8 @@ function _showFixPopover(editor, fix, anchorNode, { onApply, onDismiss }) {
 
   // Description
   const descEl = document.createElement('div');
-  descEl.style.cssText = 'margin-bottom: 8px; color: #eee; font-weight: 500;';
-  descEl.textContent = fix.description || 'AI-detected issue';
+  descEl.style.cssText = 'margin-bottom: 8px; color: var(--text-primary); font-weight: 600;';
+  descEl.textContent = fix.description || 'Detected issue';
   popover.appendChild(descEl);
 
   // Diff
@@ -309,14 +309,14 @@ function _showFixPopover(editor, fix, anchorNode, { onApply, onDismiss }) {
 
     if (original) {
       const oldEl = document.createElement('div');
-      oldEl.style.cssText = 'background: rgba(239,68,68,0.1); color: #fca5a5; padding: 3px 6px; border-radius: 3px; margin-bottom: 3px; white-space: pre-wrap;';
-      oldEl.textContent = `− ${original}`;
+      oldEl.style.cssText = 'background: color-mix(in srgb, var(--accent-danger) 9%, transparent); color: var(--accent-danger); padding: 3px 6px; border-radius: var(--radius-control); margin-bottom: 3px; white-space: pre-wrap;';
+      oldEl.textContent = `- ${original}`;
       diffEl.appendChild(oldEl);
     }
 
     if (replacement) {
       const newEl = document.createElement('div');
-      newEl.style.cssText = 'background: rgba(34,197,94,0.1); color: #86efac; padding: 3px 6px; border-radius: 3px; white-space: pre-wrap;';
+      newEl.style.cssText = 'background: color-mix(in srgb, var(--accent-success) 9%, transparent); color: var(--accent-success); padding: 3px 6px; border-radius: var(--radius-control); white-space: pre-wrap;';
       newEl.textContent = `+ ${replacement}`;
       diffEl.appendChild(newEl);
     }
@@ -329,16 +329,16 @@ function _showFixPopover(editor, fix, anchorNode, { onApply, onDismiss }) {
   btnContainer.style.cssText = 'display: flex; gap: 6px;';
 
   const applyBtn = document.createElement('button');
-  applyBtn.textContent = '✓ Apply';
-  applyBtn.style.cssText = 'background: rgba(34,197,94,0.25); color: #86efac; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;';
+  applyBtn.textContent = 'Apply';
+  applyBtn.style.cssText = 'background: color-mix(in srgb, var(--accent-success) 14%, transparent); color: var(--accent-success); border: 1px solid color-mix(in srgb, var(--accent-success) 28%, transparent); padding: 4px 12px; border-radius: var(--radius-control); cursor: pointer; font-size: 11px;';
   applyBtn.addEventListener('click', () => {
     onApply?.(fix);
     popover.remove();
   });
 
   const dismissBtn = document.createElement('button');
-  dismissBtn.textContent = '✕ Dismiss';
-  dismissBtn.style.cssText = 'background: rgba(255,255,255,0.05); color: #999; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.style.cssText = 'background: color-mix(in srgb, var(--text-primary) 5%, transparent); color: var(--text-muted); border: 1px solid var(--border-subtle); padding: 4px 12px; border-radius: var(--radius-control); cursor: pointer; font-size: 11px;';
   dismissBtn.addEventListener('click', () => {
     onDismiss?.(fix);
     popover.remove();

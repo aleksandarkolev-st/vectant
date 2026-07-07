@@ -68,7 +68,7 @@ export function AIDiffPreview({
       {/* Header */}
       <div className="vt-panel-header justify-between text-xs">
         <span className="vt-panel-title">
-          {title || 'AI Fix Preview'}
+          {title || 'Fix preview'}
         </span>
         <span style={{ display: 'flex', gap: 6 }}>
           {onDismiss && (

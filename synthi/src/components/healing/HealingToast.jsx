@@ -5,6 +5,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { AlertTriangle, RotateCcw, ShieldOff, Wrench } from 'lucide-react';
 import { useSelector, useDispatch } from 'react-redux';
 import { toast } from 'sonner';
 import { selectNextToast, selectHealingEnabled } from '@/redux/healingSelectors';
@@ -69,24 +70,24 @@ export function HealingToast({ onUndo, onUndoSuppress }) {
               onClick: () => onUndo(),
             }
           : undefined,
-        icon: '🩹',
+        icon: <Wrench className="h-4 w-4" />,
       });
     } else if (type === 'healing-undo') {
       toast.info(message, {
         duration: 3000,
-        icon: '↩️',
+        icon: <RotateCcw className="h-4 w-4" />,
       });
     } else if (type === 'healing-error') {
       toast.error(message, {
         description: details,
         duration: 5000,
-        icon: '⚠️',
+        icon: <AlertTriangle className="h-4 w-4" />,
       });
     } else if (type === 'info' && undoAction && onUndoSuppress) {
       // Suppress-style toast with Undo affordance
       toast.info(message, {
         duration: 6000,
-        icon: '🚫',
+        icon: <ShieldOff className="h-4 w-4" />,
         action: {
           label: undoAction.label || 'Undo',
           onClick: () => onUndoSuppress({
