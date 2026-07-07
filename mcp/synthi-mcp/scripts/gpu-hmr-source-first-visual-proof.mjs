@@ -374,60 +374,172 @@ function selfCheckSourceRootManifest() {
   console.log(`source-root manifest self-check passed: ${generated.manifestPath}`);
 }
 
+function resolveLauncherInputs(args, env = process.env) {
+  const fixtureArg = readOption(args, '--fixture');
+  const profileArg = readOption(args, '--profile');
+  const sourceManifestArg = readOption(args, '--source-manifest');
+  const sourceRootArg = readOption(args, '--source-root');
+  const sourceEntryArg = readOption(args, '--source-entry');
+  const sourceAuthorityArg = readOption(args, '--source-authority');
+  const directSourceRequested = Boolean(
+    sourceManifestArg
+    || sourceRootArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
+    || env.SYNTHI_GPU_AGENT_SOURCE_ROOT
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
+  );
+  const fixture = directSourceRequested && !fixtureArg
+    ? ''
+    : fixtureArg || env.SYNTHI_GPU_AGENT_FIXTURE || '';
+  const profile = profileArg || env.SYNTHI_GPU_AGENT_PROFILE_PATH || '';
+  const sourceManifest =
+    sourceManifestArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
+    || '';
+  const sourceRoot =
+    sourceRootArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_ROOT
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
+    || '';
+  const sourceEntry =
+    sourceEntryArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH
+    || '';
+  const sourceAuthority =
+    sourceAuthorityArg
+    || env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY
+    || '';
+  const vendor = readOption(args, '--vendor') || env.SYNTHI_GPU_VENDOR || 'rocm';
+
+  if (fixture && profile) {
+    throw new Error('choose either --fixture or --profile, not both');
+  }
+  if (fixtureArg && directSourceRequested) {
+    throw new Error('choose either --fixture or direct source inputs, not both');
+  }
+
+  return {
+    fixtureArg,
+    profileArg,
+    sourceManifestArg,
+    sourceRootArg,
+    sourceEntryArg,
+    sourceAuthorityArg,
+    directSourceRequested,
+    fixture,
+    profile,
+    sourceManifest,
+    sourceRoot,
+    sourceEntry,
+    sourceAuthority,
+    vendor,
+  };
+}
+
+function applyLauncherInputs(inputs, env = process.env) {
+  const {
+    fixture,
+    profile,
+    sourceManifest,
+    sourceRoot,
+    sourceEntry,
+    sourceAuthority,
+  } = inputs;
+  if (fixture) env.SYNTHI_GPU_AGENT_FIXTURE = fixture;
+  if (profile) env.SYNTHI_GPU_AGENT_PROFILE_PATH = profile;
+  if (sourceManifest || sourceRoot) {
+    delete env.SYNTHI_GPU_AGENT_FIXTURE;
+  }
+  if (sourceManifest) {
+    env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH = sourceManifest;
+    env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH = sourceManifest;
+  }
+  if (sourceRoot) {
+    env.SYNTHI_GPU_AGENT_SOURCE_ROOT = sourceRoot;
+    env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT = sourceRoot;
+  }
+  if (sourceEntry) {
+    env.SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH = sourceEntry;
+    env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH = sourceEntry;
+  }
+  if (sourceAuthority) {
+    env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY = sourceAuthority;
+    env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY = sourceAuthority;
+  }
+}
+
+function selfCheckProfileDirectSourceOverlayPolicy() {
+  const profilePath = 'scripts/profiles/agent-realistic-raytrace-scene.json';
+  const inputs = resolveLauncherInputs([
+    '--profile',
+    profilePath,
+    '--source-root',
+    'user-project-src',
+    '--source-entry',
+    'src/main.cpp',
+    '--source-authority',
+    'user_source_files',
+  ], {});
+  const env = {
+    SYNTHI_GPU_AGENT_FIXTURE: 'flow',
+  };
+  applyLauncherInputs({
+    ...inputs,
+    sourceManifest: 'generated-direct-source-manifest.json',
+  }, env);
+  if (
+    inputs.profile !== profilePath
+    || inputs.fixture !== ''
+    || inputs.directSourceRequested !== true
+    || env.SYNTHI_GPU_AGENT_PROFILE_PATH !== profilePath
+    || env.SYNTHI_GPU_AGENT_FIXTURE !== undefined
+    || env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH !== 'generated-direct-source-manifest.json'
+    || env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH !== 'generated-direct-source-manifest.json'
+    || env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY !== 'user_source_files'
+  ) {
+    throw new Error('profile plus direct source overlay launcher policy self-check failed');
+  }
+  let fixtureRejected = false;
+  try {
+    resolveLauncherInputs([
+      '--fixture',
+      'flow',
+      '--source-root',
+      'user-project-src',
+    ], {});
+  } catch (error) {
+    fixtureRejected = String(error?.message ?? '').includes('direct source inputs');
+  }
+  if (!fixtureRejected) {
+    throw new Error('fixture plus direct source launcher policy self-check failed');
+  }
+  console.log('profile plus direct source launcher policy self-check passed');
+}
+
 const args = process.argv.slice(2);
 const selfCheck = hasFlag(args, '--self-check');
 const prepareSourceManifestOnly = hasFlag(args, '--prepare-source-manifest-only');
-const fixtureArg = readOption(args, '--fixture');
-const profileArg = readOption(args, '--profile');
-const sourceManifestArg = readOption(args, '--source-manifest');
-const sourceRootArg = readOption(args, '--source-root');
-const sourceEntryArg = readOption(args, '--source-entry');
-const sourceAuthorityArg = readOption(args, '--source-authority');
-const directSourceRequested = Boolean(
-  sourceManifestArg
-  || sourceRootArg
-  || process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
-  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
-  || process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT
-  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
-);
-const fixture = directSourceRequested && !fixtureArg
-  ? ''
-  : fixtureArg || process.env.SYNTHI_GPU_AGENT_FIXTURE || '';
-const profile = directSourceRequested && !profileArg
-  ? ''
-  : profileArg || process.env.SYNTHI_GPU_AGENT_PROFILE_PATH || '';
-let sourceManifest =
-  sourceManifestArg
-  || process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH
-  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH
-  || '';
-const sourceRoot =
-  sourceRootArg
-  || process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT
-  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT
-  || '';
-const sourceEntry =
-  sourceEntryArg
-  || process.env.SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH
-  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH
-  || '';
-const sourceAuthority =
-  sourceAuthorityArg
-  || process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY
-  || process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY
-  || '';
-const vendor = readOption(args, '--vendor') || process.env.SYNTHI_GPU_VENDOR || 'rocm';
-
-if (fixture && profile) {
-  throw new Error('choose either --fixture or --profile, not both');
-}
-if ((fixtureArg || profileArg) && (sourceManifestArg || sourceRootArg)) {
-  throw new Error('choose either fixture/profile inputs or direct source inputs, not both');
-}
+const launcherInputs = resolveLauncherInputs(args);
+const {
+  fixture,
+  profile,
+  sourceRoot,
+  sourceEntry,
+  sourceAuthority,
+  sourceRootArg,
+  sourceEntryArg,
+  sourceAuthorityArg,
+  vendor,
+} = launcherInputs;
+let { sourceManifest } = launcherInputs;
 
 if (selfCheck) {
   selfCheckSourceRootManifest();
+  selfCheckProfileDirectSourceOverlayPolicy();
 }
 
 if (!fixture && !profile && !sourceManifest && !sourceRoot && !selfCheck) {
@@ -468,28 +580,10 @@ if (prepareSourceManifestOnly) {
   process.exit(0);
 }
 
-if (fixture) process.env.SYNTHI_GPU_AGENT_FIXTURE = fixture;
-if (profile) process.env.SYNTHI_GPU_AGENT_PROFILE_PATH = profile;
-if (sourceManifest || sourceRoot) {
-  delete process.env.SYNTHI_GPU_AGENT_FIXTURE;
-  delete process.env.SYNTHI_GPU_AGENT_PROFILE_PATH;
-}
-if (sourceManifest) {
-  process.env.SYNTHI_GPU_AGENT_SOURCE_MANIFEST_PATH = sourceManifest;
-  process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_MANIFEST_PATH = sourceManifest;
-}
-if (sourceRoot) {
-  process.env.SYNTHI_GPU_AGENT_SOURCE_ROOT = sourceRoot;
-  process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ROOT = sourceRoot;
-}
-if (sourceEntry) {
-  process.env.SYNTHI_GPU_AGENT_SOURCE_ENTRY_PATH = sourceEntry;
-  process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_ENTRY_PATH = sourceEntry;
-}
-if (sourceAuthority) {
-  process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY = sourceAuthority;
-  process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY = sourceAuthority;
-}
+applyLauncherInputs({
+  ...launcherInputs,
+  sourceManifest,
+});
 
 setDefaultEnv('SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS', '1');
 setDefaultEnv('SYNTHI_SYNC_TO_GCS', '0');
