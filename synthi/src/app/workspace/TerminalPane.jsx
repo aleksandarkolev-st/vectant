@@ -1954,15 +1954,6 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
     : 'Editor remains usable while the workspace runtime reconnects.';
   const actionLabel = isClosed ? 'New session' : repairing ? 'Repairing' : 'Repair';
   const actionHandler = isClosed ? onReconnect : onRepairRuntime;
-  const statusItems = isClosed
-    ? [
-        ['Session', 'Exited'],
-        ['Workspace', 'Files preserved'],
-      ]
-    : [
-        ['Runtime', 'Unavailable'],
-        ['Workspace', 'Files preserved'],
-      ];
   const iconColor = isClosed ? 'var(--text-secondary, #a1a1aa)' : 'var(--accent-warning, #d89b2b)';
 
   return (
@@ -2024,23 +2015,6 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
             <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
               {body}
             </p>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {statusItems.map(([label, value]) => (
-                <div
-                  key={label}
-                  className="flex max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[10px]"
-                  style={{
-                    borderColor: 'var(--border-subtle, #2a2b38)',
-                    background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 70%, transparent)',
-                  }}
-                >
-                  <span style={{ color: 'var(--text-muted, #6b7089)' }}>{label}</span>
-                  <span className="truncate" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-                    {value}
-                  </span>
-                </div>
-              ))}
-            </div>
           </div>
           <motion.button
             type="button"
