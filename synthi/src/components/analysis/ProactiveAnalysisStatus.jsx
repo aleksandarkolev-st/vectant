@@ -169,7 +169,7 @@ export function ProactiveAnalysisStatusFloat({
   
   const positionClass = {
     'bottom-right': 'bottom-4 right-4',
-    'bottom-left': 'bottom-4 left-4',
+    'bottom-left': 'bottom-4 left-16',
     'top-right': 'top-4 right-4',
     'top-left': 'top-4 left-4',
   }[position] || 'bottom-4 right-4';
