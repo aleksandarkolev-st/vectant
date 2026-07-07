@@ -589,12 +589,14 @@ function runtimeBoundaryProofAdapterSummary(adapterProof = {}) {
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
     gpu_hmr_success: false,
-    canSatisfyRuntimeProof:
+    adapterProofCanSatisfyRuntimeProof:
       adapterProof.canSatisfyRuntimeProof === true
       || adapterProof.can_satisfy_runtime_proof === true,
-    can_satisfy_runtime_proof:
+    adapter_proof_can_satisfy_runtime_proof:
       adapterProof.canSatisfyRuntimeProof === true
       || adapterProof.can_satisfy_runtime_proof === true,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
     stageEvidence: adapterProof.stageEvidence ?? adapterProof.stage_evidence ?? null,
     stage_evidence: adapterProof.stage_evidence ?? adapterProof.stageEvidence ?? null,
     inputEvidence: adapterProof.inputEvidence ?? adapterProof.input_evidence ?? null,
@@ -676,8 +678,10 @@ async function runRuntimeBoundaryProofAdapterProfile(profile, { resultPath = nul
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,
     gpu_hmr_success: false,
-    canSatisfyRuntimeProof: accepted,
-    can_satisfy_runtime_proof: accepted,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    strictRuntimeArtifactProduced: accepted,
+    strict_runtime_artifact_produced: accepted,
     profileId: profile.id,
     profile_id: profile.id,
     adapterFamily: profile.adapter.family,
@@ -1332,6 +1336,10 @@ async function selfCheck() {
       && runtimeBoundaryResult.runtimeBoundaryLineMaterializationHash?.startsWith('sha256:')
       && runtimeBoundaryResult.runtimeBoundaryLines?.length === 5
       && runtimeBoundaryResult.adapterRuntimeBoundaryLines?.length === 5
+      && runtimeBoundarySpawn.proof?.strictRuntimeArtifactProduced === true
+      && runtimeBoundarySpawn.proof?.canSatisfyRuntimeProof === false
+      && runtimeBoundarySpawn.proof?.runtimeBoundaryProofAdapter?.adapterProofCanSatisfyRuntimeProof === true
+      && runtimeBoundarySpawn.proof?.runtimeBoundaryProofAdapter?.canSatisfyRuntimeProof === false
       && runtimeBoundaryResult.runtimeBoundaryLines.some((line) =>
         line.includes('[gpu-runtime-boundary] dispatcher_epoch ')
         && line.includes('host_identity_previous_generation=1')
