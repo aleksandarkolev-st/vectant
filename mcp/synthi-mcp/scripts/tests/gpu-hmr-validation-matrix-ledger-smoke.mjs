@@ -3640,8 +3640,41 @@ assert.ok(['artifact_transport', 'epoch_publication', 'dispatch_trace', 'host_id
       && plan.observedRuntimeEventRequired === true
     )
   ));
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.present, true);
+assert.equal(
+  randomColdRow.randomColdRuntimeBoundaryClosureChecklist.proofAuthority,
+  'random_cold_runtime_boundary_closure_checklist_only_not_gpu_hmr_success',
+);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.acceptedAsSupportEvidence, true);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.acceptedForGpuHmr, false);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.gpuHmrSuccess, false);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.canSatisfyRuntimeProof, false);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.canSatisfyDispatchProof, false);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.complete, false);
+assert.equal(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.targetNameIndependent, true);
+assert.deepEqual(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.projectNameWhitelist, []);
+assert.deepEqual(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.specificTargetIdsAllowed, []);
+assert.ok(randomColdRow.randomColdRuntimeBoundaryClosureChecklist.checklistHash.startsWith('sha256:'));
+assert.ok(['artifact_transport', 'epoch_publication', 'dispatch_trace', 'host_identity', 'output_oracle']
+  .every((stage) =>
+    randomColdRow.randomColdRuntimeBoundaryClosureChecklist.requiredStages.includes(stage)
+    && randomColdRow.randomColdRuntimeBoundaryClosureChecklist.stageRequirements.some((plan) =>
+      plan.stage === stage
+      && plan.observed === false
+      && plan.complete === false
+    )
+  ));
+assert.ok(
+  randomColdRow.randomColdRuntimeBoundaryClosureChecklist.blockingGaps
+    .includes('runtime_boundary_closure_target_process_provenance_not_accepted'),
+);
+assert.ok(
+  randomColdRow.randomColdRuntimeBoundaryClosureChecklist.blockingGaps
+    .includes('runtime_boundary_closure_output_oracle_not_accepted'),
+);
 assert.ok(randomColdRow.openGaps.includes('runtime_support_closure_requires_app_hook'));
 assert.ok(randomColdRow.openGaps.includes('app_hook_materialization_requires_observed_target_process_events'));
+assert.ok(randomColdRow.openGaps.includes('runtime_boundary_closure_target_process_provenance_not_accepted'));
 assert.equal(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
   0,
@@ -6547,6 +6580,87 @@ assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate
 ));
 assert.ok(forgedAppHookMaterializationAuthorityRow.safety.failedGates.some((gate) =>
   gate.code === 'random_large_project_cold_app_hook_materialization_plan_claimed_authority'
+));
+
+const forgedRuntimeBoundaryClosureChecklistAuthorityDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-runtime-boundary-closure-checklist-forged',
+);
+const forgedRuntimeBoundaryClosureChecklistAuthority = {
+  schemaVersion: 'synthi.gpu_hmr.random_cold_path_runtime_boundary_closure_checklist.v1',
+  schema_version: 'synthi.gpu_hmr.random_cold_path_runtime_boundary_closure_checklist.v1',
+  proofAuthority: 'random_cold_runtime_boundary_closure_checklist_only_not_gpu_hmr_success',
+  proof_authority: 'random_cold_runtime_boundary_closure_checklist_only_not_gpu_hmr_success',
+  accepted: true,
+  acceptedAsSupportEvidence: true,
+  accepted_as_support_evidence: true,
+  acceptedForGpuHmr: true,
+  accepted_for_gpu_hmr: true,
+  gpuHmrSuccess: true,
+  gpu_hmr_success: true,
+  canSatisfyRuntimeProof: true,
+  can_satisfy_runtime_proof: true,
+  canSatisfyDispatchProof: true,
+  can_satisfy_dispatch_proof: true,
+  complete: true,
+  targetNameIndependent: true,
+  target_name_independent: true,
+  projectNameWhitelist: [],
+  project_name_whitelist: [],
+  specificTargetIdsAllowed: [],
+  specific_target_ids_allowed: [],
+};
+await writeJson(
+  path.join(
+    forgedRuntimeBoundaryClosureChecklistAuthorityDir,
+    'random-cold-runtime-boundary-closure-checklist-authority.json',
+  ),
+  randomColdPathManifest({
+    candidateId: 'direct-random-arbitrary-runtime-boundary-closure-checklist-authority',
+    sourceUrl: 'https://example.invalid/arbitrary/runtime-boundary-closure-checklist-authority.git',
+    immutableCommit: sha256Hex('runtime-boundary-closure-checklist-authority:commit').slice(0, 40),
+    resultOverrides: {
+      runtimeBoundaryClosureChecklist: forgedRuntimeBoundaryClosureChecklistAuthority,
+      runtime_boundary_closure_checklist: forgedRuntimeBoundaryClosureChecklistAuthority,
+      randomColdRuntimeBoundaryClosureChecklist: forgedRuntimeBoundaryClosureChecklistAuthority,
+      random_cold_runtime_boundary_closure_checklist:
+        forgedRuntimeBoundaryClosureChecklistAuthority,
+    },
+  }),
+);
+const forgedRuntimeBoundaryClosureChecklistAuthorityLedger =
+  await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [forgedRuntimeBoundaryClosureChecklistAuthorityDir],
+    includeInvalidated: true,
+  });
+const forgedRuntimeBoundaryClosureChecklistAuthorityRow =
+  forgedRuntimeBoundaryClosureChecklistAuthorityLedger.rows.find(
+    (row) => row.proofMode === 'random_large_project_cold_path',
+  );
+assert.equal(forgedRuntimeBoundaryClosureChecklistAuthorityRow?.safety.accepted, false);
+assert.equal(forgedRuntimeBoundaryClosureChecklistAuthorityRow.acceptedForGpuHmr, false);
+assert.equal(forgedRuntimeBoundaryClosureChecklistAuthorityRow.gpuHmrSuccess, false);
+assert.equal(
+  forgedRuntimeBoundaryClosureChecklistAuthorityRow
+    .randomColdRuntimeBoundaryClosureChecklist.accepted,
+  false,
+);
+assert.ok(forgedRuntimeBoundaryClosureChecklistAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_runtime_boundary_closure_checklist_invalid'
+));
+assert.ok(forgedRuntimeBoundaryClosureChecklistAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_boundary_closure_checklist_claimed_gpu_hmr_success'
+));
+assert.ok(forgedRuntimeBoundaryClosureChecklistAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_boundary_closure_checklist_claimed_runtime_authority'
+));
+assert.ok(forgedRuntimeBoundaryClosureChecklistAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_cold_runtime_boundary_closure_checklist_claimed_dispatch_authority'
+));
+assert.ok(forgedRuntimeBoundaryClosureChecklistAuthorityRow.safety.failedGates.some((gate) =>
+  gate.code === 'random_large_project_cold_runtime_boundary_closure_checklist_claimed_authority'
 ));
 
 const forgedColdBuildExecutionPlanDir = path.join(

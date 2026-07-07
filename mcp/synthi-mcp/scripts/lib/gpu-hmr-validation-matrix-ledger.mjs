@@ -249,6 +249,10 @@ const RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_app_hook_materialization_plan.v1';
 const RANDOM_COLD_APP_HOOK_MATERIALIZATION_PLAN_AUTHORITY =
   'random_cold_path_app_hook_materialization_plan_only_not_gpu_hmr_success';
+const RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_SCHEMA_VERSION =
+  'synthi.gpu_hmr.random_cold_path_runtime_boundary_closure_checklist.v1';
+const RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_AUTHORITY =
+  'random_cold_runtime_boundary_closure_checklist_only_not_gpu_hmr_success';
 const RANDOM_COLD_ADAPTER_CLOSURE_OUTCOMES = Object.freeze([
   'built_in_reload',
   'generated_adapter',
@@ -7017,6 +7021,292 @@ function randomColdAppHookMaterializationPlanFacet(raw = {}) {
     recomputed_materialization_plan_hash: recomputedMaterializationPlanHash,
     failedGates,
     failed_gates: failedGates,
+  };
+}
+
+function runtimeBoundaryClosureChecklistStageKey(stage) {
+  return String(stage ?? '').replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+}
+
+function runtimeBoundaryClosureChecklistArray(object = {}, camelKey, snakeKey) {
+  if (Array.isArray(object[camelKey])) return object[camelKey];
+  if (Array.isArray(object[snakeKey])) return object[snakeKey];
+  return [];
+}
+
+function randomColdRuntimeBoundaryClosureChecklistFacet({
+  raw = {},
+  appHookMaterializationPlan = {},
+  stageEvents = {},
+  targetProcessProvenance = {},
+  outputOracleFacet = {},
+  runtimeBoundaryPlanBinding = {},
+  runtimeStrictImportProjection = {},
+} = {}) {
+  const serialized = compactObject(raw);
+  const rawPresent = Object.keys(serialized).length > 0;
+  const schemaVersion = firstText(serialized.schemaVersion, serialized.schema_version);
+  const proofAuthority = firstText(serialized.proofAuthority, serialized.proof_authority);
+  const plan = compactObject(appHookMaterializationPlan);
+  const requiredStages = compactStringList([
+    ...runtimeBoundaryClosureChecklistArray(plan, 'requiredStages', 'required_stages'),
+    ...COLD_RUNTIME_BOUNDARY_TEMPLATE_REQUIRED_EVENT_KINDS,
+  ]);
+  const stagePlans = compactObjectList(
+    Array.isArray(plan.stagePlans) ? plan.stagePlans : plan.stage_plans,
+  );
+  const stagePlanByName = new Map(stagePlans.map((stagePlan) => [
+    firstText(stagePlan.stage, stagePlan.eventKind, stagePlan.event_kind),
+    stagePlan,
+  ]).filter(([stage]) => Boolean(stage)));
+  const stageResults = compactObject(stageEvents.stageResults ?? stageEvents.stage_results);
+  const stageRequirements = requiredStages.map((stage) => {
+    const stagePlan = compactObject(stagePlanByName.get(stage));
+    const stageKey = runtimeBoundaryClosureChecklistStageKey(stage);
+    const stageResult = compactObject(stageResults[stage] ?? stageResults[stageKey]);
+    const observed = firstBool(
+      stageResult.observed,
+      stageResult.runtimeObserved,
+      stageResult.runtime_observed,
+    ) === true;
+    const requiredProofKinds = compactStringList([
+      ...runtimeBoundaryClosureChecklistArray(stagePlan, 'requiredProofKinds', 'required_proof_kinds'),
+      ...runtimeBoundaryClosureChecklistArray(stageResult, 'requiredProofKinds', 'required_proof_kinds'),
+      ...realRocmStageProofKinds(stage),
+    ]);
+    const missingProofKinds = compactStringList([
+      ...runtimeBoundaryClosureChecklistArray(stageResult, 'missingProofKinds', 'missing_proof_kinds'),
+      ...(observed ? [] : requiredProofKinds),
+    ]);
+    const requiredFields = compactStringList([
+      ...runtimeBoundaryClosureChecklistArray(stagePlan, 'requiredFields', 'required_fields'),
+    ]);
+    const backendSpecificFields = compactStringList([
+      ...runtimeBoundaryClosureChecklistArray(
+        stagePlan,
+        'backendSpecificFields',
+        'backend_specific_fields',
+      ),
+    ]);
+    const oracleAlternatives = stage === 'output_oracle'
+      ? compactObjectList(
+        Array.isArray(stagePlan.oracleAlternatives)
+          ? stagePlan.oracleAlternatives
+          : stagePlan.oracle_alternatives,
+      )
+      : [];
+    const missingRuntimeEventGap = firstText(
+      stagePlan.missingRuntimeEventGap,
+      stagePlan.missing_runtime_event_gap,
+      `app_hook_materialization_${stage}_event_missing`,
+    );
+    const blockingGaps = compactStringList([
+      observed ? null : missingRuntimeEventGap,
+      ...missingProofKinds.map((kind) => `runtime_boundary_closure_${stage}_${kind}_missing`),
+    ]);
+    return {
+      stage,
+      eventKind: stage,
+      event_kind: stage,
+      boundaryLineToken: firstText(
+        stagePlan.boundaryLineToken,
+        stagePlan.boundary_line_token,
+      ),
+      boundary_line_token: firstText(
+        stagePlan.boundaryLineToken,
+        stagePlan.boundary_line_token,
+      ),
+      requiredProofKinds,
+      required_proof_kinds: requiredProofKinds,
+      missingProofKinds,
+      missing_proof_kinds: missingProofKinds,
+      requiredFields,
+      required_fields: requiredFields,
+      backendSpecificFields,
+      backend_specific_fields: backendSpecificFields,
+      oracleAlternatives,
+      oracle_alternatives: oracleAlternatives,
+      observed,
+      runtimeObserved: observed,
+      runtime_observed: observed,
+      complete: observed && missingProofKinds.length === 0,
+      missingRuntimeEventGap,
+      missing_runtime_event_gap: missingRuntimeEventGap,
+      blockingGaps,
+      blocking_gaps: blockingGaps,
+    };
+  });
+  const missingStages = stageRequirements
+    .filter((stage) => stage.observed !== true)
+    .map((stage) => stage.stage);
+  const stageClosureBlockingGaps = compactStringList(
+    stageRequirements.flatMap((stage) => stage.blockingGaps),
+  );
+  const stageEventsAccepted =
+    firstBool(stageEvents.accepted, stageEvents.acceptedAsSupportEvidence, stageEvents.accepted_as_support_evidence) === true
+    && firstBool(stageEvents.complete) === true;
+  const targetProcessProvenanceAccepted =
+    firstBool(
+      targetProcessProvenance.accepted,
+      targetProcessProvenance.acceptedAsSupportEvidence,
+      targetProcessProvenance.accepted_as_support_evidence,
+    ) === true
+    && firstBool(
+      targetProcessProvenance.complete,
+      targetProcessProvenance.provenanceComplete,
+      targetProcessProvenance.provenance_complete,
+    ) === true;
+  const outputOracleAccepted = firstBool(
+    outputOracleFacet.accepted,
+    outputOracleFacet.acceptedAsSupportEvidence,
+    outputOracleFacet.accepted_as_support_evidence,
+  ) === true;
+  const runtimeBoundaryPlanBindingAccepted =
+    firstBool(
+      runtimeBoundaryPlanBinding.accepted,
+      runtimeBoundaryPlanBinding.acceptedAsSupportEvidence,
+      runtimeBoundaryPlanBinding.accepted_as_support_evidence,
+    ) === true;
+  const strictImportProjectionAccepted =
+    firstBool(
+      runtimeStrictImportProjection.accepted,
+      runtimeStrictImportProjection.acceptedAsSupportEvidence,
+      runtimeStrictImportProjection.accepted_as_support_evidence,
+    ) === true;
+  const complete = stageRequirements.every((stage) => stage.complete === true)
+    && stageEventsAccepted
+    && targetProcessProvenanceAccepted
+    && outputOracleAccepted
+    && runtimeBoundaryPlanBindingAccepted
+    && strictImportProjectionAccepted;
+  const recomputedBlockingGaps = compactStringList([
+    ...stageClosureBlockingGaps,
+    stageEventsAccepted ? null : 'runtime_boundary_closure_stage_events_not_accepted',
+    targetProcessProvenanceAccepted
+      ? null
+      : 'runtime_boundary_closure_target_process_provenance_not_accepted',
+    outputOracleAccepted ? null : 'runtime_boundary_closure_output_oracle_not_accepted',
+    runtimeBoundaryPlanBindingAccepted
+      ? null
+      : 'runtime_boundary_closure_plan_binding_not_accepted',
+    strictImportProjectionAccepted
+      ? null
+      : 'runtime_boundary_closure_strict_import_projection_not_accepted',
+  ]);
+  const projectNameWhitelist = compactStringList(
+    serialized.projectNameWhitelist ?? serialized.project_name_whitelist,
+  );
+  const specificTargetIdsAllowed = compactStringList(
+    serialized.specificTargetIdsAllowed ?? serialized.specific_target_ids_allowed,
+  );
+  const serializedChecklistHash = normalizeSha256(firstText(
+    serialized.checklistHash,
+    serialized.checklist_hash,
+  ));
+  const serializedFailedGates = compactStringList([
+    ...(Array.isArray(serialized.failedGates) ? serialized.failedGates : []),
+    ...(Array.isArray(serialized.failed_gates) ? serialized.failed_gates : []),
+  ]);
+  const checklistHashSeed = {
+    schemaVersion: RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_AUTHORITY,
+    requiredStages,
+    missingStages,
+    stageRequirements,
+    stageEventsAccepted,
+    targetProcessProvenanceAccepted,
+    outputOracleAccepted,
+    runtimeBoundaryPlanBindingAccepted,
+    strictImportProjectionAccepted,
+    complete,
+    blockingGaps: recomputedBlockingGaps,
+  };
+  const checklistHash = stableJsonHash(checklistHashSeed);
+  const failedGates = compactStringList([
+    ...serializedFailedGates,
+    rawPresent && schemaVersion !== RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_SCHEMA_VERSION
+      ? 'random_cold_runtime_boundary_closure_checklist_schema_invalid'
+      : null,
+    rawPresent && proofAuthority !== RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_AUTHORITY
+      ? 'random_cold_runtime_boundary_closure_checklist_authority_invalid'
+      : null,
+    firstBool(serialized.acceptedForGpuHmr, serialized.accepted_for_gpu_hmr) === true
+      ? 'random_cold_runtime_boundary_closure_checklist_claimed_gpu_hmr_acceptance'
+      : null,
+    firstBool(serialized.gpuHmrSuccess, serialized.gpu_hmr_success) === true
+      ? 'random_cold_runtime_boundary_closure_checklist_claimed_gpu_hmr_success'
+      : null,
+    firstBool(serialized.canSatisfyRuntimeProof, serialized.can_satisfy_runtime_proof) === true
+      ? 'random_cold_runtime_boundary_closure_checklist_claimed_runtime_authority'
+      : null,
+    firstBool(serialized.canSatisfyDispatchProof, serialized.can_satisfy_dispatch_proof) === true
+      ? 'random_cold_runtime_boundary_closure_checklist_claimed_dispatch_authority'
+      : null,
+    rawPresent && firstBool(serialized.targetNameIndependent, serialized.target_name_independent) !== true
+      ? 'random_cold_runtime_boundary_closure_checklist_not_target_independent'
+      : null,
+    projectNameWhitelist.length > 0
+      ? 'random_cold_runtime_boundary_closure_checklist_project_whitelist_present'
+      : null,
+    specificTargetIdsAllowed.length > 0
+      ? 'random_cold_runtime_boundary_closure_checklist_specific_target_allowlist_present'
+      : null,
+    rawPresent && firstBool(serialized.complete) === true && complete !== true
+      ? 'random_cold_runtime_boundary_closure_checklist_complete_claim_unproven'
+      : null,
+    serializedChecklistHash && serializedChecklistHash !== checklistHash
+      ? 'random_cold_runtime_boundary_closure_checklist_hash_mismatch'
+      : null,
+  ]);
+  const accepted = failedGates.length === 0;
+  return {
+    present: rawPresent || Object.keys(plan).length > 0 || Object.keys(stageEvents).length > 0,
+    schemaVersion: RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_SCHEMA_VERSION,
+    schema_version: RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_SCHEMA_VERSION,
+    proofAuthority: RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_AUTHORITY,
+    proof_authority: RANDOM_COLD_RUNTIME_BOUNDARY_CLOSURE_CHECKLIST_AUTHORITY,
+    accepted,
+    acceptedAsSupportEvidence: accepted,
+    accepted_as_support_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    complete,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    observedTargetProcessEventsRequired: true,
+    observed_target_process_events_required: true,
+    requiredStages,
+    required_stages: requiredStages,
+    missingStages,
+    missing_stages: missingStages,
+    stageRequirements,
+    stage_requirements: stageRequirements,
+    stageEventsAccepted,
+    stage_events_accepted: stageEventsAccepted,
+    targetProcessProvenanceAccepted,
+    target_process_provenance_accepted: targetProcessProvenanceAccepted,
+    outputOracleAccepted,
+    output_oracle_accepted: outputOracleAccepted,
+    runtimeBoundaryPlanBindingAccepted,
+    runtime_boundary_plan_binding_accepted: runtimeBoundaryPlanBindingAccepted,
+    strictImportProjectionAccepted,
+    strict_import_projection_accepted: strictImportProjectionAccepted,
+    blockingGaps: recomputedBlockingGaps,
+    blocking_gaps: recomputedBlockingGaps,
+    failedGates,
+    failed_gates: failedGates,
+    checklistHash,
+    checklist_hash: checklistHash,
   };
 }
 
@@ -20131,6 +20421,103 @@ function rowSafetyFailures(row, context = {}) {
         code: 'random_large_project_cold_app_hook_materialization_plan_claimed_authority',
       });
     }
+    const runtimeBoundaryClosureChecklistRaw = firstCompactObject(
+      row.randomColdRuntimeBoundaryClosureChecklist,
+      row.random_cold_runtime_boundary_closure_checklist,
+      row.runtimeBoundaryClosureChecklist,
+      row.runtime_boundary_closure_checklist,
+      coldPathFacet.randomColdRuntimeBoundaryClosureChecklist,
+      coldPathFacet.random_cold_runtime_boundary_closure_checklist,
+      coldPathFacet.runtimeBoundaryClosureChecklist,
+      coldPathFacet.runtime_boundary_closure_checklist,
+    );
+    const runtimeBoundaryClosureChecklist =
+      randomColdRuntimeBoundaryClosureChecklistFacet({
+        raw: runtimeBoundaryClosureChecklistRaw,
+        appHookMaterializationPlan: appHookMaterialization,
+        stageEvents: firstCompactObject(
+          row.randomColdRuntimeAdapterStageEvents,
+          row.random_cold_runtime_adapter_stage_events,
+          row.runtimeAdapterStageEvents,
+          row.runtime_adapter_stage_events,
+        ),
+        targetProcessProvenance: firstCompactObject(
+          row.realRocmRuntimeBoundaryTargetProcessProvenance,
+          row.real_rocm_runtime_boundary_target_process_provenance,
+          row.runtimeBoundaryTargetProcessProvenance,
+          row.runtime_boundary_target_process_provenance,
+        ),
+        outputOracleFacet: firstCompactObject(
+          row.randomColdImportedOutputOracleFacet,
+          row.random_cold_imported_output_oracle_facet,
+          row.outputOracleFacet,
+          row.output_oracle_facet,
+        ),
+        runtimeBoundaryPlanBinding: firstCompactObject(
+          row.randomColdRuntimeBoundaryPlanBinding,
+          row.random_cold_runtime_boundary_plan_binding,
+          row.runtimeBoundaryPlanBinding,
+          row.runtime_boundary_plan_binding,
+          row.runtimeProfileAdapterResultImport?.runtimeBoundaryPlanBinding,
+          row.runtimeProfileAdapterResultImport?.runtime_boundary_plan_binding,
+          row.runtime_profile_adapter_result_import?.runtimeBoundaryPlanBinding,
+          row.runtime_profile_adapter_result_import?.runtime_boundary_plan_binding,
+        ),
+        runtimeStrictImportProjection: firstCompactObject(
+          row.randomColdRuntimeStrictImportProjection,
+          row.random_cold_runtime_strict_import_projection,
+        ),
+      });
+    const runtimeBoundaryClosureChecklistFailedGates = compactStringList([
+      ...(Array.isArray(runtimeBoundaryClosureChecklist.failedGates)
+        ? runtimeBoundaryClosureChecklist.failedGates
+        : []),
+      ...(Array.isArray(runtimeBoundaryClosureChecklist.failed_gates)
+        ? runtimeBoundaryClosureChecklist.failed_gates
+        : []),
+    ]);
+    if (
+      Object.keys(runtimeBoundaryClosureChecklistRaw).length > 0
+      && runtimeBoundaryClosureChecklist.accepted !== true
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_runtime_boundary_closure_checklist_invalid',
+      });
+      failures.push(...runtimeBoundaryClosureChecklistFailedGates.map((code) => ({ code })));
+    }
+    const runtimeBoundaryClosureChecklistAuthorityFailed =
+      runtimeBoundaryClosureChecklistFailedGates.some((code) =>
+        code === 'random_cold_runtime_boundary_closure_checklist_claimed_gpu_hmr_acceptance'
+        || code === 'random_cold_runtime_boundary_closure_checklist_claimed_gpu_hmr_success'
+        || code === 'random_cold_runtime_boundary_closure_checklist_claimed_runtime_authority'
+        || code === 'random_cold_runtime_boundary_closure_checklist_claimed_dispatch_authority'
+      );
+    if (
+      Object.keys(runtimeBoundaryClosureChecklistRaw).length > 0
+      && (
+        runtimeBoundaryClosureChecklistAuthorityFailed
+        || firstBool(
+          runtimeBoundaryClosureChecklistRaw.acceptedForGpuHmr,
+          runtimeBoundaryClosureChecklistRaw.accepted_for_gpu_hmr,
+        ) === true
+        || firstBool(
+          runtimeBoundaryClosureChecklistRaw.gpuHmrSuccess,
+          runtimeBoundaryClosureChecklistRaw.gpu_hmr_success,
+        ) === true
+        || firstBool(
+          runtimeBoundaryClosureChecklistRaw.canSatisfyRuntimeProof,
+          runtimeBoundaryClosureChecklistRaw.can_satisfy_runtime_proof,
+        ) === true
+        || firstBool(
+          runtimeBoundaryClosureChecklistRaw.canSatisfyDispatchProof,
+          runtimeBoundaryClosureChecklistRaw.can_satisfy_dispatch_proof,
+        ) === true
+      )
+    ) {
+      failures.push({
+        code: 'random_large_project_cold_runtime_boundary_closure_checklist_claimed_authority',
+      });
+    }
     const runtimeBoundaryPlanBindingRaw = firstCompactObject(
       row.randomColdRuntimeBoundaryPlanBinding,
       row.random_cold_runtime_boundary_plan_binding,
@@ -32064,6 +32451,25 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       outputOracleFacet: randomColdImportedOutputOracleFacet,
       runtimeBoundaryPlanBinding: randomColdRuntimeBoundaryPlanBinding,
     });
+  const randomColdRuntimeBoundaryClosureChecklist =
+    randomColdRuntimeBoundaryClosureChecklistFacet({
+      raw: firstCompactObject(
+        result.runtimeBoundaryClosureChecklist,
+        result.runtime_boundary_closure_checklist,
+        result.randomColdRuntimeBoundaryClosureChecklist,
+        result.random_cold_runtime_boundary_closure_checklist,
+        randomLargeProjectColdPath.runtimeBoundaryClosureChecklist,
+        randomLargeProjectColdPath.runtime_boundary_closure_checklist,
+        randomLargeProjectColdPath.randomColdRuntimeBoundaryClosureChecklist,
+        randomLargeProjectColdPath.random_cold_runtime_boundary_closure_checklist,
+      ),
+      appHookMaterializationPlan: randomColdAppHookMaterializationPlan,
+      stageEvents: randomColdRuntimeAdapterStageEvents,
+      targetProcessProvenance: randomColdRuntimeBoundaryTargetProcessProvenance,
+      outputOracleFacet: randomColdImportedOutputOracleFacet,
+      runtimeBoundaryPlanBinding: randomColdRuntimeBoundaryPlanBinding,
+      runtimeStrictImportProjection: randomColdRuntimeStrictImportProjection,
+    });
   const randomColdSameProcessRuntimeOracle =
     realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
       serialized: {},
@@ -32208,6 +32614,12 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdRuntimeBoundaryPlanBinding.present === true
       ? randomColdRuntimeBoundaryPlanBinding.failedGates
       : []),
+    ...(randomColdRuntimeBoundaryClosureChecklist.present === true
+      ? randomColdRuntimeBoundaryClosureChecklist.blockingGaps
+      : []),
+    ...(randomColdRuntimeBoundaryClosureChecklist.present === true
+      ? randomColdRuntimeBoundaryClosureChecklist.failedGates
+      : []),
     'same_process_loader_unproven',
     'epoch_publication_unproven',
     'dispatch_trace_unproven',
@@ -32285,6 +32697,8 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeStrictImportProjection.facet_hash,
     randomColdRuntimeBoundaryPlanBinding.bindingHash,
     randomColdRuntimeBoundaryPlanBinding.binding_hash,
+    randomColdRuntimeBoundaryClosureChecklist.checklistHash,
+    randomColdRuntimeBoundaryClosureChecklist.checklist_hash,
     randomColdSameProcessRuntimeOracle.oracleHash,
     randomColdSameProcessRuntimeOracle.oracle_hash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
@@ -32568,6 +32982,22 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     runtime_app_hook_materialization_plan_accepted:
       randomColdAppHookMaterializationPlan.present === true
       && randomColdAppHookMaterializationPlan.acceptedAsSupportEvidence === true,
+    randomColdRuntimeBoundaryClosureChecklist:
+      randomColdRuntimeBoundaryClosureChecklist.present === true
+        ? randomColdRuntimeBoundaryClosureChecklist
+        : null,
+    random_cold_runtime_boundary_closure_checklist:
+      randomColdRuntimeBoundaryClosureChecklist.present === true
+        ? randomColdRuntimeBoundaryClosureChecklist
+        : null,
+    runtimeBoundaryClosureChecklist:
+      randomColdRuntimeBoundaryClosureChecklist.present === true
+        ? randomColdRuntimeBoundaryClosureChecklist
+        : null,
+    runtime_boundary_closure_checklist:
+      randomColdRuntimeBoundaryClosureChecklist.present === true
+        ? randomColdRuntimeBoundaryClosureChecklist
+        : null,
     runtimeSupportClosureOutcome:
       randomColdRuntimeSupportClosureObligation.present === true
         ? randomColdRuntimeSupportClosureObligation.outcome
@@ -34415,6 +34845,47 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       facet.runtimeAppHookMaterializationPlan,
       facet.runtime_app_hook_materialization_plan,
     ));
+    const runtimeBoundaryClosureChecklist = randomColdRuntimeBoundaryClosureChecklistFacet({
+      raw: firstCompactObject(
+        row.randomColdRuntimeBoundaryClosureChecklist,
+        row.random_cold_runtime_boundary_closure_checklist,
+        row.runtimeBoundaryClosureChecklist,
+        row.runtime_boundary_closure_checklist,
+        facet.randomColdRuntimeBoundaryClosureChecklist,
+        facet.random_cold_runtime_boundary_closure_checklist,
+        facet.runtimeBoundaryClosureChecklist,
+        facet.runtime_boundary_closure_checklist,
+      ),
+      appHookMaterializationPlan: appHookMaterialization,
+      stageEvents: firstCompactObject(
+        row.randomColdRuntimeAdapterStageEvents,
+        row.random_cold_runtime_adapter_stage_events,
+        row.runtimeAdapterStageEvents,
+        row.runtime_adapter_stage_events,
+      ),
+      targetProcessProvenance: firstCompactObject(
+        row.realRocmRuntimeBoundaryTargetProcessProvenance,
+        row.real_rocm_runtime_boundary_target_process_provenance,
+        row.runtimeBoundaryTargetProcessProvenance,
+        row.runtime_boundary_target_process_provenance,
+      ),
+      outputOracleFacet: firstCompactObject(
+        row.randomColdImportedOutputOracleFacet,
+        row.random_cold_imported_output_oracle_facet,
+        row.outputOracleFacet,
+        row.output_oracle_facet,
+      ),
+      runtimeBoundaryPlanBinding: firstCompactObject(
+        row.randomColdRuntimeBoundaryPlanBinding,
+        row.random_cold_runtime_boundary_plan_binding,
+        row.runtimeBoundaryPlanBinding,
+        row.runtime_boundary_plan_binding,
+      ),
+      runtimeStrictImportProjection: firstCompactObject(
+        row.randomColdRuntimeStrictImportProjection,
+        row.random_cold_runtime_strict_import_projection,
+      ),
+    });
     const backendEvidence = compactObject(
       row.randomColdBackendEvidence
       ?? row.random_cold_backend_evidence,
@@ -34645,6 +35116,24 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       ) === true
       || (appHookMaterialization.present === true && appHookMaterialization.accepted !== true)
       || firstBool(
+        runtimeBoundaryClosureChecklist.acceptedForGpuHmr,
+        runtimeBoundaryClosureChecklist.accepted_for_gpu_hmr,
+      ) === true
+      || firstBool(
+        runtimeBoundaryClosureChecklist.gpuHmrSuccess,
+        runtimeBoundaryClosureChecklist.gpu_hmr_success,
+      ) === true
+      || firstBool(
+        runtimeBoundaryClosureChecklist.canSatisfyRuntimeProof,
+        runtimeBoundaryClosureChecklist.can_satisfy_runtime_proof,
+      ) === true
+      || firstBool(
+        runtimeBoundaryClosureChecklist.canSatisfyDispatchProof,
+        runtimeBoundaryClosureChecklist.can_satisfy_dispatch_proof,
+      ) === true
+      || (runtimeBoundaryClosureChecklist.present === true
+        && runtimeBoundaryClosureChecklist.acceptedAsSupportEvidence !== true)
+      || firstBool(
         directInputEvidence.acceptedForGpuHmr,
         directInputEvidence.accepted_for_gpu_hmr,
       ) === true
@@ -34685,6 +35174,8 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && buildMetadataAccepted
       && Boolean(sourceContentIdentityHash)
       && templateAccepted
+      && runtimeBoundaryClosureChecklist.present === true
+      && runtimeBoundaryClosureChecklist.acceptedAsSupportEvidence === true
       && (!requireLargeSourceTree || largeSourceTree)
       && !forbiddenAuthority
       && freshness.accepted === true;
