@@ -1299,7 +1299,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
-      {/* Connection status — viewport-centred floating panel (portal to body) */}
+      {/* Connection status — contained in the terminal pane so workspace dialogs stay on top. */}
       <AnimatePresence>
         {(state === 'error' || state === 'closed') && (
           <ConnectionStatusPanel
@@ -1939,19 +1939,13 @@ function TerminalColorPanel({ baseTheme, overrides, onClose }) {
 }
 
 /**
- * ConnectionStatusPanel — viewport-centred floating panel (portal to body)
- * shown when the terminal disconnects or the shell exits. No backdrop, so
- * the rest of the IDE stays usable; draggable by the titlebar.
+ * ConnectionStatusPanel — terminal-scoped status panel shown when the
+ * runtime disconnects or the shell exits. It is intentionally contained
+ * here instead of portaled to the body so global dialogs and menus keep
+ * the correct layer priority.
  */
 function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepairRuntime }) {
-  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
   const reduceMotion = useReducedMotion();
-
-  if (typeof document === 'undefined') return null;
-
-  const placement = pos
-    ? { left: pos.x, top: pos.y }
-    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
 
   const isClosed = state === 'closed';
   const title = isClosed ? 'Terminal session ended' : 'Runtime terminal unavailable';
@@ -1972,15 +1966,11 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
       ];
   const iconColor = isClosed ? 'var(--text-secondary, #a1a1aa)' : 'var(--accent-warning, #d89b2b)';
 
-  return createPortal(
+  return (
     <div
-      ref={panelRef}
-      className="fixed"
+      className="pointer-events-none absolute inset-x-3 top-3 flex justify-center lg:left-auto lg:right-3 lg:w-[404px] lg:justify-end"
       style={{
-        ...placement,
-        width: 404,
-        maxWidth: 'calc(100vw - 16px)',
-        zIndex: 120,
+        zIndex: 3,
       }}
     >
       <motion.div
@@ -1990,8 +1980,9 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.985 }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: TERMINAL_MOTION_EASE }}
-        className="flex flex-col overflow-hidden rounded-lg border shadow-none"
+        className="pointer-events-auto flex flex-col overflow-hidden rounded-lg border shadow-none"
         style={{
+          width: 'min(404px, 100%)',
           background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 94%, var(--bg-app, #0a0b10))',
           borderColor: 'var(--border-medium, #3f3f46)',
           color: 'var(--text-primary, #e4e4e7)',
@@ -2004,11 +1995,9 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           style={{ background: 'var(--brand-gradient-horizontal)' }}
         />
         <div
-          onMouseDown={onTitleMouseDown}
           className="flex items-start gap-3 border-b px-3.5 py-3.5 select-none"
           style={{
             borderColor: 'var(--border-subtle, #2a2b38)',
-            cursor: 'move',
           }}
         >
           <div
@@ -2084,8 +2073,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           </motion.button>
         </div>
       </motion.div>
-    </div>,
-    document.body
+    </div>
   );
 }
 
