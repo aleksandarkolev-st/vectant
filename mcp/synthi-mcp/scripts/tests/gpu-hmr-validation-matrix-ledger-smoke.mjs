@@ -32254,7 +32254,10 @@ const forgedComputeRocm = forgedComputeRocmLedger.rows.find(
 );
 assert.equal(forgedComputeRocm?.matrixOutcome, 'unproven');
 assert.equal(forgedComputeRocm.acceptedForGpuHmr, false);
-assert.equal(forgedComputeRocm.runtimeProofArtifact.accepted, true);
+assert.equal(forgedComputeRocm.runtimeProofArtifact.accepted, false);
+assert.ok(forgedComputeRocm.runtimeProofArtifact.failedGates.some(
+  (gate) => gate.code === 'compute_oracle_raw_readback_bytes_unreadable',
+));
 assert.equal(forgedComputeRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedComputeRocm.outputOracleFacet.kind, 'compute_oracle');
 assert.equal(forgedComputeRocm.outputOracleFacet.accepted, false);
