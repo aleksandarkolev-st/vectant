@@ -2685,7 +2685,43 @@ function randomColdRocmMlSourceListingManifestFixture(options = {}) {
   return manifest;
 }
 
-function randomColdRocmMlBuildMetadataSemanticSummary() {
+function randomColdSourceBoundSemanticSignal(sourceListingManifest, matcher, token, reason) {
+  const entries = Array.isArray(sourceListingManifest?.entries) ? sourceListingManifest.entries : [];
+  const entry = entries.find((candidate) => matcher(String(candidate.path ?? '')));
+  return {
+    token,
+    reason,
+    ...(entry
+      ? {
+        path: entry.path,
+        object: entry.object,
+        object_id: entry.object,
+      }
+      : {}),
+  };
+}
+
+function randomColdRocmMlBuildMetadataSemanticSummary(sourceListingManifest = null) {
+  const mlDomainSignals = [
+    randomColdSourceBoundSemanticSignal(
+      sourceListingManifest,
+      (pathName) => /(^|\/)src\/gpu\/tensor_ops\/gemm_kernel_/i.test(pathName),
+      'gemm',
+      'source_bound_build_target',
+    ),
+    randomColdSourceBoundSemanticSignal(
+      sourceListingManifest,
+      (pathName) => /(^|\/)src\/gpu\/attention\/softmax_tensor_/i.test(pathName),
+      'tensor',
+      'source_bound_source_group',
+    ),
+    randomColdSourceBoundSemanticSignal(
+      sourceListingManifest,
+      (pathName) => /(^|\/)src\/gpu\/convolution\/conv2d_kernel_/i.test(pathName),
+      'convolution',
+      'source_bound_operator_path',
+    ),
+  ];
   return {
     backendSignalAuthority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
     backend_signal_authority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
@@ -2701,34 +2737,8 @@ function randomColdRocmMlBuildMetadataSemanticSummary() {
         reason: 'cmake_language_enables_hip',
       },
     ],
-    mlDomainSignals: [
-      {
-        token: 'gemm',
-        reason: 'build_target_name',
-      },
-      {
-        token: 'tensor',
-        reason: 'source_group',
-      },
-      {
-        token: 'convolution',
-        reason: 'operator_source_path',
-      },
-    ],
-    ml_domain_signals: [
-      {
-        token: 'gemm',
-        reason: 'build_target_name',
-      },
-      {
-        token: 'tensor',
-        reason: 'source_group',
-      },
-      {
-        token: 'convolution',
-        reason: 'operator_source_path',
-      },
-    ],
+    mlDomainSignals,
+    ml_domain_signals: mlDomainSignals.map((signal) => ({ ...signal })),
   };
 }
 
@@ -2745,7 +2755,7 @@ function randomColdRocmMlReadinessMatrixRow(index, overrides = {}) {
     buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceForListing({
       targetId,
       sourceListingManifest,
-      semanticSummary: randomColdRocmMlBuildMetadataSemanticSummary(),
+      semanticSummary: randomColdRocmMlBuildMetadataSemanticSummary(sourceListingManifest),
     }),
     ...overrides,
   });
@@ -16416,6 +16426,87 @@ assert.equal(
 assert.ok(
   semanticLabelOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
     .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_observed'),
+);
+const broadReadinessTokenOnlyRocmMlColdRows = Array.from({ length: 5 }, (_, index) => {
+  const targetId = `semantic-token-only-cold-readiness-${index + 1}`;
+  const sourceListingManifest = randomColdSourceListingManifestFixture({
+    targetId,
+    fileCount: 1500,
+    totalKnownBytes: 15 * 1024 * 1024,
+    sourceRelevantFileCount: 1500,
+    gpuSourceSignalCount: 31,
+  });
+  return randomColdReadinessMatrixRow({
+    targetId,
+    sourceUrl: `https://example.invalid/semantic-token-only-random-cold/project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`semantic-token-only-rocm-ml-cold-readiness-${index + 1}`)
+      .slice(0, 40),
+    sourceListingManifest,
+    buildMetadataContentEvidence: randomColdBuildMetadataContentEvidenceForListing({
+      targetId,
+      sourceListingManifest,
+      semanticSummary: {
+        backendSignalAuthority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
+        backend_signal_authority: 'build_metadata_semantic_tokens_only_not_runtime_authority',
+        backendSignals: [
+          {
+            backend: 'hip_rocm',
+            reason: 'cmake_language_enables_hip',
+          },
+        ],
+        backend_signals: [
+          {
+            backend: 'hip_rocm',
+            reason: 'cmake_language_enables_hip',
+          },
+        ],
+        mlDomainSignals: [
+          {
+            token: 'gemm',
+            reason: 'scenario_label_without_source_binding',
+          },
+        ],
+        ml_domain_signals: [
+          {
+            token: 'gemm',
+            reason: 'scenario_label_without_source_binding',
+          },
+        ],
+      },
+    }),
+  });
+});
+const broadReadinessWithTokenOnlyRocmMlQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessTokenOnlyRocmMlColdRows,
+  ],
+});
+assert.equal(broadReadinessWithTokenOnlyRocmMlQuery.accepted, true);
+assert.equal(
+  broadReadinessWithTokenOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithTokenOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness
+    .largeRocmMlRandomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithTokenOnlyRocmMlQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('large_rocm_ml_random_cold_path_source_evidence_required'),
+);
+const tokenOnlyRocmMlCoverage = new Map(
+  broadReadinessWithTokenOnlyRocmMlQuery.summary.planCoverage.map((entry) => [entry.id, entry])
+);
+assert.equal(
+  tokenOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.status,
+  'diagnostic_only',
+);
+assert.ok(
+  tokenOnlyRocmMlCoverage.get('large_rocm_ml_random_cold_source_intake')?.openGaps
+    .includes('large_rocm_ml_random_cold_source_intake_ml_domain_not_source_bound'),
 );
 const broadReadinessSerializedRecomputedBuildContentRows = Array.from({ length: 5 }, (_, index) => {
   const forgedHash = hashValue(`serialized-recomputed-build-content:${index + 1}`);

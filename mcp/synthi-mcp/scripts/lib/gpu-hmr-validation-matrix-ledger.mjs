@@ -34295,8 +34295,79 @@ function largeRocmMlRandomColdListingTextValues(sourceListingManifest = {}) {
   ]);
 }
 
-function largeRocmMlRandomColdSemanticTextValues(summary = {}) {
+function largeRocmMlRandomColdSourceListingObjectByPath(sourceListingManifest = {}) {
+  const manifest = compactObject(sourceListingManifest);
+  const entries = randomColdNormalizeSourceListingEntries(
+    manifest.entries
+    ?? manifest.entrySample
+    ?? manifest.entry_sample
+    ?? manifest.sourceListingEntries
+    ?? manifest.source_listing_entries
+    ?? manifest.files
+    ?? manifest.sourceFiles
+    ?? manifest.source_files,
+  );
+  const byPath = new Map();
+  for (const entry of entries) {
+    const object = normalizeColdListingObjectId(entry.object);
+    if (!entry.path || !object) continue;
+    byPath.set(entry.path, object);
+  }
+  return byPath;
+}
+
+function largeRocmMlRandomColdSemanticSignalSourceBound(item = {}, sourceListingObjectByPath = null) {
+  const object = compactObject(item);
+  const pathName = randomColdNormalizeRepoRelativePath(firstText(
+    object.path,
+    object.sourcePath,
+    object.source_path,
+    object.sourceFile,
+    object.source_file,
+    object.file,
+    object.filePath,
+    object.file_path,
+    object.relativePath,
+    object.relative_path,
+  ));
+  if (!pathName || !(sourceListingObjectByPath instanceof Map)) return false;
+  const listingObject = sourceListingObjectByPath.get(pathName);
+  if (!listingObject) return false;
+  const declaredObject = normalizeColdListingObjectId(firstText(
+    object.object,
+    object.objectId,
+    object.object_id,
+    object.sourceObject,
+    object.source_object,
+    object.sourceObjectId,
+    object.source_object_id,
+    object.sha,
+    object.hash,
+  ));
+  return Boolean(declaredObject && declaredObject === listingObject);
+}
+
+function largeRocmMlRandomColdSemanticSignalValues(item = {}) {
+  const object = compactObject(item);
+  return compactStringList([
+    firstText(object.token),
+    firstText(object.name),
+    firstText(object.value),
+    firstText(object.kind),
+    firstText(object.domain),
+    firstText(object.domain_token, object.domainToken),
+    firstText(object.kernel_family, object.kernelFamily),
+    firstText(object.operator),
+    firstText(object.operation),
+  ]);
+}
+
+function largeRocmMlRandomColdSemanticTextValues(summary = {}, options = {}) {
   const semanticSummary = compactObject(summary);
+  const requireSourceBinding = options.requireSourceBinding === true;
+  const sourceListingObjectByPath = options.sourceListingObjectByPath instanceof Map
+    ? options.sourceListingObjectByPath
+    : null;
   const values = [];
   const objectLists = [
     semanticSummary.mlDomainSignals,
@@ -34311,18 +34382,20 @@ function largeRocmMlRandomColdSemanticTextValues(summary = {}) {
   for (const list of objectLists) {
     for (const item of Array.isArray(list) ? list : []) {
       if (typeof item === 'string') {
-        values.push(item);
+        if (!requireSourceBinding) values.push(item);
         continue;
       }
       const object = compactObject(item);
-      values.push(
-        firstText(object.token),
-        firstText(object.name),
-        firstText(object.value),
-        firstText(object.kind),
-      );
+      if (
+        requireSourceBinding
+        && !largeRocmMlRandomColdSemanticSignalSourceBound(object, sourceListingObjectByPath)
+      ) {
+        continue;
+      }
+      values.push(...largeRocmMlRandomColdSemanticSignalValues(object));
     }
   }
+  if (requireSourceBinding) return compactStringList(values);
   for (const key of [
     'domain',
     'domain_token',
@@ -34337,9 +34410,55 @@ function largeRocmMlRandomColdSemanticTextValues(summary = {}) {
   return compactStringList(values);
 }
 
+function largeRocmMlRandomColdUnboundSemanticDomainSignalCount(summary = {}, options = {}) {
+  const semanticSummary = compactObject(summary);
+  const sourceListingObjectByPath = options.sourceListingObjectByPath instanceof Map
+    ? options.sourceListingObjectByPath
+    : null;
+  let count = 0;
+  const objectLists = [
+    semanticSummary.mlDomainSignals,
+    semanticSummary.ml_domain_signals,
+    semanticSummary.domainSignals,
+    semanticSummary.domain_signals,
+    semanticSummary.semanticTokens,
+    semanticSummary.semantic_tokens,
+  ];
+  for (const list of objectLists) {
+    for (const item of Array.isArray(list) ? list : []) {
+      const values = typeof item === 'string'
+        ? [item]
+        : largeRocmMlRandomColdSemanticSignalValues(item);
+      if (
+        values.some((value) => largeRocmMlRandomColdDomainTokenMatches(value).length > 0)
+        && !largeRocmMlRandomColdSemanticSignalSourceBound(item, sourceListingObjectByPath)
+      ) {
+        count += 1;
+      }
+    }
+  }
+  for (const key of [
+    'domain',
+    'domain_token',
+    'domainToken',
+    'kernel_family',
+    'kernelFamily',
+    'operator',
+    'operation',
+  ]) {
+    if (largeRocmMlRandomColdDomainTokenMatches(semanticSummary[key]).length > 0) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function largeRocmMlRandomColdBuildTextSignals(buildContentEvidence = {}, options = {}) {
   const buildContent = compactObject(buildContentEvidence);
   const buildFiles = compactObjectList(buildContent.buildFiles ?? buildContent.build_files);
+  const sourceListingObjectByPath = options.sourceListingObjectByPath instanceof Map
+    ? options.sourceListingObjectByPath
+    : largeRocmMlRandomColdSourceListingObjectByPath(options.sourceListingManifest);
   const values = [];
   for (const buildFile of buildFiles) {
     values.push(firstText(buildFile.path));
@@ -34349,10 +34468,35 @@ function largeRocmMlRandomColdBuildTextSignals(buildContentEvidence = {}, option
       semanticSummary.backend_signal_authority,
     );
     if (authority === RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY) {
-      values.push(...largeRocmMlRandomColdSemanticTextValues(semanticSummary));
+      values.push(...largeRocmMlRandomColdSemanticTextValues(semanticSummary, {
+        requireSourceBinding: true,
+        sourceListingObjectByPath,
+      }));
     }
   }
   return largeRocmMlRandomColdTextSignals(values, 'verified_build_metadata', options);
+}
+
+function largeRocmMlRandomColdUnboundBuildMlSemanticSignalCount(
+  buildContentEvidence = {},
+  options = {},
+) {
+  const buildContent = compactObject(buildContentEvidence);
+  const buildFiles = compactObjectList(buildContent.buildFiles ?? buildContent.build_files);
+  const sourceListingObjectByPath = options.sourceListingObjectByPath instanceof Map
+    ? options.sourceListingObjectByPath
+    : largeRocmMlRandomColdSourceListingObjectByPath(options.sourceListingManifest);
+  return buildFiles.reduce((count, buildFile) => {
+    const semanticSummary = compactObject(buildFile.semanticSummary ?? buildFile.semantic_summary);
+    const authority = firstText(
+      semanticSummary.backendSignalAuthority,
+      semanticSummary.backend_signal_authority,
+    );
+    if (authority !== RANDOM_COLD_BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY) return count;
+    return count + largeRocmMlRandomColdUnboundSemanticDomainSignalCount(semanticSummary, {
+      sourceListingObjectByPath,
+    });
+  }, 0);
 }
 
 function largeRocmMlRandomColdRocmBackendSignals({
@@ -34475,8 +34619,13 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
   );
   const buildMlSignals = largeRocmMlRandomColdBuildTextSignals(
     buildContentEvidence,
-    { identityTerms },
+    { identityTerms, sourceListingManifest },
   );
+  const unboundBuildMlSemanticSignalCount =
+    largeRocmMlRandomColdUnboundBuildMlSemanticSignalCount(
+      buildContentEvidence,
+      { sourceListingManifest },
+    );
   const sourceIdentityHash = randomColdPathSourceIdentityHash(row);
   const sourceContentIdentityHash = randomColdPathSourceContentIdentityHash(row);
   const sourceContentOnlyIdentityHash = randomColdPathSourceContentOnlyIdentityHash(row);
@@ -34515,7 +34664,9 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
       : 'large_rocm_ml_random_cold_source_intake_rocm_backend_not_observed',
     sourceMlSignals.length > 0 || buildMlSignals.length > 0
       ? null
-      : 'large_rocm_ml_random_cold_source_intake_ml_domain_not_observed',
+      : unboundBuildMlSemanticSignalCount > 0
+        ? 'large_rocm_ml_random_cold_source_intake_ml_domain_not_source_bound'
+        : 'large_rocm_ml_random_cold_source_intake_ml_domain_not_observed',
     sourceIdentityHash
       ? null
       : 'large_rocm_ml_random_cold_source_intake_source_identity_missing',
@@ -34545,6 +34696,7 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     rocmBackendSignals,
     sourceMlSignals,
     buildMlSignals,
+    unboundBuildMlSemanticSignalCount,
     failedGates,
   });
   return {
@@ -34581,6 +34733,8 @@ function largeRocmMlRandomColdSourceIntakeFacet(row) {
     build_ml_signal_count: buildMlSignals.length,
     buildMlSignals,
     build_ml_signals: buildMlSignals,
+    unboundBuildMlSemanticSignalCount,
+    unbound_build_ml_semantic_signal_count: unboundBuildMlSemanticSignalCount,
     sourceListingHash: sourceListingManifest.sourceListingHash
       ?? sourceListingManifest.source_listing_hash
       ?? null,
