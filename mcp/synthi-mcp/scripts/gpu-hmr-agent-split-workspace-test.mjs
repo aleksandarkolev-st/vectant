@@ -48,6 +48,55 @@ import {
   visualEvidenceArtifactsFromVisualOracleArtifacts,
 } from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
+let stdioPipeClosed = false;
+
+function isStdioEpipe(err) {
+  return err?.code === 'EPIPE' || /\bEPIPE\b/i.test(String(err?.message ?? err ?? ''));
+}
+
+function installStdioEpipeGuard() {
+  const onStreamError = (err) => {
+    if (isStdioEpipe(err)) {
+      stdioPipeClosed = true;
+      return;
+    }
+    process.nextTick(() => {
+      throw err;
+    });
+  };
+  process.stdout.on('error', onStreamError);
+  process.stderr.on('error', onStreamError);
+
+  const originalLog = console.log.bind(console);
+  const originalError = console.error.bind(console);
+  console.log = (...args) => {
+    if (stdioPipeClosed) return;
+    try {
+      originalLog(...args);
+    } catch (err) {
+      if (isStdioEpipe(err)) {
+        stdioPipeClosed = true;
+        return;
+      }
+      throw err;
+    }
+  };
+  console.error = (...args) => {
+    if (stdioPipeClosed) return;
+    try {
+      originalError(...args);
+    } catch (err) {
+      if (isStdioEpipe(err)) {
+        stdioPipeClosed = true;
+        return;
+      }
+      throw err;
+    }
+  };
+}
+
+installStdioEpipeGuard();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
