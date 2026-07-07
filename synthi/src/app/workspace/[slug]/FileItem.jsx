@@ -710,8 +710,13 @@ useEffect(() => {
                             }}
                             onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}
                             title={p.state?.user?.name || 'User'}
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default overflow-hidden"
-                            style={{ border: `2px solid ${p.state?.user?.color || '#0b0b0b'}`, background: p.state?.user?.color ? 'rgba(255,255,255,0.03)' : '#111' }}
+                            className="flex h-6 w-6 cursor-default items-center justify-center overflow-hidden rounded-full text-xs text-[var(--text-primary)]"
+                            style={{
+                              border: `2px solid ${p.state?.user?.color || 'var(--border-medium)'}`,
+                              background: p.state?.user?.color
+                                ? 'color-mix(in srgb, var(--text-primary) 3%, transparent)'
+                                : 'var(--bg-panel)',
+                            }}
                           >
                             {userImage
                               ? <img src={userImage} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
@@ -730,11 +735,11 @@ useEffect(() => {
             {/* Hover card for file presence */}
             {hoverPresence && hoverPresence.rect && (
               <div style={{ position: 'fixed', left: hoverPresence.rect.left + hoverPresence.rect.width + 6, top: hoverPresence.rect.top - 6, zIndex: 2000 }} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                <div className="rounded-md p-2 text-sm shadow-lg w-44 border" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
+                <div className="vt-command-popover w-44 p-2 text-sm" style={{ color: 'var(--text-primary)' }}>
                   <div className="flex items-center gap-2">
                     {hoverPresence.user.image
                       ? <img src={hoverPresence.user.image} alt="" className="w-7 h-7 rounded-full object-cover" referrerPolicy="no-referrer" />
-                      : <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                      : <div className="flex h-7 w-7 items-center justify-center rounded-full text-sm text-[var(--text-primary)]" style={{ background: hoverPresence.user.color || 'var(--bg-elevated)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
                     }
                     <div className="flex flex-col">
                       <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>

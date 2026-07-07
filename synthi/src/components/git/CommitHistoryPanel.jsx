@@ -68,11 +68,10 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
   return (
     <div
       ref={menuRef}
-      className="fixed z-[9999] rounded-lg shadow-xl py-1 min-w-[200px]"
+      className="vt-command-popover fixed z-[9999] min-w-[200px] py-1"
       style={{
         left: x, top: y,
-        background: 'var(--bg-panel)',
-        border: '1px solid var(--border-subtle)',
+        color: 'var(--text-primary)',
       }}
     >
       {items.map((item, i) =>
