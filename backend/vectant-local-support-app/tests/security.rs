@@ -659,10 +659,24 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
         Err(LocalAuthorizationError::DeviceMismatch)
     );
 
-    let mut bad_proof = auth;
+    let mut malformed_device = auth.clone();
+    malformed_device.device_fingerprint = "dev-not-a-fingerprint".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &malformed_device, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+
+    let mut bad_proof = auth.clone();
     bad_proof.device_proof = "sha256:bad-proof".to_string();
     assert_eq!(
         validate_file_request_authorization(&session, &policy, &req, &bad_proof, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
+
+    let mut malformed_proof = auth;
+    malformed_proof.device_proof = "not-a-proof".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &malformed_proof, now),
         Err(LocalAuthorizationError::DeviceProofInvalid)
     );
 }

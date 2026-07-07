@@ -575,6 +575,12 @@ pub fn validate_file_request_authorization(
     if auth.policy_version != crate::POLICY_VERSION {
         return Err(LocalAuthorizationError::PolicyVersionMismatch);
     }
+    if !is_sha256_hex(&auth.device_fingerprint, 16) {
+        return Err(LocalAuthorizationError::DeviceMismatch);
+    }
+    if !is_sha256_hex(&auth.device_proof, 64) {
+        return Err(LocalAuthorizationError::DeviceProofInvalid);
+    }
     if auth.device_fingerprint != session.device_fingerprint() {
         return Err(LocalAuthorizationError::DeviceMismatch);
     }
@@ -582,6 +588,13 @@ pub fn validate_file_request_authorization(
         return Err(LocalAuthorizationError::DeviceProofInvalid);
     }
     Ok(())
+}
+
+fn is_sha256_hex(value: &str, hex_len: usize) -> bool {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == hex_len && digest.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn required_header<'a>(
