@@ -38,6 +38,8 @@ fn request(path: &str) -> FileReadRequest {
     FileReadRequest {
         request_id: format!("req_{path}"),
         session_id: "sess_123".to_string(),
+        account_id: "acct_local".to_string(),
+        org_id: "org_local".to_string(),
         workspace_id: "wk_123".to_string(),
         capability: "workspace.file.source.read".to_string(),
         path: path.to_string(),
@@ -585,6 +587,20 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
     assert_eq!(
         validate_file_request_authorization(&session, &policy, &wrong_session, &auth, now),
         Err(LocalAuthorizationError::SessionMismatch)
+    );
+
+    let mut wrong_account = req.clone();
+    wrong_account.account_id = "acct_attacker".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_account, &auth, now),
+        Err(LocalAuthorizationError::AccountMismatch)
+    );
+
+    let mut wrong_org = req.clone();
+    wrong_org.org_id = "org_attacker".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &wrong_org, &auth, now),
+        Err(LocalAuthorizationError::OrgMismatch)
     );
 
     let mut wrong_workspace = req.clone();

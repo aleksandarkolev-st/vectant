@@ -503,6 +503,8 @@ impl LocalRequestAuthorization {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalAuthorizationError {
     SessionMismatch,
+    AccountMismatch,
+    OrgMismatch,
     WorkspaceMismatch,
     ExpiredRequest,
     InvalidRequestExpiry,
@@ -518,6 +520,8 @@ impl LocalAuthorizationError {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SessionMismatch => "session_mismatch",
+            Self::AccountMismatch => "account_mismatch",
+            Self::OrgMismatch => "org_mismatch",
             Self::WorkspaceMismatch => "workspace_mismatch",
             Self::ExpiredRequest => "expired_request",
             Self::InvalidRequestExpiry => "invalid_request_expiry",
@@ -540,6 +544,12 @@ pub fn validate_file_request_authorization(
 ) -> Result<(), LocalAuthorizationError> {
     if request.session_id != session.session_id() {
         return Err(LocalAuthorizationError::SessionMismatch);
+    }
+    if request.account_id != session.account_id() {
+        return Err(LocalAuthorizationError::AccountMismatch);
+    }
+    if request.org_id != session.org_id() {
+        return Err(LocalAuthorizationError::OrgMismatch);
     }
     if request.workspace_id != session.workspace_id() || request.workspace_id != workspace.workspace_id() {
         return Err(LocalAuthorizationError::WorkspaceMismatch);

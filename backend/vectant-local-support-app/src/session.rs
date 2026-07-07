@@ -9,6 +9,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     pub session_id: String,
+    pub account_id: String,
+    pub org_id: String,
     pub workspace_id: String,
     pub device_fingerprint: String,
     pub token_fingerprint: String,
@@ -19,6 +21,8 @@ pub struct SessionState {
 #[derive(Debug)]
 pub struct SessionGuard {
     session_id: String,
+    account_id: String,
+    org_id: String,
     workspace_id: String,
     device_fingerprint: String,
     token: String,
@@ -30,6 +34,15 @@ pub struct SessionGuard {
 
 impl SessionGuard {
     pub fn new(workspace_id: impl Into<String>, ttl: Duration) -> Self {
+        Self::new_bound("acct_local", "org_local", workspace_id, ttl)
+    }
+
+    pub fn new_bound(
+        account_id: impl Into<String>,
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        ttl: Duration,
+    ) -> Self {
         let token: String = rand::thread_rng()
             .sample_iter(&Alphanumeric)
             .take(48)
@@ -39,6 +52,8 @@ impl SessionGuard {
         let device_fingerprint = fingerprint(&format!("device:{token}"));
         Self {
             session_id: format!("sess_{}", Uuid::new_v4()),
+            account_id: account_id.into(),
+            org_id: org_id.into(),
             workspace_id: workspace_id.into(),
             device_fingerprint,
             token,
@@ -55,6 +70,14 @@ impl SessionGuard {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn org_id(&self) -> &str {
+        &self.org_id
     }
 
     pub fn workspace_id(&self) -> &str {
@@ -82,6 +105,8 @@ impl SessionGuard {
     pub fn state(&self) -> SessionState {
         SessionState {
             session_id: self.session_id.clone(),
+            account_id: self.account_id.clone(),
+            org_id: self.org_id.clone(),
             workspace_id: self.workspace_id.clone(),
             device_fingerprint: self.device_fingerprint.clone(),
             token_fingerprint: self.token_fingerprint.clone(),

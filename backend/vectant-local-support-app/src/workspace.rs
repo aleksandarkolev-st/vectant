@@ -15,6 +15,8 @@ const MAX_FILE_BYTES: u64 = 262_144;
 pub struct FileReadRequest {
     pub request_id: String,
     pub session_id: String,
+    pub account_id: String,
+    pub org_id: String,
     pub workspace_id: String,
     pub capability: String,
     pub path: String,
