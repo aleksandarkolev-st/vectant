@@ -30933,6 +30933,64 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       Object.keys(randomColdImportedRuntimeProofArtifact).length > 0
       || Object.keys(randomColdImportedProofLedger).length > 0
     );
+  const randomColdRuntimeProofArtifactGate = runtimeProofArtifactFacet(
+    randomColdImportedRuntimeProofArtifact,
+    runtimeProofArtifactGateOptions(filePath, context),
+  );
+  const randomColdRuntimeBoundaryTargetEnvironment =
+    realRocmRuntimeBoundaryTargetEnvironmentFacet(compactObject(
+      randomColdRuntimeProfileAdapterResultImport.real_rocm_runtime_boundary_target_environment
+      ?? randomColdRuntimeProfileAdapterResultImport.realRocmRuntimeBoundaryTargetEnvironment
+      ?? randomColdRuntimeProfileAdapterResultImport.runtime_boundary_target_environment
+      ?? randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryTargetEnvironment
+      ?? randomColdImportedRuntimeProofArtifact.real_rocm_runtime_boundary_target_environment
+      ?? randomColdImportedRuntimeProofArtifact.realRocmRuntimeBoundaryTargetEnvironment
+      ?? randomColdImportedRuntimeProofArtifact.runtime_boundary_target_environment
+      ?? randomColdImportedRuntimeProofArtifact.runtimeBoundaryTargetEnvironment,
+    ));
+  const randomColdRuntimeBoundaryTargetProcessProvenance =
+    realRocmRuntimeBoundaryTargetProcessProvenanceFacet(compactObject({
+      ...compactObject(
+        randomColdRuntimeProfileAdapterResultImport.real_rocm_runtime_boundary_target_process_provenance
+        ?? randomColdRuntimeProfileAdapterResultImport.realRocmRuntimeBoundaryTargetProcessProvenance
+        ?? randomColdRuntimeProfileAdapterResultImport.runtime_boundary_target_process_provenance
+        ?? randomColdRuntimeProfileAdapterResultImport.runtimeBoundaryTargetProcessProvenance
+        ?? randomColdImportedRuntimeProofArtifact.real_rocm_runtime_boundary_target_process_provenance
+        ?? randomColdImportedRuntimeProofArtifact.realRocmRuntimeBoundaryTargetProcessProvenance
+        ?? randomColdImportedRuntimeProofArtifact.runtime_boundary_target_process_provenance
+        ?? randomColdImportedRuntimeProofArtifact.runtimeBoundaryTargetProcessProvenance,
+      ),
+      sourceRuntimeBoundaryLines: importedRuntimeBoundaryLinesForStageEvents,
+      targetEnvironment: randomColdRuntimeBoundaryTargetEnvironment,
+      adapterResultTransport: compactObject(
+        randomColdRuntimeProfileAdapterResultImport.real_rocm_runtime_adapter_result_transport
+        ?? randomColdRuntimeProfileAdapterResultImport.realRocmRuntimeAdapterResultTransport
+        ?? randomColdRuntimeProfileAdapterResultImport.runtime_adapter_result_transport
+        ?? randomColdRuntimeProfileAdapterResultImport.runtimeAdapterResultTransport
+        ?? randomColdImportedRuntimeProofArtifact.real_rocm_runtime_adapter_result_transport
+        ?? randomColdImportedRuntimeProofArtifact.realRocmRuntimeAdapterResultTransport
+        ?? randomColdImportedRuntimeProofArtifact.runtime_adapter_result_transport
+        ?? randomColdImportedRuntimeProofArtifact.runtimeAdapterResultTransport,
+      ),
+      adapterEventManifestTransport: compactObject(
+        randomColdRuntimeProfileAdapterResultImport.real_rocm_runtime_adapter_event_manifest_transport
+        ?? randomColdRuntimeProfileAdapterResultImport.realRocmRuntimeAdapterEventManifestTransport
+        ?? randomColdRuntimeProfileAdapterResultImport.runtime_adapter_event_manifest_transport
+        ?? randomColdRuntimeProfileAdapterResultImport.runtimeAdapterEventManifestTransport
+        ?? randomColdImportedRuntimeProofArtifact.real_rocm_runtime_adapter_event_manifest_transport
+        ?? randomColdImportedRuntimeProofArtifact.realRocmRuntimeAdapterEventManifestTransport
+        ?? randomColdImportedRuntimeProofArtifact.runtime_adapter_event_manifest_transport
+        ?? randomColdImportedRuntimeProofArtifact.runtimeAdapterEventManifestTransport,
+      ),
+    }));
+  const randomColdRecomputedLedger =
+    Object.keys(randomColdImportedProofLedger).length > 0
+      ? {
+          present: true,
+          source: 'recomputed_ledger',
+          ...randomColdImportedProofLedgerQuery,
+        }
+      : {};
   const randomColdRealRocmFirewall = randomColdImportedStrictProofMaterialPresent
     ? realRocmFirewallFieldsFromEvidence({
         runtimeProofArtifact: randomColdImportedRuntimeProofArtifact,
@@ -30941,18 +30999,14 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     : null;
   const randomColdRealRocmRuntimeChain = randomColdImportedStrictProofMaterialPresent
     ? realRocmRuntimeChainFacet({
-        ledger: randomColdImportedProofLedgerQuery,
+        ledger: randomColdRecomputedLedger,
         proofLedger: randomColdImportedProofLedger,
         runtimeProfileAdapterResult: randomColdRuntimeProfileAdapterResultImport,
       })
     : null;
   const randomColdImportedOutputOracleFacet = randomColdImportedStrictProofMaterialPresent
     ? await ledgerOutputOracleFacet(
-        {
-          present: true,
-          source: 'recomputed_ledger',
-          ...randomColdImportedProofLedgerQuery,
-        },
+        randomColdRecomputedLedger,
         randomColdImportedProofLedger,
         {},
         context.repoRoot,
@@ -31003,6 +31057,32 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       appHookGate: randomColdRuntimeAppHookContractGate,
       outputOracleFacet: randomColdImportedOutputOracleFacet,
       runtimeBoundaryPlanBinding: randomColdRuntimeBoundaryPlanBinding,
+    });
+  const randomColdSameProcessRuntimeOracle =
+    realRocmDerivedSameProcessRuntimeOracleFromMatrixEvidence({
+      serialized: {},
+      realRocmAppHookContractGate: randomColdRuntimeAppHookContractGate,
+      runtimeProofArtifactGate: randomColdRuntimeProofArtifactGate,
+      ledger: randomColdRecomputedLedger,
+      proofLedger: randomColdImportedProofLedger,
+      realRocmRuntimeChain: randomColdRealRocmRuntimeChain ?? {},
+      outputOracleFacet: randomColdImportedOutputOracleFacet,
+      realRocmFirewall: randomColdRealRocmFirewall ?? {},
+      realRocmRuntimeAdapterStageEvents: randomColdRuntimeAdapterStageEvents,
+      realRocmRuntimeBoundaryTargetProcessProvenance:
+        randomColdRuntimeBoundaryTargetProcessProvenance,
+    });
+  const randomColdSameProcessRuntimeOracleGate =
+    realRocmSameProcessRuntimeOracleGate({
+      required: true,
+      realRocmSameProcessRuntimeOracle: randomColdSameProcessRuntimeOracle,
+      realRocmAppHookContractGate: randomColdRuntimeAppHookContractGate,
+      runtimeProofArtifactGate: randomColdRuntimeProofArtifactGate,
+      ledger: randomColdRecomputedLedger,
+      proofLedger: randomColdImportedProofLedger,
+      realRocmRuntimeChain: randomColdRealRocmRuntimeChain ?? {},
+      outputOracleFacet: randomColdImportedOutputOracleFacet,
+      realRocmFirewall: randomColdRealRocmFirewall ?? {},
     });
   const randomColdPathDirectInputEvidence =
     randomLargeProjectColdPath.directInputEvidence
@@ -31089,10 +31169,24 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     ...(randomColdRuntimeAdapterStageEvents.present === true
       ? randomColdRuntimeAdapterStageEvents.failedGates
       : []),
+    ...(randomColdRuntimeBoundaryTargetEnvironment.present === true
+      ? randomColdRuntimeBoundaryTargetEnvironment.blockingGaps
+      : []),
+    ...(randomColdRuntimeBoundaryTargetEnvironment.present === true
+      ? randomColdRuntimeBoundaryTargetEnvironment.failedGates
+      : []),
+    ...(randomColdRuntimeBoundaryTargetProcessProvenance.present === true
+      ? randomColdRuntimeBoundaryTargetProcessProvenance.blockingGaps
+      : []),
+    ...(randomColdRuntimeBoundaryTargetProcessProvenance.present === true
+      ? randomColdRuntimeBoundaryTargetProcessProvenance.failedGates
+      : []),
     ...(randomColdImportedOutputOracleFacet
       ? compactStringList((randomColdImportedOutputOracleFacet.failedGates ?? [])
         .map((failure) => failure.code ?? failure))
       : []),
+    ...randomColdRuntimeProofArtifactGate.failedGates.map((failure) => failure.code),
+    ...randomColdSameProcessRuntimeOracleGate.failedGates,
     ...(randomColdRuntimeSupportClosureObligation.present === true
       ? randomColdRuntimeSupportClosureObligation.blockingGaps
       : []),
@@ -31185,6 +31279,8 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     randomColdRuntimeStrictImportProjection.facet_hash,
     randomColdRuntimeBoundaryPlanBinding.bindingHash,
     randomColdRuntimeBoundaryPlanBinding.binding_hash,
+    randomColdSameProcessRuntimeOracle.oracleHash,
+    randomColdSameProcessRuntimeOracle.oracle_hash,
     randomColdRuntimeSupportClosureObligation.obligationHash,
     randomColdAppHookMaterializationPlan.materializationPlanHash,
   ]);
@@ -31372,10 +31468,62 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     output_oracle_facet: randomColdImportedOutputOracleFacet ?? null,
     realRocmFirewall: randomColdRealRocmFirewall,
     real_rocm_firewall: randomColdRealRocmFirewall,
+    runtimeProofArtifact: randomColdRuntimeProofArtifactGate,
+    runtime_proof_artifact: randomColdRuntimeProofArtifactGate,
     realRocmRuntimeChain: randomColdRealRocmRuntimeChain,
     real_rocm_runtime_chain: randomColdRealRocmRuntimeChain,
     runtimeChain: randomColdRealRocmRuntimeChain,
     runtime_chain: randomColdRealRocmRuntimeChain,
+    realRocmRuntimeBoundaryTargetEnvironment:
+      randomColdRuntimeBoundaryTargetEnvironment.present === true
+        ? randomColdRuntimeBoundaryTargetEnvironment
+        : null,
+    real_rocm_runtime_boundary_target_environment:
+      randomColdRuntimeBoundaryTargetEnvironment.present === true
+        ? randomColdRuntimeBoundaryTargetEnvironment
+        : null,
+    runtimeBoundaryTargetEnvironment:
+      randomColdRuntimeBoundaryTargetEnvironment.present === true
+        ? randomColdRuntimeBoundaryTargetEnvironment
+        : null,
+    runtime_boundary_target_environment:
+      randomColdRuntimeBoundaryTargetEnvironment.present === true
+        ? randomColdRuntimeBoundaryTargetEnvironment
+        : null,
+    realRocmRuntimeBoundaryTargetProcessProvenance:
+      randomColdRuntimeBoundaryTargetProcessProvenance.present === true
+        ? randomColdRuntimeBoundaryTargetProcessProvenance
+        : null,
+    real_rocm_runtime_boundary_target_process_provenance:
+      randomColdRuntimeBoundaryTargetProcessProvenance.present === true
+        ? randomColdRuntimeBoundaryTargetProcessProvenance
+        : null,
+    runtimeBoundaryTargetProcessProvenance:
+      randomColdRuntimeBoundaryTargetProcessProvenance.present === true
+        ? randomColdRuntimeBoundaryTargetProcessProvenance
+        : null,
+    runtime_boundary_target_process_provenance:
+      randomColdRuntimeBoundaryTargetProcessProvenance.present === true
+        ? randomColdRuntimeBoundaryTargetProcessProvenance
+        : null,
+    realRocmSameProcessRuntimeOracle:
+      Object.keys(randomColdSameProcessRuntimeOracle).length > 0
+        ? randomColdSameProcessRuntimeOracle
+        : null,
+    real_rocm_same_process_runtime_oracle:
+      Object.keys(randomColdSameProcessRuntimeOracle).length > 0
+        ? randomColdSameProcessRuntimeOracle
+        : null,
+    sameProcessRuntimeOracle:
+      Object.keys(randomColdSameProcessRuntimeOracle).length > 0
+        ? randomColdSameProcessRuntimeOracle
+        : null,
+    same_process_runtime_oracle:
+      Object.keys(randomColdSameProcessRuntimeOracle).length > 0
+        ? randomColdSameProcessRuntimeOracle
+        : null,
+    realRocmSameProcessRuntimeOracleGate: randomColdSameProcessRuntimeOracleGate,
+    real_rocm_same_process_runtime_oracle_gate: randomColdSameProcessRuntimeOracleGate,
     randomColdRuntimeSupportClosureObligation:
       randomColdRuntimeSupportClosureObligation.present === true
         ? randomColdRuntimeSupportClosureObligation
