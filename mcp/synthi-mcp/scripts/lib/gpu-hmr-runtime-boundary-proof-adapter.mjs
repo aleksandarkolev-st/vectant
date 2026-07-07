@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import {
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
 } from './gpu-hmr-acceptance-contract.mjs';
@@ -192,6 +193,58 @@ function firstBool(...values) {
     if (value === true || value === false) return value;
   }
   return null;
+}
+
+function proofArtifactPath(value) {
+  const text = firstText(value);
+  if (!text) return null;
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
+  return text;
+}
+
+function runtimeBoundaryStrictGateOptions(input = {}) {
+  const computeOracleArtifacts = objectOrNull(
+    input.computeOracleArtifacts
+    ?? input.compute_oracle_artifacts,
+  ) ?? {};
+  const explicitAllowedRoots = compactStringList([
+    ...(Array.isArray(input.allowedArtifactRoots) ? input.allowedArtifactRoots : []),
+    ...(Array.isArray(input.allowed_artifact_roots) ? input.allowed_artifact_roots : []),
+    ...(Array.isArray(input.computeArtifactRoots) ? input.computeArtifactRoots : []),
+    ...(Array.isArray(input.compute_artifact_roots) ? input.compute_artifact_roots : []),
+  ]);
+  const explicitPathBaseRoots = compactStringList([
+    ...(Array.isArray(input.computeArtifactPathBaseRoots) ? input.computeArtifactPathBaseRoots : []),
+    ...(Array.isArray(input.compute_artifact_path_base_roots) ? input.compute_artifact_path_base_roots : []),
+    ...(Array.isArray(input.artifactPathBaseRoots) ? input.artifactPathBaseRoots : []),
+    ...(Array.isArray(input.artifact_path_base_roots) ? input.artifact_path_base_roots : []),
+  ]);
+  const artifactRoots = [
+    computeOracleArtifacts.raw_readback_bin,
+    computeOracleArtifacts.rawReadbackBin,
+    computeOracleArtifacts.before_raw_readback_bin,
+    computeOracleArtifacts.beforeRawReadbackBin,
+    computeOracleArtifacts.readback_schema_json,
+    computeOracleArtifacts.readbackSchemaJson,
+    computeOracleArtifacts.rendered_card_png,
+    computeOracleArtifacts.renderedCardPng,
+    computeOracleArtifacts.raw_readback_cas_manifest,
+    computeOracleArtifacts.rawReadbackCasManifest,
+  ].map(proofArtifactPath)
+    .filter((artifactPath) => artifactPath && path.isAbsolute(artifactPath))
+    .map((artifactPath) => path.dirname(path.resolve(artifactPath)));
+  const allowedArtifactRoots = compactStringList([
+    ...explicitAllowedRoots,
+    ...artifactRoots,
+  ]);
+  const computeArtifactPathBaseRoots = compactStringList([
+    ...explicitPathBaseRoots,
+    ...allowedArtifactRoots,
+  ]);
+  return {
+    allowedArtifactRoots,
+    computeArtifactPathBaseRoots,
+  };
 }
 
 function firstTimestamp(...values) {
@@ -2148,7 +2201,10 @@ export function buildRuntimeBoundaryProofAdapter(input = {}) {
         error: null,
       },
     });
-    strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
+    strictGate = runtimeProofArtifactStrictGate(
+      runtimeProofArtifact,
+      runtimeBoundaryStrictGateOptions(input),
+    );
   }
 
   const failedGates = runtimeProofFailureCodes(runtimeProofArtifact, strictGate, stageEvidence);
