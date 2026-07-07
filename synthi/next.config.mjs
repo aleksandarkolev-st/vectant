@@ -17,6 +17,12 @@ function resolveDep(rel) {
   return candidates.find((p) => fs.existsSync(p)) || candidates[0];
 }
 
+function resolveDepForTurbopack(rel) {
+  const absolute = resolveDep(rel);
+  const relative = path.relative(__dirname, absolute).replaceAll(path.sep, '/');
+  return relative.startsWith('.') ? relative : `./${relative}`;
+}
+
 const contentSecurityPolicy = buildContentSecurityPolicy(
   // Use the configured collab URL; only fall back to localhost in non-production
   // so an unset env var never injects a bogus localhost origin into prod headers.
@@ -46,7 +52,7 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
       // use the same instance for LSP features to work.
       'monaco-editor': '@codingame/monaco-vscode-editor-api',
       // Yjs dedup (resolveDep handles workspace hoisting)
-      'yjs': resolveDep('yjs/dist/yjs.mjs'),
+      'yjs': resolveDepForTurbopack('yjs/dist/yjs.mjs'),
     },
   },
   // Webpack fallback (used by `next build` without turbopack)

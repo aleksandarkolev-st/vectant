@@ -23,4 +23,12 @@ describe("local support route headers", () => {
       expect(csp).not.toContain("frame-ancestors 'self'");
     }
   });
+
+  it("keeps Turbopack dependency aliases portable on Windows", () => {
+    const yjsAlias = nextConfig.turbopack?.resolveAlias?.yjs;
+
+    expect(yjsAlias).toContain("node_modules/yjs/dist/yjs.mjs");
+    expect(yjsAlias).not.toMatch(/^[A-Za-z]:/);
+    expect(yjsAlias).not.toContain("\\");
+  });
 });
