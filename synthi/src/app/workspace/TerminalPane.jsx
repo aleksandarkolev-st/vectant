@@ -1948,11 +1948,11 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
   const reduceMotion = useReducedMotion();
 
   const isClosed = state === 'closed';
-  const title = isClosed ? 'Terminal session ended' : 'Runtime terminal unavailable';
+  const title = isClosed ? 'Session ended' : 'Runtime unavailable';
   const body = isClosed
     ? 'The shell process exited. Workspace files are preserved.'
-    : 'The editor is still usable. The workspace runtime is unavailable, so terminal commands cannot start yet.';
-  const actionLabel = isClosed ? 'New session' : repairing ? 'Repairing runtime' : 'Repair runtime';
+    : 'Editor remains usable while the workspace runtime reconnects.';
+  const actionLabel = isClosed ? 'New session' : repairing ? 'Repairing' : 'Repair';
   const actionHandler = isClosed ? onReconnect : onRepairRuntime;
   const statusItems = isClosed
     ? [
@@ -1961,7 +1961,6 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
       ]
     : [
         ['Runtime', 'Unavailable'],
-        ['Repair path', 'Restart workspace runtime'],
         ['Workspace', 'Files preserved'],
       ];
   const iconColor = isClosed ? 'var(--text-secondary, #a1a1aa)' : 'var(--accent-warning, #d89b2b)';
