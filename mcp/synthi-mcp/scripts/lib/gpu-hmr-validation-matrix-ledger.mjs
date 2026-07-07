@@ -33157,6 +33157,8 @@ async function classifyJsonArtifact(json, filePath, context) {
 
 export async function walkJsonFiles(root) {
   if (!(await pathExists(root))) return [];
+  const rootStat = await fs.stat(root);
+  if (rootStat.isFile()) return root.endsWith('.json') ? [root] : [];
   const out = [];
   const stack = [root];
   while (stack.length > 0) {

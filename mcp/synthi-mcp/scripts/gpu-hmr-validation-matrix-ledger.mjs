@@ -39,7 +39,7 @@ function parseArgs(argv) {
       args.outputDir = path.resolve(argv[++i] ?? args.outputDir);
     } else if (arg === '--root') {
       const root = argv[++i];
-      if (!root) throw new Error('--root requires a directory');
+      if (!root) throw new Error('--root requires a file or directory');
       args.roots.push(path.resolve(root));
     } else if (arg === '--self-check') {
       args.selfCheck = true;
@@ -56,10 +56,10 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root DIR] [--self-check] [--output-oracle-self-check]',
+    'Usage: node scripts/gpu-hmr-validation-matrix-ledger.mjs [--all] [--include-invalidated] [--include-unproven] [--format json|markdown|both] [--output-dir DIR] [--root PATH] [--self-check] [--output-oracle-self-check]',
     '',
     'Collects GPU HMR proof artifacts into a matrix ledger. The collector records accepted full-runtime proof, visual-profile proof, preflight-only evidence, and structured refusals separately.',
-    'When --root is provided one or more times, collection is restricted to those artifact roots.',
+    'When --root is provided one or more times, collection is restricted to those artifact roots. A root may be a directory or a single JSON artifact file.',
   ].join('\n');
 }
 
