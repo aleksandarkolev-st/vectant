@@ -592,6 +592,18 @@ fn desktop_tauri_config_keeps_renderer_unprivileged() {
     assert!(report.clipboard_disabled);
     assert!(report.devtools_disabled);
     assert!(report.renderer_token_access_blocked);
+    assert!(!report.updater_requires_signature);
+    assert!(!report.hardened());
+
+    let signed_config = config
+        .replace(r#""pubkey": """#, &format!(r#""pubkey": "{}""#, "a".repeat(64)))
+        .replace(
+            r#""endpoints": []"#,
+            r#""endpoints": ["https://updates.vectant.dev/local-support/{{target}}/{{current_version}}"]"#,
+        );
+    let signed_report = inspect_tauri_config(&signed_config).unwrap();
+    assert!(signed_report.updater_requires_signature);
+    assert!(signed_report.hardened());
 }
 
 #[test]

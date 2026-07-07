@@ -52,7 +52,22 @@ pub fn inspect_tauri_config(config_json: &str) -> Result<DesktopSecurityReport, 
         && value
             .pointer("/bundle/createUpdaterArtifacts")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(false)
+        && value
+            .pointer("/plugins/updater/pubkey")
+            .and_then(Value::as_str)
+            .is_some_and(is_ed25519_public_key_hex)
+        && value
+            .pointer("/plugins/updater/endpoints")
+            .and_then(Value::as_array)
+            .is_some_and(|endpoints| {
+                !endpoints.is_empty()
+                    && endpoints.iter().all(|endpoint| {
+                        endpoint
+                            .as_str()
+                            .is_some_and(|url| url.starts_with("https://") && !url.contains("localhost"))
+                    })
+            });
 
     Ok(DesktopSecurityReport {
         csp_restrictive: csp_allows_no_remote_code(csp),
@@ -94,6 +109,10 @@ fn csp_allows_no_remote_code(csp: &str) -> bool {
         && !lower.contains("'unsafe-inline'")
         && !lower.contains("script-src http:")
         && !lower.contains("script-src https:")
+}
+
+fn is_ed25519_public_key_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn renderer_token_access_blocked(value: &Value) -> bool {
