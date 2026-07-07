@@ -337,6 +337,16 @@ fn is_sensitive_path(path: &str) -> bool {
         || name == ".git-credentials"
         || name == ".ds_store"
         || name == "thumbs.db"
+        || name == "package-lock.json"
+        || name == "pnpm-lock.yaml"
+        || name == "yarn.lock"
+        || name == "bun.lockb"
+        || name == "composer.lock"
+        || name == "poetry.lock"
+        || name == "cargo.lock"
+        || name.ends_with(".min.js")
+        || name.ends_with(".min.css")
+        || name.ends_with(".map")
         || name.ends_with(".sqlite")
         || name.ends_with(".db")
         || name.ends_with(".dump")
