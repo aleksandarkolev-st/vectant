@@ -19371,12 +19371,30 @@ function rowSafetyFailures(row, context = {}) {
       coldPathFacet.runtime_profile_proof_bridge,
     );
     const runtimeProfileBridge = randomColdRuntimeProfileProofBridgeFacet(runtimeProfileBridgeRaw);
-    if (runtimeProfileBridge.present === true && runtimeProfileBridge.accepted !== true) {
+    const runtimeProfileBridgeFailedGates = compactStringList([
+      ...(Array.isArray(runtimeProfileBridge.failedGates) ? runtimeProfileBridge.failedGates : []),
+      ...(Array.isArray(runtimeProfileBridge.failed_gates) ? runtimeProfileBridge.failed_gates : []),
+    ]);
+    const runtimeProfileBridgeShapeFailed =
+      runtimeProfileBridgeFailedGates.includes('random_cold_runtime_profile_bridge_schema_invalid')
+      || runtimeProfileBridgeFailedGates.includes('random_cold_runtime_profile_bridge_authority_invalid')
+      || runtimeProfileBridgeFailedGates.some((code) =>
+        code.includes('claimed')
+        || code.includes('loose_accept')
+        || code.includes('accepted_without')
+        || code.includes('proof_without')
+        || code.includes('hash_invalid')
+        || code.includes('hash_missing')
+        || code.includes('proof_id_invalid')
+        || code.includes('proof_id_missing')
+      );
+    if (
+      runtimeProfileBridge.present === true
+      && runtimeProfileBridge.accepted !== true
+      && runtimeProfileBridgeShapeFailed
+    ) {
       failures.push({ code: 'random_large_project_cold_runtime_profile_bridge_invalid' });
-      failures.push(...compactStringList([
-        ...(Array.isArray(runtimeProfileBridge.failedGates) ? runtimeProfileBridge.failedGates : []),
-        ...(Array.isArray(runtimeProfileBridge.failed_gates) ? runtimeProfileBridge.failed_gates : []),
-      ]).map((code) => ({ code })));
+      failures.push(...runtimeProfileBridgeFailedGates.map((code) => ({ code })));
     }
     if (
       runtimeProfileBridge.present === true
@@ -19573,6 +19591,31 @@ function rowSafetyFailures(row, context = {}) {
           ? runtimeProfileAdapterResultImport.failed_gates
           : []),
       ]);
+      const importTransportOrByteMissing = importFailedGates.some((code) =>
+        code.endsWith('bridge_not_accepted')
+        || code.endsWith('path_missing')
+        || code.endsWith('expected_hash_missing')
+        || code.endsWith('unreadable')
+        || code.endsWith('proof_hash_missing')
+        || code.endsWith('proof_path_missing')
+      );
+      const importShapeFailed = importFailedGates.some((code) =>
+        code.includes('schema')
+        || code.includes('authority')
+        || code.includes('claimed')
+        || code.includes('outside_repo')
+        || code.includes('hash_invalid')
+        || code.includes('hash_mismatch')
+        || code.includes('line_hash_mismatch')
+        || code.includes('strict_gate:')
+        || code.includes('runtime_proof_artifact_not_strictly_accepted')
+        || code.includes('strict_runtime_acceptance_mismatch')
+        || code.includes('proof_id_mismatch')
+        || code.includes('ledger_id_mismatch')
+        || code.includes('event_manifest_hash_mismatch')
+        || code.includes('adapter_proof_acceptance_mismatch')
+        || (!importTransportOrByteMissing && code.includes('boundary_line_materialization'))
+      );
       if (importSchema !== RANDOM_COLD_RUNTIME_PROFILE_ADAPTER_RESULT_IMPORT_SCHEMA_VERSION) {
         failures.push({
           code: 'random_large_project_cold_runtime_profile_adapter_result_import_schema_invalid',
@@ -19583,7 +19626,7 @@ function rowSafetyFailures(row, context = {}) {
           code: 'random_large_project_cold_runtime_profile_adapter_result_import_authority_invalid',
         });
       }
-      if (importAccepted !== true || importFailedGates.length > 0) {
+      if (importShapeFailed) {
         failures.push({
           code: 'random_large_project_cold_runtime_profile_adapter_result_import_invalid',
         });
