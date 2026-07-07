@@ -38195,6 +38195,10 @@ function runtimeClosureRowSignals(row = {}) {
         runtimeBoundaryPlanBinding.acceptedAsSupportEvidence === true
         || runtimeBoundaryPlanBinding.accepted_as_support_evidence === true
       ),
+    appHookPlanRuntimeManifestBindingHash: firstText(
+      runtimeBoundaryPlanBinding.bindingHash,
+      runtimeBoundaryPlanBinding.binding_hash,
+    ),
     strictRuntimeProofAccepted,
     runtimeBoundaryTemplateAccepted:
       coldTemplate.acceptedAsSupportEvidence === true
@@ -38259,8 +38263,20 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     signals.filter((signal) => signal.appHookMaterializationPlanAccepted).length;
   const appHookPlanRuntimeManifestBindingPresentCount =
     signals.filter((signal) => signal.appHookPlanRuntimeManifestBindingPresent).length;
+  const appHookPlanRuntimeManifestBindingAcceptedKeys = new Set();
+  let appHookPlanRuntimeManifestBindingAcceptedUnhashedCount = 0;
+  for (const signal of signals) {
+    if (signal.appHookPlanRuntimeManifestBindingAccepted !== true) continue;
+    if (signal.appHookPlanRuntimeManifestBindingHash) {
+      appHookPlanRuntimeManifestBindingAcceptedKeys
+        .add(signal.appHookPlanRuntimeManifestBindingHash);
+    } else {
+      appHookPlanRuntimeManifestBindingAcceptedUnhashedCount += 1;
+    }
+  }
   const appHookPlanRuntimeManifestBindingAcceptedCount =
-    signals.filter((signal) => signal.appHookPlanRuntimeManifestBindingAccepted).length;
+    appHookPlanRuntimeManifestBindingAcceptedKeys.size
+    + appHookPlanRuntimeManifestBindingAcceptedUnhashedCount;
   const strictRuntimeProofAcceptedCount =
     signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
   const planBindingGap =
