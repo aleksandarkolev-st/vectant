@@ -115,6 +115,34 @@ describe("local support relay route", () => {
     });
   });
 
+  it("refuses relay forwarding for the wrong account or organization", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    process.env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID = "acct_relay_123";
+    process.env.VECTANT_LOCAL_SUPPORT_ORG_ID = "org_relay_123";
+
+    const wrongAccount = await POST(request(signedEnvelope({ account_id: "acct_attacker" })));
+    expect(wrongAccount.status).toBe(403);
+    await expect(wrongAccount.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "account_mismatch",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
+
+    const wrongOrg = await POST(request(signedEnvelope({
+      request_id: "req_relay_wrong_org",
+      org_id: "org_attacker",
+    })));
+    expect(wrongOrg.status).toBe(403);
+    await expect(wrongOrg.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "org_mismatch",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
+  });
+
   it("returns scrubbed relay summaries and never includes local body content", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
