@@ -3,7 +3,7 @@
 /**
  * @fileoverview ConfidenceWarning — ULTRAPLAN Phase 8.
  *
- * Lightweight pre-compile nudge shown when the AI-synthesised build
+ * Lightweight pre-compile nudge shown when the agent-synthesized build
  * manifest reports MEDIUM confidence in runner_synthesis or link_flags.
  * Purpose: let the user know the compile might fail before they hit
  * "compile" and give them the option to pre-emptively switch to BYOR
@@ -14,8 +14,8 @@
  *   - Dismissible by default (user can just ignore the nudge).
  *   - Shown BEFORE the compile, not after.
  *
- * Shape matches the existing Synthi alert convention: Radix Card
- * primitive + lucide-react icons + CSS variables for theming.
+ * Shape matches the Vectant diagnostic panel convention: compact
+ * warning chrome, tokenized controls, and direct operator language.
  *
  * Parent components are responsible for deciding WHEN to show this
  * (typically: when `manifest.confidence.overall === "medium"` or when
@@ -23,7 +23,6 @@
  */
 
 import { AlertTriangle, X, ExternalLink } from 'lucide-react';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 
 /**
  * @param {object} props
@@ -53,76 +52,87 @@ export function ConfidenceWarning({ confidence, onDismiss, onLearnMore }) {
   if (runnerLevel === 'medium') {
     concerns.push({
       label: 'Runner synthesis',
-      body: 'The AI can probably isolate your `main()` into a clean host_runner.cpp, but the project has framework boilerplate that might need manual adjustment.',
+      body: 'Runner synthesis can probably isolate your `main()` into a clean host_runner.cpp, but the project has framework boilerplate that might need manual adjustment.',
     });
   }
   if (linkLevel === 'medium') {
     concerns.push({
       label: 'Link flags',
-      body: 'The AI identified your library but the exact link flags may differ by distribution. If the compile fails with `undefined reference`, the manifest heal loop will try to fix it automatically.',
+      body: 'The manifest matched your library, but the exact link flags may differ by distribution. If compile fails with `undefined reference`, the heal loop will try to fix it automatically.',
     });
   }
 
   return (
-    <Card
-      className="border-yellow-500/40 max-w-xl"
+    <section
+      className="max-w-xl overflow-hidden rounded-[var(--radius-panel)] border"
       style={{
-        background: 'color-mix(in srgb, #eab308 6%, var(--bg-panel, #1a1a22))',
+        background: 'color-mix(in srgb, var(--accent-warning) 8%, var(--bg-panel) 92%)',
+        borderColor: 'color-mix(in srgb, var(--accent-warning) 42%, var(--border-subtle))',
       }}
       data-testid="confidence-warning"
     >
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between gap-2 text-yellow-400 text-sm">
-          <span className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4" />
-            Medium confidence — compile may need adjustment
+      <header
+        className="border-b px-4 py-3"
+        style={{
+          borderColor: 'var(--border-subtle)',
+          background: 'color-mix(in srgb, var(--bg-editor) 44%, transparent)',
+        }}
+      >
+        <div className="flex items-center justify-between gap-2 text-sm">
+          <span className="flex items-center gap-2 font-semibold" style={{ color: 'var(--accent-warning)' }}>
+            <AlertTriangle className="h-4 w-4" />
+            Compile route needs review
           </span>
           {onDismiss && (
             <button
               type="button"
               onClick={onDismiss}
-              className="opacity-60 hover:opacity-100 transition"
+              className="vt-icon-button th-focus-ring h-7 w-7"
               aria-label="Dismiss"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="h-3.5 w-3.5" />
             </button>
           )}
-        </CardTitle>
-        <CardDescription className="text-xs">
-          The AI split your project successfully but flagged uncertainty in the areas below. Compile will proceed — this is just a heads-up.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2 pb-4">
+        </div>
+        <p className="mt-1 text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+          The split succeeded, but the runner manifest flagged uncertainty in the areas below before dispatch.
+        </p>
+      </header>
+      <div className="flex flex-col gap-2 p-4">
         {concerns.map((c) => (
           <div
             key={c.label}
-            className="text-[11px] leading-relaxed pl-3 border-l-2"
-            style={{ borderColor: '#eab308', color: 'var(--text-primary)' }}
+            className="border-l-2 pl-3 text-[11px] leading-relaxed"
+            style={{ borderColor: 'var(--accent-warning)', color: 'var(--text-primary)' }}
           >
             <strong>{c.label}:</strong> {c.body}
           </div>
         ))}
         {notes && (
-          <div className="text-[11px] leading-relaxed mt-1 px-2 py-1.5 rounded" style={{
-            background: 'var(--bg-input, var(--bg-editor, #11111a))',
+          <div className="mt-1 rounded-[var(--radius-control)] border px-2 py-1.5 text-[11px] leading-relaxed" style={{
+            background: 'var(--bg-editor)',
+            borderColor: 'var(--border-subtle)',
             color: 'var(--text-muted)',
           }}>
-            <strong>AI note:</strong> {notes}
+            <strong>Runner note:</strong> {notes}
           </div>
         )}
         {onLearnMore && (
           <button
             type="button"
             onClick={onLearnMore}
-            className="flex items-center gap-1 text-[11px] mt-1 self-start hover:opacity-80 transition"
-            style={{ color: 'var(--accent-primary, #60a5fa)' }}
+            className="th-focus-ring mt-1 flex items-center gap-1 self-start rounded-[var(--radius-control)] border px-2 py-1 text-[11px] transition hover:opacity-80"
+            style={{
+              borderColor: 'var(--border-subtle)',
+              color: 'var(--accent-primary)',
+            }}
           >
-            <ExternalLink className="w-3 h-3" />
+            <ExternalLink className="h-3 w-3" />
             Learn about confidence levels
           </button>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
