@@ -436,6 +436,98 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
   };
 }
 
+export function summarizeTransparencyState(input, policy = readLocalSupportPolicy()) {
+  const state = input && typeof input === "object" ? input : {};
+  const session = state.session && typeof state.session === "object" ? state.session : {};
+  const workspace = state.workspace && typeof state.workspace === "object" ? state.workspace : {};
+  const inventory = Array.isArray(state.inventory) ? state.inventory : [];
+  const sentPayloads = Array.isArray(state.sent_payloads) ? state.sent_payloads : [];
+  const blockedItems = Array.isArray(state.blocked_items) ? state.blocked_items : [];
+  const activity = Array.isArray(state.activity) ? state.activity : [];
+  const ports = Array.isArray(state.ports) ? state.ports : [];
+
+  return {
+    decision: "transparency_state_ready",
+    raw_bodies_included: false,
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    scanner_version: scrubTelemetryValue(state.scanner_version || "scanner-2026.07.05"),
+    session: {
+      connected: session.connected === true,
+      paused: session.paused === true,
+      account_id: scrubTelemetryValue(session.account_id || "not_paired"),
+      org_id: scrubTelemetryValue(session.org_id || "not_paired"),
+      session_id: scrubTelemetryValue(session.session_id || "not_paired"),
+      device_fingerprint: scrubTelemetryValue(session.device_fingerprint || "not_paired"),
+      permission_mode: scrubTelemetryValue(session.permission_mode || "Balanced mode"),
+    },
+    workspace: {
+      workspace_id: scrubTelemetryValue(workspace.workspace_id || "not_selected"),
+      display: scrubTelemetryValue(workspace.display || workspace.root || "No workspace selected"),
+    },
+    inventory: inventory.slice(0, 200).map((item) => ({
+      target: scrubTelemetryValue(item.target || item.path || ""),
+      state: normalizeTransparencyState(item.state, ["available_locally", "approval_required", "blocked_locally", "sent_to_vectant"], "available_locally"),
+      classification: scrubTelemetryValue(item.classification || item.className || "unknown"),
+      reason: scrubTelemetryValue(item.reason || ""),
+      bytes_sent: clampNumber(item.bytes_sent, 0, 100_000_000, 0),
+    })),
+    sent_payloads: sentPayloads.slice(0, 200).map((item) => ({
+      id: scrubTelemetryValue(item.id || item.request_id || ""),
+      actor: scrubTelemetryValue(item.actor || ""),
+      target: scrubTelemetryValue(item.target || item.target_display || ""),
+      classification: scrubTelemetryValue(item.classification || item.className || "unknown"),
+      hash: scrubTelemetryValue(item.hash || item.target_hash || ""),
+      redactions: clampNumber(item.redactions || item.redaction_count, 0, 1_000, 0),
+      bytes: clampNumber(item.bytes || item.bytes_sent, 0, 100_000_000, 0),
+      reason: scrubTelemetryValue(item.reason || ""),
+      at: scrubTelemetryValue(item.at || ""),
+    })),
+    blocked_items: blockedItems.slice(0, 200).map((item) => ({
+      target: scrubTelemetryValue(item.target || item.path || ""),
+      reason: scrubTelemetryValue(item.reason || ""),
+      className: scrubTelemetryValue(item.className || item.classification || "unknown"),
+      bytes_sent: 0,
+      at: scrubTelemetryValue(item.at || ""),
+    })),
+    activity: activity.slice(0, 300).map((item) => ({
+      at: scrubTelemetryValue(item.at || ""),
+      kind: scrubTelemetryValue(item.kind || item.class || "Event"),
+      text: scrubTelemetryValue(item.text || item.summary || ""),
+    })),
+    ports: ports.slice(0, 100).map((item) => ({
+      port: clampNumber(item.port, 1, 65_535, 0),
+      targetHost: scrubTelemetryValue(item.targetHost || item.target_host || "127.0.0.1"),
+      service: scrubTelemetryValue(item.service || ""),
+      previewHost: scrubTelemetryValue(item.previewHost || item.preview_host || ""),
+      processHash: scrubTelemetryValue(item.processHash || item.process_hash || ""),
+      ttl: scrubTelemetryValue(item.ttl || item.expires_at || "session_end"),
+      browser: item.browser !== false,
+      aiRead: false,
+      supportRead: false,
+      aiInteract: false,
+      responseBodies: false,
+      screenshots: false,
+      consoleNetwork: false,
+      persistent: false,
+      methods: scrubTelemetryValue(item.methods || "GET, HEAD only"),
+      requestRate: scrubTelemetryValue(item.requestRate || item.request_rate || "60/min"),
+      responseLimit: scrubTelemetryValue(item.responseLimit || item.response_limit || "stream capped"),
+      token_state: item.revoked === true ? "revoked" : "present_hidden_from_renderer",
+      revoked: item.revoked === true,
+    })).filter((item) => item.port > 0),
+    export_metadata: {
+      exported_by: "local_support_app",
+      export_type: "scrubbed_activity_history",
+      session_id: scrubTelemetryValue(session.session_id || "not_paired"),
+      workspace_display: scrubTelemetryValue(workspace.display || workspace.root || "No workspace selected"),
+      policy_version: policy.policy_version,
+      scanner_version: scrubTelemetryValue(state.scanner_version || "scanner-2026.07.05"),
+      raw_bodies_included: false,
+    },
+  };
+}
+
 export function buildAdminRevokeDecision(input, policy = readLocalSupportPolicy()) {
   const targetType = typeof input?.target_type === "string" ? input.target_type : "";
   const targetId = typeof input?.target_id === "string" ? input.target_id.trim() : "";
@@ -493,6 +585,10 @@ function normalizePolicyLayer(value) {
     };
   }
   return { decision: "allow" };
+}
+
+function normalizeTransparencyState(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback;
 }
 
 function canonicalizeEnvelope(value) {

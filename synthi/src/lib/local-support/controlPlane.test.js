@@ -8,6 +8,7 @@ import {
   evaluatePolicyPrecedence,
   readLocalSupportPolicy,
   signRequestEnvelope,
+  summarizeTransparencyState,
   summarizeSecurityEvent,
   validateRequestEnvelope,
   verifyRequestEnvelopeSignature,
@@ -461,5 +462,58 @@ describe("local support control plane policy", () => {
     });
     expect(clamped.scanner_version).toContain("authorization: [REDACTED]");
     expect(JSON.stringify(clamped)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("builds scrubbed transparency state without renderer secrets", () => {
+    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const state = summarizeTransparencyState(
+      {
+        session: {
+          connected: true,
+          session_id: "sess_123",
+          account_id: "acct_123",
+        },
+        workspace: {
+          workspace_id: "wk_123",
+          display: "repo Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        },
+        ports: [
+          {
+            port: 3000,
+            preview_token: "secret-preview-token",
+            aiRead: true,
+            supportRead: true,
+            responseBodies: true,
+            screenshots: true,
+          },
+        ],
+      },
+      policy,
+    );
+
+    expect(state).toMatchObject({
+      decision: "transparency_state_ready",
+      raw_bodies_included: false,
+      session: {
+        connected: true,
+        session_id: "sess_123",
+      },
+      workspace: {
+        workspace_id: "wk_123",
+      },
+      ports: [
+        expect.objectContaining({
+          port: 3000,
+          aiRead: false,
+          supportRead: false,
+          responseBodies: false,
+          screenshots: false,
+          token_state: "present_hidden_from_renderer",
+        }),
+      ],
+    });
+    expect(state.workspace.display).toContain("authorization: [REDACTED]");
+    expect(JSON.stringify(state)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    expect(JSON.stringify(state)).not.toContain("secret-preview-token");
   });
 });

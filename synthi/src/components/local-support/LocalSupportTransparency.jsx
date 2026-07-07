@@ -34,15 +34,15 @@ import {
 } from "@/lib/local-support/acceptance";
 import { cn } from "@/lib/utils";
 
-const inventory = [];
+const DEFAULT_INVENTORY = [];
 
-const sentPayloads = [];
+const DEFAULT_SENT_PAYLOADS = [];
 
-const blockedItems = [];
+const DEFAULT_BLOCKED_ITEMS = [];
 
-const activity = [];
+const DEFAULT_ACTIVITY = [];
 
-const exportMetadata = {
+const DEFAULT_EXPORT_METADATA = {
   exported_by: "local_support_app",
   export_type: "scrubbed_activity_history",
   session_id: "not_paired",
@@ -95,7 +95,7 @@ const permissionModes = [
   },
 ];
 
-const ports = [];
+const DEFAULT_PORTS = [];
 
 function Pill({ tone = "neutral", children }) {
   return (
@@ -187,8 +187,8 @@ function blockerStatusView(status) {
 }
 
 export default function LocalSupportTransparency() {
-  const [paused, setPaused] = useState(false);
-  const [connected, setConnected] = useState(true);
+  const [localPaused, setLocalPaused] = useState(false);
+  const [localDisconnected, setLocalDisconnected] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(true);
   const [historyDeleted, setHistoryDeleted] = useState(false);
   const [lastExport, setLastExport] = useState(null);
@@ -197,6 +197,11 @@ export default function LocalSupportTransparency() {
   const [policyState, setPolicyState] = useState({
     status: "loading",
     policy: null,
+    error: null,
+  });
+  const [transparencyState, setTransparencyState] = useState({
+    status: "loading",
+    state: null,
     error: null,
   });
 
@@ -229,6 +234,47 @@ export default function LocalSupportTransparency() {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadTransparencyState() {
+      try {
+        const response = await fetch("/api/local-support/transparency-state", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`transparency_state_${response.status}`);
+        }
+        const state = await response.json();
+        if (!controller.signal.aborted) {
+          setTransparencyState({ status: "loaded", state, error: null });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setTransparencyState({
+            status: "error",
+            state: null,
+            error: error instanceof Error ? error.message : "transparency_state_unavailable",
+          });
+        }
+      }
+    }
+    loadTransparencyState();
+    return () => controller.abort();
+  }, []);
+
+  const liveState = transparencyState.state;
+  const liveSession = liveState?.session || {};
+  const liveWorkspace = liveState?.workspace || {};
+  const connected = Boolean(liveSession.connected) && !localDisconnected;
+  const paused = Boolean(liveSession.paused || localPaused);
+  const inventory = liveState?.inventory || DEFAULT_INVENTORY;
+  const sentPayloads = liveState?.sent_payloads || DEFAULT_SENT_PAYLOADS;
+  const blockedItems = liveState?.blocked_items || DEFAULT_BLOCKED_ITEMS;
+  const activity = liveState?.activity || DEFAULT_ACTIVITY;
+  const ports = liveState?.ports || DEFAULT_PORTS;
+  const redactionCount = sentPayloads.reduce((total, item) => total + Number(item.redactions || 0), 0);
+
   const sessionState = useMemo(() => {
     if (!connected) return { label: "Disconnected", tone: "bad", Icon: XCircle };
     if (paused) return { label: "Paused", tone: "warn", Icon: Pause };
@@ -241,10 +287,14 @@ export default function LocalSupportTransparency() {
   const ciRequiredBlockers = RELEASE_BLOCKERS.filter((item) => item.status === "ci_required");
   const livePolicy = policyState.policy;
   const liveExportMetadata = {
-    ...exportMetadata,
-    policy_version: livePolicy?.policy_version || exportMetadata.policy_version,
-    scanner_version: livePolicy?.scanner_version || exportMetadata.scanner_version,
+    ...DEFAULT_EXPORT_METADATA,
+    ...(liveState?.export_metadata || {}),
+    policy_version: livePolicy?.policy_version || liveState?.policy_version || DEFAULT_EXPORT_METADATA.policy_version,
+    scanner_version: liveState?.scanner_version || DEFAULT_EXPORT_METADATA.scanner_version,
   };
+  const workspaceDisplay = liveWorkspace.display || "No workspace selected";
+  const accountDisplay = liveSession.account_id || "not_paired";
+  const sessionDisplay = liveSession.session_id || "not_paired";
   const policyStatus = policyState.status === "loaded"
     ? livePolicy?.enabled
       ? { label: "Cloud policy enabled", tone: "good" }
@@ -299,7 +349,7 @@ export default function LocalSupportTransparency() {
                 <Pill tone={policyStatus.tone}>{policyStatus.label}</Pill>
               </div>
               <p className="mt-1 text-sm text-zinc-400">
-                Workspace: not selected. Account: not paired. Session: not paired.
+                Workspace: {workspaceDisplay}. Account: {accountDisplay}. Session: {sessionDisplay}.
               </p>
             </div>
           </div>
@@ -309,7 +359,7 @@ export default function LocalSupportTransparency() {
               variant="outline"
               size="sm"
               className="border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
-              onClick={() => setPaused((value) => !value)}
+              onClick={() => setLocalPaused((value) => !value)}
               disabled={!connected}
             >
               {paused ? <Play className="size-4" aria-hidden="true" /> : <Pause className="size-4" aria-hidden="true" />}
@@ -321,8 +371,8 @@ export default function LocalSupportTransparency() {
               size="sm"
               className="bg-red-500/90 text-zinc-950 hover:bg-red-400"
               onClick={() => {
-                setConnected(false);
-                setPaused(true);
+                setLocalDisconnected(true);
+                setLocalPaused(true);
               }}
             >
               <Unplug className="size-4" aria-hidden="true" />
@@ -370,7 +420,7 @@ export default function LocalSupportTransparency() {
             <Stat icon={FileCheck2} label="Sent" value={String(sentPayloads.length)} tone="text-emerald-200" />
             <Stat icon={Ban} label="Blocked" value={String(blockedItems.length)} tone="text-red-200" />
             <Stat icon={Eye} label="Ports" value={String(ports.length)} tone="text-sky-200" />
-            <Stat icon={KeyRound} label="Redactions" value="0" tone="text-amber-200" />
+            <Stat icon={KeyRound} label="Redactions" value={String(redactionCount)} tone="text-amber-200" />
           </section>
         </div>
 
@@ -397,10 +447,10 @@ export default function LocalSupportTransparency() {
             <Panel title="Session boundary" description="One support session, one selected workspace, short lived approvals, and immediate revoke controls.">
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
-                  ["Device", "Not paired", "No local device fingerprint has been confirmed"],
-                  ["Workspace", "Not selected", "Pick one workspace in the desktop app before requests can proceed"],
-                  ["Policy", "2026.07.05", "Deny on uncertainty"],
-                  ["Scanner", "scanner-2026.07.05", "Secrets blocked or redacted locally"],
+                  ["Device", liveSession.device_fingerprint || "not_paired", "No renderer access to device keys or preview tokens"],
+                  ["Workspace", workspaceDisplay, "Pick one workspace in the desktop app before requests can proceed"],
+                  ["Policy", liveExportMetadata.policy_version, "Deny on uncertainty"],
+                  ["Scanner", liveExportMetadata.scanner_version, "Secrets blocked or redacted locally"],
                 ].map(([label, value, detail]) => (
                   <div key={label} className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
                     <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">{label}</div>
@@ -698,8 +748,8 @@ export default function LocalSupportTransparency() {
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
                   onClick={() => {
-                    setConnected(false);
-                    setPaused(true);
+                    setLocalDisconnected(true);
+                    setLocalPaused(true);
                     setApprovalsRevoked(true);
                   }}
                 >

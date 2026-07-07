@@ -17,7 +17,8 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("30 days, raw bodies never stored")).toBeVisible();
     await expect(page.getByText("Workspace selection")).toBeVisible();
     await expect(page.getByText("Installation is not consent.")).toBeVisible();
-    await expect(page.getByText("Workspace: not selected. Account: not paired. Session: not paired.")).toBeVisible();
+    await expect(page.getByText("Workspace: No workspace selected. Account: not_paired. Session: not_paired.")).toBeVisible();
+    await expect(page.getByText("Disconnected")).toBeVisible();
     await expect(page.getByText("No live approval request")).toBeVisible();
 
     await page.getByRole("tab", { name: "Inventory" }).click();
@@ -35,9 +36,6 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Auto-send, broad repo upload, persistent approvals")).toBeVisible();
     await page.getByRole("button", { name: "Revoke session approvals" }).click();
     await expect(page.getByText("Session approvals revoked. Future sends require review.")).toBeVisible();
-
-    await page.getByRole("button", { name: "Pause" }).click();
-    await expect(page.getByText("Paused")).toBeVisible();
 
     await page.getByRole("button", { name: "Disconnect", exact: true }).click();
     await expect(page.getByText("Disconnected")).toBeVisible();
