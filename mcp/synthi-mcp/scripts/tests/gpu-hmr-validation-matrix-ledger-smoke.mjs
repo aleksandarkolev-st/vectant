@@ -17188,7 +17188,7 @@ const sameTargetSourceFirstVisualLedger = buildGpuHmrValidationMatrixLedger([
   ...sameTargetSourceFirstVisualRows,
   ...broadReadinessRows.slice(1),
   ...broadReadinessRandomColdRows,
-]);
+], { generatedAt: '2026-06-30T21:05:00.000Z' });
 assert.ok(
   sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
     .broadLibraryAgnosticProof.sourceFirstVisualRows >= 2,
