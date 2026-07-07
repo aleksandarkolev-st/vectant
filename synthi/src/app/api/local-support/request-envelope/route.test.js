@@ -183,6 +183,33 @@ describe("local support request-envelope route", () => {
     });
   });
 
+  it("does not consume replay nonces for policy-denied envelopes", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const requestId = "req_policy_denied_then_valid";
+    const denied = await POST(request(signedEnvelope({
+      request_id: requestId,
+      capability: "workspace.file.write",
+    })));
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      bytes_sent: 0,
+    });
+
+    const valid = await POST(request(signedEnvelope({
+      request_id: requestId,
+      capability: "workspace.log.read",
+    })));
+    expect(valid.status).toBe(200);
+    await expect(valid.json()).resolves.toMatchObject({
+      decision: "approval_required",
+      bytes_sent: 0,
+    });
+  });
+
   it("fails closed when envelope signing is not configured for enabled support", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     delete process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET;

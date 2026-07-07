@@ -32,15 +32,21 @@ export async function POST(req) {
     if (signatureDecision.decision === "denied") {
       return jsonNoStore(signatureDecision, 403);
     }
+  }
+
+  const decision = validateRequestEnvelope(body, policy);
+  if (decision.decision === "denied") {
+    return jsonNoStore(decision, 403);
+  }
+
+  if (policy.enabled) {
     const replayDecision = enforceRequestEnvelopeReplayProtection(body);
     if (replayDecision.decision === "denied") {
       return jsonNoStore(replayDecision, 409);
     }
   }
 
-  const decision = validateRequestEnvelope(body, policy);
-  const status = decision.decision === "denied" ? 403 : 200;
-  return jsonNoStore(decision, status);
+  return jsonNoStore(decision, 200);
 }
 
 function jsonNoStore(body, status = 200) {

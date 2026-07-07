@@ -143,6 +143,35 @@ describe("local support relay route", () => {
     });
   });
 
+  it("does not consume relay replay nonces for policy-denied envelopes", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+
+    const requestId = "req_relay_denied_then_valid";
+    const denied = await POST(request(signedEnvelope({
+      request_id: requestId,
+      capability: "workspace.command.execute",
+    })));
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
+
+    const valid = await POST(request(signedEnvelope({
+      request_id: requestId,
+      capability: "workspace.log.read",
+    })));
+    expect(valid.status).toBe(200);
+    await expect(valid.json()).resolves.toMatchObject({
+      decision: "relay_ready",
+      relay_forward: true,
+      bytes_sent: 0,
+    });
+  });
+
   it("returns scrubbed relay summaries and never includes local body content", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
