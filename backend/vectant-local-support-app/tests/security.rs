@@ -1223,6 +1223,23 @@ fn update_manifest_requires_valid_signature_and_blocks_downgrades() {
 }
 
 #[test]
+fn update_manifest_rejects_malformed_artifact_hash_and_unknown_channel() {
+    let (trusted_key, mut bad_hash) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    bad_hash.artifact_sha256 = "sha256:not-hex".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &bad_hash),
+        Err(UpdateError::InvalidArtifactHash)
+    );
+
+    let (trusted_key, mut bad_channel) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    bad_channel.channel = "nightly".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &bad_channel),
+        Err(UpdateError::UnsupportedChannel)
+    );
+}
+
+#[test]
 fn update_manifest_supports_emergency_version_revocation() {
     let (trusted_key, manifest) =
         signed_test_manifest("0.2.0", "0.1.0", vec!["0.1.0".to_string()]);

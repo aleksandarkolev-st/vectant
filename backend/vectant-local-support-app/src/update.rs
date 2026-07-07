@@ -19,6 +19,8 @@ pub struct UpdateManifest {
 pub enum UpdateError {
     BadPublicKey,
     BadSignature,
+    InvalidArtifactHash,
+    UnsupportedChannel,
     Downgrade,
     VersionRevoked,
     UnsupportedCurrentVersion,
@@ -41,6 +43,12 @@ pub fn verify_update_manifest(
     }
     if compare_versions(&manifest.app_version, current_version) < 0 {
         return Err(UpdateError::Downgrade);
+    }
+    if !matches!(manifest.channel.as_str(), "stable" | "beta" | "internal") {
+        return Err(UpdateError::UnsupportedChannel);
+    }
+    if !valid_sha256_digest(&manifest.artifact_sha256) {
+        return Err(UpdateError::InvalidArtifactHash);
     }
 
     let public_key_bytes: [u8; 32] = hex::decode(trusted_public_key_hex)
@@ -97,6 +105,13 @@ fn manifest_payload(manifest: &UpdateManifest) -> Vec<u8> {
         framed
     })
     .collect()
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn compare_versions(left: &str, right: &str) -> i8 {
