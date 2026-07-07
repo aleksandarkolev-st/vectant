@@ -27,7 +27,7 @@ const quickActions = [
   {
     href: "/",
     label: "Start with brief",
-    detail: "Agent-created scaffold",
+    detail: "Agent-scaffolded runtime",
     Icon: Sparkles,
   },
 ];
@@ -77,38 +77,36 @@ export default function WorkspacePage() {
           </Link>
         </header>
 
-        <section className="grid flex-1 items-center gap-8 py-12 lg:grid-cols-[1.05fr_0.95fr] lg:py-16">
+        <section className="grid flex-1 items-stretch gap-6 py-8 lg:grid-cols-[0.92fr_1.08fr] lg:py-10">
           <div className="max-w-[690px]">
             <div className="mb-7 inline-flex items-center gap-2 rounded-[8px] border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-panel)_82%,transparent)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--text-secondary)] shadow-[inset_0_1px_0_color-mix(in_srgb,white_6%,transparent)]">
               <span className="size-1.5 rounded-full" style={{ background: "var(--attention-purple)" }} />
               Agent workspace ready
             </div>
 
-            <h1 className="max-w-[12ch] text-[56px] font-semibold leading-[0.92] tracking-[-0.035em] text-balance sm:text-[76px] lg:text-[92px]">
-              Build from the command deck.
+            <h1 className="max-w-[14ch] text-[42px] font-semibold leading-[0.96] text-balance sm:text-[56px] lg:text-[64px]">
+              Workspace command deck
             </h1>
 
             <p className="mt-7 max-w-[58ch] text-[15px] leading-7 text-[var(--text-secondary)]">
               Open a recent workspace, import a repository, or start an agent-guided project from the same control surface.
             </p>
 
-            <div className="mt-9 grid gap-3 sm:grid-cols-3">
+            <div className="mt-9 grid gap-2">
               {quickActions.map(({ href, label, detail, Icon }) => (
                 <Link
                   key={label}
                   href={href}
-                  className="th-focus-ring vt-shell-panel group flex min-h-[118px] flex-col justify-between p-4 transition-transform duration-200 hover:-translate-y-0.5"
+                  className="th-focus-ring group grid min-h-[72px] grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-panel)_76%,transparent)] px-3 py-2 transition-colors duration-200"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="grid size-8 place-items-center rounded-[8px] bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)] text-[var(--text-secondary)]">
-                      <Icon className="size-4" strokeWidth={1.7} />
-                    </span>
-                    <ArrowRight className="size-4 text-[var(--text-muted)] transition-transform duration-200 group-hover:translate-x-0.5" strokeWidth={1.7} />
-                  </div>
-                  <span>
+                  <span className="grid size-9 place-items-center rounded-[8px] bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)] text-[var(--text-secondary)]">
+                    <Icon className="size-4" strokeWidth={1.7} />
+                  </span>
+                  <span className="min-w-0">
                     <span className="block text-sm font-semibold">{label}</span>
                     <span className="mt-1 block text-xs text-[var(--text-muted)]">{detail}</span>
                   </span>
+                  <ArrowRight className="size-4 text-[var(--text-muted)] transition-transform duration-200 group-hover:translate-x-0.5" strokeWidth={1.7} />
                 </Link>
               ))}
             </div>
@@ -130,14 +128,14 @@ export default function WorkspacePage() {
               </div>
 
               <div className="grid flex-1 grid-rows-[auto_1fr_auto] gap-3 p-3">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid gap-1.5">
                   {lanes.map(({ label, value, Icon }) => (
-                    <div key={label} className="rounded-[8px] border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-panel)_74%,transparent)] p-3">
-                      <div className="flex items-center justify-between text-[var(--text-muted)]">
+                    <div key={label} className="grid min-h-12 grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[8px] border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-panel)_74%,transparent)] px-2.5 py-2">
+                      <span className="text-[var(--text-muted)]">
                         <Icon className="size-3.5" strokeWidth={1.7} />
-                        <span className="vt-mono text-[10px]">{value}</span>
-                      </div>
-                      <div className="mt-6 text-sm font-semibold">{label}</div>
+                      </span>
+                      <span className="text-sm font-semibold">{label}</span>
+                      <span className="vt-mono text-[10px] text-[var(--text-muted)]">{value}</span>
                     </div>
                   ))}
                 </div>

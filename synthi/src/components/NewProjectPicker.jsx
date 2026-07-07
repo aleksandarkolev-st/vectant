@@ -1,20 +1,20 @@
 'use client';
 
 /**
- * NewProjectPicker — modal shown in two contexts:
+ * NewProjectPicker - modal shown in two contexts:
  *
  *   1. **Scaffold mode** (default, opened from FileTree on an empty
  *      workspace): templates write starter files via
  *      `scaffoldProjectThunk`. The "Other" tile opens an inline
- *      AI-description input; on submit the picker dispatches a window
+ *      build-brief input; on submit the picker dispatches a window
  *      `synthi:jumpstart-trigger` event that the workspace page wires
  *      into the existing AI chat jumpstart path.
  *
- *   2. **Jumpstart mode** (opened from the dashboard's AI Jumpstart
+ *   2. **Jumpstart mode** (opened from the dashboard's brief launcher
  *      section): the picker only *records* the user's project-type
  *      choice; no scaffolding happens, no thunks fire. The chosen
  *      template + variant is returned via `onPick` so the dashboard
- *      can persist it alongside the AI prompt. "Other" returns a
+ *      can persist it alongside the build brief. "Other" returns a
  *      null project type (blank canvas).
  *
  * Opened from anywhere wrapped by `<NewProjectPickerProvider>` (mounted
@@ -36,8 +36,9 @@ import {
   createContext,
   useContext,
 } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import { toast } from 'sonner';
-import { ArrowLeft, FilePlus, FolderPlus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, FilePlus, FolderPlus } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -77,7 +78,7 @@ export function useNewProjectPicker() {
 // ─── Provider ──────────────────────────────────────────────────────
 
 export function NewProjectPickerProvider({ children }) {
-  // `mode` — 'scaffold' (default) or 'jumpstart'.
+  // `mode` - 'scaffold' (default) or 'jumpstart'.
   const [state, setState] = useState({ open: false, mode: 'scaffold' });
   // Jumpstart-mode resolver: when the dashboard calls
   // openPickerForJumpstart() it awaits a Promise that resolves with the
@@ -127,12 +128,16 @@ export function NewProjectPickerProvider({ children }) {
 // ─── Tile ──────────────────────────────────────────────────────────
 
 function Tile({ icon: Icon, label, description, onClick, disabled, highlight }) {
+  const reduceMotion = useReducedMotion();
   return (
-    <button
+    <motion.button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="group flex min-h-[132px] flex-col items-start gap-2 rounded-md border p-4 text-left transition-colors duration-150 ease-out active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
+      whileHover={disabled || reduceMotion ? undefined : { x: 2 }}
+      whileTap={disabled || reduceMotion ? undefined : { scale: 0.992 }}
+      transition={{ duration: reduceMotion ? 0 : 0.18, ease: [0.16, 1, 0.3, 1] }}
+      className="group grid min-h-[76px] grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--radius-control)] border px-3 py-2 text-left transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-50"
       style={{
         borderColor: highlight ? 'var(--accent-primary)' : 'var(--border-medium)',
         background: highlight
@@ -154,7 +159,7 @@ function Tile({ icon: Icon, label, description, onClick, disabled, highlight }) 
       }}
     >
       <div
-        className="flex h-9 w-9 items-center justify-center rounded-md border transition-colors duration-150"
+        className="flex h-9 w-9 items-center justify-center rounded-[var(--radius-control)] border transition-colors duration-150"
         style={{
           background: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)',
           borderColor: 'color-mix(in srgb, var(--accent-primary) 24%, transparent)',
@@ -167,7 +172,7 @@ function Tile({ icon: Icon, label, description, onClick, disabled, highlight }) 
           />
         ) : null}
       </div>
-      <div className="flex flex-col gap-0.5">
+      <div className="flex min-w-0 flex-col gap-0.5">
         <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>
           {label}
         </span>
@@ -177,7 +182,11 @@ function Tile({ icon: Icon, label, description, onClick, disabled, highlight }) 
           </span>
         )}
       </div>
-    </button>
+      <ArrowRight
+        className="h-4 w-4 opacity-55 transition-transform duration-150 group-hover:translate-x-0.5"
+        style={{ color: 'var(--text-muted)' }}
+      />
+    </motion.button>
   );
 }
 
@@ -281,14 +290,14 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
     }
   }
 
-  // ─── Other → in-workspace AI prompt ──────────────────────────────
+  // ─── Other → in-workspace build brief ────────────────────────────
   async function handleOtherSubmit() {
     const text = otherPrompt.trim();
     if (!text) return;
     setBusy(true);
-    // Compose a small directive header so the AI knows it has free
-    // rein and should pick the stack itself.
-    const composed = `[PROJECT TYPE: Custom / blank canvas]\nThe user is starting from an empty workspace and wants the AI to choose the stack and create all files needed. Bias toward the simplest viable tech for the request.\n\n${text}`;
+    // Compose a small directive header so the jumpstart route can pick
+    // the stack itself.
+    const composed = `[PROJECT TYPE: Custom / blank canvas]\nThe user is starting from an empty workspace and wants Vectant to choose the stack and create all files needed. Bias toward the simplest viable tech for the request.\n\n${text}`;
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
         new CustomEvent('synthi:jumpstart-trigger', {
@@ -296,7 +305,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
         }),
       );
     }
-    toast.success('Asked Vectant AI to build it');
+    toast.success('Build brief dispatched');
     handleClose();
   }
 
@@ -350,11 +359,11 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
-              <DialogTitle>{pendingTemplate.label} — choose build setup</DialogTitle>
+              <DialogTitle>{pendingTemplate.label} - choose build setup</DialogTitle>
             </div>
             <DialogDescription>Pick which build system to scaffold.</DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-3 pt-2">
+          <div className="grid gap-2 pt-2">
             {pendingTemplate.variants.map((v) => (
               <Tile
                 key={v.id}
@@ -422,7 +431,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
     );
   }
 
-  // ─── Other → AI description sub-step (scaffold mode only) ────────
+  // ─── Other → build brief sub-step (scaffold mode only) ───────────
   if (step === 'other-prompt') {
     return (
       <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
@@ -437,10 +446,10 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
-              <DialogTitle>Describe what you want Vectant AI to build</DialogTitle>
+              <DialogTitle>Write the build brief</DialogTitle>
             </div>
             <DialogDescription>
-              The AI will pick the stack and write the files. The more specific, the better.
+              Vectant will choose the runtime, scaffold the files, and keep the first pass inspectable.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 pt-2">
@@ -455,8 +464,8 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               }}
               rows={6}
               maxLength={2000}
-              placeholder="e.g. A small CLI in Go that watches a folder and ships changed files to S3…"
-              className="w-full rounded-lg px-3 py-2.5 text-sm outline-none transition-colors resize-y"
+              placeholder="Internal Go CLI that watches a folder, validates changed files, and ships them to S3."
+              className="w-full resize-y rounded-[var(--radius-panel)] px-3 py-2.5 text-sm outline-none transition-colors"
               style={{
                 background: 'var(--bg-editor)',
                 color: 'var(--text-primary)',
@@ -467,7 +476,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
             />
             <div className="flex items-center justify-between">
               <span className="text-xs" style={{ color: 'var(--text-dim)' }}>
-                {otherPrompt.length}/2000 · ⌘/Ctrl + Enter to send
+                {otherPrompt.length}/2000
               </span>
             </div>
           </div>
@@ -479,7 +488,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               onClick={() => void handleOtherSubmit()}
               disabled={busy || !otherPrompt.trim()}
             >
-              Build with AI
+              Dispatch brief
             </Button>
           </div>
         </DialogContent>
@@ -493,16 +502,16 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>
-            {mode === 'jumpstart' ? 'Pick a project type for AI Jumpstart' : 'Start a new workspace'}
+            {mode === 'jumpstart' ? 'Choose a project shape' : 'Start a new workspace'}
           </DialogTitle>
           <DialogDescription>
             {mode === 'jumpstart'
-              ? 'Choose what you want Vectant AI to build. You’ll describe the details next.'
-              : 'Pick a project scaffold, or create a single file by type.'}
+              ? 'Select the closest runtime shape. The detailed brief comes next.'
+              : 'Choose a scaffold or create a single file without leaving the workspace.'}
           </DialogDescription>
         </DialogHeader>
         {mode === 'jumpstart' ? (
-          <div className="pt-2 grid grid-cols-2 gap-3 md:grid-cols-3 max-h-[60vh] overflow-y-auto pr-1">
+          <div className="grid max-h-[60vh] gap-2 overflow-y-auto pt-2 pr-1">
             {PROJECT_TEMPLATES.map((t) => (
               <Tile
                 key={t.id}
@@ -517,7 +526,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               key={OTHER_TEMPLATE.id}
               icon={OTHER_TEMPLATE.icon}
               label={OTHER_TEMPLATE.label}
-              description="No specific type — AI picks the stack"
+              description="Open brief - Vectant chooses the runtime"
               onClick={() => handleProjectTile(OTHER_TEMPLATE)}
               disabled={busy}
               highlight
@@ -536,7 +545,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="projects">
-              <div className="grid grid-cols-2 gap-3 pt-2 md:grid-cols-3 max-h-[60vh] overflow-y-auto pr-1">
+              <div className="grid max-h-[60vh] gap-2 overflow-y-auto pt-2 pr-1">
                 {PROJECT_TEMPLATES.map((t) => (
                   <Tile
                     key={t.id}
@@ -559,7 +568,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               </div>
             </TabsContent>
             <TabsContent value="files">
-              <div className="grid grid-cols-2 gap-3 pt-2 md:grid-cols-3 max-h-[60vh] overflow-y-auto pr-1">
+              <div className="grid max-h-[60vh] gap-2 overflow-y-auto pt-2 pr-1">
                 {FILE_TYPES.map((f) => (
                   <Tile
                     key={f.id}
