@@ -174,7 +174,7 @@ function RuntimeSummary({ skill, graph }) {
       <div className="min-w-0">
         <div className="mb-1 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]" style={panelStyle}>
           <Waypoints size={13} aria-hidden="true" />
-          Runtime star map
+          Runtime dependency graph
         </div>
         <h2 className="truncate text-lg font-semibold md:text-xl">{skill.title}</h2>
       </div>
@@ -287,7 +287,7 @@ function GraphNodeRail({ nodes, selectedNodeId, onSelectNode }) {
           <button
             key={node.id}
             type="button"
-            className="th-focus-ring inline-flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
+            className="th-focus-ring inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
             style={{
               borderColor: active
                 ? tone.color
@@ -298,6 +298,7 @@ function GraphNodeRail({ nodes, selectedNodeId, onSelectNode }) {
               color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
             }}
             aria-pressed={active}
+            aria-label={`Select ${node.label || node.id} node`}
             onClick={() => onSelectNode?.(node.id)}
             title={`${node.kind}: ${node.label || node.id}`}
           >
@@ -308,7 +309,7 @@ function GraphNodeRail({ nodes, selectedNodeId, onSelectNode }) {
                 boxShadow: active ? `0 0 10px ${tone.color}` : 'none',
               }}
             />
-            <span className="max-w-36 truncate">{node.label || node.id}</span>
+            <span className="max-w-44 truncate">{node.label || node.id}</span>
           </button>
         );
       })}
