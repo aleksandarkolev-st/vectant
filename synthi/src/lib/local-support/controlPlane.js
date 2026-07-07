@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, verify as verifySignature } from "node:crypto";
 
 export const LOCAL_SUPPORT_PROTOCOL = "local-support-mvp.1";
 export const DEFAULT_MIN_APP_VERSION = "0.1.0";
@@ -41,6 +41,9 @@ const SECURITY_EVENT_TYPES = new Set([
 
 const MAX_REPLAY_CACHE_ENTRIES = 5_000;
 const replayCache = new Map();
+const pairingSessions = new Map();
+const PAIRING_TTL_MS = 5 * 60 * 1000;
+const MAX_PAIRING_ATTEMPTS = 5;
 
 export const POLICY_PRECEDENCE = [
   "hardcoded_safety_baseline",
@@ -215,6 +218,10 @@ export function clearRequestEnvelopeReplayCache() {
   replayCache.clear();
 }
 
+export function clearPairingChallengeStore() {
+  pairingSessions.clear();
+}
+
 export function compareSemverLike(left, right) {
   const parse = (value) => String(value || "0")
     .split(".")
@@ -319,6 +326,139 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
     bytes_sent: 0,
     local_enforcement_required: true,
     user_visible_message: "The local app must re-check policy and show review before any data is sent.",
+  };
+}
+
+export function createPairingChallenge(input, policy = readLocalSupportPolicy(), nowMs = Date.now()) {
+  if (!policy.enabled) {
+    return deny("feature_disabled", "Local Support pairing is disabled by policy.");
+  }
+  const body = input && typeof input === "object" ? input : {};
+  const accountId = typeof body.account_id === "string" ? body.account_id : "";
+  const orgId = typeof body.org_id === "string" ? body.org_id : "";
+  const workspaceId = typeof body.workspace_id === "string" ? body.workspace_id : "";
+  const browserSessionId = typeof body.browser_session_id === "string" ? body.browser_session_id : "";
+  const requestedUserId = typeof body.requested_user_id === "string" ? body.requested_user_id : "";
+
+  for (const value of [accountId, orgId, workspaceId, browserSessionId, requestedUserId]) {
+    if (!isSafeEnvelopeIdentifier(value)) {
+      return deny("invalid_pairing_schema", "Pairing request identifiers were not accepted.");
+    }
+  }
+  if (policy.account_id && accountId !== policy.account_id) {
+    return deny("account_mismatch", "This pairing request is not for the configured account.");
+  }
+  if (policy.org_id && orgId !== policy.org_id) {
+    return deny("org_mismatch", "This pairing request is not for the configured organization.");
+  }
+
+  prunePairingSessions(nowMs);
+  const code = randomPairingCode();
+  const pairing = {
+    pairing_id: `pair_${randomBytes(12).toString("hex")}`,
+    code,
+    fingerprint: pairingFingerprint(code),
+    server_nonce: `nonce_${randomBytes(16).toString("hex")}`,
+    browser_session_id: browserSessionId,
+    requested_user_id: requestedUserId,
+    account_id: accountId,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    expires_at_ms: nowMs + PAIRING_TTL_MS,
+    attempts: 0,
+    consumed: false,
+  };
+  pairingSessions.set(pairing.pairing_id, pairing);
+
+  return {
+    decision: "pairing_challenge_created",
+    reason: "confirm_pairing_code_and_fingerprint_locally",
+    pairing_id: pairing.pairing_id,
+    code,
+    fingerprint: pairing.fingerprint,
+    server_nonce: pairing.server_nonce,
+    browser_session_id: browserSessionId,
+    requested_user_id: requestedUserId,
+    account_id: accountId,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    expires_at: new Date(pairing.expires_at_ms).toISOString(),
+    expires_in_seconds: Math.trunc(PAIRING_TTL_MS / 1000),
+    raw_body_included: false,
+    bytes_sent: 0,
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    user_visible_message: "Confirm this code and fingerprint in the local desktop app before pairing.",
+  };
+}
+
+export function completePairingChallenge(input, policy = readLocalSupportPolicy(), nowMs = Date.now()) {
+  if (!policy.enabled) {
+    return deny("feature_disabled", "Local Support pairing is disabled by policy.");
+  }
+  prunePairingSessions(nowMs);
+  const body = input && typeof input === "object" ? input : {};
+  const pairingId = typeof body.pairing_id === "string" ? body.pairing_id : "";
+  const code = typeof body.code === "string" ? body.code : "";
+  const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
+  const proof = body.proof && typeof body.proof === "object" ? body.proof : null;
+  const pairing = pairingSessions.get(pairingId);
+  if (!pairing || !proof) {
+    return deny("pairing_challenge_not_found", "Pairing challenge was not found or already expired.");
+  }
+
+  pairing.attempts += 1;
+  if (pairing.attempts > MAX_PAIRING_ATTEMPTS) {
+    return deny("pairing_rate_limited", "Too many pairing attempts. Start a new pairing challenge.");
+  }
+  if (pairing.consumed) {
+    return deny("pairing_code_consumed", "This pairing code was already used.");
+  }
+  if (nowMs > pairing.expires_at_ms) {
+    pairingSessions.delete(pairingId);
+    return deny("pairing_code_expired", "This pairing code expired.");
+  }
+  if (!constantTimeStringEqual(code, pairing.code) || !constantTimeStringEqual(fingerprint, pairing.fingerprint)) {
+    return deny("pairing_code_mismatch", "Pairing code or fingerprint did not match.");
+  }
+
+  const proofDecision = verifyDevicePairingProof(proof, pairing);
+  if (proofDecision.decision === "denied") {
+    return proofDecision;
+  }
+
+  pairing.consumed = true;
+  return {
+    decision: "pairing_complete",
+    reason: "device_keypair_challenge_verified",
+    account_id: pairing.account_id,
+    org_id: pairing.org_id,
+    workspace_id: pairing.workspace_id,
+    session_id: `sess_${createHash("sha256").update(pairing.pairing_id).digest("hex").slice(0, 24)}`,
+    pairing_id: pairing.pairing_id,
+    browser_session_id: pairing.browser_session_id,
+    requested_user_id: pairing.requested_user_id,
+    device_fingerprint: proof.device_fingerprint,
+    device_public_key_hash: `sha256:${createHash("sha256").update(proof.device_public_key).digest("hex")}`,
+    capabilities: [...MVP_ALLOWED_CAPABILITIES],
+    expires_at: new Date(pairing.expires_at_ms).toISOString(),
+    consent_receipt: {
+      session_id: `sess_${createHash("sha256").update(pairing.pairing_id).digest("hex").slice(0, 24)}`,
+      account_id: pairing.account_id,
+      org_id: pairing.org_id,
+      workspace_id: pairing.workspace_id,
+      device_fingerprint: proof.device_fingerprint,
+      capabilities: [...MVP_ALLOWED_CAPABILITIES],
+      policy_version: policy.policy_version,
+      expires_at: new Date(pairing.expires_at_ms).toISOString(),
+      user_confirmation_required: true,
+    },
+    raw_body_included: false,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    user_visible_message: "Pairing proof verified. The local app remains final authority for every request.",
   };
 }
 
@@ -589,6 +729,114 @@ function normalizePolicyLayer(value) {
 
 function normalizeTransparencyState(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
+}
+
+function verifyDevicePairingProof(proof, pairing) {
+  const required = [
+    "pairing_id",
+    "server_nonce",
+    "browser_session_id",
+    "requested_user_id",
+    "device_public_key",
+    "device_fingerprint",
+    "signature",
+  ];
+  for (const field of required) {
+    if (typeof proof[field] !== "string" || !proof[field]) {
+      return deny("pairing_proof_invalid", "Pairing proof was incomplete.");
+    }
+  }
+  if (
+    proof.pairing_id !== pairing.pairing_id
+    || proof.server_nonce !== pairing.server_nonce
+    || proof.browser_session_id !== pairing.browser_session_id
+    || proof.requested_user_id !== pairing.requested_user_id
+  ) {
+    return deny("pairing_proof_context_mismatch", "Pairing proof was signed for a different challenge.");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(proof.device_public_key)) {
+    return deny("pairing_device_public_key_invalid", "Device public key was not accepted.");
+  }
+  if (!/^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/i.test(proof.device_fingerprint)) {
+    return deny("pairing_device_fingerprint_invalid", "Device fingerprint was not accepted.");
+  }
+  if (proof.device_fingerprint !== pairingDeviceFingerprint(proof.device_public_key)) {
+    return deny("pairing_device_fingerprint_mismatch", "Device fingerprint did not match the public key.");
+  }
+  if (!/^[0-9a-f]{128}$/i.test(proof.signature)) {
+    return deny("pairing_signature_invalid", "Pairing proof signature was not accepted.");
+  }
+
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([
+        Buffer.from("302a300506032b6570032100", "hex"),
+        Buffer.from(proof.device_public_key, "hex"),
+      ]),
+      format: "der",
+      type: "spki",
+    });
+    const ok = verifySignature(
+      null,
+      pairingChallengePayload(
+        proof.pairing_id,
+        proof.server_nonce,
+        proof.browser_session_id,
+        proof.requested_user_id,
+        proof.device_public_key,
+      ),
+      publicKey,
+      Buffer.from(proof.signature, "hex"),
+    );
+    if (!ok) {
+      return deny("pairing_signature_invalid", "Pairing proof signature did not verify.");
+    }
+  } catch {
+    return deny("pairing_signature_invalid", "Pairing proof signature did not verify.");
+  }
+
+  return {
+    decision: "verified",
+    reason: "pairing_device_proof_verified",
+  };
+}
+
+function pairingChallengePayload(...parts) {
+  return Buffer.concat(parts.map((part) => {
+    const bytes = Buffer.from(String(part), "utf8");
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(bytes.length));
+    return Buffer.concat([length, bytes]);
+  }));
+}
+
+function pairingDeviceFingerprint(devicePublicKeyHex) {
+  const digest = createHash("sha256")
+    .update("vectant-local-support-device:")
+    .update(Buffer.from(devicePublicKeyHex, "hex"))
+    .digest("hex");
+  return `${digest.slice(0, 4)}-${digest.slice(4, 8)}-${digest.slice(8, 12)}`;
+}
+
+function pairingFingerprint(code) {
+  const digest = createHash("sha256")
+    .update("vectant-local-support-pairing:")
+    .update(code)
+    .digest("hex");
+  return `${digest.slice(0, 4)}-${digest.slice(4, 8)}-${digest.slice(8, 12)}`;
+}
+
+function randomPairingCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from(randomBytes(12), (byte) => alphabet[byte % alphabet.length]).join("");
+}
+
+function prunePairingSessions(nowMs) {
+  for (const [pairingId, pairing] of pairingSessions) {
+    if (pairing.expires_at_ms <= nowMs) {
+      pairingSessions.delete(pairingId);
+    }
+  }
 }
 
 function canonicalizeEnvelope(value) {
