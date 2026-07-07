@@ -14,21 +14,21 @@
  * ThemeProvider for CSS selectors that need to differ by base type. */
 :root {
   /* Atmospheric Depth backgrounds — deeper, less neutral, more "void" */
-  --bg-app: oklch(11.5% 0.018 284);
-  --bg-editor: oklch(13.2% 0.015 281);
-  --bg-sidebar: oklch(10.5% 0.018 284);
-  --bg-panel: oklch(16.2% 0.016 280);
-  --bg-surface: oklch(19% 0.018 279);
-  --bg-elevated: oklch(23.5% 0.021 278);
+  --bg-app: oklch(10.5% 0.013 248);
+  --bg-editor: oklch(12.2% 0.012 250);
+  --bg-sidebar: oklch(11.2% 0.013 248);
+  --bg-panel: oklch(15.2% 0.014 248);
+  --bg-surface: oklch(19.5% 0.017 247);
+  --bg-elevated: oklch(24.2% 0.021 246);
   --bg-overlay: color-mix(in srgb, var(--bg-panel) 92%, black 8%);
-  --border-subtle: oklch(25% 0.018 278);
-  --border-medium: oklch(34% 0.022 277);
-  --border-focus: oklch(45% 0.045 285);
-  --border-strong: oklch(52% 0.038 276);
-  --text-primary: oklch(95.5% 0.008 275);
-  --text-secondary: oklch(74% 0.023 276);
-  --text-muted: oklch(61.5% 0.025 276);
-  --text-dim: oklch(39% 0.025 276);
+  --border-subtle: oklch(26% 0.021 247);
+  --border-medium: oklch(36% 0.026 246);
+  --border-focus: oklch(48% 0.058 225);
+  --border-strong: oklch(57% 0.038 244);
+  --text-primary: oklch(96% 0.006 248);
+  --text-secondary: oklch(76% 0.019 248);
+  --text-muted: oklch(63% 0.023 247);
+  --text-dim: oklch(42% 0.023 247);
 
   /* ── Vectant Brand Gradient ─────────────────────────────────────
      Logo gradient stops at the exact positions you specified.
@@ -67,9 +67,9 @@
   /* Calm everyday accent — slate-violet that BARELY reads as color.
      Use for ambient borders, faint hovers, neutral indicators. If
      it's grabbing your eye, it's the wrong token. */
-  --accent-primary: oklch(57% 0.056 284);
-  --accent-secondary: oklch(66% 0.061 286);
-  --accent-tertiary: oklch(44% 0.052 284);
+  --accent-primary: oklch(59% 0.035 245);
+  --accent-secondary: oklch(82% 0.118 215);
+  --accent-tertiary: oklch(45% 0.045 230);
   --accent-gradient: var(--brand-gradient);
   --accent-glow: 0 0 18px color-mix(in srgb, var(--accent-primary) 22%, transparent);
 
@@ -78,10 +78,10 @@
      the tree, toggle-ON switches, selected option pills, focused
      panel borders, status-bar pills representing a live state.
      If everything uses it, nothing does. */
-  --attention-purple: oklch(65% 0.245 305);
-  --attention-glow: 0 0 22px color-mix(in srgb, var(--attention-purple) 38%, transparent);
-  --attention-rim: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent),
-                   0 0 16px -2px color-mix(in srgb, var(--attention-purple) 36%, transparent);
+  --attention-purple: oklch(82% 0.118 215);
+  --attention-glow: 0 0 20px color-mix(in srgb, var(--attention-purple) 28%, transparent);
+  --attention-rim: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 24%, transparent),
+                   0 0 14px -2px color-mix(in srgb, var(--attention-purple) 30%, transparent);
   --accent-danger: oklch(68% 0.205 25);
   --accent-danger-soft: #ff575720;
   --accent-success: oklch(74% 0.148 154);
@@ -210,8 +210,8 @@
   --card-foreground: var(--text-primary);
   --popover: var(--bg-overlay);
   --popover-foreground: var(--text-primary);
-  --primary: #b545ff;
-  --primary-foreground: #ffffff;
+  --primary: #5dd6e4;
+  --primary-foreground: #031014;
   --secondary: var(--bg-surface);
   --secondary-foreground: var(--text-primary);
   --muted: var(--bg-surface);
@@ -221,20 +221,20 @@
   --destructive: var(--accent-danger);
   --border: var(--border-subtle);
   --input: var(--bg-panel);
-  --ring: #b545ff;
-  --chart-1: #b545ff;
+  --ring: #5dd6e4;
+  --chart-1: #5dd6e4;
   --chart-2: #4ade80;
-  --chart-3: #a23dff;
+  --chart-3: #8a85a8;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
   --sidebar: var(--bg-sidebar);
   --sidebar-foreground: var(--text-primary);
-  --sidebar-primary: #b545ff;
-  --sidebar-primary-foreground: #ffffff;
+  --sidebar-primary: #5dd6e4;
+  --sidebar-primary-foreground: #031014;
   --sidebar-accent: var(--bg-surface);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
-  --sidebar-ring: #b545ff;
+  --sidebar-ring: #5dd6e4;
 }
 
 .dark {
@@ -244,8 +244,8 @@
   --card-foreground: var(--text-primary);
   --popover: var(--bg-overlay);
   --popover-foreground: var(--text-primary);
-  --primary: #b545ff;
-  --primary-foreground: #ffffff;
+  --primary: #5dd6e4;
+  --primary-foreground: #031014;
   --secondary: var(--bg-surface);
   --secondary-foreground: var(--text-primary);
   --muted: var(--bg-surface);
@@ -255,20 +255,20 @@
   --destructive: var(--accent-danger);
   --border: var(--border-subtle);
   --input: var(--bg-panel);
-  --ring: #b545ff;
-  --chart-1: #b545ff;
+  --ring: #5dd6e4;
+  --chart-1: #5dd6e4;
   --chart-2: #4ade80;
-  --chart-3: #a23dff;
+  --chart-3: #8a85a8;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
   --sidebar: var(--bg-sidebar);
   --sidebar-foreground: var(--text-primary);
-  --sidebar-primary: #b545ff;
-  --sidebar-primary-foreground: #ffffff;
+  --sidebar-primary: #5dd6e4;
+  --sidebar-primary-foreground: #031014;
   --sidebar-accent: var(--bg-surface);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
-  --sidebar-ring: #b545ff;
+  --sidebar-ring: #5dd6e4;
 }
 
 @layer base {
