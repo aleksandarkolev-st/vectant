@@ -14,6 +14,9 @@ describe("local support route headers", () => {
       expect(entry.headers).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ key: "X-Frame-Options", value: "DENY" }),
+          expect.objectContaining({ key: "X-Content-Type-Options", value: "nosniff" }),
+          expect.objectContaining({ key: "Referrer-Policy", value: "no-referrer" }),
+          expect.objectContaining({ key: "Cache-Control", value: "no-store" }),
           expect.objectContaining({
             key: "Content-Security-Policy",
             value: expect.stringContaining("frame-ancestors 'none'"),
