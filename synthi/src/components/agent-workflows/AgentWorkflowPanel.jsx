@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useReducedMotion } from 'framer-motion';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -590,7 +591,7 @@ function buildActions(model) {
       },
       {
         action: WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER,
-        label: 'Universe',
+        label: 'Capability',
         icon: 'manifest',
         enabled: dojoSkillReady,
         disabledReason: 'License or preview a skill first',
@@ -604,7 +605,7 @@ function buildActions(model) {
       },
       {
         action: WORKFLOW_ACTIONS.RUN_WIND_TUNNEL,
-        label: 'Wind',
+        label: 'Hardening',
         icon: 'run',
         enabled: dojoSkillReady,
         disabledReason: 'License or preview a skill first',
@@ -952,9 +953,7 @@ function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSe
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      className="grid min-h-16 w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2 text-left transition-[background,border-color] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]"
+      className="grid min-h-16 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2 text-left transition-[background,border-color] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]"
       style={{
         borderColor: selected
           ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
@@ -963,35 +962,35 @@ function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSe
           ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)'
           : 'transparent',
       }}
-      aria-pressed={selected}
-      onClick={() => onSelect?.(stage.id)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onSelect?.(stage.id);
-        }
-      }}
     >
-      <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
-        <Icon className="h-3.5 w-3.5" strokeWidth={2} />
-      </div>
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold">{stage.title}</div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
-            {stage.label}
-          </span>
-          <p className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{stage.detail}</p>
+      <button
+        type="button"
+        data-workflow-stage-selector={stage.id}
+        className="th-focus-ring grid min-h-12 min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-3 rounded-md bg-transparent py-1 text-left"
+        style={{ color: 'var(--text-primary)' }}
+        aria-pressed={selected}
+        onClick={() => onSelect?.(stage.id)}
+      >
+        <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
+          <Icon className="h-3.5 w-3.5" strokeWidth={2} />
         </div>
-      </div>
+        <div className="min-w-0">
+          <div className="truncate text-xs font-semibold">{stage.title}</div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
+              {stage.label}
+            </span>
+            <p className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{stage.detail}</p>
+          </div>
+        </div>
+      </button>
       <button
         type="button"
         className="inline-flex h-7 min-w-16 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
         style={{ ...style, minWidth: 64 }}
         disabled={disabled}
         title={disabledMessage}
-        onClick={(event) => {
-          event.stopPropagation();
+        onClick={() => {
           onAction?.(stage.action, { stageId: stage.id });
         }}
       >
@@ -1173,7 +1172,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
           </dd>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <dt style={{ color: 'var(--text-muted)' }}>Wind tunnel</dt>
+          <dt style={{ color: 'var(--text-muted)' }}>Adversarial runs</dt>
           <dd className="min-w-0 truncate text-right">
             {dojo.windTunnel?.runCount || 0} runs
           </dd>
@@ -1183,7 +1182,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
           <dd className="min-w-0 truncate text-right">{dojo.artifactCount || 0} exported</dd>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <dt style={{ color: 'var(--text-muted)' }}>Evil twin</dt>
+          <dt style={{ color: 'var(--text-muted)' }}>Escape rate</dt>
           <dd className="min-w-0 truncate text-right">{Math.round(Number(dojo.attackSuccessRate || 0) * 100)}% escaped</dd>
         </div>
         {dojo.licenseExpiresAt ? (
@@ -1210,7 +1209,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
           <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Dry-run:</span> {dojo.proofDryRun.status}</div>
         ) : null}
         {dojo.blockExplanation?.refusal ? (
-          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Why:</span> {dojo.blockExplanation.refusal}</div>
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Block reason:</span> {dojo.blockExplanation.refusal}</div>
         ) : null}
         {dojo.permissionUpgrade?.requiredSteps?.length ? (
           <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Upgrade:</span> {dojo.permissionUpgrade.requiredSteps.slice(0, 3).join(', ')}</div>
@@ -1273,7 +1272,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
         />
         <ActionButton
           action={WORKFLOW_ACTIONS.EXPLAIN_BLOCK}
-          label="Why"
+          label="Block Reason"
           icon="manifest"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
@@ -1291,7 +1290,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
       <div className="grid grid-cols-3 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
         <ActionButton
           action={WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER}
-          label="Universe"
+          label="Capability"
           icon="manifest"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
@@ -1307,7 +1306,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
         />
         <ActionButton
           action={WORKFLOW_ACTIONS.RUN_WIND_TUNNEL}
-          label="Wind"
+          label="Hardening"
           icon="run"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
@@ -1562,6 +1561,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   const [localRecording, setLocalRecording] = useState(false);
   const [activeWorkflowSection, setActiveWorkflowSection] = useState('runbook');
   const [selectedStageId, setSelectedStageId] = useState('');
+  const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
     const externalTeachState = workflowState?.teach?.state;
@@ -1637,8 +1637,8 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
     setActiveWorkflowSection(sectionId);
     if (typeof document === 'undefined') return;
     const target = document.querySelector(`[data-workflow-section="${sectionId}"]`);
-    target?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-  }, []);
+    target?.scrollIntoView?.({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' });
+  }, [prefersReducedMotion]);
 
   return (
     <section
