@@ -78,6 +78,14 @@ const VISUAL_INVALID = writeVisualArtifact('invalid-frame.bin', [0x89, 0x50, 0x4
 const corruptPngBytes = Buffer.from(readFileSync(VISUAL_BEFORE.path));
 corruptPngBytes[corruptPngBytes.length - 1] ^= 0xff;
 const VISUAL_CORRUPT = writeVisualArtifact('corrupt-frame.png', corruptPngBytes);
+const COMPUTE_RAW_BYTES = Buffer.from(Array.from({ length: 128 }, (_, index) =>
+  (index * 17 + 23) % 256
+));
+const COMPUTE_RAW_PATH = path.join(SELF_CHECK_ARTIFACT_DIR, 'strict-readback-after.bin');
+writeFileSync(COMPUTE_RAW_PATH, COMPUTE_RAW_BYTES);
+const COMPUTE_RAW_HASH = sha256Bytes(COMPUTE_RAW_BYTES);
+const COMPUTE_SLICE_BYTES = COMPUTE_RAW_BYTES.subarray(0, 64);
+const COMPUTE_SLICE_HASH = sha256Bytes(COMPUTE_SLICE_BYTES);
 
 async function visualCasLocator(artifact, role) {
   return writeArtifactToCas(readFileSync(artifact.path), {
@@ -153,27 +161,27 @@ function modelProvenance() {
 
 function computeOracleArtifacts() {
   return {
-    raw_readback_bin: 'memory://strict-readback-after.bin',
+    raw_readback_bin: COMPUTE_RAW_PATH,
     readback_schema_json: 'memory://strict-readback-schema.json',
     checksum_before: HASH_A,
-    checksum_after: HASH_B,
+    checksum_after: COMPUTE_RAW_HASH,
     expected_output_change: true,
     deterministic_slice: {
       offset: 0,
       length: 64,
       format: 'float32',
-      hash: HASH_C,
+      hash: COMPUTE_SLICE_HASH,
     },
-    raw_readback_hash: HASH_B,
+    raw_readback_hash: COMPUTE_RAW_HASH,
     raw_readback_hash_verified: true,
-    raw_readback_byte_length: 128,
+    raw_readback_byte_length: COMPUTE_RAW_BYTES.length,
     raw_readback_source: 'runtime_readback_sample',
-    deterministic_slice_hash: HASH_C,
+    deterministic_slice_hash: COMPUTE_SLICE_HASH,
     deterministic_slice_hash_verified: true,
     raw_readback_verification: {
       hash_verified: true,
-      byte_length: 128,
-      deterministic_slice_hash: HASH_C,
+      byte_length: COMPUTE_RAW_BYTES.length,
+      deterministic_slice_hash: COMPUTE_SLICE_HASH,
       deterministic_slice_hash_verified: true,
       slice_bounds_verified: true,
     },
@@ -393,6 +401,26 @@ function ledgerRecord(overrides = {}) {
     model_provenance: modelProvenance(),
     evidence_refs: ['runtime:module-load', 'runtime:epoch-publish', 'runtime:dispatch', 'runtime:output-oracle'],
     ...overrides,
+  };
+}
+
+function computeOracleArtifactsWithoutBytes() {
+  const copy = JSON.parse(JSON.stringify(computeOracleArtifacts()));
+  copy.raw_readback_bin = 'memory://strict-readback-after.bin';
+  copy.rawReadbackBin = 'memory://strict-readback-after.bin';
+  return copy;
+}
+
+function withComputeOracleProofLedgerOnly(computeOracleArtifactsValue) {
+  const proofLedger = buildGpuHmrProofLedger(ledgerRecord({
+    oracle_artifacts: {
+      compute_oracle_artifacts: computeOracleArtifactsValue,
+    },
+  }));
+  assert.equal(proofLedger.query.gpuHmrSuccess, true);
+  return {
+    proofLedger,
+    proofLedgerQuery: proofLedger.query,
   };
 }
 
@@ -670,6 +698,13 @@ assert.equal(runtimeProofArtifactStrictGate(runtimeArtifact({
   proofLedger: webgpuComputeOnlyLedger,
   proofLedgerQuery: webgpuComputeOnlyLedger.query,
 })).status, 'pass');
+assert.match(
+  runtimeProofArtifactStrictGate(runtimeArtifact({
+    proofId: 'strict-compute-runtime-proof-artifact:declaration-only-refused',
+    ...withComputeOracleProofLedgerOnly(computeOracleArtifactsWithoutBytes()),
+  })).detail,
+  /compute_oracle_raw_readback_bytes_unreadable/,
+);
 assert.equal(runtimeProofArtifactStrictGate(byteBackedVisualArtifact).status, 'pass');
 const casOnlyStrictGate = runtimeProofArtifactStrictGate(casOnlyVisualArtifact, {
   visualArtifactRoots: [SELF_CHECK_CAS_ROOT],

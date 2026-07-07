@@ -225,6 +225,10 @@ function visualArtifactsPresent(record) {
   ].some(isObject);
 }
 
+function computeArtifactsPresent(record) {
+  return computeOracleArtifactObjects(record).length > 0;
+}
+
 function contentAddressedSha256(value) {
   return /^sha256:[a-f0-9]{64}$/i.test(String(value ?? '').trim());
 }
@@ -407,6 +411,23 @@ function visualArtifactRoots(options = {}) {
   ]);
 }
 
+function computeArtifactRoots(options = {}) {
+  return uniqueRealRoots([
+    ...DEFAULT_VISUAL_ARTIFACT_ROOTS,
+    ...compactStrings(options.computeArtifactRoots ?? options.compute_artifact_roots),
+    ...compactStrings(options.allowedArtifactRoots ?? options.allowed_artifact_roots),
+    ...compactStrings(options.allowedCasRoots ?? options.allowed_cas_roots),
+  ]);
+}
+
+function computeArtifactPathBaseRoots(options = {}) {
+  return uniqueRealRoots([
+    ...DEFAULT_VISUAL_ARTIFACT_ROOTS,
+    ...compactStrings(options.computeArtifactPathBaseRoots ?? options.compute_artifact_path_base_roots),
+    ...compactStrings(options.artifactPathBaseRoots ?? options.artifact_path_base_roots),
+  ]);
+}
+
 function resolveReadableVisualArtifactPath(rawPath, roots) {
   const pathText = fileUrlToPathMaybe(rawPath);
   if (!pathText || roots.length === 0) return null;
@@ -418,6 +439,25 @@ function resolveReadableVisualArtifactPath(rawPath, roots) {
       if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
       const realPath = realpathSync(candidate);
       if (!roots.some((root) => pathInsideRoot(realPath, root))) continue;
+      return realPath;
+    } catch {
+      // Keep trying the next candidate.
+    }
+  }
+  return null;
+}
+
+function resolveReadableComputeArtifactPath(rawPath, allowedRoots, pathBaseRoots = allowedRoots) {
+  const pathText = fileUrlToPathMaybe(rawPath);
+  if (!pathText || allowedRoots.length === 0) return null;
+  const candidates = path.isAbsolute(pathText)
+    ? [path.resolve(pathText)]
+    : pathBaseRoots.map((root) => path.resolve(root, pathText));
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
+      const realPath = realpathSync(candidate);
+      if (!allowedRoots.some((root) => pathInsideRoot(realPath, root))) continue;
       return realPath;
     } catch {
       // Keep trying the next candidate.
@@ -446,6 +486,238 @@ function visualArtifactByteHash(entry, roots) {
   } catch {
     return casValidation ? { casValidation } : null;
   }
+}
+
+function normalizedComputeArtifactRole(value) {
+  const role = String(value ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  if ([
+    'raw_readback',
+    'raw_readback_bin',
+    'readback',
+    'readback_bin',
+    'compute_readback',
+    'compute_raw_readback',
+    'runtime_compute_raw_readback',
+  ].includes(role)) {
+    return 'raw_readback';
+  }
+  if ([
+    'schema',
+    'readback_schema',
+    'readback_schema_json',
+    'compute_schema',
+    'compute_readback_schema',
+    'runtime_compute_readback_schema',
+  ].includes(role)) {
+    return 'readback_schema';
+  }
+  if ([
+    'card',
+    'proof_card',
+    'proof_card_png',
+    'rendered_card',
+    'rendered_card_png',
+    'compute_card',
+    'compute_proof_card',
+    'runtime_compute_proof_card',
+  ].includes(role)) {
+    return 'rendered_card';
+  }
+  return null;
+}
+
+function computeArtifactLocatorRole(locator) {
+  return normalizedComputeArtifactRole(
+    locator?.role
+    ?? locator?.artifactRole
+    ?? locator?.artifact_role
+    ?? locator?.artifactKind
+    ?? locator?.artifact_kind,
+  );
+}
+
+function computeArtifactLocatorHash(locator) {
+  const directHash = normalizeSha256(
+    locator?.contentHash
+    ?? locator?.content_hash
+    ?? locator?.artifactHash
+    ?? locator?.artifact_hash,
+  );
+  if (directHash) return directHash;
+  try {
+    return normalizeSha256(hashFromArtifactId(firstString(locator?.artifactId, locator?.artifact_id)));
+  } catch {
+    return null;
+  }
+}
+
+function computeArtifactLocatorValidation(locator, roots, expectedHash = null) {
+  if (!isObject(locator)) return null;
+  const reasons = [];
+  const fail = (reason) => reasons.push(reason);
+  const result = {
+    accepted: false,
+    acceptedAsTransportEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    proofAuthority: 'transport_integrity_only',
+    contentHash: null,
+    manifestHash: null,
+    localPath: null,
+    byteLength: null,
+    reasons,
+  };
+  if (firstString(locator.schemaVersion, locator.schema_version) !== CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION) {
+    fail('artifact_cas_manifest_schema_invalid');
+  }
+  const role = computeArtifactLocatorRole(locator);
+  if (role !== 'raw_readback') fail('artifact_cas_compute_role_not_raw_readback');
+  const contentHash = computeArtifactLocatorHash(locator);
+  if (!contentHash) fail('artifact_cas_content_hash_invalid');
+  result.contentHash = contentHash;
+  if (expectedHash && contentHash && contentHash !== expectedHash) {
+    fail('artifact_cas_content_hash_mismatch');
+  }
+  try {
+    const artifactHash = hashFromArtifactId(firstString(locator.artifactId, locator.artifact_id));
+    if (contentHash && artifactHash !== contentHash) {
+      fail('artifact_cas_artifact_id_hash_mismatch');
+    }
+  } catch {
+    fail('artifact_cas_artifact_id_invalid');
+  }
+  validateVisualArtifactCasUri(locator, contentHash, fail);
+  const byteLength = Number(locator.byteLength ?? locator.byte_length);
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+    fail('artifact_cas_byte_length_invalid');
+  } else {
+    result.byteLength = byteLength;
+  }
+  const transport = isObject(locator.transport) ? locator.transport : {};
+  if (transport.contentAddressed !== true && transport.content_addressed !== true) {
+    fail('artifact_cas_transport_not_content_addressed');
+  }
+  if (transport.bytesEmbedded === true || transport.bytes_embedded === true) {
+    fail('artifact_cas_manifest_embeds_bytes');
+  }
+  if (
+    locator.acceptedForGpuHmr === true
+    || locator.accepted_for_gpu_hmr === true
+    || locator.gpuHmrSuccess === true
+    || locator.gpu_hmr_success === true
+  ) {
+    fail('artifact_cas_manifest_claims_gpu_hmr_success');
+  }
+  const declaredManifestHash = firstString(locator.manifestHash, locator.manifest_hash);
+  const manifestHashInput = { ...locator, manifestHash: undefined };
+  if (Object.prototype.hasOwnProperty.call(manifestHashInput, 'manifest_hash')) {
+    manifestHashInput.manifest_hash = undefined;
+  }
+  result.manifestHash = casSha256Text(stableJson(manifestHashInput));
+  if (declaredManifestHash && declaredManifestHash !== result.manifestHash) {
+    fail('artifact_cas_manifest_hash_mismatch');
+  }
+  if (contentHash) {
+    const resolvedPath = resolveReadableCasLocatorPath(locator, roots, contentHash, fail);
+    if (resolvedPath) {
+      result.localPath = resolvedPath;
+      try {
+        const bytes = readFileSync(resolvedPath);
+        const readableHash = sha256Bytes(bytes);
+        if (readableHash !== contentHash) fail('artifact_cas_readable_hash_mismatch');
+        if (Number.isSafeInteger(byteLength) && bytes.byteLength !== byteLength) {
+          fail('artifact_cas_readable_byte_length_mismatch');
+        }
+      } catch {
+        fail('artifact_cas_local_path_unreadable');
+      }
+    }
+  }
+  if (reasons.length === 0) {
+    result.accepted = true;
+    result.acceptedAsTransportEvidence = true;
+  }
+  return result;
+}
+
+function computeArtifactCasLocators(source, role = 'raw_readback') {
+  const expectedRole = normalizedComputeArtifactRole(role);
+  return collectArtifactLocators(source).filter((locator) => {
+    if ((locator.schemaVersion ?? locator.schema_version) !== CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION) {
+      return false;
+    }
+    return computeArtifactLocatorRole(locator) === expectedRole;
+  });
+}
+
+function readComputeArtifactLocatorManifest(value, role, roots, pathBaseRoots = roots) {
+  if (isObject(value)) {
+    return {
+      manifest: {
+        role,
+        ...value,
+        role: value.role ?? value.artifactRole ?? value.artifact_role ?? role,
+      },
+      readError: null,
+    };
+  }
+  const manifestPath = resolveReadableComputeArtifactPath(value, roots, pathBaseRoots);
+  if (!manifestPath) return { manifest: null, readError: null };
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    return {
+      manifest: {
+        role,
+        ...parsed,
+        role: parsed.role ?? parsed.artifactRole ?? parsed.artifact_role ?? role,
+      },
+      readError: null,
+      manifestPath,
+    };
+  } catch (error) {
+    return {
+      manifest: null,
+      readError: error?.message ? String(error.message) : String(error),
+      manifestPath,
+    };
+  }
+}
+
+function computeRawReadbackLocators(source, roots, pathBaseRoots = roots) {
+  const manifestValues = [
+    source.raw_readback_cas_manifest,
+    source.rawReadbackCasManifest,
+    source.raw_readback_locator,
+    source.rawReadbackLocator,
+  ].filter((value) => value !== undefined && value !== null);
+  const manifestLocators = manifestValues.flatMap((value) => {
+    const loaded = readComputeArtifactLocatorManifest(value, 'raw_readback', roots, pathBaseRoots);
+    return loaded.manifest ? [loaded.manifest] : [];
+  });
+  return [
+    ...manifestLocators,
+    ...computeArtifactCasLocators(source, 'raw_readback'),
+  ];
+}
+
+function computeOracleArtifactObjects(record) {
+  const oracleArtifacts = firstObject(record.oracle_artifacts, record.oracleArtifacts);
+  const outputEvent = firstObject(record.output_event, record.outputEvent) ?? {};
+  const outputArtifacts = firstObject(outputEvent.oracle_artifacts, outputEvent.oracleArtifacts);
+  const outputOracle = firstObject(outputEvent.output_oracle, outputEvent.outputOracle) ?? {};
+  const outputOracleArtifacts = firstObject(outputOracle.oracle_artifacts, outputOracle.oracleArtifacts);
+  return [
+    oracleArtifacts?.compute_oracle_artifacts,
+    oracleArtifacts?.computeOracleArtifacts,
+    outputArtifacts?.compute_oracle_artifacts,
+    outputArtifacts?.computeOracleArtifacts,
+    outputEvent.compute_oracle_artifacts,
+    outputEvent.computeOracleArtifacts,
+    outputOracle.compute_oracle_artifacts,
+    outputOracle.computeOracleArtifacts,
+    outputOracleArtifacts?.compute_oracle_artifacts,
+    outputOracleArtifacts?.computeOracleArtifacts,
+  ].filter(isObject);
 }
 
 function visualArtifactObjects(record) {
@@ -1029,6 +1301,154 @@ function visualOracleDeclarationFailures(proofLedger, options = {}) {
   ]);
 }
 
+function computeDeclaredRawHash(source) {
+  return normalizeSha256(firstString(
+    source.raw_readback_hash,
+    source.rawReadbackHash,
+    source.readback_hash,
+    source.readbackHash,
+  ));
+}
+
+function computeDeclaredRawByteLength(source) {
+  const verification = firstObject(
+    source.raw_readback_verification,
+    source.rawReadbackVerification,
+    source.byte_verification,
+    source.byteVerification,
+  ) ?? {};
+  const value = source.raw_readback_byte_length
+    ?? source.rawReadbackByteLength
+    ?? source.byte_length
+    ?? source.byteLength
+    ?? verification.byte_length
+    ?? verification.byteLength;
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function computeDeterministicSlice(source) {
+  return firstObject(source.deterministic_slice, source.deterministicSlice) ?? {};
+}
+
+function computeDeterministicSliceHash(source, slice) {
+  const verification = firstObject(
+    source.raw_readback_verification,
+    source.rawReadbackVerification,
+    source.byte_verification,
+    source.byteVerification,
+  ) ?? {};
+  return normalizeSha256(firstString(
+    source.deterministic_slice_hash,
+    source.deterministicSliceHash,
+    slice.hash,
+    slice.sha256,
+    slice.slice_hash,
+    slice.sliceHash,
+    verification.deterministic_slice_hash,
+    verification.deterministicSliceHash,
+    verification.slice_hash,
+    verification.sliceHash,
+  ));
+}
+
+function zeroOrPositiveInteger(value) {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function computeOracleRawReadbackBytes(source, roots, expectedHash = null, pathBaseRoots = roots) {
+  const rawPath = firstString(source.raw_readback_bin, source.rawReadbackBin);
+  const resolvedPath = resolveReadableComputeArtifactPath(rawPath, roots, pathBaseRoots);
+  if (resolvedPath) {
+    try {
+      return {
+        path: resolvedPath,
+        bytes: readFileSync(resolvedPath),
+        casValidation: null,
+      };
+    } catch {
+      return null;
+    }
+  }
+  const validations = computeRawReadbackLocators(source, roots, pathBaseRoots)
+    .map((locator) => computeArtifactLocatorValidation(locator, roots, expectedHash))
+    .filter(Boolean);
+  const accepted = validations.find((validation) => validation.accepted === true && validation.localPath);
+  if (!accepted) {
+    return validations.length > 0
+      ? { path: null, bytes: null, casValidations: validations }
+      : null;
+  }
+  try {
+    return {
+      path: accepted.localPath,
+      bytes: readFileSync(accepted.localPath),
+      casValidation: accepted,
+    };
+  } catch {
+    return { path: accepted.localPath, bytes: null, casValidation: accepted };
+  }
+}
+
+function computeOracleDeclarationFailures(proofLedger, options = {}) {
+  const records = ledgerRecords(proofLedger).filter((record) =>
+    computeArtifactsPresent(record) && !recordClaimsVisualOutput(record)
+  );
+  if (records.length === 0) return [];
+  const roots = computeArtifactRoots(options);
+  const pathBaseRoots = computeArtifactPathBaseRoots(options);
+  const failures = [];
+  const addFailure = (code) => {
+    if (code) failures.push(code);
+  };
+  for (const artifacts of records.flatMap(computeOracleArtifactObjects)) {
+    const declaredHash = computeDeclaredRawHash(artifacts);
+    const declaredByteLength = computeDeclaredRawByteLength(artifacts);
+    const byteEvidence = computeOracleRawReadbackBytes(artifacts, roots, declaredHash, pathBaseRoots);
+    const bytes = byteEvidence?.bytes;
+    const casValidations = [
+      ...(byteEvidence?.casValidation ? [byteEvidence.casValidation] : []),
+      ...(Array.isArray(byteEvidence?.casValidations) ? byteEvidence.casValidations : []),
+    ];
+    if (casValidations.some((validation) => validation.accepted !== true)) {
+      addFailure('compute_oracle_raw_readback_cas_locator_invalid');
+    }
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      addFailure('compute_oracle_raw_readback_bytes_unreadable');
+      continue;
+    }
+    const actualHash = sha256Bytes(bytes);
+    if (!declaredHash) {
+      addFailure('compute_oracle_raw_readback_hash_missing');
+    } else if (actualHash !== declaredHash) {
+      addFailure('compute_oracle_raw_readback_hash_mismatch');
+    }
+    if (declaredByteLength === null) {
+      addFailure('compute_oracle_raw_readback_byte_length_missing');
+    } else if (bytes.length !== declaredByteLength) {
+      addFailure('compute_oracle_raw_readback_byte_length_mismatch');
+    }
+    const slice = computeDeterministicSlice(artifacts);
+    const sliceOffset = zeroOrPositiveInteger(slice.offset ?? slice.byte_offset ?? slice.byteOffset);
+    const sliceLength = positiveInteger(slice.length ?? slice.byte_length ?? slice.byteLength);
+    const declaredSliceHash = computeDeterministicSliceHash(artifacts, slice);
+    if (sliceOffset === null || sliceLength === null) {
+      addFailure('compute_oracle_deterministic_slice_bounds_missing');
+    } else if (sliceOffset + sliceLength > bytes.length) {
+      addFailure('compute_oracle_deterministic_slice_out_of_bounds');
+    } else {
+      const actualSliceHash = sha256Bytes(bytes.subarray(sliceOffset, sliceOffset + sliceLength));
+      if (!declaredSliceHash) {
+        addFailure('compute_oracle_deterministic_slice_hash_missing');
+      } else if (declaredSliceHash !== actualSliceHash) {
+        addFailure('compute_oracle_deterministic_slice_hash_mismatch');
+      }
+    }
+  }
+  return compactStrings(failures);
+}
+
 function visualOracleArtifactOverlaysFromLedger(proofLedger, options = {}) {
   const roots = visualArtifactRoots(options);
   const overlays = [];
@@ -1240,6 +1660,7 @@ export function runtimeProofArtifactStrictGate(record, options = {}) {
         failures.push('proof_ledger_query_mismatch');
       }
       failures.push(...visualOracleDeclarationFailures(proofLedger, options));
+      failures.push(...computeOracleDeclarationFailures(proofLedger, options));
     }
     if (!proofLedgerQuery) {
       failures.push('proof_ledger_query_missing');

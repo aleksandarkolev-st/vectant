@@ -105,6 +105,38 @@ function relRepo(filePath) {
   return path.relative(REPO_ROOT, filePath).replace(/\\/g, '/');
 }
 
+function proofArtifactPath(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return null;
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
+  return text;
+}
+
+function computeOracleStrictGateOptions(oracleArtifacts = {}) {
+  const artifactPaths = [
+    oracleArtifacts.raw_readback_bin,
+    oracleArtifacts.rawReadbackBin,
+    oracleArtifacts.before_raw_readback_bin,
+    oracleArtifacts.beforeRawReadbackBin,
+    oracleArtifacts.readback_schema_json,
+    oracleArtifacts.readbackSchemaJson,
+    oracleArtifacts.rendered_card_png,
+    oracleArtifacts.renderedCardPng,
+    oracleArtifacts.raw_readback_cas_manifest,
+    oracleArtifacts.rawReadbackCasManifest,
+  ].map(proofArtifactPath).filter(Boolean);
+  const allowedArtifactRoots = [...new Set(artifactPaths.map((artifactPath) => {
+    const resolved = path.isAbsolute(artifactPath)
+      ? artifactPath
+      : path.resolve(REPO_ROOT, artifactPath);
+    return path.dirname(resolved);
+  }))];
+  return {
+    allowedArtifactRoots,
+    computeArtifactPathBaseRoots: [REPO_ROOT],
+  };
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
@@ -1694,7 +1726,10 @@ function runtimeProofArtifact({ beforeHash, afterHash, runtimeTrace, proofLedger
     processContinuity,
     process_continuity: processContinuity,
   };
-  const strictGate = runtimeProofArtifactStrictGate(artifact);
+  const strictGate = runtimeProofArtifactStrictGate(
+    artifact,
+    computeOracleStrictGateOptions(oracleArtifacts),
+  );
   return {
     ...artifact,
     strictGate,

@@ -62,6 +62,20 @@ function sha256Buffer(buffer) {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
 }
 
+const COMPUTE_RAW_BYTES = Buffer.from(Array.from({ length: 128 }, (_, index) =>
+  (index * 19 + 11) % 256
+));
+const COMPUTE_RAW_PATH = path.resolve(
+  '.gpu-hmr-test-logs',
+  'runtime-boundary-adapter-compute-smoke',
+  'readback.bin',
+);
+mkdirSync(path.dirname(COMPUTE_RAW_PATH), { recursive: true });
+writeFileSync(COMPUTE_RAW_PATH, COMPUTE_RAW_BYTES);
+const COMPUTE_RAW_HASH = sha256Buffer(COMPUTE_RAW_BYTES);
+const COMPUTE_SLICE_BYTES = COMPUTE_RAW_BYTES.subarray(0, 64);
+const COMPUTE_SLICE_HASH = sha256Buffer(COMPUTE_SLICE_BYTES);
+
 function writeVisualFixturePngs() {
   const relativeDir = path.join('.gpu-hmr-test-logs', 'runtime-boundary-adapter-visual-smoke');
   const absoluteDir = path.resolve(relativeDir);
@@ -212,19 +226,20 @@ function boundaryEvents(overrides = {}) {
 
 function computeOracle() {
   return buildComputeOracleArtifactsFromByteEvidence({
-    rawReadbackHash: HASH_B,
+    rawReadbackBin: COMPUTE_RAW_PATH,
+    rawReadbackHash: COMPUTE_RAW_HASH,
     checksumBefore: HASH_A,
-    checksumAfter: HASH_B,
-    deterministicSliceHash: HASH_C,
-    rawReadbackByteLength: 128,
+    checksumAfter: COMPUTE_RAW_HASH,
+    deterministicSliceHash: COMPUTE_SLICE_HASH,
+    rawReadbackByteLength: COMPUTE_RAW_BYTES.length,
     sliceOffset: 0,
-    sliceLength: 64,
+    sliceLength: COMPUTE_SLICE_BYTES.length,
     timestampAfterDispatch: 400,
     epoch: 'epoch-7',
     rawReadbackHashVerified: true,
     deterministicSliceHashVerified: true,
     expectedOutputVerified: true,
-    expectedOutputHash: HASH_B,
+    expectedOutputHash: COMPUTE_RAW_HASH,
     expectedOutputChange: true,
     evidenceRefs: ['compute-oracle:raw-readback-bytes'],
   });

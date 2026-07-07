@@ -2,7 +2,7 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,6 +144,38 @@ function resolveRelative(baseDir, value) {
 
 function relRepo(filePath) {
   return path.relative(REPO_ROOT, filePath).replace(/\\/g, '/');
+}
+
+function proofArtifactPath(value) {
+  const text = firstText(value);
+  if (!text) return null;
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(text)) return null;
+  return text;
+}
+
+function computeOracleStrictGateOptions(oracleArtifacts = {}) {
+  const artifactPaths = [
+    oracleArtifacts.raw_readback_bin,
+    oracleArtifacts.rawReadbackBin,
+    oracleArtifacts.before_raw_readback_bin,
+    oracleArtifacts.beforeRawReadbackBin,
+    oracleArtifacts.readback_schema_json,
+    oracleArtifacts.readbackSchemaJson,
+    oracleArtifacts.rendered_card_png,
+    oracleArtifacts.renderedCardPng,
+    oracleArtifacts.raw_readback_cas_manifest,
+    oracleArtifacts.rawReadbackCasManifest,
+  ].map(proofArtifactPath).filter(Boolean);
+  const allowedArtifactRoots = [...new Set(artifactPaths.map((artifactPath) => {
+    const resolved = path.isAbsolute(artifactPath)
+      ? artifactPath
+      : path.resolve(REPO_ROOT, artifactPath);
+    return path.dirname(resolved);
+  }))];
+  return {
+    allowedArtifactRoots,
+    computeArtifactPathBaseRoots: [REPO_ROOT],
+  };
 }
 
 function nsSince(startNs) {
@@ -1781,7 +1813,10 @@ function buildRuntimeProofArtifact({
     processContinuity,
     process_continuity: processContinuity,
   };
-  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
+  const strictGate = runtimeProofArtifactStrictGate(
+    runtimeProofArtifact,
+    computeOracleStrictGateOptions(oracleArtifacts),
+  );
   return {
     ...runtimeProofArtifact,
     strictGate,
@@ -1942,18 +1977,36 @@ function buildSyntheticRuntimeProofFixture(profile) {
   const rawReadbackHash = sha256Bytes(expectedBytes);
   const beforeHash = sha256Bytes(beforeBytes);
   const sliceHash = sha256Bytes(deterministicSliceBytes);
+  const selfCheckArtifactDir = path.join(ARTIFACT_DIR, 'self-check');
+  mkdirSync(selfCheckArtifactDir, { recursive: true });
+  const rawAfterPath = path.join(selfCheckArtifactDir, 'after-readback.bin');
+  const rawBeforePath = path.join(selfCheckArtifactDir, 'before-readback.bin');
+  const schemaPath = path.join(selfCheckArtifactDir, 'readback-schema.json');
+  const cardPath = path.join(selfCheckArtifactDir, 'compute-card.png');
+  const schemaBytes = Buffer.from(`${stableJson({
+    dataType: profile.outputOracle.dataType,
+    byteLength: expectedBytes.length,
+    targetId: profile.buffers.readback.name,
+  })}\n`);
+  const cardBytes = Buffer.from('hip module self-check compute card\n');
+  writeFileSync(rawAfterPath, expectedBytes);
+  writeFileSync(rawBeforePath, beforeBytes);
+  writeFileSync(schemaPath, schemaBytes);
+  writeFileSync(cardPath, cardBytes);
+  const readbackSchemaHash = sha256Bytes(schemaBytes);
+  const renderedCardHash = sha256Bytes(cardBytes);
   const oracleArtifacts = {
-    raw_readback_bin: 'self-check/after-readback.bin',
-    rawReadbackBin: 'self-check/after-readback.bin',
-    before_raw_readback_bin: 'self-check/before-readback.bin',
-    readback_schema_json: 'self-check/readback-schema.json',
-    readbackSchemaJson: 'self-check/readback-schema.json',
+    raw_readback_bin: relRepo(rawAfterPath),
+    rawReadbackBin: relRepo(rawAfterPath),
+    before_raw_readback_bin: relRepo(rawBeforePath),
+    readback_schema_json: relRepo(schemaPath),
+    readbackSchemaJson: relRepo(schemaPath),
     raw_readback_hash: rawReadbackHash,
     rawReadbackHash: rawReadbackHash,
     raw_readback_hash_verified: true,
     raw_readback_source: 'runtime_raw_readback',
     raw_readback_byte_length: expectedBytes.length,
-    readback_schema_hash: sha256Text(`${profile.targetId}:readback-schema`),
+    readback_schema_hash: readbackSchemaHash,
     checksum_before: beforeHash,
     checksum_after: rawReadbackHash,
     output_change_expected: true,
@@ -1976,9 +2029,9 @@ function buildSyntheticRuntimeProofFixture(profile) {
     deterministic_slice_hash: sliceHash,
     deterministic_slice_hash_verified: true,
     oracle_code_hash: sha256Text('hip_module_self_check_oracle_code'),
-    rendered_card_png: 'self-check/compute-card.png',
-    renderedCardPng: 'self-check/compute-card.png',
-    rendered_card_hash: sha256Text('hip_module_self_check_card'),
+    rendered_card_png: relRepo(cardPath),
+    renderedCardPng: relRepo(cardPath),
+    rendered_card_hash: renderedCardHash,
     producer: 'hip_module_runtime_proof_self_check',
     timestamp_after_dispatch: 160,
     epoch: 2,
@@ -1988,7 +2041,7 @@ function buildSyntheticRuntimeProofFixture(profile) {
       byte_length: expectedBytes.length,
       deterministic_slice_hash: sliceHash,
       deterministic_slice_hash_verified: true,
-      readback_schema_hash: sha256Text(`${profile.targetId}:readback-schema`),
+      readback_schema_hash: readbackSchemaHash,
     },
   };
   const oracleValidation = computeOracleValidation({ artifacts: oracleArtifacts });

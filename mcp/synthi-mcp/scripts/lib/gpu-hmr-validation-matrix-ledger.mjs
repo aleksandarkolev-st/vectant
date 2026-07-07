@@ -20227,7 +20227,11 @@ function runtimeProofArtifactGateOptions(filePath, context = {}) {
     context.mcpRoot,
     filePath ? path.dirname(filePath) : null,
   ]);
-  return roots.length > 0 ? { visualArtifactRoots: roots } : {};
+  return roots.length > 0 ? {
+    visualArtifactRoots: roots,
+    allowedArtifactRoots: roots,
+    computeArtifactPathBaseRoots: roots,
+  } : {};
 }
 
 function runtimeProofArtifactFacet(runtimeProofArtifact, options = {}) {
