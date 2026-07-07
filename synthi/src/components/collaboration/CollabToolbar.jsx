@@ -113,7 +113,7 @@ export default function CollabToolbar({ slug, filePath }) {
   const knockCount = pendingKnocks?.length || 0;
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="vt-session-control flex items-center gap-1.5">
 
       {/* ── Missed-while-offline tray ────────────────────────────────── */}
       <MissedEventsTray />
@@ -131,18 +131,17 @@ export default function CollabToolbar({ slug, filePath }) {
 
       {isHost && (
         <div className="flex items-center gap-1.5">
-          {/* LIVE badge — opens modal */}
           <button onClick={openModal}
-            className="vt-workflow-chip th-focus-ring"
+            className="vt-session-button vt-session-button--live th-focus-ring"
             style={{ '--chip-color': 'var(--accent-danger)' }}
-            title="Manage session (Ctrl+Shift+K)">
+            title="Session controls (Ctrl+Shift+K)">
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent-danger)] opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--accent-danger)]" />
             </span>
-            <span className="text-[11px] font-bold tracking-wide">LIVE</span>
+            <span>Host</span>
             {(guests?.length || 0) > 0 && (
-              <span className="text-[10px] opacity-70">·{guests.length}</span>
+              <span className="vt-session-count">{guests.length}</span>
             )}
           </button>
 
@@ -157,16 +156,16 @@ export default function CollabToolbar({ slug, filePath }) {
         <div className="flex items-center gap-1.5">
           {/* Guest badge — opens modal */}
           <button onClick={openModal}
-            className="vt-workflow-chip th-focus-ring"
+            className="vt-session-button th-focus-ring"
             style={{ '--chip-color': permissions?.canEdit ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}
             title="Session details">
             {permissions?.canEdit ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-            <span className="text-[11px] font-semibold">{session?.hostName || 'Host'}</span>
+            <span>{session?.hostName || 'Host'}</span>
           </button>
 
           {/* Leave button */}
           <button onClick={leaveSession}
-            className="vt-workflow-chip th-focus-ring text-[11px]"
+            className="vt-session-button vt-session-button--danger th-focus-ring"
             style={{ '--chip-color': 'var(--accent-danger)' }}
             title="Leave session">
             <LogOut className="w-3 h-3" />
@@ -198,8 +197,9 @@ function PresenceAvatars({ users }) {
 
   if (users.length === 0) {
     return (
-      <span className="text-[11px] px-2.5 py-1 rounded-full border" style={{ color: 'var(--text-muted)', background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
-        Solo
+      <span className="vt-session-local">
+        <span aria-hidden="true" />
+        Local
       </span>
     );
   }
@@ -272,11 +272,11 @@ function ShareButton({ onClick }) {
   return (
     <button
       onClick={onClick}
-      className="th-focus-ring th-btn-ghost flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2.5 py-1 text-[11px] font-medium"
-      title="Start a collaboration session (Ctrl+Shift+K)"
+      className="vt-session-button th-focus-ring"
+      title="Open session controls (Ctrl+Shift+K)"
     >
       <Share2 className="w-3.5 h-3.5" />
-      Share
+      Session
     </button>
   );
 }
@@ -303,7 +303,7 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
       >
         <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-warning)]">
           <Bell className="w-3.5 h-3.5" />
-          Requesting Access
+          Join requests
         </div>
         <div className="space-y-2">
           {knocks.map((knock) => (
@@ -351,9 +351,9 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
 
 function KnockingIndicator({ onCancel }) {
   return (
-    <div className="vt-workflow-chip flex items-center gap-2" style={{ '--chip-color': 'var(--accent-warning)' }}>
+    <div className="vt-session-button" style={{ '--chip-color': 'var(--accent-warning)' }}>
       <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent-warning)] border-t-transparent" />
-      <span className="text-[11px] font-medium">Waiting…</span>
+      <span>Waiting</span>
       <button
         onClick={onCancel}
         className="vt-icon-button th-focus-ring h-6 min-w-6"

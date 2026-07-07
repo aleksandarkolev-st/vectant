@@ -14,10 +14,10 @@ import {
  * Permission toggle labels and icons.
  */
 const PERM_CONFIG = [
-  { key: 'canEdit',     label: 'Edit Code',     icon: FileEdit,   risk: 'low',    desc: 'Allow editing files via Yjs' },
-  { key: 'canFileOps',  label: 'File Ops',       icon: FolderEdit, risk: 'medium', desc: 'Create, delete, rename files' },
-  { key: 'canTerminal', label: 'Terminal',        icon: Terminal,   risk: 'high',   desc: 'Run commands in the terminal' },
-  { key: 'canGit',      label: 'Git Control',     icon: GitBranch,  risk: 'high',   desc: 'Commit, push, pull, checkout' },
+  { key: 'canEdit',     label: 'Edit',     icon: FileEdit,   risk: 'low',    desc: 'Change workspace files' },
+  { key: 'canFileOps',  label: 'Files',    icon: FolderEdit, risk: 'medium', desc: 'Create, rename, and remove files' },
+  { key: 'canTerminal', label: 'Terminal', icon: Terminal,   risk: 'high',   desc: 'Run shell commands' },
+  { key: 'canGit',      label: 'Git',      icon: GitBranch,  risk: 'high',   desc: 'Change branches and publish commits' },
 ];
 
 const RISK_COLORS = {
@@ -78,7 +78,7 @@ export default function SessionControlPanel({ slug }) {
     } catch (_) {}
   }, [session?.inviteLink]);
 
-  // ── Not hosting: show "Share Session" button ──────────────────────────
+  // ── Not hosting: show "Start session" button ──────────────────────────
 
   if (role === 'idle' && !showCreate) {
     return (
@@ -87,7 +87,7 @@ export default function SessionControlPanel({ slug }) {
         className="th-focus-ring th-btn-ghost flex items-center gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-3 py-1.5 text-sm font-medium"
       >
         <Users className="w-4 h-4" />
-        Share Session
+        Start session
       </button>
     );
   }
@@ -117,10 +117,10 @@ export default function SessionControlPanel({ slug }) {
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--accent-danger)]" />
           </div>
           <span className="text-sm font-semibold text-[var(--accent-danger)]">
-            LIVE
+            Live session
           </span>
           <span className="text-sm text-[var(--text-muted)]">
-            {guests.length} Guest{guests.length !== 1 ? 's' : ''}
+            {guests.length} peer{guests.length !== 1 ? 's' : ''}
           </span>
           {pendingKnocks.length > 0 && (
             <span className="vt-workflow-chip animate-pulse text-xs" style={{ '--chip-color': 'var(--accent-warning)' }}>
@@ -142,7 +142,7 @@ export default function SessionControlPanel({ slug }) {
           <div className="px-4 py-3">
             <div className="flex items-center gap-2 mb-2">
               <Link2 className="w-4 h-4 text-[var(--accent-secondary)]" />
-              <span className="vt-panel-kicker">Invite Link</span>
+              <span className="vt-panel-kicker">Invite URL</span>
             </div>
             <div className="flex items-center gap-2">
               <input
@@ -176,7 +176,7 @@ export default function SessionControlPanel({ slug }) {
             <div className="px-4 py-3">
               <div className="flex items-center gap-2 mb-2">
                 <Bell className="w-4 h-4 text-[var(--accent-warning)]" />
-                <span className="vt-panel-kicker text-[var(--accent-warning)]">Requesting Access</span>
+                <span className="vt-panel-kicker text-[var(--accent-warning)]">Join requests</span>
               </div>
               <div className="space-y-2">
                 {pendingKnocks.map((knock) => (
@@ -213,14 +213,14 @@ export default function SessionControlPanel({ slug }) {
             </div>
           )}
 
-          {/* ── Connected Guests ─────────────────────────────────────── */}
+          {/* ── Connected peers ──────────────────────────────────────── */}
           <div className="px-4 py-3">
             <div className="flex items-center gap-2 mb-2">
               <Users className="w-4 h-4 text-[var(--accent-secondary)]" />
-              <span className="vt-panel-kicker">Connected Guests</span>
+              <span className="vt-panel-kicker">Connected peers</span>
             </div>
             {guests.length === 0 ? (
-              <p className="py-2 text-xs italic text-[var(--text-muted)]">No guests connected yet</p>
+              <p className="py-2 text-xs text-[var(--text-muted)]">No peers connected.</p>
             ) : (
               <div className="space-y-3">
                 {guests.map((guest) => (
@@ -243,7 +243,7 @@ export default function SessionControlPanel({ slug }) {
               style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 32%, transparent)' }}
             >
               <X className="w-4 h-4" />
-              Stop Sharing
+              End session
             </button>
           </div>
 
@@ -322,7 +322,7 @@ function GuestCard({ guest, onUpdatePermissions, onKick }) {
                     {label}
                   </span>
                   <span className={`text-[10px] ${RISK_COLORS[risk]}`}>
-                    {risk === 'high' && '⚠'}
+                    {risk === 'high' && 'High'}
                   </span>
                 </div>
                 <div className={`relative h-4 w-8 rounded-full transition-colors ${enabled ? 'th-toggle-on' : 'th-toggle-off'}`}>
@@ -354,8 +354,8 @@ function CreateSessionModal({ onClose, onCreate }) {
       <div className="vt-dialog-surface w-[400px] p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--text-primary)]">
-            <Users className="w-5 h-5 text-[var(--attention-purple)]" />
-            Share Session
+            <Users className="w-5 h-5 text-[var(--accent-primary)]" />
+            Start session
           </h2>
           <button onClick={onClose} className="vt-icon-button th-focus-ring h-8 min-w-8">
             <X className="w-5 h-5" />
@@ -363,8 +363,7 @@ function CreateSessionModal({ onClose, onCreate }) {
         </div>
 
         <p className="mb-4 text-sm text-[var(--text-muted)]">
-          Set default permissions for guests who join your session.
-          You can change these per-user after they connect.
+          Set the initial access profile. You can tighten permissions per peer after they connect.
         </p>
 
         <div className="space-y-2 mb-6">
@@ -383,7 +382,7 @@ function CreateSessionModal({ onClose, onCreate }) {
                   <p className="text-xs text-[var(--text-muted)]">{desc}</p>
                 </div>
                 {risk === 'high' && (
-                  <span className="vt-workflow-chip text-xs" style={{ '--chip-color': 'var(--accent-danger)' }}>High Risk</span>
+                  <span className="vt-session-risk">Privileged</span>
                 )}
               </div>
               <div className={`relative h-5 w-9 rounded-full transition-colors ${perms[key] ? 'th-toggle-on' : 'th-toggle-off'}`}>
@@ -400,7 +399,7 @@ function CreateSessionModal({ onClose, onCreate }) {
           className="th-focus-ring th-btn-primary flex w-full items-center justify-center gap-2 py-2.5 font-semibold"
         >
           <Radio className="w-4 h-4" />
-          Start Sharing
+          Start session
         </button>
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import collabSessionService from '@/services/collabSessionService';
 import WorkspaceUsersPanel from './WorkspaceUsersPanel';
@@ -16,10 +17,10 @@ import T from './collabTheme';
 // ── Permission config ─────────────────────────────────────────────────────────
 
 const PERM_CONFIG = [
-  { key: 'canEdit',     label: 'Edit Code',   icon: FileEdit,   risk: 'low',    desc: 'Allow editing files via Yjs' },
-  { key: 'canFileOps',  label: 'File Ops',     icon: FolderEdit, risk: 'medium', desc: 'Create, delete, rename files' },
-  { key: 'canTerminal', label: 'Terminal',      icon: Terminal,   risk: 'high',   desc: 'Run commands in the terminal' },
-  { key: 'canGit',      label: 'Git Control',   icon: GitBranch,  risk: 'high',   desc: 'Commit, push, pull, checkout' },
+  { key: 'canEdit',     label: 'Edit',     icon: FileEdit,   risk: 'low',    desc: 'Change workspace files' },
+  { key: 'canFileOps',  label: 'Files',    icon: FolderEdit, risk: 'medium', desc: 'Create, rename, and remove files' },
+  { key: 'canTerminal', label: 'Terminal', icon: Terminal,   risk: 'high',   desc: 'Run shell commands' },
+  { key: 'canGit',      label: 'Git',      icon: GitBranch,  risk: 'high',   desc: 'Change branches and publish commits' },
 ];
 
 /**
@@ -126,29 +127,46 @@ export default function ShareModal({ slug, open, onClose }) {
     });
   }, [createSession, slug, authSession]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="share-modal-title"
-      ref={modalRef}
-      tabIndex={-1}
-      onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
-    >
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="fixed inset-0 z-[200] flex items-center justify-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-modal-title"
+          ref={modalRef}
+          tabIndex={-1}
+          onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-[color-mix(in_srgb,black_68%,transparent)] backdrop-blur-sm" onClick={onClose} />
+      <motion.div
+        className="absolute inset-0 bg-[color-mix(in_srgb,black_68%,transparent)] backdrop-blur-sm"
+        onClick={onClose}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      />
 
       {/* Modal */}
-      <div className="vt-dialog-surface relative flex max-h-[85vh] w-[480px] flex-col overflow-hidden">
+      <motion.div
+        className="vt-dialog-surface vt-session-modal relative flex max-h-[85vh] w-[520px] max-w-[calc(100vw-28px)] flex-col overflow-hidden"
+        initial={{ opacity: 0, y: 18, scale: 0.965 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+        transition={{ duration: 0.42, ease: [0.16, 1, 0.3, 1] }}
+      >
         {/* ── Header ─────────────────────────────────────────────── */}
         <div className="vt-panel-header justify-between px-5">
           <div className="flex items-center gap-2.5">
-            <Users className="h-4 w-4 text-[var(--attention-purple)]" />
+            <Users className="h-4 w-4 text-[var(--accent-primary)]" />
             <h2 id="share-modal-title" className="vt-panel-title">
-              Collaboration
+              Session control
             </h2>
             {isActive && (
               <span className="vt-workflow-chip text-[9px]" style={{ '--chip-color': 'var(--accent-danger)' }}>
@@ -156,7 +174,7 @@ export default function ShareModal({ slug, open, onClose }) {
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent-danger)] opacity-75" />
                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--accent-danger)]" />
                 </span>
-                LIVE
+                Live
               </span>
             )}
             {isActive && wsStatus !== 'connected' && (
@@ -234,7 +252,7 @@ export default function ShareModal({ slug, open, onClose }) {
               disabled={isLoading}
               className="th-focus-ring th-btn-primary flex flex-1 items-center justify-center gap-2 px-3 py-2 text-xs font-semibold disabled:opacity-50">
               <Users className="w-3.5 h-3.5" />
-              {isLoading ? 'Starting…' : 'Start Sharing'}
+              {isLoading ? 'Starting...' : 'Start session'}
             </button>
           )}
 
@@ -244,7 +262,7 @@ export default function ShareModal({ slug, open, onClose }) {
               className="th-focus-ring th-btn-ghost flex flex-1 items-center justify-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-xs font-semibold text-[var(--accent-danger)] disabled:opacity-50"
               style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 28%, transparent)' }}>
               {terminating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CircleOff className="w-3.5 h-3.5" />}
-              {terminating ? 'Stopping…' : 'Stop Sharing'}
+              {terminating ? 'Ending…' : 'End session'}
             </button>
           )}
 
@@ -253,7 +271,7 @@ export default function ShareModal({ slug, open, onClose }) {
               className="th-focus-ring th-btn-ghost flex flex-1 items-center justify-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-xs font-semibold text-[var(--accent-danger)]"
               style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 28%, transparent)' }}>
               <LogOut className="w-3.5 h-3.5" />
-              Leave Session
+              Leave session
             </button>
           )}
 
@@ -262,7 +280,7 @@ export default function ShareModal({ slug, open, onClose }) {
               className="th-focus-ring th-btn-ghost flex flex-1 items-center justify-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-xs font-semibold text-[var(--accent-warning)]"
               style={{ borderColor: 'color-mix(in srgb, var(--accent-warning) 28%, transparent)' }}>
               <X className="w-3.5 h-3.5" />
-              Cancel Request
+              Cancel request
             </button>
           )}
         </div>
@@ -285,8 +303,10 @@ export default function ShareModal({ slug, open, onClose }) {
             </button>
           </div>
         )}
-      </div>
-    </div>
+      </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -318,16 +338,16 @@ function SessionInfoHost({ session, copied, copiedCode, regenerating, onCopy, on
   const duration = useSessionDuration(session?.createdAt);
 
   return (
-    <div className="space-y-2 border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-4 py-3">
+      <div className="vt-session-info space-y-2 border-b border-[var(--border-subtle)] px-4 py-3">
       {/* Room Code — big and bold */}
       {roomCode && (
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
-            <Hash className="w-3.5 h-3.5 text-[var(--attention-purple)]" />
-            <span className="vt-panel-kicker">Room Code</span>
+            <Hash className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+            <span className="vt-panel-kicker">Room code</span>
           </div>
           <div className="flex items-center gap-2 flex-1">
-            <span className="select-all font-mono text-lg font-bold tracking-[0.3em] text-[var(--attention-purple)]">
+            <span className="vt-session-room-code select-all font-mono text-lg font-bold tracking-[0.26em]">
               {roomCode}
             </span>
             <button onClick={onCopyCode}
@@ -386,14 +406,14 @@ function SessionInfoGuest({ session, permissions, requestPermission }) {
   const hasEdit = permissions?.canEdit;
 
   return (
-    <div className="flex items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-4 py-2.5">
+      <div className="vt-session-info flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-2.5">
       <div className="flex items-center gap-2">
         <div className="vt-workflow-chip" style={{ '--chip-color': hasEdit ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}>
           {hasEdit ? <Edit3 className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-          {hasEdit ? 'EDIT' : 'VIEW'}
+          {hasEdit ? 'Edit' : 'View'}
         </div>
         <span className="text-xs font-medium text-[var(--text-primary)]">
-          {hostName}&apos;s Session
+          Hosted by {hostName}
         </span>
       </div>
       {/* Permission pills — denied ones are clickable to request */}
@@ -423,7 +443,7 @@ function PendingKnocksSection({ knocks, onAdmit, onDeny }) {
       <div className="flex items-center gap-1.5 mb-2">
         <Bell className="w-3.5 h-3.5 text-[var(--accent-warning)]" />
         <span className="vt-panel-kicker text-[var(--accent-warning)]">
-          Requesting Access ({knocks.length})
+	          Join requests ({knocks.length})
         </span>
       </div>
       <div className="space-y-1.5">
@@ -470,7 +490,7 @@ function ConnectedGuestsSection({ guests, onUpdatePermissions, onKick }) {
       <div className="flex items-center gap-1.5 mb-2">
         <Users className="w-3.5 h-3.5 text-[var(--accent-secondary)]" />
         <span className="vt-panel-kicker">
-          Connected ({guests.length})
+          Connected peers ({guests.length})
         </span>
       </div>
       <div className="space-y-1.5">
@@ -531,7 +551,7 @@ function GuestRow({ guest, onUpdatePermissions, onKick }) {
                 <div className="flex items-center gap-1.5">
                   <Icon className="w-3 h-3" />
                   <span className="text-[11px] font-medium">{label}</span>
-                  {risk === 'high' && <span className="text-[9px] text-[var(--accent-danger)]">High</span>}
+                  {risk === 'high' && <span className="vt-session-risk">Privileged</span>}
                 </div>
                 <MiniToggle enabled={enabled} />
               </button>
@@ -551,7 +571,7 @@ function JoinByCodeSection({ code, onChange, onJoin, loading }) {
       <div className="flex items-center gap-1.5 mb-2">
         <Hash className="w-3.5 h-3.5 text-[var(--text-muted)]" />
         <span className="vt-panel-kicker">
-          Join by Room Code
+          Join by code
         </span>
       </div>
       <div className="flex items-center gap-2">
@@ -562,7 +582,7 @@ function JoinByCodeSection({ code, onChange, onJoin, loading }) {
             e.stopPropagation(); // prevent global shortcuts from intercepting input
             if (e.key === 'Enter') onJoin();
           }}
-          placeholder="Enter code…"
+          placeholder="ROOM-CODE"
           maxLength={8}
           className="th-input flex-1 rounded-[var(--radius-control)] border px-3 py-1.5 font-mono text-sm uppercase tracking-widest focus:outline-none"
           aria-label="Room code"
