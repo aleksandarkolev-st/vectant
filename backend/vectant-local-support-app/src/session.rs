@@ -48,14 +48,54 @@ impl SessionGuard {
             .take(48)
             .map(char::from)
             .collect();
-        let token_fingerprint = fingerprint(&token);
         let device_fingerprint = fingerprint(&format!("device:{token}"));
+        Self::new_bound_with_token(
+            account_id,
+            org_id,
+            workspace_id,
+            device_fingerprint,
+            ttl,
+            token,
+        )
+    }
+
+    pub fn new_bound_device(
+        account_id: impl Into<String>,
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        device_fingerprint: impl Into<String>,
+        ttl: Duration,
+    ) -> Self {
+        let token: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(48)
+            .map(char::from)
+            .collect();
+        Self::new_bound_with_token(
+            account_id,
+            org_id,
+            workspace_id,
+            device_fingerprint,
+            ttl,
+            token,
+        )
+    }
+
+    fn new_bound_with_token(
+        account_id: impl Into<String>,
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        device_fingerprint: impl Into<String>,
+        ttl: Duration,
+        token: String,
+    ) -> Self {
+        let token_fingerprint = fingerprint(&token);
         Self {
             session_id: format!("sess_{}", Uuid::new_v4()),
             account_id: account_id.into(),
             org_id: org_id.into(),
             workspace_id: workspace_id.into(),
-            device_fingerprint,
+            device_fingerprint: device_fingerprint.into(),
             token,
             token_fingerprint,
             expires_at: Instant::now() + ttl,

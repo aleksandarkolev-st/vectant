@@ -991,7 +991,7 @@ function verifyDevicePairingProof(proof, pairing) {
   if (!/^[0-9a-f]{64}$/i.test(proof.device_public_key)) {
     return deny("pairing_device_public_key_invalid", "Device public key was not accepted.");
   }
-  if (!/^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/i.test(proof.device_fingerprint)) {
+  if (!isSha256Hex(proof.device_fingerprint, 16)) {
     return deny("pairing_device_fingerprint_invalid", "Device fingerprint was not accepted.");
   }
   if (proof.device_fingerprint !== pairingDeviceFingerprint(proof.device_public_key)) {
@@ -1049,7 +1049,7 @@ function pairingDeviceFingerprint(devicePublicKeyHex) {
     .update("vectant-local-support-device:")
     .update(Buffer.from(devicePublicKeyHex, "hex"))
     .digest("hex");
-  return `${digest.slice(0, 4)}-${digest.slice(4, 8)}-${digest.slice(8, 12)}`;
+  return `sha256:${digest.slice(0, 16)}`;
 }
 
 function pairingFingerprint(code) {

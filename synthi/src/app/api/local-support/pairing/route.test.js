@@ -125,6 +125,8 @@ describe("local support pairing route", () => {
       }),
     });
     expect(paired.device_public_key_hash).toMatch(/^sha256:/);
+    expect(paired.device_fingerprint).toMatch(/^sha256:[0-9a-f]{16}$/);
+    expect(paired.consent_receipt.device_fingerprint).toBe(paired.device_fingerprint);
     expect(JSON.stringify(paired)).not.toContain("PRIVATE KEY");
 
     const replay = await POST(request(completeBody(challenge)));
@@ -195,7 +197,7 @@ function deviceFingerprint(devicePublicKeyHex) {
     .update("vectant-local-support-device:")
     .update(Buffer.from(devicePublicKeyHex, "hex"))
     .digest("hex");
-  return `${digest.slice(0, 4)}-${digest.slice(4, 8)}-${digest.slice(8, 12)}`;
+  return `sha256:${digest.slice(0, 16)}`;
 }
 
 function pairingChallengePayload(...parts) {

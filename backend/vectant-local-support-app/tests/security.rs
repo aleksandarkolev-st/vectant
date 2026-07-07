@@ -665,7 +665,9 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
         .unwrap()
         .with_timezone(&chrono::Utc);
 
-    assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
+    assert!(
+        validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok()
+    );
 
     let mut wrong_session = req.clone();
     wrong_session.session_id = "sess_attacker".to_string();
@@ -774,6 +776,39 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
 }
 
 #[test]
+fn local_sessions_can_bind_to_pairing_device_identity() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let paired_device = DeviceIdentity::generate().public_identity();
+    let session = SessionGuard::new_bound_device(
+        "acct_local",
+        "org_local",
+        "wk_123",
+        paired_device.device_fingerprint.clone(),
+        std::time::Duration::from_secs(60),
+    );
+    let mut req = request("app.rs");
+    req.session_id = session.session_id().to_string();
+    req.device_fingerprint = paired_device.device_fingerprint.clone();
+    let auth = local_auth(&session, &req.request_id);
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    assert_eq!(session.device_fingerprint(), paired_device.device_fingerprint);
+    assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
+
+    let attacker = DeviceIdentity::generate().public_identity();
+    let mut wrong_device = auth.clone();
+    wrong_device.device_fingerprint = attacker.device_fingerprint.clone();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &req, &wrong_device, now),
+        Err(LocalAuthorizationError::DeviceMismatch)
+    );
+}
+
+#[test]
 fn pairing_requires_matching_fingerprint_and_rate_limits() {
     let mut pairing = PairingSession::new(std::time::Duration::from_secs(60));
     let public = pairing.public_code();
@@ -794,6 +829,9 @@ fn pairing_requires_matching_fingerprint_and_rate_limits() {
 #[test]
 fn pairing_proof_binds_device_key_to_challenge() {
     let device = DeviceIdentity::generate();
+    let public = device.public_identity();
+    assert!(public.device_fingerprint.starts_with("sha256:"));
+    assert_eq!(public.device_fingerprint.len(), "sha256:".len() + 16);
     let proof = device.sign_pairing_challenge("pair_123", "nonce_123", "browser_123", "user_123");
 
     assert!(verify_pairing_proof(&proof).is_ok());

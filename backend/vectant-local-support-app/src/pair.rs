@@ -186,7 +186,7 @@ fn device_fingerprint(verifying_key: &VerifyingKey) -> String {
     hasher.update(b"vectant-local-support-device:");
     hasher.update(verifying_key.to_bytes());
     let digest = hex::encode(hasher.finalize());
-    format!("{}-{}-{}", &digest[0..4], &digest[4..8], &digest[8..12])
+    format!("sha256:{}", &digest[0..16])
 }
 
 fn pairing_challenge_payload(
