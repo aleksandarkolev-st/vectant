@@ -1525,6 +1525,215 @@
   font-weight: 650;
 }
 
+.vt-session-control {
+  isolation: isolate;
+}
+
+.vt-session-modal {
+  border-color: color-mix(in srgb, var(--accent-primary) 18%, var(--border-medium));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 4%, transparent), transparent 18%),
+    color-mix(in srgb, var(--bg-elevated) 86%, var(--bg-app) 14%);
+  box-shadow:
+    0 30px 90px -54px color-mix(in srgb, var(--accent-primary) 52%, transparent),
+    0 28px 90px -36px color-mix(in srgb, black 88%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.vt-session-info {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-primary) 7%, transparent), transparent 74%),
+    color-mix(in srgb, var(--bg-panel) 78%, var(--bg-app) 22%);
+}
+
+.vt-session-room-code {
+  color: var(--accent-primary);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+}
+
+.vt-session-risk {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent-danger) 24%, transparent);
+  border-radius: 4px;
+  color: var(--accent-danger);
+  background: color-mix(in srgb, var(--accent-danger) 8%, transparent);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vt-session-button,
+.vt-session-local {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--chip-color, var(--text-muted)) 22%, var(--border-subtle));
+  border-radius: 8px;
+  color: var(--chip-color, var(--text-secondary));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 4%, transparent), transparent),
+    color-mix(in srgb, var(--bg-elevated) 72%, var(--bg-app) 28%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+    0 12px 26px -24px color-mix(in srgb, var(--chip-color, var(--text-muted)) 42%, transparent);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.vt-session-button:hover {
+  transform: translateY(-1px);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--chip-color, var(--accent-primary)) 42%, var(--border-subtle));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 6%, transparent), transparent),
+    color-mix(in srgb, var(--bg-elevated) 82%, var(--chip-color, var(--accent-primary)) 7%);
+}
+
+.vt-session-button:active {
+  transform: translateY(0) scale(0.985);
+}
+
+.vt-session-button--live {
+  padding-left: 9px;
+}
+
+.vt-session-button--danger:hover {
+  color: var(--accent-danger);
+}
+
+.vt-session-count {
+  min-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--chip-color, var(--accent-primary)) 14%, transparent);
+  color: var(--text-primary);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.vt-session-local {
+  color: var(--text-muted);
+  border-color: color-mix(in srgb, var(--border-subtle) 80%, transparent);
+}
+
+.vt-session-local > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-muted) 10%, transparent);
+}
+
+.vt-branch-trigger {
+  max-width: 176px;
+  border-radius: 7px !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 4%, transparent), transparent),
+    color-mix(in srgb, var(--bg-app) 72%, var(--bg-elevated) 28%) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.vt-branch-trigger:hover {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 5%, transparent), transparent),
+    color-mix(in srgb, var(--bg-elevated) 72%, var(--accent-primary) 8%) !important;
+}
+
+.vt-branch-menu {
+  border-radius: 10px;
+  box-shadow:
+    0 28px 80px -46px color-mix(in srgb, var(--accent-primary) 44%, transparent),
+    0 20px 70px -32px color-mix(in srgb, black 86%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+
+.vt-branch-menu__label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px 6px;
+  color: var(--text-muted);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.vt-branch-menu__label span:last-child {
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.vt-branch-health {
+  display: flex;
+  gap: 4px;
+  padding: 0 6px 7px;
+}
+
+.vt-branch-health span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 21px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 82%, transparent);
+  border-radius: 6px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-app) 48%, transparent);
+  font-family: var(--font-geist-mono), "SF Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.vt-branch-health strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.vt-branch-health span.is-active {
+  border-color: color-mix(in srgb, var(--accent-warning) 24%, transparent);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent-warning) 7%, transparent);
+}
+
+.vt-branch-option {
+  min-height: 30px;
+  border: 1px solid transparent;
+}
+
+.vt-branch-option[data-state="checked"] {
+  border-color: color-mix(in srgb, var(--accent-primary) 24%, transparent);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-primary) 10%, transparent), transparent 70%),
+    color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+}
+
+.vt-branch-option--create {
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  padding-top: 8px;
+}
+
 .vt-workflow-alert {
   --workflow-alert-color: var(--accent-warning);
   border: 1px solid color-mix(in srgb, var(--workflow-alert-color) 28%, transparent);
