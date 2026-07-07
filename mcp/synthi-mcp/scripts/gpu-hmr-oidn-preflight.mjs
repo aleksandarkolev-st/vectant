@@ -102,8 +102,115 @@ const CFG = {
   outputOracleAllowedRoots: process.env.SYNTHI_OIDN_OUTPUT_ORACLE_ALLOWED_ROOTS ?? '',
 };
 
-function failConfig(message) {
-  throw new Error(`${message}. Set SYNTHI_OIDN_WORKER_CONTAINER and SYNTHI_OIDN_REPO_PATH explicitly for live preflight.`);
+function missingOidnLiveConfigGaps() {
+  const gaps = [];
+  if (!CFG.workerContainer) gaps.push('oidn_worker_container_missing');
+  if (!CFG.repoPath) gaps.push('oidn_repo_path_missing');
+  return gaps;
+}
+
+function buildOidnConfigRefusalProof(configGaps = []) {
+  const startedAt = new Date().toISOString();
+  const openGaps = compactStringList([
+    ...configGaps,
+    'oidn_live_preflight_not_executed',
+    'oidn_runtime_boundary_not_observed',
+    'oidn_output_oracle_not_observed',
+  ]);
+  const classification = {
+    resultState: 'oidn-hip-runtime-preflight-config-refused',
+    oidnHipRuntimePreflightAccepted: false,
+    oidnHipOutputProofAccepted: false,
+    oidnHipOutputOracleProven: false,
+    oidnCpuDiagnosticsPassed: false,
+    openGaps,
+    missingLibraries: [],
+    unsupportedReasons: openGaps,
+  };
+  const timingMetrics = oidnPreflightTimingMetrics({ durationNs: 0, classification });
+  const pathIntegrity = {
+    schemaVersion: 'synthi.gpu_hmr.oidn_config_path_integrity_refusal.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_config_path_integrity_refusal.v1',
+    proofAuthority: 'oidn_config_path_integrity_refusal_only_not_gpu_hmr_success',
+    proof_authority: 'oidn_config_path_integrity_refusal_only_not_gpu_hmr_success',
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    noShimApplied: true,
+    no_shim_applied: true,
+    noSymlinkApplied: true,
+    no_symlink_applied: true,
+    noSynthesizedRuntime: true,
+    no_synthesized_runtime: true,
+    blockingGaps: openGaps,
+    blocking_gaps: openGaps,
+  };
+  const proofBase = {
+    schema: 'synthi.gpu_hmr.oidn_preflight.v1',
+    schemaVersion: 'synthi.gpu_hmr.oidn_preflight.v1',
+    schema_version: 'synthi.gpu_hmr.oidn_preflight.v1',
+    proofAuthority: 'oidn_live_preflight_config_refusal_only_not_gpu_hmr_success',
+    proof_authority: 'oidn_live_preflight_config_refusal_only_not_gpu_hmr_success',
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    slug: CFG.slug,
+    startedAt,
+    completedAt: startedAt,
+    durationMs: 0,
+    timingMetrics,
+    timing_metrics: timingMetrics,
+    workerContainer: CFG.workerContainer || null,
+    repoPath: CFG.repoPath || null,
+    seed: CFG.seed,
+    oidnTool: null,
+    oidnToolProbe: null,
+    hipDeviceLibrary: null,
+    hipDeviceLibraryProbe: null,
+    pathIntegrity,
+    path_integrity: pathIntegrity,
+    ldd: { skipped: true, reason: 'oidn_live_preflight_config_refused', missingLibraries: [] },
+    tests: [],
+    backendEvidence: null,
+    outputOracle: null,
+    output_oracle: null,
+    outputOracleCommandExecution: null,
+    output_oracle_command_execution: null,
+    workerOutputOracleTransport: null,
+    worker_output_oracle_transport: null,
+    runtimeBoundaryBridge: null,
+    runtime_boundary_bridge: null,
+    runtimeBoundaryRunModeProof: null,
+    runtime_boundary_run_mode_proof: null,
+    classification,
+    acceptance: {
+      acceptedForOidnHipRuntimePreflight: false,
+      acceptedForHipOutputProof: false,
+      acceptedForOidnHipOutputProof: false,
+      outputOracleProven: false,
+      output_oracle_proven: false,
+      runtimeBoundaryProofAccepted: false,
+      runtime_boundary_proof_accepted: false,
+      gpuHmrSuccess: false,
+      reason: 'oidn_live_preflight_config_refused',
+      openGaps,
+      open_gaps: openGaps,
+      cpuDiagnosticOnly: false,
+      noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
+    },
+  };
+  const proofId = `oidn-preflight-proof:sha256:${sha256Json(proofBase)}`;
+  return { ...proofBase, proofId };
 }
 
 function shellQuote(value) {
@@ -1477,8 +1584,8 @@ function oidnPreflightTimingMetrics({ durationNs, classification }) {
 }
 
 async function buildProof() {
-  if (!CFG.workerContainer) failConfig('OIDN preflight requires a worker container');
-  if (!CFG.repoPath) failConfig('OIDN preflight requires the HIPRT/OIDN repo path inside the worker');
+  const configGaps = missingOidnLiveConfigGaps();
+  if (configGaps.length > 0) return buildOidnConfigRefusalProof(configGaps);
 
   const startedAt = new Date().toISOString();
   const started = process.hrtime.bigint();
@@ -1732,6 +1839,37 @@ function runSelfCheck() {
   assert(
     shimRejected.unsupportedReasons.includes('oidn_wrapper_or_shim_detected'),
     'shim rejection reason absent',
+  );
+  const configRefusal = buildOidnConfigRefusalProof([
+    'oidn_worker_container_missing',
+    'oidn_repo_path_missing',
+  ]);
+  assert(
+    configRefusal.proofAuthority === 'oidn_live_preflight_config_refusal_only_not_gpu_hmr_success',
+    'OIDN config refusal authority must remain refusal-only',
+  );
+  assert(
+    /^oidn-preflight-proof:sha256:[a-f0-9]{64}$/.test(configRefusal.proofId),
+    'OIDN config refusal proof id must be content-addressed',
+  );
+  assert(
+    configRefusal.classification.resultState === 'oidn-hip-runtime-preflight-config-refused',
+    'OIDN config refusal state not classified',
+  );
+  assert(configRefusal.classification.openGaps.includes('oidn_worker_container_missing'), 'worker config gap missing');
+  assert(configRefusal.classification.openGaps.includes('oidn_repo_path_missing'), 'repo config gap missing');
+  assert(
+    configRefusal.classification.openGaps.includes('oidn_live_preflight_not_executed'),
+    'live preflight execution gap missing',
+  );
+  assert(configRefusal.acceptedForGpuHmr === false, 'OIDN config refusal cannot claim GPU HMR acceptance');
+  assert(configRefusal.gpuHmrSuccess === false, 'OIDN config refusal cannot claim GPU HMR success');
+  assert(configRefusal.canSatisfyRuntimeProof === false, 'OIDN config refusal cannot satisfy runtime proof');
+  assert(configRefusal.pathIntegrity.noShimApplied === true, 'OIDN config refusal must not apply shims');
+  assert(configRefusal.pathIntegrity.noSymlinkApplied === true, 'OIDN config refusal must not apply symlinks');
+  assert(
+    configRefusal.pathIntegrity.noSynthesizedRuntime === true,
+    'OIDN config refusal must not synthesize a runtime',
   );
   return runOutputOracleSelfCheck().then(() => {
     console.log('[ok] OIDN preflight self-check passed');
