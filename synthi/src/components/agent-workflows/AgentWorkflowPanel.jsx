@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -621,6 +621,61 @@ function buildActions(model) {
   };
 }
 
+function buildAgentModes(model, summary, localRecording) {
+  const traceReady = hasRecordedTrace(model);
+  const compiled = hasCompiledContract(model);
+  const scriptReady = hasGeneratedScript(model);
+  const unresolvedCount = unresolvedQuestionCount(model);
+  const reviewCount = Number(summary.blockerCount || 0);
+
+  return [
+    {
+      id: 'plan',
+      label: 'Plan',
+      status: compiled ? 'Contract' : traceReady ? 'Trace' : 'Draft',
+      detail: unresolvedCount > 0
+        ? `${unresolvedCount} contract decisions`
+        : traceReady
+          ? 'Trace can be compiled'
+          : 'Attach, observe, teach',
+      tone: compiled ? 'ok' : traceReady ? 'warn' : 'neutral',
+      icon: Route,
+      section: 'runbook',
+    },
+    {
+      id: 'execute',
+      label: 'Execute',
+      status: localRecording ? 'Recording' : scriptReady ? 'Replay' : 'Manual',
+      detail: localRecording
+        ? 'Browser events are captured'
+        : scriptReady
+          ? 'Replay artifact is ready'
+          : 'Controlled browser actions',
+      tone: localRecording || scriptReady ? 'ok' : 'neutral',
+      icon: Play,
+      section: 'runbook',
+    },
+    {
+      id: 'debug',
+      label: 'Debug',
+      status: traceReady ? `${summary.stepCount} events` : 'No trace',
+      detail: traceReady ? 'Inspect trace and replay state' : 'Teach a workflow first',
+      tone: traceReady ? 'ok' : 'neutral',
+      icon: Gauge,
+      section: 'trace',
+    },
+    {
+      id: 'review',
+      label: 'Review',
+      status: reviewCount > 0 ? `${reviewCount} gates` : 'Clear',
+      detail: reviewCount > 0 ? 'Resolve hardening gates' : 'Policy gates are clear',
+      tone: reviewCount > 0 ? 'warn' : 'ok',
+      icon: ShieldCheck,
+      section: reviewCount > 0 ? 'hardening' : 'dojo',
+    },
+  ];
+}
+
 export function createDefaultWorkflowViewModel(workspaceSlug) {
   const workspaceLabel = readableWorkspaceLabel(workspaceSlug);
   const model = {
@@ -839,6 +894,84 @@ function WorkflowCommandStrip({ items, activeId, onSelect }) {
   );
 }
 
+function AgentModeStrip({ modes, activeId, onSelect, reducedMotion = false }) {
+  const activeMode = modes.find((mode) => mode.id === activeId) || modes[0];
+
+  return (
+    <section
+      data-testid="agent-workflow-mode-strip"
+      className="rounded-md border p-1"
+      style={{
+        borderColor: 'var(--border-subtle)',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 74%, transparent), color-mix(in srgb, var(--bg-panel) 88%, transparent))',
+      }}
+      aria-label="Agent operating mode"
+    >
+      <div className="grid grid-cols-2 gap-1" role="tablist" aria-label="Agent modes">
+        {modes.map((mode) => {
+          const active = activeId === mode.id;
+          const Icon = mode.icon || Workflow;
+          const statusStyle = toneStyle(mode.tone);
+          return (
+            <button
+              key={mode.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className="th-focus-ring relative min-h-[58px] overflow-hidden rounded-[var(--radius-control)] border px-2.5 py-2 text-left transition-[border-color,color,transform] hover:-translate-y-px"
+              style={{
+                borderColor: active
+                  ? 'color-mix(in srgb, var(--primary) 42%, var(--border-subtle))'
+                  : 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              }}
+              onClick={() => onSelect?.(mode.id)}
+            >
+              {active ? (
+                <motion.span
+                  layoutId="agent-workflow-mode-active"
+                  className="absolute inset-0"
+                  style={{
+                    background: 'linear-gradient(135deg, color-mix(in srgb, var(--primary) 13%, var(--bg-panel)), color-mix(in srgb, var(--bg-surface) 84%, transparent))',
+                  }}
+                  transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
+                />
+              ) : null}
+              <span className="relative z-10 grid min-w-0 gap-1">
+                <span className="flex min-w-0 items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+                    <span className="truncate text-xs font-semibold">{mode.label}</span>
+                  </span>
+                  <span
+                    className="max-w-20 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                    style={statusStyle}
+                  >
+                    {mode.status}
+                  </span>
+                </span>
+                <span className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {mode.detail}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {activeMode ? (
+        <div className="mt-1 flex min-h-8 items-center justify-between gap-3 border-t px-2 pt-1.5 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+          <span className="truncate" style={{ color: 'var(--text-muted)' }}>
+            Operating mode
+          </span>
+          <span className="min-w-0 truncate text-right font-medium">
+            {activeMode.label}: {activeMode.detail}
+          </span>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ActionButton({
   action,
   label,
@@ -864,8 +997,8 @@ function ActionButton({
       ].join(' ')}
       style={{
         borderColor: 'var(--border-subtle)',
-        background: primary ? 'var(--accent-primary)' : 'var(--bg-panel)',
-        color: primary ? 'var(--accent-foreground, var(--bg-app))' : 'var(--text-primary)',
+        background: primary ? 'var(--primary)' : 'var(--bg-panel)',
+        color: primary ? 'var(--primary-foreground)' : 'var(--text-primary)',
       }}
       disabled={disabled}
       title={disabledMessage}
@@ -1559,6 +1692,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   isBusy = false,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
+  const [activeAgentMode, setActiveAgentMode] = useState('plan');
   const [activeWorkflowSection, setActiveWorkflowSection] = useState('runbook');
   const [selectedStageId, setSelectedStageId] = useState('');
   const prefersReducedMotion = useReducedMotion();
@@ -1595,6 +1729,10 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   const headerTone = summary.blockerCount > 0 ? 'warn' : hasGeneratedScript(model) ? 'ok' : 'neutral';
   const headerLabel = localRecording ? 'Teaching' : model.workflow?.label || 'Workflow draft';
   const traceReady = hasRecordedTrace(model);
+  const agentModes = useMemo(
+    () => buildAgentModes(model, summary, localRecording),
+    [localRecording, model, summary],
+  );
   const selectedStage = useMemo(() => (
     model.stages.find((stage) => stage.id === selectedStageId) || model.stages[0] || null
   ), [model.stages, selectedStageId]);
@@ -1614,6 +1752,16 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
       model.stages.some((stage) => stage.id === current) ? current : model.stages[0].id
     ));
   }, [model.stages]);
+
+  useEffect(() => {
+    if (localRecording) {
+      setActiveAgentMode('execute');
+      return;
+    }
+    setActiveAgentMode((current) => (
+      agentModes.some((mode) => mode.id === current) ? current : agentModes[0]?.id || 'plan'
+    ));
+  }, [agentModes, localRecording]);
 
   const emitWorkflowAction = useCallback((action, payload = {}) => {
     if (!action) return;
@@ -1640,6 +1788,12 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
     target?.scrollIntoView?.({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' });
   }, [prefersReducedMotion]);
 
+  const selectAgentMode = useCallback((modeId) => {
+    const mode = agentModes.find((item) => item.id === modeId);
+    setActiveAgentMode(modeId);
+    if (mode?.section) selectWorkflowSection(mode.section);
+  }, [agentModes, selectWorkflowSection]);
+
   return (
     <section
       data-testid="agent-workflow-panel"
@@ -1662,7 +1816,14 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div className="grid gap-2" data-testid="agent-workflow-readiness">
+        <AgentModeStrip
+          modes={agentModes}
+          activeId={activeAgentMode}
+          onSelect={selectAgentMode}
+          reducedMotion={prefersReducedMotion}
+        />
+
+        <div className="mt-3 grid gap-2" data-testid="agent-workflow-readiness">
           {model.readiness.map((row) => (
             <ReadinessRow key={row.label} row={row} />
           ))}
