@@ -208,6 +208,37 @@
     min-width: 460px !important;
 }
 
+/* Tablet has enough room for the island affordance, but not for every
+ * extension/status label. Keep the trusted command-center shape and collapse
+ * nonessential text before it can collide. */
+.vp-tablet .status-island .status-island-label,
+.vp-tablet .status-island .status-island-cursor,
+.vp-tablet .status-island .status-island-branch button > span,
+.vp-tablet .status-island .status-island-branch button > svg:last-child {
+    max-width: 0 !important;
+    opacity: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+.vp-tablet .status-island .status-island-branch button {
+    gap: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+.vp-tablet .status-island .status-island-row {
+    gap: 4px !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+}
+
+.vp-tablet .status-island .status-island-zone {
+    gap: 2px !important;
+}
+
 /* The tablet resting width must not pin the shell open while it is
  * collapsing back to the 28px logo seed, otherwise the brackets keep
  * tracking the tablet min-width instead of closing around the V. */
