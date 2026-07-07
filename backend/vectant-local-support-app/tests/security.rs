@@ -657,6 +657,10 @@ fn pairing_requires_matching_fingerprint_and_rate_limits() {
     let public = pairing.public_code();
     assert_eq!(pairing.verify(&public.code, "bad-fingerprint"), Err(PairingError::Mismatch));
     assert!(pairing.verify(&public.code, &public.fingerprint).is_ok());
+    assert_eq!(
+        pairing.verify(&public.code, &public.fingerprint),
+        Err(PairingError::Consumed)
+    );
 
     let mut limited = PairingSession::new(std::time::Duration::from_secs(60));
     for _ in 0..5 {

@@ -85,6 +85,7 @@ pub struct PairingSession {
     fingerprint: String,
     expires_at: Instant,
     attempts: u8,
+    consumed: bool,
 }
 
 impl PairingSession {
@@ -101,6 +102,7 @@ impl PairingSession {
             fingerprint,
             expires_at: Instant::now() + ttl,
             attempts: 0,
+            consumed: false,
         }
     }
 
@@ -119,12 +121,16 @@ impl PairingSession {
         if self.attempts > 5 {
             return Err(PairingError::RateLimited);
         }
+        if self.consumed {
+            return Err(PairingError::Consumed);
+        }
         if Instant::now() > self.expires_at {
             return Err(PairingError::Expired);
         }
         if submitted_code != self.code || submitted_fingerprint != self.fingerprint {
             return Err(PairingError::Mismatch);
         }
+        self.consumed = true;
         Ok(())
     }
 }
@@ -133,6 +139,7 @@ impl PairingSession {
 pub enum PairingError {
     Expired,
     Mismatch,
+    Consumed,
     RateLimited,
     BadPublicKey,
     BadSignature,
