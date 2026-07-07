@@ -1271,7 +1271,8 @@ fn audit_export_contains_consent_receipts_and_detects_tampering() {
         device_fingerprint: "sha256:device12345678".to_string(),
         actor: "support_agent".to_string(),
         capability: "workspace.log.read".to_string(),
-        target_display: "dev-server.log".to_string(),
+        target_display: "dev-server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
+            .to_string(),
         classification: Classification::L3,
         content_sha256: Some("sha256:content".to_string()),
         scope: "once".to_string(),
@@ -1292,6 +1293,12 @@ fn audit_export_contains_consent_receipts_and_detects_tampering() {
     assert!(!export.raw_bodies_included);
     assert_eq!(export.consent_receipts.len(), 1);
     assert_eq!(export.consent_receipts[0].approval_id, "appr_123");
+    assert!(export.consent_receipts[0]
+        .target_display
+        .contains("[REDACTED:authorization_header]"));
+    assert!(!serde_json::to_string(&export)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
 
     let mut tampered = export.clone();
     tampered.events[0].summary = "Consent silently changed".to_string();

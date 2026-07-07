@@ -114,7 +114,9 @@ impl AuditLog {
         });
     }
 
-    pub fn record_consent(&mut self, receipt: ConsentReceipt) {
+    pub fn record_consent(&mut self, mut receipt: ConsentReceipt) {
+        let report = self.scanner.scan(&receipt.target_display);
+        receipt.target_display = self.scanner.redact(&receipt.target_display, &report);
         self.append(
             AuditClass::Control,
             Some(receipt.request_id.clone()),
