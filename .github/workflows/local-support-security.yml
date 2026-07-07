@@ -63,8 +63,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run focused policy tests
-        run: npm run test --workspace synthi -- src/lib/local-support/acceptance.test.js src/lib/local-support/controlPlane.test.js src/app/api/local-support/request-envelope/route.test.js src/app/api/local-support/relay/route.test.js src/app/api/local-support/admin/state/route.test.js src/app/api/local-support/policy/route.test.js src/app/api/local-support/security-event/route.test.js
+      - name: Run focused local support tests
+        run: >
+          npm run test --workspace synthi --
+          src/lib/local-support/acceptance.test.js
+          src/lib/local-support/controlPlane.test.js
+          src/lib/local-support/nextConfigHeaders.test.js
+          src/app/api/local-support/httpGuards.test.js
+          src/app/api/local-support/request-envelope/route.test.js
+          src/app/api/local-support/relay/route.test.js
+          src/app/api/local-support/preview-gateway/route.test.js
+          src/app/api/local-support/admin/state/route.test.js
+          src/app/api/local-support/policy/route.test.js
+          src/app/api/local-support/security-event/route.test.js
+          src/app/api/local-support/transparency-state/route.test.js
+          src/app/api/local-support/pairing/route.test.js
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium
