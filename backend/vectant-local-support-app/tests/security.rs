@@ -1438,7 +1438,14 @@ fn response_headers_strip_cookie_and_block_service_workers() {
 
 #[test]
 fn preview_blocks_service_worker_script_paths() {
-    for path in ["/sw.js", "/service-worker.js?cache=1", "/static/serviceworker.js"] {
+    for path in [
+        "/sw.js",
+        "/service-worker.js?cache=1",
+        "/static/serviceworker.js",
+        "/assets/service-worker.js/ignored",
+        "/%73w.js",
+        "/static/%73erviceworker.js?cache=1",
+    ] {
         assert!(!preview_path_allowed(path), "service worker path should be blocked: {path}");
     }
     assert!(preview_path_allowed("/assets/app.js"));

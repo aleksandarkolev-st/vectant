@@ -164,12 +164,13 @@ pub fn preview_token_matches(approval: &PortApproval, token: &str) -> bool {
 }
 
 pub fn preview_path_allowed(path: &str) -> bool {
-    let normalized = path.split('?').next().unwrap_or(path).to_ascii_lowercase();
-    let filename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-    !matches!(
-        filename,
-        "sw.js" | "service-worker.js" | "serviceworker.js" | "worker.js"
-    )
+    let normalized = percent_decode_ascii(path.split('?').next().unwrap_or(path))
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    !normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .any(is_blocked_worker_script_name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -613,6 +614,40 @@ fn parse_connection_tokens(value: &str) -> Vec<String> {
         .map(|token| token.trim().to_ascii_lowercase())
         .filter(|token| !token.is_empty())
         .collect()
+}
+
+fn is_blocked_worker_script_name(segment: &str) -> bool {
+    matches!(
+        segment,
+        "sw.js" | "service-worker.js" | "serviceworker.js" | "worker.js"
+    )
+}
+
+fn percent_decode_ascii(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = String::with_capacity(value.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2])) {
+                decoded.push(char::from((high << 4) | low));
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(char::from(bytes[index]));
+        index += 1;
+    }
+    decoded
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn hash_process_identity(process_identity: &str) -> String {
