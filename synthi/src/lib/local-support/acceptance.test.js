@@ -7,7 +7,9 @@ import {
   UX_ACCEPTANCE_PROMPTS,
   summarizeLocalSupportReleaseReadiness,
 } from "./acceptance";
-import { readLocalSupportPolicy, validateRequestEnvelope } from "./controlPlane";
+import { readLocalSupportPolicy, signDeviceProof, validateRequestEnvelope } from "./controlPlane";
+
+const DEVICE_PROOF_SECRET = "test-device-proof-secret";
 
 const PLAN_SECURITY_BLOCKERS = [
   "loopback_bind_only",
@@ -141,7 +143,10 @@ describe("local support release acceptance evidence", () => {
   });
 
   it("keeps release-critical MVP capabilities disabled by default", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = readLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+      VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET: DEVICE_PROOF_SECRET,
+    });
     expect(policy.mvp).toMatchObject({
       balanced_mode_default: true,
       manual_mode_available: true,
@@ -163,26 +168,24 @@ describe("local support release acceptance evidence", () => {
       "browser.console.read",
       "browser.network_summary.read",
     ]) {
-      expect(
-        validateRequestEnvelope(
-          {
-            request_id: `req_${capability}`,
-            session_id: "sess_acceptance",
-            account_id: "acct_acceptance",
-            org_id: "org_acceptance",
-            workspace_id: "wk_acceptance",
-            device_fingerprint: "sha256:aaaaaaaaaaaaaaaa",
-            device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            capability,
-            actor: "support_agent",
-            expires_at: new Date(Date.now() + 60_000).toISOString(),
-            app_version: "0.1.0",
-            protocol_version: "local-support-mvp.1",
-            policy_version: "2026.07.05",
-          },
-          policy,
-        ),
-      ).toMatchObject({
+      const envelope = {
+        request_id: `req_${capability}`,
+        session_id: "sess_acceptance",
+        account_id: "acct_acceptance",
+        org_id: "org_acceptance",
+        workspace_id: "wk_acceptance",
+        device_fingerprint: "sha256:aaaaaaaaaaaaaaaa",
+        capability,
+        actor: "support_agent",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        app_version: "0.1.0",
+        protocol_version: "local-support-mvp.1",
+        policy_version: "2026.07.05",
+      };
+      expect(validateRequestEnvelope({
+        ...envelope,
+        device_proof: signDeviceProof(envelope, DEVICE_PROOF_SECRET),
+      }, policy)).toMatchObject({
         decision: "denied",
         bytes_sent: 0,
       });

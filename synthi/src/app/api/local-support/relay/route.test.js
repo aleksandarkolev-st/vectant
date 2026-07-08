@@ -3,12 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
+  signDeviceProof,
   signRequestEnvelope,
 } from "@/lib/local-support/controlPlane";
 
 import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
+const DEVICE_PROOF_SECRET = "test-device-proof-secret";
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -16,15 +18,20 @@ afterEach(() => {
   clearRequestEnvelopeReplayCache();
 });
 
+function enableLocalSupport() {
+  process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+  process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+  process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = DEVICE_PROOF_SECRET;
+}
+
 function envelope(overrides = {}) {
-  return {
+  const body = {
     request_id: "req_relay_123",
     session_id: "sess_relay_123",
     account_id: "acct_relay_123",
     org_id: "org_relay_123",
     workspace_id: "wk_relay_123",
     device_fingerprint: "sha256:3333333333333333",
-    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "workspace.log.read",
     actor: "support_agent",
     target_display: "server.log Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
@@ -36,6 +43,10 @@ function envelope(overrides = {}) {
     protocol_version: "local-support-mvp.1",
     policy_version: "2026.07.05",
     ...overrides,
+  };
+  return {
+    ...body,
+    device_proof: overrides.device_proof || signDeviceProof(body, DEVICE_PROOF_SECRET),
   };
 }
 
@@ -78,8 +89,7 @@ describe("local support relay route", () => {
   });
 
   it("denies cross-origin relay attempts before signature checks", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope(), { headers: { origin: "https://evil.example" } }));
     const json = await response.json();
@@ -93,8 +103,7 @@ describe("local support relay route", () => {
   });
 
   it("denies cross-site fetch metadata before relay signature checks", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope(), { headers: { "sec-fetch-site": "cross-site" } }));
     const json = await response.json();
@@ -108,8 +117,7 @@ describe("local support relay route", () => {
   });
 
   it("requires signed envelopes and rejects replay before relay forwarding", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const unsigned = await POST(request(envelope()));
     expect(unsigned.status).toBe(403);
@@ -140,8 +148,7 @@ describe("local support relay route", () => {
   });
 
   it("refuses relay forwarding for the wrong account or organization", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
     process.env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID = "acct_relay_123";
     process.env.VECTANT_LOCAL_SUPPORT_ORG_ID = "org_relay_123";
     process.env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT = "sha256:3333333333333333";
@@ -181,8 +188,7 @@ describe("local support relay route", () => {
   });
 
   it("refuses relay forwarding for signed envelopes with unsafe identity fields", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope({
       session_id: "s".repeat(129),
@@ -200,8 +206,7 @@ describe("local support relay route", () => {
   });
 
   it("does not consume relay replay nonces for policy-denied envelopes", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const requestId = "req_relay_denied_then_valid";
     const denied = await POST(request(signedEnvelope({
@@ -229,8 +234,7 @@ describe("local support relay route", () => {
   });
 
   it("returns scrubbed relay summaries and never includes local body content", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope()));
     const json = await response.json();

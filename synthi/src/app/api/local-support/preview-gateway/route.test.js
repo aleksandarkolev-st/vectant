@@ -3,12 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
+  signDeviceProof,
   signRequestEnvelope,
 } from "@/lib/local-support/controlPlane";
 
 import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
+const DEVICE_PROOF_SECRET = "test-device-proof-secret";
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -16,15 +18,20 @@ afterEach(() => {
   clearRequestEnvelopeReplayCache();
 });
 
+function enableLocalSupport() {
+  process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+  process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+  process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = DEVICE_PROOF_SECRET;
+}
+
 function envelope(overrides = {}) {
-  return {
+  const body = {
     request_id: "req_preview_route_123",
     session_id: "sess_preview_route_123",
     account_id: "acct_preview_123",
     org_id: "org_preview_123",
     workspace_id: "wk_preview_123",
     device_fingerprint: "sha256:5555555555555555",
-    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "localhost.preview.browser",
     actor: "user_browser",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -41,6 +48,10 @@ function envelope(overrides = {}) {
       accept: "text/html",
     },
     ...overrides,
+  };
+  return {
+    ...body,
+    device_proof: overrides.device_proof || signDeviceProof(body, DEVICE_PROOF_SECRET),
   };
 }
 
@@ -66,8 +77,7 @@ function request(body, init = {}) {
 
 describe("local support preview-gateway route", () => {
   it("requires same-origin signed browser preview envelopes", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const crossOrigin = await POST(request(signedEnvelope(), { headers: { origin: "https://evil.example" } }));
     expect(crossOrigin.status).toBe(403);
@@ -88,8 +98,7 @@ describe("local support preview-gateway route", () => {
   });
 
   it("authorizes browser-only loopback preview without exposing response bodies", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope()));
     const json = await response.json();
@@ -114,8 +123,7 @@ describe("local support preview-gateway route", () => {
   });
 
   it("rejects preview replays and unsafe preview targets", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const body = signedEnvelope({ request_id: "req_preview_replay" });
     const first = await POST(request(body));
@@ -144,8 +152,7 @@ describe("local support preview-gateway route", () => {
   });
 
   it("blocks credentials, websocket, service-worker, and unsafe method attempts", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const cases = [
       [{ request_headers: { authorization: "Bearer secret" } }, "preview_credentials_header_blocked"],
@@ -170,8 +177,7 @@ describe("local support preview-gateway route", () => {
   });
 
   it("classifies preview redirects without proxying unsafe targets", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const loopback = await POST(request(signedEnvelope({
       request_id: "req_preview_redirect_loopback",
@@ -233,8 +239,7 @@ describe("local support preview-gateway route", () => {
   });
 
   it("rejects malformed JSON at the shared HTTP boundary", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request("{"));
     expect(response.status).toBe(400);

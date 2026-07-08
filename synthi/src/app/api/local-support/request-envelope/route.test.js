@@ -3,12 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
+  signDeviceProof,
   signRequestEnvelope,
 } from "@/lib/local-support/controlPlane";
 
 import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
+const DEVICE_PROOF_SECRET = "test-device-proof-secret";
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -40,15 +42,20 @@ function rawRequest(body, init = {}) {
   });
 }
 
+function enableLocalSupport() {
+  process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+  process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+  process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = DEVICE_PROOF_SECRET;
+}
+
 function envelope(overrides = {}) {
-  return {
+  const body = {
     request_id: "req_123",
     session_id: "sess_123",
     account_id: "acct_123",
     org_id: "org_123",
     workspace_id: "wk_123",
     device_fingerprint: "sha256:1111111111111111",
-    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "workspace.file.source.read",
     actor: "support_agent",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -56,6 +63,10 @@ function envelope(overrides = {}) {
     protocol_version: "local-support-mvp.1",
     policy_version: "2026.07.05",
     ...overrides,
+  };
+  return {
+    ...body,
+    device_proof: overrides.device_proof || signDeviceProof(body, DEVICE_PROOF_SECRET),
   };
 }
 
@@ -69,8 +80,7 @@ function signedEnvelope(overrides = {}, secret = "test-envelope-secret") {
 
 describe("local support request-envelope route", () => {
   it("denies cross-origin browser calls before policy evaluation", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope(), { headers: { origin: "https://evil.example" } }));
     const json = await response.json();
@@ -85,8 +95,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("denies cross-site fetch metadata before policy evaluation", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope(), { headers: { "sec-fetch-site": "cross-site" } }));
     const json = await response.json();
@@ -114,8 +123,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("approval-gates allowed MVP reads without sending bytes", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope({ capability: "workspace.log.read" })));
     const json = await response.json();
@@ -130,8 +138,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("denies signed envelopes for the wrong account or organization", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
     process.env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID = "acct_123";
     process.env.VECTANT_LOCAL_SUPPORT_ORG_ID = "org_123";
     process.env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT = "sha256:1111111111111111";
@@ -168,8 +175,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("denies unsigned or tampered request envelopes before approval", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const unsigned = await POST(request(envelope({ capability: "workspace.log.read" })));
     expect(unsigned.status).toBe(403);
@@ -193,8 +199,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("denies signed envelopes with unsafe identifiers before local approval", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const response = await POST(request(signedEnvelope({
       request_id: "req_unsafe\nheader",
@@ -211,8 +216,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("rejects replayed signed request envelopes", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
     const body = signedEnvelope({
       request_id: "req_replay_route",
       capability: "workspace.log.read",
@@ -236,8 +240,7 @@ describe("local support request-envelope route", () => {
   });
 
   it("does not consume replay nonces for policy-denied envelopes", async () => {
-    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    enableLocalSupport();
 
     const requestId = "req_policy_denied_then_valid";
     const denied = await POST(request(signedEnvelope({
@@ -264,6 +267,7 @@ describe("local support request-envelope route", () => {
 
   it("fails closed when envelope signing is not configured for enabled support", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = DEVICE_PROOF_SECRET;
     delete process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET;
 
     const response = await POST(request(envelope({ capability: "workspace.log.read" })));
@@ -277,9 +281,24 @@ describe("local support request-envelope route", () => {
     });
   });
 
-  it("denies oversized request envelopes before policy evaluation", async () => {
+  it("fails closed when device proof verification is not configured", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    delete process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET;
+
+    const response = await POST(request(signedEnvelope({ capability: "workspace.log.read" })));
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "device_proof_unconfigured",
+      bytes_sent: 0,
+    });
+  });
+
+  it("denies oversized request envelopes before policy evaluation", async () => {
+    enableLocalSupport();
 
     const response = await POST(rawRequest(JSON.stringify({ padding: "x".repeat(70 * 1024) })));
     const json = await response.json();

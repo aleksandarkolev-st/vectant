@@ -9,6 +9,7 @@ import {
   enforceRequestEnvelopeReplayProtection,
   evaluatePolicyPrecedence,
   readLocalSupportPolicy,
+  signDeviceProof,
   signRequestEnvelope,
   summarizeTransparencyState,
   summarizeSecurityEvent,
@@ -23,15 +24,16 @@ afterEach(() => {
   clearRequestEnvelopeReplayCache();
 });
 
+const DEVICE_PROOF_SECRET = "test-device-proof-secret";
+
 function envelope(overrides = {}) {
-  return {
+  const body = {
     request_id: "req_123",
     session_id: "sess_123",
     account_id: "acct_123",
     org_id: "org_123",
     workspace_id: "wk_123",
     device_fingerprint: "sha256:1111111111111111",
-    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "workspace.file.source.read",
     actor: "vectant_ai",
     expires_at: future(),
@@ -40,6 +42,25 @@ function envelope(overrides = {}) {
     policy_version: "2026.07.05",
     ...overrides,
   };
+  return {
+    ...body,
+    device_proof: overrides.device_proof || signDeviceProof(body, DEVICE_PROOF_SECRET),
+  };
+}
+
+function proofBound(body) {
+  return {
+    ...body,
+    device_proof: signDeviceProof(body, DEVICE_PROOF_SECRET),
+  };
+}
+
+function enabledPolicy(overrides = {}) {
+  return readLocalSupportPolicy({
+    VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET: DEVICE_PROOF_SECRET,
+    ...overrides,
+  });
 }
 
 describe("local support control plane policy", () => {
@@ -51,8 +72,7 @@ describe("local support control plane policy", () => {
       bytes_sent: 0,
     });
 
-    const killed = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const killed = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_ORG_DISABLED: "true",
     });
     expect(killed.enabled).toBe(false);
@@ -60,8 +80,7 @@ describe("local support control plane policy", () => {
   });
 
   it("rejects old app versions and expired envelopes", () => {
-    const policy = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const policy = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION: "0.2.0",
     });
     expect(validateRequestEnvelope(envelope({ app_version: "0.1.9" }), policy).reason).toBe("app_version_too_old");
@@ -69,8 +88,7 @@ describe("local support control plane policy", () => {
   });
 
   it("binds envelopes to account organization protocol and policy versions", () => {
-    const policy = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const policy = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_ACCOUNT_ID: "acct_123",
       VECTANT_LOCAL_SUPPORT_ORG_ID: "org_123",
       VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT: "sha256:1111111111111111",
@@ -101,6 +119,18 @@ describe("local support control plane policy", () => {
       reason: "device_proof_invalid",
       bytes_sent: 0,
     });
+    expect(validateRequestEnvelope(envelope(), { ...policy, device_proof_secret: null })).toMatchObject({
+      decision: "denied",
+      reason: "device_proof_unconfigured",
+      bytes_sent: 0,
+    });
+    expect(validateRequestEnvelope(envelope({
+      device_proof: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "device_proof_invalid",
+      bytes_sent: 0,
+    });
     expect(validateRequestEnvelope(envelope({ protocol_version: "local-support-old" }), policy)).toMatchObject({
       decision: "denied",
       reason: "protocol_version_mismatch",
@@ -114,7 +144,7 @@ describe("local support control plane policy", () => {
   });
 
   it("rejects unsafe envelope identifiers and malformed app versions", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     expect(validateRequestEnvelope(envelope({ request_id: "req_123\nx" }), policy)).toMatchObject({
       decision: "denied",
       reason: "invalid_schema",
@@ -133,8 +163,7 @@ describe("local support control plane policy", () => {
   });
 
   it("exposes emergency controls and blocks revoked versions", () => {
-    const policy = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const policy = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_PAIRING_DISABLED: "true",
       VECTANT_LOCAL_SUPPORT_PREVIEW_GATEWAY_DISABLED: "true",
       VECTANT_LOCAL_SUPPORT_VULNERABLE_VERSIONS: "0.1.1, 0.1.2",
@@ -157,8 +186,7 @@ describe("local support control plane policy", () => {
   });
 
   it("denies revoked sessions and devices from env or admin state", () => {
-    const policy = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const policy = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_REVOKED_SESSIONS: "sess_123",
       VECTANT_LOCAL_SUPPORT_REVOKED_DEVICES: "sha256:2222222222222222",
     });
@@ -179,8 +207,7 @@ describe("local support control plane policy", () => {
   });
 
   it("exposes retention controls and no-retention mode", () => {
-    const retained = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const retained = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_RETENTION_DAYS: "120",
     });
     expect(retained.retention).toMatchObject({
@@ -190,8 +217,7 @@ describe("local support control plane policy", () => {
       raw_bodies_allowed: false,
     });
 
-    const noRetention = readLocalSupportPolicy({
-      VECTANT_LOCAL_SUPPORT_ENABLED: "true",
+    const noRetention = enabledPolicy({
       VECTANT_LOCAL_SUPPORT_NO_RETENTION: "true",
     });
     expect(noRetention.retention).toMatchObject({
@@ -209,7 +235,7 @@ describe("local support control plane policy", () => {
   });
 
   it("blocks writes, command execution, repo upload, and AI preview reading in the MVP", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     for (const capability of [
       "workspace.file.write",
       "workspace.command.execute",
@@ -238,7 +264,7 @@ describe("local support control plane policy", () => {
   });
 
   it("allows only approval-gated MVP read capabilities", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     expect(validateRequestEnvelope(envelope({ capability: "workspace.log.read" }), policy)).toMatchObject({
       decision: "approval_required",
       local_enforcement_required: true,
@@ -376,7 +402,7 @@ describe("local support control plane policy", () => {
   });
 
   it("records scrubbed security events without raw local content", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     const event = summarizeSecurityEvent(
       {
         event_type: "denied_secret_request",
@@ -404,7 +430,7 @@ describe("local support control plane policy", () => {
   });
 
   it("routes required operational security alerts by severity without raw bodies", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     const cases = [
       ["bad_origin", 10, "high", "local_support.security.high"],
       ["old_version", 1, "medium", "local_support.security.watch"],
@@ -440,7 +466,7 @@ describe("local support control plane policy", () => {
   });
 
   it("builds minimized relay forwarding decisions without raw local bodies", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     const decision = buildRelayForwardDecision(
       envelope({
         actor: "support_agent",
@@ -490,7 +516,7 @@ describe("local support control plane policy", () => {
   });
 
   it("authorizes browser-only localhost preview and blocks SSRF or support reads", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     const previewEnvelope = envelope({
       actor: "user_browser",
       capability: "localhost.preview.browser",
@@ -519,55 +545,55 @@ describe("local support control plane policy", () => {
       approved_port: 3000,
     });
 
-    expect(buildPreviewGatewayDecision({
+    expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
       request_id: "req_preview_support",
       actor: "support_agent",
-    }, policy)).toMatchObject({
+    }), policy)).toMatchObject({
       decision: "denied",
       reason: "browser_only_preview_required",
       preview_forward: false,
       bytes_sent: 0,
     });
 
-    expect(buildPreviewGatewayDecision({
+    expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
       request_id: "req_preview_metadata",
       target_host: "169.254.169.254",
-    }, policy)).toMatchObject({
+    }), policy)).toMatchObject({
       decision: "denied",
       reason: "preview_target_not_loopback",
       preview_forward: false,
       bytes_sent: 0,
     });
 
-    expect(buildPreviewGatewayDecision({
+    expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
       request_id: "req_preview_cookie",
       request_headers: { cookie: "sid=secret" },
-    }, policy)).toMatchObject({
+    }), policy)).toMatchObject({
       decision: "denied",
       reason: "preview_credentials_header_blocked",
       preview_forward: false,
       bytes_sent: 0,
     });
 
-    expect(buildPreviewGatewayDecision({
+    expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
       request_id: "req_preview_ws",
       request_headers: { upgrade: "websocket" },
-    }, policy)).toMatchObject({
+    }), policy)).toMatchObject({
       decision: "denied",
       reason: "preview_websocket_blocked",
       preview_forward: false,
       bytes_sent: 0,
     });
 
-    expect(buildPreviewGatewayDecision({
+    expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
       request_id: "req_preview_host",
       preview_host: "br-local-p3001.vectant-preview.dev",
-    }, policy)).toMatchObject({
+    }), policy)).toMatchObject({
       decision: "denied",
       reason: "preview_host_mismatch",
       preview_forward: false,
@@ -576,7 +602,7 @@ describe("local support control plane policy", () => {
   });
 
   it("builds scrubbed transparency state without renderer secrets", () => {
-    const policy = readLocalSupportPolicy({ VECTANT_LOCAL_SUPPORT_ENABLED: "true" });
+    const policy = enabledPolicy();
     const state = summarizeTransparencyState(
       {
         session: {

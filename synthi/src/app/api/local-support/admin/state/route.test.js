@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
+  signDeviceProof,
   signRequestEnvelope,
 } from "@/lib/local-support/controlPlane";
 import { POST as REQUEST_ENVELOPE_POST } from "@/app/api/local-support/request-envelope/route";
@@ -10,6 +11,7 @@ import { POST as REQUEST_ENVELOPE_POST } from "@/app/api/local-support/request-e
 import { GET, POST } from "./route";
 
 const OLD_ENV = { ...process.env };
+const DEVICE_PROOF_SECRET = "test-device-proof-secret";
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -55,7 +57,6 @@ function signedEnvelope(overrides = {}) {
     org_id: "org_123",
     workspace_id: "wk_123",
     device_fingerprint: "sha256:1111111111111111",
-    device_proof: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     capability: "workspace.log.read",
     actor: "support_agent",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -64,9 +65,13 @@ function signedEnvelope(overrides = {}) {
     policy_version: "2026.07.05",
     ...overrides,
   };
-  return {
+  const proofBoundBody = {
     ...body,
-    signature: signRequestEnvelope(body, "test-envelope-secret"),
+    device_proof: overrides.device_proof || signDeviceProof(body, DEVICE_PROOF_SECRET),
+  };
+  return {
+    ...proofBoundBody,
+    signature: signRequestEnvelope(proofBoundBody, "test-envelope-secret"),
   };
 }
 
@@ -211,6 +216,7 @@ describe("local support admin state route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
     process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET = "test-envelope-secret";
+    process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = DEVICE_PROOF_SECRET;
 
     const before = await REQUEST_ENVELOPE_POST(requestEnvelope(signedEnvelope({ request_id: "req_before_revoke" })));
     expect(before.status).toBe(200);

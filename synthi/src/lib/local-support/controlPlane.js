@@ -68,6 +68,7 @@ export function readLocalSupportPolicy(env = process.env) {
   const allowedAccountId = env.VECTANT_LOCAL_SUPPORT_ACCOUNT_ID || null;
   const allowedOrgId = env.VECTANT_LOCAL_SUPPORT_ORG_ID || null;
   const allowedDeviceFingerprint = env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT || null;
+  const deviceProofSecret = env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET || null;
   const disabledReason = env.VECTANT_LOCAL_SUPPORT_DISABLED_REASON || null;
   const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED === "true";
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
@@ -89,6 +90,7 @@ export function readLocalSupportPolicy(env = process.env) {
     account_id: allowedAccountId,
     org_id: allowedOrgId,
     device_fingerprint: allowedDeviceFingerprint,
+    device_proof_secret: deviceProofSecret,
     vulnerable_versions: vulnerableVersions,
     revoked_sessions: revokedSessionIds,
     revoked_devices: revokedDeviceFingerprints,
@@ -160,6 +162,15 @@ export function signRequestEnvelope(envelope, secret) {
     throw new Error("request envelope signing secret is required");
   }
   return `sha256=${createHmac("sha256", secret).update(canonicalizeEnvelope(envelope)).digest("hex")}`;
+}
+
+export function signDeviceProof(envelope, secret) {
+  if (!secret || typeof secret !== "string") {
+    throw new Error("device proof secret is required");
+  }
+  return `sha256:${createHmac("sha256", secret)
+    .update(canonicalizeDeviceProofBasis(envelope))
+    .digest("hex")}`;
 }
 
 export function verifyRequestEnvelopeSignature(envelope, secret) {
@@ -305,6 +316,12 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   }
   if (!isSha256Hex(request.device_proof, 64)) {
     return deny("device_proof_invalid", "The device proof was not accepted.");
+  }
+  if (!policy.device_proof_secret) {
+    return deny("device_proof_unconfigured", "Device proof verification is not configured.");
+  }
+  if (!constantTimeStringEqual(request.device_proof, signDeviceProof(request, policy.device_proof_secret))) {
+    return deny("device_proof_invalid", "The device proof did not match this request envelope.");
   }
   if (request.protocol_version !== policy.protocol_version) {
     return deny("protocol_version_mismatch", "This support request uses a stale local-support protocol.");
@@ -1209,6 +1226,23 @@ function prunePairingSessions(nowMs) {
 
 function canonicalizeEnvelope(value) {
   return JSON.stringify(canonicalValue(value, new Set(["signature"])));
+}
+
+function canonicalizeDeviceProofBasis(envelope) {
+  return JSON.stringify(canonicalValue({
+    request_id: envelope?.request_id,
+    session_id: envelope?.session_id,
+    account_id: envelope?.account_id,
+    org_id: envelope?.org_id,
+    workspace_id: envelope?.workspace_id,
+    device_fingerprint: envelope?.device_fingerprint,
+    capability: envelope?.capability,
+    actor: envelope?.actor,
+    expires_at: envelope?.expires_at,
+    app_version: envelope?.app_version,
+    protocol_version: envelope?.protocol_version,
+    policy_version: envelope?.policy_version,
+  }));
 }
 
 function canonicalValue(value, excludedKeys = new Set()) {
