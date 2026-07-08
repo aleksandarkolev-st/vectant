@@ -32,6 +32,7 @@ function adminPost(body, headers = {}) {
     headers: {
       "content-type": "application/json",
       origin: "https://beta.vectant.dev",
+      "sec-fetch-site": "same-origin",
       ...headers,
     },
     body: JSON.stringify(body),
@@ -44,6 +45,7 @@ function requestEnvelope(body) {
     headers: {
       "content-type": "application/json",
       origin: "https://beta.vectant.dev",
+      "sec-fetch-site": "same-origin",
     },
     body: JSON.stringify(body),
   });
