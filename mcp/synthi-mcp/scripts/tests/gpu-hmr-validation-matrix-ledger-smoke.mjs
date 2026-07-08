@@ -3682,15 +3682,19 @@ assert.ok(randomColdRow.openGaps.includes('app_hook_materialization_requires_obs
 assert.ok(randomColdRow.openGaps.includes('runtime_boundary_closure_target_process_provenance_not_accepted'));
 assert.equal(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  0,
+  1,
 );
 assert.equal(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceIdentityCount,
-  0,
+  1,
+);
+assert.equal(
+  randomColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathDistinctSourceContentOnlyIdentityCount,
+  1,
 );
 assert.ok(
   randomColdLedger.summary.broadLibraryAgnosticReadiness.openGaps.includes(
-    'broad_acceptance_requires_random_large_project_cold_path',
+    'broad_acceptance_requires_more_random_large_project_cold_paths',
   ),
 );
 const unknownBackendColdDir = path.join(
@@ -3811,11 +3815,11 @@ assert.deepEqual(
 );
 assert.equal(
   buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  0,
+  1,
 );
 assert.ok(
   buildMetadataBackendColdLedger.summary.broadLibraryAgnosticReadiness.openGaps.includes(
-    'broad_acceptance_requires_random_large_project_cold_path',
+    'broad_acceptance_requires_more_random_large_project_cold_paths',
   ),
 );
 const mismatchedTemplateBindingColdDir = path.join(
@@ -3974,11 +3978,11 @@ assert.equal(externalLocalColdRow.acceptedForGpuHmr, false);
 assert.equal(externalLocalColdRow.gpuHmrSuccess, false);
 assert.equal(
   externalLocalColdLedger.summary.broadLibraryAgnosticReadiness.randomColdPathRowCount,
-  0,
+  1,
 );
 assert.ok(
   externalLocalColdLedger.summary.broadLibraryAgnosticReadiness.openGaps.includes(
-    'broad_acceptance_requires_random_large_project_cold_path',
+    'broad_acceptance_requires_more_random_large_project_cold_paths',
   ),
 );
 const forgedSelectionAuditDir = path.join(
@@ -6076,15 +6080,15 @@ const randomColdCoverage = new Map(
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.status,
-  'diagnostic_only',
+  'candidate_only',
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.qualifyingRowCount,
-  0,
+  1,
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.candidateRowCount,
-  0,
+  1,
 );
 assert.equal(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.refusalRowCount,
@@ -6092,7 +6096,7 @@ assert.equal(
 );
 assert.ok(
   randomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
-    .includes('qualifying_direct_random_large_project_cold_path_required'),
+    .includes('random_large_project_cold_path_more_distinct_sources_required'),
 );
 const randomColdRuntimeClosure = randomColdCoverage.get('large_arbitrary_project_runtime_closure');
 assert.equal(randomColdRuntimeClosure?.status, 'refused');

@@ -34994,25 +34994,12 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && directInputEvidence.projectNameWhitelist.length === 0
       && directInputEvidence.specificTargetIdsAllowed.length === 0
       && directInputEvidence.sourceIdentityHashMatchesContext === true;
-    const samplePoolCoverageAccepted =
-      selectionAudit.sourceMode === 'configured_sample_pool'
-      && selectionAudit.samplePoolExplicitlyRequested === true
-      && selectionAudit.samplePoolCoverageContract?.accepted === true
-      && selectionAudit.samplePoolCoverageContract?.targetNameIndependent === true
-      && selectionAudit.samplePoolCoverageContract?.projectNameWhitelist?.length === 0
-      && selectionAudit.samplePoolCoverageContract?.specificTargetIdsAllowed?.length === 0;
     const arbitraryColdIntake = profileMode === 'unprofiled_arbitrary_project_cold_intake'
       && directUserColdInput
       && localRepoPathOrigin.accepted === true
       && directSourceUrlOrigin.accepted === true
       && directInputModeProven
       && directInputEvidenceAccepted
-      && Boolean(immutableCommit)
-      && Boolean(sourceUrl || repoPath);
-    const configuredSamplePoolColdIntake =
-      profileMode === 'unprofiled_arbitrary_project_cold_intake'
-      && candidateSource === 'configured_candidate_pool'
-      && samplePoolCoverageAccepted
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath);
     const candidateBackendUsedForAcceptance = firstBool(
@@ -35178,7 +35165,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && finalizedActualAttempt
       && selectionAudit.present === true
       && selectionAudit.accepted === true
-      && (arbitraryColdIntake || configuredSamplePoolColdIntake)
+      && arbitraryColdIntake
       && sourceDerivedProjectEvidenceObserved
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
