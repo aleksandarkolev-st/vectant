@@ -34632,7 +34632,12 @@ function randomColdSourceIntakeForRow(row = {}) {
 }
 
 function randomColdSourceIntakeFormConsistency(row = {}) {
-  const rawIntake = firstCompactObject(row.sourceIntakeEvidence, row.source_intake_evidence);
+  const rawIntake = firstCompactObject(
+    row.rawSourceIntakeEvidence,
+    row.raw_source_intake_evidence,
+    row.sourceIntakeEvidence,
+    row.source_intake_evidence,
+  );
   const normalizedIntake = firstCompactObject(row.coldSourceTreeIntake, row.cold_source_tree_intake);
   const rawPresent = Object.keys(rawIntake).length > 0;
   const normalizedPresent = Object.keys(normalizedIntake).length > 0;
@@ -34726,6 +34731,10 @@ function randomColdSourceIntakeFormConsistency(row = {}) {
     rawSummary.accepted !== true ? 'random_cold_source_intake_raw_invalid' : null,
     ...(rawSummary.accepted !== true
       ? compactStringList(rawSummary.failedGates ?? rawSummary.failed_gates)
+      : []),
+    normalizedSummary.accepted !== true ? 'random_cold_source_intake_normalized_invalid' : null,
+    ...(normalizedSummary.accepted !== true
+      ? compactStringList(normalizedSummary.failedGates ?? normalizedSummary.failed_gates)
       : []),
     normalizedAccepted !== true ? 'random_cold_source_intake_normalized_not_accepted' : null,
     normalizedFailedGates.length > 0
@@ -35170,6 +35179,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && !candidateBackendUsedForAcceptance
       && sourceAccepted
       && sourceIntakeFormConsistency.accepted === true
+      && (!requireLargeSourceTree || sourceIntakeFormConsistency.compared === true)
       && sourceEvidenceProvenance.accepted === true
       && sourceListingManifestAccepted
       && buildMetadataAccepted

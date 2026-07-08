@@ -15183,6 +15183,11 @@ function randomColdReadinessMatrixRow({
     row.cold_source_tree_intake.facetHash = recomputedSourceIntakeFacetHash;
     row.cold_source_tree_intake.facet_hash = recomputedSourceIntakeFacetHash;
   }
+  if (buildMetadataContentEvidence) {
+    const rawSourceIntakeEvidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+    row.rawSourceIntakeEvidence = rawSourceIntakeEvidence;
+    row.raw_source_intake_evidence = JSON.parse(JSON.stringify(rawSourceIntakeEvidence));
+  }
   return withQueryRecomputedRowId(row);
 }
 
@@ -15204,6 +15209,10 @@ function attachRandomColdTransportFallback(row, fallbackEvidence) {
   row.coldSourceTreeIntake.facet_hash = recomputedSourceIntakeFacetHash;
   row.cold_source_tree_intake.facetHash = recomputedSourceIntakeFacetHash;
   row.cold_source_tree_intake.facet_hash = recomputedSourceIntakeFacetHash;
+  if (row.rawSourceIntakeEvidence || row.raw_source_intake_evidence) {
+    row.rawSourceIntakeEvidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+    row.raw_source_intake_evidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+  }
   return withQueryRecomputedRowId(row);
 }
 
@@ -16719,7 +16728,7 @@ const broadReadinessWithSerializedRecomputedBuildContentQuery =
       ...broadReadinessSerializedRecomputedBuildContentRows,
     ],
   });
-assert.equal(broadReadinessWithSerializedRecomputedBuildContentQuery.accepted, true);
+assert.equal(broadReadinessWithSerializedRecomputedBuildContentQuery.accepted, false);
 assert.equal(
   broadReadinessWithSerializedRecomputedBuildContentQuery.summary
     .broadLibraryAgnosticReadiness.accepted,
@@ -16948,6 +16957,44 @@ assert.equal(
 assert.ok(
   smallRandomColdCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('random_large_project_cold_path_large_source_required'),
+);
+const broadReadinessSingleFormRandomColdRows = Array.from({ length: 5 }, (_, index) => {
+  const row = randomColdReadinessMatrixRow({
+    targetId: `single-form-random-cold-readiness-user-project-${index + 1}`,
+    sourceUrl: `https://example.invalid/user/single-form-project-${index + 1}.git`,
+    immutableCommit: sha256Hex(`single-form-random-cold-readiness-commit-${index + 1}`).slice(0, 40),
+  });
+  delete row.rawSourceIntakeEvidence;
+  delete row.raw_source_intake_evidence;
+  delete row.sourceIntakeEvidence;
+  delete row.source_intake_evidence;
+  return withQueryRecomputedRowId(row);
+});
+const broadReadinessWithSingleFormRandomColdQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    ...broadReadinessRows,
+    ...broadReadinessSingleFormRandomColdRows,
+  ],
+});
+assert.equal(broadReadinessWithSingleFormRandomColdQuery.accepted, true);
+assert.equal(
+  broadReadinessWithSingleFormRandomColdQuery.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithSingleFormRandomColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.equal(
+  broadReadinessWithSingleFormRandomColdQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  5,
+);
+assert.ok(
+  broadReadinessWithSingleFormRandomColdQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('broad_acceptance_requires_large_random_project_cold_paths'),
 );
 const broadReadinessAssetHeavyLowSourceColdRows = Array.from({ length: 5 }, (_, index) =>
   randomColdReadinessMatrixRow({
@@ -18376,16 +18423,16 @@ const droppedNormalizedTransportFallbackColdRow = withQueryRecomputedRowId((() =
     immutableCommit: row.immutableCommit,
     directSourceInputEvidenceHash: directInputHash,
   });
-  row.sourceIntakeEvidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
-  row.sourceIntakeEvidence.transportEvidence = {
+  row.rawSourceIntakeEvidence = JSON.parse(JSON.stringify(row.coldSourceTreeIntake));
+  row.rawSourceIntakeEvidence.transportEvidence = {
     githubTreeFallback: fallbackEvidence,
     github_tree_fallback: fallbackEvidence,
   };
-  row.sourceIntakeEvidence.transport_evidence =
-    JSON.parse(JSON.stringify(row.sourceIntakeEvidence.transportEvidence));
-  row.sourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(row.sourceIntakeEvidence);
-  row.sourceIntakeEvidence.facet_hash = row.sourceIntakeEvidence.facetHash;
-  row.source_intake_evidence = JSON.parse(JSON.stringify(row.sourceIntakeEvidence));
+  row.rawSourceIntakeEvidence.transport_evidence =
+    JSON.parse(JSON.stringify(row.rawSourceIntakeEvidence.transportEvidence));
+  row.rawSourceIntakeEvidence.facetHash = sourceIntakeFacetHashFor(row.rawSourceIntakeEvidence);
+  row.rawSourceIntakeEvidence.facet_hash = row.rawSourceIntakeEvidence.facetHash;
+  row.raw_source_intake_evidence = JSON.parse(JSON.stringify(row.rawSourceIntakeEvidence));
   return row;
 })());
 const droppedNormalizedTransportFallbackColdQuery = queryGpuHmrValidationMatrixLedger({
