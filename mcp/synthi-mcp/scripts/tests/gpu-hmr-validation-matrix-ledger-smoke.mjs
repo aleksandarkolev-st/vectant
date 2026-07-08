@@ -9026,6 +9026,81 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
 });
 
 const hiprtPreflightEvidenceRef = 'evidence:synthetic-hiprt-preflight:worker-prerequisites';
+const hiprtRuntimePrerequisiteContract = {
+  schemaVersion: 'synthi.gpu_hmr.runtime_prerequisite_contract.v1',
+  schema_version: 'synthi.gpu_hmr.runtime_prerequisite_contract.v1',
+  proofAuthority: 'runtime_prerequisite_disclosure_only_not_gpu_hmr_success',
+  proof_authority: 'runtime_prerequisite_disclosure_only_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+  canSatisfyDispatchProof: false,
+  can_satisfy_dispatch_proof: false,
+  backend: 'hiprt',
+  backendFamily: 'hiprt',
+  backend_family: 'hiprt',
+  profileId: 'synthetic-hiprt-preflight',
+  profile_id: 'synthetic-hiprt-preflight',
+  mode: 'same-process',
+  targetName: 'SyntheticHIPRTPathTracer',
+  target_name: 'SyntheticHIPRTPathTracer',
+  workerRepoPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer',
+  worker_repo_path: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer',
+  source: {
+    file: 'src/Device/kernels/CameraRays.h',
+    workerPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/src/Device/kernels/CameraRays.h',
+    worker_path: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/src/Device/kernels/CameraRays.h',
+    deltaHash: hashValue('synthetic-hiprt-preflight-source-delta'),
+    delta_hash: hashValue('synthetic-hiprt-preflight-source-delta'),
+  },
+  runtime: {
+    args: ['../data/GLTFs/cornell_pbr.gltf'],
+    requiredKernels: ['CameraRays', 'MegaKernel'],
+    required_kernels: ['CameraRays', 'MegaKernel'],
+    reloadKernelName: 'Fill G-Buffer',
+    reload_kernel_name: 'Fill G-Buffer',
+    reloadKernelSymbol: 'CameraRays',
+    reload_kernel_symbol: 'CameraRays',
+    requiredFiles: [
+      {
+        file: 'data/GLTFs/cornell_pbr.gltf',
+        workerPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/data/GLTFs/cornell_pbr.gltf',
+        worker_path: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/data/GLTFs/cornell_pbr.gltf',
+        role: 'runtime_input',
+        present: false,
+      },
+    ],
+  },
+  visualProof: {
+    claim: 'Synthetic HIPRT visual preflight requires real scene assets before visual proof can run.',
+    width: 640,
+    height: 360,
+  },
+  blockingGaps: [
+    'hiprt_worker_repo_missing',
+    'hiprt_source_file_missing',
+  ],
+  blocking_gaps: [
+    'hiprt_worker_repo_missing',
+    'hiprt_source_file_missing',
+  ],
+};
+hiprtRuntimePrerequisiteContract.contractHash = contentHashFor({
+  schemaVersion: hiprtRuntimePrerequisiteContract.schemaVersion,
+  backend: hiprtRuntimePrerequisiteContract.backend,
+  profileId: hiprtRuntimePrerequisiteContract.profileId,
+  mode: hiprtRuntimePrerequisiteContract.mode,
+  targetName: hiprtRuntimePrerequisiteContract.targetName,
+  workerRepoPath: hiprtRuntimePrerequisiteContract.workerRepoPath,
+  source: hiprtRuntimePrerequisiteContract.source,
+  runtime: hiprtRuntimePrerequisiteContract.runtime,
+  visualProof: hiprtRuntimePrerequisiteContract.visualProof,
+  blockingGaps: hiprtRuntimePrerequisiteContract.blockingGaps,
+});
+hiprtRuntimePrerequisiteContract.contract_hash = hiprtRuntimePrerequisiteContract.contractHash;
 await writeJson(path.join(artifactsRoot, 'hiprt-preflight', 'hiprt-proof.json'), {
   schema: 'synthi.gpu_hmr.hiprt_preflight.v1',
   schemaVersion: 'synthi.gpu_hmr.hiprt_preflight.v1',
@@ -9091,10 +9166,66 @@ await writeJson(path.join(artifactsRoot, 'hiprt-preflight', 'hiprt-proof.json'),
       'hiprt_source_file_missing',
     ],
   },
+  runtimePrerequisiteContract: hiprtRuntimePrerequisiteContract,
+  runtime_prerequisite_contract: hiprtRuntimePrerequisiteContract,
   proofAuthority: 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success',
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   proofId: 'hiprt-preflight-proof:sha256:synthetic',
+});
+
+await writeJson(path.join(artifactsRoot, 'hiprt-preflight-forged-prereq', 'hiprt-proof.json'), {
+  schema: 'synthi.gpu_hmr.hiprt_preflight.v1',
+  schemaVersion: 'synthi.gpu_hmr.hiprt_preflight.v1',
+  slug: 'synthetic-hiprt-preflight-forged-prereq',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: { value: 'hiprt', evidenceRefs: [hiprtPreflightEvidenceRef] },
+    backendFamily: { value: 'hiprt', evidenceRefs: [hiprtPreflightEvidenceRef] },
+    runtimeCapabilityPreflight: {
+      backend: 'hiprt',
+      backendFamily: 'hiprt',
+      probe: 'hiprt_worker_preflight_probe',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    evidenceRefs: [hiprtPreflightEvidenceRef],
+  },
+  classification: {
+    backend: { value: 'hiprt', evidenceRefs: [hiprtPreflightEvidenceRef] },
+    backendFamily: 'hiprt',
+    runtimeCapabilityPreflight: {
+      backend: 'hiprt',
+      backendFamily: 'hiprt',
+      probe: 'hiprt_worker_preflight_probe',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    resultState: 'hiprt-runtime-preflight-rejected',
+    unsupportedReasons: ['hiprt_runtime_preflight_failed', 'hiprt_worker_repo_missing'],
+  },
+  acceptance: {
+    acceptedForHiprtRuntimePreflight: false,
+    acceptedForHiprtVisualProof: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    reason: 'hiprt_runtime_preflight_failed',
+    noShimApplied: true,
+    noVendorIcdSynthesized: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  runtimePrerequisiteContract: {
+    ...hiprtRuntimePrerequisiteContract,
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+  },
+  proofAuthority: 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  proofId: 'hiprt-preflight-proof:sha256:synthetic-forged-prereq',
 });
 
 const webGpuPreflightEvidenceRef = 'evidence:synthetic-webgpu-preflight:browser-runtime-capability';
@@ -20058,6 +20189,33 @@ assert.deepEqual(hiprtPreflight.backendEvidence.evidenceRefs, [hiprtPreflightEvi
 assert.ok(hiprtPreflight.reasons.includes('hiprt_worker_repo_missing'));
 assert.ok(hiprtPreflight.reasons.includes('hiprt_source_file_missing'));
 assert.ok(!hiprtPreflight.reasons.includes('preflight_typed_backend_evidence_required'));
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.present, true);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.accepted, true);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.acceptedForGpuHmr, false);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.gpuHmrSuccess, false);
+assert.equal(
+  hiprtPreflight.runtimePrerequisiteContract.proofAuthority,
+  'runtime_prerequisite_disclosure_only_not_gpu_hmr_success',
+);
+assert.equal(
+  hiprtPreflight.runtimePrerequisiteContract.contractHash,
+  hiprtRuntimePrerequisiteContract.contractHash,
+);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredFileCount, 1);
+
+const hiprtForgedPrereq = ledger.rows.find((row) =>
+  row.backend === 'hiprt'
+  && row.targetId === 'synthetic-hiprt-preflight-forged-prereq'
+);
+assert.equal(hiprtForgedPrereq?.matrixOutcome, 'refusal_proven');
+assert.equal(hiprtForgedPrereq.acceptedForGpuHmr, false);
+assert.equal(hiprtForgedPrereq.gpuHmrSuccess, false);
+assert.equal(hiprtForgedPrereq.runtimePrerequisiteContract.present, true);
+assert.equal(hiprtForgedPrereq.runtimePrerequisiteContract.accepted, false);
+assert.equal(hiprtForgedPrereq.runtimePrerequisiteContract.acceptedForGpuHmr, false);
+assert.equal(hiprtForgedPrereq.runtimePrerequisiteContract.gpuHmrSuccess, false);
+assert.ok(hiprtForgedPrereq.reasons.includes('runtime_prerequisite_contract_claimed_gpu_hmr_success'));
+assert.ok(hiprtForgedPrereq.reasons.includes('runtime_prerequisite_contract_claimed_runtime_authority'));
 
 const webgpuPreflight = ledger.rows.find((row) =>
   row.backend === 'webgpu'
@@ -22711,7 +22869,7 @@ const standaloneOidnOutputOracleRefusalCount = ledger.rows
 assert.ok(standaloneOidnOutputOracleRefusalCount >= 3);
 assert.equal(
   ledger.summary.refusalProvenRows,
-  5 + retainedRealRocmRefusalCount + standaloneOidnOutputOracleRefusalCount,
+  6 + retainedRealRocmRefusalCount + standaloneOidnOutputOracleRefusalCount,
 );
 assert.ok(ledger.summary.unprovenRows >= 1);
 

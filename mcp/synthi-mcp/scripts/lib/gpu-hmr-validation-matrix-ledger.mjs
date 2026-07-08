@@ -407,6 +407,10 @@ const REAL_ROCM_OPERATIONAL_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.real_rocm_operational_evidence.v1';
 const REAL_ROCM_OPERATIONAL_EVIDENCE_AUTHORITY =
   'matrix_operational_evidence_normalization_not_gpu_hmr_proof';
+const RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_prerequisite_contract.v1';
+const RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY =
+  'runtime_prerequisite_disclosure_only_not_gpu_hmr_success';
 const VALIDATION_BLOCKER_SCHEMA_VERSION =
   'synthi.gpu_hmr.validation_blocker.v1';
 const REAL_ROCM_OUTPUT_ORACLE_SELECTED_SOURCES = new Set([
@@ -24943,6 +24947,115 @@ function preflightBackendEvidenceAccepted(row = {}) {
   return evidence.accepted === true;
 }
 
+function runtimePrerequisiteContractFacet(json = {}) {
+  const contract = compactObject(json.runtimePrerequisiteContract ?? json.runtime_prerequisite_contract);
+  if (Object.keys(contract).length === 0) {
+    return {
+      schemaVersion: 'synthi.gpu_hmr.runtime_prerequisite_contract_matrix_facet.v1',
+      schema_version: 'synthi.gpu_hmr.runtime_prerequisite_contract_matrix_facet.v1',
+      present: false,
+      accepted: false,
+      acceptedAsSupportEvidence: false,
+      accepted_as_support_evidence: false,
+      failedGates: [],
+      failed_gates: [],
+    };
+  }
+  const schemaVersion = firstText(contract.schemaVersion, contract.schema_version);
+  const proofAuthority = firstText(contract.proofAuthority, contract.proof_authority);
+  const backend = firstText(contract.backend);
+  const backendFamily = firstText(contract.backendFamily, contract.backend_family);
+  const profileId = firstText(contract.profileId, contract.profile_id);
+  const targetName = firstText(contract.targetName, contract.target_name);
+  const workerRepoPath = firstText(contract.workerRepoPath, contract.worker_repo_path);
+  const source = compactObject(contract.source);
+  const runtime = compactObject(contract.runtime);
+  const visualProof = compactObject(contract.visualProof ?? contract.visual_proof);
+  const requiredFiles = compactObjectList(runtime.requiredFiles ?? runtime.required_files);
+  const blockingGaps = compactStringList(contract.blockingGaps ?? contract.blocking_gaps);
+  const contractHash = firstText(contract.contractHash, contract.contract_hash);
+  const recomputedContractHash = stableJsonHash({
+    schemaVersion,
+    backend,
+    profileId,
+    mode: firstText(contract.mode),
+    targetName,
+    workerRepoPath,
+    source,
+    runtime,
+    visualProof,
+    blockingGaps,
+  });
+  const claimsGpuHmr = firstBool(contract.acceptedForGpuHmr, contract.accepted_for_gpu_hmr) === true
+    || firstBool(contract.gpuHmrSuccess, contract.gpu_hmr_success) === true;
+  const claimsRuntimeAuthority = firstBool(contract.canSatisfyRuntimeProof, contract.can_satisfy_runtime_proof) === true;
+  const claimsDispatchAuthority = firstBool(contract.canSatisfyDispatchProof, contract.can_satisfy_dispatch_proof) === true;
+  const failedGates = compactStringList([
+    schemaVersion === RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION
+      ? null
+      : 'runtime_prerequisite_contract_schema_invalid',
+    proofAuthority === RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY
+      ? null
+      : 'runtime_prerequisite_contract_authority_invalid',
+    claimsGpuHmr ? 'runtime_prerequisite_contract_claimed_gpu_hmr_success' : null,
+    claimsRuntimeAuthority ? 'runtime_prerequisite_contract_claimed_runtime_authority' : null,
+    claimsDispatchAuthority ? 'runtime_prerequisite_contract_claimed_dispatch_authority' : null,
+    backend ? null : 'runtime_prerequisite_contract_backend_missing',
+    backendFamily ? null : 'runtime_prerequisite_contract_backend_family_missing',
+    profileId ? null : 'runtime_prerequisite_contract_profile_id_missing',
+    targetName ? null : 'runtime_prerequisite_contract_target_missing',
+    workerRepoPath ? null : 'runtime_prerequisite_contract_worker_repo_path_missing',
+    firstText(source.file) ? null : 'runtime_prerequisite_contract_source_file_missing',
+    firstText(source.workerPath, source.worker_path) ? null : 'runtime_prerequisite_contract_source_worker_path_missing',
+    firstText(source.deltaHash, source.delta_hash) ? null : 'runtime_prerequisite_contract_source_delta_hash_missing',
+    firstText(runtime.reloadKernelName, runtime.reload_kernel_name) ? null : 'runtime_prerequisite_contract_reload_kernel_missing',
+    firstText(runtime.reloadKernelSymbol, runtime.reload_kernel_symbol) ? null : 'runtime_prerequisite_contract_reload_symbol_missing',
+    requiredFiles.length > 0 ? null : 'runtime_prerequisite_contract_required_files_missing',
+    firstText(visualProof.claim) ? null : 'runtime_prerequisite_contract_visual_claim_missing',
+    contractHash ? null : 'runtime_prerequisite_contract_hash_missing',
+    contractHash && contractHash !== recomputedContractHash
+      ? 'runtime_prerequisite_contract_hash_mismatch'
+      : null,
+  ]);
+  return {
+    schemaVersion: 'synthi.gpu_hmr.runtime_prerequisite_contract_matrix_facet.v1',
+    schema_version: 'synthi.gpu_hmr.runtime_prerequisite_contract_matrix_facet.v1',
+    present: true,
+    accepted: failedGates.length === 0,
+    acceptedAsSupportEvidence: failedGates.length === 0,
+    accepted_as_support_evidence: failedGates.length === 0,
+    proofAuthority,
+    proof_authority: proofAuthority,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    backend,
+    backendFamily,
+    backend_family: backendFamily,
+    profileId,
+    profile_id: profileId,
+    targetName,
+    target_name: targetName,
+    workerRepoPath,
+    worker_repo_path: workerRepoPath,
+    requiredFileCount: requiredFiles.length,
+    required_file_count: requiredFiles.length,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    contractHash,
+    contract_hash: contractHash,
+    recomputedContractHash,
+    recomputed_contract_hash: recomputedContractHash,
+    failedGates: failedGates.map((code) => ({ code })),
+    failed_gates: failedGates.map((code) => ({ code })),
+  };
+}
+
 function preflightAcceptedField(backend, acceptance) {
   if (backend === 'oidn_hip') {
     return acceptance.acceptedForOidnHipOutputProof === true
@@ -25950,6 +26063,7 @@ function oidnRuntimeBoundaryBridgeFacet(input = {}, { outputOracleFacet = {} } =
 async function preflightRow(json, filePath, context) {
   const schema = firstText(json.schema, json.schemaVersion) ?? 'unknown';
   const backendEvidence = preflightBackendEvidenceFacet(json);
+  const runtimePrerequisiteContract = runtimePrerequisiteContractFacet(json);
   const backend = backendEvidence.accepted ? backendEvidence.backend : 'unknown';
   const acceptance = compactObject(json.acceptance);
   const classification = compactObject(json.classification);
@@ -26044,6 +26158,8 @@ async function preflightRow(json, filePath, context) {
       ?? compactObject(json.runtimeBoundaryBridge ?? json.runtime_boundary_bridge),
     runtime_boundary_bridge_facet: oidnRuntimeBoundaryBridge
       ?? compactObject(json.runtimeBoundaryBridge ?? json.runtime_boundary_bridge),
+    runtimePrerequisiteContract,
+    runtime_prerequisite_contract: runtimePrerequisiteContract,
     matrixOutcome,
     acceptanceClass: matrixOutcome,
     acceptedForGpuHmr: false,
@@ -26089,6 +26205,9 @@ async function preflightRow(json, filePath, context) {
         : []),
       ...(backend === 'oidn_hip' && oidnRuntimeBoundaryBridge?.present === true
         ? (oidnRuntimeBoundaryBridge.failedGates ?? []).map((gate) => gate.code)
+        : []),
+      ...(runtimePrerequisiteContract.present === true
+        ? (runtimePrerequisiteContract.failedGates ?? []).map((gate) => gate.code)
         : []),
       ...unsupportedReasons,
       acceptance.reason,

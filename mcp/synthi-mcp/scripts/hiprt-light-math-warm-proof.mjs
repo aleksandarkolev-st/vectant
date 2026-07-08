@@ -44,6 +44,10 @@ const ARTIFACT_ROOT = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
 const HIPRT_PREFLIGHT_SCHEMA_VERSION = 'synthi.gpu_hmr.hiprt_preflight.v1';
 const HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION = 'synthi.gpu_hmr.hiprt_worker_preflight_probe.v1';
 const HIPRT_PREFLIGHT_AUTHORITY = 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success';
+const RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_prerequisite_contract.v1';
+const RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY =
+  'runtime_prerequisite_disclosure_only_not_gpu_hmr_success';
 
 const DEFAULT_BEFORE =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator);';
@@ -618,6 +622,140 @@ function hiprtRocmConfigDetectionGaps(err) {
   ]);
 }
 
+function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
+  const runtimeRequiredFiles = CFG.requiredFiles.map((file) => {
+    const observed = Array.isArray(prerequisiteProbe.requiredFiles)
+      ? prerequisiteProbe.requiredFiles.find((entry) => entry?.file === file)
+      : null;
+    const workerPath = observed?.workerPath ?? observed?.worker_path ?? workerRuntimeRequiredFilePath(file);
+    return {
+      file,
+      workerPath,
+      worker_path: workerPath,
+      role: 'runtime_input',
+      present: observed?.present === true,
+    };
+  });
+  const contract = {
+    schemaVersion: RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION,
+    schema_version: RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION,
+    proofAuthority: RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY,
+    proof_authority: RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    backend: 'hiprt',
+    backendFamily: 'hiprt',
+    backend_family: 'hiprt',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    mode: CFG.mode,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+    native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    adapter: {
+      family: CFG.runtimeProfile?.adapter?.family ?? null,
+      proofRunner: CFG.runtimeProfile?.adapter?.proofRunner ?? null,
+      proof_runner: CFG.runtimeProfile?.adapter?.proofRunner ?? null,
+      capabilities: Array.isArray(CFG.runtimeProfile?.adapter?.capabilities)
+        ? CFG.runtimeProfile.adapter.capabilities
+        : [],
+    },
+    source: {
+      file: CFG.sourceRel,
+      workerPath: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+      worker_path: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+      beforeHash: sha256Json(CFG.before),
+      before_hash: sha256Json(CFG.before),
+      afterHash: sha256Json(CFG.after),
+      after_hash: sha256Json(CFG.after),
+      deltaHash: sha256Json({ before: CFG.before, after: CFG.after }),
+      delta_hash: sha256Json({ before: CFG.before, after: CFG.after }),
+      present: prerequisiteProbe.sourceFilePresent === true,
+    },
+    build: {
+      cmakeArgs: CFG.cmakeArgs,
+      cmake_args: CFG.cmakeArgs,
+      cmakeConfigName: CFG.cmakeConfigName,
+      cmake_config_name: CFG.cmakeConfigName,
+      buildEnvKeys: Object.keys(CFG.buildEnv).sort(),
+      build_env_keys: Object.keys(CFG.buildEnv).sort(),
+      gpuArch: CFG.gpuArch || null,
+      gpu_arch: CFG.gpuArch || null,
+      rocmPrefix: CFG.rocmPrefix || null,
+      rocm_prefix: CFG.rocmPrefix || null,
+      buildExecutable: prerequisiteProbe.buildExecutable ?? prerequisiteProbe.build_executable ?? null,
+      build_executable: prerequisiteProbe.buildExecutable ?? prerequisiteProbe.build_executable ?? null,
+      buildConfig: prerequisiteProbe.buildConfig ?? prerequisiteProbe.build_config ?? null,
+      build_config: prerequisiteProbe.buildConfig ?? prerequisiteProbe.build_config ?? null,
+    },
+    runtime: {
+      args: CFG.runtimeArgs,
+      envKeys: Object.keys(CFG.runtimeEnv).sort(),
+      env_keys: Object.keys(CFG.runtimeEnv).sort(),
+      requiredKernels: CFG.requiredKernels,
+      required_kernels: CFG.requiredKernels,
+      reloadKernelName: CFG.reloadKernelName,
+      reload_kernel_name: CFG.reloadKernelName,
+      reloadKernelSymbol: CFG.reloadKernelSymbol,
+      reload_kernel_symbol: CFG.reloadKernelSymbol,
+      requiredFiles: runtimeRequiredFiles,
+      required_files: runtimeRequiredFiles,
+      orochiApi: CFG.orochiApi || null,
+      orochi_api: CFG.orochiApi || null,
+    },
+    visualProof: {
+      claim: CFG.claim,
+      width: CFG.width,
+      height: CFG.height,
+      minChangedPixelRatio: CFG.minChangedPixelRatio,
+      min_changed_pixel_ratio: CFG.minChangedPixelRatio,
+      minMeanAbsDelta8bit: CFG.minMeanAbsDelta8bit,
+      min_mean_abs_delta_8bit: CFG.minMeanAbsDelta8bit,
+      deterministicVisualMode: CFG.deterministicVisualMode,
+      deterministic_visual_mode: CFG.deterministicVisualMode,
+    },
+    observed: {
+      repoDirPresent: prerequisiteProbe.repoDirPresent === true,
+      repo_dir_present: prerequisiteProbe.repoDirPresent === true,
+      repoGitPresent: prerequisiteProbe.repoGitPresent === true,
+      repo_git_present: prerequisiteProbe.repoGitPresent === true,
+      repoCommit: prerequisiteProbe.repoCommit ?? prerequisiteProbe.repo_commit ?? null,
+      repo_commit: prerequisiteProbe.repoCommit ?? prerequisiteProbe.repo_commit ?? null,
+      nativeObserverPresent: prerequisiteProbe.nativeObserverPresent === true,
+      native_observer_present: prerequisiteProbe.nativeObserverPresent === true,
+      sourceFilePresent: prerequisiteProbe.sourceFilePresent === true,
+      source_file_present: prerequisiteProbe.sourceFilePresent === true,
+    },
+    blockingGaps: compactStringList(prerequisiteProbe.blockingGaps ?? prerequisiteProbe.blocking_gaps),
+    blocking_gaps: compactStringList(prerequisiteProbe.blockingGaps ?? prerequisiteProbe.blocking_gaps),
+  };
+  contract.contractHash = sha256Json({
+    schemaVersion: contract.schemaVersion,
+    backend: contract.backend,
+    profileId: contract.profileId,
+    mode: contract.mode,
+    targetName: contract.targetName,
+    workerRepoPath: contract.workerRepoPath,
+    source: contract.source,
+    runtime: contract.runtime,
+    visualProof: contract.visualProof,
+    blockingGaps: contract.blockingGaps,
+  });
+  contract.contract_hash = contract.contractHash;
+  return contract;
+}
+
 function hiprtPreflightProbeFromError({ stage, err }) {
   const blockingGaps = hiprtRocmConfigDetectionGaps(err);
   return {
@@ -802,6 +940,7 @@ async function writeHiprtPreflightRefusalArtifact({
   totalStartedMonotonicNs,
 }) {
   const prerequisiteProbe = preflightResult.prerequisiteProbe ?? {};
+  const runtimePrerequisiteContract = buildRuntimePrerequisiteContract(prerequisiteProbe);
   const evidenceRef = `hiprt-worker-preflight-probe:${sha256Hex(stableJson({
     schemaVersion: prerequisiteProbe.schemaVersion,
     workerContainer: prerequisiteProbe.workerContainer,
@@ -810,6 +949,7 @@ async function writeHiprtPreflightRefusalArtifact({
     sourceRel: prerequisiteProbe.sourceRel,
     sourceWorkerPath: prerequisiteProbe.sourceWorkerPath,
     requiredFiles: prerequisiteProbe.requiredFiles,
+    runtimePrerequisiteContractHash: runtimePrerequisiteContract.contractHash,
     blockingGaps: prerequisiteProbe.blockingGaps,
   }))}`;
   const unsupportedReasons = compactStringList([
@@ -853,6 +993,8 @@ async function writeHiprtPreflightRefusalArtifact({
         worker_repo_path: CFG.workerRepoPath,
         nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
         native_launch_observer_path: CFG.nativeLaunchObserverPath,
+        runtimePrerequisiteContractHash: runtimePrerequisiteContract.contractHash,
+        runtime_prerequisite_contract_hash: runtimePrerequisiteContract.contractHash,
         accepted: false,
         evidenceRefs: [evidenceRef],
         evidence_refs: [evidenceRef],
@@ -866,6 +1008,8 @@ async function writeHiprtPreflightRefusalArtifact({
         worker_repo_path: CFG.workerRepoPath,
         nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
         native_launch_observer_path: CFG.nativeLaunchObserverPath,
+        runtimePrerequisiteContractHash: runtimePrerequisiteContract.contractHash,
+        runtime_prerequisite_contract_hash: runtimePrerequisiteContract.contractHash,
         accepted: false,
         evidenceRefs: [evidenceRef],
         evidence_refs: [evidenceRef],
@@ -923,6 +1067,8 @@ async function writeHiprtPreflightRefusalArtifact({
     preflight: prerequisiteProbe,
     hiprtWorkerPreflightProbe: prerequisiteProbe,
     hiprt_worker_preflight_probe: prerequisiteProbe,
+    runtimePrerequisiteContract,
+    runtime_prerequisite_contract: runtimePrerequisiteContract,
     strictHmrProvenance: strictSummary,
     strict_hmr_provenance: strictSummary,
     timings: {
@@ -945,6 +1091,7 @@ async function writeHiprtPreflightRefusalArtifact({
     classification: artifact.classification,
     acceptance: artifact.acceptance,
     preflight: artifact.preflight,
+    runtimePrerequisiteContract: artifact.runtimePrerequisiteContract,
   }))}`;
   artifact.proof_id = artifact.proofId;
   const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-preflight-refusal.json`);
