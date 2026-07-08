@@ -128,7 +128,10 @@ impl WorkspacePolicy {
         PolicyDecision::approval(
             "source_file_requires_review",
             Classification::L2,
-            format!("Review {} before sending to Vectant.", request.path),
+            format!(
+                "Review {} before sending to Vectant.",
+                self.scrub_display(&request.path)
+            ),
         )
     }
 

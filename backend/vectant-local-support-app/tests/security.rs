@@ -195,6 +195,14 @@ fn file_response_display_paths_are_scrubbed() {
     .unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
 
+    let decision = policy.decide_file(&request(secret_name));
+    assert!(decision
+        .user_message
+        .contains("[REDACTED:openai_api_key]"));
+    assert!(!decision
+        .user_message
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+
     let response = policy.read_file_for_review(&request(secret_name));
     assert_eq!(response.decision, "approval_required");
     assert!(response.path_display.contains("[REDACTED:openai_api_key]"));
