@@ -22,7 +22,11 @@ afterEach(() => {
 function adminGet(headers = {}) {
   return new Request("https://beta.vectant.dev/api/local-support/admin/state", {
     method: "GET",
-    headers,
+    headers: {
+      origin: "https://beta.vectant.dev",
+      "sec-fetch-site": "same-origin",
+      ...headers,
+    },
   });
 }
 
@@ -96,6 +100,44 @@ describe("local support admin state route", () => {
     await expect(response.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "admin_token_invalid",
+      bytes_sent: 0,
+    });
+  });
+
+  it("rejects unsafe admin token configuration and oversized presented tokens", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "short";
+    let response = await GET(adminGet({ "x-vectant-admin-token": "short" }));
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "admin_token_misconfigured",
+      bytes_sent: 0,
+    });
+
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+    response = await GET(adminGet({ "x-vectant-admin-token": "a".repeat(512) }));
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "admin_token_invalid",
+      bytes_sent: 0,
+    });
+  });
+
+  it("denies cross-site fetch metadata for admin state reads", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+
+    const response = await GET(adminGet({
+      "x-vectant-admin-token": "admin-secret",
+      "sec-fetch-site": "cross-site",
+    }));
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "bad_origin",
       bytes_sent: 0,
     });
   });

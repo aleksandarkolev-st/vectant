@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
-  buildAdminRevokeDecision,
   constantTimeStringEqual,
   readLocalSupportPolicy,
   recordAdminRevocation,
@@ -14,6 +13,10 @@ export const runtime = "nodejs";
 export async function GET(req) {
   const auth = authorizeAdmin(req);
   if (auth) return auth;
+  if (!isSameOriginRequest(req)) {
+    const denied = deniedJson("bad_origin", "Request origin was not accepted.");
+    return jsonNoStore(denied.body, denied.status);
+  }
 
   const state = parseAdminStateEnv();
   return jsonNoStore(summarizeAdminState(state, readLocalSupportPolicy()));
@@ -44,8 +47,12 @@ function authorizeAdmin(req) {
     const denied = deniedJson("admin_token_unconfigured", "Local Support admin access is not configured.");
     return jsonNoStore(denied.body, denied.status);
   }
+  if (!isSafeAdminToken(expected)) {
+    const denied = deniedJson("admin_token_misconfigured", "Local Support admin access is not configured safely.");
+    return jsonNoStore(denied.body, denied.status);
+  }
   const actual = req.headers.get("x-vectant-admin-token") || "";
-  if (!constantTimeStringEqual(actual, expected)) {
+  if (!isSafeAdminToken(actual) || !constantTimeStringEqual(actual, expected)) {
     const denied = deniedJson("admin_token_invalid", "Local Support admin token was not accepted.");
     return jsonNoStore(denied.body, 401);
   }
@@ -68,4 +75,11 @@ function parseAdminStateEnv() {
   } catch {
     return {};
   }
+}
+
+function isSafeAdminToken(value) {
+  return typeof value === "string"
+    && value.length >= 8
+    && value.length <= 256
+    && /^[\x21-\x7e]+$/.test(value);
 }
