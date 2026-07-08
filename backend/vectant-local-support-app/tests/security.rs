@@ -659,6 +659,7 @@ fn session_control_can_resume_from_paused_state() {
 
     session.pause();
     assert_eq!(session.validate(&token, "req_data"), Err(SessionError::Paused));
+    assert!(session.validate_control(&token, "req_pause_again").is_ok());
     assert!(session.validate_control(&token, "req_resume").is_ok());
     session.resume();
     assert!(session.validate(&token, "req_after_resume").is_ok());

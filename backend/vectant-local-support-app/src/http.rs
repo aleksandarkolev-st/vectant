@@ -312,7 +312,7 @@ async fn pause_session(
     let token = bearer(&headers)?;
     let mut session = state.session.lock().await;
     session
-        .validate(token, &request_id)
+        .validate_control(token, &request_id)
         .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     session.pause();
     let session_state = session.state();
