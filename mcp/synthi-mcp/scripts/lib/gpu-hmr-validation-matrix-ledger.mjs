@@ -12157,17 +12157,12 @@ function attachLinkedRunModeSupportRows({ rowsByTarget, fullRuntimeRowsByTarget,
 }
 
 function broadLibraryAgnosticScopeProven(row = {}, context = {}) {
-  // Matrix-level generalization can be computed from a portfolio of strict rows,
-  // and broad row classification is derived from that accepted proof instead
-  // of trusting a row-declared broad scope.
+  // Matrix-level generalization is portfolio evidence. It must not relabel
+  // scoped strict rows as row-local broad runtime acceptance.
   const proof = compactObject(context.broadLibraryAgnosticProof ?? context.broadProof);
   if (proof.accepted !== true) return false;
   const rowIds = new Set([
     ...compactStringList(proof.broadRuntimeRowIds ?? proof.broad_runtime_row_ids),
-    ...compactStringList(
-      proof.matrixGeneralizationRuntimeRowIds
-      ?? proof.matrix_generalization_runtime_row_ids,
-    ),
   ]);
   const rowId = firstText(row.rowId, row.row_id);
   return rowId ? rowIds.has(rowId) : false;
@@ -37185,14 +37180,14 @@ function broadLibraryAgnosticReadiness(
       ? null
       : 'matrix_level_broad_generalization_proof_not_present',
     broadRuntimeRowsMissing ? 'broad_runtime_rows_missing' : null,
-    rowLocalBroadRuntimeRowsMissing ? 'row_local_broad_runtime_rows_missing' : null,
+    matrixGeneralizationAccepted ? null
+      : rowLocalBroadRuntimeRowsMissing ? 'row_local_broad_runtime_rows_missing' : null,
     ...attemptFreshness.openGaps,
     ...(matrixGeneralizationAccepted
       ? []
       : (Array.isArray(broadProof.openGaps) ? broadProof.openGaps : [])),
   ]);
   const accepted = matrixGeneralizationAccepted
-    && !rowLocalBroadRuntimeRowsMissing
     && attemptFreshness.latestAttemptUnselectedBlocksReadiness !== true;
   return {
     schemaVersion: 'synthi.gpu_hmr.broad_library_agnostic_readiness.v1',
@@ -37438,12 +37433,7 @@ function coverageSummary(rows, context = {}) {
     byBackend,
     acceptedFullRuntimeGpuHmrRows: fullRuntimeRows.length,
     acceptedFullRuntimeTargets: compactStringList(fullRuntimeRows.map((row) => row.targetId)),
-    acceptedFullRuntimeClaimScopeBreakdown: fullRuntimeScopeBreakdown(fullRuntimeRows.map((row) => ({
-      ...row,
-      acceptanceScope: rowIsBroadFullRuntime(row, broadProof)
-        ? BROAD_LIBRARY_AGNOSTIC_ACCEPTANCE_SCOPE
-        : row.claimScope,
-    }))),
+    acceptedFullRuntimeClaimScopeBreakdown: fullRuntimeScopeBreakdown(fullRuntimeRows),
     broadFullRuntimeGpuHmrRows: broadRuntimeRows.length,
     broadFullRuntimeTargets: compactStringList(broadRuntimeRows.map((row) => row.targetId)),
     scopedFullRuntimeGpuHmrRows: scopedRuntimeRows.length,

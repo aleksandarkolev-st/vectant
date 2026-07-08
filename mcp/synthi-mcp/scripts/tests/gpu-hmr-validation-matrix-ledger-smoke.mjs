@@ -19207,14 +19207,26 @@ assert.ok(
   )
 );
 assert.equal(broadReadinessQuery.summary.acceptedFullRuntimeGpuHmrRows, 4);
-assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 4);
-assert.equal(broadReadinessQuery.summary.scopedFullRuntimeGpuHmrRows, 0);
+assert.equal(broadReadinessQuery.summary.broadFullRuntimeGpuHmrRows, 0);
+assert.equal(broadReadinessQuery.summary.scopedFullRuntimeGpuHmrRows, 4);
 assert.equal(
-  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.broad_library_agnostic,
-  4,
+  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.rocm_hip_declared_runtime_profile,
+  1,
 );
 assert.equal(
-  broadReadinessQuery.summary.fullRuntimeGeneralityBreakdown.broad_library_agnostic,
+  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.webgpu_declared_compute_readback,
+  1,
+);
+assert.equal(
+  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.opencl_declared_compute_readback,
+  1,
+);
+assert.equal(
+  broadReadinessQuery.summary.acceptedFullRuntimeClaimScopeBreakdown.vulkan_declared_pipeline_visual,
+  1,
+);
+assert.equal(
+  broadReadinessQuery.summary.fullRuntimeGeneralityBreakdown.profile_scoped_only,
   4,
 );
 assert.equal(
@@ -19314,7 +19326,7 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRows,
-  4,
+  0,
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadRuntimeRowsMissing,
@@ -19322,7 +19334,11 @@ assert.equal(
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.rowLocalBroadRuntimeRowsMissing,
-  false,
+  true,
+);
+assert.ok(
+  !broadReadinessQuery.summary.broadLibraryAgnosticReadiness.openGaps
+    .includes('row_local_broad_runtime_rows_missing'),
 );
 assert.equal(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.matrixGeneralizationRuntimeRows,
