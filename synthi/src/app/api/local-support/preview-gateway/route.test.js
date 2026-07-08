@@ -69,6 +69,7 @@ function request(body, init = {}) {
     headers: {
       "content-type": "application/json",
       origin: "https://beta.vectant.dev",
+      "sec-fetch-site": "same-origin",
       ...(init.headers || {}),
     },
     body: typeof body === "string" ? body : JSON.stringify(body),

@@ -126,6 +126,19 @@ describe("local support HTTP guards", () => {
     }))).toBe(false);
 
     expect(isSameOriginRequest(originRequest({
+      fetchSite: "same-origin",
+    }))).toBe(false);
+
+    expect(isSameOriginRequest(originRequest({
+      origin: "https://beta.vectant.dev",
+    }))).toBe(false);
+
+    expect(isSameOriginRequest(originRequest({
+      origin: "https://beta.vectant.dev",
+      fetchSite: "none",
+    }))).toBe(false);
+
+    expect(isSameOriginRequest(originRequest({
       origin: "https://beta.vectant.dev",
       fetchSite: "navigate",
     }))).toBe(false);

@@ -24,6 +24,7 @@ function request(body, init = {}) {
     headers: {
       "content-type": "application/json",
       origin: "https://beta.vectant.dev",
+      "sec-fetch-site": "same-origin",
       ...(init.headers || {}),
     },
     body: JSON.stringify(body),
@@ -36,6 +37,7 @@ function rawRequest(body, init = {}) {
     headers: {
       "content-type": "application/json",
       origin: "https://beta.vectant.dev",
+      "sec-fetch-site": "same-origin",
       ...(init.headers || {}),
     },
     body,

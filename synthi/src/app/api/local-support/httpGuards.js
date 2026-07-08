@@ -41,11 +41,11 @@ export async function readBoundedJson(req, maxBytes = MAX_LOCAL_SUPPORT_CONTROL_
 
 export function isSameOriginRequest(req) {
   const fetchSite = req.headers.get("sec-fetch-site");
-  if (fetchSite === "cross-site") return false;
-  if (fetchSite && !["same-origin", "same-site", "none"].includes(fetchSite)) return false;
+  if (!fetchSite || fetchSite === "cross-site" || fetchSite === "none") return false;
+  if (!["same-origin", "same-site"].includes(fetchSite)) return false;
 
   const origin = req.headers.get("origin");
-  if (!origin) return true;
+  if (!origin) return false;
   const url = new URL(req.url);
   return origin === `${url.protocol}//${url.host}`;
 }

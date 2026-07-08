@@ -6,6 +6,7 @@ function request(body, { origin = "http://localhost:3000" } = {}) {
     headers: {
       "content-type": "application/json",
       origin,
+      "sec-fetch-site": "same-origin",
     },
     body: JSON.stringify(body),
   });
@@ -17,6 +18,7 @@ function rawRequest(body, { origin = "http://localhost:3000" } = {}) {
     headers: {
       "content-type": "application/json",
       origin,
+      "sec-fetch-site": "same-origin",
     },
     body,
   });
