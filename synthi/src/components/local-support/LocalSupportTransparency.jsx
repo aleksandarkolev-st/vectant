@@ -917,7 +917,7 @@ export default function LocalSupportTransparency() {
                     <div key={scenario.id} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-sm text-zinc-200">{scenario.label}</span>
-                        <Pill tone="good">Covered</Pill>
+                        <Pill tone="warn">Needs E2E proof</Pill>
                       </div>
                       <div className="mt-1 font-mono text-[11px] text-zinc-500">{scenario.evidence}</div>
                     </div>
