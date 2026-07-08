@@ -29,7 +29,7 @@
     "targets": ["msi", "nsis"],
     "publisher": "Vectant",
     "copyright": "Copyright Vectant",
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "shell": {
@@ -45,7 +45,7 @@
       "enabled": false
     },
     "updater": {
-      "active": true,
+      "active": false,
       "dialog": false,
       "pubkey": "",
       "endpoints": []

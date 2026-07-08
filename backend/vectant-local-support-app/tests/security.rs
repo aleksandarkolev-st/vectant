@@ -766,6 +766,10 @@ fn desktop_tauri_config_keeps_renderer_unprivileged() {
     assert!(!report.hardened());
 
     let signed_config = config
+        .replace(r#""createUpdaterArtifacts": false"#, r#""createUpdaterArtifacts": true"#)
+        .replace(r#""updater": {
+      "active": false"#, r#""updater": {
+      "active": true"#)
         .replace(r#""pubkey": """#, &format!(r#""pubkey": "{}""#, "a".repeat(64)))
         .replace(
             r#""endpoints": []"#,
