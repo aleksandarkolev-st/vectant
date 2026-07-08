@@ -1117,6 +1117,31 @@ fn pairing_proof_binds_device_key_to_challenge() {
 }
 
 #[test]
+fn pairing_proof_rejects_malformed_or_oversized_fields_before_verification() {
+    let device = DeviceIdentity::generate();
+    let proof = device.sign_pairing_challenge("pair_123", "nonce_123", "browser_123", "user_123");
+
+    let mut oversized = proof.clone();
+    oversized.server_nonce = "n".repeat(129);
+    assert_eq!(verify_pairing_proof(&oversized), Err(PairingError::InvalidProof));
+
+    let mut control_character = proof.clone();
+    control_character.browser_session_id = "browser_123\ninjected".to_string();
+    assert_eq!(verify_pairing_proof(&control_character), Err(PairingError::InvalidProof));
+
+    let mut huge_public_key = proof.clone();
+    huge_public_key.device_public_key = "a".repeat(10_000);
+    assert_eq!(verify_pairing_proof(&huge_public_key), Err(PairingError::InvalidProof));
+
+    let mut malformed_signature = proof;
+    malformed_signature.signature = "z".repeat(128);
+    assert_eq!(
+        verify_pairing_proof(&malformed_signature),
+        Err(PairingError::InvalidProof)
+    );
+}
+
+#[test]
 fn preview_blocks_unapproved_private_redirects_and_credentials() {
     let token = preview_token(5173, "vite:1234");
     let approval = PortApproval::browser_only_with_token(5173, "vite:1234", &token);

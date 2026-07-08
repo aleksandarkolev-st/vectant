@@ -6,6 +6,9 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+const MAX_PAIRING_FIELD_BYTES: usize = 128;
+const MAX_REQUESTED_USER_ID_BYTES: usize = 256;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingCode {
     pub code: String,
@@ -141,11 +144,15 @@ pub enum PairingError {
     Mismatch,
     Consumed,
     RateLimited,
+    InvalidProof,
     BadPublicKey,
     BadSignature,
 }
 
 pub fn verify_pairing_proof(proof: &PairingProof) -> Result<(), PairingError> {
+    if !valid_pairing_proof_shape(proof) {
+        return Err(PairingError::InvalidProof);
+    }
     let public_key_bytes: [u8; 32] = hex::decode(&proof.device_public_key)
         .map_err(|_| PairingError::BadPublicKey)?
         .try_into()
@@ -171,6 +178,33 @@ pub fn verify_pairing_proof(proof: &PairingProof) -> Result<(), PairingError> {
     verifying_key
         .verify(&payload, &signature)
         .map_err(|_| PairingError::BadSignature)
+}
+
+fn valid_pairing_proof_shape(proof: &PairingProof) -> bool {
+    safe_pairing_field(&proof.pairing_id, MAX_PAIRING_FIELD_BYTES)
+        && safe_pairing_field(&proof.server_nonce, MAX_PAIRING_FIELD_BYTES)
+        && safe_pairing_field(&proof.browser_session_id, MAX_PAIRING_FIELD_BYTES)
+        && safe_pairing_field(&proof.requested_user_id, MAX_REQUESTED_USER_ID_BYTES)
+        && fixed_hex(&proof.device_public_key, 64)
+        && fixed_hex(&proof.signature, 128)
+        && fixed_device_fingerprint(&proof.device_fingerprint)
+}
+
+fn safe_pairing_field(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
+}
+
+fn fixed_hex(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn fixed_device_fingerprint(value: &str) -> bool {
+    match value.strip_prefix("sha256:") {
+        Some(digest) => fixed_hex(digest, 16),
+        None => false,
+    }
 }
 
 fn pairing_fingerprint(code: &str) -> String {
