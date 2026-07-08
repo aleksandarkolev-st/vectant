@@ -457,6 +457,9 @@ export function completePairingChallenge(input, policy = readLocalSupportPolicy(
     pairingSessions.delete(pairingId);
     return deny("pairing_code_expired", "This pairing code expired.");
   }
+  if (!isValidPairingCode(code) || !isValidPairingFingerprint(fingerprint)) {
+    return deny("invalid_pairing_schema", "Pairing code or fingerprint shape was not accepted.");
+  }
   if (!constantTimeStringEqual(code, pairing.code) || !constantTimeStringEqual(fingerprint, pairing.fingerprint)) {
     return deny("pairing_code_mismatch", "Pairing code or fingerprint did not match.");
   }
@@ -1252,6 +1255,14 @@ function pairingFingerprint(code) {
 function randomPairingCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from(randomBytes(12), (byte) => alphabet[byte % alphabet.length]).join("");
+}
+
+function isValidPairingCode(value) {
+  return typeof value === "string" && /^[A-Z2-9]{12}$/.test(value);
+}
+
+function isValidPairingFingerprint(value) {
+  return typeof value === "string" && /^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/i.test(value);
 }
 
 function prunePairingSessions(nowMs) {

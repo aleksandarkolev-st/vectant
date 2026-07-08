@@ -175,7 +175,7 @@ describe("local support pairing route", () => {
     });
 
     for (let index = 0; index < 4; index += 1) {
-      const bad = await POST(request(completeBody(challenge, signProof(challenge), { code: "BADCODE00000" })));
+      const bad = await POST(request(completeBody(challenge, signProof(challenge), { code: "BADCODE22222" })));
       expect(bad.status).toBe(403);
       await expect(bad.json()).resolves.toMatchObject({
         decision: "denied",
@@ -183,13 +183,37 @@ describe("local support pairing route", () => {
       });
     }
 
-    const limited = await POST(request(completeBody(challenge, signProof(challenge), { code: "BADCODE00000" })));
+    const limited = await POST(request(completeBody(challenge, signProof(challenge), { code: "BADCODE22222" })));
     expect(limited.status).toBe(429);
     await expect(limited.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "pairing_rate_limited",
       bytes_sent: 0,
     });
+  });
+
+  it("rejects malformed completion code and fingerprint shape", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+
+    const created = await POST(request(createBody()));
+    const challenge = await created.json();
+
+    for (const overrides of [
+      { code: `${challenge.code}\n` },
+      { code: challenge.code.toLowerCase() },
+      { fingerprint: "a".repeat(128) },
+    ]) {
+      const response = await POST(request(completeBody(challenge, signProof(challenge), {
+        request_id: `req_bad_pairing_shape_${Object.keys(overrides)[0]}`,
+        ...overrides,
+      })));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        decision: "denied",
+        reason: "invalid_pairing_schema",
+        bytes_sent: 0,
+      });
+    }
   });
 });
 
