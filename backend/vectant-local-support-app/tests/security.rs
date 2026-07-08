@@ -1198,6 +1198,25 @@ fn pairing_requires_matching_fingerprint_and_rate_limits() {
 }
 
 #[test]
+fn pairing_rejects_malformed_code_and_fingerprint_shape() {
+    let mut pairing = PairingSession::new(std::time::Duration::from_secs(60));
+    let public = pairing.public_code();
+
+    assert_eq!(
+        pairing.verify(&format!("{}\n", public.code), &public.fingerprint),
+        Err(PairingError::Mismatch)
+    );
+    assert_eq!(
+        pairing.verify(&public.code.to_ascii_lowercase(), &public.fingerprint),
+        Err(PairingError::Mismatch)
+    );
+    assert_eq!(
+        pairing.verify(&public.code, &"a".repeat(128)),
+        Err(PairingError::Mismatch)
+    );
+}
+
+#[test]
 fn pairing_proof_binds_device_key_to_challenge() {
     let device = DeviceIdentity::generate();
     let public = device.public_identity();

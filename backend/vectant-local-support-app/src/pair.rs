@@ -130,7 +130,11 @@ impl PairingSession {
         if Instant::now() > self.expires_at {
             return Err(PairingError::Expired);
         }
-        if submitted_code != self.code || submitted_fingerprint != self.fingerprint {
+        if !valid_pairing_code(submitted_code)
+            || !valid_pairing_fingerprint(submitted_fingerprint)
+            || !constant_time_eq(submitted_code.as_bytes(), self.code.as_bytes())
+            || !constant_time_eq(submitted_fingerprint.as_bytes(), self.fingerprint.as_bytes())
+        {
             return Err(PairingError::Mismatch);
         }
         self.consumed = true;
@@ -205,6 +209,31 @@ fn fixed_device_fingerprint(value: &str) -> bool {
         Some(digest) => fixed_hex(digest, 16),
         None => false,
     }
+}
+
+fn valid_pairing_code(value: &str) -> bool {
+    value.len() == 12
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+fn valid_pairing_fingerprint(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 14
+        && bytes[4] == b'-'
+        && bytes[9] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 9) || byte.is_ascii_hexdigit())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn pairing_fingerprint(code: &str) -> String {
