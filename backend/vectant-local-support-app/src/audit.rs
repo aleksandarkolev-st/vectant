@@ -9,6 +9,7 @@ use crate::policy::Classification;
 use crate::scanner::SecretScanner;
 
 const AUDIT_EXPORT_VERSION: &str = "local-support-audit-v1";
+const MAX_AUDIT_STORE_BYTES: u64 = 2 * 1024 * 1024;
 const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,6 +238,10 @@ impl LocalAuditStore {
         if !self.path.exists() {
             return Ok(AuditLog::new(self.scanner.clone()));
         }
+        let metadata = fs::metadata(&self.path).map_err(AuditStoreError::Io)?;
+        if metadata.len() > MAX_AUDIT_STORE_BYTES {
+            return Err(AuditStoreError::TooLarge);
+        }
         let bytes = fs::read(&self.path).map_err(AuditStoreError::Io)?;
         let export: AuditExport = serde_json::from_slice(&bytes).map_err(AuditStoreError::Json)?;
         AuditLog::from_verified_export(self.scanner.clone(), export)
@@ -249,6 +254,9 @@ impl LocalAuditStore {
         }
         let export = log.export_incident_bundle(self.retention_days);
         let bytes = serde_json::to_vec_pretty(&export).map_err(AuditStoreError::Json)?;
+        if bytes.len() as u64 > MAX_AUDIT_STORE_BYTES {
+            return Err(AuditStoreError::TooLarge);
+        }
         let tmp = self.path.with_extension("json.tmp");
         ensure_audit_path_safe(&self.path)?;
         ensure_audit_path_safe(&tmp)?;
@@ -277,6 +285,7 @@ pub enum AuditStoreError {
     Io(std::io::Error),
     Json(serde_json::Error),
     HashChainInvalid,
+    TooLarge,
     UnsafePath,
 }
 
@@ -286,6 +295,7 @@ impl std::fmt::Display for AuditStoreError {
             Self::Io(error) => write!(formatter, "audit store io error: {error}"),
             Self::Json(error) => write!(formatter, "audit store json error: {error}"),
             Self::HashChainInvalid => write!(formatter, "audit store hash chain invalid"),
+            Self::TooLarge => write!(formatter, "audit store file too large"),
             Self::UnsafePath => write!(formatter, "audit store unsafe path"),
         }
     }

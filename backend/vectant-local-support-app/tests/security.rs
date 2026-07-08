@@ -1805,6 +1805,19 @@ fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
 }
 
 #[test]
+fn local_audit_store_rejects_oversized_history_before_parsing() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(
+        dir.path().join("audit.json"),
+        30,
+        SecretScanner::default(),
+    );
+    fs::write(store.path(), vec![b'{'; (2 * 1024 * 1024) + 1]).unwrap();
+
+    assert!(matches!(store.load(), Err(AuditStoreError::TooLarge)));
+}
+
+#[test]
 fn local_audit_store_rejects_symlinked_audit_path() {
     let dir = tempdir().unwrap();
     let target = dir.path().join("target.json");
