@@ -375,6 +375,7 @@ export default function LocalSupportTransparency() {
               variant="destructive"
               size="sm"
               className="bg-red-500/90 text-zinc-950 hover:bg-red-400"
+              disabled={!connected}
               onClick={() => {
                 setLocalDisconnected(true);
                 setLocalPaused(true);
@@ -744,6 +745,7 @@ export default function LocalSupportTransparency() {
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
                   onClick={() => setApprovalsRevoked(true)}
+                  disabled={!connected}
                 >
                   <RotateCcw className="size-4" aria-hidden="true" />
                   Revoke session approvals
@@ -757,6 +759,7 @@ export default function LocalSupportTransparency() {
                     setLocalPaused(true);
                     setApprovalsRevoked(true);
                   }}
+                  disabled={!connected}
                 >
                   <Unplug className="size-4" aria-hidden="true" />
                   Disconnect and revoke
@@ -767,7 +770,11 @@ export default function LocalSupportTransparency() {
                     ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
                     : "border-white/10 bg-white/[0.03] text-zinc-400",
                 )}>
-                  {approvalsRevoked ? "Session approvals revoked. Future sends require review." : "No live approvals are active."}
+                  {approvalsRevoked
+                    ? "Session approvals revoked. Future sends require review."
+                    : connected
+                      ? "No live approvals are active."
+                      : "Connect the desktop app before revoking approvals. This page will not fake a revoke."}
                 </div>
               </div>
             </Panel>
@@ -795,7 +802,7 @@ export default function LocalSupportTransparency() {
                 ) : null}
               </div>
             </Panel>
-            <Panel title="Local history controls" description="Exports are scrubbed. Delete removes local activity records for the completed session.">
+            <Panel title="Local history controls" description="Exports are scrubbed. Delete requires a live desktop app storage action.">
               <div className="grid gap-2">
                 <Button
                   type="button"
@@ -804,12 +811,13 @@ export default function LocalSupportTransparency() {
                   onClick={exportScrubbedHistory}
                 >
                   <Download className="size-4" aria-hidden="true" />
-                  Export scrubbed history
+                  Export current scrubbed view
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
+                  disabled={!historyDeleted}
                   onClick={() => {
                     setHistoryDeleted(false);
                     setLastExport(null);
@@ -822,6 +830,7 @@ export default function LocalSupportTransparency() {
                   type="button"
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
+                  disabled={!connected}
                   onClick={() => {
                     setHistoryDeleted(true);
                     setLastExport(null);
@@ -833,6 +842,11 @@ export default function LocalSupportTransparency() {
                 {lastExport ? (
                   <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">
                     {lastExport}
+                  </div>
+                ) : null}
+                {!connected ? (
+                  <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+                    Connect the desktop app before deleting local activity. This page will not fake a delete.
                   </div>
                 ) : null}
               </div>

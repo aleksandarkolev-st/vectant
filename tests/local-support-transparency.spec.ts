@@ -34,10 +34,10 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("cell", { name: "Manual mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Fast Support" })).toBeVisible();
     await expect(page.getByText("Auto-send, broad repo upload, persistent approvals")).toBeVisible();
-    await page.getByRole("button", { name: "Revoke session approvals" }).click();
-    await expect(page.getByText("Session approvals revoked. Future sends require review.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
+    await expect(page.getByText("This page will not fake a revoke.")).toBeVisible();
 
-    await page.getByRole("button", { name: "Disconnect", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeDisabled();
     await expect(page.getByText("Disconnected")).toBeVisible();
 
     await page.getByRole("tab", { name: "Release gate" }).click();
@@ -59,7 +59,7 @@ test.describe("local support transparency page", () => {
     await page.getByRole("tab", { name: "Activity" }).click();
 
     const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: "Export scrubbed history" }).click();
+    await page.getByRole("button", { name: "Export current scrubbed view" }).click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toBe("vectant-local-support-history-not_paired.json");
 
@@ -80,8 +80,8 @@ test.describe("local support transparency page", () => {
     expect(JSON.stringify(exported)).not.toContain("DATABASE_URL=");
     await expect(page.getByText("0 scrubbed events exported")).toBeVisible();
 
-    await page.getByRole("button", { name: "Delete local history" }).click();
-    await expect(page.getByText("Local activity history deleted.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete local history" })).toBeDisabled();
+    await expect(page.getByText("This page will not fake a delete.")).toBeVisible();
     await expect(page.getByText("Paired browser session with fingerprint")).toHaveCount(0);
   });
 });
