@@ -482,8 +482,8 @@ fn validate_headers(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_j
     let fetch_site = headers
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("same-origin");
-    if matches!(fetch_site, "cross-site" | "none") {
+        .unwrap_or("");
+    if !matches!(fetch_site, "same-origin" | "same-site") {
         return Err(denied(StatusCode::FORBIDDEN, "bad_fetch_metadata"));
     }
     let csrf = headers
