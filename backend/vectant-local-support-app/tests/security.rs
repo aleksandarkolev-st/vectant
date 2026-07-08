@@ -690,6 +690,29 @@ fn desktop_ipc_blocks_renderer_secret_and_device_key_access() {
 }
 
 #[test]
+fn desktop_ipc_rejects_malformed_renderer_identifiers() {
+    let cases = vec![
+        ("req_ok".to_string(), "".to_string()),
+        ("".to_string(), "sess_123".to_string()),
+        (" req_space".to_string(), "sess_123".to_string()),
+        ("req_newline\nx".to_string(), "sess_123".to_string()),
+        ("req/slash".to_string(), "sess_123".to_string()),
+        ("req_123".to_string(), "sess_123\r\nx".to_string()),
+        ("r".repeat(129), "sess_123".to_string()),
+    ];
+    for (request_id, session_id) in cases {
+        let denied = decide_ipc_request(&IpcRequest {
+            command: "session.status".to_string(),
+            request_id,
+            session_id,
+        });
+        assert_eq!(denied.decision, "deny");
+        assert_eq!(denied.reason, "invalid_schema");
+        assert!(denied.user_visible);
+    }
+}
+
+#[test]
 fn local_api_rate_limiter_denies_after_window_budget() {
     let start = std::time::Instant::now();
     let mut limiter = RateLimiter::new(2, std::time::Duration::from_secs(60));

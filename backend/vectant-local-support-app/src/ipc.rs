@@ -53,7 +53,7 @@ const DANGEROUS_COMMAND_FRAGMENTS: &[&str] = &[
 ];
 
 pub fn decide_ipc_request(request: &IpcRequest) -> IpcDecision {
-    if request.request_id.trim().is_empty() || request.session_id.trim().is_empty() {
+    if !is_safe_ipc_identifier(&request.request_id) || !is_safe_ipc_identifier(&request.session_id) {
         return deny("invalid_schema");
     }
     let normalized = request.command.trim().to_ascii_lowercase();
@@ -78,6 +78,16 @@ pub fn decide_ipc_request(request: &IpcRequest) -> IpcDecision {
         reason: "ipc_command_allowed".to_string(),
         user_visible: true,
     }
+}
+
+fn is_safe_ipc_identifier(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 128
+        && trimmed == value
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'))
 }
 
 fn deny(reason: &str) -> IpcDecision {
