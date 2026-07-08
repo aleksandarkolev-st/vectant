@@ -490,7 +490,7 @@ fn validate_headers(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_j
         .get("x-vectant-csrf")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if csrf.len() < 24 {
+    if !is_safe_header_token(csrf, 24, 128) {
         return Err(denied(StatusCode::FORBIDDEN, "missing_csrf"));
     }
     Ok(())
@@ -501,15 +501,21 @@ fn bearer(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Val
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))?;
-    auth.strip_prefix("Bearer ")
-        .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))
+    let token = auth
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))?;
+    if is_safe_header_token(token, 32, 128) {
+        Ok(token)
+    } else {
+        Err(denied(StatusCode::UNAUTHORIZED, "invalid_bearer"))
+    }
 }
 
 fn local_approval_secret(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Value>)> {
     headers
         .get("x-vectant-local-approval-secret")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| value.len() >= 32 && value.len() <= 128)
+        .filter(|value| is_safe_header_token(value, 32, 128))
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "local_user_approval_required"))
 }
 
@@ -528,7 +534,7 @@ fn require_local_control_secret(
     let secret = headers
         .get("x-vectant-local-control-secret")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| value.len() >= 32 && value.len() <= 128)
+        .filter(|value| is_safe_header_token(value, 32, 128))
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "local_user_control_required"))?;
     if state.local_control_secret_matches(secret) {
         Ok(())
@@ -550,6 +556,14 @@ fn hash_local_control_secret(value: &str) -> String {
     hasher.update(b"vectant-local-support-local-control-secret:");
     hasher.update(value.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn is_safe_header_token(value: &str, min_len: usize, max_len: usize) -> bool {
+    value.len() >= min_len
+        && value.len() <= max_len
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
