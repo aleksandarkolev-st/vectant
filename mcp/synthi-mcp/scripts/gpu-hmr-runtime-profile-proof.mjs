@@ -83,6 +83,10 @@ function sha256Text(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
 
+function sha256Buffer(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function compactString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -1146,11 +1150,23 @@ async function selfCheck() {
     `runtime-boundary-${Date.now()}`,
   );
   await fs.mkdir(runtimeBoundaryDir, { recursive: true });
-  const hashA = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-  const hashB = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-  const hashC = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
-  const hashD = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
-  const hashE = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const rawReadbackPath = path.join(runtimeBoundaryDir, 'raw-readback.bin');
+  const readbackSchemaPath = path.join(runtimeBoundaryDir, 'readback-schema.json');
+  const renderedCardPath = path.join(runtimeBoundaryDir, 'compute-proof-card.png');
+  const rawReadbackBytes = Buffer.from(Array.from({ length: 128 }, (_, index) => (index * 17 + 11) % 256));
+  await fs.writeFile(rawReadbackPath, rawReadbackBytes);
+  await fs.writeFile(readbackSchemaPath, `${JSON.stringify({
+    schemaVersion: 'synthi.gpu_hmr.compute_readback_schema.v1',
+    byteLength: rawReadbackBytes.length,
+    elementType: 'u8',
+    shape: [rawReadbackBytes.length],
+  }, null, 2)}\n`);
+  await fs.writeFile(renderedCardPath, Buffer.from('runtime-boundary-compute-proof-card\n', 'utf8'));
+  const hashA = `sha256:${sha256Text('runtime-boundary-before-artifact')}`;
+  const hashB = `sha256:${sha256Buffer(rawReadbackBytes)}`;
+  const hashC = `sha256:${sha256Buffer(rawReadbackBytes.subarray(0, 64))}`;
+  const hashD = `sha256:${sha256Text('runtime-boundary-dispatch-table-before')}`;
+  const hashE = `sha256:${sha256Text('runtime-boundary-dispatch-table-after')}`;
   const runtimeBoundaryEvents = [
     {
       kind: 'artifact_transport',
@@ -1251,8 +1267,8 @@ async function selfCheck() {
     cacheState: 'compiler_cache_warm',
     runtimeBoundaryEvents,
     computeOracleArtifacts: {
-      raw_readback_bin: 'runtime-boundary://raw-readback',
-      readback_schema_json: 'runtime-boundary://readback-schema',
+      raw_readback_bin: rawReadbackPath,
+      readback_schema_json: readbackSchemaPath,
       checksum_before: hashA,
       checksum_after: hashB,
       expected_output_change: true,
@@ -1279,7 +1295,7 @@ async function selfCheck() {
         slice_bounds_verified: true,
       },
       oracle_code_hash: hashC,
-      rendered_card_png: 'runtime-boundary://compute-proof-card.png',
+      rendered_card_png: renderedCardPath,
       producer: 'runtime_boundary_profile_self_check',
       timestamp_after_dispatch: 400,
       epoch: 'epoch-7',
