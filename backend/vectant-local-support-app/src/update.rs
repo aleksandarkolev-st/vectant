@@ -20,6 +20,7 @@ pub enum UpdateError {
     BadPublicKey,
     BadSignature,
     InvalidArtifactHash,
+    InvalidVersion,
     UnsupportedChannel,
     Downgrade,
     VersionRevoked,
@@ -31,6 +32,16 @@ pub fn verify_update_manifest(
     current_version: &str,
     manifest: &UpdateManifest,
 ) -> Result<(), UpdateError> {
+    if !valid_version(current_version)
+        || !valid_version(&manifest.app_version)
+        || !valid_version(&manifest.minimum_supported_version)
+        || manifest
+            .emergency_revoked_versions
+            .iter()
+            .any(|version| !valid_version(version))
+    {
+        return Err(UpdateError::InvalidVersion);
+    }
     if manifest
         .emergency_revoked_versions
         .iter()
@@ -112,6 +123,16 @@ fn valid_sha256_digest(value: &str) -> bool {
         return false;
     };
     digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn valid_version(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    !parts.is_empty()
+        && parts.len() <= 4
+        && value.len() <= 32
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.len() <= 8 && part.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn compare_versions(left: &str, right: &str) -> i8 {

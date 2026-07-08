@@ -1784,6 +1784,35 @@ fn update_manifest_rejects_malformed_artifact_hash_and_unknown_channel() {
 }
 
 #[test]
+fn update_manifest_rejects_malformed_versions_before_update_decisions() {
+    let (trusted_key, mut manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    manifest.app_version = "0.2.0-beta".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+
+    let (trusted_key, mut manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    manifest.minimum_supported_version = "old".to_string();
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "current", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["bad-version".to_string()]);
+    assert_eq!(
+        verify_update_manifest(&trusted_key, "0.1.0", &manifest),
+        Err(UpdateError::InvalidVersion)
+    );
+}
+
+#[test]
 fn update_manifest_supports_emergency_version_revocation() {
     let (trusted_key, manifest) =
         signed_test_manifest("0.2.0", "0.1.0", vec!["0.1.0".to_string()]);
