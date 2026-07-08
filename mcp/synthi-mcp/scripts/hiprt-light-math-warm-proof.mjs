@@ -613,6 +613,32 @@ function workerRuntimeRequiredFilePath(file) {
   return `${CFG.workerRepoPath}/${normalized}`;
 }
 
+function runtimeRequiredAssetPath(asset) {
+  if (typeof asset === 'string') return asset;
+  return firstText(
+    asset?.file,
+    asset?.path,
+    asset?.relativePath,
+    asset?.relative_path,
+  );
+}
+
+function workerRuntimeRequiredAssetPath(asset) {
+  return workerRuntimeRequiredFilePath(runtimeRequiredAssetPath(asset));
+}
+
+function normalizedSha256(value) {
+  const raw = firstText(value);
+  if (/^sha256:[a-f0-9]{64}$/i.test(raw)) return raw.toLowerCase();
+  if (/^[a-f0-9]{64}$/i.test(raw)) return `sha256:${raw.toLowerCase()}`;
+  return null;
+}
+
+function positiveIntegerField(value) {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function parseShellKeyValueOutput(output) {
   const fields = new Map();
   for (const line of String(output ?? '').split(/\r?\n/)) {
@@ -646,6 +672,52 @@ function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
       worker_path: workerPath,
       role: 'runtime_input',
       present: observed?.present === true,
+      contentHash: observed?.contentHash ?? observed?.content_hash ?? null,
+      content_hash: observed?.contentHash ?? observed?.content_hash ?? null,
+      byteLength: observed?.byteLength ?? observed?.byte_length ?? null,
+      byte_length: observed?.byteLength ?? observed?.byte_length ?? null,
+      readableBytesVerified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+      readable_bytes_verified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+    };
+  });
+  const runtimeRequiredAssets = CFG.requiredAssets.map((asset) => {
+    const assetPath = runtimeRequiredAssetPath(asset);
+    const observed = Array.isArray(prerequisiteProbe.requiredAssets)
+      ? prerequisiteProbe.requiredAssets.find((entry) => entry?.path === assetPath || entry?.file === assetPath)
+      : null;
+    const declaredHash = normalizedSha256(
+      typeof asset === 'object' && asset !== null
+        ? asset.contentHash ?? asset.content_hash ?? asset.sha256
+        : null,
+    );
+    const observedHash = observed?.contentHash ?? observed?.content_hash ?? null;
+    const contentHash = observedHash ?? declaredHash ?? null;
+    const hashMatchesDeclaration = declaredHash ? observedHash === declaredHash : observedHash !== null;
+    return {
+      ...(typeof asset === 'object' && asset !== null ? asset : {}),
+      file: assetPath,
+      path: assetPath,
+      role: typeof asset === 'object' && asset !== null
+        ? firstText(asset.role) || 'runtime_input'
+        : 'runtime_input',
+      required: typeof asset === 'object' && asset !== null && asset.required === false ? false : true,
+      workerPath: observed?.workerPath ?? observed?.worker_path ?? workerRuntimeRequiredAssetPath(asset),
+      worker_path: observed?.workerPath ?? observed?.worker_path ?? workerRuntimeRequiredAssetPath(asset),
+      present: observed?.present === true,
+      contentHash,
+      content_hash: contentHash,
+      declaredContentHash: declaredHash,
+      declared_content_hash: declaredHash,
+      hashMatchesDeclaration,
+      hash_matches_declaration: hashMatchesDeclaration,
+      byteLength: observed?.byteLength ?? observed?.byte_length ?? null,
+      byte_length: observed?.byteLength ?? observed?.byte_length ?? null,
+      readableBytesVerified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+      readable_bytes_verified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
     };
   });
   const contract = {
@@ -725,8 +797,8 @@ function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
       reload_kernel_symbol: CFG.reloadKernelSymbol,
       requiredFiles: runtimeRequiredFiles,
       required_files: runtimeRequiredFiles,
-      requiredAssets: CFG.requiredAssets,
-      required_assets: CFG.requiredAssets,
+      requiredAssets: runtimeRequiredAssets,
+      required_assets: runtimeRequiredAssets,
       orochiApi: CFG.orochiApi || null,
       orochi_api: CFG.orochiApi || null,
     },
@@ -813,7 +885,27 @@ async function probeHiprtPreflightPrerequisites() {
   const requiredFilePrints = CFG.requiredFiles
     .map((file, index) => {
       const workerPath = workerRuntimeRequiredFilePath(file);
-      return `[ -f ${shQuote(workerPath)} ] && printf 'required_file_${index}_present=1\\n' || printf 'required_file_${index}_present=0\\n'`;
+      return `
+if [ -f ${shQuote(workerPath)} ]; then
+  required_file_${index}_hash="$(sha256sum ${shQuote(workerPath)} 2>/dev/null | awk '{print $1}')"
+  required_file_${index}_bytes="$(wc -c < ${shQuote(workerPath)} 2>/dev/null | tr -d ' ')"
+  printf 'required_file_${index}_present=1\\nrequired_file_${index}_sha256=sha256:%s\\nrequired_file_${index}_bytes=%s\\n' "$required_file_${index}_hash" "$required_file_${index}_bytes"
+else
+  printf 'required_file_${index}_present=0\\nrequired_file_${index}_sha256=\\nrequired_file_${index}_bytes=\\n'
+fi`;
+    })
+    .join('\n');
+  const requiredAssetPrints = CFG.requiredAssets
+    .map((asset, index) => {
+      const workerPath = workerRuntimeRequiredAssetPath(asset);
+      return `
+if [ -f ${shQuote(workerPath)} ]; then
+  required_asset_${index}_hash="$(sha256sum ${shQuote(workerPath)} 2>/dev/null | awk '{print $1}')"
+  required_asset_${index}_bytes="$(wc -c < ${shQuote(workerPath)} 2>/dev/null | tr -d ' ')"
+  printf 'required_asset_${index}_present=1\\nrequired_asset_${index}_sha256=sha256:%s\\nrequired_asset_${index}_bytes=%s\\n' "$required_asset_${index}_hash" "$required_asset_${index}_bytes"
+else
+  printf 'required_asset_${index}_present=0\\nrequired_asset_${index}_sha256=\\nrequired_asset_${index}_bytes=\\n'
+fi`;
     })
     .join('\n');
   const script = `
@@ -836,6 +928,7 @@ fi
 [ -f ${shQuote(`${CFG.workerRepoPath}/build/CMakeCache.txt`)} ] && build_config=present
 printf 'repo_dir_present=%s\\nrepo_git_present=%s\\nnative_observer_present=%s\\nsource_file_present=%s\\nrepo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_dir_present" "$repo_git_present" "$native_observer_present" "$source_file_present" "$repo_commit" "$build_executable" "$build_config"
 ${requiredFilePrints}
+${requiredAssetPrints}
 exit 0
 `;
   let output = '';
@@ -854,6 +947,55 @@ exit 0
       workerPath,
       worker_path: workerPath,
       present: fields.get(`required_file_${index}_present`) === '1',
+      contentHash: normalizedSha256(fields.get(`required_file_${index}_sha256`)),
+      content_hash: normalizedSha256(fields.get(`required_file_${index}_sha256`)),
+      byteLength: positiveIntegerField(fields.get(`required_file_${index}_bytes`)),
+      byte_length: positiveIntegerField(fields.get(`required_file_${index}_bytes`)),
+      readableBytesVerified:
+        fields.get(`required_file_${index}_present`) === '1'
+        && Boolean(normalizedSha256(fields.get(`required_file_${index}_sha256`)))
+        && positiveIntegerField(fields.get(`required_file_${index}_bytes`)) !== null,
+    };
+  });
+  const requiredAssets = CFG.requiredAssets.map((asset, index) => {
+    const assetPath = runtimeRequiredAssetPath(asset);
+    const workerPath = workerRuntimeRequiredAssetPath(asset);
+    const declaredHash = normalizedSha256(
+      typeof asset === 'object' && asset !== null
+        ? asset.contentHash ?? asset.content_hash ?? asset.sha256
+        : null,
+    );
+    const observedHash = normalizedSha256(fields.get(`required_asset_${index}_sha256`));
+    const byteLength = positiveIntegerField(fields.get(`required_asset_${index}_bytes`));
+    return {
+      ...(typeof asset === 'object' && asset !== null ? asset : {}),
+      file: assetPath,
+      path: assetPath,
+      workerPath,
+      worker_path: workerPath,
+      role: typeof asset === 'object' && asset !== null
+        ? firstText(asset.role) || 'runtime_input'
+        : 'runtime_input',
+      required: typeof asset === 'object' && asset !== null && asset.required === false ? false : true,
+      present: fields.get(`required_asset_${index}_present`) === '1',
+      contentHash: observedHash,
+      content_hash: observedHash,
+      declaredContentHash: declaredHash,
+      declared_content_hash: declaredHash,
+      hashMatchesDeclaration: declaredHash ? observedHash === declaredHash : observedHash !== null,
+      hash_matches_declaration: declaredHash ? observedHash === declaredHash : observedHash !== null,
+      byteLength,
+      byte_length: byteLength,
+      readableBytesVerified:
+        fields.get(`required_asset_${index}_present`) === '1'
+        && Boolean(observedHash)
+        && byteLength !== null
+        && (declaredHash ? observedHash === declaredHash : true),
+      readable_bytes_verified:
+        fields.get(`required_asset_${index}_present`) === '1'
+        && Boolean(observedHash)
+        && byteLength !== null
+        && (declaredHash ? observedHash === declaredHash : true),
     };
   });
   const blockingGaps = compactStringList([
@@ -865,6 +1007,9 @@ exit 0
     ...requiredFiles
       .filter((entry) => entry.present !== true)
       .map((entry) => `hiprt_required_runtime_file_missing:${entry.file}`),
+    ...requiredAssets
+      .filter((entry) => entry.required !== false && entry.readableBytesVerified !== true)
+      .map((entry) => `hiprt_required_runtime_asset_bytes_unverified:${entry.path}`),
   ]);
   return {
     schemaVersion: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
@@ -904,6 +1049,8 @@ exit 0
     build_config: firstText(fields.get('build_config')) || 'missing',
     requiredFiles,
     required_files: requiredFiles,
+    requiredAssets,
+    required_assets: requiredAssets,
     dockerError: dockerError ? firstText(dockerError.message, dockerError.code) : null,
     docker_error: dockerError ? firstText(dockerError.message, dockerError.code) : null,
     outputTail: output ? String(output).slice(-4000) : '',

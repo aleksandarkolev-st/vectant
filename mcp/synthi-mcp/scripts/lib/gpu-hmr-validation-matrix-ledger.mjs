@@ -24947,6 +24947,65 @@ function preflightBackendEvidenceAccepted(row = {}) {
   return evidence.accepted === true;
 }
 
+function runtimePrerequisiteEntryAuthorityFailures(entry = {}, codePrefix) {
+  return compactStringList([
+    firstBool(entry.acceptedForGpuHmr, entry.accepted_for_gpu_hmr) === true
+      || firstBool(entry.gpuHmrSuccess, entry.gpu_hmr_success) === true
+      ? `${codePrefix}_claimed_gpu_hmr_success`
+      : null,
+    firstBool(entry.canSatisfyRuntimeProof, entry.can_satisfy_runtime_proof) === true
+      ? `${codePrefix}_claimed_runtime_authority`
+      : null,
+    firstBool(entry.canSatisfyDispatchProof, entry.can_satisfy_dispatch_proof) === true
+      ? `${codePrefix}_claimed_dispatch_authority`
+      : null,
+  ]);
+}
+
+function runtimePrerequisiteByteProofFailures(entries = [], codePrefix, { allowDeclaredHash = false } = {}) {
+  return compactStringList((Array.isArray(entries) ? entries : []).flatMap((entry) => {
+    const required = firstBool(entry.required) !== false;
+    if (!required) return runtimePrerequisiteEntryAuthorityFailures(entry, codePrefix);
+    const contentHash = normalizeSha256(firstText(
+      entry.contentHash,
+      entry.content_hash,
+      entry.sha256,
+    ));
+    const declaredContentHash = normalizeSha256(firstText(
+      entry.declaredContentHash,
+      entry.declared_content_hash,
+      entry.expectedHash,
+      entry.expected_hash,
+    ));
+    const byteLength = finiteNumber(
+      entry.byteLength
+      ?? entry.byte_length
+      ?? entry.sizeBytes
+      ?? entry.size_bytes,
+    );
+    const readableBytesVerified = firstBool(
+      entry.readableBytesVerified,
+      entry.readable_bytes_verified,
+      entry.bytesVerified,
+      entry.bytes_verified,
+    ) === true;
+    const hashMatchesDeclaration = firstBool(
+      entry.hashMatchesDeclaration,
+      entry.hash_matches_declaration,
+    );
+    return [
+      ...runtimePrerequisiteEntryAuthorityFailures(entry, codePrefix),
+      firstBool(entry.present) === true ? null : `${codePrefix}_missing`,
+      isSha256(contentHash) ? null : `${codePrefix}_hash_missing`,
+      byteLength !== null && byteLength > 0 ? null : `${codePrefix}_byte_length_missing`,
+      readableBytesVerified ? null : `${codePrefix}_readable_bytes_unverified`,
+      allowDeclaredHash && isSha256(declaredContentHash) && hashMatchesDeclaration !== true
+        ? `${codePrefix}_declared_hash_mismatch`
+        : null,
+    ];
+  }));
+}
+
 function runtimePrerequisiteContractFacet(json = {}) {
   const contract = compactObject(json.runtimePrerequisiteContract ?? json.runtime_prerequisite_contract);
   if (Object.keys(contract).length === 0) {
@@ -24972,6 +25031,7 @@ function runtimePrerequisiteContractFacet(json = {}) {
   const sourceTreeInput = contract.sourceTree ?? contract.source_tree ?? null;
   const sourceTree = isObject(sourceTreeInput) ? sourceTreeInput : null;
   const sourceTreeDeclared = Object.hasOwn(contract, 'sourceTree') || Object.hasOwn(contract, 'source_tree');
+  const observed = compactObject(contract.observed);
   const runtime = compactObject(contract.runtime);
   const visualProof = compactObject(contract.visualProof ?? contract.visual_proof);
   const requiredFiles = compactObjectList(runtime.requiredFiles ?? runtime.required_files);
@@ -25006,6 +25066,32 @@ function runtimePrerequisiteContractFacet(json = {}) {
     && firstBool(sourceTree.canSatisfyRuntimeProof, sourceTree.can_satisfy_runtime_proof) === true;
   const sourceTreeClaimsDispatchAuthority = sourceTree
     && firstBool(sourceTree.canSatisfyDispatchProof, sourceTree.can_satisfy_dispatch_proof) === true;
+  const sourceTreeKind = sourceTree
+    ? firstText(sourceTree.sourceKind, sourceTree.source_kind, sourceTree.kind)
+    : null;
+  const sourceTreeCommit = sourceTree
+    ? firstText(sourceTree.commit, sourceTree.immutableCommit, sourceTree.immutable_commit)
+    : null;
+  const observedRepoCommit = firstText(observed.repoCommit, observed.repo_commit);
+  const sourceTreeCommitIsReal = Boolean(sourceTreeCommit)
+    && /^[a-f0-9]{40}$/i.test(sourceTreeCommit);
+  const sourceTreeCommitMatchesObserved =
+    !observedRepoCommit
+    || (
+      sourceTreeCommitIsReal
+      && observedRepoCommit.toLowerCase() === sourceTreeCommit.toLowerCase()
+    );
+  const gitSourceTreeRequiresCommit = sourceTree
+    && ['git', 'local_git'].includes(sourceTreeKind);
+  const requiredSourceByteFailures = runtimePrerequisiteByteProofFailures(
+    requiredFiles,
+    'runtime_prerequisite_contract_required_source_file',
+  );
+  const requiredAssetByteFailures = runtimePrerequisiteByteProofFailures(
+    requiredAssets,
+    'runtime_prerequisite_contract_required_asset',
+    { allowDeclaredHash: true },
+  );
   const failedGates = compactStringList([
     schemaVersion === RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION
       ? null
@@ -25019,9 +25105,19 @@ function runtimePrerequisiteContractFacet(json = {}) {
     sourceTreeProofAuthority && sourceTreeProofAuthority !== 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success'
       ? 'runtime_prerequisite_contract_source_tree_authority_invalid'
       : null,
+    sourceTreeDeclared && !sourceTree ? 'runtime_prerequisite_contract_source_tree_missing' : null,
     sourceTreeClaimsGpuHmr ? 'runtime_prerequisite_contract_source_tree_claimed_gpu_hmr_success' : null,
     sourceTreeClaimsRuntimeAuthority ? 'runtime_prerequisite_contract_source_tree_claimed_runtime_authority' : null,
     sourceTreeClaimsDispatchAuthority ? 'runtime_prerequisite_contract_source_tree_claimed_dispatch_authority' : null,
+    gitSourceTreeRequiresCommit && !sourceTreeCommitIsReal
+      ? 'runtime_prerequisite_contract_source_tree_commit_unverified'
+      : null,
+    gitSourceTreeRequiresCommit && !observedRepoCommit
+      ? 'runtime_prerequisite_contract_source_tree_observed_commit_missing'
+      : null,
+    gitSourceTreeRequiresCommit && !sourceTreeCommitMatchesObserved
+      ? 'runtime_prerequisite_contract_source_tree_commit_mismatch'
+      : null,
     backend ? null : 'runtime_prerequisite_contract_backend_missing',
     backendFamily ? null : 'runtime_prerequisite_contract_backend_family_missing',
     profileId ? null : 'runtime_prerequisite_contract_profile_id_missing',
@@ -25038,6 +25134,8 @@ function runtimePrerequisiteContractFacet(json = {}) {
     contractHash && contractHash !== recomputedContractHash
       ? 'runtime_prerequisite_contract_hash_mismatch'
       : null,
+    ...requiredSourceByteFailures,
+    ...requiredAssetByteFailures,
   ]);
   return {
     schemaVersion: 'synthi.gpu_hmr.runtime_prerequisite_contract_matrix_facet.v1',
@@ -25067,10 +25165,22 @@ function runtimePrerequisiteContractFacet(json = {}) {
     worker_repo_path: workerRepoPath,
     sourceTree,
     source_tree: sourceTree,
+    sourceTreeCommit: sourceTreeCommit ?? null,
+    source_tree_commit: sourceTreeCommit ?? null,
+    sourceTreeCommitVerified:
+      !gitSourceTreeRequiresCommit
+      || (sourceTreeCommitIsReal && Boolean(observedRepoCommit) && sourceTreeCommitMatchesObserved),
+    source_tree_commit_verified:
+      !gitSourceTreeRequiresCommit
+      || (sourceTreeCommitIsReal && Boolean(observedRepoCommit) && sourceTreeCommitMatchesObserved),
     requiredFileCount: requiredFiles.length,
     required_file_count: requiredFiles.length,
     requiredAssetCount: requiredAssets.length,
     required_asset_count: requiredAssets.length,
+    requiredSourceBytesVerified: requiredSourceByteFailures.length === 0,
+    required_source_bytes_verified: requiredSourceByteFailures.length === 0,
+    requiredAssetBytesVerified: requiredAssetByteFailures.length === 0,
+    required_asset_bytes_verified: requiredAssetByteFailures.length === 0,
     blockingGaps,
     blocking_gaps: blockingGaps,
     contractHash,

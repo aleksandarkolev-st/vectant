@@ -9026,6 +9026,30 @@ await writeJson(path.join(artifactsRoot, 'opencl-preflight', 'opencl-proof.json'
 });
 
 const hiprtPreflightEvidenceRef = 'evidence:synthetic-hiprt-preflight:worker-prerequisites';
+const hiprtSyntheticRepoCommit = sha256Hex('synthetic-hiprt-source-tree-commit').slice(0, 40);
+const hiprtSyntheticSceneAssetHash = contentHashFor('synthetic-hiprt-scene-asset-bytes');
+function runtimePrerequisiteContractHashSeed(contract) {
+  return {
+    schemaVersion: contract.schemaVersion,
+    backend: contract.backend,
+    profileId: contract.profileId,
+    mode: contract.mode,
+    targetName: contract.targetName,
+    workerRepoPath: contract.workerRepoPath,
+    sourceTree: contract.sourceTree,
+    source: contract.source,
+    runtime: contract.runtime,
+    visualProof: contract.visualProof,
+    blockingGaps: contract.blockingGaps,
+  };
+}
+
+function refreshRuntimePrerequisiteContractHash(contract) {
+  contract.contractHash = contentHashFor(runtimePrerequisiteContractHashSeed(contract));
+  contract.contract_hash = contract.contractHash;
+  return contract;
+}
+
 const hiprtRuntimePrerequisiteContract = {
   schemaVersion: 'synthi.gpu_hmr.runtime_prerequisite_contract.v1',
   schema_version: 'synthi.gpu_hmr.runtime_prerequisite_contract.v1',
@@ -9049,7 +9073,25 @@ const hiprtRuntimePrerequisiteContract = {
   target_name: 'SyntheticHIPRTPathTracer',
   workerRepoPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer',
   worker_repo_path: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer',
-  sourceTree: null,
+  sourceTree: {
+    sourceKind: 'git',
+    source_kind: 'git',
+    repoUrl: 'https://example.invalid/synthetic/hiprt-path-tracer.git',
+    repo_url: 'https://example.invalid/synthetic/hiprt-path-tracer.git',
+    commit: hiprtSyntheticRepoCommit,
+    proofAuthority: 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    manifestHash: contentHashFor('synthetic-hiprt-source-tree-manifest'),
+    manifest_hash: contentHashFor('synthetic-hiprt-source-tree-manifest'),
+  },
   source_tree: null,
   source: {
     file: 'src/Device/kernels/CameraRays.h',
@@ -9072,7 +9114,13 @@ const hiprtRuntimePrerequisiteContract = {
         workerPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/data/GLTFs/cornell_pbr.gltf',
         worker_path: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/data/GLTFs/cornell_pbr.gltf',
         role: 'runtime_input',
-        present: false,
+        present: true,
+        contentHash: hiprtSyntheticSceneAssetHash,
+        content_hash: hiprtSyntheticSceneAssetHash,
+        byteLength: 32768,
+        byte_length: 32768,
+        readableBytesVerified: true,
+        readable_bytes_verified: true,
       },
     ],
     requiredAssets: [
@@ -9081,6 +9129,17 @@ const hiprtRuntimePrerequisiteContract = {
         role: 'scene_gltf',
         mediaType: 'model/gltf+json',
         required: true,
+        present: true,
+        contentHash: hiprtSyntheticSceneAssetHash,
+        content_hash: hiprtSyntheticSceneAssetHash,
+        declaredContentHash: hiprtSyntheticSceneAssetHash,
+        declared_content_hash: hiprtSyntheticSceneAssetHash,
+        hashMatchesDeclaration: true,
+        hash_matches_declaration: true,
+        byteLength: 32768,
+        byte_length: 32768,
+        readableBytesVerified: true,
+        readable_bytes_verified: true,
       },
     ],
     required_assets: [
@@ -9089,6 +9148,17 @@ const hiprtRuntimePrerequisiteContract = {
         role: 'scene_gltf',
         mediaType: 'model/gltf+json',
         required: true,
+        present: true,
+        contentHash: hiprtSyntheticSceneAssetHash,
+        content_hash: hiprtSyntheticSceneAssetHash,
+        declaredContentHash: hiprtSyntheticSceneAssetHash,
+        declared_content_hash: hiprtSyntheticSceneAssetHash,
+        hashMatchesDeclaration: true,
+        hash_matches_declaration: true,
+        byteLength: 32768,
+        byte_length: 32768,
+        readableBytesVerified: true,
+        readable_bytes_verified: true,
       },
     ],
   },
@@ -9105,21 +9175,13 @@ const hiprtRuntimePrerequisiteContract = {
     'hiprt_worker_repo_missing',
     'hiprt_source_file_missing',
   ],
+  observed: {
+    repoCommit: hiprtSyntheticRepoCommit,
+    repo_commit: hiprtSyntheticRepoCommit,
+  },
 };
-hiprtRuntimePrerequisiteContract.contractHash = contentHashFor({
-  schemaVersion: hiprtRuntimePrerequisiteContract.schemaVersion,
-  backend: hiprtRuntimePrerequisiteContract.backend,
-  profileId: hiprtRuntimePrerequisiteContract.profileId,
-  mode: hiprtRuntimePrerequisiteContract.mode,
-  targetName: hiprtRuntimePrerequisiteContract.targetName,
-  workerRepoPath: hiprtRuntimePrerequisiteContract.workerRepoPath,
-  sourceTree: hiprtRuntimePrerequisiteContract.sourceTree,
-  source: hiprtRuntimePrerequisiteContract.source,
-  runtime: hiprtRuntimePrerequisiteContract.runtime,
-  visualProof: hiprtRuntimePrerequisiteContract.visualProof,
-  blockingGaps: hiprtRuntimePrerequisiteContract.blockingGaps,
-});
-hiprtRuntimePrerequisiteContract.contract_hash = hiprtRuntimePrerequisiteContract.contractHash;
+hiprtRuntimePrerequisiteContract.source_tree = hiprtRuntimePrerequisiteContract.sourceTree;
+refreshRuntimePrerequisiteContractHash(hiprtRuntimePrerequisiteContract);
 await writeJson(path.join(artifactsRoot, 'hiprt-preflight', 'hiprt-proof.json'), {
   schema: 'synthi.gpu_hmr.hiprt_preflight.v1',
   schemaVersion: 'synthi.gpu_hmr.hiprt_preflight.v1',
@@ -9245,6 +9307,60 @@ await writeJson(path.join(artifactsRoot, 'hiprt-preflight-forged-prereq', 'hiprt
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   proofId: 'hiprt-preflight-proof:sha256:synthetic-forged-prereq',
+});
+
+const hiprtMissingAssetBytesPrerequisiteContract = JSON.parse(JSON.stringify(hiprtRuntimePrerequisiteContract));
+delete hiprtMissingAssetBytesPrerequisiteContract.runtime.requiredAssets[0].contentHash;
+delete hiprtMissingAssetBytesPrerequisiteContract.runtime.requiredAssets[0].content_hash;
+hiprtMissingAssetBytesPrerequisiteContract.runtime.requiredAssets[0].readableBytesVerified = false;
+hiprtMissingAssetBytesPrerequisiteContract.runtime.requiredAssets[0].readable_bytes_verified = false;
+hiprtMissingAssetBytesPrerequisiteContract.runtime.required_assets =
+  JSON.parse(JSON.stringify(hiprtMissingAssetBytesPrerequisiteContract.runtime.requiredAssets));
+refreshRuntimePrerequisiteContractHash(hiprtMissingAssetBytesPrerequisiteContract);
+await writeJson(path.join(artifactsRoot, 'hiprt-preflight-missing-asset-bytes', 'hiprt-proof.json'), {
+  schema: 'synthi.gpu_hmr.hiprt_preflight.v1',
+  schemaVersion: 'synthi.gpu_hmr.hiprt_preflight.v1',
+  slug: 'synthetic-hiprt-preflight-missing-asset-bytes',
+  backendEvidence: {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: { value: 'hiprt', evidenceRefs: [hiprtPreflightEvidenceRef] },
+    backendFamily: { value: 'hiprt', evidenceRefs: [hiprtPreflightEvidenceRef] },
+    runtimeCapabilityPreflight: {
+      backend: 'hiprt',
+      backendFamily: 'hiprt',
+      probe: 'hiprt_worker_preflight_probe',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    evidenceRefs: [hiprtPreflightEvidenceRef],
+  },
+  classification: {
+    backend: { value: 'hiprt', evidenceRefs: [hiprtPreflightEvidenceRef] },
+    backendFamily: 'hiprt',
+    runtimeCapabilityPreflight: {
+      backend: 'hiprt',
+      backendFamily: 'hiprt',
+      probe: 'hiprt_worker_preflight_probe',
+      evidenceRefs: [hiprtPreflightEvidenceRef],
+    },
+    resultState: 'hiprt-runtime-preflight-rejected',
+    unsupportedReasons: ['hiprt_runtime_preflight_failed', 'hiprt_required_runtime_asset_bytes_unverified'],
+  },
+  acceptance: {
+    acceptedForHiprtRuntimePreflight: false,
+    acceptedForHiprtVisualProof: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    reason: 'hiprt_runtime_preflight_failed',
+    noShimApplied: true,
+    noVendorIcdSynthesized: true,
+    noSynthesizedRuntime: true,
+    noSymlinkApplied: true,
+  },
+  runtimePrerequisiteContract: hiprtMissingAssetBytesPrerequisiteContract,
+  proofAuthority: 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  proofId: 'hiprt-preflight-proof:sha256:synthetic-missing-asset-bytes',
 });
 
 const webGpuPreflightEvidenceRef = 'evidence:synthetic-webgpu-preflight:browser-runtime-capability';
@@ -20326,6 +20442,9 @@ assert.equal(
 );
 assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredFileCount, 1);
 assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredAssetCount, 1);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.sourceTreeCommitVerified, true);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredSourceBytesVerified, true);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredAssetBytesVerified, true);
 
 const hiprtForgedPrereq = ledger.rows.find((row) =>
   row.backend === 'hiprt'
@@ -20340,6 +20459,25 @@ assert.equal(hiprtForgedPrereq.runtimePrerequisiteContract.acceptedForGpuHmr, fa
 assert.equal(hiprtForgedPrereq.runtimePrerequisiteContract.gpuHmrSuccess, false);
 assert.ok(hiprtForgedPrereq.reasons.includes('runtime_prerequisite_contract_claimed_gpu_hmr_success'));
 assert.ok(hiprtForgedPrereq.reasons.includes('runtime_prerequisite_contract_claimed_runtime_authority'));
+
+const hiprtMissingAssetBytesPrereq = ledger.rows.find((row) =>
+  row.backend === 'hiprt'
+  && row.targetId === 'synthetic-hiprt-preflight-missing-asset-bytes'
+);
+assert.equal(hiprtMissingAssetBytesPrereq?.matrixOutcome, 'refusal_proven');
+assert.equal(hiprtMissingAssetBytesPrereq.acceptedForGpuHmr, false);
+assert.equal(hiprtMissingAssetBytesPrereq.gpuHmrSuccess, false);
+assert.equal(hiprtMissingAssetBytesPrereq.runtimePrerequisiteContract.present, true);
+assert.equal(hiprtMissingAssetBytesPrereq.runtimePrerequisiteContract.accepted, false);
+assert.equal(hiprtMissingAssetBytesPrereq.runtimePrerequisiteContract.requiredAssetBytesVerified, false);
+assert.ok(
+  hiprtMissingAssetBytesPrereq.reasons
+    .includes('runtime_prerequisite_contract_required_asset_hash_missing'),
+);
+assert.ok(
+  hiprtMissingAssetBytesPrereq.reasons
+    .includes('runtime_prerequisite_contract_required_asset_readable_bytes_unverified'),
+);
 
 const webgpuPreflight = ledger.rows.find((row) =>
   row.backend === 'webgpu'
@@ -22993,7 +23131,7 @@ const standaloneOidnOutputOracleRefusalCount = ledger.rows
 assert.ok(standaloneOidnOutputOracleRefusalCount >= 3);
 assert.equal(
   ledger.summary.refusalProvenRows,
-  6 + retainedRealRocmRefusalCount + standaloneOidnOutputOracleRefusalCount,
+  7 + retainedRealRocmRefusalCount + standaloneOidnOutputOracleRefusalCount,
 );
 assert.ok(ledger.summary.unprovenRows >= 1);
 
