@@ -15341,6 +15341,75 @@ function randomColdReadinessMatrixRow({
   return withQueryRecomputedRowId(row);
 }
 
+function withConfiguredSamplePoolSelectionAudit(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const applySelectionAudit = (container) => {
+    if (!container) return;
+    const selectionAudit = container.selectionAudit ?? container.selection_audit;
+    if (!selectionAudit) return;
+    const requiredBuckets = ['large_rocm_ml', 'engine_rendering', 'webgpu_stack', 'multibackend_compute'];
+    const availableBuckets = [...requiredBuckets, 'large_rocm_profile'];
+    const selectedBuckets = ['large_rocm_ml'];
+    const missingRequiredBuckets = [];
+    const requestedCount = 1;
+    const coverageHash = contentHashFor({
+      requiredBuckets,
+      availableBuckets,
+      selectedBuckets,
+      requestedCount,
+      missingRequiredBuckets,
+    });
+    const samplePoolCoverageContract = {
+      schemaVersion: 'synthi.gpu_hmr.random_large_project_cold_path_sample_pool_coverage_contract.v1',
+      schema_version: 'synthi.gpu_hmr.random_large_project_cold_path_sample_pool_coverage_contract.v1',
+      proofAuthority: 'random_large_project_sample_pool_coverage_only_not_gpu_hmr_success',
+      proof_authority: 'random_large_project_sample_pool_coverage_only_not_gpu_hmr_success',
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      canSatisfyRuntimeProof: false,
+      can_satisfy_runtime_proof: false,
+      canSatisfyDispatchProof: false,
+      can_satisfy_dispatch_proof: false,
+      targetNameIndependent: true,
+      target_name_independent: true,
+      projectNameWhitelist: [],
+      project_name_whitelist: [],
+      specificTargetIdsAllowed: [],
+      specific_target_ids_allowed: [],
+      requiredBuckets,
+      required_buckets: requiredBuckets,
+      availableBuckets,
+      available_buckets: availableBuckets,
+      selectedBuckets,
+      selected_buckets: selectedBuckets,
+      missingRequiredBuckets,
+      missing_required_buckets: missingRequiredBuckets,
+      requestedCount,
+      requested_count: requestedCount,
+      coverageHash,
+      coverage_hash: coverageHash,
+      coverageAcceptableForRequestedCount: true,
+      coverage_acceptable_for_requested_count: true,
+    };
+    selectionAudit.sourceMode = 'configured_sample_pool';
+    selectionAudit.source_mode = 'configured_sample_pool';
+    selectionAudit.samplePoolExplicitlyRequested = true;
+    selectionAudit.sample_pool_explicitly_requested = true;
+    selectionAudit.configuredPoolCount = 5;
+    selectionAudit.configured_pool_count = 5;
+    selectionAudit.samplePoolCoverageContract = samplePoolCoverageContract;
+    selectionAudit.sample_pool_coverage_contract = samplePoolCoverageContract;
+    container.selectionAudit = selectionAudit;
+    container.selection_audit = selectionAudit;
+  };
+  applySelectionAudit(cloned);
+  applySelectionAudit(cloned.randomLargeProjectColdPath);
+  applySelectionAudit(cloned.random_large_project_cold_path);
+  return withQueryRecomputedRowId(cloned);
+}
+
 function attachRandomColdTransportFallback(row, fallbackEvidence) {
   row.coldSourceTreeIntake.transportEvidence = {
     githubTreeFallback: fallbackEvidence,
@@ -16133,6 +16202,41 @@ assert.equal(
 assert.ok(
   configuredColdOnlyCoverage.get('random_large_arbitrary_project_cold_path')?.openGaps
     .includes('qualifying_direct_random_large_project_cold_path_required'),
+);
+const directLookingConfiguredSelectionAuditColdRow = withConfiguredSamplePoolSelectionAudit(
+  randomColdReadinessMatrixRow({
+    targetId: 'direct-looking-configured-selection-audit-cold-readiness',
+    sourceUrl: 'https://example.invalid/direct-looking/configured-selection.git',
+    immutableCommit: sha256Hex('direct-looking-configured-selection-audit').slice(0, 40),
+  }),
+);
+const broadReadinessWithDirectLookingConfiguredSelectionAuditQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows,
+      directLookingConfiguredSelectionAuditColdRow,
+    ],
+  });
+assert.equal(broadReadinessWithDirectLookingConfiguredSelectionAuditQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDirectLookingConfiguredSelectionAuditQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithDirectLookingConfiguredSelectionAuditQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDirectLookingConfiguredSelectionAuditQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_random_large_project_cold_path'),
+);
+assert.equal(
+  broadReadinessWithDirectLookingConfiguredSelectionAuditQuery.summary.broadLibraryAgnosticReadiness
+    .randomColdPathCandidateRowCount,
+  0,
 );
 const summaryOnlyRuntimeBoundaryTemplate = {
   present: true,

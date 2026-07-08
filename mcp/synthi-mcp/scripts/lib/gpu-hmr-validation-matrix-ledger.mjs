@@ -34987,6 +34987,13 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       selectedCount: finiteNumber(facet.selectedCount ?? facet.selected_count ?? 1),
       resultCount: finiteNumber(facet.resultCount ?? facet.result_count ?? 1),
     });
+    const directSourceSelectionAudit =
+      (selectionAudit.sourceMode === 'direct_user_source'
+        || selectionAudit.sourceMode === 'direct_local_user_source')
+      && selectionAudit.directSourceRequired === true
+      && selectionAudit.samplePoolExplicitlyRequested !== true
+      && selectionAudit.configuredPoolCount === 0
+      && Number(selectionAudit.directUserSourceCount) > 0;
     const templateRaw = firstCompactObject(
       row.coldRuntimeBoundaryEventManifestTemplate,
       row.cold_runtime_boundary_event_manifest_template,
@@ -35314,6 +35321,7 @@ function randomColdPathRowsForBroadReadiness(rows, options = {}) {
       && finalizedActualAttempt
       && selectionAudit.present === true
       && selectionAudit.accepted === true
+      && (!requireLargeSourceTree || directSourceSelectionAudit)
       && arbitraryColdIntake
       && sourceDerivedProjectEvidenceObserved
       && !candidateBackendUsedForAcceptance
