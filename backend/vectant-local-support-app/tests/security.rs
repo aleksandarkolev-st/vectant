@@ -1600,10 +1600,59 @@ fn audit_delete_clears_prior_events_and_keeps_new_chain_valid() {
     );
 
     let export = log.export_incident_bundle(0);
-    assert_eq!(export.events.len(), 1);
+    assert_eq!(export.events.len(), 0);
     assert!(export.verify_hash_chain());
     assert!(!export.raw_bodies_included);
     assert!(!serde_json::to_string(&export).unwrap().contains("Sent package metadata"));
+}
+
+#[test]
+fn audit_export_applies_retention_and_rechains_retained_events() {
+    let mut log = AuditLog::new(SecretScanner::default());
+    let old = chrono::Utc::now() - chrono::Duration::days(45);
+    let recent = chrono::Utc::now() - chrono::Duration::days(2);
+
+    log.append_at(
+        AuditClass::Denied,
+        Some("req_old".to_string()),
+        "Old denied request.",
+        true,
+        old,
+    );
+    log.append_at(
+        AuditClass::Control,
+        Some("req_recent".to_string()),
+        "Recent control event.",
+        true,
+        recent,
+    );
+    log.record_consent(ConsentReceipt {
+        approval_id: "appr_old".to_string(),
+        request_id: "req_old_receipt".to_string(),
+        session_id: "sess_123".to_string(),
+        account_id: "acct_123".to_string(),
+        org_id: "org_123".to_string(),
+        workspace_id: "wk_123".to_string(),
+        device_fingerprint: "sha256:device12345678".to_string(),
+        actor: "support_agent".to_string(),
+        capability: "workspace.log.read".to_string(),
+        target_display: "old.log".to_string(),
+        classification: Classification::L2,
+        content_sha256: None,
+        scope: "once".to_string(),
+        granted_at: old,
+        expires_at: "session_end".to_string(),
+        policy_version: "2026.07.05".to_string(),
+        scanner_version: "scanner-2026.07.05".to_string(),
+    });
+
+    let export = log.export_incident_bundle(30);
+    assert!(export.verify_hash_chain());
+    assert_eq!(export.events.len(), 1);
+    assert!(export.events.iter().all(|event| event.request_id.as_deref() != Some("req_old")));
+    assert_eq!(export.events[0].previous_hash, "sha256:0000000000000000000000000000000000000000000000000000000000000000");
+    assert!(export.consent_receipts.is_empty());
+    assert!(!serde_json::to_string(&export).unwrap().contains("Old denied request"));
 }
 
 #[test]

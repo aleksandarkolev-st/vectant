@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -87,9 +87,19 @@ impl AuditLog {
         summary: impl AsRef<str>,
         user_visible: bool,
     ) {
+        self.append_at(class, request_id, summary, user_visible, Utc::now());
+    }
+
+    pub fn append_at(
+        &mut self,
+        class: AuditClass,
+        request_id: Option<String>,
+        summary: impl AsRef<str>,
+        user_visible: bool,
+        at: DateTime<Utc>,
+    ) {
         let report = self.scanner.scan(summary.as_ref());
         let scrubbed = self.scanner.redact(summary.as_ref(), &report);
-        let at = Utc::now();
         let previous_hash = self
             .events
             .last()
@@ -114,10 +124,14 @@ impl AuditLog {
         });
     }
 
-    pub fn record_consent(&mut self, mut receipt: ConsentReceipt) {
+    pub fn record_consent(&mut self, receipt: ConsentReceipt) {
+        self.record_consent_at(receipt.clone(), receipt.granted_at);
+    }
+
+    pub fn record_consent_at(&mut self, mut receipt: ConsentReceipt, at: DateTime<Utc>) {
         let report = self.scanner.scan(&receipt.target_display);
         receipt.target_display = self.scanner.redact(&receipt.target_display, &report);
-        self.append(
+        self.append_at(
             AuditClass::Control,
             Some(receipt.request_id.clone()),
             format!(
@@ -125,6 +139,7 @@ impl AuditLog {
                 receipt.approval_id, receipt.capability, receipt.actor, receipt.target_display
             ),
             true,
+            at,
         );
         self.consent_receipts.push(receipt);
     }
@@ -143,18 +158,17 @@ impl AuditLog {
     }
 
     pub fn export_incident_bundle(&self, retention_days: u16) -> AuditExport {
+        let now = Utc::now();
+        let (events, root_hash) = retained_event_chain(&self.events, retention_days, now);
+        let consent_receipts = retained_consent_receipts(&self.consent_receipts, retention_days, now);
         AuditExport {
             export_version: AUDIT_EXPORT_VERSION.to_string(),
-            exported_at: Utc::now(),
+            exported_at: now,
             raw_bodies_included: false,
             retention_days,
-            events: self.events.clone(),
-            consent_receipts: self.consent_receipts.clone(),
-            root_hash: self
-                .events
-                .last()
-                .map(|event| event.event_hash.clone())
-                .unwrap_or_else(|| ZERO_HASH.to_string()),
+            events,
+            consent_receipts,
+            root_hash,
         }
     }
 
@@ -290,6 +304,50 @@ fn ensure_audit_path_safe(path: &Path) -> Result<(), AuditStoreError> {
         }
     }
     Ok(())
+}
+
+fn retained_event_chain(
+    events: &[AuditEvent],
+    retention_days: u16,
+    now: DateTime<Utc>,
+) -> (Vec<AuditEvent>, String) {
+    if retention_days == 0 {
+        return (Vec::new(), ZERO_HASH.to_string());
+    }
+    let cutoff = now - Duration::days(i64::from(retention_days));
+    let mut previous_hash = ZERO_HASH.to_string();
+    let mut retained = Vec::new();
+    for event in events.iter().filter(|event| event.at >= cutoff) {
+        let mut event = event.clone();
+        event.previous_hash = previous_hash;
+        event.event_hash = hash_event(
+            &event.at,
+            &event.class,
+            event.request_id.as_deref(),
+            &event.summary,
+            event.user_visible,
+            &event.previous_hash,
+        );
+        previous_hash = event.event_hash.clone();
+        retained.push(event);
+    }
+    (retained, previous_hash)
+}
+
+fn retained_consent_receipts(
+    receipts: &[ConsentReceipt],
+    retention_days: u16,
+    now: DateTime<Utc>,
+) -> Vec<ConsentReceipt> {
+    if retention_days == 0 {
+        return Vec::new();
+    }
+    let cutoff = now - Duration::days(i64::from(retention_days));
+    receipts
+        .iter()
+        .filter(|receipt| receipt.granted_at >= cutoff)
+        .cloned()
+        .collect()
 }
 
 fn hash_event(
