@@ -409,7 +409,7 @@ async fn delete_history(
     if let Some(store) = &state.audit_store {
         store
             .delete()
-            .map_err(|err| denied(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            .map_err(|_| denied(StatusCode::INTERNAL_SERVER_ERROR, "audit_store_delete_failed"))?;
     }
     Ok(Json(serde_json::json!({
         "decision": "deleted",
@@ -426,7 +426,7 @@ fn persist_audit(
     if let Some(store) = &state.audit_store {
         store
             .persist(audit)
-            .map_err(|err| denied(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+            .map_err(|_| denied(StatusCode::INTERNAL_SERVER_ERROR, "audit_store_persist_failed"))?;
     }
     Ok(())
 }
