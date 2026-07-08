@@ -219,7 +219,10 @@ pub fn decide_preview_request_with_token(
     if !target_ip.is_loopback() {
         return PreviewDecision::Deny("target_not_loopback".to_string());
     }
-    if !approval.state_changing_methods_allowed && !matches!(method, "GET" | "HEAD" | "OPTIONS") {
+    let Some(method) = normalize_preview_method(method) else {
+        return PreviewDecision::Deny("invalid_method_blocked".to_string());
+    };
+    if !approval.state_changing_methods_allowed && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
         return PreviewDecision::Deny("state_changing_method_blocked".to_string());
     }
     let header_list = headers
@@ -265,7 +268,10 @@ pub fn decide_preview_request_from_header_list_with_token(
     if !target_ip.is_loopback() {
         return PreviewDecision::Deny("target_not_loopback".to_string());
     }
-    if !approval.state_changing_methods_allowed && !matches!(method, "GET" | "HEAD" | "OPTIONS") {
+    let Some(method) = normalize_preview_method(method) else {
+        return PreviewDecision::Deny("invalid_method_blocked".to_string());
+    };
+    if !approval.state_changing_methods_allowed && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
         return PreviewDecision::Deny("state_changing_method_blocked".to_string());
     }
     if let Some(reason) = validate_preview_request_headers(headers) {
@@ -614,6 +620,19 @@ fn parse_connection_tokens(value: &str) -> Vec<String> {
         .map(|token| token.trim().to_ascii_lowercase())
         .filter(|token| !token.is_empty())
         .collect()
+}
+
+fn normalize_preview_method(method: &str) -> Option<String> {
+    let trimmed = method.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 16
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphabetic() || ch == '-')
+    {
+        return None;
+    }
+    Some(trimmed.to_ascii_uppercase())
 }
 
 fn is_blocked_worker_script_name(segment: &str) -> bool {

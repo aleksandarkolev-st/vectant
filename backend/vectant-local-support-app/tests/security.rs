@@ -1147,6 +1147,28 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
         ),
         PreviewDecision::Deny("state_changing_method_blocked".to_string())
     );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            " get ",
+            &approval.preview_host,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Allow
+    );
+    assert_eq!(
+        decide_preview_request_with_token(
+            Some(&approval),
+            "GET\r\nX-Injected: yes",
+            &approval.preview_host,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            &token,
+        ),
+        PreviewDecision::Deny("invalid_method_blocked".to_string())
+    );
 
     assert!(!redirect_allowed("http://169.254.169.254/latest/meta-data/"));
     assert!(!redirect_allowed("http://192.168.1.1/admin"));
