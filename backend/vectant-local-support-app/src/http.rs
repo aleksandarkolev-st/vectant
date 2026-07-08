@@ -582,7 +582,19 @@ pub fn validate_file_request_authorization(
     if auth.device_fingerprint != session.device_fingerprint() {
         return Err(LocalAuthorizationError::DeviceMismatch);
     }
-    if auth.device_proof != session.request_device_proof(&request.request_id) {
+    if auth.device_proof
+        != session.request_device_proof_for_context(
+            &request.request_id,
+            &request.account_id,
+            &request.org_id,
+            &request.workspace_id,
+            &request.capability,
+            &request.actor,
+            &request.expires_at,
+            &auth.protocol_version,
+            &auth.policy_version,
+        )
+    {
         return Err(LocalAuthorizationError::DeviceProofInvalid);
     }
     Ok(())

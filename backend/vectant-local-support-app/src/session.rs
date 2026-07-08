@@ -129,6 +129,31 @@ impl SessionGuard {
     }
 
     pub fn request_device_proof(&self, request_id: &str) -> String {
+        self.request_device_proof_for_context(
+            request_id,
+            self.account_id.as_str(),
+            self.org_id.as_str(),
+            self.workspace_id.as_str(),
+            "",
+            "",
+            "",
+            crate::APP_PROTOCOL_VERSION,
+            crate::POLICY_VERSION,
+        )
+    }
+
+    pub fn request_device_proof_for_context(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        org_id: &str,
+        workspace_id: &str,
+        capability: &str,
+        actor: &str,
+        expires_at: &str,
+        protocol_version: &str,
+        policy_version: &str,
+    ) -> String {
         let mut hasher = Sha256::new();
         hasher.update(b"vectant-local-support-device-proof-v1");
         hasher.update(b"\0");
@@ -139,6 +164,22 @@ impl SessionGuard {
         hasher.update(request_id.as_bytes());
         hasher.update(b"\0");
         hasher.update(self.device_fingerprint.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(account_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(org_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(workspace_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(capability.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(actor.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(expires_at.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(protocol_version.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(policy_version.as_bytes());
         format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 

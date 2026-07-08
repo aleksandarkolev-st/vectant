@@ -51,14 +51,26 @@ fn request(path: &str) -> FileReadRequest {
     }
 }
 
-fn local_auth(session: &SessionGuard, request_id: &str) -> LocalRequestAuthorization {
-    LocalRequestAuthorization {
+fn local_auth(session: &SessionGuard, request: &FileReadRequest) -> LocalRequestAuthorization {
+    let mut auth = LocalRequestAuthorization {
         app_version: "0.1.0".to_string(),
         protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION.to_string(),
         policy_version: vectant_local_support_app::POLICY_VERSION.to_string(),
         device_fingerprint: session.device_fingerprint().to_string(),
-        device_proof: session.request_device_proof(request_id),
-    }
+        device_proof: String::new(),
+    };
+    auth.device_proof = session.request_device_proof_for_context(
+        &request.request_id,
+        &request.account_id,
+        &request.org_id,
+        &request.workspace_id,
+        &request.capability,
+        &request.actor,
+        &request.expires_at,
+        &auth.protocol_version,
+        &auth.policy_version,
+    );
+    auth
 }
 
 fn preview_token(port: u16, process_identity: &str) -> String {
@@ -736,7 +748,7 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
     let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
     let mut req = request("app.rs");
     req.session_id = session.session_id().to_string();
-    let auth = local_auth(&session, &req.request_id);
+    let auth = local_auth(&session, &req);
     req.device_fingerprint = auth.device_fingerprint.clone();
     let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
         .unwrap()
@@ -779,6 +791,20 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
     assert_eq!(
         validate_file_request_authorization(&session, &policy, &mismatched_body_device, &auth, now),
         Err(LocalAuthorizationError::DeviceMismatch)
+    );
+
+    let mut tampered_capability = req.clone();
+    tampered_capability.capability = "workspace.log.read".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &tampered_capability, &auth, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
+    );
+
+    let mut tampered_actor = req.clone();
+    tampered_actor.actor = "support_agent".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &tampered_actor, &auth, now),
+        Err(LocalAuthorizationError::DeviceProofInvalid)
     );
 
     let mut expired = req.clone();
@@ -868,7 +894,7 @@ fn local_sessions_can_bind_to_pairing_device_identity() {
     let mut req = request("app.rs");
     req.session_id = session.session_id().to_string();
     req.device_fingerprint = paired_device.device_fingerprint.clone();
-    let auth = local_auth(&session, &req.request_id);
+    let auth = local_auth(&session, &req);
     let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
