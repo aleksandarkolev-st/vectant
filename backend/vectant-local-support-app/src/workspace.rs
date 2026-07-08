@@ -135,11 +135,12 @@ impl WorkspacePolicy {
     pub fn read_file_for_review(&self, request: &FileReadRequest) -> FileReadResponse {
         let policy = self.decide_file(request);
         if matches!(&policy.decision, DecisionKind::Deny) {
-            return denied_response(request, policy);
+            return self.denied_response(request, policy);
         }
 
         match self.safe_read_text(&request.path, request.max_bytes.unwrap_or(MAX_FILE_BYTES)) {
             Ok((content, sha)) => {
+                let path_display = self.scrub_display(&request.path);
                 let scan = match self.scanner.try_scan(&content) {
                     Ok(scan) => scan,
                     Err(_) => {
@@ -147,7 +148,7 @@ impl WorkspacePolicy {
                             request_id: request.request_id.clone(),
                             approval_id: None,
                             decision: "denied".to_string(),
-                            path_display: request.path.clone(),
+                            path_display: path_display.clone(),
                             classification: Classification::L5,
                             bytes_sent: 0,
                             content_sha256: None,
@@ -168,7 +169,7 @@ impl WorkspacePolicy {
                         request_id: request.request_id.clone(),
                         approval_id: None,
                         decision: "redact_then_approval".to_string(),
-                        path_display: request.path.clone(),
+                        path_display: path_display.clone(),
                         classification: scan.classification,
                         bytes_sent: redacted.len(),
                         content_sha256: Some(sha),
@@ -184,7 +185,7 @@ impl WorkspacePolicy {
                     request_id: request.request_id.clone(),
                     approval_id: None,
                     decision: "approval_required".to_string(),
-                    path_display: request.path.clone(),
+                    path_display,
                     classification: scan.classification,
                     bytes_sent: content.len(),
                     content_sha256: Some(sha),
@@ -199,7 +200,7 @@ impl WorkspacePolicy {
                 request_id: request.request_id.clone(),
                 approval_id: None,
                 decision: "denied".to_string(),
-                path_display: request.path.clone(),
+                path_display: self.scrub_display(&request.path),
                 classification: Classification::L5,
                 bytes_sent: 0,
                 content_sha256: None,
@@ -210,6 +211,40 @@ impl WorkspacePolicy {
                 content: None,
             },
         }
+    }
+
+    fn denied_response(
+        &self,
+        request: &FileReadRequest,
+        decision: PolicyDecision,
+    ) -> FileReadResponse {
+        let classification = decision.classification;
+        let reason = decision.reason;
+        let path_display = self.scrub_display(&request.path);
+        FileReadResponse {
+            request_id: request.request_id.clone(),
+            approval_id: None,
+            decision: "denied".to_string(),
+            path_display: path_display.clone(),
+            classification,
+            bytes_sent: 0,
+            content_sha256: None,
+            redactions: Vec::new(),
+            scanner_version: crate::SCANNER_VERSION.to_string(),
+            policy_version: crate::POLICY_VERSION.to_string(),
+            user_visible_message: Some(match reason.as_str() {
+                "blocked_secret_file_pattern" => format!(
+                    "Blocked {path_display}. This file usually contains secrets. Nothing was sent."
+                ),
+                _ => format!("Blocked {path_display}: {reason}. Nothing was sent."),
+            }),
+            content: None,
+        }
+    }
+
+    fn scrub_display(&self, value: &str) -> String {
+        let report = self.scanner.scan(value);
+        self.scanner.redact(value, &report)
     }
 
     fn safe_read_text(&self, requested_path: &str, max_bytes: u64) -> Result<(String, String)> {
@@ -248,28 +283,6 @@ impl WorkspacePolicy {
         hasher.update(content.as_bytes());
         let sha = format!("sha256:{}", hex::encode(hasher.finalize()));
         Ok((content, sha))
-    }
-}
-
-fn denied_response(request: &FileReadRequest, decision: PolicyDecision) -> FileReadResponse {
-    let classification = decision.classification;
-    let reason = decision.reason;
-    FileReadResponse {
-        request_id: request.request_id.clone(),
-        approval_id: None,
-        decision: "denied".to_string(),
-        path_display: request.path.clone(),
-        classification,
-        bytes_sent: 0,
-        content_sha256: None,
-        redactions: Vec::new(),
-        scanner_version: crate::SCANNER_VERSION.to_string(),
-        policy_version: crate::POLICY_VERSION.to_string(),
-        user_visible_message: Some(match reason.as_str() {
-            "blocked_secret_file_pattern" => format!("Blocked {}. This file usually contains secrets. Nothing was sent.", request.path),
-            _ => format!("Blocked {}: {}. Nothing was sent.", request.path, reason),
-        }),
-        content: None,
     }
 }
 

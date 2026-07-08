@@ -184,6 +184,33 @@ fn redacts_secrets_before_review_payload() {
 }
 
 #[test]
+fn file_response_display_paths_are_scrubbed() {
+    let dir = tempdir().unwrap();
+    let secret_name = "notes-sk-abcdefghijklmnopqrstuvwxyz123456.txt";
+    fs::write(dir.path().join(secret_name), "ordinary local note\n").unwrap();
+    fs::write(
+        dir.path().join(".env.sk-abcdefghijklmnopqrstuvwxyz123456"),
+        "OPENAI_API_KEY=sk-testsecret000000000000000\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+
+    let response = policy.read_file_for_review(&request(secret_name));
+    assert_eq!(response.decision, "approval_required");
+    assert!(response.path_display.contains("[REDACTED:openai_api_key]"));
+    assert!(!serde_json::to_string(&response)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let denied = policy.read_file_for_review(&request(".env.sk-abcdefghijklmnopqrstuvwxyz123456"));
+    assert_eq!(denied.decision, "denied");
+    assert!(denied.path_display.contains("[REDACTED:openai_api_key]"));
+    assert!(!serde_json::to_string(&denied)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+}
+
+#[test]
 fn approval_queue_keeps_review_content_local_until_approval() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("server.log"), "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\n").unwrap();
