@@ -597,7 +597,10 @@ export function buildPreviewGatewayDecision(input, policy = readLocalSupportPoli
     return previewDeny("browser_only_preview_required", "Preview gateway responses may stream only to the user's browser.", policy);
   }
 
-  const method = String(input.preview_method || input.method || "").toUpperCase();
+  const method = normalizePreviewMethod(input.preview_method || input.method || "");
+  if (!method) {
+    return previewDeny("preview_method_invalid", "Preview request method was not accepted.", policy);
+  }
   if (!["GET", "HEAD"].includes(method)) {
     return previewDeny("preview_method_not_allowed", "Preview gateway allows only GET and HEAD requests.", policy);
   }
@@ -1319,6 +1322,12 @@ function isSemverLike(value) {
   return typeof value === "string"
     && value.length <= 32
     && /^\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9._-]+)?$/.test(value);
+}
+
+function normalizePreviewMethod(value) {
+  const method = String(value || "").trim();
+  if (!method || method.length > 16 || !/^[A-Za-z-]+$/.test(method)) return null;
+  return method.toUpperCase();
 }
 
 function scrubTelemetryValue(value) {

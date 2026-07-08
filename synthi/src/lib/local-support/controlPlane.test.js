@@ -562,6 +562,27 @@ describe("local support control plane policy", () => {
 
     expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
+      request_id: "req_preview_lower_method",
+      preview_method: " get ",
+    }), policy)).toMatchObject({
+      decision: "preview_gateway_ready",
+      preview_forward: true,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision(proofBound({
+      ...previewEnvelope,
+      request_id: "req_preview_bad_method",
+      preview_method: "GET\r\nX-Injected: yes",
+    }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "preview_method_invalid",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision(proofBound({
+      ...previewEnvelope,
       request_id: "req_preview_support",
       actor: "support_agent",
     }), policy)).toMatchObject({
