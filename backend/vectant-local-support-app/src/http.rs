@@ -584,12 +584,32 @@ pub struct LocalRequestAuthorization {
 
 impl LocalRequestAuthorization {
     pub fn from_headers(headers: &HeaderMap) -> Result<Self, (StatusCode, Json<serde_json::Value>)> {
+        let app_version = required_header(headers, "x-vectant-app-version")?;
+        if !is_semver_like(app_version) {
+            return Err(invalid_header("x-vectant-app-version"));
+        }
+        let protocol_version = required_header(headers, "x-vectant-protocol-version")?;
+        if !is_safe_header_token(protocol_version, 3, 64) {
+            return Err(invalid_header("x-vectant-protocol-version"));
+        }
+        let policy_version = required_header(headers, "x-vectant-policy-version")?;
+        if !is_safe_header_token(policy_version, 3, 64) {
+            return Err(invalid_header("x-vectant-policy-version"));
+        }
+        let device_fingerprint = required_header(headers, "x-vectant-device-fingerprint")?;
+        if !is_sha256_hex(device_fingerprint, 16) {
+            return Err(invalid_header("x-vectant-device-fingerprint"));
+        }
+        let device_proof = required_header(headers, "x-vectant-device-proof")?;
+        if !is_sha256_hex(device_proof, 64) {
+            return Err(invalid_header("x-vectant-device-proof"));
+        }
         Ok(Self {
-            app_version: required_header(headers, "x-vectant-app-version")?.to_string(),
-            protocol_version: required_header(headers, "x-vectant-protocol-version")?.to_string(),
-            policy_version: required_header(headers, "x-vectant-policy-version")?.to_string(),
-            device_fingerprint: required_header(headers, "x-vectant-device-fingerprint")?.to_string(),
-            device_proof: required_header(headers, "x-vectant-device-proof")?.to_string(),
+            app_version: app_version.to_string(),
+            protocol_version: protocol_version.to_string(),
+            policy_version: policy_version.to_string(),
+            device_fingerprint: device_fingerprint.to_string(),
+            device_proof: device_proof.to_string(),
         })
     }
 }
@@ -717,6 +737,20 @@ fn required_header<'a>(
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, format!("missing_{name}")))
+}
+
+fn invalid_header(name: &str) -> (StatusCode, Json<serde_json::Value>) {
+    denied(StatusCode::FORBIDDEN, format!("invalid_{name}"))
+}
+
+fn is_semver_like(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    !parts.is_empty()
+        && parts.len() <= 4
+        && value.len() <= 32
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.len() <= 8 && part.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn compare_versions(left: &str, right: &str) -> i8 {

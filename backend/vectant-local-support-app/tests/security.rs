@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
 use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
@@ -71,6 +72,30 @@ fn local_auth(session: &SessionGuard, request: &FileReadRequest) -> LocalRequest
         &auth.policy_version,
     );
     auth
+}
+
+fn local_authorization_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-vectant-app-version", HeaderValue::from_static("0.1.0"));
+    headers.insert(
+        "x-vectant-protocol-version",
+        HeaderValue::from_static(vectant_local_support_app::APP_PROTOCOL_VERSION),
+    );
+    headers.insert(
+        "x-vectant-policy-version",
+        HeaderValue::from_static(vectant_local_support_app::POLICY_VERSION),
+    );
+    headers.insert(
+        "x-vectant-device-fingerprint",
+        HeaderValue::from_static("sha256:1111111111111111"),
+    );
+    headers.insert(
+        "x-vectant-device-proof",
+        HeaderValue::from_static(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    );
+    headers
 }
 
 fn preview_token(port: u16, process_identity: &str) -> String {
@@ -861,6 +886,26 @@ fn local_control_secret_is_required_for_desktop_side_effects() {
     state.set_local_control_secret_for_test("desktop-control-secret-000000000000");
     assert!(state.local_control_secret_matches("desktop-control-secret-000000000000"));
     assert!(!state.local_control_secret_matches("desktop-control-secret-111111111111"));
+}
+
+#[test]
+fn local_authorization_headers_reject_malformed_values_before_policy_validation() {
+    let mut headers = local_authorization_headers();
+    assert!(LocalRequestAuthorization::from_headers(&headers).is_ok());
+
+    for (name, value) in [
+        ("x-vectant-app-version", "0.1.0-beta"),
+        ("x-vectant-app-version", "1.2.3.4.5"),
+        ("x-vectant-protocol-version", "local support mvp"),
+        ("x-vectant-policy-version", "2026/07/05"),
+        ("x-vectant-device-fingerprint", "sha256:not-hex"),
+        ("x-vectant-device-proof", "sha256:bad-proof"),
+    ] {
+        headers = local_authorization_headers();
+        headers.insert(name, HeaderValue::from_str(value).unwrap());
+        let error = LocalRequestAuthorization::from_headers(&headers).unwrap_err();
+        assert_eq!(error.0, StatusCode::FORBIDDEN);
+    }
 }
 
 #[test]
