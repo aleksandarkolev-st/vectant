@@ -75,7 +75,11 @@ impl AppState {
     }
 
     pub fn local_control_secret_matches(&self, secret: &str) -> bool {
-        !secret.is_empty() && *self.local_control_secret_hash == hash_local_control_secret(secret)
+        !secret.is_empty()
+            && constant_time_eq(
+                self.local_control_secret_hash.as_bytes(),
+                hash_local_control_secret(secret).as_bytes(),
+            )
     }
 
     pub fn set_local_control_secret_for_test(&mut self, secret: &str) {
@@ -548,6 +552,13 @@ fn hash_local_control_secret(value: &str) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalRequestAuthorization {
     pub app_version: String,
@@ -656,19 +667,21 @@ pub fn validate_file_request_authorization(
     if auth.device_fingerprint != session.device_fingerprint() {
         return Err(LocalAuthorizationError::DeviceMismatch);
     }
-    if auth.device_proof
-        != session.request_device_proof_for_context(
-            &request.request_id,
-            &request.account_id,
-            &request.org_id,
-            &request.workspace_id,
-            &request.capability,
-            &request.actor,
-            &request.expires_at,
-            &auth.protocol_version,
-            &auth.policy_version,
-        )
-    {
+    let expected_device_proof = session.request_device_proof_for_context(
+        &request.request_id,
+        &request.account_id,
+        &request.org_id,
+        &request.workspace_id,
+        &request.capability,
+        &request.actor,
+        &request.expires_at,
+        &auth.protocol_version,
+        &auth.policy_version,
+    );
+    if !constant_time_eq(
+        auth.device_proof.as_bytes(),
+        expected_device_proof.as_bytes(),
+    ) {
         return Err(LocalAuthorizationError::DeviceProofInvalid);
     }
     Ok(())

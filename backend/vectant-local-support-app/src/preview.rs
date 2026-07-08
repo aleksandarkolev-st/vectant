@@ -149,11 +149,18 @@ impl PortApprovalRegistry {
 }
 
 pub fn port_identity_matches(approval: &PortApproval, current_process_identity: &str) -> bool {
-    approval.process_identity_hash == hash_process_identity(current_process_identity)
+    constant_time_eq(
+        approval.process_identity_hash.as_bytes(),
+        hash_process_identity(current_process_identity).as_bytes(),
+    )
 }
 
 pub fn preview_token_matches(approval: &PortApproval, token: &str) -> bool {
-    !token.is_empty() && approval.preview_token_hash == hash_preview_token(token)
+    !token.is_empty()
+        && constant_time_eq(
+            approval.preview_token_hash.as_bytes(),
+            hash_preview_token(token).as_bytes(),
+        )
 }
 
 pub fn preview_path_allowed(path: &str) -> bool {
@@ -627,4 +634,11 @@ fn generate_preview_token() -> String {
         .take(48)
         .map(char::from)
         .collect()
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

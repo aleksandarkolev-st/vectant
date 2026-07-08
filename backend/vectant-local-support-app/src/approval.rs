@@ -208,7 +208,10 @@ impl ApprovalQueue {
             return false;
         };
         !local_approval_secret.is_empty()
-            && queued.local_approval_secret_hash == hash_local_approval_secret(local_approval_secret)
+            && constant_time_eq(
+                queued.local_approval_secret_hash.as_bytes(),
+                hash_local_approval_secret(local_approval_secret).as_bytes(),
+            )
     }
 }
 
@@ -275,4 +278,11 @@ fn hash_local_approval_secret(value: &str) -> String {
     hasher.update(b"vectant-local-support-local-approval-secret:");
     hasher.update(value.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
