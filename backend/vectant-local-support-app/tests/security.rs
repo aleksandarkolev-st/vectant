@@ -300,6 +300,49 @@ fn approval_queue_deny_and_revoke_invalidate_queued_content() {
 }
 
 #[test]
+fn approval_queue_revalidates_expiry_before_releasing_content() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("server.log"), "local log line\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut expired_req = request("server.log");
+    expired_req.expires_at = "2026-07-05T11:59:59Z".to_string();
+    let expired_public = queue.queue_file_review(
+        expired_req.clone(),
+        policy.read_file_for_review(&expired_req),
+    );
+    let expired_id = expired_public.approval_id.unwrap();
+    assert!(queue.approve_at(&expired_id, now).is_none());
+    assert!(queue.get(&expired_id).is_none());
+
+    let mut malformed_req = request("server.log");
+    malformed_req.request_id = "req_malformed_expiry".to_string();
+    malformed_req.expires_at = "not-a-date".to_string();
+    let malformed_public = queue.queue_file_review(
+        malformed_req.clone(),
+        policy.read_file_for_review(&malformed_req),
+    );
+    let malformed_id = malformed_public.approval_id.unwrap();
+    assert!(queue.approve_at(&malformed_id, now).is_none());
+    assert!(queue.get(&malformed_id).is_none());
+
+    let mut valid_req = request("server.log");
+    valid_req.request_id = "req_valid_expiry".to_string();
+    valid_req.expires_at = "2026-07-05T12:01:00Z".to_string();
+    let valid_public = queue.queue_file_review(
+        valid_req.clone(),
+        policy.read_file_for_review(&valid_req),
+    );
+    let valid_id = valid_public.approval_id.unwrap();
+    let (approved, _) = queue.approve_at(&valid_id, now).unwrap();
+    assert!(approved.content.is_some());
+}
+
+#[test]
 fn blocks_sensitive_filename_variants_and_cloud_credentials() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".aws")).unwrap();

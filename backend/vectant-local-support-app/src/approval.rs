@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -58,8 +58,23 @@ impl ApprovalQueue {
     }
 
     pub fn approve(&mut self, approval_id: &str) -> Option<(FileReadResponse, ConsentReceipt)> {
+        self.approve_at(approval_id, Utc::now())
+    }
+
+    pub fn approve_at(
+        &mut self,
+        approval_id: &str,
+        now: DateTime<Utc>,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
         let mut queued = self.pending.remove(approval_id)?;
         if queued.status != ApprovalStatus::Pending {
+            return None;
+        }
+        let expires_at = DateTime::parse_from_rfc3339(&queued.request.expires_at)
+            .ok()?
+            .with_timezone(&Utc);
+        if expires_at <= now {
+            queued.local_review.content = None;
             return None;
         }
         queued.status = ApprovalStatus::Approved;
