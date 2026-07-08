@@ -567,7 +567,7 @@ export function SourceControlPanel({ slug }) {
 
   // ── Render ─────────────────────────────────────────────────────
   return (
-    <div className="scm-panel vt-app-surface" data-git-panel>
+    <div className="scm-panel" data-git-panel>
       <div className="scm-bridge-shell" style={{ position: 'relative' }}>
         <BranchBridge
           slug={slug}

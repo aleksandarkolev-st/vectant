@@ -218,7 +218,12 @@ export function useActivityBarDocking() {
       extensions: () => togglePanel(IDE_PANEL.EXTENSIONS, 'Extensions'),
       programs:   () => togglePanel(IDE_PANEL.PROGRAMS, 'Programs'),
       terminal:   () => togglePanel(IDE_PANEL.TERMINAL, 'Terminal'),
-      chat:       () => togglePanel(IDE_PANEL.CHAT, 'AI Chat'),
+      // Activity-bar chat docks as a full panel on the RIGHT of the editor
+      // (page-level ensureDockedChatRight, via event) — not the left sidebar.
+      // The navbar button opens the floating right popup instead.
+      chat:       () => { if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('synthi:dock-chat-right')); },
+      // Low-level open used by ensureDockedChatRight (avoids recursing on `chat`).
+      openChatPanel: () => togglePanel(IDE_PANEL.CHAT, 'AI Chat'),
       workflows:  () => togglePanel(IDE_PANEL.AGENT_WORKFLOWS, 'Workflows'),
       codesite:   () => togglePanel(IDE_PANEL.CODESITE, 'CodeSite'),
       problems:   () => togglePanel(IDE_PANEL.PROBLEMS, 'Problems'),

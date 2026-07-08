@@ -28,9 +28,10 @@
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 18% -8%, color-mix(in srgb, var(--brand-stop-3) 7%, transparent), transparent 18rem),
-    var(--bg-sidebar);
+  /* Surface comes from the panel wrapper's Workspace-group tint
+     (.vt-panel-frame[data-panel-type="git"]) so SCM matches its siblings
+     and picks up the brand gradient. */
+  background: transparent;
   color: var(--text-primary);
   font-family: var(--font-ui);
 }
@@ -170,9 +171,8 @@
   text-align: center;
   padding: 18px 14px 14px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 70%, transparent), transparent),
-    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 3%, transparent) 0 1px, transparent 1px 12px);
-  border: 1px dashed color-mix(in srgb, var(--border-medium) 75%, transparent);
+    radial-gradient(circle at 50% 122%, color-mix(in srgb, var(--attention-purple) 6%, transparent), transparent 60%),
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--text-primary) 2.5%, transparent) 0 1px, transparent 1px 4px);
 }
 
 .scm-focal-title {

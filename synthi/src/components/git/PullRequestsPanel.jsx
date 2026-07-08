@@ -391,7 +391,7 @@ export function PullRequestsPanel({ slug }) {
 
   // ── List view ────────────────────────────────────────────────────────────────
   return (
-    <div className="vt-panel-frame flex h-full min-h-0 flex-col rounded-none border-0 text-[var(--text-primary)]">
+    <div className="flex h-full min-h-0 flex-col rounded-none border-0 text-[var(--text-primary)]">
       <div className="vt-panel-header flex-shrink-0">
         <GitPullRequest className="w-4 h-4 flex-shrink-0 text-[var(--attention-purple)]" strokeWidth={1.5} />
         <span className="vt-panel-title flex-1">Pull Requests</span>

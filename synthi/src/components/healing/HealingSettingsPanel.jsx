@@ -118,7 +118,7 @@ function RadioRow({ value, onChange, options }) {
       ref={containerRef}
       className="relative flex rounded-md p-0.5 gap-1"
       style={{
-        background: 'var(--bg-base)',
+        background: 'var(--bg-elevated)',
         border: '1px solid var(--border-subtle)',
       }}
     >
@@ -636,7 +636,7 @@ export function HealingSettingsPanel() {
                 className="w-full mt-2 px-2 py-1 text-xs font-mono rounded-md"
                 rows={4}
                 style={{
-                  background: 'var(--bg-base)',
+                  background: 'var(--bg-surface)',
                   color: 'var(--text-primary)',
                   border: '1px solid var(--border-subtle)',
                   resize: 'vertical',

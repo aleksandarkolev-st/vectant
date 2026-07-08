@@ -421,7 +421,7 @@ function EditorTabStripImpl() {
                 {attrib.length > 0 && (
                   <span
                     aria-hidden="true"
-                    className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] flex rounded-t-full overflow-hidden"
+                    className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] flex rounded-none overflow-hidden"
                   >
                     {attrib.map((p) => (
                       <span
@@ -438,7 +438,7 @@ function EditorTabStripImpl() {
 
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-0 h-[2px] rounded-t-full"
+            className="pointer-events-none absolute bottom-0 h-[2px] rounded-none"
             style={{
               left: tabIndicator.left,
               width: tabIndicator.width,

@@ -3227,7 +3227,7 @@ export default function EditorPage({ params }) {
         let chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
 
         if (!chatPanel) {
-            dockingHandlers?.chat?.();
+            dockingHandlers?.openChatPanel?.();
             layout = store.getState()?.layout;
             chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
         }
@@ -3237,7 +3237,11 @@ export default function EditorPage({ params }) {
         const sidebarGroupId = findDockGroup(layout, 'sidebar');
         const dockRightTargetNodeId = findDockRightRailTarget(layout);
 
-        if (dockRightTargetNodeId && chatPanel.groupId === sidebarGroupId) {
+        // Dock the chat to the right of the editor whenever a right target exists.
+        // Don't gate on chatPanel.groupId === sidebarGroupId: the chat opens in its
+        // OWN sidebar-category group, which findDockGroup('sidebar') may not return,
+        // so that check was flaky and silently skipped the split (chat stayed left).
+        if (dockRightTargetNodeId && chatPanel.groupId !== dockRightTargetNodeId) {
             dispatch(splitNodeAction({
                 targetNodeId: dockRightTargetNodeId,
                 tabId: chatPanel.tabId,
@@ -3278,6 +3282,14 @@ export default function EditorPage({ params }) {
         if (ensureDockedChatRight()) {
             setFloatingChatVisible(false);
         }
+    }, [ensureDockedChatRight]);
+
+    // Activity-bar "AI Chat" docks the chat as a full panel on the right of the
+    // editor. The navbar button opens the floating right popup (handleToggleChat).
+    useEffect(() => {
+        const onDockChatRight = () => { ensureDockedChatRight(); };
+        window.addEventListener('synthi:dock-chat-right', onDockChatRight);
+        return () => window.removeEventListener('synthi:dock-chat-right', onDockChatRight);
     }, [ensureDockedChatRight]);
 
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);

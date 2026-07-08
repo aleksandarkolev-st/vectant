@@ -68,7 +68,7 @@
      Use for ambient borders, faint hovers, neutral indicators. If
      it's grabbing your eye, it's the wrong token. */
   --accent-primary: oklch(59% 0.035 245);
-  --accent-secondary: oklch(82% 0.118 215);
+  --accent-secondary: #8a85a8;
   --accent-tertiary: oklch(45% 0.045 230);
   --accent-gradient: var(--brand-gradient);
   --accent-glow: 0 0 18px color-mix(in srgb, var(--accent-primary) 22%, transparent);
@@ -78,7 +78,7 @@
      the tree, toggle-ON switches, selected option pills, focused
      panel borders, status-bar pills representing a live state.
      If everything uses it, nothing does. */
-  --attention-purple: oklch(82% 0.118 215);
+  --attention-purple: #b545ff;
   --attention-glow: 0 0 20px color-mix(in srgb, var(--attention-purple) 28%, transparent);
   --attention-rim: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 24%, transparent),
                    0 0 14px -2px color-mix(in srgb, var(--attention-purple) 30%, transparent);
@@ -210,8 +210,8 @@
   --card-foreground: var(--text-primary);
   --popover: var(--bg-overlay);
   --popover-foreground: var(--text-primary);
-  --primary: #5dd6e4;
-  --primary-foreground: #031014;
+  --primary: #b545ff;
+  --primary-foreground: #ffffff;
   --secondary: var(--bg-surface);
   --secondary-foreground: var(--text-primary);
   --muted: var(--bg-surface);
@@ -221,20 +221,20 @@
   --destructive: var(--accent-danger);
   --border: var(--border-subtle);
   --input: var(--bg-panel);
-  --ring: #5dd6e4;
-  --chart-1: #5dd6e4;
+  --ring: #b545ff;
+  --chart-1: #b545ff;
   --chart-2: #4ade80;
   --chart-3: #8a85a8;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
   --sidebar: var(--bg-sidebar);
   --sidebar-foreground: var(--text-primary);
-  --sidebar-primary: #5dd6e4;
-  --sidebar-primary-foreground: #031014;
+  --sidebar-primary: #b545ff;
+  --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: var(--bg-surface);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
-  --sidebar-ring: #5dd6e4;
+  --sidebar-ring: #b545ff;
 }
 
 .dark {
@@ -244,8 +244,8 @@
   --card-foreground: var(--text-primary);
   --popover: var(--bg-overlay);
   --popover-foreground: var(--text-primary);
-  --primary: #5dd6e4;
-  --primary-foreground: #031014;
+  --primary: #b545ff;
+  --primary-foreground: #ffffff;
   --secondary: var(--bg-surface);
   --secondary-foreground: var(--text-primary);
   --muted: var(--bg-surface);
@@ -255,20 +255,20 @@
   --destructive: var(--accent-danger);
   --border: var(--border-subtle);
   --input: var(--bg-panel);
-  --ring: #5dd6e4;
-  --chart-1: #5dd6e4;
+  --ring: #b545ff;
+  --chart-1: #b545ff;
   --chart-2: #4ade80;
   --chart-3: #8a85a8;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
   --sidebar: var(--bg-sidebar);
   --sidebar-foreground: var(--text-primary);
-  --sidebar-primary: #5dd6e4;
-  --sidebar-primary-foreground: #031014;
+  --sidebar-primary: #b545ff;
+  --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: var(--bg-surface);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
-  --sidebar-ring: #5dd6e4;
+  --sidebar-ring: #b545ff;
 }
 
 @layer base {
@@ -1158,10 +1158,12 @@
   min-height: 180px;
   padding: 24px;
   color: var(--text-muted);
+  /* Faint horizontal scanlines + a soft brand glow read as a quiet console
+     surface waiting for output — not a drag-and-drop target (no diagonal
+     hatch, no dashed border). */
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 86%, transparent), transparent),
-    repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 3%, transparent) 0 1px, transparent 1px 12px);
-  border: 1px dashed color-mix(in srgb, var(--border-medium) 72%, transparent);
+    radial-gradient(circle at 50% 122%, color-mix(in srgb, var(--attention-purple) 6%, transparent), transparent 60%),
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--text-primary) 2.5%, transparent) 0 1px, transparent 1px 4px);
   border-radius: var(--radius-panel);
 }
 
@@ -1220,11 +1222,55 @@
   box-shadow: var(--vt-bezel);
 }
 
-.vt-panel-frame {
+/* Top navbar: drop the bezel's top highlight and the background's white top-lift
+   so there's no light gradient along the very top edge; keep the bottom edge.
+   Scoped to the navbar only — the shared --vt-bezel token stays intact. */
+.topnav-root.vt-workbench-chrome {
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 90%, white 3%), color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-app) 28%));
+    linear-gradient(180deg, var(--bg-panel), color-mix(in srgb, var(--bg-app) 86%, black 14%));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, black 24%, transparent);
+}
+
+/* Every docked panel shares ONE dark surface so nothing reads lighter than
+   its siblings. Each of the three activity groups then layers a subtle brand
+   radial on top via [data-panel-type] — brand tokens only, no blue. */
+.vt-panel-frame {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
   border-color: color-mix(in srgb, var(--border-subtle) 88%, transparent);
   box-shadow: var(--vt-bezel);
+}
+
+/* Workspace group — calm purple, top-left */
+.vt-panel-frame[data-panel-type="explorer"],
+.vt-panel-frame[data-panel-type="search"],
+.vt-panel-frame[data-panel-type="git"],
+.vt-panel-frame[data-panel-type="pullrequests"],
+.vt-panel-frame[data-panel-type="commithistory"] {
+  background:
+    radial-gradient(circle at 12% -4%, color-mix(in srgb, var(--brand-stop-3) 7%, transparent), transparent 58%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
+}
+
+/* Agents group — warm pink → purple (the living-orb signature) */
+.vt-panel-frame[data-panel-type="chat"],
+.vt-panel-frame[data-panel-type="agent-workflows"],
+.vt-panel-frame[data-panel-type="codesite"],
+.vt-panel-frame[data-panel-type="ai-healing"] {
+  background:
+    radial-gradient(circle at 14% -6%, color-mix(in srgb, var(--brand-stop-1) 7%, transparent), transparent 54%),
+    radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--brand-stop-3) 5%, transparent), transparent 50%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
+}
+
+/* Platform group — cool lavender, top-right */
+.vt-panel-frame[data-panel-type="extensions"],
+.vt-panel-frame[data-panel-type="extension-view"],
+.vt-panel-frame[data-panel-type="programs"],
+.vt-panel-frame[data-panel-type="integrations"],
+.vt-panel-frame[data-panel-type="ports"] {
+  background:
+    radial-gradient(circle at 90% -2%, color-mix(in srgb, var(--accent-secondary) 11%, transparent), transparent 56%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 82%, black 18%), var(--bg-app));
 }
 
 .vt-panel-frame[data-panel-kind="editor"] {
@@ -1350,7 +1396,7 @@
 
 .vt-editor-tab {
   border-inline: 1px solid transparent;
-  border-radius: 7px 7px 0 0;
+  border-radius: 0;
   transition:
     background var(--motion-fast),
     border-color var(--motion-fast),
@@ -1365,8 +1411,8 @@
 
 .vt-editor-tab[aria-selected="true"] {
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--attention-purple) 8%, transparent), transparent),
-    color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+    linear-gradient(180deg, color-mix(in srgb, var(--attention-purple) 14%, transparent), transparent),
+    color-mix(in srgb, var(--bg-elevated) 82%, transparent);
   border-color: color-mix(in srgb, var(--border-subtle) 78%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
 }

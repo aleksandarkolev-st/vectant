@@ -37,7 +37,7 @@ export default function PortsPanel() {
   }, [urlFor]);
 
   return (
-    <div className="vt-app-surface h-full w-full overflow-y-auto p-3" style={{ color: 'var(--text-primary)' }}>
+    <div className="h-full w-full overflow-y-auto p-3" style={{ color: 'var(--text-primary)' }}>
       <div className="flex items-center gap-2 mb-3">
         <Network size={16} />
         <span className="text-sm font-medium">Ports</span>

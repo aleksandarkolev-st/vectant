@@ -1520,3 +1520,72 @@ Live-review feedback after the Library/Store overhaul. Corrective slices on the 
 
 ## Already answered (no code)
 - Scale-to-zero: prod Sysbox runtime is a per-workspace Deployment (`replicas:1`), app-managed **idle-cull → on-demand respawn** (not k8s HPA-to-zero); optional warm image cache via `RUNTIME_PERSIST_DOCKER_DATA`.
+
+---
+
+# Task: Tool-UI redesign — color & consistency fixes (2026-07-08, `Codex/tool-UI-redesign-20260706`)
+
+Fix 7 UI issues from the redesign while keeping consistency. Full context gathered via 4 recon subagents + direct verification. Decisions confirmed with user (2026-07-08). Color pipeline is centralized: `theme-engine.js` derives accent/glow/gradient CSS vars from theme-JSON tokens; `synthi-dark.json` = "Vectant Dark" = default theme.
+
+## Confirmed decisions
+1. Colors → **accent-only swap** (cyan→dev-purple for accents + blue-tinted borders; KEEP branch's darker neutrals).
+2. Output empty state → **faint console scanlines/dots** (drop diagonal hatch + dashed border).
+3. Tabs → **square tops + stronger active state**.
+4+7. Panels → **uniform brand-radial surface + subtle per-group tint** (Workspace/Agents/Platform); Search+SCM get chat/ports gradient; Search/PR/Healing no longer lighter. Tints from `--brand-stop-*`/surface tokens, NO hardcoded hex (lesson #43), NO blue.
+5. Navbar → remove top light highlight (scoped override).
+6. Chat → all entry points open the RIGHT floating popup; kill left-dock overlap (lesson #12: keep popup state separate, unify controls).
+
+## Plan (checkable)
+
+### 1 — Blue→purple (accent-only)  [do FIRST; foundational]
+Files: `synthi/src/themes/builtin/synthi-dark.json`, `synthi/src/app/globals.css`
+- [ ] synthi-dark.json: replace_all `#5dd6e4`→`#b545ff` (all cyan accents incl. alpha suffixes)
+- [ ] synthi-dark.json: swap non-#5dd6e4 accents/blue-borders → dev values: accentPrimary #6f7e8f→#6c6885 · accentSecondary #7dd3fc→#8a85a8 · accentTertiary #415d6a→#4d4870 · chart3 #8a85a8→#a23dff · borderFocus #375566→#3a3d55 · borderStrong #4b5d70→#45485f · editorLineNumber.activeForeground #8fb9c4→#b545ff · shadowGlow rgba(93,214,228,.16)→rgba(162,61,255,.18) · terminal.selection rgba(93,214,228,.28/.14)→rgba(138,124,217,.3/.15) · primaryForeground & sidebarPrimaryForeground #031014→#ffffff
+- [ ] KEEP branch neutrals (bg*, text*, most editor/terminal bg, ANSI). Do NOT touch midnight.json.
+- [ ] globals.css: replace_all `#5dd6e4`→`#b545ff` (10×); paired `--primary-foreground`/`--sidebar-primary-foreground` #031014→#ffffff; 2 cyan oklch fallbacks (`--attention-purple`, `--accent-secondary`)→purple.
+- [ ] VERIFY: grep both files for `5dd6e4|7dd3fc|8fb9c4|375566|4b5d70|93, 214, 228|oklch(82% 0.118 215` → 0.
+
+### 5 — Navbar top light gradient  [small, isolated]
+File: `globals.css`
+- [ ] Add scoped `.topnav-root.vt-workbench-chrome { box-shadow: inset 0 -1px 0 color-mix(in srgb, black 24%, transparent); }` (drop top white line, keep bottom). Do NOT edit shared `--vt-bezel`.
+
+### 3 — Tabs: square + stronger active  [CSS]
+Files: `globals.css` (`.vt-editor-tab` 1351-1372), `docking.css` (`.dock-tab` 201-252), `EditorTabStrip.jsx` (underline 424/441)
+- [ ] `.vt-editor-tab` radius `7px 7px 0 0`→`0` (1353); `.dock-tab` `7px 7px 0 0 !important`→`0 !important` (204)
+- [ ] Strengthen active tab: prominent brand underline + subtle fill; drop `.dock-tab:hover translateY(-1px)` lift; square underline ends if needed.
+
+### 2 — Output empty state: console scanlines  [CSS]
+Files: `globals.css` (`.vt-empty-state` 1155-1166), `scm-tokens.css` (sibling 168-176)
+- [ ] Remove diagonal hatch + dashed border; add faint horizontal scanline/dotted texture (low-alpha, theme vars); keep centered icon + text. Apply same to SCM sibling (or dedupe to `.vt-empty-state`).
+
+### 4+7 — Panel surfaces: uniform base + per-group tint  [cross-cutting; after item 1]
+Files: `globals.css` (`.vt-panel-frame` 1223-1228, `.vt-app-surface` 1063-1069), `panel-wrappers.jsx`, `DockingActivityBar.jsx` (ACTIVITY_GROUPS 70-104), inner panels (`.vt-file-tree`, `.scm-panel`, `.vx-chat-shell`, `PortsPanel`, Search/PR/Healing roots), `HealingSettingsPanel.jsx`
+- [ ] Make `.vt-panel-frame` the shared dark brand-radial surface (fixes light Search/PR/Healing + gives everyone the gradient)
+- [ ] Add `data-panel-group="workspace|agents|platform"` per wrapper (map panel type→group)
+- [ ] 3 subtle per-group tint modifiers `[data-panel-group=…]` (vary radial stop/position; purple/pink brand-stops only)
+- [ ] Neutralize inner ad-hoc backgrounds so the wrapper surface shows uniformly
+- [ ] Fix undefined `--bg-base` in HealingSettingsPanel (:121,:639)→defined surface var
+- [ ] VERIFY: Search+SCM show gradient; no lighter panels; groups subtly distinct.
+
+### 6 — Chat: navbar=right popup, activity-bar=right full panel  [logic]  (user-clarified)
+Files: `use-activity-bar-docking.js` (221), `page.jsx` (`ensureDockedChatRight` 3223-3281), `DockingActivityBar.jsx`
+- [ ] Navbar button: keep as-is (floating right popup, `docked=false`, `fixed top-12 right-4`) — verify it lands right.
+- [ ] Activity-bar `chat`: dock chat as a FULL PANEL on the RIGHT rail (NOT the left sidebar group). Reuse existing `ensureDockedChatRight()` (opens chat → splits to `DROP_ZONE.RIGHT`, ratio 0.34, pins). Bridge activity-bar→page via a `synthi:dock-chat-right` event; keep `ensureDockedChatRight`'s internal low-level open separate to avoid recursion.
+- [ ] VERIFY: navbar→right popup; activity-bar→right docked panel (right of editor), never left over Healing.
+
+## Verification (overall)
+- [ ] Lint touched files; run frontend; screenshot each fixed surface; diff vs dev where relevant.
+
+## Review — COMPLETE (all 7 items, static-verified 2026-07-08)
+Implemented in order 1 → 5 → 3 → 2 → 4/7 → 6. CSS validated with PostCSS (globals/docking/chat/scm all parse), synthi-dark.json valid JSON, JSX parses (only pre-existing unused-var/`await` lint nits remain — left untouched). No residual cyan accent; only intentional syntax/ANSI cyan kept (same as dev).
+
+1. Colors (accent-only): synthi-dark.json accents cyan→dev purple (#b545ff family) incl. editor + terminal cursor, selection, minimap/scrollbar sliders, bracket/word-highlight; accentPrimary/Secondary/Tertiary + blue-tinted borderFocus/Strong → dev; primary/sidebar foregrounds #031014→#ffffff. Syntax `function`/`method`/`support.*` + ANSI `cyan` kept (identical on dev). globals.css: 10× #5dd6e4→#b545ff, 4× #031014→#ffffff, 2 cyan `oklch` fallbacks→purple. Branch neutrals kept per user. midnight.json untouched.
+2. Output empty state: `.vt-empty-state` (globals.css) + copy-paste sibling `.scm-focal--empty` (scm-tokens.css) → faint horizontal scanlines + soft brand glow; removed diagonal hatch + dashed border (the drop-zone read).
+3. Tabs: `.vt-editor-tab` + `.dock-tab` radius `7px 7px 0 0`→`0`; active fill 8%→14%; squared active underlines (`999px`→0, `rounded-t-full`→`rounded-none`); dropped `.dock-tab:hover` translateY lift for a flat feel.
+4+7. Panels: `.vt-panel-frame`→one shared dark surface; 3 per-group tints via `[data-panel-type]` (Workspace purple top-left / Agents pink→purple / Platform lavender top-right) — brand tokens only, no blue. Neutralized inner opaque bgs so the wrapper shows: `.scm-panel`→transparent (+ removed `vt-app-surface` from SCM root), docked `.vx-chat-shell`→transparent (floating keeps its gradient), Ports root removed `vt-app-surface`, PR inner root removed `vt-panel-frame`. Explorer needs no edit (its `.vt-file-tree` is on the wrapper element, so the higher-specificity group tint wins). Fixed undefined `--bg-base` in HealingSettingsPanel → `--bg-elevated`/`--bg-surface`.
+5. Navbar: scoped `.topnav-root.vt-workbench-chrome` drops the top bezel highlight + the background's white top-lift; bottom edge kept; shared `--vt-bezel` untouched.
+6. Chat: navbar button unchanged (floating right popup). Activity-bar chat now dispatches `synthi:dock-chat-right` → page.jsx `useEffect` listener → `ensureDockedChatRight()` (full panel on the right rail, pinned). Added low-level `openChatPanel` so `ensureDockedChatRight`'s internal open doesn't recurse on the new `chat` handler.
+
+Files changed (12): themes/builtin/synthi-dark.json, app/globals.css, docking-wm/styles/docking.css, chat/chat.css, git/scm/scm-tokens.css, EditorTabStrip.jsx, git/scm/SourceControlPanel.jsx, git/PullRequestsPanel.jsx, ports/PortsPanel.jsx, healing/HealingSettingsPanel.jsx, docking-wm/hooks/use-activity-bar-docking.js, workspace/[slug]/page.jsx.
+
+Self-caught during verify: the line-range sed for Item 1 skipped `terminal.cursor` (outside the ui/editor range) — fixed to purple. Remaining: live visual pass in a running workspace (needs backend stack); all static checks green.

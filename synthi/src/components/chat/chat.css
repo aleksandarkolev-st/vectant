@@ -74,9 +74,17 @@
 
 .vx-chat-shell--docked {
   border-radius: 0;
+  /* Docked chat defers its surface to the panel wrapper's Agents-group tint;
+     the floating popup keeps .vx-chat-shell's own gradient. */
+  background: transparent;
 }
 
 .vx-chat-shell--floating {
+  /* Force fixed positioning: the base .vx-chat-shell sets position:relative,
+     which otherwise overrides Tailwind's `fixed` utility and drops the popup
+     into the document flow (top-left) instead of pinning it to the viewport
+     (top-12 right-4). This is what made the navbar chat open on the left. */
+  position: fixed;
   border: 1px solid color-mix(in srgb, var(--brand-stop-3) 24%, transparent);
   border-radius: var(--radius-panel);
   box-shadow:
