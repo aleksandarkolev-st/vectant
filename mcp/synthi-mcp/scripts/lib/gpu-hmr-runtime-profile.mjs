@@ -184,6 +184,113 @@ function normalizeNegativeEdit(value, sourceFile) {
   };
 }
 
+function normalizeRuntimeSourceTree(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile runtime.sourceTree must be an object');
+  }
+  const sourceKind = optionalEnum(
+    value.sourceKind ?? value.source_kind ?? value.kind,
+    'runtime.sourceTree.sourceKind',
+    ['git', 'local_git', 'archive', 'workspace'],
+  ) ?? 'git';
+  return {
+    sourceKind,
+    source_kind: sourceKind,
+    repoUrl: optionalString(value.repoUrl ?? value.repo_url ?? value.url, 'runtime.sourceTree.repoUrl'),
+    repo_url: optionalString(value.repoUrl ?? value.repo_url ?? value.url, 'runtime.sourceTree.repoUrl'),
+    repoName: optionalString(value.repoName ?? value.repo_name ?? value.name, 'runtime.sourceTree.repoName'),
+    repo_name: optionalString(value.repoName ?? value.repo_name ?? value.name, 'runtime.sourceTree.repoName'),
+    commit: optionalString(
+      value.commit ?? value.immutableCommit ?? value.immutable_commit,
+      'runtime.sourceTree.commit',
+    ),
+    hostPath: optionalString(value.hostPath ?? value.host_path ?? value.path, 'runtime.sourceTree.hostPath')
+      ?.replace(/\\/g, '/') ?? null,
+    host_path: optionalString(value.hostPath ?? value.host_path ?? value.path, 'runtime.sourceTree.hostPath')
+      ?.replace(/\\/g, '/') ?? null,
+    workerPath: optionalString(
+      value.workerPath ?? value.worker_path,
+      'runtime.sourceTree.workerPath',
+    )?.replace(/\\/g, '/') ?? null,
+    worker_path: optionalString(
+      value.workerPath ?? value.worker_path,
+      'runtime.sourceTree.workerPath',
+    )?.replace(/\\/g, '/') ?? null,
+    manifestHash: optionalString(
+      value.manifestHash ?? value.manifest_hash,
+      'runtime.sourceTree.manifestHash',
+    ),
+    manifest_hash: optionalString(
+      value.manifestHash ?? value.manifest_hash,
+      'runtime.sourceTree.manifestHash',
+    ),
+    proofAuthority: optionalString(
+      value.proofAuthority ?? value.proof_authority,
+      'runtime.sourceTree.proofAuthority',
+    ) ?? 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success',
+    proof_authority: optionalString(
+      value.proofAuthority ?? value.proof_authority,
+      'runtime.sourceTree.proofAuthority',
+    ) ?? 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success',
+  };
+}
+
+function normalizeRequiredAssets(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('runtime profile runtime.requiredAssets must be an array');
+  }
+  return value.map((item, index) => {
+    if (typeof item === 'string') {
+      const file = nonEmptyString(item, `runtime.requiredAssets[${index}]`).replace(/\\/g, '/');
+      return {
+        file,
+        path: file,
+        role: 'runtime_input',
+        required: true,
+      };
+    }
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`runtime profile runtime.requiredAssets[${index}] must be a string or object`);
+    }
+    const file = nonEmptyString(
+      item.file ?? item.path ?? item.relativePath ?? item.relative_path,
+      `runtime.requiredAssets[${index}].path`,
+    ).replace(/\\/g, '/');
+    return {
+      file,
+      path: file,
+      role: optionalString(item.role, `runtime.requiredAssets[${index}].role`) ?? 'runtime_input',
+      mediaType: optionalString(
+        item.mediaType ?? item.media_type,
+        `runtime.requiredAssets[${index}].mediaType`,
+      ),
+      media_type: optionalString(
+        item.mediaType ?? item.media_type,
+        `runtime.requiredAssets[${index}].mediaType`,
+      ),
+      contentHash: optionalString(
+        item.contentHash ?? item.content_hash ?? item.sha256,
+        `runtime.requiredAssets[${index}].contentHash`,
+      ),
+      content_hash: optionalString(
+        item.contentHash ?? item.content_hash ?? item.sha256,
+        `runtime.requiredAssets[${index}].contentHash`,
+      ),
+      casManifest: optionalString(
+        item.casManifest ?? item.cas_manifest,
+        `runtime.requiredAssets[${index}].casManifest`,
+      ),
+      cas_manifest: optionalString(
+        item.casManifest ?? item.cas_manifest,
+        `runtime.requiredAssets[${index}].casManifest`,
+      ),
+      required: item.required === false ? false : true,
+    };
+  });
+}
+
 function normalizeDeterministicVisualMode(value) {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -332,6 +439,12 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     runtime: {
       targetName,
       workerRepoPath: optionalString(runtime.workerRepoPath ?? raw.workerRepoPath, 'runtime.workerRepoPath'),
+      sourceTree: normalizeRuntimeSourceTree(
+        runtime.sourceTree ?? runtime.source_tree ?? raw.sourceTree ?? raw.source_tree,
+      ),
+      source_tree: normalizeRuntimeSourceTree(
+        runtime.sourceTree ?? runtime.source_tree ?? raw.sourceTree ?? raw.source_tree,
+      ),
       mode: optionalString(runtime.mode ?? raw.mode, 'runtime.mode'),
       env: optionalStringMap(runtime.env, 'runtime.env'),
       requiredKernels,
@@ -346,6 +459,8 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
         ? runtime.requiredFiles.map((item, index) =>
           nonEmptyString(item, `runtime.requiredFiles[${index}]`).replace(/\\/g, '/'))
         : [],
+      requiredAssets: normalizeRequiredAssets(runtime.requiredAssets ?? runtime.required_assets),
+      required_assets: normalizeRequiredAssets(runtime.requiredAssets ?? runtime.required_assets),
       backend: {
         orochiApi: optionalString(
           backend.orochiApi ?? runtime.orochiApi ?? raw.orochiApi,
@@ -417,6 +532,8 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     runtimeArgs: normalized.runtime.args,
     runtimeEnv: normalized.runtime.env,
     requiredFiles: normalized.runtime.requiredFiles,
+    requiredAssets: normalized.runtime.requiredAssets,
+    sourceTree: normalized.runtime.sourceTree,
     orochiApi: normalized.runtime.backend.orochiApi ?? undefined,
     claim: normalized.visualProof.claim,
     width: normalized.visualProof.width,
@@ -459,6 +576,14 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
   if (Object.keys(normalized.runtime.env).length > 0) env.SYNTHI_HIPRT_WARM_RUNTIME_ENV_JSON = JSON.stringify(normalized.runtime.env);
   if (normalized.runtime.requiredFiles.length > 0) {
     env.SYNTHI_HIPRT_WARM_REQUIRED_FILES_JSON = JSON.stringify(normalized.runtime.requiredFiles);
+  }
+  if (normalized.runtime.requiredAssets.length > 0) {
+    env.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON = JSON.stringify(normalized.runtime.requiredAssets);
+    env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_ASSETS_JSON = env.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON;
+  }
+  if (normalized.runtime.sourceTree) {
+    env.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON = JSON.stringify(normalized.runtime.sourceTree);
+    env.SYNTHI_GPU_HMR_RUNTIME_SOURCE_TREE_JSON = env.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON;
   }
   if (normalized.build.cmakeArgs.length > 0) env.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON = JSON.stringify(normalized.build.cmakeArgs);
   if (Object.keys(normalized.build.env).length > 0) env.SYNTHI_HIPRT_WARM_BUILD_ENV_JSON = JSON.stringify(normalized.build.env);

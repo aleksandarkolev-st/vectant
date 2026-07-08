@@ -9049,6 +9049,8 @@ const hiprtRuntimePrerequisiteContract = {
   target_name: 'SyntheticHIPRTPathTracer',
   workerRepoPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer',
   worker_repo_path: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer',
+  sourceTree: null,
+  source_tree: null,
   source: {
     file: 'src/Device/kernels/CameraRays.h',
     workerPath: '/tmp/synthi-real-rocm/SyntheticHIPRTPathTracer/src/Device/kernels/CameraRays.h',
@@ -9073,6 +9075,22 @@ const hiprtRuntimePrerequisiteContract = {
         present: false,
       },
     ],
+    requiredAssets: [
+      {
+        path: 'data/GLTFs/cornell_pbr.gltf',
+        role: 'scene_gltf',
+        mediaType: 'model/gltf+json',
+        required: true,
+      },
+    ],
+    required_assets: [
+      {
+        path: 'data/GLTFs/cornell_pbr.gltf',
+        role: 'scene_gltf',
+        mediaType: 'model/gltf+json',
+        required: true,
+      },
+    ],
   },
   visualProof: {
     claim: 'Synthetic HIPRT visual preflight requires real scene assets before visual proof can run.',
@@ -9095,6 +9113,7 @@ hiprtRuntimePrerequisiteContract.contractHash = contentHashFor({
   mode: hiprtRuntimePrerequisiteContract.mode,
   targetName: hiprtRuntimePrerequisiteContract.targetName,
   workerRepoPath: hiprtRuntimePrerequisiteContract.workerRepoPath,
+  sourceTree: hiprtRuntimePrerequisiteContract.sourceTree,
   source: hiprtRuntimePrerequisiteContract.source,
   runtime: hiprtRuntimePrerequisiteContract.runtime,
   visualProof: hiprtRuntimePrerequisiteContract.visualProof,
@@ -20202,6 +20221,7 @@ assert.equal(
   hiprtRuntimePrerequisiteContract.contractHash,
 );
 assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredFileCount, 1);
+assert.equal(hiprtPreflight.runtimePrerequisiteContract.requiredAssetCount, 1);
 
 const hiprtForgedPrereq = ledger.rows.find((row) =>
   row.backend === 'hiprt'

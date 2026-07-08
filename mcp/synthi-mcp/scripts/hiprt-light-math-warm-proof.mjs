@@ -136,6 +136,18 @@ const CFG = {
     PROFILE.requiredFiles ?? [],
     'required runtime files',
   ),
+  requiredAssets: parseJsonArrayEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_ASSETS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON,
+    PROFILE.requiredAssets ?? [],
+    'required runtime assets',
+  ),
+  runtimeSourceTree: parseJsonObjectEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_SOURCE_TREE_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON,
+    PROFILE.sourceTree ?? null,
+    'runtime source tree',
+  ),
   cmakeArgs: parseJsonStringListEnv(
     process.env.SYNTHI_GPU_HMR_RUNTIME_CMAKE_ARGS_JSON
       ?? process.env.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON,
@@ -661,6 +673,8 @@ function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
     worker_container: CFG.workerContainer,
     workerRepoPath: CFG.workerRepoPath,
     worker_repo_path: CFG.workerRepoPath,
+    sourceTree: CFG.runtimeSourceTree,
+    source_tree: CFG.runtimeSourceTree,
     nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
     native_launch_observer_path: CFG.nativeLaunchObserverPath,
     adapter: {
@@ -711,6 +725,8 @@ function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
       reload_kernel_symbol: CFG.reloadKernelSymbol,
       requiredFiles: runtimeRequiredFiles,
       required_files: runtimeRequiredFiles,
+      requiredAssets: CFG.requiredAssets,
+      required_assets: CFG.requiredAssets,
       orochiApi: CFG.orochiApi || null,
       orochi_api: CFG.orochiApi || null,
     },
@@ -747,6 +763,7 @@ function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
     mode: contract.mode,
     targetName: contract.targetName,
     workerRepoPath: contract.workerRepoPath,
+    sourceTree: contract.sourceTree,
     source: contract.source,
     runtime: contract.runtime,
     visualProof: contract.visualProof,

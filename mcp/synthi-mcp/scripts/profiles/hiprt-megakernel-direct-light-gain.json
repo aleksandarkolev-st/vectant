@@ -12,6 +12,13 @@
   },
   "runtime": {
     "targetName": "HIPRTPathTracer",
+    "sourceTree": {
+      "sourceKind": "git",
+      "repoUrl": "https://github.com/TomClabault/HIPRT-Path-Tracer.git",
+      "repoName": "HIPRT-Path-Tracer",
+      "commit": "d114ed0d4c1d4ff9ea4e2511841819ed9aa59e6e",
+      "proofAuthority": "runtime_source_tree_prerequisite_only_not_gpu_hmr_success"
+    },
     "args": [
       "../data/GLTFs/cornell_pbr.gltf",
       "--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr"
@@ -19,6 +26,18 @@
     "requiredFiles": [
       "data/GLTFs/cornell_pbr.gltf",
       "data/Skyspheres/evening_road_01_puresky_2k.hdr"
+    ],
+    "requiredAssets": [
+      {
+        "path": "data/GLTFs/cornell_pbr.gltf",
+        "role": "scene_gltf",
+        "mediaType": "model/gltf+json"
+      },
+      {
+        "path": "data/Skyspheres/evening_road_01_puresky_2k.hdr",
+        "role": "environment_map",
+        "mediaType": "image/vnd.radiance"
+      }
     ],
     "requiredKernels": [
       "CameraRays",

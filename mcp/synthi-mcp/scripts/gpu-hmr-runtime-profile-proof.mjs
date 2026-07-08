@@ -1459,6 +1459,18 @@ async function selfCheck() {
     cmakeArgs: controlled.build.cmakeArgs,
     runtimeEnvKeys: Object.keys(controlled.runtime.env).sort(),
   });
+  const defaultProfileEnv = runtimeProfileToHiprtWarmEnv(defaultProfile);
+  checks.push({
+    name: 'runtime-source-tree-and-assets-export-generic-aliases',
+    ok:
+      defaultProfile.runtime.sourceTree?.proofAuthority === 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success'
+      && defaultProfile.runtime.requiredAssets.length > 0
+      && Boolean(defaultProfileEnv.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON)
+      && defaultProfileEnv.SYNTHI_GPU_HMR_RUNTIME_SOURCE_TREE_JSON === defaultProfileEnv.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON
+      && Boolean(defaultProfileEnv.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON)
+      && defaultProfileEnv.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_ASSETS_JSON === defaultProfileEnv.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON,
+    requiredAssetCount: defaultProfile.runtime.requiredAssets.length,
+  });
   const failed = checks.filter((check) => !check.ok);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.runtime_profile.self_check.v1',

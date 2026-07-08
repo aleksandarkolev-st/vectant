@@ -24969,12 +24969,16 @@ function runtimePrerequisiteContractFacet(json = {}) {
   const targetName = firstText(contract.targetName, contract.target_name);
   const workerRepoPath = firstText(contract.workerRepoPath, contract.worker_repo_path);
   const source = compactObject(contract.source);
+  const sourceTreeInput = contract.sourceTree ?? contract.source_tree ?? null;
+  const sourceTree = isObject(sourceTreeInput) ? sourceTreeInput : null;
+  const sourceTreeDeclared = Object.hasOwn(contract, 'sourceTree') || Object.hasOwn(contract, 'source_tree');
   const runtime = compactObject(contract.runtime);
   const visualProof = compactObject(contract.visualProof ?? contract.visual_proof);
   const requiredFiles = compactObjectList(runtime.requiredFiles ?? runtime.required_files);
+  const requiredAssets = compactObjectList(runtime.requiredAssets ?? runtime.required_assets);
   const blockingGaps = compactStringList(contract.blockingGaps ?? contract.blocking_gaps);
   const contractHash = firstText(contract.contractHash, contract.contract_hash);
-  const recomputedContractHash = stableJsonHash({
+  const contractHashSeed = {
     schemaVersion,
     backend,
     profileId,
@@ -24985,11 +24989,23 @@ function runtimePrerequisiteContractFacet(json = {}) {
     runtime,
     visualProof,
     blockingGaps,
-  });
+  };
+  if (sourceTreeDeclared) contractHashSeed.sourceTree = sourceTree;
+  const recomputedContractHash = stableJsonHash(contractHashSeed);
   const claimsGpuHmr = firstBool(contract.acceptedForGpuHmr, contract.accepted_for_gpu_hmr) === true
     || firstBool(contract.gpuHmrSuccess, contract.gpu_hmr_success) === true;
   const claimsRuntimeAuthority = firstBool(contract.canSatisfyRuntimeProof, contract.can_satisfy_runtime_proof) === true;
   const claimsDispatchAuthority = firstBool(contract.canSatisfyDispatchProof, contract.can_satisfy_dispatch_proof) === true;
+  const sourceTreeProofAuthority = sourceTree
+    ? firstText(sourceTree.proofAuthority, sourceTree.proof_authority)
+    : null;
+  const sourceTreeClaimsGpuHmr = sourceTree
+    && (firstBool(sourceTree.acceptedForGpuHmr, sourceTree.accepted_for_gpu_hmr) === true
+      || firstBool(sourceTree.gpuHmrSuccess, sourceTree.gpu_hmr_success) === true);
+  const sourceTreeClaimsRuntimeAuthority = sourceTree
+    && firstBool(sourceTree.canSatisfyRuntimeProof, sourceTree.can_satisfy_runtime_proof) === true;
+  const sourceTreeClaimsDispatchAuthority = sourceTree
+    && firstBool(sourceTree.canSatisfyDispatchProof, sourceTree.can_satisfy_dispatch_proof) === true;
   const failedGates = compactStringList([
     schemaVersion === RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION
       ? null
@@ -25000,6 +25016,12 @@ function runtimePrerequisiteContractFacet(json = {}) {
     claimsGpuHmr ? 'runtime_prerequisite_contract_claimed_gpu_hmr_success' : null,
     claimsRuntimeAuthority ? 'runtime_prerequisite_contract_claimed_runtime_authority' : null,
     claimsDispatchAuthority ? 'runtime_prerequisite_contract_claimed_dispatch_authority' : null,
+    sourceTreeProofAuthority && sourceTreeProofAuthority !== 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success'
+      ? 'runtime_prerequisite_contract_source_tree_authority_invalid'
+      : null,
+    sourceTreeClaimsGpuHmr ? 'runtime_prerequisite_contract_source_tree_claimed_gpu_hmr_success' : null,
+    sourceTreeClaimsRuntimeAuthority ? 'runtime_prerequisite_contract_source_tree_claimed_runtime_authority' : null,
+    sourceTreeClaimsDispatchAuthority ? 'runtime_prerequisite_contract_source_tree_claimed_dispatch_authority' : null,
     backend ? null : 'runtime_prerequisite_contract_backend_missing',
     backendFamily ? null : 'runtime_prerequisite_contract_backend_family_missing',
     profileId ? null : 'runtime_prerequisite_contract_profile_id_missing',
@@ -25043,8 +25065,12 @@ function runtimePrerequisiteContractFacet(json = {}) {
     target_name: targetName,
     workerRepoPath,
     worker_repo_path: workerRepoPath,
+    sourceTree,
+    source_tree: sourceTree,
     requiredFileCount: requiredFiles.length,
     required_file_count: requiredFiles.length,
+    requiredAssetCount: requiredAssets.length,
+    required_asset_count: requiredAssets.length,
     blockingGaps,
     blocking_gaps: blockingGaps,
     contractHash,
