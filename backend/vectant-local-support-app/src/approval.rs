@@ -92,10 +92,41 @@ impl ApprovalQueue {
         self.approve_at(approval_id, now)
     }
 
+    pub fn approve_with_secret_and_current_review(
+        &mut self,
+        approval_id: &str,
+        local_approval_secret: &str,
+        current_review: FileReadResponse,
+        now: DateTime<Utc>,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        if !self.local_approval_secret_matches(approval_id, local_approval_secret) {
+            return None;
+        }
+        self.approve_revalidated_at(approval_id, current_review, now)
+    }
+
     pub fn approve_at(
         &mut self,
         approval_id: &str,
         now: DateTime<Utc>,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        self.approve_at_inner(approval_id, now, None)
+    }
+
+    pub fn approve_revalidated_at(
+        &mut self,
+        approval_id: &str,
+        current_review: FileReadResponse,
+        now: DateTime<Utc>,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        self.approve_at_inner(approval_id, now, Some(current_review))
+    }
+
+    fn approve_at_inner(
+        &mut self,
+        approval_id: &str,
+        now: DateTime<Utc>,
+        current_review: Option<FileReadResponse>,
     ) -> Option<(FileReadResponse, ConsentReceipt)> {
         if !is_safe_approval_id(approval_id) {
             return None;
@@ -112,7 +143,11 @@ impl ApprovalQueue {
             return None;
         }
         queued.status = ApprovalStatus::Approved;
-        let mut review = queued.local_review.clone();
+        let mut review = match current_review {
+            Some(current) if review_still_matches(&queued.local_review, &current) => current,
+            Some(_) => return None,
+            None => queued.local_review.clone(),
+        };
         review.approval_id = Some(queued.approval_id.clone());
         let receipt = ConsentReceipt {
             approval_id: queued.approval_id.clone(),
@@ -128,7 +163,7 @@ impl ApprovalQueue {
             classification: review.classification.clone(),
             content_sha256: review.content_sha256.clone(),
             scope: "once".to_string(),
-            granted_at: Utc::now(),
+            granted_at: now,
             expires_at: queued.request.expires_at.clone(),
             policy_version: review.policy_version.clone(),
             scanner_version: review.scanner_version.clone(),
@@ -165,6 +200,17 @@ impl ApprovalQueue {
                 queued.local_review.content = None;
             }
         }
+    }
+
+    pub fn request_for_approval(&self, approval_id: &str) -> Option<FileReadRequest> {
+        if !is_safe_approval_id(approval_id) {
+            return None;
+        }
+        let queued = self.pending.get(approval_id)?;
+        if queued.status != ApprovalStatus::Pending {
+            return None;
+        }
+        Some(queued.request.clone())
     }
 
     pub fn pending_len(&self) -> usize {
@@ -232,6 +278,13 @@ fn public_pending_response(local_review: &FileReadResponse, approval_id: &str) -
         ),
         content: None,
     }
+}
+
+fn review_still_matches(original: &FileReadResponse, current: &FileReadResponse) -> bool {
+    current.decision != "denied"
+        && current.content.is_some()
+        && original.content_sha256.is_some()
+        && original.content_sha256 == current.content_sha256
 }
 
 pub fn denied_approval_response(request_id: &str, approval_id: &str) -> FileReadResponse {

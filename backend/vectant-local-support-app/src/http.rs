@@ -251,11 +251,22 @@ async fn approve_request(
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
 
+    let approval_secret = local_approval_secret(&headers)?.to_string();
+    let queued_request = {
+        let approvals = state.approvals.lock().await;
+        approvals.request_for_approval(&approval_id)
+    };
+    let Some(queued_request) = queued_request else {
+        return Ok(Json(denied_approval_response(&request_id, &approval_id)));
+    };
+    let current_review = state.workspace.read_file_for_review(&queued_request);
     let approved = {
         let mut approvals = state.approvals.lock().await;
-        approvals.approve_with_secret(
+        approvals.approve_with_secret_and_current_review(
             &approval_id,
-            local_approval_secret(&headers)?,
+            &approval_secret,
+            current_review,
+            chrono::Utc::now(),
         )
     };
     let Some((response, receipt)) = approved else {

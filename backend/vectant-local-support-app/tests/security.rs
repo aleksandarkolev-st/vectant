@@ -417,6 +417,54 @@ fn approval_queue_revalidates_expiry_before_releasing_content() {
 }
 
 #[test]
+fn approval_queue_revalidates_file_hash_before_releasing_content() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("server.log");
+    fs::write(&path, "first safe local log line\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut req = request("server.log");
+    req.capability = "workspace.log.read".to_string();
+    req.expires_at = "2026-07-05T12:01:00Z".to_string();
+    let public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let approval_id = public.approval_id.unwrap();
+    assert!(queue.set_local_approval_secret_for_test(&approval_id, "desktop-confirmation-secret"));
+
+    let unchanged_review = policy.read_file_for_review(&req);
+    let (approved, _) = queue
+        .approve_with_secret_and_current_review(
+            &approval_id,
+            "desktop-confirmation-secret",
+            unchanged_review,
+            now.clone(),
+        )
+        .unwrap();
+    assert!(approved.content.unwrap().contains("first safe local log line"));
+
+    let second_public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let second_approval_id = second_public.approval_id.unwrap();
+    assert!(queue.set_local_approval_secret_for_test(
+        &second_approval_id,
+        "desktop-confirmation-secret",
+    ));
+    fs::write(&path, "changed local log line after review\n").unwrap();
+    let changed_review = policy.read_file_for_review(&req);
+    assert!(queue
+        .approve_with_secret_and_current_review(
+            &second_approval_id,
+            "desktop-confirmation-secret",
+            changed_review,
+            now.clone(),
+        )
+        .is_none());
+    assert!(queue.get(&second_approval_id).is_none());
+}
+
+#[test]
 fn blocks_sensitive_filename_variants_and_cloud_credentials() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".aws")).unwrap();
