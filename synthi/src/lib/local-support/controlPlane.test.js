@@ -625,6 +625,24 @@ describe("local support control plane policy", () => {
       bytes_sent: 0,
     });
 
+    for (const [request_headers, reason] of [
+      [[["content-length", "0"], ["content-length", "0"]], "preview_duplicate_content_length_blocked"],
+      [{ "content-length": "0", "transfer-encoding": "chunked" }, "preview_ambiguous_body_length_blocked"],
+      [{ connection: "authorization" }, "preview_connection_sensitive_header_blocked"],
+      [[["connection", "x-shadow-hop"], ["x-shadow-hop", "secret"]], "preview_connection_named_header_blocked"],
+    ]) {
+      expect(buildPreviewGatewayDecision(proofBound({
+        ...previewEnvelope,
+        request_id: `req_${reason}`,
+        request_headers,
+      }), policy)).toMatchObject({
+        decision: "denied",
+        reason,
+        preview_forward: false,
+        bytes_sent: 0,
+      });
+    }
+
     expect(buildPreviewGatewayDecision(proofBound({
       ...previewEnvelope,
       request_id: "req_preview_host",

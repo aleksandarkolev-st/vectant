@@ -974,10 +974,14 @@ function validatePreviewRequestHeaderSummary(headers) {
     : headers && typeof headers === "object"
       ? Object.entries(headers)
       : [];
+  let contentLengthCount = 0;
+  let hasTransferEncoding = false;
+  const connectionTokens = [];
+  const names = pairs.map(([name]) => String(name || "").trim().toLowerCase());
   for (const [name, value] of pairs) {
-    const lower = String(name || "").toLowerCase();
+    const lower = String(name || "").trim().toLowerCase();
     const stringValue = String(value || "");
-    if (["cookie", "authorization", "proxy-authorization"].includes(lower)) {
+    if (["cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token", "x-csrf-token", "forwarded", "x-forwarded-for", "x-real-ip"].includes(lower)) {
       return "preview_credentials_header_blocked";
     }
     if (lower === "upgrade" && stringValue.toLowerCase().includes("websocket")) {
@@ -989,11 +993,39 @@ function validatePreviewRequestHeaderSummary(headers) {
     if (lower === "service-worker") {
       return "preview_service_worker_blocked";
     }
-    if (lower === "content-length" && Number(stringValue) > 0) {
-      return "preview_request_body_blocked";
+    if (lower === "content-length") {
+      contentLengthCount += 1;
+      if (Number(stringValue) > 0) {
+        return "preview_request_body_blocked";
+      }
+    }
+    if (lower === "transfer-encoding") {
+      hasTransferEncoding = true;
+    }
+    if (lower === "connection") {
+      connectionTokens.push(...parseConnectionTokens(stringValue));
     }
   }
+  if (contentLengthCount > 1) {
+    return "preview_duplicate_content_length_blocked";
+  }
+  if (hasTransferEncoding && contentLengthCount > 0) {
+    return "preview_ambiguous_body_length_blocked";
+  }
+  if (connectionTokens.some((token) => ["cookie", "authorization", "proxy-authorization", "set-cookie"].includes(token))) {
+    return "preview_connection_sensitive_header_blocked";
+  }
+  if (connectionTokens.some((token) => names.includes(token))) {
+    return "preview_connection_named_header_blocked";
+  }
   return null;
+}
+
+function parseConnectionTokens(value) {
+  return String(value || "")
+    .split(",")
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function classifyPreviewRedirect(location, currentPath, previewHost, approvedPort, policy) {

@@ -158,6 +158,10 @@ describe("local support preview-gateway route", () => {
     const cases = [
       [{ request_headers: { authorization: "Bearer secret" } }, "preview_credentials_header_blocked"],
       [{ request_headers: { "sec-websocket-key": "abc" } }, "preview_websocket_blocked"],
+      [{ request_headers: [["content-length", "0"], ["content-length", "0"]] }, "preview_duplicate_content_length_blocked"],
+      [{ request_headers: { "content-length": "0", "transfer-encoding": "chunked" } }, "preview_ambiguous_body_length_blocked"],
+      [{ request_headers: { connection: "authorization" } }, "preview_connection_sensitive_header_blocked"],
+      [{ request_headers: [["connection", "x-shadow-hop"], ["x-shadow-hop", "secret"]] }, "preview_connection_named_header_blocked"],
       [{ preview_path: "/service-worker.js" }, "preview_path_invalid"],
       [{ preview_method: "POST" }, "preview_method_not_allowed"],
     ];
