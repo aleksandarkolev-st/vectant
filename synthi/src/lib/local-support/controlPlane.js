@@ -213,6 +213,9 @@ export function enforceRequestEnvelopeReplayProtection(envelope, nowMs = Date.no
   if (!requestId || !sessionId || !Number.isFinite(expiresAt)) {
     return deny("request_replay_identity_invalid", "Request envelope replay identity is invalid.");
   }
+  if (expiresAt <= nowMs) {
+    return deny("request_replay_expired", "Request envelope replay window expired.");
+  }
 
   pruneReplayCache(nowMs);
   const cacheKey = `${sessionId}\0${requestId}`;

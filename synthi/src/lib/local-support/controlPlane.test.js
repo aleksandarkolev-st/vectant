@@ -395,7 +395,22 @@ describe("local support control plane policy", () => {
       reason: "request_replay_detected",
       bytes_sent: 0,
     });
-    expect(enforceRequestEnvelopeReplayProtection({ ...body, request_id: "req_replay_2" }, 1_000_001)).toMatchObject({
+    expect(enforceRequestEnvelopeReplayProtection({
+      ...body,
+      request_id: "req_replay_2",
+      expires_at: new Date(1_100_000).toISOString(),
+    }, 1_000_001)).toMatchObject({
+      decision: "accepted",
+      reason: "request_replay_nonce_recorded",
+    });
+
+    const expired = { ...body, request_id: "req_replay_expired" };
+    expect(enforceRequestEnvelopeReplayProtection(expired, 1_000_001)).toMatchObject({
+      decision: "denied",
+      reason: "request_replay_expired",
+      bytes_sent: 0,
+    });
+    expect(enforceRequestEnvelopeReplayProtection({ ...expired, expires_at: new Date(1_100_000).toISOString() }, 1_000_002)).toMatchObject({
       decision: "accepted",
       reason: "request_replay_nonce_recorded",
     });
