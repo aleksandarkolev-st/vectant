@@ -13,7 +13,6 @@ pub struct SessionState {
     pub org_id: String,
     pub workspace_id: String,
     pub device_fingerprint: String,
-    pub token_fingerprint: String,
     pub paused: bool,
     pub protocol_version: String,
 }
@@ -26,7 +25,6 @@ pub struct SessionGuard {
     workspace_id: String,
     device_fingerprint: String,
     token: String,
-    token_fingerprint: String,
     expires_at: Instant,
     paused: bool,
     seen_request_ids: HashSet<String>,
@@ -89,7 +87,6 @@ impl SessionGuard {
         ttl: Duration,
         token: String,
     ) -> Self {
-        let token_fingerprint = fingerprint(&token);
         Self {
             session_id: format!("sess_{}", Uuid::new_v4()),
             account_id: account_id.into(),
@@ -97,7 +94,6 @@ impl SessionGuard {
             workspace_id: workspace_id.into(),
             device_fingerprint: device_fingerprint.into(),
             token,
-            token_fingerprint,
             expires_at: Instant::now() + ttl,
             paused: false,
             seen_request_ids: HashSet::new(),
@@ -190,7 +186,6 @@ impl SessionGuard {
             org_id: self.org_id.clone(),
             workspace_id: self.workspace_id.clone(),
             device_fingerprint: self.device_fingerprint.clone(),
-            token_fingerprint: self.token_fingerprint.clone(),
             paused: self.paused,
             protocol_version: crate::APP_PROTOCOL_VERSION.to_string(),
         }

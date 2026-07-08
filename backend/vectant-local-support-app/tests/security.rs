@@ -593,6 +593,17 @@ fn session_rejects_unsafe_request_ids_before_replay_tracking() {
 }
 
 #[test]
+fn session_state_omits_token_material() {
+    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let serialized = serde_json::to_string(&session.state()).unwrap();
+
+    assert!(!serialized.contains("token"));
+    assert!(!serialized.contains("bearer"));
+    assert!(serialized.contains("device_fingerprint"));
+    assert!(serialized.contains("protocol_version"));
+}
+
+#[test]
 fn session_control_can_resume_from_paused_state() {
     let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
     let token = session.token_for_pairing_response().to_string();
