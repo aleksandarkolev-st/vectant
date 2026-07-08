@@ -7,7 +7,7 @@ use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, Co
 use vectant_local_support_app::approval::{ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::desktop::{inspect_tauri_config, renderer_command_can_access_secret};
 use vectant_local_support_app::http::{
-    validate_file_request_authorization, LocalAuthorizationError, LocalRequestAuthorization,
+    validate_file_request_authorization, AppState, LocalAuthorizationError, LocalRequestAuthorization,
     RateLimiter, MAX_JSON_BODY_BYTES,
 };
 use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
@@ -822,6 +822,21 @@ fn local_api_rate_limiter_denies_after_window_budget() {
 #[test]
 fn local_api_body_limit_matches_file_review_cap() {
     assert_eq!(MAX_JSON_BODY_BYTES, 262_144);
+}
+
+#[test]
+fn local_control_secret_is_required_for_desktop_side_effects() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut state = AppState::new(session, policy);
+
+    assert!(!state.local_control_secret_matches(""));
+    assert!(!state.local_control_secret_matches("wrong-control-secret"));
+    state.set_local_control_secret_for_test("desktop-control-secret-000000000000");
+    assert!(state.local_control_secret_matches("desktop-control-secret-000000000000"));
+    assert!(!state.local_control_secret_matches("desktop-control-secret-111111111111"));
 }
 
 #[test]

@@ -9,6 +9,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use rand::{distributions::Alphanumeric, Rng};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
@@ -31,6 +33,7 @@ pub struct AppState {
     pub audit: Arc<Mutex<AuditLog>>,
     pub audit_store: Option<Arc<LocalAuditStore>>,
     pub approvals: Arc<Mutex<ApprovalQueue>>,
+    local_control_secret_hash: Arc<String>,
 }
 
 impl AppState {
@@ -45,6 +48,7 @@ impl AppState {
             audit: Arc::new(Mutex::new(AuditLog::new(SecretScanner::default()))),
             audit_store: None,
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
+            local_control_secret_hash: Arc::new(hash_local_control_secret(&generate_local_control_secret())),
         }
     }
 
@@ -66,7 +70,16 @@ impl AppState {
             audit: Arc::new(Mutex::new(audit)),
             audit_store: Some(Arc::new(audit_store)),
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
+            local_control_secret_hash: Arc::new(hash_local_control_secret(&generate_local_control_secret())),
         }
+    }
+
+    pub fn local_control_secret_matches(&self, secret: &str) -> bool {
+        !secret.is_empty() && *self.local_control_secret_hash == hash_local_control_secret(secret)
+    }
+
+    pub fn set_local_control_secret_for_test(&mut self, secret: &str) {
+        self.local_control_secret_hash = Arc::new(hash_local_control_secret(secret));
     }
 }
 
@@ -224,6 +237,7 @@ async fn approve_request(
 ) -> Result<Json<FileReadResponse>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -255,6 +269,7 @@ async fn deny_request(
 ) -> Result<Json<FileReadResponse>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -291,6 +306,7 @@ async fn pause_session(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
     let token = bearer(&headers)?;
     let mut session = state.session.lock().await;
     session
@@ -340,6 +356,7 @@ async fn control_session(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
     let token = bearer(&headers)?;
     let mut session = state.session.lock().await;
     session
@@ -371,6 +388,7 @@ async fn export_history(
 ) -> Result<Json<AuditExport>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -396,6 +414,7 @@ async fn delete_history(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -486,6 +505,37 @@ fn local_approval_secret(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<
         .and_then(|value| value.to_str().ok())
         .filter(|value| value.len() >= 32 && value.len() <= 128)
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "local_user_approval_required"))
+}
+
+fn require_local_control_secret(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let secret = headers
+        .get("x-vectant-local-control-secret")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() >= 32 && value.len() <= 128)
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "local_user_control_required"))?;
+    if state.local_control_secret_matches(secret) {
+        Ok(())
+    } else {
+        Err(denied(StatusCode::FORBIDDEN, "local_user_control_required"))
+    }
+}
+
+fn generate_local_control_secret() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
+}
+
+fn hash_local_control_secret(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"vectant-local-support-local-control-secret:");
+    hasher.update(value.as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
