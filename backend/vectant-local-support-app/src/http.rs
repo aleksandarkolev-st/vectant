@@ -616,6 +616,7 @@ impl LocalRequestAuthorization {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalAuthorizationError {
+    InvalidRequestShape,
     SessionMismatch,
     AccountMismatch,
     OrgMismatch,
@@ -633,6 +634,7 @@ pub enum LocalAuthorizationError {
 impl LocalAuthorizationError {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::InvalidRequestShape => "invalid_request_shape",
             Self::SessionMismatch => "session_mismatch",
             Self::AccountMismatch => "account_mismatch",
             Self::OrgMismatch => "org_mismatch",
@@ -656,6 +658,9 @@ pub fn validate_file_request_authorization(
     auth: &LocalRequestAuthorization,
     now: DateTime<Utc>,
 ) -> Result<(), LocalAuthorizationError> {
+    if !valid_request_authorization_shape(request) {
+        return Err(LocalAuthorizationError::InvalidRequestShape);
+    }
     if request.session_id != session.session_id() {
         return Err(LocalAuthorizationError::SessionMismatch);
     }
@@ -719,6 +724,27 @@ pub fn validate_file_request_authorization(
         return Err(LocalAuthorizationError::DeviceProofInvalid);
     }
     Ok(())
+}
+
+fn valid_request_authorization_shape(request: &FileReadRequest) -> bool {
+    safe_authorization_field(&request.request_id, 3, 128)
+        && safe_authorization_field(&request.session_id, 3, 128)
+        && safe_authorization_field(&request.account_id, 3, 128)
+        && safe_authorization_field(&request.org_id, 3, 128)
+        && safe_authorization_field(&request.workspace_id, 3, 128)
+        && safe_authorization_field(&request.capability, 3, 128)
+        && safe_authorization_field(&request.actor, 3, 128)
+        && safe_authorization_field(&request.expires_at, 10, 64)
+}
+
+fn safe_authorization_field(value: &str, min_len: usize, max_len: usize) -> bool {
+    value.len() >= min_len
+        && value.len() <= max_len
+        && value
+            .chars()
+            .all(|ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '+')
+            })
 }
 
 fn is_sha256_hex(value: &str, hex_len: usize) -> bool {

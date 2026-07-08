@@ -1047,6 +1047,43 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
 }
 
 #[test]
+fn local_file_request_authorization_rejects_malformed_body_identity_before_proof_hashing() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut req = request("app.rs");
+    req.session_id = session.session_id().to_string();
+    let auth = local_auth(&session, &req);
+    req.device_fingerprint = auth.device_fingerprint.clone();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut injected_request_id = req.clone();
+    injected_request_id.request_id = "req_bad\nheader".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &injected_request_id, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestShape)
+    );
+
+    let mut oversized_actor = req.clone();
+    oversized_actor.actor = "support_agent".repeat(20);
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &oversized_actor, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestShape)
+    );
+
+    let mut malformed_expiry_shape = req;
+    malformed_expiry_shape.expires_at =
+        "2030-07-05T12:00:00Z authorization: bearer secret".to_string();
+    assert_eq!(
+        validate_file_request_authorization(&session, &policy, &malformed_expiry_shape, &auth, now),
+        Err(LocalAuthorizationError::InvalidRequestShape)
+    );
+}
+
+#[test]
 fn local_sessions_can_bind_to_pairing_device_identity() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
