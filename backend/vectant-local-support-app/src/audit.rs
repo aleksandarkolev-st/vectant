@@ -219,6 +219,7 @@ impl LocalAuditStore {
     }
 
     pub fn load(&self) -> Result<AuditLog, AuditStoreError> {
+        ensure_audit_path_safe(&self.path)?;
         if !self.path.exists() {
             return Ok(AuditLog::new(self.scanner.clone()));
         }
@@ -228,12 +229,15 @@ impl LocalAuditStore {
     }
 
     pub fn persist(&self, log: &AuditLog) -> Result<(), AuditStoreError> {
+        ensure_audit_path_safe(&self.path)?;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(AuditStoreError::Io)?;
         }
         let export = log.export_incident_bundle(self.retention_days);
         let bytes = serde_json::to_vec_pretty(&export).map_err(AuditStoreError::Json)?;
         let tmp = self.path.with_extension("json.tmp");
+        ensure_audit_path_safe(&self.path)?;
+        ensure_audit_path_safe(&tmp)?;
         fs::write(&tmp, bytes).map_err(AuditStoreError::Io)?;
         match fs::remove_file(&self.path) {
             Ok(()) => {}
@@ -245,6 +249,7 @@ impl LocalAuditStore {
     }
 
     pub fn delete(&self) -> Result<(), AuditStoreError> {
+        ensure_audit_path_safe(&self.path)?;
         match fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -258,6 +263,7 @@ pub enum AuditStoreError {
     Io(std::io::Error),
     Json(serde_json::Error),
     HashChainInvalid,
+    UnsafePath,
 }
 
 impl std::fmt::Display for AuditStoreError {
@@ -266,11 +272,25 @@ impl std::fmt::Display for AuditStoreError {
             Self::Io(error) => write!(formatter, "audit store io error: {error}"),
             Self::Json(error) => write!(formatter, "audit store json error: {error}"),
             Self::HashChainInvalid => write!(formatter, "audit store hash chain invalid"),
+            Self::UnsafePath => write!(formatter, "audit store unsafe path"),
         }
     }
 }
 
 impl std::error::Error for AuditStoreError {}
+
+fn ensure_audit_path_safe(path: &Path) -> Result<(), AuditStoreError> {
+    for component in path.ancestors() {
+        if !component.exists() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(component).map_err(AuditStoreError::Io)?;
+        if metadata.file_type().is_symlink() {
+            return Err(AuditStoreError::UnsafePath);
+        }
+    }
+    Ok(())
+}
 
 fn hash_event(
     at: &DateTime<Utc>,

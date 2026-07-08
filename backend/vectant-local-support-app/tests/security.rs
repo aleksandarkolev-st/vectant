@@ -1525,6 +1525,48 @@ fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
 }
 
 #[test]
+fn local_audit_store_rejects_symlinked_audit_path() {
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("target.json");
+    let link = dir.path().join("audit.json");
+    fs::write(&target, "{}").unwrap();
+    if create_file_symlink_for_test(&target, &link).is_err() {
+        return;
+    }
+
+    let store = LocalAuditStore::new(&link, 30, SecretScanner::default());
+    let mut log = AuditLog::new(SecretScanner::default());
+    log.append(
+        AuditClass::Control,
+        Some("req_symlink_store".to_string()),
+        "Audit path symlink must not be followed.",
+        true,
+    );
+
+    assert!(matches!(store.load(), Err(AuditStoreError::UnsafePath)));
+    assert!(matches!(store.persist(&log), Err(AuditStoreError::UnsafePath)));
+    assert!(matches!(store.delete(), Err(AuditStoreError::UnsafePath)));
+    assert!(link.exists());
+    assert!(target.exists());
+}
+
+#[cfg(unix)]
+fn create_file_symlink_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[test]
 fn update_manifest_requires_valid_signature_and_blocks_downgrades() {
     let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", Vec::new());
     assert!(verify_update_manifest(&trusted_key, "0.1.0", &manifest).is_ok());
