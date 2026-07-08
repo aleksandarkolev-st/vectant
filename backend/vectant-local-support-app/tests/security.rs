@@ -756,6 +756,13 @@ fn desktop_ipc_allows_only_narrow_commands() {
     });
     assert_eq!(allowed.decision, "allow");
 
+    let allowed_delete = decide_ipc_request(&IpcRequest {
+        command: "history.delete".to_string(),
+        request_id: "req_delete_history".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed_delete.decision, "allow");
+
     for command in [
         "fs.readFile",
         "workspace.writeFile",
@@ -765,6 +772,7 @@ fn desktop_ipc_allows_only_narrow_commands() {
         "screen.capture",
         "accessibility.enable",
         "keychain.read",
+        "workspace.deleteAll",
     ] {
         let denied = decide_ipc_request(&IpcRequest {
             command: command.to_string(),
@@ -774,6 +782,13 @@ fn desktop_ipc_allows_only_narrow_commands() {
         assert_eq!(denied.decision, "deny");
         assert_eq!(denied.user_visible, true);
     }
+
+    let dangerous_delete = decide_ipc_request(&IpcRequest {
+        command: "workspace.deleteall".to_string(),
+        request_id: "req_workspace_delete".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(dangerous_delete.reason, "dangerous_ipc_command_blocked");
 }
 
 #[test]

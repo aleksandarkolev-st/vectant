@@ -64,20 +64,20 @@ pub fn decide_ipc_request(request: &IpcRequest) -> IpcDecision {
     {
         return deny("invalid_schema");
     }
+    if ALLOWED_IPC_COMMANDS.contains(&normalized.as_str()) {
+        return IpcDecision {
+            decision: "allow".to_string(),
+            reason: "ipc_command_allowed".to_string(),
+            user_visible: true,
+        };
+    }
     if DANGEROUS_COMMAND_FRAGMENTS
         .iter()
         .any(|fragment| normalized.contains(fragment))
     {
         return deny("dangerous_ipc_command_blocked");
     }
-    if !ALLOWED_IPC_COMMANDS.contains(&normalized.as_str()) {
-        return deny("ipc_command_not_allowed");
-    }
-    IpcDecision {
-        decision: "allow".to_string(),
-        reason: "ipc_command_allowed".to_string(),
-        user_visible: true,
-    }
+    deny("ipc_command_not_allowed")
 }
 
 fn is_safe_ipc_identifier(value: &str) -> bool {
