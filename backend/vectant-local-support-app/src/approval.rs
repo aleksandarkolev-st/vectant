@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::audit::ConsentReceipt;
@@ -22,6 +24,8 @@ pub struct QueuedApproval {
     pub request: FileReadRequest,
     pub local_review: FileReadResponse,
     pub status: ApprovalStatus,
+    #[serde(skip)]
+    local_approval_secret_hash: String,
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +56,7 @@ impl ApprovalQueue {
                 request,
                 local_review,
                 status: ApprovalStatus::Pending,
+                local_approval_secret_hash: hash_local_approval_secret(&generate_local_approval_secret()),
             },
         );
         public_response
@@ -59,6 +64,26 @@ impl ApprovalQueue {
 
     pub fn approve(&mut self, approval_id: &str) -> Option<(FileReadResponse, ConsentReceipt)> {
         self.approve_at(approval_id, Utc::now())
+    }
+
+    pub fn approve_with_secret(
+        &mut self,
+        approval_id: &str,
+        local_approval_secret: &str,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        self.approve_with_secret_at(approval_id, local_approval_secret, Utc::now())
+    }
+
+    pub fn approve_with_secret_at(
+        &mut self,
+        approval_id: &str,
+        local_approval_secret: &str,
+        now: DateTime<Utc>,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        if !self.local_approval_secret_matches(approval_id, local_approval_secret) {
+            return None;
+        }
+        self.approve_at(approval_id, now)
     }
 
     pub fn approve_at(
@@ -111,6 +136,13 @@ impl ApprovalQueue {
         true
     }
 
+    pub fn deny_with_secret(&mut self, approval_id: &str, local_approval_secret: &str) -> bool {
+        if !self.local_approval_secret_matches(approval_id, local_approval_secret) {
+            return false;
+        }
+        self.deny(approval_id)
+    }
+
     pub fn revoke_all(&mut self) {
         for queued in self.pending.values_mut() {
             if queued.status == ApprovalStatus::Pending {
@@ -129,6 +161,30 @@ impl ApprovalQueue {
 
     pub fn get(&self, approval_id: &str) -> Option<&QueuedApproval> {
         self.pending.get(approval_id)
+    }
+
+    pub fn set_local_approval_secret_for_test(
+        &mut self,
+        approval_id: &str,
+        local_approval_secret: &str,
+    ) -> bool {
+        let Some(queued) = self.pending.get_mut(approval_id) else {
+            return false;
+        };
+        queued.local_approval_secret_hash = hash_local_approval_secret(local_approval_secret);
+        true
+    }
+
+    fn local_approval_secret_matches(
+        &self,
+        approval_id: &str,
+        local_approval_secret: &str,
+    ) -> bool {
+        let Some(queued) = self.pending.get(approval_id) else {
+            return false;
+        };
+        !local_approval_secret.is_empty()
+            && queued.local_approval_secret_hash == hash_local_approval_secret(local_approval_secret)
     }
 }
 
@@ -166,4 +222,19 @@ pub fn denied_approval_response(request_id: &str, approval_id: &str) -> FileRead
         user_visible_message: Some("Approval was denied or no longer pending. Nothing was sent.".to_string()),
         content: None,
     }
+}
+
+fn generate_local_approval_secret() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
+}
+
+fn hash_local_approval_secret(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"vectant-local-support-local-approval-secret:");
+    hasher.update(value.as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }

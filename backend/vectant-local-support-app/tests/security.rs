@@ -300,6 +300,36 @@ fn approval_queue_deny_and_revoke_invalidate_queued_content() {
 }
 
 #[test]
+fn approval_queue_requires_local_secret_for_http_approval_paths() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("server.log"), "local log line\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let mut queue = ApprovalQueue::new();
+    let req = request("server.log");
+    let public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
+    let approval_id = public.approval_id.clone().unwrap();
+
+    assert!(serde_json::to_string(queue.get(&approval_id).unwrap())
+        .unwrap()
+        .contains("local_review"));
+    assert!(!serde_json::to_string(queue.get(&approval_id).unwrap())
+        .unwrap()
+        .contains("local_approval_secret"));
+
+    assert!(queue.approve_with_secret(&approval_id, "wrong-secret").is_none());
+    assert_eq!(queue.pending_len(), 1);
+    assert!(!queue.deny_with_secret(&approval_id, "wrong-secret"));
+    assert_eq!(queue.get(&approval_id).unwrap().status, ApprovalStatus::Pending);
+
+    assert!(queue.set_local_approval_secret_for_test(&approval_id, "desktop-confirmation-secret"));
+    let (approved, _) = queue
+        .approve_with_secret(&approval_id, "desktop-confirmation-secret")
+        .unwrap();
+    assert!(approved.content.is_some());
+    assert!(queue.get(&approval_id).is_none());
+}
+
+#[test]
 fn approval_queue_revalidates_expiry_before_releasing_content() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("server.log"), "local log line\n").unwrap();

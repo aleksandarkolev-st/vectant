@@ -234,7 +234,10 @@ async fn approve_request(
 
     let approved = {
         let mut approvals = state.approvals.lock().await;
-        approvals.approve(&approval_id)
+        approvals.approve_with_secret(
+            &approval_id,
+            local_approval_secret(&headers)?,
+        )
     };
     let Some((response, receipt)) = approved else {
         return Ok(Json(denied_approval_response(&request_id, &approval_id)));
@@ -261,7 +264,10 @@ async fn deny_request(
     }
     let denied_pending = {
         let mut approvals = state.approvals.lock().await;
-        approvals.deny(&approval_id)
+        approvals.deny_with_secret(
+            &approval_id,
+            local_approval_secret(&headers)?,
+        )
     };
     let mut audit = state.audit.lock().await;
     audit.append(
@@ -472,6 +478,14 @@ fn bearer(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Val
         .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))?;
     auth.strip_prefix("Bearer ")
         .ok_or_else(|| denied(StatusCode::UNAUTHORIZED, "missing_bearer"))
+}
+
+fn local_approval_secret(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Value>)> {
+    headers
+        .get("x-vectant-local-approval-secret")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() >= 32 && value.len() <= 128)
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "local_user_approval_required"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
