@@ -104,6 +104,22 @@ fn blocks_device_unc_named_pipe_and_drive_paths() {
     }
 }
 
+#[test]
+fn workspace_status_summary_omits_raw_root_path() {
+    let dir = tempdir().unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let summary = policy.summary();
+
+    assert_eq!(summary.workspace_id, "wk_123");
+    assert!(!summary.root_path_included);
+    assert!(summary.root_hash.starts_with("sha256:"));
+    assert!(!summary.display.contains('\\'));
+    assert!(!summary.display.contains('/'));
+    assert!(!serde_json::to_string(&summary)
+        .unwrap()
+        .contains(&dir.path().display().to_string()));
+}
+
 #[cfg(unix)]
 #[test]
 fn blocks_symlink_escape_from_workspace() {

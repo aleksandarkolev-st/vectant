@@ -155,12 +155,7 @@ async fn status(
     let audit = state.audit.lock().await;
     Ok(Json(serde_json::json!({
         "session": session_state,
-        "workspace": {
-            "workspace_id": state.workspace.workspace_id(),
-            "root": state.workspace.root_display(),
-            "policy_version": crate::POLICY_VERSION,
-            "scanner_version": crate::SCANNER_VERSION
-        },
+        "workspace": state.workspace.summary(),
         "history": {
             "events": audit.events(),
             "consent_receipts": audit.consent_receipts(),

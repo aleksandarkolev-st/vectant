@@ -43,6 +43,16 @@ pub struct FileReadResponse {
     pub content: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSummary {
+    pub workspace_id: String,
+    pub display: String,
+    pub root_hash: String,
+    pub root_path_included: bool,
+    pub policy_version: String,
+    pub scanner_version: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkspacePolicy {
     root: PathBuf,
@@ -69,6 +79,27 @@ impl WorkspacePolicy {
 
     pub fn root_display(&self) -> String {
         self.root.display().to_string()
+    }
+
+    pub fn summary(&self) -> WorkspaceSummary {
+        let display = self
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("Selected workspace")
+            .to_string();
+        let mut hasher = Sha256::new();
+        hasher.update(b"vectant-local-support-workspace-root:");
+        hasher.update(self.root.to_string_lossy().as_bytes());
+        WorkspaceSummary {
+            workspace_id: self.workspace_id.clone(),
+            display,
+            root_hash: format!("sha256:{}", hex::encode(hasher.finalize())),
+            root_path_included: false,
+            policy_version: crate::POLICY_VERSION.to_string(),
+            scanner_version: crate::SCANNER_VERSION.to_string(),
+        }
     }
 
     pub fn workspace_id(&self) -> &str {
