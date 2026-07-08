@@ -63,6 +63,9 @@ impl ApprovalQueue {
     }
 
     pub fn approve(&mut self, approval_id: &str) -> Option<(FileReadResponse, ConsentReceipt)> {
+        if !is_safe_approval_id(approval_id) {
+            return None;
+        }
         self.approve_at(approval_id, Utc::now())
     }
 
@@ -71,6 +74,9 @@ impl ApprovalQueue {
         approval_id: &str,
         local_approval_secret: &str,
     ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        if !is_safe_approval_id(approval_id) {
+            return None;
+        }
         self.approve_with_secret_at(approval_id, local_approval_secret, Utc::now())
     }
 
@@ -91,6 +97,9 @@ impl ApprovalQueue {
         approval_id: &str,
         now: DateTime<Utc>,
     ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        if !is_safe_approval_id(approval_id) {
+            return None;
+        }
         let mut queued = self.pending.remove(approval_id)?;
         if queued.status != ApprovalStatus::Pending {
             return None;
@@ -128,6 +137,9 @@ impl ApprovalQueue {
     }
 
     pub fn deny(&mut self, approval_id: &str) -> bool {
+        if !is_safe_approval_id(approval_id) {
+            return false;
+        }
         let Some(queued) = self.pending.get_mut(approval_id) else {
             return false;
         };
@@ -137,6 +149,9 @@ impl ApprovalQueue {
     }
 
     pub fn deny_with_secret(&mut self, approval_id: &str, local_approval_secret: &str) -> bool {
+        if !is_safe_approval_id(approval_id) {
+            return false;
+        }
         if !self.local_approval_secret_matches(approval_id, local_approval_secret) {
             return false;
         }
@@ -160,6 +175,9 @@ impl ApprovalQueue {
     }
 
     pub fn get(&self, approval_id: &str) -> Option<&QueuedApproval> {
+        if !is_safe_approval_id(approval_id) {
+            return None;
+        }
         self.pending.get(approval_id)
     }
 
@@ -168,6 +186,9 @@ impl ApprovalQueue {
         approval_id: &str,
         local_approval_secret: &str,
     ) -> bool {
+        if !is_safe_approval_id(approval_id) {
+            return false;
+        }
         let Some(queued) = self.pending.get_mut(approval_id) else {
             return false;
         };
@@ -180,6 +201,9 @@ impl ApprovalQueue {
         approval_id: &str,
         local_approval_secret: &str,
     ) -> bool {
+        if !is_safe_approval_id(approval_id) {
+            return false;
+        }
         let Some(queued) = self.pending.get(approval_id) else {
             return false;
         };
@@ -208,11 +232,16 @@ fn public_pending_response(local_review: &FileReadResponse, approval_id: &str) -
 }
 
 pub fn denied_approval_response(request_id: &str, approval_id: &str) -> FileReadResponse {
+    let path_display = if is_safe_approval_id(approval_id) {
+        approval_id.to_string()
+    } else {
+        "approval_request".to_string()
+    };
     FileReadResponse {
         request_id: request_id.to_string(),
-        approval_id: Some(approval_id.to_string()),
+        approval_id: Some(path_display.clone()),
         decision: "denied".to_string(),
-        path_display: approval_id.to_string(),
+        path_display,
         classification: Classification::L5,
         bytes_sent: 0,
         content_sha256: None,
@@ -222,6 +251,15 @@ pub fn denied_approval_response(request_id: &str, approval_id: &str) -> FileRead
         user_visible_message: Some("Approval was denied or no longer pending. Nothing was sent.".to_string()),
         content: None,
     }
+}
+
+pub fn is_safe_approval_id(value: &str) -> bool {
+    value.starts_with("appr_")
+        && value.len() <= 64
+        && value.len() >= "appr_".len() + 8
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
 }
 
 fn generate_local_approval_secret() -> String {

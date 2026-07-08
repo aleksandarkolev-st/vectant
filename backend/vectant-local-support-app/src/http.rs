@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
-use crate::approval::{denied_approval_response, ApprovalQueue};
+use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
@@ -238,6 +238,7 @@ async fn approve_request(
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
     require_local_control_secret(&state, &headers)?;
+    validate_approval_id(&approval_id)?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -270,6 +271,7 @@ async fn deny_request(
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
     require_local_control_secret(&state, &headers)?;
+    validate_approval_id(&approval_id)?;
     let token = bearer(&headers)?;
     {
         let mut session = state.session.lock().await;
@@ -505,6 +507,14 @@ fn local_approval_secret(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<
         .and_then(|value| value.to_str().ok())
         .filter(|value| value.len() >= 32 && value.len() <= 128)
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "local_user_approval_required"))
+}
+
+fn validate_approval_id(approval_id: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if is_safe_approval_id(approval_id) {
+        Ok(())
+    } else {
+        Err(denied(StatusCode::BAD_REQUEST, "invalid_approval_id"))
+    }
 }
 
 fn require_local_control_secret(

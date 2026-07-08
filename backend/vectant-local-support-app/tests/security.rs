@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
-use vectant_local_support_app::approval::{ApprovalQueue, ApprovalStatus};
+use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::desktop::{inspect_tauri_config, renderer_command_can_access_secret};
 use vectant_local_support_app::http::{
     validate_file_request_authorization, AppState, LocalAuthorizationError, LocalRequestAuthorization,
@@ -327,6 +327,25 @@ fn approval_queue_requires_local_secret_for_http_approval_paths() {
         .unwrap();
     assert!(approved.content.is_some());
     assert!(queue.get(&approval_id).is_none());
+}
+
+#[test]
+fn approval_queue_rejects_and_scrubs_malformed_approval_ids() {
+    let mut queue = ApprovalQueue::new();
+    let malicious_id = "sk-abcdefghijklmnopqrstuvwxyz123456";
+
+    assert!(queue.approve(malicious_id).is_none());
+    assert!(queue.approve_with_secret(malicious_id, "desktop-confirmation-secret").is_none());
+    assert!(!queue.deny(malicious_id));
+    assert!(!queue.deny_with_secret(malicious_id, "desktop-confirmation-secret"));
+    assert!(queue.get(malicious_id).is_none());
+
+    let denied = denied_approval_response("req_bad_approval", malicious_id);
+    let serialized = serde_json::to_string(&denied).unwrap();
+    assert_eq!(denied.path_display, "approval_request");
+    assert_eq!(denied.approval_id.as_deref(), Some("approval_request"));
+    assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert!(!serialized.contains("sk-"));
 }
 
 #[test]
