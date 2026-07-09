@@ -1,5 +1,5 @@
-pub mod audit;
 pub mod approval;
+pub mod audit;
 pub mod desktop;
 pub mod http;
 pub mod ipc;

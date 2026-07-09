@@ -133,19 +133,18 @@ impl DeviceIdentityStore {
     }
 
     pub fn load(&self) -> Result<DeviceIdentity, DeviceIdentityStoreError> {
-        let raw = fs::read_to_string(&self.path)
-            .map_err(|err| {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    DeviceIdentityStoreError::NotFound
-                } else {
-                    DeviceIdentityStoreError::Io
-                }
-            })?;
+        let raw = fs::read_to_string(&self.path).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                DeviceIdentityStoreError::NotFound
+            } else {
+                DeviceIdentityStoreError::Io
+            }
+        })?;
         if raw.len() > 4096 {
             return Err(DeviceIdentityStoreError::InvalidFormat);
         }
-        let stored: StoredDeviceIdentity = serde_json::from_str(&raw)
-            .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
+        let stored: StoredDeviceIdentity =
+            serde_json::from_str(&raw).map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
         if stored.version != 1 {
             return Err(DeviceIdentityStoreError::InvalidFormat);
         }
@@ -246,7 +245,11 @@ impl PairingSession {
         }
     }
 
-    pub fn verify(&mut self, submitted_code: &str, submitted_fingerprint: &str) -> Result<(), PairingError> {
+    pub fn verify(
+        &mut self,
+        submitted_code: &str,
+        submitted_fingerprint: &str,
+    ) -> Result<(), PairingError> {
         self.attempts = self.attempts.saturating_add(1);
         if self.attempts > 5 {
             return Err(PairingError::RateLimited);
@@ -260,7 +263,10 @@ impl PairingSession {
         if !valid_pairing_code(submitted_code)
             || !valid_pairing_fingerprint(submitted_fingerprint)
             || !constant_time_eq(submitted_code.as_bytes(), self.code.as_bytes())
-            || !constant_time_eq(submitted_fingerprint.as_bytes(), self.fingerprint.as_bytes())
+            || !constant_time_eq(
+                submitted_fingerprint.as_bytes(),
+                self.fingerprint.as_bytes(),
+            )
         {
             return Err(PairingError::Mismatch);
         }
@@ -334,7 +340,8 @@ fn write_private_identity_file(path: &Path, raw: &[u8]) -> Result<(), DeviceIden
         .mode(0o600)
         .open(path)
         .map_err(|_| DeviceIdentityStoreError::Io)?;
-    file.write_all(raw).map_err(|_| DeviceIdentityStoreError::Io)?;
+    file.write_all(raw)
+        .map_err(|_| DeviceIdentityStoreError::Io)?;
     file.sync_all().map_err(|_| DeviceIdentityStoreError::Io)
 }
 
@@ -349,7 +356,8 @@ fn write_private_identity_file(path: &Path, raw: &[u8]) -> Result<(), DeviceIden
         .write(true)
         .open(path)
         .map_err(|_| DeviceIdentityStoreError::Io)?;
-    file.write_all(raw).map_err(|_| DeviceIdentityStoreError::Io)?;
+    file.write_all(raw)
+        .map_err(|_| DeviceIdentityStoreError::Io)?;
     file.sync_all().map_err(|_| DeviceIdentityStoreError::Io)
 }
 

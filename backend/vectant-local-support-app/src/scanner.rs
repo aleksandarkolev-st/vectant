@@ -35,16 +35,28 @@ impl SecretScanner {
             ("github_token", r"gh[pousr]_[A-Za-z0-9_]{20,}"),
             ("openai_api_key", r"sk-[A-Za-z0-9_-]{20,}"),
             ("aws_access_key", r"AKIA[0-9A-Z]{16}"),
-            ("jwt", r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+            (
+                "jwt",
+                r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+            ),
             ("private_key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
             (
                 "database_url",
                 r#"(?i)\b(postgres|postgresql|mysql|mongodb|redis)://[^\s'"<>]+"#,
             ),
-            ("authorization_header", r"(?i)\bauthorization:\s*(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
-            ("cookie", r"(?i)\b(cookie|set-cookie):\s*[^\n\r;=]+=[^\n\r;]+"),
+            (
+                "authorization_header",
+                r"(?i)\bauthorization:\s*(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}",
+            ),
+            (
+                "cookie",
+                r"(?i)\b(cookie|set-cookie):\s*[^\n\r;=]+=[^\n\r;]+",
+            ),
             ("npm_token", r"npm_[A-Za-z0-9]{20,}"),
-            ("firebase_service_account", r#""type"\s*:\s*"service_account""#),
+            (
+                "firebase_service_account",
+                r#""type"\s*:\s*"service_account""#,
+            ),
         ];
         let patterns = specs
             .into_iter()

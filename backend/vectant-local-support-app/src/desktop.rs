@@ -92,7 +92,9 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
     }))
 }
 
-pub fn plan_desktop_ipc_action(request: &IpcRequest) -> Result<DesktopIpcActionPlan, DesktopIpcError> {
+pub fn plan_desktop_ipc_action(
+    request: &IpcRequest,
+) -> Result<DesktopIpcActionPlan, DesktopIpcError> {
     let decision = decide_ipc_request(request);
     if decision.decision != "allow" {
         return Err(DesktopIpcError::Denied(decision.reason));
@@ -109,20 +111,28 @@ pub fn plan_desktop_ipc_action(request: &IpcRequest) -> Result<DesktopIpcActionP
         },
         "session.pause" => control_plan(command, "POST", "/v1/session/pause/{request_id}", true),
         "session.resume" => control_plan(command, "POST", "/v1/session/resume/{request_id}", true),
-        "session.disconnect" => control_plan(command, "POST", "/v1/session/disconnect/{request_id}", true),
-        "approval.revoke_session" => control_plan(command, "POST", "/v1/approval/revoke-all/{request_id}", true),
+        "session.disconnect" => {
+            control_plan(command, "POST", "/v1/session/disconnect/{request_id}", true)
+        }
+        "approval.revoke_session" => control_plan(
+            command,
+            "POST",
+            "/v1/approval/revoke-all/{request_id}",
+            true,
+        ),
         "history.export" => control_plan(command, "GET", "/v1/history/export/{request_id}", true),
         "history.delete" => control_plan(command, "POST", "/v1/history/delete/{request_id}", true),
-        "workspace.pick" | "workspace.inventory" | "approval.file.review" | "approval.port.review" => {
-            DesktopIpcActionPlan {
-                command,
-                daemon_method: None,
-                daemon_path_template: None,
-                requires_local_control: true,
-                returns_sanitized_state: true,
-                user_visible: true,
-            }
-        }
+        "workspace.pick"
+        | "workspace.inventory"
+        | "approval.file.review"
+        | "approval.port.review" => DesktopIpcActionPlan {
+            command,
+            daemon_method: None,
+            daemon_path_template: None,
+            requires_local_control: true,
+            returns_sanitized_state: true,
+            user_visible: true,
+        },
         _ => return Err(DesktopIpcError::UnsupportedCommand),
     };
     Ok(plan)
@@ -168,9 +178,9 @@ pub fn inspect_tauri_config(config_json: &str) -> Result<DesktopSecurityReport, 
             .is_some_and(|endpoints| {
                 !endpoints.is_empty()
                     && endpoints.iter().all(|endpoint| {
-                        endpoint
-                            .as_str()
-                            .is_some_and(|url| url.starts_with("https://") && !url.contains("localhost"))
+                        endpoint.as_str().is_some_and(|url| {
+                            url.starts_with("https://") && !url.contains("localhost")
+                        })
                     })
             });
 
@@ -272,10 +282,7 @@ fn renderer_token_access_blocked(value: &Value) -> bool {
     let Some(commands) = value.pointer("/plugins").or(Some(value)) else {
         return true;
     };
-    !commands
-        .to_string()
-        .to_ascii_lowercase()
-        .contains("token")
+    !commands.to_string().to_ascii_lowercase().contains("token")
         && !commands
             .to_string()
             .to_ascii_lowercase()

@@ -61,8 +61,15 @@ pub struct WorkspacePolicy {
 }
 
 impl WorkspacePolicy {
-    pub fn new(root: impl AsRef<Path>, workspace_id: impl Into<String>, scanner: SecretScanner) -> Result<Self> {
-        let root = root.as_ref().canonicalize().context("workspace root must exist")?;
+    pub fn new(
+        root: impl AsRef<Path>,
+        workspace_id: impl Into<String>,
+        scanner: SecretScanner,
+    ) -> Result<Self> {
+        let root = root
+            .as_ref()
+            .canonicalize()
+            .context("workspace root must exist")?;
         if !root.is_dir() {
             return Err(anyhow!("workspace root must be a directory"));
         }
@@ -110,7 +117,9 @@ impl WorkspacePolicy {
         if request.workspace_id != self.workspace_id {
             return PolicyDecision::deny("workspace_mismatch", Classification::L5);
         }
-        if request.capability != "workspace.file.source.read" && request.capability != "workspace.log.read" {
+        if request.capability != "workspace.file.source.read"
+            && request.capability != "workspace.log.read"
+        {
             return PolicyDecision::deny("capability_not_allowed", Classification::L5);
         }
         if request.actor != "vectant_ai" && request.actor != "support_agent" {
@@ -179,7 +188,10 @@ impl WorkspacePolicy {
                         redactions: scan.findings.into_iter().map(|f| f.kind).collect(),
                         scanner_version: scan.scanner_version,
                         policy_version: crate::POLICY_VERSION.to_string(),
-                        user_visible_message: Some("Possible secrets were redacted locally. Review before sending.".to_string()),
+                        user_visible_message: Some(
+                            "Possible secrets were redacted locally. Review before sending."
+                                .to_string(),
+                        ),
                         content: Some(redacted),
                     };
                 }
@@ -195,7 +207,9 @@ impl WorkspacePolicy {
                     redactions: Vec::new(),
                     scanner_version: scan.scanner_version,
                     policy_version: crate::POLICY_VERSION.to_string(),
-                    user_visible_message: Some("No secrets detected. Review before sending.".to_string()),
+                    user_visible_message: Some(
+                        "No secrets detected. Review before sending.".to_string(),
+                    ),
                     content: Some(content),
                 }
             }
@@ -210,7 +224,9 @@ impl WorkspacePolicy {
                 redactions: Vec::new(),
                 scanner_version: crate::SCANNER_VERSION.to_string(),
                 policy_version: crate::POLICY_VERSION.to_string(),
-                user_visible_message: Some(format!("Blocked because the local app could not safely read this file: {error}")),
+                user_visible_message: Some(format!(
+                    "Blocked because the local app could not safely read this file: {error}"
+                )),
                 content: None,
             },
         }
@@ -307,7 +323,9 @@ pub fn resolve_relative(root: &Path, requested_path: &str) -> Result<PathBuf> {
         }
     }
     let joined = root.join(path);
-    let canonical = joined.canonicalize().context("target must exist inside workspace")?;
+    let canonical = joined
+        .canonicalize()
+        .context("target must exist inside workspace")?;
     if !is_within(root, &canonical) {
         return Err(anyhow!("canonical target escaped workspace"));
     }
@@ -424,18 +442,16 @@ fn is_archive_path(path: &str) -> bool {
 #[cfg(unix)]
 fn same_file_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev()
-        && a.ino() == b.ino()
-        && a.len() == b.len()
-        && same_modified_time(a, b)
+    a.dev() == b.dev() && a.ino() == b.ino() && a.len() == b.len() && same_modified_time(a, b)
 }
 
 #[cfg(windows)]
 fn same_file_identity(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    a.file_index() == b.file_index()
-        && a.volume_serial_number() == b.volume_serial_number()
-        && a.file_size() == b.file_size()
+    a.file_size() == b.file_size()
+        && a.creation_time() == b.creation_time()
+        && a.last_write_time() == b.last_write_time()
+        && a.file_attributes() == b.file_attributes()
         && same_modified_time(a, b)
 }
 

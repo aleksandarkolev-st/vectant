@@ -63,7 +63,11 @@ impl PolicyDecision {
         }
     }
 
-    pub fn approval(reason: impl Into<String>, classification: Classification, message: impl Into<String>) -> Self {
+    pub fn approval(
+        reason: impl Into<String>,
+        classification: Classification,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             decision: DecisionKind::ApprovalRequired,
             reason: reason.into(),

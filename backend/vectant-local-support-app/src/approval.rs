@@ -56,7 +56,9 @@ impl ApprovalQueue {
                 request,
                 local_review,
                 status: ApprovalStatus::Pending,
-                local_approval_secret_hash: hash_local_approval_secret(&generate_local_approval_secret()),
+                local_approval_secret_hash: hash_local_approval_secret(
+                    &generate_local_approval_secret(),
+                ),
             },
         );
         public_response
@@ -304,7 +306,9 @@ pub fn denied_approval_response(request_id: &str, approval_id: &str) -> FileRead
         redactions: Vec::new(),
         scanner_version: crate::SCANNER_VERSION.to_string(),
         policy_version: crate::POLICY_VERSION.to_string(),
-        user_visible_message: Some("Approval was denied or no longer pending. Nothing was sent.".to_string()),
+        user_visible_message: Some(
+            "Approval was denied or no longer pending. Nothing was sent.".to_string(),
+        ),
         content: None,
     }
 }

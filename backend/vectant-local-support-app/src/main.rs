@@ -17,7 +17,8 @@ async fn main() -> anyhow::Result<()> {
     let workspace_id = "wk_local";
     let scanner = SecretScanner::default();
     let policy = WorkspacePolicy::new(workspace, workspace_id, scanner)?;
-    let device_identity = DeviceIdentityStore::new(default_device_identity_path()?).load_or_create()?;
+    let device_identity =
+        DeviceIdentityStore::new(default_device_identity_path()?).load_or_create()?;
     let device_fingerprint = device_identity.public_identity().device_fingerprint;
     let session = SessionGuard::new_bound_device(
         "acct_local",
@@ -33,7 +34,11 @@ async fn main() -> anyhow::Result<()> {
     let addr = bind_loopback(state.clone()).await?;
     println!("Vectant Local Support listening on http://{addr}");
     #[cfg(debug_assertions)]
-    if std::env::var("VECTANT_LOCAL_SUPPORT_PRINT_DEV_TOKEN").ok().as_deref() == Some("1") {
+    if std::env::var("VECTANT_LOCAL_SUPPORT_PRINT_DEV_TOKEN")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         println!("Development pairing bearer token: {token}");
     }
     tokio::signal::ctrl_c().await?;
@@ -58,7 +63,9 @@ fn default_audit_path() -> anyhow::Result<PathBuf> {
             .join("vectant-local-support")
             .join("audit.json"));
     }
-    Ok(std::env::current_dir()?.join(".vectant-local-support").join("audit.json"))
+    Ok(std::env::current_dir()?
+        .join(".vectant-local-support")
+        .join("audit.json"))
 }
 
 fn default_device_identity_path() -> anyhow::Result<PathBuf> {

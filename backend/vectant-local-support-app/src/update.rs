@@ -94,7 +94,10 @@ pub fn signed_test_manifest(
         signature: String::new(),
     };
     manifest.signature = hex::encode(signing_key.sign(&manifest_payload(&manifest)).to_bytes());
-    (hex::encode(signing_key.verifying_key().to_bytes()), manifest)
+    (
+        hex::encode(signing_key.verifying_key().to_bytes()),
+        manifest,
+    )
 }
 
 fn manifest_payload(manifest: &UpdateManifest) -> Vec<u8> {
@@ -130,9 +133,9 @@ fn valid_version(value: &str) -> bool {
     !parts.is_empty()
         && parts.len() <= 4
         && value.len() <= 32
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.len() <= 8 && part.chars().all(|ch| ch.is_ascii_digit()))
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 8 && part.chars().all(|ch| ch.is_ascii_digit())
+        })
 }
 
 fn compare_versions(left: &str, right: &str) -> i8 {

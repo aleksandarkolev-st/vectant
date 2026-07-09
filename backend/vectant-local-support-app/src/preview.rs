@@ -91,7 +91,8 @@ impl PortApprovalRegistry {
         port: u16,
         process_identity: &str,
     ) -> PortApproval {
-        self.approve_browser_port_grant(session_id, port, process_identity).approval
+        self.approve_browser_port_grant(session_id, port, process_identity)
+            .approval
     }
 
     pub fn approve_browser_port_grant(
@@ -101,7 +102,8 @@ impl PortApprovalRegistry {
         process_identity: &str,
     ) -> PortApprovalGrant {
         let preview_token = generate_preview_token();
-        let mut approval = PortApproval::browser_only_with_token(port, process_identity, &preview_token);
+        let mut approval =
+            PortApproval::browser_only_with_token(port, process_identity, &preview_token);
         approval.session_id = session_id.into();
         self.approvals.insert(port, approval.clone());
         PortApprovalGrant {
@@ -230,7 +232,9 @@ pub fn decide_preview_request_with_token(
     let Some(method) = normalize_preview_method(method) else {
         return PreviewDecision::Deny("invalid_method_blocked".to_string());
     };
-    if !approval.state_changing_methods_allowed && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+    if !approval.state_changing_methods_allowed
+        && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
+    {
         return PreviewDecision::Deny("state_changing_method_blocked".to_string());
     }
     let header_list = headers
@@ -250,7 +254,9 @@ pub fn decide_preview_request_from_header_list(
     target_ip: IpAddr,
     headers: &[(&str, &str)],
 ) -> PreviewDecision {
-    decide_preview_request_from_header_list_with_token(approval, method, host, target_ip, headers, "")
+    decide_preview_request_from_header_list_with_token(
+        approval, method, host, target_ip, headers, "",
+    )
 }
 
 pub fn decide_preview_request_from_header_list_with_token(
@@ -279,7 +285,9 @@ pub fn decide_preview_request_from_header_list_with_token(
     let Some(method) = normalize_preview_method(method) else {
         return PreviewDecision::Deny("invalid_method_blocked".to_string());
     };
-    if !approval.state_changing_methods_allowed && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+    if !approval.state_changing_methods_allowed
+        && !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
+    {
         return PreviewDecision::Deny("state_changing_method_blocked".to_string());
     }
     if let Some(reason) = validate_preview_request_headers(headers) {
@@ -405,7 +413,8 @@ pub fn sanitize_response_header_list(headers: &[(&str, &str)]) -> HashMap<String
     sanitized.insert("X-Content-Type-Options".to_string(), "nosniff".to_string());
     sanitized.insert(
         "Permissions-Policy".to_string(),
-        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), serial=(), hid=()".to_string(),
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), serial=(), hid=()"
+            .to_string(),
     );
     sanitized
 }
@@ -607,9 +616,9 @@ fn host_has_forbidden_numeric_form(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
     lower.starts_with("0x")
         || lower.split('.').any(|part| part.starts_with("0x"))
-        || lower
-            .split('.')
-            .any(|part| part.len() > 1 && part.starts_with('0') && part.chars().all(|ch| ch.is_ascii_digit()))
+        || lower.split('.').any(|part| {
+            part.len() > 1 && part.starts_with('0') && part.chars().all(|ch| ch.is_ascii_digit())
+        })
         || (lower.chars().all(|ch| ch.is_ascii_digit()) && lower.len() > 3)
 }
 
@@ -656,7 +665,9 @@ fn percent_decode_ascii(value: &str) -> String {
     let mut index = 0usize;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2])) {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
                 decoded.push(char::from((high << 4) | low));
                 index += 3;
                 continue;

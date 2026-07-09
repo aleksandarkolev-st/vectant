@@ -161,7 +161,8 @@ impl AuditLog {
     pub fn export_incident_bundle(&self, retention_days: u16) -> AuditExport {
         let now = Utc::now();
         let (events, root_hash) = retained_event_chain(&self.events, retention_days, now);
-        let consent_receipts = retained_consent_receipts(&self.consent_receipts, retention_days, now);
+        let consent_receipts =
+            retained_consent_receipts(&self.consent_receipts, retention_days, now);
         AuditExport {
             export_version: AUDIT_EXPORT_VERSION.to_string(),
             exported_at: now,
@@ -173,7 +174,10 @@ impl AuditLog {
         }
     }
 
-    pub fn from_verified_export(scanner: SecretScanner, export: AuditExport) -> Result<Self, AuditStoreError> {
+    pub fn from_verified_export(
+        scanner: SecretScanner,
+        export: AuditExport,
+    ) -> Result<Self, AuditStoreError> {
         if !export.verify_hash_chain() {
             return Err(AuditStoreError::HashChainInvalid);
         }

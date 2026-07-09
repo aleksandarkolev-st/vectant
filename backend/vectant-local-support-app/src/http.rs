@@ -16,13 +16,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
+use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
-    preview_path_allowed, sanitize_response_headers, validate_preview_response_size,
+    preview_path_allowed, sanitize_response_headers, validate_preview_response_size, PortApproval,
     PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard,
-    PortApproval,
 };
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
@@ -116,7 +115,9 @@ impl AppState {
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
-            local_control_secret_hash: Arc::new(hash_local_control_secret(&generate_local_control_secret())),
+            local_control_secret_hash: Arc::new(hash_local_control_secret(
+                &generate_local_control_secret(),
+            )),
         }
     }
 
@@ -140,7 +141,9 @@ impl AppState {
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
-            local_control_secret_hash: Arc::new(hash_local_control_secret(&generate_local_control_secret())),
+            local_control_secret_hash: Arc::new(hash_local_control_secret(
+                &generate_local_control_secret(),
+            )),
         }
     }
 
@@ -199,10 +202,22 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/file/review", post(review_file))
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
-        .route("/v1/session/disconnect/:request_id", post(disconnect_session))
-        .route("/v1/approval/approve/:approval_id/:request_id", post(approve_request))
-        .route("/v1/approval/deny/:approval_id/:request_id", post(deny_request))
-        .route("/v1/approval/revoke-all/:request_id", post(revoke_all_approvals))
+        .route(
+            "/v1/session/disconnect/:request_id",
+            post(disconnect_session),
+        )
+        .route(
+            "/v1/approval/approve/:approval_id/:request_id",
+            post(approve_request),
+        )
+        .route(
+            "/v1/approval/deny/:approval_id/:request_id",
+            post(deny_request),
+        )
+        .route(
+            "/v1/approval/revoke-all/:request_id",
+            post(revoke_all_approvals),
+        )
         .route("/v1/port/approve", post(approve_port))
         .route("/v1/port/revoke/:port/:request_id", post(revoke_port))
         .route("/v1/preview/:port/*path", any(preview_gateway))
@@ -231,7 +246,11 @@ pub async fn shutdown_cleanup(state: &AppState, request_id: &str) -> anyhow::Res
         session_id
     };
     state.approvals.lock().await.revoke_all();
-    state.port_approvals.lock().await.disconnect_session(&session_id);
+    state
+        .port_approvals
+        .lock()
+        .await
+        .disconnect_session(&session_id);
     state.preview_traffic.lock().await.clear_all();
     let mut audit = state.audit.lock().await;
     audit.append(
@@ -418,10 +437,7 @@ async fn deny_request(
     }
     let denied_pending = {
         let mut approvals = state.approvals.lock().await;
-        approvals.deny_with_secret(
-            &approval_id,
-            local_approval_secret(&headers)?,
-        )
+        approvals.deny_with_secret(&approval_id, local_approval_secret(&headers)?)
     };
     let mut audit = state.audit.lock().await;
     audit.append(
@@ -542,7 +558,12 @@ async fn revoke_port(
             .validate_control(token, &request_id)
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     }
-    let revoked = state.port_approvals.lock().await.revoke_port(port).is_some();
+    let revoked = state
+        .port_approvals
+        .lock()
+        .await
+        .revoke_port(port)
+        .is_some();
     state.preview_traffic.lock().await.clear_all();
     let mut audit = state.audit.lock().await;
     audit.append(
@@ -613,15 +634,25 @@ async fn preview_gateway(
         let mut traffic = state.preview_traffic.lock().await;
         let now = Utc::now().timestamp().try_into().unwrap_or_default();
         if !traffic.allow_request_at(&approval.preview_host, now) {
-            return Err(denied(StatusCode::TOO_MANY_REQUESTS, "preview_rate_limit_exceeded"));
+            return Err(denied(
+                StatusCode::TOO_MANY_REQUESTS,
+                "preview_rate_limit_exceeded",
+            ));
         }
         if !traffic.begin_stream(&approval.preview_host) {
-            return Err(denied(StatusCode::TOO_MANY_REQUESTS, "preview_stream_limit_exceeded"));
+            return Err(denied(
+                StatusCode::TOO_MANY_REQUESTS,
+                "preview_stream_limit_exceeded",
+            ));
         }
     }
     let target_url = preview_target_url(port, &preview_path, query.target_query.as_deref())?;
     let result = fetch_preview_response(&method, &target_url, &approval, &preview_path).await;
-    state.preview_traffic.lock().await.end_stream(&approval.preview_host);
+    state
+        .preview_traffic
+        .lock()
+        .await
+        .end_stream(&approval.preview_host);
     result
 }
 
@@ -723,7 +754,10 @@ fn validate_preview_query(
                 .chars()
                 .any(|ch| ch.is_control() || matches!(ch, '#' | '\\'))
         {
-            return Err(denied(StatusCode::BAD_REQUEST, "invalid_preview_target_query"));
+            return Err(denied(
+                StatusCode::BAD_REQUEST,
+                "invalid_preview_target_query",
+            ));
         }
     }
     Ok(())
@@ -739,7 +773,9 @@ fn preview_host_from_headers(
         .unwrap_or("");
     if host.len() > 160
         || !host.ends_with(".vectant-preview.dev")
-        || host.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | '@'))
+        || host
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | '@'))
     {
         return Err(denied(StatusCode::FORBIDDEN, "preview_host_invalid"));
     }
@@ -853,7 +889,11 @@ async fn control_session(
             let session_id = session.session_id().to_string();
             session.disconnect();
             state.approvals.lock().await.revoke_all();
-            state.port_approvals.lock().await.disconnect_session(&session_id);
+            state
+                .port_approvals
+                .lock()
+                .await
+                .disconnect_session(&session_id);
             state.preview_traffic.lock().await.clear_all();
         }
     }
@@ -861,7 +901,9 @@ async fn control_session(
     drop(session);
     let summary = match action {
         SessionAction::Resume => "Session resumed by local user.",
-        SessionAction::Disconnect => "Session disconnected by local user. Approvals and ports must be revoked.",
+        SessionAction::Disconnect => {
+            "Session disconnected by local user. Approvals and ports must be revoked."
+        }
     };
     let mut audit = state.audit.lock().await;
     audit.append(AuditClass::Control, Some(request_id), summary, true);
@@ -917,7 +959,7 @@ async fn delete_history(
     audit.clear();
     audit.append(
         AuditClass::Control,
-        Some(request_id),
+        Some(request_id.clone()),
         "Local support history deleted according to retention policy.",
         true,
     );
@@ -935,9 +977,12 @@ fn persist_audit(
     audit: &AuditLog,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if let Some(store) = &state.audit_store {
-        store
-            .persist(audit)
-            .map_err(|_| denied(StatusCode::INTERNAL_SERVER_ERROR, "audit_store_persist_failed"))?;
+        store.persist(audit).map_err(|_| {
+            denied(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "audit_store_persist_failed",
+            )
+        })?;
     }
     Ok(())
 }
@@ -991,7 +1036,9 @@ fn bearer(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Val
     }
 }
 
-fn local_approval_secret(headers: &HeaderMap) -> Result<&str, (StatusCode, Json<serde_json::Value>)> {
+fn local_approval_secret(
+    headers: &HeaderMap,
+) -> Result<&str, (StatusCode, Json<serde_json::Value>)> {
     headers
         .get("x-vectant-local-approval-secret")
         .and_then(|value| value.to_str().ok())
@@ -1025,9 +1072,7 @@ fn validate_port_approval_request(
     Ok(())
 }
 
-fn validate_safe_request_id(
-    request_id: &str,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_safe_request_id(request_id: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if safe_authorization_field(request_id, 3, 128) {
         Ok(())
     } else {
@@ -1036,9 +1081,7 @@ fn validate_safe_request_id(
 }
 
 fn is_safe_process_identity(value: &str) -> bool {
-    !value.trim().is_empty()
-        && value.len() <= 256
-        && !value.chars().any(|ch| ch.is_control())
+    !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(|ch| ch.is_control())
 }
 
 fn scrub_for_audit(value: &str) -> String {
@@ -1101,7 +1144,9 @@ pub struct LocalRequestAuthorization {
 }
 
 impl LocalRequestAuthorization {
-    pub fn from_headers(headers: &HeaderMap) -> Result<Self, (StatusCode, Json<serde_json::Value>)> {
+    pub fn from_headers(
+        headers: &HeaderMap,
+    ) -> Result<Self, (StatusCode, Json<serde_json::Value>)> {
         let app_version = required_header(headers, "x-vectant-app-version")?;
         if !is_semver_like(app_version) {
             return Err(invalid_header("x-vectant-app-version"));
@@ -1188,7 +1233,9 @@ pub fn validate_file_request_authorization(
     if request.org_id != session.org_id() {
         return Err(LocalAuthorizationError::OrgMismatch);
     }
-    if request.workspace_id != session.workspace_id() || request.workspace_id != workspace.workspace_id() {
+    if request.workspace_id != session.workspace_id()
+        || request.workspace_id != workspace.workspace_id()
+    {
         return Err(LocalAuthorizationError::WorkspaceMismatch);
     }
     if request.device_fingerprint != auth.device_fingerprint {
@@ -1260,9 +1307,7 @@ fn safe_authorization_field(value: &str, min_len: usize, max_len: usize) -> bool
         && value.len() <= max_len
         && value
             .chars()
-            .all(|ch| {
-                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '+')
-            })
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '+'))
 }
 
 fn is_sha256_hex(value: &str, hex_len: usize) -> bool {
@@ -1292,9 +1337,9 @@ fn is_semver_like(value: &str) -> bool {
     !parts.is_empty()
         && parts.len() <= 4
         && value.len() <= 32
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.len() <= 8 && part.chars().all(|ch| ch.is_ascii_digit()))
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 8 && part.chars().all(|ch| ch.is_ascii_digit())
+        })
 }
 
 fn compare_versions(left: &str, right: &str) -> i8 {

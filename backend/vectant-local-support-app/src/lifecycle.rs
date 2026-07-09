@@ -71,5 +71,10 @@ pub fn uninstall_cleanup(
     preview_traffic: &mut PreviewTrafficGuard,
     pending_approvals: &mut PendingApprovalQueue,
 ) -> LifecycleCleanupReport {
-    disconnect_cleanup(session, preview_approvals, preview_traffic, pending_approvals)
+    disconnect_cleanup(
+        session,
+        preview_approvals,
+        preview_traffic,
+        pending_approvals,
+    )
 }

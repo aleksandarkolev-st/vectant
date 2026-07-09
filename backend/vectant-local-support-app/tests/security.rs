@@ -7,16 +7,19 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use tempfile::tempdir;
-use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
-use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
+use vectant_local_support_app::approval::{
+    denied_approval_response, ApprovalQueue, ApprovalStatus,
+};
+use vectant_local_support_app::audit::{
+    AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore,
+};
 use vectant_local_support_app::desktop::{
     build_desktop_status_state, inspect_tauri_config, plan_desktop_ipc_action,
     renderer_command_can_access_secret, sanitize_desktop_ipc_state, DesktopIpcError,
 };
 use vectant_local_support_app::http::{
     bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
-    LocalAuthorizationError,
-    LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
+    LocalAuthorizationError, LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
 };
 use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
 use vectant_local_support_app::lifecycle::{
@@ -26,16 +29,16 @@ use vectant_local_support_app::pair::{
     verify_pairing_proof, DeviceIdentity, DeviceIdentityStore, DeviceIdentityStoreError,
     PairingError, PairingSession,
 };
+use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::preview::{
     classify_preview_redirect, decide_preview_request, decide_preview_request_from_header_list,
     decide_preview_request_from_header_list_with_token, decide_preview_request_with_token,
-    redirect_allowed, port_identity_matches, preview_path_allowed, preview_token_matches,
+    port_identity_matches, preview_path_allowed, preview_token_matches, redirect_allowed,
     sanitize_response_header_list, sanitize_response_headers, validate_preview_response_size,
-    PortApproval, PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard,
-    MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST, MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST,
-    MAX_PREVIEW_RESPONSE_BYTES,
+    PortApproval, PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision,
+    PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
+    MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
 };
-use vectant_local_support_app::policy::Classification;
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::{SessionError, SessionGuard};
 use vectant_local_support_app::update::{
@@ -118,14 +121,13 @@ fn http_headers(
         "x-vectant-csrf",
         "csrf_123456789012345678901234567890".parse().unwrap(),
     );
-    headers.insert(
-        "authorization",
-        format!("Bearer {token}").parse().unwrap(),
-    );
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
     headers.insert("x-vectant-app-version", "0.1.0".parse().unwrap());
     headers.insert(
         "x-vectant-protocol-version",
-        vectant_local_support_app::APP_PROTOCOL_VERSION.parse().unwrap(),
+        vectant_local_support_app::APP_PROTOCOL_VERSION
+            .parse()
+            .unwrap(),
     );
     headers.insert(
         "x-vectant-policy-version",
@@ -163,10 +165,7 @@ fn http_control_headers(token: &str, control_secret: &str) -> reqwest::header::H
         "x-vectant-csrf",
         "csrf_123456789012345678901234567890".parse().unwrap(),
     );
-    headers.insert(
-        "authorization",
-        format!("Bearer {token}").parse().unwrap(),
-    );
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
     headers.insert(
         "x-vectant-local-control-secret",
         control_secret.parse().unwrap(),
@@ -182,10 +181,7 @@ fn http_preview_headers(token: &str, preview_host: &str) -> reqwest::header::Hea
         "x-vectant-csrf",
         "csrf_123456789012345678901234567890".parse().unwrap(),
     );
-    headers.insert(
-        "authorization",
-        format!("Bearer {token}").parse().unwrap(),
-    );
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
     headers.insert("x-vectant-preview-host", preview_host.parse().unwrap());
     headers
 }
@@ -229,7 +225,9 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     req.capability = "workspace.log.read".to_string();
     req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
 
-    let mut bad_headers = http_headers(&token, &req, &shared_state.session.lock().await);
+    let session_guard = shared_state.session.lock().await;
+    let mut bad_headers = http_headers(&token, &req, &session_guard);
+    drop(session_guard);
     bad_headers.insert("origin", "https://evil.example".parse().unwrap());
     let bad_origin = client
         .post(format!("http://{addr}/v1/file/review"))
@@ -245,11 +243,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
 
     let queued = client
         .post(format!("http://{addr}/v1/file/review"))
-        .headers(http_headers(
-            &token,
-            &req,
-            &shared_state.session.lock().await,
-        ))
+        .headers({
+            let session_guard = shared_state.session.lock().await;
+            http_headers(&token, &req, &session_guard)
+        })
         .json(&req)
         .send()
         .await
@@ -267,11 +264,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     revoke_req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
     let queued_for_revoke = client
         .post(format!("http://{addr}/v1/file/review"))
-        .headers(http_headers(
-            &token,
-            &revoke_req,
-            &shared_state.session.lock().await,
-        ))
+        .headers({
+            let session_guard = shared_state.session.lock().await;
+            http_headers(&token, &revoke_req, &session_guard)
+        })
         .json(&revoke_req)
         .send()
         .await
@@ -303,11 +299,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     approve_req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
     let queued_after_revoke = client
         .post(format!("http://{addr}/v1/file/review"))
-        .headers(http_headers(
-            &token,
-            &approve_req,
-            &shared_state.session.lock().await,
-        ))
+        .headers({
+            let session_guard = shared_state.session.lock().await;
+            http_headers(&token, &approve_req, &session_guard)
+        })
         .json(&approve_req)
         .send()
         .await
@@ -315,7 +310,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert_eq!(queued_after_revoke.status(), StatusCode::OK);
     let queued_after_revoke_body: serde_json::Value = queued_after_revoke.json().await.unwrap();
     assert_eq!(queued_after_revoke_body["decision"], "approval_queued");
-    let approval_id = queued_after_revoke_body["approval_id"].as_str().unwrap().to_string();
+    let approval_id = queued_after_revoke_body["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let approval_without_local_secret = client
         .post(format!(
@@ -328,7 +326,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
         .send()
         .await
         .unwrap();
-    assert_eq!(approval_without_local_secret.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        approval_without_local_secret.status(),
+        StatusCode::FORBIDDEN
+    );
     let missing_secret_body: serde_json::Value =
         approval_without_local_secret.json().await.unwrap();
     assert_eq!(missing_secret_body["decision"], "denied");
@@ -346,9 +347,7 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
         http_control_headers(&token, "desktop_control_secret_123456789012345");
     approve_headers.insert(
         "x-vectant-local-approval-secret",
-        "desktop_approval_secret_123456789012345"
-            .parse()
-            .unwrap(),
+        "desktop_approval_secret_123456789012345".parse().unwrap(),
     );
     let approved = client
         .post(format!(
@@ -399,7 +398,9 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
         .contains("preview_token_hash"));
 
     let status_after_port = client
-        .get(format!("http://{addr}/v1/status/req_http_status_after_port"))
+        .get(format!(
+            "http://{addr}/v1/status/req_http_status_after_port"
+        ))
         .headers(http_control_headers(
             &token,
             "desktop_control_secret_123456789012345",
@@ -421,20 +422,29 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     let target_addr = target_listener.local_addr().unwrap();
     tokio::spawn(async move {
         let app = Router::new()
-            .route("/ok", get(|| async {
-                let mut headers = HeaderMap::new();
-                headers.insert("set-cookie", HeaderValue::from_static("local_preview=secret"));
-                headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
-                (headers, "local preview body").into_response()
-            }))
-            .route("/redirect-private", get(|| async {
-                let mut headers = HeaderMap::new();
-                headers.insert(
-                    "location",
-                    HeaderValue::from_static("http://169.254.169.254/latest/meta-data/"),
-                );
-                (StatusCode::FOUND, headers, "").into_response()
-            }));
+            .route(
+                "/ok",
+                get(|| async {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        "set-cookie",
+                        HeaderValue::from_static("local_preview=secret"),
+                    );
+                    headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+                    (headers, "local preview body").into_response()
+                }),
+            )
+            .route(
+                "/redirect-private",
+                get(|| async {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        "location",
+                        HeaderValue::from_static("http://169.254.169.254/latest/meta-data/"),
+                    );
+                    (StatusCode::FOUND, headers, "").into_response()
+                }),
+            );
         let _ = axum::serve(target_listener, app).await;
     });
     let preview_grant = {
@@ -458,7 +468,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert_eq!(preview_ok.status(), StatusCode::OK);
     assert!(preview_ok.headers().get("set-cookie").is_none());
     assert!(preview_ok.headers().get("x-frame-options").is_none());
-    assert!(preview_ok.headers().get("content-security-policy").is_some());
+    assert!(preview_ok
+        .headers()
+        .get("content-security-policy")
+        .is_some());
     let preview_body = preview_ok.text().await.unwrap();
     assert_eq!(preview_body, "local preview body");
 
@@ -531,7 +544,11 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
             .port_approvals
             .lock()
             .await
-            .approval_for(port_body["session_id"].as_str().unwrap(), 5173, "vite:5173:pid123")
+            .approval_for(
+                port_body["session_id"].as_str().unwrap(),
+                5173,
+                "vite:5173:pid123"
+            )
             .is_none(),
         true
     );
@@ -561,13 +578,15 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert_eq!(paused_body["session"]["paused"], true);
 
     let audit = shared_state.audit.lock().await;
-    assert!(audit.events().iter().any(|event| event
-        .summary
-        .contains("bytes prepared for local review")));
+    assert!(audit
+        .events()
+        .iter()
+        .any(|event| event.summary.contains("bytes prepared for local review")));
     assert_eq!(audit.consent_receipts().len(), 1);
-    assert!(audit.events().iter().any(|event| event
-        .summary
-        .contains("Browser-only preview approved")));
+    assert!(audit
+        .events()
+        .iter()
+        .any(|event| event.summary.contains("Browser-only preview approved")));
     assert!(audit.events().iter().any(|event| event
         .summary
         .contains("Port approval for 127.0.0.1:5173 revoked locally")));
@@ -615,7 +634,9 @@ async fn app_shutdown_revokes_session_approvals_ports_and_preview_traffic() {
         .begin_stream(&grant.approval.preview_host));
     assert_eq!(state.approvals.lock().await.pending_len(), 1);
 
-    shutdown_cleanup(&state, "req_shutdown_cleanup").await.unwrap();
+    shutdown_cleanup(&state, "req_shutdown_cleanup")
+        .await
+        .unwrap();
 
     assert_eq!(state.approvals.lock().await.pending_len(), 0);
     assert!(state
@@ -639,8 +660,7 @@ async fn app_shutdown_revokes_session_approvals_ports_and_preview_traffic() {
     );
     drop(session);
     assert!(state.audit.lock().await.events().iter().any(|event| {
-        event.summary.contains("Local app shutdown disconnected")
-            && event.user_visible
+        event.summary.contains("Local app shutdown disconnected") && event.user_visible
     }));
 }
 
@@ -676,7 +696,9 @@ async fn history_delete_persists_scrubbed_deletion_marker_and_removes_prior_even
     let client = reqwest::Client::new();
 
     let delete = client
-        .post(format!("http://{addr}/v1/history/delete/req_http_history_delete"))
+        .post(format!(
+            "http://{addr}/v1/history/delete/req_http_history_delete"
+        ))
         .headers(http_control_headers(
             &token,
             "desktop_control_secret_123456789012345",
@@ -711,7 +733,8 @@ async fn history_delete_persists_scrubbed_deletion_marker_and_removes_prior_even
 async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payload() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
-    let policy = WorkspacePolicy::new(dir.path(), "wk_desktop_state", SecretScanner::default()).unwrap();
+    let policy =
+        WorkspacePolicy::new(dir.path(), "wk_desktop_state", SecretScanner::default()).unwrap();
     let session = SessionGuard::new_bound_device(
         "acct_desktop",
         "org_desktop",
@@ -751,7 +774,10 @@ async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payl
 
     assert_eq!(desktop_state["connected"], true);
     assert_eq!(desktop_state["session"]["account_id"], "acct_desktop");
-    assert_eq!(desktop_state["workspace"]["workspace_id"], "wk_desktop_state");
+    assert_eq!(
+        desktop_state["workspace"]["workspace_id"],
+        "wk_desktop_state"
+    );
     assert_eq!(desktop_state["approvals"]["pending_count"], 1);
     assert_eq!(desktop_state["approvals"]["content_included"], false);
     assert_eq!(desktop_state["ports"][0]["port"], 5173);
@@ -765,7 +791,11 @@ async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payl
 fn blocks_traversal_and_secret_files() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
-    fs::write(dir.path().join(".env"), "OPENAI_API_KEY=sk-testsecret000000000000000\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        "OPENAI_API_KEY=sk-testsecret000000000000000\n",
+    )
+    .unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
 
     let traversal = policy.read_file_for_review(&request("../.ssh/id_ed25519"));
@@ -792,7 +822,10 @@ fn blocks_device_unc_named_pipe_and_drive_paths() {
         r"C:\Users\alex\.aws\credentials",
         "C:relative-drive-path.txt",
     ] {
-        assert!(resolve_relative(policy.root(), path).is_err(), "path should be blocked: {path}");
+        assert!(
+            resolve_relative(policy.root(), path).is_err(),
+            "path should be blocked: {path}"
+        );
         let response = policy.read_file_for_review(&request(path));
         assert_eq!(response.decision, "denied");
         assert_eq!(response.bytes_sent, 0);
@@ -823,9 +856,18 @@ fn blocks_symlink_escape_from_workspace() {
 
     let workspace = tempdir().unwrap();
     let outside = tempdir().unwrap();
-    fs::write(outside.path().join("credentials"), "aws_access_key_id = AKIA1234567890ABCDEF\n").unwrap();
-    symlink(outside.path().join("credentials"), workspace.path().join("linked-credentials")).unwrap();
-    let policy = WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
+    fs::write(
+        outside.path().join("credentials"),
+        "aws_access_key_id = AKIA1234567890ABCDEF\n",
+    )
+    .unwrap();
+    symlink(
+        outside.path().join("credentials"),
+        workspace.path().join("linked-credentials"),
+    )
+    .unwrap();
+    let policy =
+        WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
 
     let response = policy.read_file_for_review(&request("linked-credentials"));
     assert_eq!(response.decision, "denied");
@@ -841,7 +883,11 @@ fn blocks_junction_escape_from_workspace() {
 
     let workspace = tempdir().unwrap();
     let outside = tempdir().unwrap();
-    fs::write(outside.path().join("credentials.txt"), "aws_access_key_id = AKIA1234567890ABCDEF\n").unwrap();
+    fs::write(
+        outside.path().join("credentials.txt"),
+        "aws_access_key_id = AKIA1234567890ABCDEF\n",
+    )
+    .unwrap();
     let link = workspace.path().join("outside-link");
     let status = Command::new("cmd")
         .args(["/C", "mklink", "/J"])
@@ -849,9 +895,13 @@ fn blocks_junction_escape_from_workspace() {
         .arg(outside.path())
         .status()
         .unwrap();
-    assert!(status.success(), "mklink /J should create a junction for the escape test");
+    assert!(
+        status.success(),
+        "mklink /J should create a junction for the escape test"
+    );
 
-    let policy = WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
+    let policy =
+        WorkspacePolicy::new(workspace.path(), "wk_123", SecretScanner::default()).unwrap();
     let response = policy.read_file_for_review(&request("outside-link/credentials.txt"));
     assert_eq!(response.decision, "denied");
     assert_eq!(response.bytes_sent, 0);
@@ -891,22 +941,23 @@ fn file_response_display_paths_are_scrubbed() {
     .unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
 
-    let decision = policy.decide_file(&request(secret_name));
-    assert!(decision
-        .user_message
-        .contains("[REDACTED:openai_api_key]"));
-    assert!(!decision
-        .user_message
-        .contains("abcdefghijklmnopqrstuvwxyz"));
+    let mut scrubbed_path_request = request(secret_name);
+    scrubbed_path_request.request_id = "req_secret_named_file".to_string();
+    let decision = policy.decide_file(&scrubbed_path_request);
+    let message = &decision.required_approval.as_ref().unwrap().message;
+    assert!(message.contains("[REDACTED:openai_api_key]"));
+    assert!(!message.contains("abcdefghijklmnopqrstuvwxyz"));
 
-    let response = policy.read_file_for_review(&request(secret_name));
+    let response = policy.read_file_for_review(&scrubbed_path_request);
     assert_eq!(response.decision, "approval_required");
     assert!(response.path_display.contains("[REDACTED:openai_api_key]"));
     assert!(!serde_json::to_string(&response)
         .unwrap()
         .contains("abcdefghijklmnopqrstuvwxyz"));
 
-    let denied = policy.read_file_for_review(&request(".env.sk-abcdefghijklmnopqrstuvwxyz123456"));
+    let mut denied_request = request(".env.sk-abcdefghijklmnopqrstuvwxyz123456");
+    denied_request.request_id = "req_secret_env_file".to_string();
+    let denied = policy.read_file_for_review(&denied_request);
     assert_eq!(denied.decision, "denied");
     assert!(denied.path_display.contains("[REDACTED:openai_api_key]"));
     assert!(!serde_json::to_string(&denied)
@@ -917,7 +968,11 @@ fn file_response_display_paths_are_scrubbed() {
 #[test]
 fn approval_queue_keeps_review_content_local_until_approval() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("server.log"), "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\n").unwrap();
+    fs::write(
+        dir.path().join("server.log"),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\n",
+    )
+    .unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
     let mut req = request("server.log");
     req.capability = "workspace.log.read".to_string();
@@ -936,11 +991,17 @@ fn approval_queue_keeps_review_content_local_until_approval() {
     assert_eq!(public.bytes_sent, 0);
     assert!(public.content.is_none());
     assert_eq!(queue.pending_len(), 1);
-    assert_eq!(queue.get(&approval_id).unwrap().status, ApprovalStatus::Pending);
+    assert_eq!(
+        queue.get(&approval_id).unwrap().status,
+        ApprovalStatus::Pending
+    );
 
     let (approved, receipt) = queue.approve(&approval_id).unwrap();
     assert_eq!(approved.approval_id.as_deref(), Some(approval_id.as_str()));
-    assert!(approved.content.unwrap().contains("[REDACTED:authorization_header]"));
+    assert!(approved
+        .content
+        .unwrap()
+        .contains("[REDACTED:authorization_header]"));
     assert_eq!(receipt.approval_id, approval_id);
     assert_eq!(receipt.request_id, req.request_id);
     assert_eq!(receipt.session_id, "sess_queue");
@@ -974,7 +1035,8 @@ fn approval_queue_deny_and_revoke_invalidate_queued_content() {
 
     let mut second_req = request("app.rs");
     second_req.request_id = "req_second".to_string();
-    let second_public = queue.queue_file_review(second_req.clone(), policy.read_file_for_review(&second_req));
+    let second_public =
+        queue.queue_file_review(second_req.clone(), policy.read_file_for_review(&second_req));
     let second_approval_id = second_public.approval_id.clone().unwrap();
     queue.revoke_all();
     let revoked = queue.get(&second_approval_id).unwrap();
@@ -1000,10 +1062,15 @@ fn approval_queue_requires_local_secret_for_http_approval_paths() {
         .unwrap()
         .contains("local_approval_secret"));
 
-    assert!(queue.approve_with_secret(&approval_id, "wrong-secret").is_none());
+    assert!(queue
+        .approve_with_secret(&approval_id, "wrong-secret")
+        .is_none());
     assert_eq!(queue.pending_len(), 1);
     assert!(!queue.deny_with_secret(&approval_id, "wrong-secret"));
-    assert_eq!(queue.get(&approval_id).unwrap().status, ApprovalStatus::Pending);
+    assert_eq!(
+        queue.get(&approval_id).unwrap().status,
+        ApprovalStatus::Pending
+    );
 
     assert!(queue.set_local_approval_secret_for_test(&approval_id, "desktop-confirmation-secret"));
     let (approved, _) = queue
@@ -1019,7 +1086,9 @@ fn approval_queue_rejects_and_scrubs_malformed_approval_ids() {
     let malicious_id = "sk-abcdefghijklmnopqrstuvwxyz123456";
 
     assert!(queue.approve(malicious_id).is_none());
-    assert!(queue.approve_with_secret(malicious_id, "desktop-confirmation-secret").is_none());
+    assert!(queue
+        .approve_with_secret(malicious_id, "desktop-confirmation-secret")
+        .is_none());
     assert!(!queue.deny(malicious_id));
     assert!(!queue.deny_with_secret(malicious_id, "desktop-confirmation-secret"));
     assert!(queue.get(malicious_id).is_none());
@@ -1066,10 +1135,8 @@ fn approval_queue_revalidates_expiry_before_releasing_content() {
     let mut valid_req = request("server.log");
     valid_req.request_id = "req_valid_expiry".to_string();
     valid_req.expires_at = "2026-07-05T12:01:00Z".to_string();
-    let valid_public = queue.queue_file_review(
-        valid_req.clone(),
-        policy.read_file_for_review(&valid_req),
-    );
+    let valid_public =
+        queue.queue_file_review(valid_req.clone(), policy.read_file_for_review(&valid_req));
     let valid_id = valid_public.approval_id.unwrap();
     let (approved, _) = queue.approve_at(&valid_id, now).unwrap();
     assert!(approved.content.is_some());
@@ -1102,14 +1169,15 @@ fn approval_queue_revalidates_file_hash_before_releasing_content() {
             now.clone(),
         )
         .unwrap();
-    assert!(approved.content.unwrap().contains("first safe local log line"));
+    assert!(approved
+        .content
+        .unwrap()
+        .contains("first safe local log line"));
 
     let second_public = queue.queue_file_review(req.clone(), policy.read_file_for_review(&req));
     let second_approval_id = second_public.approval_id.unwrap();
-    assert!(queue.set_local_approval_secret_for_test(
-        &second_approval_id,
-        "desktop-confirmation-secret",
-    ));
+    assert!(queue
+        .set_local_approval_secret_for_test(&second_approval_id, "desktop-confirmation-secret",));
     fs::write(&path, "changed local log line after review\n").unwrap();
     let changed_review = policy.read_file_for_review(&req);
     assert!(queue
@@ -1287,7 +1355,11 @@ fn scanner_redacts_required_secret_fixtures() {
     .join("\n");
 
     let report = scanner.scan(&content);
-    let kinds: Vec<_> = report.findings.iter().map(|finding| finding.kind.as_str()).collect();
+    let kinds: Vec<_> = report
+        .findings
+        .iter()
+        .map(|finding| finding.kind.as_str())
+        .collect();
     for expected in [
         "github_token",
         "openai_api_key",
@@ -1300,7 +1372,10 @@ fn scanner_redacts_required_secret_fixtures() {
         "npm_token",
         "firebase_service_account",
     ] {
-        assert!(kinds.contains(&expected), "missing scanner fixture {expected}");
+        assert!(
+            kinds.contains(&expected),
+            "missing scanner fixture {expected}"
+        );
     }
 
     let redacted = scanner.redact(&content, &report);
@@ -1346,7 +1421,10 @@ fn session_rejects_bad_token_replay_and_pause() {
     let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
     let token = session.token_for_pairing_response().to_string();
 
-    assert_eq!(session.validate("wrong", "req_1"), Err(SessionError::BadToken));
+    assert_eq!(
+        session.validate("wrong", "req_1"),
+        Err(SessionError::BadToken)
+    );
     assert!(session.validate(&token, "req_1").is_ok());
     assert_eq!(session.validate(&token, "req_1"), Err(SessionError::Replay));
     session.pause();
@@ -1390,14 +1468,20 @@ fn session_control_can_resume_from_paused_state() {
     let token = session.token_for_pairing_response().to_string();
 
     session.pause();
-    assert_eq!(session.validate(&token, "req_data"), Err(SessionError::Paused));
+    assert_eq!(
+        session.validate(&token, "req_data"),
+        Err(SessionError::Paused)
+    );
     assert!(session.validate_control(&token, "req_pause_again").is_ok());
     assert!(session.validate_control(&token, "req_resume").is_ok());
     session.resume();
     assert!(session.validate(&token, "req_after_resume").is_ok());
     assert!(session.validate_control(&token, "req_disconnect").is_ok());
     session.disconnect();
-    assert_eq!(session.validate_control(&token, "req_after_disconnect"), Err(SessionError::Expired));
+    assert_eq!(
+        session.validate_control(&token, "req_after_disconnect"),
+        Err(SessionError::Expired)
+    );
 }
 
 #[test]
@@ -1413,13 +1497,17 @@ fn disconnect_cleanup_revokes_tokens_streams_and_pending_approvals() {
     pending.push("appr_file_1");
     assert!(traffic.begin_stream(&approval.preview_host));
     assert_eq!(traffic.active_stream_count(&approval.preview_host), 1);
-    assert!(registry.approval_for(&session_id, 5173, "vite:1234").is_some());
+    assert!(registry
+        .approval_for(&session_id, 5173, "vite:1234")
+        .is_some());
 
     let report = disconnect_cleanup(&mut session, &mut registry, &mut traffic, &mut pending);
 
     assert_eq!(pending.len(), 0);
     assert_eq!(traffic.active_stream_count(&approval.preview_host), 0);
-    assert!(registry.approval_for(&session_id, 5173, "vite:1234").is_none());
+    assert!(registry
+        .approval_for(&session_id, 5173, "vite:1234")
+        .is_none());
     assert_eq!(
         session.validate_control(&token, "req_after_cleanup"),
         Err(SessionError::Expired)
@@ -1450,7 +1538,9 @@ fn uninstall_cleanup_leaves_no_hidden_daemon_state() {
 
     assert_eq!(pending.len(), 0);
     assert_eq!(traffic.active_stream_count(&approval.preview_host), 0);
-    assert!(registry.approval_for(&session_id, 3000, "next:3000").is_none());
+    assert!(registry
+        .approval_for(&session_id, 3000, "next:3000")
+        .is_none());
     assert!(!report.hidden_daemon_running);
 }
 
@@ -1514,7 +1604,10 @@ fn desktop_ipc_action_plans_map_renderer_commands_to_narrow_daemon_routes() {
     })
     .unwrap();
     assert_eq!(status.daemon_method.as_deref(), Some("GET"));
-    assert_eq!(status.daemon_path_template.as_deref(), Some("/v1/status/{request_id}"));
+    assert_eq!(
+        status.daemon_path_template.as_deref(),
+        Some("/v1/status/{request_id}")
+    );
     assert!(!status.requires_local_control);
     assert!(status.returns_sanitized_state);
 
@@ -1742,9 +1835,7 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
         .unwrap()
         .with_timezone(&chrono::Utc);
 
-    assert!(
-        validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok()
-    );
+    assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
 
     let mut wrong_session = req.clone();
     wrong_session.session_id = "sess_attacker".to_string();
@@ -1924,7 +2015,10 @@ fn local_sessions_can_bind_to_pairing_device_identity() {
         .unwrap()
         .with_timezone(&chrono::Utc);
 
-    assert_eq!(session.device_fingerprint(), paired_device.device_fingerprint);
+    assert_eq!(
+        session.device_fingerprint(),
+        paired_device.device_fingerprint
+    );
     assert!(validate_file_request_authorization(&session, &policy, &req, &auth, now).is_ok());
 
     let attacker = DeviceIdentity::generate().public_identity();
@@ -1985,7 +2079,10 @@ fn device_identity_store_persists_rotates_and_fails_closed() {
 fn pairing_requires_matching_fingerprint_and_rate_limits() {
     let mut pairing = PairingSession::new(std::time::Duration::from_secs(60));
     let public = pairing.public_code();
-    assert_eq!(pairing.verify(&public.code, "bad-fingerprint"), Err(PairingError::Mismatch));
+    assert_eq!(
+        pairing.verify(&public.code, "bad-fingerprint"),
+        Err(PairingError::Mismatch)
+    );
     assert!(pairing.verify(&public.code, &public.fingerprint).is_ok());
     assert_eq!(
         pairing.verify(&public.code, &public.fingerprint),
@@ -2030,11 +2127,17 @@ fn pairing_proof_binds_device_key_to_challenge() {
 
     let mut tampered = proof.clone();
     tampered.browser_session_id = "browser_456".to_string();
-    assert_eq!(verify_pairing_proof(&tampered), Err(PairingError::BadSignature));
+    assert_eq!(
+        verify_pairing_proof(&tampered),
+        Err(PairingError::BadSignature)
+    );
 
     let mut wrong_user = proof;
     wrong_user.requested_user_id = "user_456".to_string();
-    assert_eq!(verify_pairing_proof(&wrong_user), Err(PairingError::BadSignature));
+    assert_eq!(
+        verify_pairing_proof(&wrong_user),
+        Err(PairingError::BadSignature)
+    );
 }
 
 #[test]
@@ -2044,15 +2147,24 @@ fn pairing_proof_rejects_malformed_or_oversized_fields_before_verification() {
 
     let mut oversized = proof.clone();
     oversized.server_nonce = "n".repeat(129);
-    assert_eq!(verify_pairing_proof(&oversized), Err(PairingError::InvalidProof));
+    assert_eq!(
+        verify_pairing_proof(&oversized),
+        Err(PairingError::InvalidProof)
+    );
 
     let mut control_character = proof.clone();
     control_character.browser_session_id = "browser_123\ninjected".to_string();
-    assert_eq!(verify_pairing_proof(&control_character), Err(PairingError::InvalidProof));
+    assert_eq!(
+        verify_pairing_proof(&control_character),
+        Err(PairingError::InvalidProof)
+    );
 
     let mut huge_public_key = proof.clone();
     huge_public_key.device_public_key = "a".repeat(10_000);
-    assert_eq!(verify_pairing_proof(&huge_public_key), Err(PairingError::InvalidProof));
+    assert_eq!(
+        verify_pairing_proof(&huge_public_key),
+        Err(PairingError::InvalidProof)
+    );
 
     let mut malformed_signature = proof;
     malformed_signature.signature = "z".repeat(128);
@@ -2116,7 +2228,9 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
         PreviewDecision::Deny("invalid_method_blocked".to_string())
     );
 
-    assert!(!redirect_allowed("http://169.254.169.254/latest/meta-data/"));
+    assert!(!redirect_allowed(
+        "http://169.254.169.254/latest/meta-data/"
+    ));
     assert!(!redirect_allowed("http://192.168.1.1/admin"));
     assert!(!redirect_allowed("http://2130706433/admin"));
     assert!(!redirect_allowed("http://0x7f.0.0.1/admin"));
@@ -2141,7 +2255,11 @@ fn preview_redirect_classifier_rewrites_only_approved_loopback_targets() {
         PreviewRedirectDecision::RewriteToPreview("/docs/next.html".to_string())
     );
     assert_eq!(
-        classify_preview_redirect(&approval, "/docs/index.html", "http://127.0.0.1:5173/ok?x=1"),
+        classify_preview_redirect(
+            &approval,
+            "/docs/index.html",
+            "http://127.0.0.1:5173/ok?x=1"
+        ),
         PreviewRedirectDecision::RewriteToPreview("/ok?x=1".to_string())
     );
     assert_eq!(
@@ -2382,18 +2500,26 @@ fn port_approvals_are_session_scoped_revocable_and_process_bound() {
     assert!(registry
         .approval_for("sess_123", 5173, "admin-panel:9999")
         .is_none());
-    assert!(registry.approval_for("other_session", 5173, "vite:1234").is_none());
+    assert!(registry
+        .approval_for("other_session", 5173, "vite:1234")
+        .is_none());
 
     registry.revoke_port(5173);
-    assert!(registry.approval_for("sess_123", 5173, "vite:1234").is_none());
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_none());
 
     registry.approve_browser_port("sess_123", 5173, "vite:1234");
     registry.port_closed(5173);
-    assert!(registry.approval_for("sess_123", 5173, "vite:1234").is_none());
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_none());
 
     registry.approve_browser_port("sess_123", 5173, "vite:1234");
     registry.disconnect_session("sess_123");
-    assert!(registry.approval_for("sess_123", 5173, "vite:1234").is_none());
+    assert!(registry
+        .approval_for("sess_123", 5173, "vite:1234")
+        .is_none());
 }
 
 #[test]
@@ -2428,8 +2554,14 @@ fn preview_traffic_guard_limits_request_rate_streams_and_response_bytes() {
 #[test]
 fn response_headers_strip_cookie_and_block_service_workers() {
     let mut headers = HashMap::new();
-    headers.insert("Set-Cookie".to_string(), "vectant_session=bad; Domain=.vectant.com".to_string());
-    headers.insert("Location".to_string(), "http://192.168.1.1/admin".to_string());
+    headers.insert(
+        "Set-Cookie".to_string(),
+        "vectant_session=bad; Domain=.vectant.com".to_string(),
+    );
+    headers.insert(
+        "Location".to_string(),
+        "http://192.168.1.1/admin".to_string(),
+    );
     headers.insert("X-Frame-Options".to_string(), "SAMEORIGIN".to_string());
     headers.insert("Clear-Site-Data".to_string(), "\"cookies\"".to_string());
     headers.insert("Content-Type".to_string(), "text/html".to_string());
@@ -2439,10 +2571,22 @@ fn response_headers_strip_cookie_and_block_service_workers() {
     assert!(!sanitized.contains_key("Location"));
     assert!(!sanitized.contains_key("X-Frame-Options"));
     assert!(!sanitized.contains_key("Clear-Site-Data"));
-    assert_eq!(sanitized.get("Service-Worker-Allowed"), Some(&"none".to_string()));
-    assert_eq!(sanitized.get("Cache-Control"), Some(&"no-store".to_string()));
-    assert_eq!(sanitized.get("Referrer-Policy"), Some(&"no-referrer".to_string()));
-    assert_eq!(sanitized.get("X-Content-Type-Options"), Some(&"nosniff".to_string()));
+    assert_eq!(
+        sanitized.get("Service-Worker-Allowed"),
+        Some(&"none".to_string())
+    );
+    assert_eq!(
+        sanitized.get("Cache-Control"),
+        Some(&"no-store".to_string())
+    );
+    assert_eq!(
+        sanitized.get("Referrer-Policy"),
+        Some(&"no-referrer".to_string())
+    );
+    assert_eq!(
+        sanitized.get("X-Content-Type-Options"),
+        Some(&"nosniff".to_string())
+    );
     assert!(sanitized
         .get("Permissions-Policy")
         .unwrap()
@@ -2463,7 +2607,10 @@ fn preview_blocks_service_worker_script_paths() {
         "/%73w.js",
         "/static/%73erviceworker.js?cache=1",
     ] {
-        assert!(!preview_path_allowed(path), "service worker path should be blocked: {path}");
+        assert!(
+            !preview_path_allowed(path),
+            "service worker path should be blocked: {path}"
+        );
     }
     assert!(preview_path_allowed("/assets/app.js"));
 }
@@ -2482,7 +2629,10 @@ fn response_headers_strip_hop_by_hop_and_connection_named_headers() {
     assert!(!sanitized.contains_key("X-Internal-Trace"));
     assert!(!sanitized.contains_key("Keep-Alive"));
     assert!(!sanitized.contains_key("Transfer-Encoding"));
-    assert_eq!(sanitized.get("Content-Type"), Some(&"text/html".to_string()));
+    assert_eq!(
+        sanitized.get("Content-Type"),
+        Some(&"text/html".to_string())
+    );
 }
 
 #[test]
@@ -2571,7 +2721,9 @@ fn audit_delete_clears_prior_events_and_keeps_new_chain_valid() {
     assert_eq!(export.events.len(), 0);
     assert!(export.verify_hash_chain());
     assert!(!export.raw_bodies_included);
-    assert!(!serde_json::to_string(&export).unwrap().contains("Sent package metadata"));
+    assert!(!serde_json::to_string(&export)
+        .unwrap()
+        .contains("Sent package metadata"));
 }
 
 #[test]
@@ -2617,20 +2769,24 @@ fn audit_export_applies_retention_and_rechains_retained_events() {
     let export = log.export_incident_bundle(30);
     assert!(export.verify_hash_chain());
     assert_eq!(export.events.len(), 1);
-    assert!(export.events.iter().all(|event| event.request_id.as_deref() != Some("req_old")));
-    assert_eq!(export.events[0].previous_hash, "sha256:0000000000000000000000000000000000000000000000000000000000000000");
+    assert!(export
+        .events
+        .iter()
+        .all(|event| event.request_id.as_deref() != Some("req_old")));
+    assert_eq!(
+        export.events[0].previous_hash,
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    );
     assert!(export.consent_receipts.is_empty());
-    assert!(!serde_json::to_string(&export).unwrap().contains("Old denied request"));
+    assert!(!serde_json::to_string(&export)
+        .unwrap()
+        .contains("Old denied request"));
 }
 
 #[test]
 fn local_audit_store_persists_scrubbed_hash_chained_history() {
     let dir = tempdir().unwrap();
-    let store = LocalAuditStore::new(
-        dir.path().join("audit.json"),
-        30,
-        SecretScanner::default(),
-    );
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
     let mut log = AuditLog::new(SecretScanner::default());
     log.append(
         AuditClass::Denied,
@@ -2654,19 +2810,23 @@ fn local_audit_store_persists_scrubbed_hash_chained_history() {
 #[test]
 fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
     let dir = tempdir().unwrap();
-    let store = LocalAuditStore::new(
-        dir.path().join("audit.json"),
-        0,
-        SecretScanner::default(),
-    );
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
     let mut log = AuditLog::new(SecretScanner::default());
-    log.append(AuditClass::Control, Some("req_audit".to_string()), "Session paused.", true);
+    log.append(
+        AuditClass::Control,
+        Some("req_audit".to_string()),
+        "Session paused.",
+        true,
+    );
     store.persist(&log).unwrap();
 
-    let mut export = log.export_incident_bundle(0);
+    let mut export = log.export_incident_bundle(store.retention_days());
     export.events[0].summary = "tampered summary".to_string();
     fs::write(store.path(), serde_json::to_vec_pretty(&export).unwrap()).unwrap();
-    assert!(matches!(store.load(), Err(AuditStoreError::HashChainInvalid)));
+    assert!(matches!(
+        store.load(),
+        Err(AuditStoreError::HashChainInvalid)
+    ));
 
     store.delete().unwrap();
     assert!(!store.path().exists());
@@ -2676,11 +2836,7 @@ fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
 #[test]
 fn local_audit_store_rejects_oversized_history_before_parsing() {
     let dir = tempdir().unwrap();
-    let store = LocalAuditStore::new(
-        dir.path().join("audit.json"),
-        30,
-        SecretScanner::default(),
-    );
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
     fs::write(store.path(), vec![b'{'; (2 * 1024 * 1024) + 1]).unwrap();
 
     assert!(matches!(store.load(), Err(AuditStoreError::TooLarge)));
@@ -2706,7 +2862,10 @@ fn local_audit_store_rejects_symlinked_audit_path() {
     );
 
     assert!(matches!(store.load(), Err(AuditStoreError::UnsafePath)));
-    assert!(matches!(store.persist(&log), Err(AuditStoreError::UnsafePath)));
+    assert!(matches!(
+        store.persist(&log),
+        Err(AuditStoreError::UnsafePath)
+    ));
     assert!(matches!(store.delete(), Err(AuditStoreError::UnsafePath)));
     assert!(link.exists());
     assert!(target.exists());
@@ -2786,7 +2945,8 @@ fn update_manifest_rejects_malformed_versions_before_update_decisions() {
         Err(UpdateError::InvalidVersion)
     );
 
-    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["bad-version".to_string()]);
+    let (trusted_key, manifest) =
+        signed_test_manifest("0.2.0", "0.1.0", vec!["bad-version".to_string()]);
     assert_eq!(
         verify_update_manifest(&trusted_key, "0.1.0", &manifest),
         Err(UpdateError::InvalidVersion)
@@ -2795,8 +2955,7 @@ fn update_manifest_rejects_malformed_versions_before_update_decisions() {
 
 #[test]
 fn update_manifest_supports_emergency_version_revocation() {
-    let (trusted_key, manifest) =
-        signed_test_manifest("0.2.0", "0.1.0", vec!["0.1.0".to_string()]);
+    let (trusted_key, manifest) = signed_test_manifest("0.2.0", "0.1.0", vec!["0.1.0".to_string()]);
     assert_eq!(
         verify_update_manifest(&trusted_key, "0.1.0", &manifest),
         Err(UpdateError::VersionRevoked)

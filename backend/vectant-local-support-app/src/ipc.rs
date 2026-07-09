@@ -54,14 +54,15 @@ const DANGEROUS_COMMAND_FRAGMENTS: &[&str] = &[
 ];
 
 pub fn decide_ipc_request(request: &IpcRequest) -> IpcDecision {
-    if !is_safe_ipc_identifier(&request.request_id) || !is_safe_ipc_identifier(&request.session_id) {
+    if !is_safe_ipc_identifier(&request.request_id) || !is_safe_ipc_identifier(&request.session_id)
+    {
         return deny("invalid_schema");
     }
     let normalized = request.command.trim().to_ascii_lowercase();
     if normalized.len() > 80
         || !normalized
             .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.')
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '_')
     {
         return deny("invalid_schema");
     }
