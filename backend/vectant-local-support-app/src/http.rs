@@ -921,11 +921,7 @@ async fn delete_history(
         "Local support history deleted according to retention policy.",
         true,
     );
-    if let Some(store) = &state.audit_store {
-        store
-            .delete()
-            .map_err(|_| denied(StatusCode::INTERNAL_SERVER_ERROR, "audit_store_delete_failed"))?;
-    }
+    persist_audit(&state, &audit)?;
     Ok(Json(serde_json::json!({
         "decision": "deleted",
         "request_id": request_id,

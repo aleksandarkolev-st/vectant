@@ -645,6 +645,69 @@ async fn app_shutdown_revokes_session_approvals_ports_and_preview_traffic() {
 }
 
 #[tokio::test]
+async fn history_delete_persists_scrubbed_deletion_marker_and_removes_prior_events() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let audit_path = dir.path().join("audit.json");
+    let audit_store = LocalAuditStore::new(&audit_path, 30, SecretScanner::default());
+    let mut existing = AuditLog::new(SecretScanner::default());
+    existing.append(
+        AuditClass::Denied,
+        Some("req_old_secret".to_string()),
+        "Old blocked Authorization: Bearer abcdefghijklmnopqrstuvwxyz should not survive delete.",
+        true,
+    );
+    audit_store.persist(&existing).unwrap();
+
+    let policy =
+        WorkspacePolicy::new(dir.path(), "wk_history_delete", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_history",
+        "org_history",
+        "wk_history_delete",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let mut state = AppState::new_with_audit_store(session, policy, audit_store.clone());
+    state.set_local_control_secret_for_test("desktop_control_secret_123456789012345");
+    let shared_state = state.clone();
+    let addr = bind_loopback(state).await.unwrap();
+    let client = reqwest::Client::new();
+
+    let delete = client
+        .post(format!("http://{addr}/v1/history/delete/req_http_history_delete"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::OK);
+    let delete_body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(delete_body["decision"], "deleted");
+    assert_eq!(delete_body["bytes_sent"], 0);
+    assert!(audit_path.exists());
+
+    let raw = fs::read_to_string(&audit_path).unwrap();
+    assert!(raw.contains("Local support history deleted according to retention policy."));
+    assert!(!raw.contains("Old blocked"));
+    assert!(!raw.contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let reloaded = audit_store.load().unwrap();
+    let export = reloaded.export_incident_bundle(audit_store.retention_days());
+    assert!(export.verify_hash_chain());
+    assert_eq!(export.events.len(), 1);
+    assert_eq!(
+        export.events[0].request_id.as_deref(),
+        Some("req_http_history_delete")
+    );
+    assert!(export.consent_receipts.is_empty());
+    assert_eq!(shared_state.audit.lock().await.events().len(), 1);
+}
+
+#[tokio::test]
 async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payload() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
