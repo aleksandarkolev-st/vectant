@@ -54,8 +54,60 @@ const DEFAULT_BEFORE =
 const DEFAULT_AFTER =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator) * 0.0f;';
 
+function explicitHiprtRuntimeProfileSource(env) {
+  if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON?.trim()) return 'explicit_profile_json';
+  if (env.SYNTHI_HIPRT_WARM_PROFILE_JSON?.trim()) return 'explicit_hiprt_profile_json';
+  if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH?.trim()) return 'explicit_profile_path';
+  if (env.SYNTHI_HIPRT_WARM_PROFILE_PATH?.trim()) return 'explicit_hiprt_profile_path';
+  return null;
+}
+
+function hiprtWarmRuntimeProfileSelection(env = process.env) {
+  const explicitSource = explicitHiprtRuntimeProfileSource(env);
+  if (explicitSource) {
+    return {
+      env,
+      source: explicitSource,
+      explicit: true,
+      profilePath: env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH ?? env.SYNTHI_HIPRT_WARM_PROFILE_PATH ?? null,
+    };
+  }
+  const diagnosticDefault =
+    env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE === '1'
+    || env.SYNTHI_HIPRT_WARM_ALLOW_PACKAGED_DEFAULT_PROFILE === '1';
+  const selfCheckDefault = process.argv.includes('--runtime-boundary-app-hook-self-check');
+  if (!diagnosticDefault && !selfCheckDefault) {
+    throw new Error(
+      'HIPRT runtime proof requires an explicit runtime profile through '
+      + 'SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH, SYNTHI_HIPRT_WARM_PROFILE_PATH, '
+      + 'SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON, or SYNTHI_HIPRT_WARM_PROFILE_JSON; '
+      + 'set SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE=1 only for diagnostic packaged-profile runs',
+    );
+  }
+  return {
+    env,
+    source: selfCheckDefault ? 'self_check_packaged_default' : 'packaged_default_opt_in',
+    explicit: false,
+    profilePath: null,
+  };
+}
+
 function loadProfile() {
-  const normalized = loadRuntimeProofProfileFromEnv(process.env, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
+  const selection = hiprtWarmRuntimeProfileSelection(process.env);
+  const normalized = loadRuntimeProofProfileFromEnv(selection.env, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
+  normalized.profileSelection = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_selection.v1',
+    source: selection.source,
+    explicit: selection.explicit,
+    profilePath: selection.profilePath,
+    profile_path: selection.profilePath,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'runtime_profile_selection_metadata_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_profile_selection_metadata_only_not_gpu_hmr_success',
+  };
   return {
     ...runtimeProfileToLegacyHiprtWarmProfile(normalized),
     runtimeProfile: normalized,

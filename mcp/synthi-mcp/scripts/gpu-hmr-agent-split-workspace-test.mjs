@@ -156,7 +156,8 @@ const CFG = {
   directSourceAuthority: process.env.SYNTHI_GPU_AGENT_SOURCE_AUTHORITY
     ?? process.env.SYNTHI_GPU_AGENT_DIRECT_SOURCE_AUTHORITY
     ?? '',
-  fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
+  fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? '').toLowerCase(),
+  allowPackagedDefaultFixture: process.env.SYNTHI_GPU_AGENT_ALLOW_PACKAGED_DEFAULT_FIXTURE === '1',
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
   captureArtifacts: process.env.SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS === '1',
   visualDeltaWindowMs: Number(process.env.SYNTHI_GPU_AGENT_VISUAL_DELTA_WINDOW_MS ?? 6000),
@@ -1405,12 +1406,12 @@ function sourceFilesForInitialCompile(entryPath, sourceText) {
 }
 
 function validationProfileId() {
-  return ACTIVE_AGENT_PROFILE?.profileId ?? CFG.fixture;
+  return ACTIVE_AGENT_PROFILE?.profileId ?? selectedPackagedFixture();
 }
 
 function validationFixtureId() {
   if (ACTIVE_AGENT_PROFILE) return ACTIVE_AGENT_PROFILE.source?.fixture || '';
-  return ACTIVE_AGENT_PROFILE?.source?.fixture || CFG.fixture;
+  return ACTIVE_AGENT_PROFILE?.source?.fixture || selectedPackagedFixture();
 }
 
 function validationProfileClass() {
@@ -1987,11 +1988,34 @@ function runtimeApi(vendor) {
 
 function monolithicSource(vendor) {
   if (ACTIVE_AGENT_PROFILE) return sourceFromAgentVisualProfile(ACTIVE_AGENT_PROFILE, vendor);
-  return builtinFixtureSource(vendor, CFG.fixture);
+  return builtinFixtureSource(vendor, selectedPackagedFixture());
 }
 
-function builtinFixtureSource(vendor, fixture = CFG.fixture) {
-  const normalizedFixture = String(fixture || 'flow').toLowerCase();
+function selectedPackagedFixture() {
+  const fixture = String(CFG.fixture || '').trim().toLowerCase();
+  if (fixture) return fixture;
+  if (CFG.allowPackagedDefaultFixture) return 'flow';
+  throw new Error(
+    'agent split source-first runner requires an explicit fixture, profile, or direct source manifest; '
+    + 'set SYNTHI_GPU_AGENT_ALLOW_PACKAGED_DEFAULT_FIXTURE=1 only for diagnostic packaged-fixture runs',
+  );
+}
+
+function assertAgentProfileSelectionConfigured() {
+  if (
+    CFG.profilePath
+    || CFG.directSourceManifestPath
+    || CFG.directSourceRoot
+    || CFG.fixture
+    || CFG.allowPackagedDefaultFixture
+  ) {
+    return;
+  }
+  selectedPackagedFixture();
+}
+
+function builtinFixtureSource(vendor, fixture = selectedPackagedFixture()) {
+  const normalizedFixture = String(fixture).toLowerCase();
   if (normalizedFixture === 'complex-flow') return complexFlowSource(vendor);
   if (normalizedFixture === 'ray-light') return rayLightSource(vendor);
   if (normalizedFixture === 'realistic-raytrace') return realisticRaytraceSource(vendor);
@@ -5700,7 +5724,31 @@ function negativeEditProofId(value) {
 
 function selfCheckAgentVisualProfile() {
   const originalProfile = ACTIVE_AGENT_PROFILE;
+  const originalFixture = CFG.fixture;
+  const originalAllowPackagedDefaultFixture = CFG.allowPackagedDefaultFixture;
   try {
+    let implicitPackagedFixtureRejected = false;
+    try {
+      ACTIVE_AGENT_PROFILE = null;
+      CFG.fixture = '';
+      CFG.allowPackagedDefaultFixture = false;
+      monolithicSource('rocm');
+    } catch (err) {
+      implicitPackagedFixtureRejected =
+        String(err.message).includes('requires an explicit fixture, profile, or direct source manifest');
+    }
+    CFG.allowPackagedDefaultFixture = true;
+    const diagnosticDefaultFixtureSource = monolithicSource('rocm');
+    if (
+      !implicitPackagedFixtureRejected
+      || !diagnosticDefaultFixtureSource.includes('particle_flow')
+    ) {
+      throw new Error('agent visual profile self-check failed packaged fixture selection gate');
+    }
+    CFG.fixture = originalFixture;
+    CFG.allowPackagedDefaultFixture = originalAllowPackagedDefaultFixture;
+    ACTIVE_AGENT_PROFILE = originalProfile;
+
     const source = [
       'extern "C" __global__ void render(unsigned int* pixels) {',
       '  const float sceneLight = 1.0f;',
@@ -6583,6 +6631,8 @@ function selfCheckAgentVisualProfile() {
     console.log('agent visual profile self-check passed');
   } finally {
     ACTIVE_AGENT_PROFILE = originalProfile;
+    CFG.fixture = originalFixture;
+    CFG.allowPackagedDefaultFixture = originalAllowPackagedDefaultFixture;
   }
 }
 
@@ -9773,6 +9823,7 @@ if (process.argv.includes('--self-check')) {
     process.exitCode = 1;
   }
 } else {
+  assertAgentProfileSelectionConfigured();
   installEmergencyResultHandlers();
   run()
     .catch(async (err) => {

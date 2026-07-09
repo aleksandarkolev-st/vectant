@@ -15,6 +15,21 @@ const largeRocmScripts = [
   'proof:real-rocm:large-ml-composable-kernel',
   'proof:real-rocm:large-ml-hipblaslt',
 ];
+const hiprtDirectProofScripts = [
+  'proof:hiprt:warm',
+  'proof:hiprt:warm:camera-rays',
+  'proof:hiprt:warm:megakernel-light-gain',
+  'proof:hiprt:same-process',
+  'proof:hiprt:same-process:camera-rays',
+  'proof:hiprt:same-process:megakernel-light-gain',
+];
+const sourceFirstPackagedScripts = [
+  'proof:agent-split:source-first',
+  'proof:agent-split:source-first:seed-only',
+  'proof:agent-split:source-first:realistic-raytrace',
+  'proof:flow:source-first:visual',
+  'proof:rocm:source-first:realistic-visual',
+];
 const largeRocmProfiles = [
   {
     id: 'real-rocm-miopen-activation-large-ml',
@@ -130,6 +145,42 @@ for (const scriptName of largeRocmScripts) {
     failures.push(`${scriptName}:native_observer_missing`);
   }
 }
+for (const scriptName of hiprtDirectProofScripts) {
+  const command = packageJson.scripts?.[scriptName];
+  if (typeof command !== 'string') {
+    failures.push(`${scriptName}:missing_script`);
+    continue;
+  }
+  if (
+    !command.includes('SYNTHI_HIPRT_WARM_PROFILE_PATH=')
+    && !command.includes('SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH=')
+    && !command.includes('SYNTHI_HIPRT_WARM_PROFILE_JSON=')
+    && !command.includes('SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON=')
+  ) {
+    failures.push(`${scriptName}:hiprt_runtime_profile_not_explicit`);
+  }
+  if (command.includes('SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE')) {
+    failures.push(`${scriptName}:hiprt_packaged_default_profile_opt_in_forbidden`);
+  }
+}
+for (const scriptName of sourceFirstPackagedScripts) {
+  const command = packageJson.scripts?.[scriptName];
+  if (typeof command !== 'string') {
+    failures.push(`${scriptName}:missing_script`);
+    continue;
+  }
+  const explicitFixtureOrProfile =
+    command.includes('--fixture ')
+    || command.includes('--profile ')
+    || command.includes('SYNTHI_GPU_AGENT_FIXTURE')
+    || command.includes('SYNTHI_GPU_AGENT_PROFILE_PATH');
+  if (!explicitFixtureOrProfile) {
+    failures.push(`${scriptName}:source_first_fixture_or_profile_not_explicit`);
+  }
+  if (command.includes('SYNTHI_GPU_AGENT_ALLOW_PACKAGED_DEFAULT_FIXTURE')) {
+    failures.push(`${scriptName}:source_first_packaged_default_fixture_opt_in_forbidden`);
+  }
+}
 for (const profile of largeRocmProfiles) {
   const profilePath = path.resolve(packageRoot, profile.path);
   let profileJson;
@@ -206,6 +257,8 @@ console.log(JSON.stringify({
   ok: true,
   schemaVersion: 'synthi.gpu_hmr.real_rocm_package_scripts_smoke.v1',
   largeRocmScripts,
+  hiprtDirectProofScripts,
+  sourceFirstPackagedScripts,
   largeRocmProfiles: largeRocmProfiles.map((profile) => profile.id),
   packagedProofRunnerFiles: [...packageProofRunnerFiles.keys()].sort(),
   runtimeAdapterTemplate: 'runtime_boundary_log_harvest_v1',
