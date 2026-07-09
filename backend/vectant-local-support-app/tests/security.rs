@@ -3,6 +3,9 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::Router;
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
 use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
@@ -163,6 +166,22 @@ fn http_control_headers(token: &str, control_secret: &str) -> reqwest::header::H
         "x-vectant-local-control-secret",
         control_secret.parse().unwrap(),
     );
+    headers
+}
+
+fn http_preview_headers(token: &str, preview_host: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("origin", "https://app.vectant.dev".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "x-vectant-csrf",
+        "csrf_123456789012345678901234567890".parse().unwrap(),
+    );
+    headers.insert(
+        "authorization",
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    headers.insert("x-vectant-preview-host", preview_host.parse().unwrap());
     headers
 }
 
@@ -390,6 +409,102 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert!(!serde_json::to_string(&status_body)
         .unwrap()
         .contains("preview_token_hash"));
+
+    let target_listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let target_addr = target_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/ok", get(|| async {
+                let mut headers = HeaderMap::new();
+                headers.insert("set-cookie", HeaderValue::from_static("local_preview=secret"));
+                headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+                (headers, "local preview body").into_response()
+            }))
+            .route("/redirect-private", get(|| async {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    "location",
+                    HeaderValue::from_static("http://169.254.169.254/latest/meta-data/"),
+                );
+                (StatusCode::FOUND, headers, "").into_response()
+            }));
+        let _ = axum::serve(target_listener, app).await;
+    });
+    let preview_grant = {
+        let mut registry = shared_state.port_approvals.lock().await;
+        registry.approve_browser_port_grant(
+            port_body["session_id"].as_str().unwrap(),
+            target_addr.port(),
+            "vite-preview:pid123",
+        )
+    };
+    let preview_ok = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_ok&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(&token, &preview_grant.approval.preview_host))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_ok.status(), StatusCode::OK);
+    assert!(preview_ok.headers().get("set-cookie").is_none());
+    assert!(preview_ok.headers().get("x-frame-options").is_none());
+    assert!(preview_ok.headers().get("content-security-policy").is_some());
+    let preview_body = preview_ok.text().await.unwrap();
+    assert_eq!(preview_body, "local preview body");
+
+    let preview_cookie = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_cookie&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers({
+            let mut headers = http_preview_headers(&token, &preview_grant.approval.preview_host);
+            headers.insert("cookie", "vectant_session=should_not_forward".parse().unwrap());
+            headers
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_cookie.status(), StatusCode::FORBIDDEN);
+    let preview_cookie_body: serde_json::Value = preview_cookie.json().await.unwrap();
+    assert_eq!(preview_cookie_body["reason"], "credential_header_blocked");
+    assert_eq!(preview_cookie_body["bytes_sent"], 0);
+
+    let preview_private_redirect = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/redirect-private?request_id=req_http_preview_redirect&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(&token, &preview_grant.approval.preview_host))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_private_redirect.status(), StatusCode::FORBIDDEN);
+    let redirect_body: serde_json::Value = preview_private_redirect.json().await.unwrap();
+    assert_eq!(redirect_body["reason"], "redirect_target_not_approved");
+    assert_eq!(redirect_body["bytes_sent"], 0);
+
+    let preview_worker = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/sw.js?request_id=req_http_preview_worker&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(&token, &preview_grant.approval.preview_host))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_worker.status(), StatusCode::FORBIDDEN);
+    let worker_body: serde_json::Value = preview_worker.json().await.unwrap();
+    assert_eq!(worker_body["reason"], "service_worker_path_blocked");
+    assert_eq!(worker_body["bytes_sent"], 0);
 
     let port_revoke = client
         .post(format!(

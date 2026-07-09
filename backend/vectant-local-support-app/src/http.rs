@@ -3,10 +3,12 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::body::{Body, Bytes};
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::response::Response;
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use rand::{distributions::Alphanumeric, Rng};
@@ -16,7 +18,12 @@ use tokio::sync::Mutex;
 
 use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
-use crate::preview::{PortApprovalRegistry, PreviewTrafficGuard};
+use crate::preview::{
+    classify_preview_redirect, decide_preview_request_from_header_list_with_token,
+    preview_path_allowed, sanitize_response_headers, validate_preview_response_size,
+    PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard,
+    PortApproval,
+};
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
@@ -33,6 +40,14 @@ pub struct PortApprovalRequest {
     pub port: u16,
     pub process_identity: String,
     pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewGatewayQuery {
+    pub request_id: String,
+    pub preview_token: String,
+    pub process_identity: String,
+    pub target_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,6 +205,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/approval/revoke-all/:request_id", post(revoke_all_approvals))
         .route("/v1/port/approve", post(approve_port))
         .route("/v1/port/revoke/:port/:request_id", post(revoke_port))
+        .route("/v1/preview/:port/*path", any(preview_gateway))
         .route("/v1/history/export/:request_id", get(export_history))
         .route("/v1/history/delete/:request_id", post(delete_history))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
@@ -518,6 +534,229 @@ async fn revoke_port(
         "preview_token_included": false,
         "bytes_sent": 0
     })))
+}
+
+async fn preview_gateway(
+    State(state): State<AppState>,
+    Path((port, path)): Path<(u16, String)>,
+    Query(query): Query<PreviewGatewayQuery>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response<Body>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    validate_preview_query(&query)?;
+    if !body.is_empty() {
+        return Err(denied(StatusCode::FORBIDDEN, "preview_body_blocked"));
+    }
+    let preview_path = format!("/{}", path.trim_start_matches('/'));
+    if !preview_path_allowed(&preview_path) {
+        return Err(denied(StatusCode::FORBIDDEN, "service_worker_path_blocked"));
+    }
+    let preview_host = preview_host_from_headers(&headers)?;
+    let token = bearer(&headers)?;
+    let session_id = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &query.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        session.session_id().to_string()
+    };
+    let approval = {
+        let registry = state.port_approvals.lock().await;
+        registry
+            .approval_for(&session_id, port, &query.process_identity)
+            .cloned()
+    };
+    let filtered_headers = preview_validation_headers(&headers);
+    match decide_preview_request_from_header_list_with_token(
+        approval.as_ref(),
+        method.as_str(),
+        &preview_host,
+        Ipv4Addr::LOCALHOST.into(),
+        &filtered_headers,
+        &query.preview_token,
+    ) {
+        PreviewDecision::Allow => {}
+        PreviewDecision::Deny(reason) => return Err(denied(StatusCode::FORBIDDEN, reason)),
+    }
+    let Some(approval) = approval else {
+        return Err(denied(StatusCode::FORBIDDEN, "port_not_approved"));
+    };
+    {
+        let mut traffic = state.preview_traffic.lock().await;
+        let now = Utc::now().timestamp().try_into().unwrap_or_default();
+        if !traffic.allow_request_at(&approval.preview_host, now) {
+            return Err(denied(StatusCode::TOO_MANY_REQUESTS, "preview_rate_limit_exceeded"));
+        }
+        if !traffic.begin_stream(&approval.preview_host) {
+            return Err(denied(StatusCode::TOO_MANY_REQUESTS, "preview_stream_limit_exceeded"));
+        }
+    }
+    let target_url = preview_target_url(port, &preview_path, query.target_query.as_deref())?;
+    let result = fetch_preview_response(&method, &target_url, &approval, &preview_path).await;
+    state.preview_traffic.lock().await.end_stream(&approval.preview_host);
+    result
+}
+
+async fn fetch_preview_response(
+    method: &Method,
+    target_url: &str,
+    approval: &PortApproval,
+    preview_path: &str,
+) -> Result<Response<Body>, (StatusCode, Json<serde_json::Value>)> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_client_unavailable"))?;
+    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "invalid_method_blocked"))?;
+    let response = client
+        .request(reqwest_method, target_url)
+        .header(reqwest::header::HOST, "127.0.0.1")
+        .send()
+        .await
+        .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_target_unreachable"))?;
+    validate_preview_response_size(response.content_length(), 0)
+        .map_err(|reason| denied(StatusCode::PAYLOAD_TOO_LARGE, reason))?;
+    let status = StatusCode::from_u16(response.status().as_u16())
+        .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_status_invalid"))?;
+    let response_headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    if status.is_redirection() {
+        if let Some(location) = response_headers.get("location") {
+            return preview_redirect_response(approval, preview_path, location, status);
+        }
+    }
+    let bytes = if *method == Method::HEAD {
+        Bytes::new()
+    } else {
+        response
+            .bytes()
+            .await
+            .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_target_read_failed"))?
+    };
+    validate_preview_response_size(None, bytes.len() as u64)
+        .map_err(|reason| denied(StatusCode::PAYLOAD_TOO_LARGE, reason))?;
+    let mut builder = Response::builder().status(status);
+    for (name, value) in sanitize_response_headers(&response_headers) {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+    builder
+        .body(Body::from(bytes))
+        .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_response_build_failed"))
+}
+
+fn preview_redirect_response(
+    approval: &PortApproval,
+    preview_path: &str,
+    location: &str,
+    status: StatusCode,
+) -> Result<Response<Body>, (StatusCode, Json<serde_json::Value>)> {
+    match classify_preview_redirect(approval, preview_path, location) {
+        PreviewRedirectDecision::RewriteToPreview(path) => Response::builder()
+            .status(status)
+            .header("location", path)
+            .body(Body::empty())
+            .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_response_build_failed")),
+        PreviewRedirectDecision::ExternalNavigation(url) => Response::builder()
+            .status(status)
+            .header("location", url)
+            .body(Body::empty())
+            .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_response_build_failed")),
+        PreviewRedirectDecision::Block(reason) => Err(denied(StatusCode::FORBIDDEN, reason)),
+    }
+}
+
+fn validate_preview_query(
+    query: &PreviewGatewayQuery,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    validate_safe_request_id(&query.request_id)?;
+    if !is_safe_header_token(&query.preview_token, 32, 128) {
+        return Err(denied(StatusCode::FORBIDDEN, "preview_token_invalid"));
+    }
+    if !is_safe_process_identity(&query.process_identity) {
+        return Err(denied(StatusCode::BAD_REQUEST, "invalid_process_identity"));
+    }
+    if let Some(target_query) = &query.target_query {
+        if target_query.len() > 2048
+            || target_query
+                .chars()
+                .any(|ch| ch.is_control() || matches!(ch, '#' | '\\'))
+        {
+            return Err(denied(StatusCode::BAD_REQUEST, "invalid_preview_target_query"));
+        }
+    }
+    Ok(())
+}
+
+fn preview_host_from_headers(
+    headers: &HeaderMap,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let host = headers
+        .get("x-vectant-preview-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if host.len() > 160
+        || !host.ends_with(".vectant-preview.dev")
+        || host.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | '@'))
+    {
+        return Err(denied(StatusCode::FORBIDDEN, "preview_host_invalid"));
+    }
+    Ok(host.to_string())
+}
+
+fn preview_validation_headers(headers: &HeaderMap) -> Vec<(&str, &str)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let lower = name.as_str().to_ascii_lowercase();
+            if lower.starts_with("sec-fetch-") || lower.starts_with("sec-ch-") {
+                return None;
+            }
+            if matches!(
+                lower.as_str(),
+                "origin"
+                    | "sec-fetch-site"
+                    | "x-vectant-csrf"
+                    | "authorization"
+                    | "x-vectant-local-control-secret"
+                    | "x-vectant-local-approval-secret"
+                    | "x-vectant-preview-host"
+            ) {
+                return None;
+            }
+            value.to_str().ok().map(|value| (name.as_str(), value))
+        })
+        .collect()
+}
+
+fn preview_target_url(
+    port: u16,
+    preview_path: &str,
+    target_query: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let mut url = format!("http://127.0.0.1:{port}{preview_path}");
+    if let Some(target_query) = target_query.filter(|value| !value.is_empty()) {
+        url.push('?');
+        url.push_str(target_query.trim_start_matches('?'));
+    }
+    Ok(url)
 }
 
 async fn pause_session(
