@@ -8,8 +8,8 @@ use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, Co
 use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::desktop::{inspect_tauri_config, renderer_command_can_access_secret};
 use vectant_local_support_app::http::{
-    validate_file_request_authorization, AppState, LocalAuthorizationError, LocalRequestAuthorization,
-    RateLimiter, MAX_JSON_BODY_BYTES,
+    bind_loopback, validate_file_request_authorization, AppState, LocalAuthorizationError,
+    LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
 };
 use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
 use vectant_local_support_app::lifecycle::{
@@ -98,8 +98,203 @@ fn local_authorization_headers() -> HeaderMap {
     headers
 }
 
+fn http_headers(
+    token: &str,
+    request: &FileReadRequest,
+    session: &SessionGuard,
+) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("origin", "https://app.vectant.dev".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "x-vectant-csrf",
+        "csrf_123456789012345678901234567890".parse().unwrap(),
+    );
+    headers.insert(
+        "authorization",
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    headers.insert("x-vectant-app-version", "0.1.0".parse().unwrap());
+    headers.insert(
+        "x-vectant-protocol-version",
+        vectant_local_support_app::APP_PROTOCOL_VERSION.parse().unwrap(),
+    );
+    headers.insert(
+        "x-vectant-policy-version",
+        vectant_local_support_app::POLICY_VERSION.parse().unwrap(),
+    );
+    headers.insert(
+        "x-vectant-device-fingerprint",
+        session.device_fingerprint().parse().unwrap(),
+    );
+    headers.insert(
+        "x-vectant-device-proof",
+        session
+            .request_device_proof_for_context(
+                &request.request_id,
+                &request.account_id,
+                &request.org_id,
+                &request.workspace_id,
+                &request.capability,
+                &request.actor,
+                &request.expires_at,
+                vectant_local_support_app::APP_PROTOCOL_VERSION,
+                vectant_local_support_app::POLICY_VERSION,
+            )
+            .parse()
+            .unwrap(),
+    );
+    headers
+}
+
+fn http_control_headers(token: &str, control_secret: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("origin", "https://app.vectant.dev".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "x-vectant-csrf",
+        "csrf_123456789012345678901234567890".parse().unwrap(),
+    );
+    headers.insert(
+        "authorization",
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    headers.insert(
+        "x-vectant-local-control-secret",
+        control_secret.parse().unwrap(),
+    );
+    headers
+}
+
 fn preview_token(port: u16, process_identity: &str) -> String {
     format!("local-preview-token-{port}-{process_identity}")
+}
+
+#[tokio::test]
+async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("server.log"),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\nsafe tail\n",
+    )
+    .unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_http", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_http",
+        "org_http",
+        "wk_http",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let session_id = session.session_id().to_string();
+    let mut state = AppState::new(session, policy);
+    state.set_local_control_secret_for_test("desktop_control_secret_123456789012345");
+    let shared_state = state.clone();
+    let addr = bind_loopback(state).await.unwrap();
+    let client = reqwest::Client::new();
+
+    let mut req = request("server.log");
+    req.request_id = "req_http_review".to_string();
+    req.session_id = session_id;
+    req.account_id = "acct_http".to_string();
+    req.org_id = "org_http".to_string();
+    req.workspace_id = "wk_http".to_string();
+    req.device_fingerprint = "sha256:1111111111111111".to_string();
+    req.capability = "workspace.log.read".to_string();
+    req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+
+    let mut bad_headers = http_headers(&token, &req, &shared_state.session.lock().await);
+    bad_headers.insert("origin", "https://evil.example".parse().unwrap());
+    let bad_origin = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers(bad_headers)
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_origin.status(), StatusCode::FORBIDDEN);
+    let bad_origin_body: serde_json::Value = bad_origin.json().await.unwrap();
+    assert_eq!(bad_origin_body["decision"], "denied");
+    assert_eq!(bad_origin_body["bytes_sent"], 0);
+
+    let queued = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers(http_headers(
+            &token,
+            &req,
+            &shared_state.session.lock().await,
+        ))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(queued.status(), StatusCode::OK);
+    let queued_body: serde_json::Value = queued.json().await.unwrap();
+    assert_eq!(queued_body["decision"], "approval_queued");
+    assert_eq!(queued_body["bytes_sent"], 0);
+    assert!(queued_body.get("content").is_none() || queued_body["content"].is_null());
+    let approval_id = queued_body["approval_id"].as_str().unwrap().to_string();
+    assert!(approval_id.starts_with("appr_"));
+
+    let approval_without_local_secret = client
+        .post(format!(
+            "http://{addr}/v1/approval/approve/{approval_id}/req_http_control_missing_secret"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approval_without_local_secret.status(), StatusCode::FORBIDDEN);
+    let missing_secret_body: serde_json::Value =
+        approval_without_local_secret.json().await.unwrap();
+    assert_eq!(missing_secret_body["decision"], "denied");
+    assert_eq!(missing_secret_body["bytes_sent"], 0);
+
+    assert!(shared_state
+        .approvals
+        .lock()
+        .await
+        .set_local_approval_secret_for_test(
+            &approval_id,
+            "desktop_approval_secret_123456789012345"
+        ));
+    let mut approve_headers =
+        http_control_headers(&token, "desktop_control_secret_123456789012345");
+    approve_headers.insert(
+        "x-vectant-local-approval-secret",
+        "desktop_approval_secret_123456789012345"
+            .parse()
+            .unwrap(),
+    );
+    let approved = client
+        .post(format!(
+            "http://{addr}/v1/approval/approve/{approval_id}/req_http_control_approve"
+        ))
+        .headers(approve_headers)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approved.status(), StatusCode::OK);
+    let approved_body: serde_json::Value = approved.json().await.unwrap();
+    assert_eq!(approved_body["decision"], "redact_then_approval");
+    assert!(approved_body["content"]
+        .as_str()
+        .unwrap()
+        .contains("[REDACTED:authorization_header]"));
+    assert!(!serde_json::to_string(&approved_body)
+        .unwrap()
+        .contains("abcdefghijklmnopqrstuvwxyz"));
+
+    let audit = shared_state.audit.lock().await;
+    assert!(audit.events().iter().any(|event| event
+        .summary
+        .contains("bytes prepared for local review")));
+    assert_eq!(audit.consent_receipts().len(), 1);
 }
 
 #[test]

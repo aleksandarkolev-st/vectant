@@ -27,4 +27,5 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
