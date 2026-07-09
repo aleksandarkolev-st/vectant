@@ -1,5 +1,8 @@
 use serde_json::Value;
 
+use crate::http::AppState;
+use crate::ipc::{decide_ipc_request, IpcRequest};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopSecurityReport {
     pub csp_restrictive: bool,
@@ -11,6 +14,33 @@ pub struct DesktopSecurityReport {
     pub renderer_token_access_blocked: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopIpcActionPlan {
+    pub command: String,
+    pub daemon_method: Option<String>,
+    pub daemon_path_template: Option<String>,
+    pub requires_local_control: bool,
+    pub returns_sanitized_state: bool,
+    pub user_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopIpcError {
+    Denied(String),
+    UnsupportedCommand,
+}
+
+impl std::fmt::Display for DesktopIpcError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied(reason) => write!(formatter, "desktop ipc denied: {reason}"),
+            Self::UnsupportedCommand => formatter.write_str("desktop ipc command is unsupported"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopIpcError {}
+
 impl DesktopSecurityReport {
     pub fn hardened(&self) -> bool {
         self.csp_restrictive
@@ -21,6 +51,79 @@ impl DesktopSecurityReport {
             && self.updater_requires_signature
             && self.renderer_token_access_blocked
     }
+}
+
+pub async fn build_desktop_status_state(state: &AppState) -> Value {
+    let session = state.session.lock().await.state();
+    let workspace = state.workspace.summary();
+    let pending_approvals = state.approvals.lock().await.pending_len();
+    let ports = state.port_approvals.lock().await.approvals();
+    let events = state.audit.lock().await.events().to_vec();
+
+    sanitize_desktop_ipc_state(&serde_json::json!({
+        "connected": true,
+        "paused": session.paused,
+        "session": {
+            "session_id": session.session_id,
+            "account_id": session.account_id,
+            "org_id": session.org_id,
+            "workspace_id": session.workspace_id,
+            "device_fingerprint": session.device_fingerprint,
+            "protocol_version": session.protocol_version,
+            "mode": "Balanced review before send"
+        },
+        "workspace": {
+            "workspace_id": workspace.workspace_id,
+            "display": workspace.display,
+            "root_hash": workspace.root_hash,
+            "root_path_included": workspace.root_path_included,
+            "policy_version": workspace.policy_version,
+            "scanner_version": workspace.scanner_version
+        },
+        "approvals": {
+            "pending_count": pending_approvals,
+            "content_included": false
+        },
+        "ports": ports,
+        "activity": events,
+        "raw_bodies_included": false
+    }))
+}
+
+pub fn plan_desktop_ipc_action(request: &IpcRequest) -> Result<DesktopIpcActionPlan, DesktopIpcError> {
+    let decision = decide_ipc_request(request);
+    if decision.decision != "allow" {
+        return Err(DesktopIpcError::Denied(decision.reason));
+    }
+    let command = request.command.trim().to_ascii_lowercase();
+    let plan = match command.as_str() {
+        "session.status" => DesktopIpcActionPlan {
+            command,
+            daemon_method: Some("GET".to_string()),
+            daemon_path_template: Some("/v1/status/{request_id}".to_string()),
+            requires_local_control: false,
+            returns_sanitized_state: true,
+            user_visible: true,
+        },
+        "session.pause" => control_plan(command, "POST", "/v1/session/pause/{request_id}", true),
+        "session.resume" => control_plan(command, "POST", "/v1/session/resume/{request_id}", true),
+        "session.disconnect" => control_plan(command, "POST", "/v1/session/disconnect/{request_id}", true),
+        "approval.revoke_session" => control_plan(command, "POST", "/v1/approval/revoke-all/{request_id}", true),
+        "history.export" => control_plan(command, "GET", "/v1/history/export/{request_id}", true),
+        "history.delete" => control_plan(command, "POST", "/v1/history/delete/{request_id}", true),
+        "workspace.pick" | "workspace.inventory" | "approval.file.review" | "approval.port.review" => {
+            DesktopIpcActionPlan {
+                command,
+                daemon_method: None,
+                daemon_path_template: None,
+                requires_local_control: true,
+                returns_sanitized_state: true,
+                user_visible: true,
+            }
+        }
+        _ => return Err(DesktopIpcError::UnsupportedCommand),
+    };
+    Ok(plan)
 }
 
 pub fn inspect_tauri_config(config_json: &str) -> Result<DesktopSecurityReport, serde_json::Error> {
@@ -78,6 +181,22 @@ pub fn inspect_tauri_config(config_json: &str) -> Result<DesktopSecurityReport, 
         updater_requires_signature,
         renderer_token_access_blocked: renderer_token_access_blocked(&value),
     })
+}
+
+fn control_plan(
+    command: String,
+    method: &str,
+    path_template: &str,
+    returns_sanitized_state: bool,
+) -> DesktopIpcActionPlan {
+    DesktopIpcActionPlan {
+        command,
+        daemon_method: Some(method.to_string()),
+        daemon_path_template: Some(path_template.to_string()),
+        requires_local_control: true,
+        returns_sanitized_state,
+        user_visible: true,
+    }
 }
 
 pub fn renderer_command_can_access_secret(command: &str) -> bool {

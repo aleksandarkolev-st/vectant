@@ -10,7 +10,8 @@ use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
 use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::desktop::{
-    inspect_tauri_config, renderer_command_can_access_secret, sanitize_desktop_ipc_state,
+    build_desktop_status_state, inspect_tauri_config, plan_desktop_ipc_action,
+    renderer_command_can_access_secret, sanitize_desktop_ipc_state, DesktopIpcError,
 };
 use vectant_local_support_app::http::{
     bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
@@ -641,6 +642,60 @@ async fn app_shutdown_revokes_session_approvals_ports_and_preview_traffic() {
         event.summary.contains("Local app shutdown disconnected")
             && event.user_visible
     }));
+}
+
+#[tokio::test]
+async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payload() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_desktop_state", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_desktop",
+        "org_desktop",
+        "wk_desktop_state",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let session_id = session.session_id().to_string();
+    let state = AppState::new(session, policy);
+    let mut request = request("app.rs");
+    request.session_id = session_id.clone();
+    request.account_id = "acct_desktop".to_string();
+    request.org_id = "org_desktop".to_string();
+    request.workspace_id = "wk_desktop_state".to_string();
+    request.device_fingerprint = "sha256:1111111111111111".to_string();
+    request.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let review = state.workspace.read_file_for_review(&request);
+    state
+        .approvals
+        .lock()
+        .await
+        .queue_file_review(request, review);
+    state
+        .port_approvals
+        .lock()
+        .await
+        .approve_browser_port_grant(&session_id, 5173, "vite:5173:pid123");
+    state.audit.lock().await.append(
+        AuditClass::Security,
+        Some("req_desktop_secret_event".to_string()),
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        true,
+    );
+
+    let desktop_state = build_desktop_status_state(&state).await;
+    let serialized = serde_json::to_string(&desktop_state).unwrap();
+
+    assert_eq!(desktop_state["connected"], true);
+    assert_eq!(desktop_state["session"]["account_id"], "acct_desktop");
+    assert_eq!(desktop_state["workspace"]["workspace_id"], "wk_desktop_state");
+    assert_eq!(desktop_state["approvals"]["pending_count"], 1);
+    assert_eq!(desktop_state["approvals"]["content_included"], false);
+    assert_eq!(desktop_state["ports"][0]["port"], 5173);
+    assert!(!serialized.contains("preview_token"));
+    assert!(!serialized.contains("preview_token_hash"));
+    assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert!(!serialized.contains("Authorization: Bearer"));
 }
 
 #[test]
@@ -1385,6 +1440,54 @@ fn desktop_ipc_allows_only_narrow_commands() {
         session_id: "sess_123".to_string(),
     });
     assert_eq!(dangerous_delete.reason, "dangerous_ipc_command_blocked");
+}
+
+#[test]
+fn desktop_ipc_action_plans_map_renderer_commands_to_narrow_daemon_routes() {
+    let status = plan_desktop_ipc_action(&IpcRequest {
+        command: "session.status".to_string(),
+        request_id: "req_status".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert_eq!(status.daemon_method.as_deref(), Some("GET"));
+    assert_eq!(status.daemon_path_template.as_deref(), Some("/v1/status/{request_id}"));
+    assert!(!status.requires_local_control);
+    assert!(status.returns_sanitized_state);
+
+    let revoke = plan_desktop_ipc_action(&IpcRequest {
+        command: "approval.revoke_session".to_string(),
+        request_id: "req_revoke_session_approvals".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert_eq!(revoke.daemon_method.as_deref(), Some("POST"));
+    assert_eq!(
+        revoke.daemon_path_template.as_deref(),
+        Some("/v1/approval/revoke-all/{request_id}")
+    );
+    assert!(revoke.requires_local_control);
+    assert!(revoke.user_visible);
+
+    let workspace_pick = plan_desktop_ipc_action(&IpcRequest {
+        command: "workspace.pick".to_string(),
+        request_id: "req_workspace_pick".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(workspace_pick.daemon_method.is_none());
+    assert!(workspace_pick.requires_local_control);
+
+    let denied = plan_desktop_ipc_action(&IpcRequest {
+        command: "shell.exec".to_string(),
+        request_id: "req_shell_exec".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap_err();
+    assert_eq!(
+        denied,
+        DesktopIpcError::Denied("dangerous_ipc_command_blocked".to_string())
+    );
 }
 
 #[test]
