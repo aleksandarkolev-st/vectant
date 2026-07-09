@@ -1501,8 +1501,17 @@ fn desktop_tauri_config_keeps_renderer_unprivileged() {
     assert!(report.clipboard_disabled);
     assert!(report.devtools_disabled);
     assert!(report.renderer_token_access_blocked);
+    assert!(report.csp_blocks_loopback_fetch);
     assert!(!report.updater_requires_signature);
     assert!(!report.hardened());
+
+    let loopback_fetch_config = config.replace(
+        r#"connect-src 'self';"#,
+        r#"connect-src 'self' http://127.0.0.1:*;"#,
+    );
+    let loopback_fetch_report = inspect_tauri_config(&loopback_fetch_config).unwrap();
+    assert!(!loopback_fetch_report.csp_blocks_loopback_fetch);
+    assert!(!loopback_fetch_report.hardened());
 
     let signed_config = config
         .replace(r#""createUpdaterArtifacts": false"#, r#""createUpdaterArtifacts": true"#)

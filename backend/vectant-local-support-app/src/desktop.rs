@@ -11,6 +11,7 @@ pub struct DesktopSecurityReport {
     pub clipboard_disabled: bool,
     pub devtools_disabled: bool,
     pub updater_requires_signature: bool,
+    pub csp_blocks_loopback_fetch: bool,
     pub renderer_token_access_blocked: bool,
 }
 
@@ -48,6 +49,7 @@ impl DesktopSecurityReport {
             && self.shell_open_disabled
             && self.clipboard_disabled
             && self.devtools_disabled
+            && self.csp_blocks_loopback_fetch
             && self.updater_requires_signature
             && self.renderer_token_access_blocked
     }
@@ -179,6 +181,7 @@ pub fn inspect_tauri_config(config_json: &str) -> Result<DesktopSecurityReport, 
         clipboard_disabled,
         devtools_disabled,
         updater_requires_signature,
+        csp_blocks_loopback_fetch: csp_blocks_loopback_fetch(csp),
         renderer_token_access_blocked: renderer_token_access_blocked(&value),
     })
 }
@@ -246,6 +249,19 @@ fn csp_allows_no_remote_code(csp: &str) -> bool {
         && !lower.contains("'unsafe-inline'")
         && !lower.contains("script-src http:")
         && !lower.contains("script-src https:")
+}
+
+fn csp_blocks_loopback_fetch(csp: &str) -> bool {
+    let lower = csp.to_ascii_lowercase();
+    let connect_src = lower
+        .split(';')
+        .map(str::trim)
+        .find(|directive| directive.starts_with("connect-src "))
+        .unwrap_or_default();
+    !connect_src.contains("127.0.0.1")
+        && !connect_src.contains("localhost")
+        && !connect_src.contains("[::1]")
+        && !connect_src.contains("::1")
 }
 
 fn is_ed25519_public_key_hex(value: &str) -> bool {
