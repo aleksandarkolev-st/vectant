@@ -23,6 +23,7 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "workspace.inventory",
     "approval.file.review",
     "approval.port.review",
+    "approval.revoke_session",
     "history.export",
     "history.delete",
 ];

@@ -16,7 +16,7 @@
         </div>
         <div class="status-block">
           <span class="status-pill" data-status-pill>Disconnected</span>
-          <span class="muted">No workspace selected</span>
+          <span class="muted" data-workspace-subtitle>No workspace selected</span>
         </div>
       </header>
 
@@ -48,10 +48,10 @@
             <span class="tag warn">Local authority required</span>
           </div>
           <dl class="facts">
-            <div><dt>Account</dt><dd>not paired</dd></div>
-            <div><dt>Workspace</dt><dd>No folder selected</dd></div>
-            <div><dt>Device</dt><dd>Stored locally, private key never shown to renderer</dd></div>
-            <div><dt>Mode</dt><dd>Balanced review before send</dd></div>
+            <div><dt>Account</dt><dd data-field="account">not paired</dd></div>
+            <div><dt>Workspace</dt><dd data-field="workspace">No folder selected</dd></div>
+            <div><dt>Device</dt><dd data-field="device">Stored locally, private key never shown to renderer</dd></div>
+            <div><dt>Mode</dt><dd data-field="mode">Balanced review before send</dd></div>
           </dl>
         </article>
 
@@ -68,6 +68,7 @@
             <button type="button" data-action="disconnect" disabled>Disconnect</button>
             <button type="button" data-action="revoke" disabled>Revoke session approvals</button>
           </div>
+          <p class="hint" data-bridge-status>Desktop IPC unavailable, showing safe disconnected state.</p>
         </article>
       </section>
 
@@ -76,12 +77,12 @@
           <div class="panel-head">
             <div>
               <p class="label">Review before send</p>
-              <h2>No live approval request</h2>
+              <h2 data-field="approval-title">No live approval request</h2>
             </div>
-            <span class="tag">Zero bytes sent</span>
+            <span class="tag" data-field="approval-tag">Zero bytes sent</span>
           </div>
           <div class="approval-preview">
-            <p>When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.</p>
+            <p data-field="approval-copy">When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.</p>
           </div>
         </article>
         <article class="panel">
@@ -100,11 +101,11 @@
           <div class="panel-head">
             <div>
               <p class="label">Localhost preview</p>
-              <h2>No ports approved</h2>
+              <h2 data-field="ports-title">No ports approved</h2>
             </div>
             <span class="tag warn">Browser only</span>
           </div>
-          <p class="copy">Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.</p>
+          <p class="copy" data-field="ports-copy">Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.</p>
         </article>
         <article class="panel">
           <p class="label">Never included in MVP</p>
@@ -122,11 +123,11 @@
           <div class="panel-head">
             <div>
               <p class="label">Local activity</p>
-              <h2>History is empty</h2>
+              <h2 data-field="activity-title">History is empty</h2>
             </div>
             <span class="tag">Raw bodies excluded</span>
           </div>
-          <p class="copy">Allowed, denied, redacted, approved, revoked, paused, disconnected, exported, and deleted events are written to local product storage with scrubbed summaries.</p>
+          <p class="copy" data-field="activity-copy">Allowed, denied, redacted, approved, revoked, paused, disconnected, exported, and deleted events are written to local product storage with scrubbed summaries.</p>
         </article>
         <article class="panel">
           <p class="label">History controls</p>

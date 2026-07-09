@@ -97,6 +97,24 @@ pub fn renderer_command_can_access_secret(command: &str) -> bool {
     .any(|fragment| normalized.contains(fragment))
 }
 
+pub fn sanitize_desktop_ipc_state(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut sanitized = serde_json::Map::new();
+            for (key, value) in map {
+                if desktop_state_key_is_sensitive(key) {
+                    continue;
+                }
+                sanitized.insert(key.clone(), sanitize_desktop_ipc_state(value));
+            }
+            Value::Object(sanitized)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sanitize_desktop_ipc_state).collect()),
+        Value::String(text) => Value::String(scrub_desktop_state_string(text)),
+        other => other.clone(),
+    }
+}
+
 fn csp_allows_no_remote_code(csp: &str) -> bool {
     let lower = csp.to_ascii_lowercase();
     lower.contains("default-src 'self'")
@@ -127,4 +145,23 @@ fn renderer_token_access_blocked(value: &Value) -> bool {
             .to_string()
             .to_ascii_lowercase()
             .contains("keychain")
+}
+
+fn desktop_state_key_is_sensitive(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized.contains("token")
+        || normalized.contains("private_key")
+        || normalized.contains("device_private")
+        || normalized.contains("keychain")
+        || normalized.contains("credential")
+        || normalized.contains("secret")
+        || normalized.contains("raw_body")
+        || normalized.contains("raw_bodies")
+        || normalized.contains("authorization")
+}
+
+fn scrub_desktop_state_string(value: &str) -> String {
+    let scanner = crate::scanner::SecretScanner::default();
+    let report = scanner.scan(value);
+    scanner.redact(value, &report)
 }

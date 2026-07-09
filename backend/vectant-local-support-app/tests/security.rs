@@ -9,7 +9,9 @@ use axum::Router;
 use tempfile::tempdir;
 use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore};
 use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
-use vectant_local_support_app::desktop::{inspect_tauri_config, renderer_command_can_access_secret};
+use vectant_local_support_app::desktop::{
+    inspect_tauri_config, renderer_command_can_access_secret, sanitize_desktop_ipc_state,
+};
 use vectant_local_support_app::http::{
     bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
     LocalAuthorizationError,
@@ -1350,6 +1352,13 @@ fn desktop_ipc_allows_only_narrow_commands() {
     });
     assert_eq!(allowed_delete.decision, "allow");
 
+    let allowed_revoke = decide_ipc_request(&IpcRequest {
+        command: "approval.revoke_session".to_string(),
+        request_id: "req_revoke_session_approvals".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed_revoke.decision, "allow");
+
     for command in [
         "fs.readFile",
         "workspace.writeFile",
@@ -1434,6 +1443,40 @@ fn desktop_ipc_blocks_renderer_secret_and_device_key_access() {
         assert_eq!(denied.decision, "deny", "{command} must be denied");
         assert!(denied.user_visible);
     }
+}
+
+#[test]
+fn desktop_ipc_state_sanitizer_removes_tokens_keys_and_raw_bodies() {
+    let state = serde_json::json!({
+        "session": {
+            "session_id": "sess_safe",
+            "device_private_key": "PRIVATE KEY",
+            "authorization": "Bearer abcdefghijklmnopqrstuvwxyz",
+            "local_control_secret": "desktop-control-secret-000000000000"
+        },
+        "ports": [{
+            "port": 5173,
+            "preview_host": "br-local-p5173.vectant-preview.dev",
+            "preview_token": "raw-preview-token",
+            "preview_token_hash": "sha256:tokenhash"
+        }],
+        "history": {
+            "raw_bodies_included": false,
+            "raw_body": "OPENAI_API_KEY=sk-testsecret000000000000000"
+        }
+    });
+    let sanitized = sanitize_desktop_ipc_state(&state);
+    let serialized = serde_json::to_string(&sanitized).unwrap();
+
+    assert!(serialized.contains("sess_safe"));
+    assert!(serialized.contains("br-local-p5173.vectant-preview.dev"));
+    assert!(!serialized.contains("PRIVATE KEY"));
+    assert!(!serialized.contains("Bearer abcdefghijklmnopqrstuvwxyz"));
+    assert!(!serialized.contains("desktop-control-secret"));
+    assert!(!serialized.contains("raw-preview-token"));
+    assert!(!serialized.contains("preview_token"));
+    assert!(!serialized.contains("sk-testsecret"));
+    assert!(!serialized.contains("raw_body"));
 }
 
 #[test]
