@@ -187,6 +187,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/disconnect/:request_id", post(disconnect_session))
         .route("/v1/approval/approve/:approval_id/:request_id", post(approve_request))
         .route("/v1/approval/deny/:approval_id/:request_id", post(deny_request))
+        .route("/v1/approval/revoke-all/:request_id", post(revoke_all_approvals))
         .route("/v1/port/approve", post(approve_port))
         .route("/v1/port/revoke/:port/:request_id", post(revoke_port))
         .route("/v1/history/export/:request_id", get(export_history))
@@ -394,6 +395,39 @@ async fn deny_request(
     } else {
         Err(denied(StatusCode::NOT_FOUND, "approval_not_pending"))
     }
+}
+
+async fn revoke_all_approvals(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
+    validate_safe_request_id(&request_id)?;
+    let token = bearer(&headers)?;
+    {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    }
+    state.approvals.lock().await.revoke_all();
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Control,
+        Some(request_id.clone()),
+        "Session approvals revoked locally. Future sends require review.",
+        true,
+    );
+    persist_audit(&state, &audit)?;
+    Ok(Json(serde_json::json!({
+        "decision": "session_approvals_revoked",
+        "request_id": request_id,
+        "raw_bodies_included": false,
+        "bytes_sent": 0
+    })))
 }
 
 async fn approve_port(

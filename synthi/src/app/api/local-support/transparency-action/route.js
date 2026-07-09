@@ -159,6 +159,7 @@ function localDaemonActionPath(action, body, requestId) {
   if (action === "pause_session") return { method: "POST", path: `/v1/session/pause/${requestId}` };
   if (action === "resume_session") return { method: "POST", path: `/v1/session/resume/${requestId}` };
   if (action === "disconnect_session") return { method: "POST", path: `/v1/session/disconnect/${requestId}` };
+  if (action === "revoke_session_approvals") return { method: "POST", path: `/v1/approval/revoke-all/${requestId}` };
   if (action === "export_history") return { method: "GET", path: `/v1/history/export/${requestId}` };
   if (action === "delete_history") return { method: "POST", path: `/v1/history/delete/${requestId}` };
   if (action === "revoke_port") {

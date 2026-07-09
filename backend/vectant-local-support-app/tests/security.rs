@@ -235,8 +235,63 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert_eq!(queued_body["decision"], "approval_queued");
     assert_eq!(queued_body["bytes_sent"], 0);
     assert!(queued_body.get("content").is_none() || queued_body["content"].is_null());
-    let approval_id = queued_body["approval_id"].as_str().unwrap().to_string();
-    assert!(approval_id.starts_with("appr_"));
+    let revoked_approval_id = queued_body["approval_id"].as_str().unwrap().to_string();
+    assert!(revoked_approval_id.starts_with("appr_"));
+
+    let mut revoke_req = req.clone();
+    revoke_req.request_id = "req_http_review_revoke_all".to_string();
+    revoke_req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let queued_for_revoke = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers(http_headers(
+            &token,
+            &revoke_req,
+            &shared_state.session.lock().await,
+        ))
+        .json(&revoke_req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(queued_for_revoke.status(), StatusCode::OK);
+    let queued_for_revoke_body: serde_json::Value = queued_for_revoke.json().await.unwrap();
+    assert_eq!(queued_for_revoke_body["decision"], "approval_queued");
+    assert!(shared_state.approvals.lock().await.pending_len() >= 2);
+
+    let revoke_all = client
+        .post(format!(
+            "http://{addr}/v1/approval/revoke-all/req_http_revoke_all"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_all.status(), StatusCode::OK);
+    let revoke_all_body: serde_json::Value = revoke_all.json().await.unwrap();
+    assert_eq!(revoke_all_body["decision"], "session_approvals_revoked");
+    assert_eq!(revoke_all_body["bytes_sent"], 0);
+    assert_eq!(shared_state.approvals.lock().await.pending_len(), 0);
+
+    let mut approve_req = req.clone();
+    approve_req.request_id = "req_http_review_after_revoke_all".to_string();
+    approve_req.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let queued_after_revoke = client
+        .post(format!("http://{addr}/v1/file/review"))
+        .headers(http_headers(
+            &token,
+            &approve_req,
+            &shared_state.session.lock().await,
+        ))
+        .json(&approve_req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(queued_after_revoke.status(), StatusCode::OK);
+    let queued_after_revoke_body: serde_json::Value = queued_after_revoke.json().await.unwrap();
+    assert_eq!(queued_after_revoke_body["decision"], "approval_queued");
+    let approval_id = queued_after_revoke_body["approval_id"].as_str().unwrap().to_string();
 
     let approval_without_local_secret = client
         .post(format!(

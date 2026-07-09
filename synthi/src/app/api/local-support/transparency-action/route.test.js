@@ -161,6 +161,48 @@ describe("local support transparency action route", () => {
     );
   });
 
+  it("forwards session approval revocation to the local daemon", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/v1/status/")) {
+        return new Response(JSON.stringify({
+          session: { session_id: "sess_live" },
+          workspace: { workspace_id: "wk_live" },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        decision: "session_approvals_revoked",
+        bytes_sent: 0,
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ action: "revoke_session_approvals" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      decision: "local_control_action_applied",
+      action: "revoke_session_approvals",
+      daemon_decision: "session_approvals_revoked",
+      local_daemon_forwarded: true,
+      bytes_sent: 0,
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/^http:\/\/127\.0\.0\.1:49152\/v1\/approval\/revoke-all\/web_revoke_session_approvals_/),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "x-vectant-local-control-secret": "desktop_control_secret_123456789012345",
+        }),
+      }),
+    );
+  });
+
   it("sanitizes daemon history export responses before returning them to the browser", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
