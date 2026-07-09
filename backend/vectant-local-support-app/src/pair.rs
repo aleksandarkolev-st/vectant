@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -45,6 +47,20 @@ impl DeviceIdentity {
         }
     }
 
+    pub fn from_private_key_hex(private_key_hex: &str) -> Result<Self, DeviceIdentityStoreError> {
+        let private_key_bytes: [u8; 32] = hex::decode(private_key_hex)
+            .map_err(|_| DeviceIdentityStoreError::InvalidPrivateKey)?
+            .try_into()
+            .map_err(|_| DeviceIdentityStoreError::InvalidPrivateKey)?;
+        Ok(Self {
+            signing_key: SigningKey::from_bytes(&private_key_bytes),
+        })
+    }
+
+    fn private_key_hex(&self) -> String {
+        hex::encode(self.signing_key.to_bytes())
+    }
+
     pub fn public_identity(&self) -> DevicePublicIdentity {
         let verifying_key = self.signing_key.verifying_key();
         let device_public_key = hex::encode(verifying_key.to_bytes());
@@ -81,6 +97,117 @@ impl DeviceIdentity {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredDeviceIdentity {
+    version: u8,
+    private_key_hex: String,
+    device_public_key: String,
+    device_fingerprint: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceIdentityStore {
+    path: PathBuf,
+}
+
+impl DeviceIdentityStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load_or_create(&self) -> Result<DeviceIdentity, DeviceIdentityStoreError> {
+        match self.load() {
+            Ok(identity) => Ok(identity),
+            Err(DeviceIdentityStoreError::NotFound) => {
+                let identity = DeviceIdentity::generate();
+                self.persist(&identity)?;
+                Ok(identity)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn load(&self) -> Result<DeviceIdentity, DeviceIdentityStoreError> {
+        let raw = fs::read_to_string(&self.path)
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    DeviceIdentityStoreError::NotFound
+                } else {
+                    DeviceIdentityStoreError::Io
+                }
+            })?;
+        if raw.len() > 4096 {
+            return Err(DeviceIdentityStoreError::InvalidFormat);
+        }
+        let stored: StoredDeviceIdentity = serde_json::from_str(&raw)
+            .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
+        if stored.version != 1 {
+            return Err(DeviceIdentityStoreError::InvalidFormat);
+        }
+        let identity = DeviceIdentity::from_private_key_hex(&stored.private_key_hex)?;
+        let public = identity.public_identity();
+        if stored.device_public_key != public.device_public_key
+            || stored.device_fingerprint != public.device_fingerprint
+        {
+            return Err(DeviceIdentityStoreError::PublicIdentityMismatch);
+        }
+        Ok(identity)
+    }
+
+    pub fn persist(&self, identity: &DeviceIdentity) -> Result<(), DeviceIdentityStoreError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|_| DeviceIdentityStoreError::Io)?;
+        }
+        let public = identity.public_identity();
+        let stored = StoredDeviceIdentity {
+            version: 1,
+            private_key_hex: identity.private_key_hex(),
+            device_public_key: public.device_public_key,
+            device_fingerprint: public.device_fingerprint,
+        };
+        let raw = serde_json::to_vec_pretty(&stored)
+            .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
+        write_private_identity_file(&self.path, &raw)
+    }
+
+    pub fn reset(&self) -> Result<DeviceIdentity, DeviceIdentityStoreError> {
+        if self.path.exists() {
+            fs::remove_file(&self.path).map_err(|_| DeviceIdentityStoreError::Io)?;
+        }
+        let identity = DeviceIdentity::generate();
+        self.persist(&identity)?;
+        Ok(identity)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceIdentityStoreError {
+    NotFound,
+    Io,
+    InvalidFormat,
+    InvalidPrivateKey,
+    PublicIdentityMismatch,
+}
+
+impl std::fmt::Display for DeviceIdentityStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NotFound => "device identity not found",
+            Self::Io => "device identity storage unavailable",
+            Self::InvalidFormat => "device identity storage invalid",
+            Self::InvalidPrivateKey => "device identity private key invalid",
+            Self::PublicIdentityMismatch => "device identity public fields mismatch",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for DeviceIdentityStoreError {}
 
 #[derive(Debug)]
 pub struct PairingSession {
@@ -192,6 +319,38 @@ fn valid_pairing_proof_shape(proof: &PairingProof) -> bool {
         && fixed_hex(&proof.device_public_key, 64)
         && fixed_hex(&proof.signature, 128)
         && fixed_device_fingerprint(&proof.device_fingerprint)
+}
+
+#[cfg(unix)]
+fn write_private_identity_file(path: &Path, raw: &[u8]) -> Result<(), DeviceIdentityStoreError> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|_| DeviceIdentityStoreError::Io)?;
+    file.write_all(raw).map_err(|_| DeviceIdentityStoreError::Io)?;
+    file.sync_all().map_err(|_| DeviceIdentityStoreError::Io)
+}
+
+#[cfg(not(unix))]
+fn write_private_identity_file(path: &Path, raw: &[u8]) -> Result<(), DeviceIdentityStoreError> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| DeviceIdentityStoreError::Io)?;
+    file.write_all(raw).map_err(|_| DeviceIdentityStoreError::Io)?;
+    file.sync_all().map_err(|_| DeviceIdentityStoreError::Io)
 }
 
 fn safe_pairing_field(value: &str, max_len: usize) -> bool {

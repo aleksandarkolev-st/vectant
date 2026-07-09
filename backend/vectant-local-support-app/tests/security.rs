@@ -20,7 +20,8 @@ use vectant_local_support_app::lifecycle::{
     disconnect_cleanup, uninstall_cleanup, PendingApprovalQueue,
 };
 use vectant_local_support_app::pair::{
-    verify_pairing_proof, DeviceIdentity, PairingError, PairingSession,
+    verify_pairing_proof, DeviceIdentity, DeviceIdentityStore, DeviceIdentityStoreError,
+    PairingError, PairingSession,
 };
 use vectant_local_support_app::preview::{
     classify_preview_redirect, decide_preview_request, decide_preview_request_from_header_list,
@@ -1714,6 +1715,51 @@ fn local_sessions_can_bind_to_pairing_device_identity() {
     assert_eq!(
         validate_file_request_authorization(&session, &policy, &req, &wrong_device, now),
         Err(LocalAuthorizationError::DeviceMismatch)
+    );
+}
+
+#[test]
+fn device_identity_store_persists_rotates_and_fails_closed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("device-identity.json");
+    let store = DeviceIdentityStore::new(&path);
+
+    let first = store.load_or_create().unwrap();
+    let first_public = first.public_identity();
+    let raw = fs::read_to_string(store.path()).unwrap();
+    assert!(raw.contains(&first_public.device_public_key));
+    assert!(raw.contains(&first_public.device_fingerprint));
+    assert!(!serde_json::to_string(&first_public)
+        .unwrap()
+        .contains("private_key"));
+
+    let loaded = store.load_or_create().unwrap();
+    assert_eq!(
+        loaded.public_identity().device_fingerprint,
+        first_public.device_fingerprint
+    );
+
+    let rotated = store.reset().unwrap();
+    assert_ne!(
+        rotated.public_identity().device_fingerprint,
+        first_public.device_fingerprint
+    );
+
+    fs::write(&path, "{not json").unwrap();
+    assert_eq!(
+        store.load().unwrap_err(),
+        DeviceIdentityStoreError::InvalidFormat
+    );
+
+    let identity = DeviceIdentity::generate();
+    store.persist(&identity).unwrap();
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    stored["device_fingerprint"] = serde_json::json!("sha256:0000000000000000");
+    fs::write(&path, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+    assert_eq!(
+        store.load().unwrap_err(),
+        DeviceIdentityStoreError::PublicIdentityMismatch
     );
 }
 
