@@ -32589,6 +32589,12 @@ function randomColdImportedRuntimeClosureRow({
     proof_ids: proofIds,
     sourceColdPathRowId: coldRow?.rowId ?? coldRow?.row_id ?? null,
     source_cold_path_row_id: coldRow?.rowId ?? coldRow?.row_id ?? null,
+    upstreamLifecycleFailure: compactObject(
+      coldRow?.upstreamLifecycleFailure ?? coldRow?.upstream_lifecycle_failure,
+    ),
+    upstream_lifecycle_failure: compactObject(
+      coldRow?.upstreamLifecycleFailure ?? coldRow?.upstream_lifecycle_failure,
+    ),
     randomColdImportedRuntimeClosureSourceColdPath: sourceColdPath,
     random_cold_imported_runtime_closure_source_cold_path: sourceColdPath,
     runtimeProfileAdapterResultImport,
@@ -32715,6 +32721,14 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
       };
   const randomLargeProjectColdPath =
     randomColdPathSupportFacet(json, result, candidate);
+  const upstreamLifecycleFailure = realRocmUpstreamLifecycleFailureFacet(firstCompactObject(
+    result.upstreamLifecycleFailure,
+    result.upstream_lifecycle_failure,
+    json.upstreamLifecycleFailure,
+    json.upstream_lifecycle_failure,
+    randomLargeProjectColdPath.upstreamLifecycleFailure,
+    randomLargeProjectColdPath.upstream_lifecycle_failure,
+  ));
   const randomColdBuildExecutionPlan = randomColdBuildExecutionPlanFacet(firstCompactObject(
     result.coldBuildExecutionPlan,
     result.cold_build_execution_plan,
@@ -33201,6 +33215,14 @@ async function randomLargeProjectColdPathResultRow(json, filePath, context, resu
     refusal_proven: matrixOutcome === 'refusal_proven',
     randomLargeProjectColdPath,
     random_large_project_cold_path: randomLargeProjectColdPath,
+    upstreamLifecycleFailure:
+      Object.keys(upstreamLifecycleFailure).length > 0
+        ? upstreamLifecycleFailure
+        : null,
+    upstream_lifecycle_failure:
+      Object.keys(upstreamLifecycleFailure).length > 0
+        ? upstreamLifecycleFailure
+        : null,
     randomColdPathSelectionAudit: randomLargeProjectColdPath.selectionAudit,
     random_cold_path_selection_audit: randomLargeProjectColdPath.selection_audit,
     randomColdPathDirectInputEvidence,
@@ -39465,6 +39487,10 @@ const LARGE_ARBITRARY_PROJECT_RUNTIME_CLOSURE_GATES = Object.freeze([
     gap: 'large_arbitrary_project_cold_source_intake_required',
   },
   {
+    key: 'cold_build_execution',
+    gap: 'large_arbitrary_project_cold_build_execution_required',
+  },
+  {
     key: 'runtime_adapter_or_app_hook_contract',
     gap: 'large_arbitrary_project_runtime_adapter_or_app_hook_contract_required',
   },
@@ -39528,6 +39554,42 @@ function runtimeClosureStageObserved(stageEvents, stage) {
   ) === true;
 }
 
+function runtimeClosureLifecycleStatusText(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim().toLowerCase();
+    if (!text) continue;
+    return text;
+  }
+  return null;
+}
+
+function runtimeClosureLifecycleBuildSucceeded(lifecycle = {}) {
+  const recomputed = firstBool(
+    lifecycle.matrixRecomputedFromLogTails,
+    lifecycle.matrix_recomputed_from_log_tails,
+  ) === true;
+  if (!recomputed) return false;
+  const status = runtimeClosureLifecycleStatusText(
+    lifecycle.buildExitCodeText,
+    lifecycle.build_exit_code_text,
+  );
+  return status === '0';
+}
+
+function runtimeClosureLifecycleBuildObserved(lifecycle = {}) {
+  const recomputed = firstBool(
+    lifecycle.matrixRecomputedFromLogTails,
+    lifecycle.matrix_recomputed_from_log_tails,
+  ) === true;
+  if (!recomputed) return false;
+  const status = runtimeClosureLifecycleStatusText(
+    lifecycle.buildExitCodeText,
+    lifecycle.build_exit_code_text,
+  );
+  return status !== null;
+}
+
 function runtimeClosureRowSignals(row = {}) {
   const proofMode = firstText(row.proofMode, row.proof_mode);
   const randomColdPath = proofMode === 'random_large_project_cold_path';
@@ -39581,6 +39643,10 @@ function runtimeClosureRowSignals(row = {}) {
     ?? row.random_cold_runtime_boundary_plan_binding
     ?? row.runtimeBoundaryPlanBinding
     ?? row.runtime_boundary_plan_binding
+  );
+  const upstreamLifecycleFailure = compactObject(
+    row.upstreamLifecycleFailure
+    ?? row.upstream_lifecycle_failure
   );
   const runtimeChain = compactObject(
     row.realRocmRuntimeChain
@@ -39707,6 +39773,8 @@ function runtimeClosureRowSignals(row = {}) {
       )
       || compactObject(row.realRocmSourceTreeTransport ?? row.real_rocm_source_tree_transport)
         .accepted === true,
+    cold_build_execution:
+      runtimeClosureLifecycleBuildSucceeded(upstreamLifecycleFailure),
     runtime_adapter_or_app_hook_contract:
       appHookGate.accepted === true,
     artifact_transport:
@@ -39742,6 +39810,9 @@ function runtimeClosureRowSignals(row = {}) {
       gateAccepted.cold_source_intake
       || coldSourceTreeIntake.present === true
       || importedRuntimeClosureSourceColdPath.present === true,
+    cold_build_execution:
+      gateAccepted.cold_build_execution
+      || runtimeClosureLifecycleBuildObserved(upstreamLifecycleFailure),
     runtime_adapter_or_app_hook_contract:
       gateAccepted.runtime_adapter_or_app_hook_contract
       || projectedGateAccepted.runtime_adapter_or_app_hook_contract === true
@@ -39901,6 +39972,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
     + appHookPlanRuntimeManifestBindingAcceptedUnhashedCount;
   const strictRuntimeProofAcceptedCount =
     signals.filter((signal) => signal.strictRuntimeProofAccepted).length;
+  const coldBuildExecutionAcceptedCount =
+    signals.filter((signal) => signal.gateAccepted.cold_build_execution === true).length;
+  const coldBuildExecutionObservedCount =
+    signals.filter((signal) => signal.gateObserved.cold_build_execution === true).length;
   const planBindingGap =
     closureRows.length > 0 && appHookPlanRuntimeManifestBindingAcceptedCount === 0
       ? ['large_arbitrary_project_app_hook_plan_runtime_manifest_binding_required']
@@ -39914,7 +39989,7 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
         : 'missing';
   return coverageEntry({
     id: 'large_arbitrary_project_runtime_closure',
-    requirement: 'Large arbitrary project runtime closure through cold intake, adapter/app-hook contract, same-process artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, runtime chain, and strict proof ledger',
+    requirement: 'Large arbitrary project runtime closure through cold intake, observed cold build execution, adapter/app-hook contract, same-process artifact transport, epoch publication, dispatch trace, host identity, output oracle, firewall, runtime chain, and strict proof ledger',
     status,
     rows: closureRows,
     openGaps: closureRows.length > 0
@@ -39970,6 +40045,10 @@ function largeArbitraryProjectRuntimeClosureCoverage(rows) {
       appHookPlanRuntimeManifestBindingAcceptedCount,
     strictRuntimeProofAcceptedCount,
     strict_runtime_proof_accepted_count: strictRuntimeProofAcceptedCount,
+    coldBuildExecutionAcceptedCount,
+    cold_build_execution_accepted_count: coldBuildExecutionAcceptedCount,
+    coldBuildExecutionObservedCount,
+    cold_build_execution_observed_count: coldBuildExecutionObservedCount,
     matrixRuntimeIngestionRequired:
       strictRuntimeProofAcceptedCount > 0 && acceptedClosureRows.length === 0,
     matrix_runtime_ingestion_required:

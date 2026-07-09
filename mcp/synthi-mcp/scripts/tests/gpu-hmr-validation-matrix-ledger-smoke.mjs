@@ -4905,6 +4905,21 @@ const fileBackedColdBaseManifest = randomColdPathManifest({
   immutableCommit: sha256Hex('runtime-bridge-file-backed-import:commit').slice(0, 40),
 });
 const fileBackedColdBaseResult = fileBackedColdBaseManifest.results[0];
+const fileBackedAcceptedColdBuildLifecycle = {
+  schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+  schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+  proofAuthority: 'wrapper_lifecycle_status_only_not_gpu_hmr_success',
+  proof_authority: 'wrapper_lifecycle_status_only_not_gpu_hmr_success',
+  acceptedForGpuHmr: false,
+  accepted_for_gpu_hmr: false,
+  gpuHmrSuccess: false,
+  gpu_hmr_success: false,
+  canSatisfyRuntimeProof: false,
+  can_satisfy_runtime_proof: false,
+  timings: 'configure_exit_code=0 post_configure_exit_code=0 build_exit_code=0 run_exit_code=0',
+  buildLogTail: 'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
+  build_log_tail: 'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
+};
 const fileBackedRuntimeBoundaryPlanBinding = randomColdRuntimeBoundaryPlanBindingFixture({
   appHookMaterializationPlan: fileBackedColdBaseResult.runtimeAppHookMaterializationPlan,
   sourceIntakeEvidence: fileBackedColdBaseResult.sourceIntakeEvidence,
@@ -4968,6 +4983,8 @@ await writeJson(
     sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import.git',
     immutableCommit: sha256Hex('runtime-bridge-file-backed-import:commit').slice(0, 40),
     resultOverrides: {
+      upstreamLifecycleFailure: fileBackedAcceptedColdBuildLifecycle,
+      upstream_lifecycle_failure: fileBackedAcceptedColdBuildLifecycle,
       runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
         runtimeProfileAdapterResultPath: fileBackedAdapterResultRelPath,
         runtime_profile_adapter_result_path: fileBackedAdapterResultRelPath,
@@ -5176,6 +5193,10 @@ assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.epoch_publicatio
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.dispatch_trace.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.host_identity.observed, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.output_or_visual_oracle.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cold_build_execution.accepted, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.cold_build_execution.observed, true);
+assert.equal(fileBackedAdapterImportRuntimeClosure.coldBuildExecutionAcceptedCount, 2);
+assert.equal(fileBackedAdapterImportRuntimeClosure.coldBuildExecutionObservedCount, 2);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted, true);
 assert.equal(fileBackedAdapterImportRuntimeClosure.appHookPlanRuntimeManifestBindingAcceptedCount, 1);
 assert.equal(fileBackedAdapterImportRuntimeClosure.gateCoverage.artifact_transport.accepted, true);
@@ -6195,6 +6216,11 @@ assert.equal(randomColdRuntimeClosure.realRocmRowCount, 0);
 assert.equal(randomColdRuntimeClosure.runtimeSupportClosurePresentCount, 1);
 assert.equal(randomColdRuntimeClosure.runtimeSupportClosureAcceptedCount, 1);
 assert.equal(randomColdRuntimeClosure.gateCoverage.cold_source_intake.accepted, true);
+assert.equal(randomColdRuntimeClosure.gateCoverage.cold_build_execution.observed, false);
+assert.equal(randomColdRuntimeClosure.gateCoverage.cold_build_execution.accepted, false);
+assert.equal(randomColdRuntimeClosure.coldBuildExecutionAcceptedCount, 0);
+assert.equal(randomColdRuntimeClosure.coldBuildExecutionObservedCount, 0);
+assert.ok(randomColdRuntimeClosure.requiredClosureGates.includes('cold_build_execution'));
 assert.equal(
   randomColdRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.observed,
   true,
@@ -6205,6 +6231,9 @@ assert.equal(
 );
 assert.ok(randomColdRuntimeClosure.openGaps.includes(
   'large_arbitrary_project_runtime_adapter_or_app_hook_contract_required',
+));
+assert.ok(randomColdRuntimeClosure.openGaps.includes(
+  'large_arbitrary_project_cold_build_execution_required',
 ));
 assert.ok(randomColdRuntimeClosure.openGaps.includes(
   'large_arbitrary_project_output_or_visual_oracle_required',
@@ -23614,11 +23643,19 @@ assert.equal(
 );
 assert.equal(largeArbitraryRuntimeClosure.randomColdPathRowCount, 0);
 assert.equal(largeArbitraryRuntimeClosure.gateCoverage.cold_source_intake.accepted, true);
+assert.equal(largeArbitraryRuntimeClosure.gateCoverage.cold_build_execution.accepted, false);
+assert.equal(largeArbitraryRuntimeClosure.gateCoverage.cold_build_execution.observed, false);
+assert.equal(largeArbitraryRuntimeClosure.coldBuildExecutionAcceptedCount, 0);
+assert.equal(largeArbitraryRuntimeClosure.coldBuildExecutionObservedCount, 0);
+assert.ok(largeArbitraryRuntimeClosure.requiredClosureGates.includes('cold_build_execution'));
 assert.equal(
   largeArbitraryRuntimeClosure.gateCoverage.runtime_adapter_or_app_hook_contract.accepted,
   true,
 );
 assert.equal(largeArbitraryRuntimeClosure.gateCoverage.output_or_visual_oracle.accepted, false);
+assert.ok(largeArbitraryRuntimeClosure.openGaps.includes(
+  'large_arbitrary_project_cold_build_execution_required',
+));
 assert.ok(largeArbitraryRuntimeClosure.openGaps.includes(
   'large_arbitrary_project_strict_runtime_ledger_required',
 ));
