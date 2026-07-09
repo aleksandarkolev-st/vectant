@@ -1641,6 +1641,26 @@ fn desktop_ipc_action_plans_map_renderer_commands_to_narrow_daemon_routes() {
     assert!(workspace_pick.daemon_method.is_none());
     assert!(workspace_pick.requires_local_control);
 
+    let file_review = plan_desktop_ipc_action(&IpcRequest {
+        command: "approval.file.review".to_string(),
+        request_id: "req_file_review".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(file_review.daemon_method.is_none());
+    assert!(file_review.requires_local_control);
+    assert!(file_review.user_visible);
+
+    let port_review = plan_desktop_ipc_action(&IpcRequest {
+        command: "approval.port.review".to_string(),
+        request_id: "req_port_review".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(port_review.daemon_method.is_none());
+    assert!(port_review.requires_local_control);
+    assert!(port_review.user_visible);
+
     let pairing_start = plan_desktop_ipc_action(&IpcRequest {
         command: "pairing.start".to_string(),
         request_id: "req_pairing_start".to_string(),

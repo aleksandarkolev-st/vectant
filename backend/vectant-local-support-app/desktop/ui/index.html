@@ -148,6 +148,10 @@
             <li>Binary, archive, sparse, generated artifacts</li>
             <li>Scanner failure or uncertain classification</li>
           </ul>
+          <div class="control-stack">
+            <button type="button" data-action="review-file-approval" disabled>Open approval review</button>
+          </div>
+          <p class="hint">Review opens only when a live local approval request exists.</p>
         </article>
       </section>
 
@@ -170,6 +174,10 @@
             <li>POST, PUT, PATCH, DELETE</li>
             <li>Private network proxying</li>
           </ul>
+          <div class="control-stack">
+            <button type="button" data-action="review-port-approval" disabled>Review port approval</button>
+          </div>
+          <p class="hint">Port review stays local and browser-only. The renderer never receives preview tokens.</p>
         </article>
       </section>
 

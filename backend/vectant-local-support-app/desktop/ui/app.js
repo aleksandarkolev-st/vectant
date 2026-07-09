@@ -7,6 +7,8 @@ const bridgeStatus = document.querySelector("[data-bridge-status]");
 const actionButtons = {
   pickWorkspace: document.querySelector('[data-action="pick-workspace"]'),
   pairSession: document.querySelector('[data-action="pair-session"]'),
+  reviewFileApproval: document.querySelector('[data-action="review-file-approval"]'),
+  reviewPortApproval: document.querySelector('[data-action="review-port-approval"]'),
   pause: document.querySelector('[data-action="pause"]'),
   disconnect: document.querySelector('[data-action="disconnect"]'),
   revoke: document.querySelector('[data-action="revoke"]'),
@@ -114,6 +116,8 @@ function renderState(rawState) {
   renderWorkflow(state);
   actionButtons.pickWorkspace.disabled = false;
   actionButtons.pairSession.disabled = false;
+  actionButtons.reviewFileApproval.disabled = !state.connected || state.approvals.length === 0;
+  actionButtons.reviewPortApproval.disabled = !state.connected || state.ports.length === 0;
   actionButtons.disconnect.disabled = !state.connected;
   actionButtons.revoke.disabled = !state.connected;
   actionButtons.exportHistory.disabled = !state.connected;
@@ -260,6 +264,12 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     }
     if (button.dataset.action === "pair-session") {
       await invokeStateAction("pairing.start", "Pairing needs a cloud challenge and local confirmation. No session was trusted.");
+    }
+    if (button.dataset.action === "review-file-approval") {
+      await invokeStateAction("approval.file.review", "Approval review needs a live local request. Nothing was sent.");
+    }
+    if (button.dataset.action === "review-port-approval") {
+      await invokeStateAction("approval.port.review", "Port review needs a live local request. No preview was exposed.");
     }
     if (button.dataset.action === "pause") {
       const command = shell.dataset.paused === "true" ? "session.resume" : "session.pause";
