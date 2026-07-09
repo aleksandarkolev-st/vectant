@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vectant Local Support</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <main class="shell" data-paused="false" data-connected="false">
+      <header class="topbar" aria-label="Local support status">
+        <div>
+          <p class="eyebrow">Local support desktop</p>
+          <h1>Vectant Local Support</h1>
+        </div>
+        <div class="status-block">
+          <span class="status-pill" data-status-pill>Disconnected</span>
+          <span class="muted">No workspace selected</span>
+        </div>
+      </header>
+
+      <section class="banner" aria-label="Security boundary">
+        <div>
+          <h2>You control what Vectant can see.</h2>
+          <p>Workspace selection is not consent. Browser preview is not AI page reading. Raw secrets stay local unless a future reviewed permission model says otherwise.</p>
+        </div>
+        <div class="banner-actions">
+          <button class="primary" type="button" data-action="pick-workspace">Choose workspace</button>
+          <button type="button" data-action="pair-session">Pair session</button>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="Desktop sections">
+        <button class="tab active" type="button" data-tab="overview">Overview</button>
+        <button class="tab" type="button" data-tab="approvals">Approvals</button>
+        <button class="tab" type="button" data-tab="ports">Ports</button>
+        <button class="tab" type="button" data-tab="activity">Activity</button>
+      </nav>
+
+      <section class="grid active" data-panel="overview">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Session</p>
+              <h2>Waiting for secure pairing</h2>
+            </div>
+            <span class="tag warn">Local authority required</span>
+          </div>
+          <dl class="facts">
+            <div><dt>Account</dt><dd>not paired</dd></div>
+            <div><dt>Workspace</dt><dd>No folder selected</dd></div>
+            <div><dt>Device</dt><dd>Stored locally, private key never shown to renderer</dd></div>
+            <div><dt>Mode</dt><dd>Balanced review before send</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel">
+          <p class="label">Release safety</p>
+          <h2>Update required below 0.1.0</h2>
+          <p class="copy">Old or blocked app versions cannot become trusted support bridges. Signed update proof is still a release gate.</p>
+        </article>
+
+        <article class="panel">
+          <p class="label">Controls</p>
+          <div class="control-stack">
+            <button type="button" data-action="pause">Pause</button>
+            <button type="button" data-action="disconnect" disabled>Disconnect</button>
+            <button type="button" data-action="revoke" disabled>Revoke session approvals</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid" data-panel="approvals">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Review before send</p>
+              <h2>No live approval request</h2>
+            </div>
+            <span class="tag">Zero bytes sent</span>
+          </div>
+          <div class="approval-preview">
+            <p>When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.</p>
+          </div>
+        </article>
+        <article class="panel">
+          <p class="label">Denied by default</p>
+          <ul class="tight-list">
+            <li>.env and credential stores</li>
+            <li>Path traversal and symlink escapes</li>
+            <li>Binary, archive, sparse, generated artifacts</li>
+            <li>Scanner failure or uncertain classification</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="grid" data-panel="ports">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Localhost preview</p>
+              <h2>No ports approved</h2>
+            </div>
+            <span class="tag warn">Browser only</span>
+          </div>
+          <p class="copy">Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.</p>
+        </article>
+        <article class="panel">
+          <p class="label">Never included in MVP</p>
+          <ul class="tight-list">
+            <li>AI page body reading</li>
+            <li>Support agent clicking</li>
+            <li>POST, PUT, PATCH, DELETE</li>
+            <li>Private network proxying</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="grid" data-panel="activity">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Local activity</p>
+              <h2>History is empty</h2>
+            </div>
+            <span class="tag">Raw bodies excluded</span>
+          </div>
+          <p class="copy">Allowed, denied, redacted, approved, revoked, paused, disconnected, exported, and deleted events are written to local product storage with scrubbed summaries.</p>
+        </article>
+        <article class="panel">
+          <p class="label">History controls</p>
+          <div class="control-stack">
+            <button type="button" disabled>Export scrubbed history</button>
+            <button type="button" disabled>Delete local history</button>
+          </div>
+          <p class="hint">Connect a paired daemon before storage actions are enabled.</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
