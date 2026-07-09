@@ -33,6 +33,7 @@
 
       <nav class="tabs" aria-label="Desktop sections">
         <button class="tab active" type="button" data-tab="overview">Overview</button>
+        <button class="tab" type="button" data-tab="workflow">First run</button>
         <button class="tab" type="button" data-tab="approvals">Approvals</button>
         <button class="tab" type="button" data-tab="ports">Ports</button>
         <button class="tab" type="button" data-tab="activity">Activity</button>
@@ -69,6 +70,60 @@
             <button type="button" data-action="revoke" disabled>Revoke session approvals</button>
           </div>
           <p class="hint" data-bridge-status>Desktop IPC unavailable, showing safe disconnected state.</p>
+        </article>
+      </section>
+
+      <section class="grid" data-panel="workflow">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Secure first run</p>
+              <h2>Investor demo path without pretending to be paired</h2>
+            </div>
+            <span class="tag warn" data-workflow-summary>Safe disconnected state</span>
+          </div>
+          <ol class="workflow-list" aria-label="Local support first-run checklist">
+            <li data-workflow-step="workspace">
+              <span class="step-status">Pending</span>
+              <div>
+                <strong>Choose one workspace</strong>
+                <p data-workflow-copy="workspace">No folder is selected. This screen sends no workspace bytes while disconnected.</p>
+              </div>
+            </li>
+            <li data-workflow-step="pairing">
+              <span class="step-status">Pending</span>
+              <div>
+                <strong>Confirm pairing fingerprint</strong>
+                <p data-workflow-copy="pairing">Pairing requires a local confirmation before the desktop bridge can trust a support session.</p>
+              </div>
+            </li>
+            <li data-workflow-step="approvals">
+              <span class="step-status">Armed</span>
+              <div>
+                <strong>Review before send</strong>
+                <p data-workflow-copy="approvals">File and log requests wait for classification, redaction, reason, expiry, and explicit local approval.</p>
+              </div>
+            </li>
+            <li data-workflow-step="ports">
+              <span class="step-status">Locked</span>
+              <div>
+                <strong>Approve browser-only localhost preview</strong>
+                <p data-workflow-copy="ports">No local ports are exposed. Preview does not grant AI or support page-reading access.</p>
+              </div>
+            </li>
+            <li data-workflow-step="history">
+              <span class="step-status">Local</span>
+              <div>
+                <strong>Export or delete scrubbed activity</strong>
+                <p data-workflow-copy="history">History actions stay disabled until a paired daemon can confirm local storage access.</p>
+              </div>
+            </li>
+          </ol>
+        </article>
+        <article class="panel">
+          <p class="label">Demo honesty</p>
+          <h2 data-workflow-guard-title>No bytes sent in this view</h2>
+          <p class="copy" data-workflow-guard-copy">Disconnected mode is a safe preview of the controls. Live state appears only after sanitized desktop IPC responds.</p>
         </article>
       </section>
 
@@ -132,8 +187,8 @@
         <article class="panel">
           <p class="label">History controls</p>
           <div class="control-stack">
-            <button type="button" disabled>Export scrubbed history</button>
-            <button type="button" disabled>Delete local history</button>
+            <button type="button" data-action="export-history" disabled>Export scrubbed history</button>
+            <button type="button" data-action="delete-history" disabled>Delete local history</button>
           </div>
           <p class="hint">Connect a paired daemon before storage actions are enabled.</p>
         </article>

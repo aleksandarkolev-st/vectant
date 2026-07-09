@@ -8,7 +8,12 @@ const actionButtons = {
   pause: document.querySelector('[data-action="pause"]'),
   disconnect: document.querySelector('[data-action="disconnect"]'),
   revoke: document.querySelector('[data-action="revoke"]'),
+  exportHistory: document.querySelector('[data-action="export-history"]'),
+  deleteHistory: document.querySelector('[data-action="delete-history"]'),
 };
+const workflowSummary = document.querySelector("[data-workflow-summary]");
+const workflowGuardTitle = document.querySelector("[data-workflow-guard-title]");
+const workflowGuardCopy = document.querySelector("[data-workflow-guard-copy]");
 
 const defaultApprovalCopy = "When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.";
 const defaultPortsCopy = "Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.";
@@ -104,8 +109,78 @@ function renderState(rawState) {
       : defaultActivityCopy,
   );
 
+  renderWorkflow(state);
   actionButtons.disconnect.disabled = !state.connected;
   actionButtons.revoke.disabled = !state.connected;
+  actionButtons.exportHistory.disabled = !state.connected;
+  actionButtons.deleteHistory.disabled = !state.connected;
+}
+
+function renderWorkflow(state) {
+  const hasWorkspace = state.connected && state.session.workspace !== fallbackState.session.workspace;
+  const hasApprovals = state.approvals.length > 0;
+  const hasPorts = state.ports.length > 0;
+  const hasActivity = state.activity.length > 0;
+
+  updateWorkflowStep(
+    "workspace",
+    hasWorkspace ? "Ready" : "Pending",
+    hasWorkspace
+      ? `Workspace ${state.session.workspace} is selected for this support session only.`
+      : "No folder is selected. This screen sends no workspace bytes while disconnected.",
+    hasWorkspace,
+  );
+  updateWorkflowStep(
+    "pairing",
+    state.connected ? "Paired" : "Pending",
+    state.connected
+      ? `Sanitized IPC reports account ${state.session.account} and device ${state.session.device}.`
+      : "Pairing requires a local confirmation before the desktop bridge can trust a support session.",
+    state.connected,
+  );
+  updateWorkflowStep(
+    "approvals",
+    hasApprovals ? "Review" : "Armed",
+    hasApprovals
+      ? `${state.approvals.length} request${state.approvals.length === 1 ? "" : "s"} waiting for local review.`
+      : "File and log requests wait for classification, redaction, reason, expiry, and explicit local approval.",
+    hasApprovals,
+  );
+  updateWorkflowStep(
+    "ports",
+    hasPorts ? "Approved" : "Locked",
+    hasPorts
+      ? `${state.ports.length} preview port${state.ports.length === 1 ? "" : "s"} approved for browser-only loopback access.`
+      : "No local ports are exposed. Preview does not grant AI or support page-reading access.",
+    hasPorts,
+  );
+  updateWorkflowStep(
+    "history",
+    hasActivity ? "Recorded" : "Local",
+    hasActivity
+      ? `${state.activity.length} scrubbed local event${state.activity.length === 1 ? "" : "s"} available for export or delete.`
+      : "History actions stay disabled until a paired daemon can confirm local storage access.",
+    hasActivity,
+  );
+
+  if (workflowSummary) workflowSummary.textContent = state.connected ? "Live sanitized state" : "Safe disconnected state";
+  if (workflowGuardTitle) workflowGuardTitle.textContent = state.connected ? "Renderer sees summaries only" : "No bytes sent in this view";
+  if (workflowGuardCopy) {
+    workflowGuardCopy.textContent = state.connected
+      ? "The desktop renderer receives account, workspace, device fingerprint, counts, and scrubbed event summaries. Tokens and private keys stay outside this UI."
+      : "Disconnected mode is a safe preview of the controls. Live state appears only after sanitized desktop IPC responds.";
+  }
+}
+
+function updateWorkflowStep(step, status, copy, complete) {
+  const item = document.querySelector(`[data-workflow-step="${step}"]`);
+  const statusNode = item?.querySelector(".step-status");
+  const copyNode = document.querySelector(`[data-workflow-copy="${step}"]`);
+  if (statusNode) {
+    statusNode.textContent = status;
+    statusNode.classList.toggle("complete", complete);
+  }
+  if (copyNode) copyNode.textContent = copy;
 }
 
 function normalizeState(rawState) {
@@ -176,6 +251,14 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     }
     if (button.dataset.action === "revoke") {
       const result = await invokeDesktop("approval.revoke_session");
+      if (result) renderState(result);
+    }
+    if (button.dataset.action === "export-history") {
+      const result = await invokeDesktop("history.export");
+      if (result) renderState(result);
+    }
+    if (button.dataset.action === "delete-history") {
+      const result = await invokeDesktop("history.delete");
       if (result) renderState(result);
     }
   });

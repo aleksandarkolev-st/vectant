@@ -18,6 +18,13 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
 
+    await page.getByRole("button", { name: "First run", exact: true }).click();
+    await expect(page.getByText("Investor demo path without pretending to be paired")).toBeVisible();
+    await expect(page.getByText("No bytes sent in this view")).toBeVisible();
+    await expect(page.getByText("Choose one workspace")).toBeVisible();
+    await expect(page.getByText("Confirm pairing fingerprint")).toBeVisible();
+    await expect(page.getByText("No folder is selected. This screen sends no workspace bytes while disconnected.")).toBeVisible();
+
     await page.getByRole("button", { name: "Approvals", exact: true }).click();
     await expect(page.getByText("No live approval request")).toBeVisible();
     await expect(page.getByText("Zero bytes sent")).toBeVisible();
@@ -71,6 +78,26 @@ test.describe("local support desktop shell", () => {
                 activity: [{ summary: "Session paused by local user." }],
               };
             }
+            if (args.command === "history.export") {
+              return {
+                connected: true,
+                paused: false,
+                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                approvals: [],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev" }],
+                activity: [{ summary: "Exported scrubbed history locally." }],
+              };
+            }
+            if (args.command === "history.delete") {
+              return {
+                connected: true,
+                paused: false,
+                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Deleted local activity history." }],
+              };
+            }
             return { connected: true, paused: false, session: { account_id: "acct_demo", workspace_id: "wk_demo" } };
           },
         },
@@ -81,10 +108,17 @@ test.describe("local support desktop shell", () => {
 
     await expect(page.getByText("Connected", { exact: true })).toBeVisible();
     await expect(page.getByText("Desktop IPC connected. Renderer received sanitized state only.")).toBeVisible();
-    await expect(page.getByText("acct_demo")).toBeVisible();
-    await expect(page.getByText("wk_demo").first()).toBeVisible();
+    await expect(page.getByText("acct_demo", { exact: true })).toBeVisible();
+    await expect(page.getByText("wk_demo", { exact: true }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeEnabled();
+
+    await page.getByRole("button", { name: "First run", exact: true }).click();
+    await expect(page.getByText("Live sanitized state")).toBeVisible();
+    await expect(page.getByText("Workspace wk_demo is selected for this support session only.")).toBeVisible();
+    await expect(page.getByText("Sanitized IPC reports account acct_demo and device sha256:1111111111111111.")).toBeVisible();
+    await expect(page.getByText("1 preview port approved for browser-only loopback access.")).toBeVisible();
+    await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
 
     await page.getByRole("button", { name: "Approvals", exact: true }).click();
     await expect(page.getByText("1 approval request pending")).toBeVisible();
@@ -98,6 +132,10 @@ test.describe("local support desktop shell", () => {
     await page.getByRole("button", { name: "Activity", exact: true }).click();
     await expect(page.getByText("1 local event recorded")).toBeVisible();
     await expect(page.getByText("Blocked .env locally. Nothing was sent.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Delete local history" })).toBeEnabled();
+    await page.getByRole("button", { name: "Export scrubbed history" }).click();
+    await expect(page.getByText("Exported scrubbed history locally.")).toBeVisible();
 
     await page.getByRole("button", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: "Pause" }).click();
