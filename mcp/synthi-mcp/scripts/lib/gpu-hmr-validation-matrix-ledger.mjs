@@ -81,6 +81,17 @@ const SOURCE_FIRST_RUNTIME_VISUAL_PROFILE_SOURCES = new Set([
 ]);
 const SOURCE_FIRST_VISUAL_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.source_first_visual_broad_readiness_predicate.v1';
+const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1';
+const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY =
+  'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
 const CLASSIFIED_JSON_ARTIFACT_CACHE_MAX_ENTRIES = 8192;
 const classifiedJsonArtifactCache = new Map();
 const ASYNC_VISUAL_METRICS_CACHE_MAX_ENTRIES = 4096;
@@ -4132,6 +4143,185 @@ function randomColdDirectSourceInputEvidenceFacet(input = {}, context = {}) {
     expected_source_identity_hash: expectedSourceIdentityHash,
     sourceIdentityHashMatchesContext,
     source_identity_hash_matches_context: sourceIdentityHashMatchesContext,
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
+function runtimeBoundaryStageNamesFromValue(value) {
+  return compactStringList((Array.isArray(value) ? value : []).map((entry) => {
+    if (typeof entry === 'string') return entry;
+    if (!isObject(entry)) return null;
+    return firstText(entry.stage, entry.kind, entry.eventKind, entry.event_kind);
+  })).map((entry) => entry.toLowerCase()).sort();
+}
+
+function directSourceRuntimeContractExpectationFacet(input = {}, context = {}) {
+  const facet = compactObject(input);
+  const present = Object.keys(facet).length > 0;
+  const schemaVersion = firstText(facet.schemaVersion, facet.schema_version, facet.schema);
+  const proofAuthority = firstText(facet.proofAuthority, facet.proof_authority);
+  const acceptedFlag = firstBool(
+    facet.acceptedAsRuntimeContractExpectation,
+    facet.accepted_as_runtime_contract_expectation,
+    facet.accepted,
+  );
+  const backend = String(firstText(
+    facet.backend,
+    facet.backendFamily,
+    facet.backend_family,
+  ) ?? '').toLowerCase();
+  const buildSystem = String(firstText(facet.buildSystem, facet.build_system) ?? '')
+    .toLowerCase();
+  const buildMetadataPaths = compactStringList([
+    ...(Array.isArray(facet.buildMetadataPaths) ? facet.buildMetadataPaths : []),
+    ...(Array.isArray(facet.build_metadata_paths) ? facet.build_metadata_paths : []),
+  ]);
+  const projectNameWhitelistPresent = Array.isArray(facet.projectNameWhitelist)
+    || Array.isArray(facet.project_name_whitelist);
+  const projectNameWhitelist = compactStringList([
+    ...(Array.isArray(facet.projectNameWhitelist) ? facet.projectNameWhitelist : []),
+    ...(Array.isArray(facet.project_name_whitelist) ? facet.project_name_whitelist : []),
+  ]);
+  const specificTargetIdsAllowedPresent = Array.isArray(facet.specificTargetIdsAllowed)
+    || Array.isArray(facet.specific_target_ids_allowed);
+  const specificTargetIdsAllowed = compactStringList([
+    ...(Array.isArray(facet.specificTargetIdsAllowed) ? facet.specificTargetIdsAllowed : []),
+    ...(Array.isArray(facet.specific_target_ids_allowed) ? facet.specific_target_ids_allowed : []),
+  ]);
+  const declaredRuntimeStages = [...new Set(compactStringList([
+    ...runtimeBoundaryStageNamesFromValue(facet.declaredRuntimeBoundaryStages),
+    ...runtimeBoundaryStageNamesFromValue(facet.declared_runtime_boundary_stages),
+    ...runtimeBoundaryStageNamesFromValue(facet.runtimeBoundaryStages),
+    ...runtimeBoundaryStageNamesFromValue(facet.runtime_boundary_stages),
+  ]))].sort();
+  const missingRuntimeStages = DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES
+    .filter((stage) => !declaredRuntimeStages.includes(stage));
+  const outputOracleKind = String(firstText(
+    facet.outputOracleKind,
+    facet.output_oracle_kind,
+    facet.oracleKind,
+    facet.oracle_kind,
+  ) ?? '').toLowerCase();
+  const declaredDeviceEditCount =
+    finiteNumber(facet.declaredDeviceEditCount ?? facet.declared_device_edit_count) ?? 0;
+  const sourceIdentityHash = normalizeSha256(firstText(
+    facet.sourceIdentityHash,
+    facet.source_identity_hash,
+  ));
+  const expectedSourceIdentityHash = normalizeSha256(firstText(
+    context.sourceIdentityHash,
+    context.source_identity_hash,
+  ));
+  const suppliedBlockingGaps = compactStringList([
+    ...(Array.isArray(facet.blockingGaps) ? facet.blockingGaps : []),
+    ...(Array.isArray(facet.blocking_gaps) ? facet.blocking_gaps : []),
+  ]);
+  const failedGates = compactStringList([
+    present ? null : 'direct_source_runtime_contract_expectation_missing',
+    present && schemaVersion !== DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION
+      ? 'direct_source_runtime_contract_expectation_schema_invalid'
+      : null,
+    present && proofAuthority !== DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY
+      ? 'direct_source_runtime_contract_expectation_authority_invalid'
+      : null,
+    present && acceptedFlag !== true
+      ? 'direct_source_runtime_contract_expectation_not_accepted'
+      : null,
+    present && firstBool(facet.targetNameIndependent, facet.target_name_independent) !== true
+      ? 'direct_source_runtime_contract_not_target_name_independent'
+      : null,
+    present && projectNameWhitelistPresent !== true
+      ? 'direct_source_runtime_contract_project_whitelist_field_missing'
+      : null,
+    present && projectNameWhitelist.length > 0
+      ? 'direct_source_runtime_contract_project_whitelist_not_empty'
+      : null,
+    present && specificTargetIdsAllowedPresent !== true
+      ? 'direct_source_runtime_contract_target_whitelist_field_missing'
+      : null,
+    present && specificTargetIdsAllowed.length > 0
+      ? 'direct_source_runtime_contract_target_whitelist_not_empty'
+      : null,
+    present && !backend ? 'direct_source_runtime_contract_backend_missing' : null,
+    present && !buildSystem && buildMetadataPaths.length === 0
+      ? 'direct_source_runtime_contract_build_metadata_missing'
+      : null,
+    present && missingRuntimeStages.length > 0
+      ? 'direct_source_runtime_contract_boundary_stages_incomplete'
+      : null,
+    present && outputOracleKind !== 'visual_oracle' && outputOracleKind !== 'compute_oracle'
+      ? 'direct_source_runtime_contract_output_oracle_missing'
+      : null,
+    present && declaredDeviceEditCount <= 0
+      ? 'direct_source_runtime_contract_declared_device_edits_missing'
+      : null,
+    present && expectedSourceIdentityHash && sourceIdentityHash !== expectedSourceIdentityHash
+      ? 'direct_source_runtime_contract_source_identity_mismatch'
+      : null,
+    present && firstBool(facet.acceptedForGpuHmr, facet.accepted_for_gpu_hmr) === true
+      ? 'direct_source_runtime_contract_claimed_gpu_hmr_acceptance'
+      : null,
+    present && firstBool(facet.gpuHmrSuccess, facet.gpu_hmr_success) === true
+      ? 'direct_source_runtime_contract_claimed_gpu_hmr_success'
+      : null,
+    present && firstBool(facet.canSatisfyRuntimeProof, facet.can_satisfy_runtime_proof) === true
+      ? 'direct_source_runtime_contract_claimed_runtime_authority'
+      : null,
+    present && firstBool(facet.canSatisfyDispatchProof, facet.can_satisfy_dispatch_proof) === true
+      ? 'direct_source_runtime_contract_claimed_dispatch_authority'
+      : null,
+    ...suppliedBlockingGaps,
+  ]);
+  const accepted = present && failedGates.length === 0;
+  return {
+    present,
+    schemaVersion: schemaVersion ?? null,
+    schema_version: schemaVersion ?? null,
+    proofAuthority: proofAuthority ?? null,
+    proof_authority: proofAuthority ?? null,
+    accepted,
+    acceptedAsRuntimeContractExpectation: accepted,
+    accepted_as_runtime_contract_expectation: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    backend: backend || null,
+    targetNameIndependent:
+      firstBool(facet.targetNameIndependent, facet.target_name_independent) === true,
+    target_name_independent:
+      firstBool(facet.targetNameIndependent, facet.target_name_independent) === true,
+    projectNameWhitelist,
+    project_name_whitelist: projectNameWhitelist,
+    specificTargetIdsAllowed,
+    specific_target_ids_allowed: specificTargetIdsAllowed,
+    buildSystem: buildSystem || null,
+    build_system: buildSystem || null,
+    buildMetadataPaths,
+    build_metadata_paths: buildMetadataPaths,
+    runtimeBoundaryStagesRequired: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    runtime_boundary_stages_required: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    declaredRuntimeBoundaryStages: declaredRuntimeStages,
+    declared_runtime_boundary_stages: declaredRuntimeStages,
+    missingRuntimeBoundaryStages: missingRuntimeStages,
+    missing_runtime_boundary_stages: missingRuntimeStages,
+    outputOracleKind: outputOracleKind || null,
+    output_oracle_kind: outputOracleKind || null,
+    declaredDeviceEditCount,
+    declared_device_edit_count: declaredDeviceEditCount,
+    sourceIdentityHash: sourceIdentityHash ?? null,
+    source_identity_hash: sourceIdentityHash ?? null,
+    sourceIdentityHashMatchesContext:
+      expectedSourceIdentityHash ? sourceIdentityHash === expectedSourceIdentityHash : null,
+    source_identity_hash_matches_context:
+      expectedSourceIdentityHash ? sourceIdentityHash === expectedSourceIdentityHash : null,
+    blockingGaps: failedGates,
+    blocking_gaps: failedGates,
     failedGates,
     failed_gates: failedGates,
   };
@@ -10504,6 +10694,24 @@ function sourceFirstIngestionFacet(row = {}) {
       && Boolean(immutableCommit)
       && Boolean(sourceUrl || repoPath)
     );
+  const directSourceRuntimeContractExpectation =
+    directSourceRuntimeContractExpectationFacet(firstCompactObject(
+      supplied.directSourceRuntimeContractExpectation,
+      supplied.direct_source_runtime_contract_expectation,
+      supplied.runtimeContractExpectation,
+      supplied.runtime_contract_expectation,
+      compileContract.directSourceRuntimeContractExpectation,
+      compileContract.direct_source_runtime_contract_expectation,
+      compileContract.runtimeContractExpectation,
+      compileContract.runtime_contract_expectation,
+    ), {
+      sourceIdentityHash: directSourceInputEvidence.sourceIdentityHash,
+      source_identity_hash: directSourceInputEvidence.source_identity_hash,
+    });
+  const directSourceRuntimeContractExpectationRequired = directSourceIdentityRequired;
+  const directSourceRuntimeContractExpectationAccepted =
+    !directSourceRuntimeContractExpectationRequired
+    || directSourceRuntimeContractExpectation.acceptedAsRuntimeContractExpectation === true;
   const canSatisfyRuntimeProof = firstBool(
     supplied.canSatisfyRuntimeProof,
     supplied.can_satisfy_runtime_proof,
@@ -10902,6 +11110,14 @@ function sourceFirstIngestionFacet(row = {}) {
     direct_source_identity_required: directSourceIdentityRequired,
     directSourceIdentityAccepted,
     direct_source_identity_accepted: directSourceIdentityAccepted,
+    directSourceRuntimeContractExpectation,
+    direct_source_runtime_contract_expectation: directSourceRuntimeContractExpectation,
+    directSourceRuntimeContractExpectationRequired,
+    direct_source_runtime_contract_expectation_required:
+      directSourceRuntimeContractExpectationRequired,
+    directSourceRuntimeContractExpectationAccepted,
+    direct_source_runtime_contract_expectation_accepted:
+      directSourceRuntimeContractExpectationAccepted,
     sourceContentHash,
     source_content_hash: sourceContentHash,
     entryPath,
@@ -34689,6 +34905,11 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
         sourceFirst.directSourceIdentityAccepted,
         sourceFirst.direct_source_identity_accepted,
       ) === true;
+    const directSourceRuntimeContractExpectationAccepted =
+      firstBool(
+        sourceFirst.directSourceRuntimeContractExpectationAccepted,
+        sourceFirst.direct_source_runtime_contract_expectation_accepted,
+      ) === true;
     const directSourceAuthority =
       SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority);
     const sourceIdentityHash = sourceFirstVisualSourceIdentityHash(row);
@@ -34708,6 +34929,7 @@ function sourceFirstVisualRowsForBroadReadiness(rows, options = {}) {
       && directLocalPathOrigin.accepted === true
       && workspaceSourceProvenance.accepted === true
       && sourceIdentityAccepted
+      && (!directSourceAuthority || directSourceRuntimeContractExpectationAccepted)
       && firstBool(sourceFirst.acceptedForGpuHmr, sourceFirst.accepted_for_gpu_hmr) === false
       && firstBool(sourceFirst.gpuHmrSuccess, sourceFirst.gpu_hmr_success) === false
       && firstBool(sourceFirst.canSatisfyRuntimeProof, sourceFirst.can_satisfy_runtime_proof) === false
@@ -34784,6 +35006,10 @@ function sourceFirstVisualBroadReadinessPredicate() {
     required_direct_input_evidence_authority: RANDOM_COLD_DIRECT_SOURCE_INPUT_AUTHORITY,
     requiredDirectSourceIdentityRole: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
     required_direct_source_identity_role: RANDOM_COLD_DIRECT_SOURCE_INPUT_IDENTITY_ROLE,
+    requiredDirectSourceRuntimeContractExpectationAuthority:
+      DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY,
+    required_direct_source_runtime_contract_expectation_authority:
+      DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY,
     requiredWorkspaceSourceProvenanceSchema:
       'synthi.gpu_hmr.source_first_workspace_source_provenance.v1',
     required_workspace_source_provenance_schema:
@@ -34821,6 +35047,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
+      'direct_source_runtime_contract_expectation_accepted_when_direct_authority',
       'direct_local_source_path_outside_matrix_internal_roots',
       'workspace_source_tree_provenance_accepted_when_workspace_authority',
       'workspace_source_tree_snapshot_hash_observed',
@@ -34843,6 +35070,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'source_first_ingestion_accepted',
       'source_first_source_authority_user_owned',
       'direct_source_identity_evidence_accepted_when_direct_authority',
+      'direct_source_runtime_contract_expectation_accepted_when_direct_authority',
       'direct_local_source_path_outside_matrix_internal_roots',
       'workspace_source_tree_provenance_accepted_when_workspace_authority',
       'workspace_source_tree_snapshot_hash_observed',

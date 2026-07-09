@@ -169,6 +169,17 @@ const ENTRY_PRIORITY = [
   'src/lib.rs',
   'lib.rs',
 ];
+const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1';
+const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY =
+  'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
 
 function assertInsideRoot(filePath, rootPath) {
   const rootReal = realpathSync(rootPath);
@@ -289,6 +300,66 @@ function synthesizeSourceManifestFromRoot({
       : 'source_tree_files';
   const immutableCommit = `source-tree:${manifestHash}`;
   const directSourceInputChannels = uniqueSortedStrings(inputChannels);
+  const entryInferenceEvidence = {
+    schemaVersion: 'synthi.gpu_hmr.source_root_entry_inference.v1',
+    schema_version: 'synthi.gpu_hmr.source_root_entry_inference.v1',
+    proofAuthority: 'source_root_entry_inference_only_not_runtime_contract',
+    proof_authority: 'source_root_entry_inference_only_not_runtime_contract',
+    accepted: true,
+    selectedEntryPath: entryPath,
+    selected_entry_path: entryPath,
+    requestedEntryPath: sourceEntry || null,
+    requested_entry_path: sourceEntry || null,
+    candidateFileCount: files.length,
+    candidate_file_count: files.length,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+  };
+  const runtimeContractExpectation = {
+    schemaVersion: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION,
+    schema_version: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION,
+    proofAuthority: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY,
+    proof_authority: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY,
+    accepted: false,
+    acceptedAsRuntimeContractExpectation: false,
+    accepted_as_runtime_contract_expectation: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    entryInferenceEvidence,
+    entry_inference_evidence: entryInferenceEvidence,
+    runtimeBoundaryStagesRequired: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    runtime_boundary_stages_required: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    declaredRuntimeBoundaryStages: [],
+    declared_runtime_boundary_stages: [],
+    blockingGaps: [
+      'direct_source_runtime_contract_backend_missing',
+      'direct_source_runtime_contract_build_metadata_missing',
+      'direct_source_runtime_contract_boundary_stages_incomplete',
+      'direct_source_runtime_contract_output_oracle_missing',
+      'direct_source_runtime_contract_declared_device_edits_missing',
+    ],
+    blocking_gaps: [
+      'direct_source_runtime_contract_backend_missing',
+      'direct_source_runtime_contract_build_metadata_missing',
+      'direct_source_runtime_contract_boundary_stages_incomplete',
+      'direct_source_runtime_contract_output_oracle_missing',
+      'direct_source_runtime_contract_declared_device_edits_missing',
+    ],
+  };
   const manifest = {
     schemaVersion: 'synthi.gpu_hmr.agent_split_direct_source_manifest.v1',
     schema_version: 'synthi.gpu_hmr.agent_split_direct_source_manifest.v1',
@@ -312,6 +383,10 @@ function synthesizeSourceManifestFromRoot({
     immutable_commit: immutableCommit,
     directSourceInputChannels,
     direct_source_input_channels: directSourceInputChannels,
+    entryInferenceEvidence,
+    entry_inference_evidence: entryInferenceEvidence,
+    runtimeContractExpectation,
+    runtime_contract_expectation: runtimeContractExpectation,
     entryPath,
     entry_path: entryPath,
     manifestHash,
@@ -332,6 +407,10 @@ function synthesizeSourceManifestFromRoot({
       immutable_commit: immutableCommit,
       directSourceInputChannels,
       direct_source_input_channels: directSourceInputChannels,
+      entryInferenceEvidence,
+      entry_inference_evidence: entryInferenceEvidence,
+      runtimeContractExpectation,
+      runtime_contract_expectation: runtimeContractExpectation,
       entryPath,
       entry_path: entryPath,
       files,
@@ -370,6 +449,15 @@ function selfCheckSourceRootManifest() {
   }
   if (generated.manifest.acceptedForGpuHmr !== false || generated.manifest.gpuHmrSuccess !== false) {
     throw new Error('source-root manifest self-check failed: manifest claimed GPU HMR authority');
+  }
+  if (
+    generated.manifest.runtimeContractExpectation?.accepted !== false
+    || generated.manifest.runtimeContractExpectation?.canSatisfyRuntimeProof !== false
+    || !generated.manifest.runtimeContractExpectation?.blockingGaps
+      ?.includes('direct_source_runtime_contract_boundary_stages_incomplete')
+    || generated.manifest.entryInferenceEvidence?.accepted !== true
+  ) {
+    throw new Error('source-root manifest self-check failed: runtime contract expectation shape mismatch');
   }
   console.log(`source-root manifest self-check passed: ${generated.manifestPath}`);
 }

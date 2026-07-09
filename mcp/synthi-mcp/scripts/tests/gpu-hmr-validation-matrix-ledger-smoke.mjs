@@ -1955,6 +1955,89 @@ function randomColdDirectInputEvidenceFixture({
   };
 }
 
+function directSourceRuntimeContractExpectationFixture({
+  sourceIdentityHash,
+  backend = 'hip',
+  buildSystem = 'cmake',
+  buildMetadataPaths = ['CMakeLists.txt'],
+  outputOracleKind = 'visual_oracle',
+  declaredDeviceEditCount = 1,
+  declaredRuntimeBoundaryStages = [
+    'artifact_transport',
+    'epoch_publication',
+    'dispatch_trace',
+    'host_identity',
+    'output_oracle',
+  ],
+} = {}) {
+  const expectationHash = contentHashFor({
+    schemaVersion: 'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1',
+    backend,
+    buildSystem,
+    buildMetadataPaths,
+    outputOracleKind,
+    declaredDeviceEditCount,
+    declaredRuntimeBoundaryStages,
+    sourceIdentityHash,
+  });
+  return {
+    schemaVersion: 'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1',
+    schema_version: 'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1',
+    proofAuthority: 'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success',
+    proof_authority: 'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success',
+    accepted: true,
+    acceptedAsRuntimeContractExpectation: true,
+    accepted_as_runtime_contract_expectation: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    backend,
+    buildSystem,
+    build_system: buildSystem,
+    buildMetadataPaths,
+    build_metadata_paths: buildMetadataPaths,
+    outputOracleKind,
+    output_oracle_kind: outputOracleKind,
+    declaredDeviceEditCount,
+    declared_device_edit_count: declaredDeviceEditCount,
+    runtimeBoundaryStagesRequired: [
+      'artifact_transport',
+      'epoch_publication',
+      'dispatch_trace',
+      'host_identity',
+      'output_oracle',
+    ],
+    runtime_boundary_stages_required: [
+      'artifact_transport',
+      'epoch_publication',
+      'dispatch_trace',
+      'host_identity',
+      'output_oracle',
+    ],
+    declaredRuntimeBoundaryStages,
+    declared_runtime_boundary_stages: declaredRuntimeBoundaryStages,
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    expectationHash,
+    expectation_hash: expectationHash,
+    evidenceRef: `direct-source-runtime-contract-expectation:${expectationHash}`,
+    evidence_ref: `direct-source-runtime-contract-expectation:${expectationHash}`,
+    blockingGaps: [],
+    blocking_gaps: [],
+  };
+}
+
 function randomColdTransportFallbackEvidenceFixture({
   candidateSource = 'direct_source_url_commit',
   immutableCommit = '1111111111111111111111111111111111111111',
@@ -7373,6 +7456,7 @@ function sourceFirstIngestionEvidenceFor({
   repoPath = null,
   immutableCommit = '2222222222222222222222222222222222222222',
   directSourceInputEvidence = undefined,
+  directSourceRuntimeContractExpectation = undefined,
   sourceTreeManifestHash = null,
   useAiSplit = true,
   userRequestedAi = true,
@@ -7460,6 +7544,16 @@ function sourceFirstIngestionEvidenceFor({
           immutableCommit,
         })
         : null;
+  const effectiveDirectSourceRuntimeContractExpectation =
+    directSourceRuntimeContractExpectation !== undefined
+      ? directSourceRuntimeContractExpectation
+      : directSourceAuthority
+        ? directSourceRuntimeContractExpectationFixture({
+          sourceIdentityHash:
+            effectiveDirectSourceInputEvidence?.sourceIdentityHash
+            ?? effectiveDirectSourceInputEvidence?.source_identity_hash,
+        })
+        : null;
   const proofId = `agent-split-source-first-ingestion:sha256:${sha256Hex(stableJson({
     sourceContentHash: sourceHash,
     entryPath,
@@ -7492,6 +7586,9 @@ function sourceFirstIngestionEvidenceFor({
       immutable_commit: immutableCommit,
       directSourceInputEvidence: effectiveDirectSourceInputEvidence,
       direct_source_input_evidence: effectiveDirectSourceInputEvidence,
+      directSourceRuntimeContractExpectation: effectiveDirectSourceRuntimeContractExpectation,
+      direct_source_runtime_contract_expectation:
+        effectiveDirectSourceRuntimeContractExpectation,
     } : {}),
     sourceContentHash: sourceHash,
     noSynthiAbiInSeedSource,
@@ -7521,6 +7618,10 @@ function sourceFirstIngestionEvidenceFor({
         immutable_commit: immutableCommit,
         directSourceInputEvidence: effectiveDirectSourceInputEvidence,
         direct_source_input_evidence: effectiveDirectSourceInputEvidence,
+        directSourceRuntimeContractExpectation:
+          effectiveDirectSourceRuntimeContractExpectation,
+        direct_source_runtime_contract_expectation:
+          effectiveDirectSourceRuntimeContractExpectation,
       } : {}),
       useAiSplit,
       userRequestedAi,
@@ -7556,6 +7657,8 @@ function sourceFirstIngestionEvidenceFor({
       effectiveSourceTreeManifestHash,
       effectiveDirectSourceInputEvidence?.sourceIdentityHash,
       effectiveDirectSourceInputEvidence?.source_identity_hash,
+      effectiveDirectSourceRuntimeContractExpectation?.evidenceRef,
+      effectiveDirectSourceRuntimeContractExpectation?.evidence_ref,
       sidecarHash,
       compileManifestHash,
       ...generatedArtifactHashes,
@@ -14809,6 +14912,132 @@ function withoutSourceFirstDirectSourceIdentity(row) {
   return withQueryRecomputedRowId(cloned);
 }
 
+function withoutSourceFirstDirectSourceRuntimeContractExpectation(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+  };
+  delete sourceFirst.directSourceRuntimeContractExpectation;
+  delete sourceFirst.direct_source_runtime_contract_expectation;
+  delete sourceFirst.runtimeContractExpectation;
+  delete sourceFirst.runtime_contract_expectation;
+  if (sourceFirst.initialCompileContract) {
+    delete sourceFirst.initialCompileContract.directSourceRuntimeContractExpectation;
+    delete sourceFirst.initialCompileContract.direct_source_runtime_contract_expectation;
+    delete sourceFirst.initialCompileContract.runtimeContractExpectation;
+    delete sourceFirst.initialCompileContract.runtime_contract_expectation;
+  }
+  if (sourceFirst.initial_compile_contract) {
+    delete sourceFirst.initial_compile_contract.directSourceRuntimeContractExpectation;
+    delete sourceFirst.initial_compile_contract.direct_source_runtime_contract_expectation;
+    delete sourceFirst.initial_compile_contract.runtimeContractExpectation;
+    delete sourceFirst.initial_compile_contract.runtime_contract_expectation;
+  }
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
+function withForgedSourceFirstDirectSourceRuntimeContractExpectation(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+  };
+  const expectation = {
+    ...(sourceFirst.directSourceRuntimeContractExpectation
+      ?? sourceFirst.direct_source_runtime_contract_expectation
+      ?? {}),
+    accepted: true,
+    acceptedAsRuntimeContractExpectation: true,
+    accepted_as_runtime_contract_expectation: true,
+    acceptedForGpuHmr: true,
+    accepted_for_gpu_hmr: true,
+    gpuHmrSuccess: true,
+    gpu_hmr_success: true,
+    canSatisfyRuntimeProof: true,
+    can_satisfy_runtime_proof: true,
+    canSatisfyDispatchProof: true,
+    can_satisfy_dispatch_proof: true,
+  };
+  sourceFirst.directSourceRuntimeContractExpectation = expectation;
+  sourceFirst.direct_source_runtime_contract_expectation = expectation;
+  if (sourceFirst.initialCompileContract) {
+    sourceFirst.initialCompileContract.directSourceRuntimeContractExpectation = expectation;
+    sourceFirst.initialCompileContract.direct_source_runtime_contract_expectation = expectation;
+  }
+  if (sourceFirst.initial_compile_contract) {
+    sourceFirst.initial_compile_contract.directSourceRuntimeContractExpectation = expectation;
+    sourceFirst.initial_compile_contract.direct_source_runtime_contract_expectation = expectation;
+  }
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
+function withScopedSourceFirstDirectSourceRuntimeContractExpectation(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+  };
+  const expectation = {
+    ...(sourceFirst.directSourceRuntimeContractExpectation
+      ?? sourceFirst.direct_source_runtime_contract_expectation
+      ?? {}),
+    accepted: true,
+    acceptedAsRuntimeContractExpectation: true,
+    accepted_as_runtime_contract_expectation: true,
+    targetNameIndependent: false,
+    target_name_independent: false,
+    projectNameWhitelist: ['one-special-project'],
+    project_name_whitelist: ['one-special-project'],
+    specificTargetIdsAllowed: [cloned.targetId],
+    specific_target_ids_allowed: [cloned.targetId],
+  };
+  sourceFirst.directSourceRuntimeContractExpectation = expectation;
+  sourceFirst.direct_source_runtime_contract_expectation = expectation;
+  if (sourceFirst.initialCompileContract) {
+    sourceFirst.initialCompileContract.directSourceRuntimeContractExpectation = expectation;
+    sourceFirst.initialCompileContract.direct_source_runtime_contract_expectation = expectation;
+  }
+  if (sourceFirst.initial_compile_contract) {
+    sourceFirst.initial_compile_contract.directSourceRuntimeContractExpectation = expectation;
+    sourceFirst.initial_compile_contract.direct_source_runtime_contract_expectation = expectation;
+  }
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
+function withMismatchedSourceFirstDirectSourceRuntimeContractExpectation(row) {
+  const cloned = JSON.parse(JSON.stringify(row));
+  const sourceFirst = {
+    ...(cloned.sourceFirstIngestion ?? cloned.source_first_ingestion ?? {}),
+  };
+  const expectation = {
+    ...(sourceFirst.directSourceRuntimeContractExpectation
+      ?? sourceFirst.direct_source_runtime_contract_expectation
+      ?? {}),
+    accepted: true,
+    acceptedAsRuntimeContractExpectation: true,
+    accepted_as_runtime_contract_expectation: true,
+    sourceIdentityHash: hashValue(`mismatched-runtime-contract-source:${cloned.targetId}`),
+    source_identity_hash: hashValue(`mismatched-runtime-contract-source:${cloned.targetId}`),
+  };
+  sourceFirst.directSourceRuntimeContractExpectation = expectation;
+  sourceFirst.direct_source_runtime_contract_expectation = expectation;
+  if (sourceFirst.initialCompileContract) {
+    sourceFirst.initialCompileContract.directSourceRuntimeContractExpectation = expectation;
+    sourceFirst.initialCompileContract.direct_source_runtime_contract_expectation = expectation;
+  }
+  if (sourceFirst.initial_compile_contract) {
+    sourceFirst.initial_compile_contract.directSourceRuntimeContractExpectation = expectation;
+    sourceFirst.initial_compile_contract.direct_source_runtime_contract_expectation = expectation;
+  }
+  cloned.sourceFirstIngestion = sourceFirst;
+  cloned.source_first_ingestion = sourceFirst;
+  return withQueryRecomputedRowId(cloned);
+}
+
 function withSourceFirstSchemaVersion(row, schemaVersion) {
   const cloned = JSON.parse(JSON.stringify(row));
   const sourceFirst = {
@@ -17697,6 +17926,106 @@ assert.equal(
   missingDirectSourceIdentityCoverage.get('source_first_uncompiled_project_validation')?.status,
   'missing',
 );
+const broadReadinessWithDirectSourceRuntimeContractMissingQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows.map((row) =>
+        withoutSourceFirstDirectSourceRuntimeContractExpectation(row)
+      ),
+      ...broadReadinessRandomColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithDirectSourceRuntimeContractMissingQuery.accepted, true);
+assert.equal(
+  broadReadinessWithDirectSourceRuntimeContractMissingQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithDirectSourceRuntimeContractMissingQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithDirectSourceRuntimeContractMissingQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithForgedDirectSourceRuntimeContractQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows.map((row) =>
+        withForgedSourceFirstDirectSourceRuntimeContractExpectation(row)
+      ),
+      ...broadReadinessRandomColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithForgedDirectSourceRuntimeContractQuery.accepted, true);
+assert.equal(
+  broadReadinessWithForgedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithForgedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithForgedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithMismatchedDirectSourceRuntimeContractQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows.map((row) =>
+        withMismatchedSourceFirstDirectSourceRuntimeContractExpectation(row)
+      ),
+      ...broadReadinessRandomColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithMismatchedDirectSourceRuntimeContractQuery.accepted, true);
+assert.equal(
+  broadReadinessWithMismatchedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithMismatchedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithMismatchedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
+const broadReadinessWithScopedDirectSourceRuntimeContractQuery =
+  queryGpuHmrValidationMatrixLedger({
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+    rows: [
+      ...broadReadinessRows.map((row) =>
+        withScopedSourceFirstDirectSourceRuntimeContractExpectation(row)
+      ),
+      ...broadReadinessRandomColdRows,
+    ],
+  });
+assert.equal(broadReadinessWithScopedDirectSourceRuntimeContractQuery.accepted, false);
+assert.equal(
+  broadReadinessWithScopedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .accepted,
+  false,
+);
+assert.equal(
+  broadReadinessWithScopedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .sourceFirstVisualRowCount,
+  0,
+);
+assert.ok(
+  broadReadinessWithScopedDirectSourceRuntimeContractQuery.summary.broadLibraryAgnosticReadiness
+    .openGaps.includes('broad_acceptance_requires_source_first_visual_full_runtime_row'),
+);
 const fixtureLocalSourceFirstVisualRows = broadReadinessRows.map((row) => {
   const oracleKind = row.outputOracleFacet?.kind ?? row.output_oracle_facet?.kind;
   return oracleKind === 'visual_oracle'
@@ -19892,6 +20221,12 @@ assert.equal(
     .sourceFirstVisualSelectionPredicate.requiredDirectInputEvidenceAuthority,
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success',
 );
+assert.equal(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate
+    .requiredDirectSourceRuntimeContractExpectationAuthority,
+  'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success',
+);
 assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
@@ -19929,6 +20264,12 @@ assert.ok(
   broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
     .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
       'direct_source_identity_evidence_accepted_when_direct_authority',
+    ),
+);
+assert.ok(
+  broadReadinessQuery.summary.broadLibraryAgnosticReadiness.broadLibraryAgnosticProof
+    .sourceFirstVisualSelectionPredicate.requiredSignals.includes(
+      'direct_source_runtime_contract_expectation_accepted_when_direct_authority',
     ),
 );
 assert.ok(

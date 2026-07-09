@@ -706,6 +706,17 @@ const DIRECT_SOURCE_INPUT_AUTHORITY =
   'runner_cli_env_direct_source_input_only_not_gpu_hmr_success';
 const DIRECT_SOURCE_INPUT_IDENTITY_ROLE =
   'source_identity_hash_bound_to_direct_input_not_whitelist';
+const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.direct_source_runtime_contract_expectation.v1';
+const DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY =
+  'direct_source_runtime_contract_expectation_only_not_gpu_hmr_success';
+const DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
 
 function normalizeDirectSourceAuthority(value) {
   const text = profileString(value, 'sourceAuthority').trim();
@@ -724,6 +735,15 @@ function uniqueSortedStrings(values) {
       .map((value) => String(value ?? '').trim())
       .filter(Boolean),
   )].sort();
+}
+
+function runtimeBoundaryStageNames(value) {
+  const rawEntries = Array.isArray(value) ? value : [];
+  return uniqueSortedStrings(rawEntries.map((entry) => {
+    if (typeof entry === 'string') return entry;
+    if (!entry || typeof entry !== 'object') return '';
+    return entry.stage ?? entry.kind ?? entry.eventKind ?? entry.event_kind ?? '';
+  }).map((entry) => String(entry ?? '').trim().toLowerCase()));
 }
 
 function realPathForExistingPath(value) {
@@ -946,6 +966,18 @@ function normalizeDirectSourceOverride(rawManifest, {
       ?? source.render_scene_manifest,
     declaredVisualSceneManifestHash,
   );
+  const runtimeContractExpectation = profileObject(
+    raw.runtimeContractExpectation
+      ?? raw.runtime_contract_expectation
+      ?? raw.directSourceRuntimeContractExpectation
+      ?? raw.direct_source_runtime_contract_expectation
+      ?? source.runtimeContractExpectation
+      ?? source.runtime_contract_expectation
+      ?? source.directSourceRuntimeContractExpectation
+      ?? source.direct_source_runtime_contract_expectation,
+    'directSourceManifest.runtimeContractExpectation',
+    {},
+  );
   const editSpecs = normalizeAgentDeviceEditSpecs(raw, 'directSourceManifest');
   const requireDeclaredEdits = profileBoolean(
     raw.requireDeclaredEdits ?? raw.require_declared_edits,
@@ -994,6 +1026,8 @@ function normalizeDirectSourceOverride(rawManifest, {
     visual_scene_manifest_hash: visualSceneManifest?.manifest_hash ?? null,
     visualSceneManifestEvidenceRef: visualSceneManifest?.evidenceRef ?? null,
     visual_scene_manifest_evidence_ref: visualSceneManifest?.evidence_ref ?? null,
+    runtimeContractExpectation,
+    runtime_contract_expectation: runtimeContractExpectation,
     deviceEdits: editSpecs,
     device_edits: editSpecs,
     requireDeclaredEdits,
@@ -1062,6 +1096,8 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
     direct_source_input_channels: override.direct_source_input_channels,
     evidenceRef: override.evidenceRef,
     evidence_ref: override.evidence_ref,
+    runtimeContractExpectation: override.runtimeContractExpectation,
+    runtime_contract_expectation: override.runtime_contract_expectation,
   };
   profile.sourceAuthority = override.sourceAuthority;
   profile.source_authority = override.source_authority;
@@ -4695,6 +4731,177 @@ function directSourceInputEvidenceForProfile(profile = ACTIVE_AGENT_PROFILE) {
   };
 }
 
+function directSourceRuntimeContractExpectationForProfile(
+  profile = ACTIVE_AGENT_PROFILE,
+  directSourceInputEvidence = null,
+) {
+  const sourceAuthority = profile?.sourceAuthority ?? profile?.source_authority ?? '';
+  if (!DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority)) return null;
+  const source = profile?.source && typeof profile.source === 'object' ? profile.source : {};
+  const declared = profileObject(
+    source.runtimeContractExpectation
+      ?? source.runtime_contract_expectation
+      ?? source.directSourceRuntimeContractExpectation
+      ?? source.direct_source_runtime_contract_expectation,
+    'directSource.runtimeContractExpectation',
+    {},
+  );
+  const buildMetadata = profileObject(
+    declared.buildMetadata
+      ?? declared.build_metadata
+      ?? source.buildMetadata
+      ?? source.build_metadata,
+    'directSource.runtimeContractExpectation.buildMetadata',
+    {},
+  );
+  const outputOracle = profileObject(
+    declared.outputOracle
+      ?? declared.output_oracle
+      ?? source.outputOracle
+      ?? source.output_oracle,
+    'directSource.runtimeContractExpectation.outputOracle',
+    {},
+  );
+  const backend = profileString(
+    declared.backend
+      ?? declared.backendFamily
+      ?? declared.backend_family
+      ?? source.backend
+      ?? source.backendFamily
+      ?? source.backend_family,
+    'directSource.runtimeContractExpectation.backend',
+  ).toLowerCase();
+  const buildSystem = profileString(
+    declared.buildSystem
+      ?? declared.build_system
+      ?? buildMetadata.buildSystem
+      ?? buildMetadata.build_system
+      ?? source.buildSystem
+      ?? source.build_system,
+    'directSource.runtimeContractExpectation.buildSystem',
+  ).toLowerCase();
+  const buildMetadataPaths = uniqueSortedStrings([
+    ...(Array.isArray(declared.buildMetadataPaths) ? declared.buildMetadataPaths : []),
+    ...(Array.isArray(declared.build_metadata_paths) ? declared.build_metadata_paths : []),
+    ...(Array.isArray(buildMetadata.paths) ? buildMetadata.paths : []),
+    ...(Array.isArray(buildMetadata.files) ? buildMetadata.files : []),
+    ...(Array.isArray(source.buildMetadataPaths) ? source.buildMetadataPaths : []),
+    ...(Array.isArray(source.build_metadata_paths) ? source.build_metadata_paths : []),
+  ].map(cleanRel));
+  const declaredRuntimeStages = uniqueSortedStrings([
+    ...runtimeBoundaryStageNames(declared.runtimeBoundaryStages),
+    ...runtimeBoundaryStageNames(declared.runtime_boundary_stages),
+    ...runtimeBoundaryStageNames(declared.boundaryStages),
+    ...runtimeBoundaryStageNames(declared.boundary_stages),
+    ...runtimeBoundaryStageNames(source.runtimeBoundaryStages),
+    ...runtimeBoundaryStageNames(source.runtime_boundary_stages),
+  ]);
+  const outputOracleKind = profileString(
+    declared.outputOracleKind
+      ?? declared.output_oracle_kind
+      ?? outputOracle.kind
+      ?? outputOracle.oracleKind
+      ?? outputOracle.oracle_kind,
+    'directSource.runtimeContractExpectation.outputOracleKind',
+  ).toLowerCase();
+  const declaredDeviceEditCount = Array.isArray(profile?.deviceEdits)
+    ? profile.deviceEdits.length
+    : 0;
+  const missingRuntimeStages = DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES
+    .filter((stage) => !declaredRuntimeStages.includes(stage));
+  const declaredClaimsGpuHmr =
+    declared.acceptedForGpuHmr === true
+    || declared.accepted_for_gpu_hmr === true
+    || declared.gpuHmrSuccess === true
+    || declared.gpu_hmr_success === true
+    || declared.canSatisfyRuntimeProof === true
+    || declared.can_satisfy_runtime_proof === true
+    || declared.canSatisfyDispatchProof === true
+    || declared.can_satisfy_dispatch_proof === true;
+  const sourceIdentityHash =
+    directSourceInputEvidence?.sourceIdentityHash
+    ?? directSourceInputEvidence?.source_identity_hash
+    ?? null;
+  const blockingGaps = [
+    backend ? null : 'direct_source_runtime_contract_backend_missing',
+    buildSystem || buildMetadataPaths.length > 0
+      ? null
+      : 'direct_source_runtime_contract_build_metadata_missing',
+    missingRuntimeStages.length === 0
+      ? null
+      : 'direct_source_runtime_contract_boundary_stages_incomplete',
+    outputOracleKind === 'visual_oracle' || outputOracleKind === 'compute_oracle'
+      ? null
+      : 'direct_source_runtime_contract_output_oracle_missing',
+    declaredDeviceEditCount > 0
+      ? null
+      : 'direct_source_runtime_contract_declared_device_edits_missing',
+    sourceIdentityHash || !STRICT_DIRECT_SOURCE_AUTHORITIES.has(sourceAuthority)
+      ? null
+      : 'direct_source_runtime_contract_source_identity_missing',
+    declaredClaimsGpuHmr
+      ? 'direct_source_runtime_contract_claimed_authority'
+      : null,
+  ].filter(Boolean);
+  const expectationSeed = {
+    schemaVersion: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION,
+    sourceAuthority,
+    backend,
+    buildSystem,
+    buildMetadataPaths,
+    runtimeBoundaryStagesRequired: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    declaredRuntimeStages,
+    outputOracleKind,
+    declaredDeviceEditCount,
+    sourceIdentityHash,
+    blockingGaps,
+  };
+  const expectationHash = `sha256:${sha256Hex(stableJson(expectationSeed))}`;
+  const accepted = blockingGaps.length === 0;
+  return {
+    schemaVersion: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION,
+    schema_version: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_SCHEMA_VERSION,
+    proofAuthority: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY,
+    proof_authority: DIRECT_SOURCE_RUNTIME_CONTRACT_EXPECTATION_AUTHORITY,
+    accepted,
+    acceptedAsRuntimeContractExpectation: accepted,
+    accepted_as_runtime_contract_expectation: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    sourceAuthority,
+    source_authority: sourceAuthority,
+    sourceIdentityHash,
+    source_identity_hash: sourceIdentityHash,
+    backend: backend || null,
+    buildSystem: buildSystem || null,
+    build_system: buildSystem || null,
+    buildMetadataPaths,
+    build_metadata_paths: buildMetadataPaths,
+    runtimeBoundaryStagesRequired: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    runtime_boundary_stages_required: DIRECT_SOURCE_RUNTIME_BOUNDARY_STAGES,
+    declaredRuntimeBoundaryStages: declaredRuntimeStages,
+    declared_runtime_boundary_stages: declaredRuntimeStages,
+    missingRuntimeBoundaryStages: missingRuntimeStages,
+    missing_runtime_boundary_stages: missingRuntimeStages,
+    outputOracleKind: outputOracleKind || null,
+    output_oracle_kind: outputOracleKind || null,
+    declaredDeviceEditCount,
+    declared_device_edit_count: declaredDeviceEditCount,
+    expectationHash,
+    expectation_hash: expectationHash,
+    evidenceRef: `direct-source-runtime-contract-expectation:${expectationHash}`,
+    evidence_ref: `direct-source-runtime-contract-expectation:${expectationHash}`,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
 function sourceFirstIngestionEvidence({
   source,
   entryPath,
@@ -4813,6 +5020,11 @@ function sourceFirstIngestionEvidence({
   });
   const directSourceContext = directSourceContextFromProfile(ACTIVE_AGENT_PROFILE);
   const directSourceInputEvidence = directSourceInputEvidenceForProfile(ACTIVE_AGENT_PROFILE);
+  const directSourceRuntimeContractExpectation =
+    directSourceRuntimeContractExpectationForProfile(
+      ACTIVE_AGENT_PROFILE,
+      directSourceInputEvidence,
+    );
   const gpuSplitLogObserved = sawGpuSplit?.matched === true;
   const gpuSplitEndpointObserved = splitEndpointEvidence?.observed === true;
   const generatedArtifactPathsInGeneratedNamespace =
@@ -4850,6 +5062,8 @@ function sourceFirstIngestionEvidence({
     ACTIVE_AGENT_PROFILE?.source?.content_hash,
     directSourceInputEvidence?.evidenceHash,
     directSourceInputEvidence?.evidence_hash,
+    directSourceRuntimeContractExpectation?.evidenceRef,
+    directSourceRuntimeContractExpectation?.evidence_ref,
     ...(Array.isArray(ACTIVE_AGENT_PROFILE?.source?.files)
       ? ACTIVE_AGENT_PROFILE.source.files.map((entry) => entry.evidenceRef ?? entry.evidence_ref)
       : []),
@@ -4906,6 +5120,8 @@ function sourceFirstIngestionEvidence({
     immutable_commit: directSourceContext?.immutable_commit ?? null,
     directSourceInputEvidence: directSourceInputEvidence ?? {},
     direct_source_input_evidence: directSourceInputEvidence ?? {},
+    directSourceRuntimeContractExpectation: directSourceRuntimeContractExpectation ?? {},
+    direct_source_runtime_contract_expectation: directSourceRuntimeContractExpectation ?? {},
     workspaceSourceProvenance: workspaceSourceProvenance ?? {},
     workspace_source_provenance: workspaceSourceProvenance ?? {},
     entryPath: normalizedEntryPath,
@@ -4975,6 +5191,8 @@ function sourceFirstIngestionEvidence({
       immutable_commit: directSourceContext?.immutable_commit ?? null,
       directSourceInputEvidence: directSourceInputEvidence ?? {},
       direct_source_input_evidence: directSourceInputEvidence ?? {},
+      directSourceRuntimeContractExpectation: directSourceRuntimeContractExpectation ?? {},
+      direct_source_runtime_contract_expectation: directSourceRuntimeContractExpectation ?? {},
     },
     initial_compile_contract: {
       language: initialCompileArgs?.language ?? null,
@@ -4996,6 +5214,7 @@ function sourceFirstIngestionEvidence({
       repo_path: directSourceContext?.repo_path ?? null,
       immutable_commit: directSourceContext?.immutable_commit ?? null,
       direct_source_input_evidence: directSourceInputEvidence ?? {},
+      direct_source_runtime_contract_expectation: directSourceRuntimeContractExpectation ?? {},
     },
     preexistingGeneratedArtifactsPresent: preexistingGeneratedArtifactPaths.length > 0,
     preexisting_generated_artifacts_present: preexistingGeneratedArtifactPaths.length > 0,
@@ -6277,8 +6496,17 @@ function selfCheckAgentVisualProfile() {
       || acceptedDirectSourceFirst.workspaceSourceProvenance?.acceptedForGpuHmr !== false
       || acceptedDirectSourceFirst.workspaceSourceProvenance?.gpuHmrSuccess !== false
       || acceptedDirectSourceFirst.workspaceSourceProvenance?.canSatisfyRuntimeProof !== false
+      || acceptedDirectSourceFirst.directSourceRuntimeContractExpectation?.accepted !== false
+      || acceptedDirectSourceFirst.directSourceRuntimeContractExpectation?.acceptedForGpuHmr !== false
+      || acceptedDirectSourceFirst.directSourceRuntimeContractExpectation?.gpuHmrSuccess !== false
+      || acceptedDirectSourceFirst.directSourceRuntimeContractExpectation?.canSatisfyRuntimeProof !== false
+      || !acceptedDirectSourceFirst.directSourceRuntimeContractExpectation?.blockingGaps
+        ?.includes('direct_source_runtime_contract_backend_missing')
       || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
         String(entry).startsWith('workspace-source-provenance:sha256:')
+      )
+      || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
+        String(entry).startsWith('direct-source-runtime-contract-expectation:sha256:')
       )
       || !acceptedDirectSourceFirst.evidenceRefs.some((entry) =>
         String(entry).startsWith('evidence:agent-direct-source-file:sha256:')
@@ -6299,6 +6527,11 @@ function selfCheckAgentVisualProfile() {
       || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.acceptedForGpuHmr !== false
       || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.gpuHmrSuccess !== false
       || acceptedDirectLocalSourceFirst.directSourceInputEvidence?.canSatisfyRuntimeProof !== false
+      || acceptedDirectLocalSourceFirst.directSourceRuntimeContractExpectation?.accepted !== false
+      || acceptedDirectLocalSourceFirst.directSourceRuntimeContractExpectation?.sourceIdentityHash
+        !== acceptedDirectLocalSourceFirst.directSourceInputEvidence?.sourceIdentityHash
+      || !acceptedDirectLocalSourceFirst.directSourceRuntimeContractExpectation?.blockingGaps
+        ?.includes('direct_source_runtime_contract_boundary_stages_incomplete')
       || !directProfileAuthorityRejected
       || !directSuccessClaimRejected
       || multiFileProfile.source.files.length !== 2
