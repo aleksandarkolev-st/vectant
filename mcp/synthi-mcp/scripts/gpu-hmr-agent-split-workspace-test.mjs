@@ -950,8 +950,13 @@ function normalizeDirectSourceOverride(rawManifest, {
   const requireDeclaredEdits = profileBoolean(
     raw.requireDeclaredEdits ?? raw.require_declared_edits,
     'directSourceManifest.requireDeclaredEdits',
-    editSpecs.length > 0,
+    true,
   );
+  if (requireDeclaredEdits !== true) {
+    throw new Error(
+      'direct source manifest must require declared edits; arbitrary source-first visual proof cannot use synthetic fixture edits',
+    );
+  }
   const manifestHash = sourceFilesManifestHash(files);
   const immutableCommit = declaredImmutableCommit || (
     sourceAuthority === 'direct_local_git_repo_path'
@@ -1063,9 +1068,7 @@ function applyDirectSourceOverride(profile, override = loadDirectSourceOverride(
   const overrideDeviceEdits = Array.isArray(override.deviceEdits)
     ? override.deviceEdits
     : [];
-  const overrideRequiresDeclaredEdits =
-    overrideDeviceEdits.length > 0
-    && override.requireDeclaredEdits === true;
+  const overrideRequiresDeclaredEdits = override.requireDeclaredEdits === true;
   profile.deviceEdits = overrideDeviceEdits;
   profile.device_edits = overrideDeviceEdits;
   profile.requireDeclaredEdits = overrideRequiresDeclaredEdits;
@@ -1112,7 +1115,7 @@ function createDirectSourceAgentProfile(override = loadDirectSourceOverride()) {
       width: 800,
       height: 600,
     },
-    requireDeclaredEdits: false,
+    requireDeclaredEdits: true,
   });
   return applyDirectSourceOverride(baseProfile, override);
 }
@@ -5748,6 +5751,21 @@ function selfCheckAgentVisualProfile() {
     } catch (err) {
       directSuccessClaimRejected = String(err.message).includes('must not claim GPU HMR');
     }
+    let directSourceSyntheticEditFallbackRejected = false;
+    try {
+      normalizeDirectSourceOverride({
+        sourceAuthority: 'user_source_files',
+        requireDeclaredEdits: false,
+        entryPath: 'src/main.cpp',
+        files: [{
+          path: 'src/main.cpp',
+          inline: multiFileEntrySource,
+        }],
+      });
+    } catch (err) {
+      directSourceSyntheticEditFallbackRejected =
+        String(err.message).includes('must require declared edits');
+    }
     const directBootstrapProfile = createDirectSourceAgentProfile(
       normalizeDirectSourceOverride({
         sourceAuthority: 'user_source_files',
@@ -5766,6 +5784,14 @@ function selfCheckAgentVisualProfile() {
         manifestPath: path.join(process.cwd(), 'self-check-direct-bootstrap-source-manifest.json'),
       }),
     );
+    let directSourceUndeclaredHotEditRejected = false;
+    try {
+      ACTIVE_AGENT_PROFILE = directSourceProfile;
+      deviceEditForRun(multiFileEntrySource, { attempt: 0, runMode: 'hot_delta_1' });
+    } catch (err) {
+      directSourceUndeclaredHotEditRejected =
+        String(err.message).includes('profile_declared_edit_missing');
+    }
     const directLocalSourceProfile = applyDirectSourceOverride(
       normalizeAgentVisualProfile({
         schemaVersion: AGENT_VISUAL_PROFILE_SCHEMA_VERSION,
@@ -6205,13 +6231,14 @@ function selfCheckAgentVisualProfile() {
       || directSourceProfile.sourceAuthority !== 'user_source_files'
       || directSourceProfile.source.fixture !== ''
       || directSourceProfile.deviceEdits.length !== 0
-      || directSourceProfile.requireDeclaredEdits !== false
+      || directSourceProfile.requireDeclaredEdits !== true
       || directSourceProfile.visualSceneManifest !== null
       || directSourceProfile.visualSceneManifestHash !== null
       || directBootstrapProfile.sourceAuthority !== 'user_source_files'
       || directBootstrapProfile.source.fixture !== ''
       || directBootstrapProfile.profileId === 'flow'
       || !directBootstrapProfile.profileId.startsWith('direct-source-')
+      || directBootstrapProfile.requireDeclaredEdits !== true
       || directLocalSourceProfile.sourceAuthority !== 'direct_local_git_repo_path'
       || directLocalSourceProfile.source.sourceKind !== 'local_repo_path_commit'
       || !directLocalSourceProfile.source.repoPath
@@ -6231,6 +6258,8 @@ function selfCheckAgentVisualProfile() {
       || directSourceOwnEdit.mutation?.kind !== 'profile_declared_source_edit'
       || !directSourceOwnEdit.edited.includes('const float ownedGain = 3.0f;')
       || directSourceOwnEdit.edited.includes('inheritedFixtureToken')
+      || !directSourceSyntheticEditFallbackRejected
+      || !directSourceUndeclaredHotEditRejected
       || !directSourceSceneHashMismatchRejected
       || directSourceResolvedSource !== multiFileEntrySource
       || directSourceInitialFiles.length !== 2
