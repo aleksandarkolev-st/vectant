@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use vectant_local_support_app::audit::LocalAuditStore;
-use vectant_local_support_app::http::{bind_loopback, AppState};
+use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
 use vectant_local_support_app::workspace::WorkspacePolicy;
@@ -21,13 +21,14 @@ async fn main() -> anyhow::Result<()> {
     let token = session.token_for_pairing_response().to_string();
     let audit_store = LocalAuditStore::new(default_audit_path()?, 30, SecretScanner::default());
     let state = AppState::new_with_audit_store(session, policy, audit_store);
-    let addr = bind_loopback(state).await?;
+    let addr = bind_loopback(state.clone()).await?;
     println!("Vectant Local Support listening on http://{addr}");
     #[cfg(debug_assertions)]
     if std::env::var("VECTANT_LOCAL_SUPPORT_PRINT_DEV_TOKEN").ok().as_deref() == Some("1") {
         println!("Development pairing bearer token: {token}");
     }
     tokio::signal::ctrl_c().await?;
+    shutdown_cleanup(&state, "local_app_shutdown").await?;
     Ok(())
 }
 

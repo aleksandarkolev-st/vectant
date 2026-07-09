@@ -221,6 +221,31 @@ pub async fn bind_loopback(state: AppState) -> anyhow::Result<SocketAddr> {
     Ok(addr)
 }
 
+pub async fn shutdown_cleanup(state: &AppState, request_id: &str) -> anyhow::Result<()> {
+    validate_safe_request_id(request_id)
+        .map_err(|_| anyhow::anyhow!("invalid shutdown request id"))?;
+    let session_id = {
+        let mut session = state.session.lock().await;
+        let session_id = session.session_id().to_string();
+        session.disconnect();
+        session_id
+    };
+    state.approvals.lock().await.revoke_all();
+    state.port_approvals.lock().await.disconnect_session(&session_id);
+    state.preview_traffic.lock().await.clear_all();
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Control,
+        Some(request_id.to_string()),
+        "Local app shutdown disconnected the support session. Approvals, ports, and preview streams were revoked.",
+        true,
+    );
+    if let Some(store) = &state.audit_store {
+        store.persist(&audit)?;
+    }
+    Ok(())
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "ok": true,

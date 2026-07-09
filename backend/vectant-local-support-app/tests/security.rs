@@ -11,7 +11,8 @@ use vectant_local_support_app::audit::{AuditClass, AuditLog, AuditStoreError, Co
 use vectant_local_support_app::approval::{denied_approval_response, ApprovalQueue, ApprovalStatus};
 use vectant_local_support_app::desktop::{inspect_tauri_config, renderer_command_can_access_secret};
 use vectant_local_support_app::http::{
-    bind_loopback, validate_file_request_authorization, AppState, LocalAuthorizationError,
+    bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
+    LocalAuthorizationError,
     LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
 };
 use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
@@ -566,6 +567,77 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert!(audit.events().iter().any(|event| event
         .summary
         .contains("Port approval for 127.0.0.1:5173 revoked locally")));
+}
+
+#[tokio::test]
+async fn app_shutdown_revokes_session_approvals_ports_and_preview_traffic() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_shutdown", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_shutdown",
+        "org_shutdown",
+        "wk_shutdown",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let mut request = request("app.rs");
+    request.request_id = "req_shutdown_review".to_string();
+    request.session_id = session.session_id().to_string();
+    request.account_id = "acct_shutdown".to_string();
+    request.org_id = "org_shutdown".to_string();
+    request.workspace_id = "wk_shutdown".to_string();
+    request.device_fingerprint = session.device_fingerprint().to_string();
+    request.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    let state = AppState::new(session, policy);
+
+    let review = state.workspace.read_file_for_review(&request);
+    state
+        .approvals
+        .lock()
+        .await
+        .queue_file_review(request, review);
+    let session_id = state.session.lock().await.session_id().to_string();
+    let grant = state
+        .port_approvals
+        .lock()
+        .await
+        .approve_browser_port_grant(&session_id, 5173, "vite:5173:pid123");
+    assert!(state
+        .preview_traffic
+        .lock()
+        .await
+        .begin_stream(&grant.approval.preview_host));
+    assert_eq!(state.approvals.lock().await.pending_len(), 1);
+
+    shutdown_cleanup(&state, "req_shutdown_cleanup").await.unwrap();
+
+    assert_eq!(state.approvals.lock().await.pending_len(), 0);
+    assert!(state
+        .port_approvals
+        .lock()
+        .await
+        .approval_for(&session_id, 5173, "vite:5173:pid123")
+        .is_none());
+    assert_eq!(
+        state
+            .preview_traffic
+            .lock()
+            .await
+            .active_stream_count(&grant.approval.preview_host),
+        0
+    );
+    let mut session = state.session.lock().await;
+    assert_eq!(
+        session.validate_control(&token, "req_after_shutdown"),
+        Err(SessionError::Expired)
+    );
+    drop(session);
+    assert!(state.audit.lock().await.events().iter().any(|event| {
+        event.summary.contains("Local app shutdown disconnected")
+            && event.user_visible
+    }));
 }
 
 #[test]
