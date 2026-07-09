@@ -17,6 +17,10 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("No workspace selected")).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
+    await page.getByRole("button", { name: "Choose workspace" }).click();
+    await expect(page.getByText("Workspace picker needs the paired desktop daemon. No local paths were exposed.")).toBeVisible();
+    await page.getByRole("button", { name: "Pair session" }).click();
+    await expect(page.getByText("Pairing needs a cloud challenge and local confirmation. No session was trusted.")).toBeVisible();
 
     await page.getByRole("button", { name: "First run", exact: true }).click();
     await expect(page.getByText("Investor demo path without pretending to be paired")).toBeVisible();
@@ -68,11 +72,41 @@ test.describe("local support desktop shell", () => {
                 activity: [{ summary: "Blocked .env locally. Nothing was sent." }],
               };
             }
+            if (args.command === "workspace.pick") {
+              return {
+                connected: false,
+                paused: false,
+                session: {
+                  account_id: "not paired",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Workspace selected locally. No files were sent." }],
+              };
+            }
+            if (args.command === "pairing.start") {
+              return {
+                connected: true,
+                paused: false,
+                session: {
+                  account_id: "acct_demo",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [{ request_id: "req_file_review" }],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
+                activity: [{ summary: "Pairing fingerprint confirmed locally." }],
+              };
+            }
             if (args.command === "session.pause") {
               return {
                 connected: true,
                 paused: true,
-                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                session: { account_id: "acct_demo", workspace_id: "wk_selected" },
                 approvals: [],
                 ports: [],
                 activity: [{ summary: "Session paused by local user." }],
@@ -112,10 +146,19 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("wk_demo", { exact: true }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeEnabled();
+    await page.getByRole("button", { name: "Choose workspace" }).click();
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Workspace selected locally. No files were sent.")).toBeVisible();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await page.getByRole("button", { name: "Pair session" }).click();
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Pairing fingerprint confirmed locally.")).toBeVisible();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
 
     await page.getByRole("button", { name: "First run", exact: true }).click();
     await expect(page.getByText("Live sanitized state")).toBeVisible();
-    await expect(page.getByText("Workspace wk_demo is selected for this support session only.")).toBeVisible();
+    await expect(page.getByText("Workspace wk_selected is selected for this support session only.")).toBeVisible();
     await expect(page.getByText("Sanitized IPC reports account acct_demo and device sha256:1111111111111111.")).toBeVisible();
     await expect(page.getByText("1 preview port approved for browser-only loopback access.")).toBeVisible();
     await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
@@ -131,7 +174,7 @@ test.describe("local support desktop shell", () => {
 
     await page.getByRole("button", { name: "Activity", exact: true }).click();
     await expect(page.getByText("1 local event recorded")).toBeVisible();
-    await expect(page.getByText("Blocked .env locally. Nothing was sent.")).toBeVisible();
+    await expect(page.getByText("Pairing fingerprint confirmed locally.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Delete local history" })).toBeEnabled();
     await page.getByRole("button", { name: "Export scrubbed history" }).click();

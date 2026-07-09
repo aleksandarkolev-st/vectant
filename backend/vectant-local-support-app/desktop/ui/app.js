@@ -5,6 +5,8 @@ const statusPill = document.querySelector("[data-status-pill]");
 const workspaceSubtitle = document.querySelector("[data-workspace-subtitle]");
 const bridgeStatus = document.querySelector("[data-bridge-status]");
 const actionButtons = {
+  pickWorkspace: document.querySelector('[data-action="pick-workspace"]'),
+  pairSession: document.querySelector('[data-action="pair-session"]'),
   pause: document.querySelector('[data-action="pause"]'),
   disconnect: document.querySelector('[data-action="disconnect"]'),
   revoke: document.querySelector('[data-action="revoke"]'),
@@ -110,10 +112,27 @@ function renderState(rawState) {
   );
 
   renderWorkflow(state);
+  actionButtons.pickWorkspace.disabled = false;
+  actionButtons.pairSession.disabled = false;
   actionButtons.disconnect.disabled = !state.connected;
   actionButtons.revoke.disabled = !state.connected;
   actionButtons.exportHistory.disabled = !state.connected;
   actionButtons.deleteHistory.disabled = !state.connected;
+}
+
+async function invokeStateAction(command, unavailableMessage) {
+  try {
+    const result = await invokeDesktop(command);
+    if (result) {
+      bridgeStatus.textContent = "Desktop IPC connected. Renderer received sanitized state only.";
+      renderState(result);
+      return;
+    }
+  } catch {
+    bridgeStatus.textContent = "Desktop IPC denied this action. No local data was sent.";
+    return;
+  }
+  bridgeStatus.textContent = unavailableMessage;
 }
 
 function renderWorkflow(state) {
@@ -236,6 +255,12 @@ tabs.forEach((tab) => {
 
 document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", async () => {
+    if (button.dataset.action === "pick-workspace") {
+      await invokeStateAction("workspace.pick", "Workspace picker needs the paired desktop daemon. No local paths were exposed.");
+    }
+    if (button.dataset.action === "pair-session") {
+      await invokeStateAction("pairing.start", "Pairing needs a cloud challenge and local confirmation. No session was trusted.");
+    }
     if (button.dataset.action === "pause") {
       const command = shell.dataset.paused === "true" ? "session.resume" : "session.pause";
       const result = await invokeDesktop(command);

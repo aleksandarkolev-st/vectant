@@ -1567,6 +1567,13 @@ fn desktop_ipc_allows_only_narrow_commands() {
     });
     assert_eq!(allowed_revoke.decision, "allow");
 
+    let allowed_pairing = decide_ipc_request(&IpcRequest {
+        command: "pairing.start".to_string(),
+        request_id: "req_pairing_start".to_string(),
+        session_id: "sess_123".to_string(),
+    });
+    assert_eq!(allowed_pairing.decision, "allow");
+
     for command in [
         "fs.readFile",
         "workspace.writeFile",
@@ -1633,6 +1640,15 @@ fn desktop_ipc_action_plans_map_renderer_commands_to_narrow_daemon_routes() {
     .unwrap();
     assert!(workspace_pick.daemon_method.is_none());
     assert!(workspace_pick.requires_local_control);
+
+    let pairing_start = plan_desktop_ipc_action(&IpcRequest {
+        command: "pairing.start".to_string(),
+        request_id: "req_pairing_start".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert!(pairing_start.daemon_method.is_none());
+    assert!(pairing_start.requires_local_control);
 
     let denied = plan_desktop_ipc_action(&IpcRequest {
         command: "shell.exec".to_string(),
