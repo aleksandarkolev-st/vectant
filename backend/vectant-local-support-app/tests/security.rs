@@ -290,11 +290,112 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
         .unwrap()
         .contains("abcdefghijklmnopqrstuvwxyz"));
 
+    let port_approval = client
+        .post(format!("http://{addr}/v1/port/approve"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .json(&serde_json::json!({
+            "request_id": "req_http_port_approve",
+            "port": 5173,
+            "process_identity": "vite:5173:pid123",
+            "service": "vite dev server"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(port_approval.status(), StatusCode::OK);
+    let port_body: serde_json::Value = port_approval.json().await.unwrap();
+    assert_eq!(port_body["decision"], "port_approved");
+    assert_eq!(port_body["port"], 5173);
+    assert_eq!(port_body["browser_preview_allowed"], true);
+    assert_eq!(port_body["agent_read_allowed"], false);
+    assert_eq!(port_body["support_agent_read_allowed"], false);
+    assert_eq!(port_body["send_response_body_allowed"], false);
+    assert_eq!(port_body["state_changing_methods_allowed"], false);
+    assert_eq!(port_body["preview_token_included"], false);
+    assert!(!serde_json::to_string(&port_body)
+        .unwrap()
+        .contains("preview_token_hash"));
+
+    let status_after_port = client
+        .get(format!("http://{addr}/v1/status/req_http_status_after_port"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_after_port.status(), StatusCode::OK);
+    let status_body: serde_json::Value = status_after_port.json().await.unwrap();
+    assert_eq!(status_body["ports"][0]["port"], 5173);
+    assert_eq!(status_body["ports"][0]["preview_token_included"], false);
+    assert!(!serde_json::to_string(&status_body)
+        .unwrap()
+        .contains("preview_token_hash"));
+
+    let port_revoke = client
+        .post(format!(
+            "http://{addr}/v1/port/revoke/5173/req_http_port_revoke"
+        ))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(port_revoke.status(), StatusCode::OK);
+    let revoke_body: serde_json::Value = port_revoke.json().await.unwrap();
+    assert_eq!(revoke_body["decision"], "port_revoked");
+    assert_eq!(revoke_body["bytes_sent"], 0);
+    assert_eq!(
+        shared_state
+            .port_approvals
+            .lock()
+            .await
+            .approval_for(port_body["session_id"].as_str().unwrap(), 5173, "vite:5173:pid123")
+            .is_none(),
+        true
+    );
+
+    let pause = client
+        .post(format!("http://{addr}/v1/session/pause/req_http_pause"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pause.status(), StatusCode::OK);
+
+    let status_while_paused = client
+        .get(format!("http://{addr}/v1/status/req_http_status_paused"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_while_paused.status(), StatusCode::OK);
+    let paused_body: serde_json::Value = status_while_paused.json().await.unwrap();
+    assert_eq!(paused_body["session"]["paused"], true);
+
     let audit = shared_state.audit.lock().await;
     assert!(audit.events().iter().any(|event| event
         .summary
         .contains("bytes prepared for local review")));
     assert_eq!(audit.consent_receipts().len(), 1);
+    assert!(audit.events().iter().any(|event| event
+        .summary
+        .contains("Browser-only preview approved")));
+    assert!(audit.events().iter().any(|event| event
+        .summary
+        .contains("Port approval for 127.0.0.1:5173 revoked locally")));
 }
 
 #[test]

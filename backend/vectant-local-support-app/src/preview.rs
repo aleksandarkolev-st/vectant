@@ -132,9 +132,17 @@ impl PortApprovalRegistry {
         self.approvals.remove(&port)
     }
 
+    pub fn approvals(&self) -> Vec<PortApproval> {
+        self.approvals.values().cloned().collect()
+    }
+
     pub fn disconnect_session(&mut self, session_id: &str) {
         self.approvals
             .retain(|_, approval| approval.session_id != session_id);
+    }
+
+    pub fn revoke_all(&mut self) {
+        self.approvals.clear();
     }
 
     pub fn port_closed(&mut self, port: u16) {

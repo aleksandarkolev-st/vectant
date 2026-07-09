@@ -10,11 +10,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use rand::{distributions::Alphanumeric, Rng};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
+use crate::preview::{PortApprovalRegistry, PreviewTrafficGuard};
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
 use crate::workspace::{FileReadRequest, FileReadResponse, WorkspacePolicy};
@@ -25,6 +27,53 @@ pub const DEFAULT_RATE_LIMIT_REQUESTS: usize = 120;
 pub const MIN_APP_VERSION: &str = "0.1.0";
 pub const VULNERABLE_APP_VERSIONS: &[&str] = &["0.0.0", "0.0.1", "0.1.1"];
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PortApprovalRequest {
+    pub request_id: String,
+    pub port: u16,
+    pub process_identity: String,
+    pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PortApprovalResponse {
+    pub decision: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub port: u16,
+    pub target_host: String,
+    pub preview_host: String,
+    pub browser_preview_allowed: bool,
+    pub agent_read_allowed: bool,
+    pub support_agent_read_allowed: bool,
+    pub agent_interact_allowed: bool,
+    pub send_response_body_allowed: bool,
+    pub state_changing_methods_allowed: bool,
+    pub expires_at: String,
+    pub persistent: bool,
+    pub process_identity_hash: String,
+    pub preview_token_included: bool,
+    pub service: Option<String>,
+    pub bytes_sent: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PortApprovalSummary {
+    pub port: u16,
+    pub target_host: String,
+    pub preview_host: String,
+    pub browser_preview_allowed: bool,
+    pub agent_read_allowed: bool,
+    pub support_agent_read_allowed: bool,
+    pub agent_interact_allowed: bool,
+    pub send_response_body_allowed: bool,
+    pub state_changing_methods_allowed: bool,
+    pub expires_at: String,
+    pub persistent: bool,
+    pub process_identity_hash: String,
+    pub preview_token_included: bool,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub session: Arc<Mutex<SessionGuard>>,
@@ -33,6 +82,8 @@ pub struct AppState {
     pub audit: Arc<Mutex<AuditLog>>,
     pub audit_store: Option<Arc<LocalAuditStore>>,
     pub approvals: Arc<Mutex<ApprovalQueue>>,
+    pub port_approvals: Arc<Mutex<PortApprovalRegistry>>,
+    pub preview_traffic: Arc<Mutex<PreviewTrafficGuard>>,
     local_control_secret_hash: Arc<String>,
 }
 
@@ -48,6 +99,8 @@ impl AppState {
             audit: Arc::new(Mutex::new(AuditLog::new(SecretScanner::default()))),
             audit_store: None,
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
+            port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
+            preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             local_control_secret_hash: Arc::new(hash_local_control_secret(&generate_local_control_secret())),
         }
     }
@@ -70,6 +123,8 @@ impl AppState {
             audit: Arc::new(Mutex::new(audit)),
             audit_store: Some(Arc::new(audit_store)),
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
+            port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
+            preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             local_control_secret_hash: Arc::new(hash_local_control_secret(&generate_local_control_secret())),
         }
     }
@@ -132,6 +187,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/disconnect/:request_id", post(disconnect_session))
         .route("/v1/approval/approve/:approval_id/:request_id", post(approve_request))
         .route("/v1/approval/deny/:approval_id/:request_id", post(deny_request))
+        .route("/v1/port/approve", post(approve_port))
+        .route("/v1/port/revoke/:port/:request_id", post(revoke_port))
         .route("/v1/history/export/:request_id", get(export_history))
         .route("/v1/history/delete/:request_id", post(delete_history))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
@@ -165,14 +222,37 @@ async fn status(
     let token = bearer(&headers)?;
     let mut session = state.session.lock().await;
     session
-        .validate(token, &request_id)
+        .validate_control(token, &request_id)
         .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
     let session_state = session.state();
     drop(session);
+    let ports = {
+        let registry = state.port_approvals.lock().await;
+        registry
+            .approvals()
+            .into_iter()
+            .map(|approval| PortApprovalSummary {
+                port: approval.port,
+                target_host: approval.target_host,
+                preview_host: approval.preview_host,
+                browser_preview_allowed: approval.browser_preview_allowed,
+                agent_read_allowed: approval.agent_read_allowed,
+                support_agent_read_allowed: approval.support_agent_read_allowed,
+                agent_interact_allowed: approval.agent_interact_allowed,
+                send_response_body_allowed: approval.send_response_body_allowed,
+                state_changing_methods_allowed: approval.state_changing_methods_allowed,
+                expires_at: approval.expires_at,
+                persistent: approval.persistent,
+                process_identity_hash: approval.process_identity_hash,
+                preview_token_included: false,
+            })
+            .collect::<Vec<_>>()
+    };
     let audit = state.audit.lock().await;
     Ok(Json(serde_json::json!({
         "session": session_state,
         "workspace": state.workspace.summary(),
+        "ports": ports,
         "history": {
             "events": audit.events(),
             "consent_receipts": audit.consent_receipts(),
@@ -316,6 +396,96 @@ async fn deny_request(
     }
 }
 
+async fn approve_port(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PortApprovalRequest>,
+) -> Result<Json<PortApprovalResponse>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
+    validate_port_approval_request(&request)?;
+    let token = bearer(&headers)?;
+    let session_id = {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        session.session_id().to_string()
+    };
+    let approval = {
+        let mut registry = state.port_approvals.lock().await;
+        registry.approve_browser_port(&session_id, request.port, &request.process_identity)
+    };
+    let response = PortApprovalResponse {
+        decision: "port_approved".to_string(),
+        request_id: request.request_id.clone(),
+        session_id,
+        port: approval.port,
+        target_host: approval.target_host,
+        preview_host: approval.preview_host,
+        browser_preview_allowed: approval.browser_preview_allowed,
+        agent_read_allowed: approval.agent_read_allowed,
+        support_agent_read_allowed: approval.support_agent_read_allowed,
+        agent_interact_allowed: approval.agent_interact_allowed,
+        send_response_body_allowed: approval.send_response_body_allowed,
+        state_changing_methods_allowed: approval.state_changing_methods_allowed,
+        expires_at: approval.expires_at,
+        persistent: approval.persistent,
+        process_identity_hash: approval.process_identity_hash,
+        preview_token_included: false,
+        service: request.service.as_deref().map(scrub_for_audit),
+        bytes_sent: 0,
+    };
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Preview,
+        Some(request.request_id),
+        format!(
+            "Browser-only preview approved for 127.0.0.1:{} as {}. AI/support page read remains blocked.",
+            response.port, response.preview_host
+        ),
+        true,
+    );
+    persist_audit(&state, &audit)?;
+    Ok(Json(response))
+}
+
+async fn revoke_port(
+    State(state): State<AppState>,
+    Path((port, request_id)): Path<(u16, String)>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
+    validate_safe_request_id(&request_id)?;
+    let token = bearer(&headers)?;
+    {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    }
+    let revoked = state.port_approvals.lock().await.revoke_port(port).is_some();
+    state.preview_traffic.lock().await.clear_all();
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Preview,
+        Some(request_id.clone()),
+        format!("Port approval for 127.0.0.1:{port} revoked locally. Preview tokens and streams were invalidated."),
+        true,
+    );
+    persist_audit(&state, &audit)?;
+    Ok(Json(serde_json::json!({
+        "decision": if revoked { "port_revoked" } else { "port_not_approved" },
+        "request_id": request_id,
+        "port": port,
+        "preview_token_included": false,
+        "bytes_sent": 0
+    })))
+}
+
 async fn pause_session(
     State(state): State<AppState>,
     Path(request_id): Path<String>,
@@ -382,8 +552,11 @@ async fn control_session(
     match action {
         SessionAction::Resume => session.resume(),
         SessionAction::Disconnect => {
+            let session_id = session.session_id().to_string();
             session.disconnect();
             state.approvals.lock().await.revoke_all();
+            state.port_approvals.lock().await.disconnect_session(&session_id);
+            state.preview_traffic.lock().await.clear_all();
         }
     }
     let session_state = session.state();
@@ -441,6 +614,8 @@ async fn delete_history(
     }
     let mut audit = state.audit.lock().await;
     state.approvals.lock().await.revoke_all();
+    state.port_approvals.lock().await.revoke_all();
+    state.preview_traffic.lock().await.clear_all();
     audit.clear();
     audit.append(
         AuditClass::Control,
@@ -536,6 +711,44 @@ fn validate_approval_id(approval_id: &str) -> Result<(), (StatusCode, Json<serde
     } else {
         Err(denied(StatusCode::BAD_REQUEST, "invalid_approval_id"))
     }
+}
+
+fn validate_port_approval_request(
+    request: &PortApprovalRequest,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    validate_safe_request_id(&request.request_id)?;
+    if request.port == 0 {
+        return Err(denied(StatusCode::BAD_REQUEST, "invalid_port"));
+    }
+    if !is_safe_process_identity(&request.process_identity) {
+        return Err(denied(StatusCode::BAD_REQUEST, "invalid_process_identity"));
+    }
+    if let Some(service) = &request.service {
+        if service.len() > 80 || service.chars().any(|ch| ch.is_control()) {
+            return Err(denied(StatusCode::BAD_REQUEST, "invalid_service"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_safe_request_id(
+    request_id: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if safe_authorization_field(request_id, 3, 128) {
+        Ok(())
+    } else {
+        Err(denied(StatusCode::BAD_REQUEST, "invalid_request_id"))
+    }
+}
+
+fn is_safe_process_identity(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.len() <= 256
+        && !value.chars().any(|ch| ch.is_control())
+}
+
+fn scrub_for_audit(value: &str) -> String {
+    SecretScanner::default().redact(value, &SecretScanner::default().scan(value))
 }
 
 fn require_local_control_secret(
