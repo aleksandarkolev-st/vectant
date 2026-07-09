@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
@@ -6,6 +6,7 @@ const OLD_ENV = { ...process.env };
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
+  vi.unstubAllGlobals();
 });
 
 describe("local support transparency state route", () => {
@@ -144,5 +145,134 @@ describe("local support transparency state route", () => {
     expect(serialized).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(serialized).not.toContain("postgres://user:pass");
     expect(serialized).not.toContain("raw-preview-token");
+  });
+
+  it("maps live loopback daemon status without exposing preview tokens", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    const fetchMock = vi.fn(async (url, init) => new Response(JSON.stringify({
+      session: {
+        session_id: "sess_live",
+        account_id: "acct_live",
+        org_id: "org_live",
+        workspace_id: "wk_live",
+        device_fingerprint: "sha256:1111111111111111",
+        paused: true,
+      },
+      workspace: {
+        workspace_id: "wk_live",
+        display: "Live workspace",
+        scanner_version: "scanner-2026.07.05",
+      },
+      ports: [
+        {
+          port: 5173,
+          target_host: "127.0.0.1",
+          preview_host: "br-local-p5173.vectant-preview.dev",
+          process_identity_hash: "sha256:process",
+          browser_preview_allowed: true,
+          agent_read_allowed: true,
+          support_agent_read_allowed: true,
+          send_response_body_allowed: true,
+          preview_token: "raw-preview-token",
+        },
+      ],
+      history: {
+        events: [
+          {
+            at: "2026-07-09T08:00:00Z",
+            class: "Denied",
+            summary: "Blocked Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+            previous_hash: "sha256:prev",
+            event_hash: "sha256:event",
+          },
+        ],
+        consent_receipts: [
+          {
+            request_id: "req_sent",
+            actor: "support_agent",
+            target_display: "server.log",
+            classification: "L2",
+            content_sha256: "sha256:content",
+            capability: "workspace.log.read",
+            granted_at: "2026-07-09T08:01:00Z",
+          },
+        ],
+      },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET();
+    const json = await response.json();
+    const serialized = JSON.stringify(json);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^http:\/\/127\.0\.0\.1:49152\/v1\/status\/web_/),
+      expect.objectContaining({
+        method: "GET",
+        cache: "no-store",
+        headers: expect.objectContaining({
+          origin: "https://app.vectant.dev",
+          "sec-fetch-site": "same-site",
+          authorization: "Bearer local_status_bearer_12345678901234567890",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      session: {
+        connected: true,
+        paused: true,
+        session_id: "sess_live",
+        account_id: "acct_live",
+      },
+      workspace: {
+        workspace_id: "wk_live",
+        display: "Live workspace",
+      },
+      sent_payloads: [
+        expect.objectContaining({
+          id: "req_sent",
+          actor: "support_agent",
+          target: "server.log",
+        }),
+      ],
+      blocked_items: [
+        expect.objectContaining({
+          bytes_sent: 0,
+          reason: "denied_locally",
+        }),
+      ],
+      ports: [
+        expect.objectContaining({
+          port: 5173,
+          aiRead: false,
+          supportRead: false,
+          responseBodies: false,
+          token_state: "present_hidden_from_renderer",
+        }),
+      ],
+    });
+    expect(serialized).not.toContain("raw-preview-token");
+    expect(serialized).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("rejects configured non-loopback local daemon URLs without fetching them", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://169.254.169.254/latest/meta-data";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(json.activity[0]).toMatchObject({
+      kind: "Denied",
+    });
+    expect(json.activity[0].text).toContain("not loopback HTTP");
   });
 });
