@@ -64,6 +64,7 @@ const BROAD_LIBRARY_MIN_LARGE_ROCM_ML_RANDOM_COLD_SOURCE_IDENTITY_COUNT = 3;
 const BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_COLLECTION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BROAD_LIBRARY_RANDOM_COLD_PATH_MAX_FUTURE_SKEW_MS = 15 * 60 * 1000;
 const BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT = 2;
+const BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT = 2;
 const RANDOM_COLD_PATH_BROAD_READINESS_PREDICATE_SCHEMA_VERSION =
   'synthi.gpu_hmr.random_cold_path_broad_readiness_predicate.v1';
 const LARGE_ROCM_ML_RANDOM_COLD_SOURCE_INTAKE_SCHEMA_VERSION =
@@ -34500,6 +34501,34 @@ function sourceFirstVisualSourceIdentityHashList(rows = []) {
   )))];
 }
 
+function sourceFirstVisualRuntimeTargetIdentityHash(row = {}) {
+  const runtimeTargetIdentity = compactObject(
+    row.runtimeTargetIdentity ?? row.runtime_target_identity,
+  );
+  const accepted = firstBool(
+    runtimeTargetIdentity.acceptedAsRuntimeTargetIdentity,
+    runtimeTargetIdentity.accepted_as_runtime_target_identity,
+    runtimeTargetIdentity.accepted,
+  ) === true;
+  const targetId = firstText(runtimeTargetIdentity.targetId, runtimeTargetIdentity.target_id);
+  if (!accepted || !targetId) return null;
+  return stableJsonHash({
+    backend: firstText(row.backend, row.backendFamily, row.backend_family),
+    acceptanceScope: firstText(row.acceptanceScope, row.acceptance_scope),
+    runtimeTargetId: targetId,
+    identitySource: firstText(
+      runtimeTargetIdentity.identitySource,
+      runtimeTargetIdentity.identity_source,
+    ),
+  });
+}
+
+function sourceFirstVisualRuntimeTargetIdentityHashList(rows = []) {
+  return [...new Set(compactStringList(rows.map((row) =>
+    sourceFirstVisualRuntimeTargetIdentityHash(row)
+  )))];
+}
+
 function sourceFirstWorkspaceSourceProvenanceFacet(sourceFirst = {}, context = {}) {
   const sourceAuthority = firstText(sourceFirst.sourceAuthority, sourceFirst.source_authority);
   if (!SOURCE_FIRST_VISUAL_WORKSPACE_SOURCE_AUTHORITIES.has(sourceAuthority)) {
@@ -34737,6 +34766,12 @@ function sourceFirstVisualBroadReadinessPredicate() {
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     minimum_distinct_source_identity_count:
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    distinctRuntimeTargetIdentitiesRequired: true,
+    distinct_runtime_target_identities_required: true,
+    minimumDistinctRuntimeTargetIdentityCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
+    minimum_distinct_runtime_target_identity_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
     directSourceAuthoritiesRequiringIdentityEvidence:
       [...SOURCE_FIRST_VISUAL_DIRECT_SOURCE_AUTHORITIES],
     direct_source_authorities_requiring_identity_evidence:
@@ -34800,6 +34835,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'strict_runtime_visual_authority_accepted',
       'visual_output_oracle_accepted',
       'distinct_source_first_visual_source_identities_observed',
+      'distinct_source_first_visual_runtime_target_identities_observed',
       'no_gpu_hmr_success_claims_from_support_facets',
     ],
     required_signals: [
@@ -34821,6 +34857,7 @@ function sourceFirstVisualBroadReadinessPredicate() {
       'strict_runtime_visual_authority_accepted',
       'visual_output_oracle_accepted',
       'distinct_source_first_visual_source_identities_observed',
+      'distinct_source_first_visual_runtime_target_identities_observed',
       'no_gpu_hmr_success_claims_from_support_facets',
     ],
     ignoredForAcceptance: [
@@ -36862,6 +36899,8 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
   const sourceFirstVisualRowIds = compactStringList(sourceFirstVisualRows.map((row) => row.rowId));
   const sourceFirstVisualSourceIdentityHashes =
     sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
+  const sourceFirstVisualRuntimeTargetIdentityHashes =
+    sourceFirstVisualRuntimeTargetIdentityHashList(sourceFirstVisualRows);
   const openGaps = compactStringList([
     fullRuntimeRows.length > 0
       ? null
@@ -36916,13 +36955,18 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       : 'large_rocm_ml_random_cold_path_source_evidence_required',
     sourceFirstVisualSourceIdentityHashes.length
       >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT
+      && sourceFirstVisualRuntimeTargetIdentityHashes.length
+        >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT
       ? null
       : sourceFirstVisualRows.length === 0
         && sourceFirstVisualCandidateRows.length > 0
         ? 'broad_acceptance_requires_fresh_source_first_visual_full_runtime_row'
         : sourceFirstVisualRows.length === 0
         ? 'broad_acceptance_requires_source_first_visual_full_runtime_row'
-        : 'broad_acceptance_requires_distinct_source_first_visual_full_runtime_sources',
+        : sourceFirstVisualSourceIdentityHashes.length
+          < BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT
+          ? 'broad_acceptance_requires_distinct_source_first_visual_full_runtime_sources'
+          : 'broad_acceptance_requires_distinct_source_first_visual_runtime_targets',
   ]);
   const accepted = openGaps.length === 0;
   const broadRuntimeRows = fullRuntimeRows.filter((row) =>
@@ -37013,9 +37057,12 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     sourceFirstVisualTargets,
     sourceFirstVisualRowIds,
     sourceFirstVisualSourceIdentityHashes,
+    sourceFirstVisualRuntimeTargetIdentityHashes,
     sourceFirstVisualSelectionPredicateHash: sourceFirstVisualSelectionPredicate.predicateHash,
     sourceFirstVisualDistinctSourceIdentityThreshold:
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    sourceFirstVisualDistinctRuntimeTargetIdentityThreshold:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
     acceptanceBoundary: 'matrix_generalization_requires_per_project_strict_ledger',
     universalProjectAcceptance: false,
     productionEveryArbitraryProjectAccepted: false,
@@ -37209,6 +37256,13 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
     source_first_visual_source_identity_hashes: sourceFirstVisualSourceIdentityHashes,
     sourceFirstVisualSourceIdentityCount: sourceFirstVisualSourceIdentityHashes.length,
     source_first_visual_source_identity_count: sourceFirstVisualSourceIdentityHashes.length,
+    sourceFirstVisualRuntimeTargetIdentityHashes,
+    source_first_visual_runtime_target_identity_hashes:
+      sourceFirstVisualRuntimeTargetIdentityHashes,
+    sourceFirstVisualRuntimeTargetIdentityCount:
+      sourceFirstVisualRuntimeTargetIdentityHashes.length,
+    source_first_visual_runtime_target_identity_count:
+      sourceFirstVisualRuntimeTargetIdentityHashes.length,
     sourceFirstVisualSelectionPredicate,
     source_first_visual_selection_predicate: sourceFirstVisualSelectionPredicate,
     sourceFirstVisualSelectionTargetNameIndependent:
@@ -37252,6 +37306,10 @@ function computeBroadLibraryAgnosticProof(rows, context = {}) {
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     minimum_source_first_visual_distinct_source_identity_count:
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimumSourceFirstVisualDistinctRuntimeTargetIdentityCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
+    minimum_source_first_visual_distinct_runtime_target_identity_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
     openGaps,
     open_gaps: openGaps,
   };
@@ -37403,6 +37461,8 @@ function broadLibraryAgnosticReadiness(
   const sourceFirstVisualTargets = compactStringList(sourceFirstVisualRows.map((row) => row.targetId));
   const sourceFirstVisualSourceIdentityHashes =
     sourceFirstVisualSourceIdentityHashList(sourceFirstVisualRows);
+  const sourceFirstVisualRuntimeTargetIdentityHashes =
+    sourceFirstVisualRuntimeTargetIdentityHashList(sourceFirstVisualRows);
   const broadRuntimeRowsComputed = true;
   const matrixGeneralizationRuntimeRows =
     finiteNumber(broadProof.matrixGeneralizationRuntimeRows ?? broadProof.matrix_generalization_runtime_rows)
@@ -37622,6 +37682,13 @@ function broadLibraryAgnosticReadiness(
     source_first_visual_source_identity_count: sourceFirstVisualSourceIdentityHashes.length,
     sourceFirstVisualSourceIdentityHashes,
     source_first_visual_source_identity_hashes: sourceFirstVisualSourceIdentityHashes,
+    sourceFirstVisualRuntimeTargetIdentityCount:
+      sourceFirstVisualRuntimeTargetIdentityHashes.length,
+    source_first_visual_runtime_target_identity_count:
+      sourceFirstVisualRuntimeTargetIdentityHashes.length,
+    sourceFirstVisualRuntimeTargetIdentityHashes,
+    source_first_visual_runtime_target_identity_hashes:
+      sourceFirstVisualRuntimeTargetIdentityHashes,
     backends,
     backendFamilies: backends,
     backend_families: backends,
@@ -37671,6 +37738,10 @@ function broadLibraryAgnosticReadiness(
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
     minimum_source_first_visual_distinct_source_identity_count:
       BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
+    minimumSourceFirstVisualDistinctRuntimeTargetIdentityCount:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
+    minimum_source_first_visual_distinct_runtime_target_identity_count:
+      BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
     openGaps,
   };
 }
@@ -39726,9 +39797,14 @@ function planCoverage(rows, context = {}) {
     });
   const sourceFirstFullRuntimeSourceIdentities =
     sourceFirstVisualSourceIdentityHashList(sourceFirstFullRuntimeRows);
+  const sourceFirstFullRuntimeTargetIdentities =
+    sourceFirstVisualRuntimeTargetIdentityHashList(sourceFirstFullRuntimeRows);
   const sourceFirstFullRuntimeDistinctSourceAccepted =
     sourceFirstFullRuntimeSourceIdentities.length
       >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT;
+  const sourceFirstFullRuntimeDistinctTargetAccepted =
+    sourceFirstFullRuntimeTargetIdentities.length
+      >= BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT;
   const fissionRows = deterministicFissionRows(rows, () => true);
   const randomColdRefusalRows = refusalRows(rows, (row) =>
     row.proofMode === 'random_large_project_cold_path'
@@ -39781,15 +39857,24 @@ function planCoverage(rows, context = {}) {
       id: 'source_first_uncompiled_project_validation',
       requirement: 'Source-first uncompiled project ingestion through split, compile, runtime proof, and output oracle',
       status: sourceFirstFullRuntimeDistinctSourceAccepted
+        && sourceFirstFullRuntimeDistinctTargetAccepted
         ? 'accepted'
         : sourceFirstFullRuntimeRows.length > 0
           ? 'candidate_only'
           : 'missing',
       rows: sourceFirstFullRuntimeRows,
       openGaps: sourceFirstFullRuntimeDistinctSourceAccepted
+        && sourceFirstFullRuntimeDistinctTargetAccepted
         ? []
         : sourceFirstFullRuntimeRows.length > 0
-          ? ['distinct_source_first_visual_full_runtime_sources_required']
+          ? compactStringList([
+            sourceFirstFullRuntimeDistinctSourceAccepted
+              ? null
+              : 'distinct_source_first_visual_full_runtime_sources_required',
+            sourceFirstFullRuntimeDistinctTargetAccepted
+              ? null
+              : 'distinct_source_first_visual_runtime_targets_required',
+          ])
           : ['source_first_full_runtime_visual_or_compute_proof_with_async_cas_support_required'],
       proofAuthority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
       proof_authority: AGENT_SPLIT_SOURCE_FIRST_INGESTION_AUTHORITY,
@@ -39805,6 +39890,14 @@ function planCoverage(rows, context = {}) {
         BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_SOURCE_IDENTITY_COUNT,
       sourceIdentityHashes: sourceFirstFullRuntimeSourceIdentities,
       source_identity_hashes: sourceFirstFullRuntimeSourceIdentities,
+      runtimeTargetIdentityCount: sourceFirstFullRuntimeTargetIdentities.length,
+      runtime_target_identity_count: sourceFirstFullRuntimeTargetIdentities.length,
+      minimumDistinctRuntimeTargetIdentityCount:
+        BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
+      minimum_distinct_runtime_target_identity_count:
+        BROAD_LIBRARY_MIN_SOURCE_FIRST_VISUAL_DISTINCT_RUNTIME_TARGET_COUNT,
+      runtimeTargetIdentityHashes: sourceFirstFullRuntimeTargetIdentities,
+      runtime_target_identity_hashes: sourceFirstFullRuntimeTargetIdentities,
     }),
     semanticVisualProbeCoverage(rows),
     coverageEntry({

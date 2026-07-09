@@ -17587,6 +17587,11 @@ assert.equal(
     .broadLibraryAgnosticProof.sourceFirstVisualSourceIdentityCount,
   2,
 );
+assert.equal(
+  broadReadinessWithWorkspaceSourceProvenanceQuery.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualRuntimeTargetIdentityCount,
+  2,
+);
 const sameTargetSourceFirstVisualRows = [0, 1].map((index) => {
   const sourceHash = hashValue(`same-target-source-first-visual-source-${index + 1}`);
   return withSourceFirstWorkspaceSourceProvenance(
@@ -17607,16 +17612,31 @@ const sameTargetSourceFirstVisualRows = [0, 1].map((index) => {
 });
 const sameTargetSourceFirstVisualLedger = buildGpuHmrValidationMatrixLedger([
   ...sameTargetSourceFirstVisualRows,
-  ...broadReadinessRows.slice(1),
+  ...broadReadinessRows.slice(1).map((row) => withoutSourceFirstVisualSupport(row)),
   ...broadReadinessRandomColdRows,
 ], { generatedAt: '2026-06-30T21:05:00.000Z' });
-assert.ok(
+assert.equal(
+  sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness.accepted,
+  false,
+);
+assert.equal(
   sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
-    .broadLibraryAgnosticProof.sourceFirstVisualRows >= 2,
+    .broadLibraryAgnosticProof.sourceFirstVisualRows,
+  2,
+);
+assert.equal(
+  sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualSourceIdentityCount,
+  2,
+);
+assert.equal(
+  sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
+    .broadLibraryAgnosticProof.sourceFirstVisualRuntimeTargetIdentityCount,
+  1,
 );
 assert.ok(
   sameTargetSourceFirstVisualLedger.summary.broadLibraryAgnosticReadiness
-    .broadLibraryAgnosticProof.sourceFirstVisualSourceIdentityCount >= 2,
+    .openGaps.includes('broad_acceptance_requires_distinct_source_first_visual_runtime_targets'),
 );
 assert.equal(
   sameTargetSourceFirstVisualLedger.rows.filter((row) =>
@@ -17624,6 +17644,17 @@ assert.equal(
     && row.matrixOutcome === 'full_runtime_gpu_hmr'
   ).length,
   2,
+);
+const sameTargetSourceFirstCoverage = new Map(
+  sameTargetSourceFirstVisualLedger.summary.planCoverage.map((entry) => [entry.id, entry]),
+);
+assert.equal(
+  sameTargetSourceFirstCoverage.get('source_first_uncompiled_project_validation')?.status,
+  'candidate_only',
+);
+assert.ok(
+  sameTargetSourceFirstCoverage.get('source_first_uncompiled_project_validation')
+    ?.openGaps.includes('distinct_source_first_visual_runtime_targets_required'),
 );
 const broadReadinessWithDirectSourceFirstMissingIdentityQuery = queryGpuHmrValidationMatrixLedger({
   schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
