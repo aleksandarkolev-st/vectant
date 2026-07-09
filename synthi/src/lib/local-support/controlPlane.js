@@ -39,6 +39,16 @@ const SECURITY_EVENT_TYPES = new Set([
   "traffic_spike",
 ]);
 
+const TRANSPARENCY_ACTIONS = new Set([
+  "pause_session",
+  "resume_session",
+  "disconnect_session",
+  "revoke_session_approvals",
+  "export_history",
+  "delete_history",
+  "revoke_port",
+]);
+
 const MAX_REPLAY_CACHE_ENTRIES = 5_000;
 const replayCache = new Map();
 const pairingSessions = new Map();
@@ -840,6 +850,63 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
       audit_chain_head: activityChainHead,
     },
   };
+}
+
+export function buildTransparencyActionDecision(input, currentState, policy = readLocalSupportPolicy()) {
+  const body = input && typeof input === "object" ? input : {};
+  const action = typeof body.action === "string" ? body.action.trim() : "";
+  if (!TRANSPARENCY_ACTIONS.has(action)) {
+    return deny("invalid_transparency_action", "Local Support action was not accepted.");
+  }
+
+  const state = summarizeTransparencyState(currentState, policy);
+  if (!state.session.connected) {
+    return deny("local_app_not_connected", "Connect the desktop app before changing local support state.");
+  }
+  if (!policy.enabled) {
+    return deny("feature_disabled", "Local Support is disabled by policy.");
+  }
+
+  if (action === "revoke_port") {
+    const port = clampNumber(body.port, 1, 65_535, 0);
+    const approvedPort = state.ports.find((item) => item.port === port && !item.revoked);
+    if (!approvedPort) {
+      return deny("port_not_approved", "This port approval was not active.");
+    }
+    return transparencyActionAllowed(action, state, {
+      port,
+      user_visible_message: "Port approval revoke requested. The local app must invalidate the preview host and token.",
+    });
+  }
+
+  return transparencyActionAllowed(action, state, {
+    user_visible_message: transparencyActionMessage(action),
+  });
+}
+
+function transparencyActionAllowed(action, state, extra = {}) {
+  return {
+    decision: "local_control_action_required",
+    reason: action,
+    action,
+    session_id: state.session.session_id,
+    workspace_id: state.workspace.workspace_id,
+    policy_version: state.policy_version,
+    raw_body_included: false,
+    bytes_sent: 0,
+    local_enforcement_required: true,
+    ...extra,
+  };
+}
+
+function transparencyActionMessage(action) {
+  if (action === "pause_session") return "Pause requested. The local app must stop sending data until resumed.";
+  if (action === "resume_session") return "Resume requested. The local app must re-check session validity before sending data.";
+  if (action === "disconnect_session") return "Disconnect requested. The local app must revoke session approvals and approved ports.";
+  if (action === "revoke_session_approvals") return "Approval revoke requested. The local app must invalidate queued and session approvals.";
+  if (action === "export_history") return "Scrubbed history export requested from local product storage.";
+  if (action === "delete_history") return "Local history delete requested from local product storage.";
+  return "Local control action requested.";
 }
 
 export function buildAdminRevokeDecision(input, policy = readLocalSupportPolicy()) {

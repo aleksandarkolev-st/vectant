@@ -54,34 +54,13 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("How do you delete local activity history?")).toBeVisible();
   });
 
-  test("exports scrubbed history and deletes local activity", async ({ page }) => {
+  test("does not fake history export or delete without a connected local app", async ({ page }) => {
     await page.goto(`${baseURL}/local-support`);
     await page.getByRole("tab", { name: "Activity" }).click();
 
-    const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: "Export current scrubbed view" }).click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("vectant-local-support-history-not_paired.json");
-
-    const stream = await download.createReadStream();
-    if (!stream) throw new Error("Expected exported history download stream");
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    const exported = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-
-    expect(exported).toMatchObject({
-      export_type: "scrubbed_activity_history",
-      raw_bodies_included: false,
-      session_id: "not_paired",
-      audit_chain_verified: true,
-      audit_chain_head: null,
-    });
-    expect(exported.events).toHaveLength(0);
-    expect(JSON.stringify(exported)).not.toContain("DATABASE_URL=");
-    await expect(page.getByText("0 scrubbed events exported")).toBeVisible();
-
+    await expect(page.getByRole("button", { name: "Export current scrubbed view" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Delete local history" })).toBeDisabled();
-    await expect(page.getByText("This page will not fake a delete.")).toBeVisible();
+    await expect(page.getByText("This page will not fake local storage actions.")).toBeVisible();
     await expect(page.getByText("Paired browser session with fingerprint")).toHaveCount(0);
   });
 });

@@ -196,6 +196,7 @@ export default function LocalSupportTransparency() {
   const [lastExport, setLastExport] = useState(null);
   const [approvalsRevoked, setApprovalsRevoked] = useState(false);
   const [revokedPorts, setRevokedPorts] = useState([]);
+  const [controlActionStatus, setControlActionStatus] = useState(null);
   const [policyState, setPolicyState] = useState({
     status: "loading",
     policy: null,
@@ -309,30 +310,72 @@ export default function LocalSupportTransparency() {
       ? "Could not load cloud policy state. The local app must fail closed for requests."
       : "Loading cloud policy state without using cached data.");
 
-  function exportScrubbedHistory() {
-    const payload = {
-      ...liveExportMetadata,
-      exported_at: new Date().toISOString(),
-      events: visibleActivity.map((item) => ({
-        at: item.at,
-        class: item.kind,
-        summary: item.text,
-        chain_index: item.chain_index,
-        previous_event_hash: item.previous_event_hash,
-        event_hash: item.event_hash,
-        user_visible: true,
-      })),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `vectant-local-support-history-${liveExportMetadata.session_id}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    setLastExport(`${payload.events.length} scrubbed events exported`);
+  async function requestLocalControlAction(action, body = {}) {
+    setControlActionStatus({ tone: "neutral", text: "Sending local control request..." });
+    try {
+      const response = await fetch("/api/local-support/transparency-action", {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ action, ...body }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.decision === "denied") {
+        throw new Error(result.user_visible_message || result.reason || "local_control_denied");
+      }
+      setControlActionStatus({
+        tone: "good",
+        text: result.user_visible_message || "Local control request accepted.",
+      });
+      return result;
+    } catch (error) {
+      setControlActionStatus({
+        tone: "bad",
+        text: error instanceof Error ? error.message : "Local control request failed.",
+      });
+      return null;
+    }
+  }
+
+  async function togglePause() {
+    const action = paused ? "resume_session" : "pause_session";
+    const result = await requestLocalControlAction(action);
+    if (result) setLocalPaused(!paused);
+  }
+
+  async function disconnectLocalSupport() {
+    const result = await requestLocalControlAction("disconnect_session");
+    if (result) {
+      setLocalDisconnected(true);
+      setLocalPaused(true);
+      setApprovalsRevoked(true);
+      setRevokedPorts(ports.map((item) => item.port));
+    }
+  }
+
+  async function revokeSessionApprovals() {
+    const result = await requestLocalControlAction("revoke_session_approvals");
+    if (result) setApprovalsRevoked(true);
+  }
+
+  async function revokePortApproval(port) {
+    const result = await requestLocalControlAction("revoke_port", { port });
+    if (result) setRevokedPorts((values) => Array.from(new Set([...values, port])));
+  }
+
+  async function exportScrubbedHistory() {
+    const result = await requestLocalControlAction("export_history");
+    if (result) setLastExport("Scrubbed history export requested from local product storage");
+  }
+
+  async function deleteLocalHistory() {
+    const result = await requestLocalControlAction("delete_history");
+    if (result) {
+      setHistoryDeleted(true);
+      setLastExport(null);
+    }
   }
 
   return (
@@ -364,7 +407,7 @@ export default function LocalSupportTransparency() {
               variant="outline"
               size="sm"
               className="border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
-              onClick={() => setLocalPaused((value) => !value)}
+              onClick={togglePause}
               disabled={!connected}
             >
               {paused ? <Play className="size-4" aria-hidden="true" /> : <Pause className="size-4" aria-hidden="true" />}
@@ -376,10 +419,7 @@ export default function LocalSupportTransparency() {
               size="sm"
               className="bg-red-500/90 text-zinc-950 hover:bg-red-400"
               disabled={!connected}
-              onClick={() => {
-                setLocalDisconnected(true);
-                setLocalPaused(true);
-              }}
+              onClick={disconnectLocalSupport}
             >
               <Unplug className="size-4" aria-hidden="true" />
               Disconnect
@@ -666,7 +706,7 @@ export default function LocalSupportTransparency() {
                             type="button"
                             variant="destructive"
                             className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
-                            onClick={() => setRevokedPorts((values) => Array.from(new Set([...values, item.port])))}
+                            onClick={() => revokePortApproval(item.port)}
                             disabled={revoked}
                           >
                             <Unplug className="size-4" aria-hidden="true" />
@@ -744,7 +784,7 @@ export default function LocalSupportTransparency() {
                   type="button"
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
-                  onClick={() => setApprovalsRevoked(true)}
+                  onClick={revokeSessionApprovals}
                   disabled={!connected}
                 >
                   <RotateCcw className="size-4" aria-hidden="true" />
@@ -754,11 +794,7 @@ export default function LocalSupportTransparency() {
                   type="button"
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
-                  onClick={() => {
-                    setLocalDisconnected(true);
-                    setLocalPaused(true);
-                    setApprovalsRevoked(true);
-                  }}
+                  onClick={disconnectLocalSupport}
                   disabled={!connected}
                 >
                   <Unplug className="size-4" aria-hidden="true" />
@@ -776,6 +812,16 @@ export default function LocalSupportTransparency() {
                       ? "No live approvals are active."
                       : "Connect the desktop app before revoking approvals. This page will not fake a revoke."}
                 </div>
+                {controlActionStatus ? (
+                  <div className={cn(
+                    "rounded-lg border px-3 py-2 text-sm",
+                    controlActionStatus.tone === "good" && "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
+                    controlActionStatus.tone === "bad" && "border-red-400/20 bg-red-400/10 text-red-100",
+                    controlActionStatus.tone === "neutral" && "border-white/10 bg-white/[0.03] text-zinc-400",
+                  )}>
+                    {controlActionStatus.text}
+                  </div>
+                ) : null}
               </div>
             </Panel>
           </TabsContent>
@@ -809,6 +855,7 @@ export default function LocalSupportTransparency() {
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
                   onClick={exportScrubbedHistory}
+                  disabled={!connected}
                 >
                   <Download className="size-4" aria-hidden="true" />
                   Export current scrubbed view
@@ -831,10 +878,7 @@ export default function LocalSupportTransparency() {
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
                   disabled={!connected}
-                  onClick={() => {
-                    setHistoryDeleted(true);
-                    setLastExport(null);
-                  }}
+                  onClick={deleteLocalHistory}
                 >
                   <Trash2 className="size-4" aria-hidden="true" />
                   Delete local history
@@ -846,7 +890,17 @@ export default function LocalSupportTransparency() {
                 ) : null}
                 {!connected ? (
                   <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
-                    Connect the desktop app before deleting local activity. This page will not fake a delete.
+                    Connect the desktop app before exporting or deleting local activity. This page will not fake local storage actions.
+                  </div>
+                ) : null}
+                {controlActionStatus ? (
+                  <div className={cn(
+                    "rounded-lg border px-3 py-2 text-sm",
+                    controlActionStatus.tone === "good" && "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
+                    controlActionStatus.tone === "bad" && "border-red-400/20 bg-red-400/10 text-red-100",
+                    controlActionStatus.tone === "neutral" && "border-white/10 bg-white/[0.03] text-zinc-400",
+                  )}>
+                    {controlActionStatus.text}
                   </div>
                 ) : null}
               </div>
