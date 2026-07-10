@@ -2122,6 +2122,40 @@ fn local_sessions_can_bind_to_pairing_device_identity() {
 }
 
 #[test]
+fn paired_local_sessions_preserve_cloud_session_identity_and_hide_local_token() {
+    let mut session = SessionGuard::new_paired(
+        "sess_cloud_pair_123",
+        "acct_pair",
+        "org_pair",
+        "wk_pair",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    )
+    .unwrap();
+    let local_token = session.token_for_pairing_response().to_string();
+    let state = session.state();
+
+    assert_eq!(state.session_id, "sess_cloud_pair_123");
+    assert_eq!(state.account_id, "acct_pair");
+    assert!(!serde_json::to_string(&state)
+        .unwrap()
+        .contains(&local_token));
+    assert!(session.validate(&local_token, "req_cloud_pair_123").is_ok());
+    assert_eq!(
+        SessionGuard::new_paired(
+            "bad session id",
+            "acct_pair",
+            "org_pair",
+            "wk_pair",
+            "sha256:1111111111111111",
+            std::time::Duration::from_secs(300),
+        )
+        .unwrap_err(),
+        vectant_local_support_app::session::SessionError::InvalidSessionId
+    );
+}
+
+#[test]
 fn device_identity_store_persists_rotates_and_fails_closed() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("device-identity.json");

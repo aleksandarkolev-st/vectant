@@ -79,6 +79,34 @@ impl SessionGuard {
         )
     }
 
+    pub fn new_paired(
+        session_id: impl Into<String>,
+        account_id: impl Into<String>,
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        device_fingerprint: impl Into<String>,
+        ttl: Duration,
+    ) -> Result<Self, SessionError> {
+        let session_id = session_id.into();
+        if !session_id.starts_with("sess_") || !safe_request_id(&session_id) {
+            return Err(SessionError::InvalidSessionId);
+        }
+        let token: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(48)
+            .map(char::from)
+            .collect();
+        Ok(Self::new_bound_with_session_and_token(
+            session_id,
+            account_id,
+            org_id,
+            workspace_id,
+            device_fingerprint,
+            ttl,
+            token,
+        ))
+    }
+
     fn new_bound_with_token(
         account_id: impl Into<String>,
         org_id: impl Into<String>,
@@ -87,8 +115,28 @@ impl SessionGuard {
         ttl: Duration,
         token: String,
     ) -> Self {
+        Self::new_bound_with_session_and_token(
+            format!("sess_{}", Uuid::new_v4()),
+            account_id,
+            org_id,
+            workspace_id,
+            device_fingerprint,
+            ttl,
+            token,
+        )
+    }
+
+    fn new_bound_with_session_and_token(
+        session_id: String,
+        account_id: impl Into<String>,
+        org_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        device_fingerprint: impl Into<String>,
+        ttl: Duration,
+        token: String,
+    ) -> Self {
         Self {
-            session_id: format!("sess_{}", Uuid::new_v4()),
+            session_id,
             account_id: account_id.into(),
             org_id: org_id.into(),
             workspace_id: workspace_id.into(),
@@ -249,6 +297,7 @@ pub enum SessionError {
     Paused,
     Replay,
     InvalidRequestId,
+    InvalidSessionId,
 }
 
 fn fingerprint(token: &str) -> String {
