@@ -37,6 +37,16 @@ pub struct PairingProof {
     pub signature: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceRequestProof {
+    pub session_id: String,
+    pub device_fingerprint: String,
+    pub timestamp: String,
+    pub nonce: String,
+    pub body_sha256: String,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceIdentity {
     signing_key: SigningKey,
@@ -96,6 +106,57 @@ impl DeviceIdentity {
             device_public_key: public.device_public_key,
             device_fingerprint: public.device_fingerprint,
             signature: hex::encode(signature.to_bytes()),
+        }
+    }
+
+    pub fn sign_device_request(
+        &self,
+        method: &str,
+        path: &str,
+        session_id: &str,
+        body: &[u8],
+    ) -> DeviceRequestProof {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+        let nonce: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(16)
+            .map(char::from)
+            .collect::<String>();
+        let nonce = hex::encode(nonce.as_bytes());
+        self.sign_device_request_at(method, path, session_id, body, &timestamp, &nonce)
+    }
+
+    pub fn sign_device_request_at(
+        &self,
+        method: &str,
+        path: &str,
+        session_id: &str,
+        body: &[u8],
+        timestamp: &str,
+        nonce: &str,
+    ) -> DeviceRequestProof {
+        let public = self.public_identity();
+        let body_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(body)));
+        let payload = device_request_payload(
+            method,
+            path,
+            session_id,
+            &public.device_fingerprint,
+            timestamp,
+            nonce,
+            &body_sha256,
+        );
+        DeviceRequestProof {
+            session_id: session_id.to_string(),
+            device_fingerprint: public.device_fingerprint,
+            timestamp: timestamp.to_string(),
+            nonce: nonce.to_string(),
+            body_sha256,
+            signature: hex::encode(self.signing_key.sign(&payload).to_bytes()),
         }
     }
 }
@@ -546,6 +607,88 @@ fn pairing_challenge_payload(
         framed
     })
     .collect()
+}
+
+fn device_request_payload(
+    method: &str,
+    path: &str,
+    session_id: &str,
+    device_fingerprint: &str,
+    timestamp: &str,
+    nonce: &str,
+    body_sha256: &str,
+) -> Vec<u8> {
+    [
+        "VECTANT-LOCAL-SUPPORT-DEVICE-V1",
+        method,
+        path,
+        session_id,
+        device_fingerprint,
+        timestamp,
+        nonce,
+        body_sha256,
+    ]
+    .iter()
+    .flat_map(|part| {
+        let bytes = part.as_bytes();
+        let mut framed = Vec::with_capacity(bytes.len() + 8);
+        framed.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        framed.extend_from_slice(bytes);
+        framed
+    })
+    .collect()
+}
+
+#[cfg(test)]
+mod device_request_tests {
+    use super::*;
+
+    #[test]
+    fn device_request_proof_binds_body_path_and_session() {
+        let identity = DeviceIdentity::generate();
+        let proof = identity.sign_device_request_at(
+            "POST",
+            "/api/local-support/relay/device",
+            "sess_12345678",
+            br#"{"action":"poll"}"#,
+            "1893456000",
+            "22222222222222222222222222222222",
+        );
+        let public_key = VerifyingKey::from_bytes(
+            &hex::decode(identity.public_identity().device_public_key)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
+        .unwrap();
+        let signature = Signature::from_slice(&hex::decode(&proof.signature).unwrap()).unwrap();
+        let payload = device_request_payload(
+            "POST",
+            "/api/local-support/relay/device",
+            &proof.session_id,
+            &proof.device_fingerprint,
+            &proof.timestamp,
+            &proof.nonce,
+            &proof.body_sha256,
+        );
+
+        assert!(public_key.verify(&payload, &signature).is_ok());
+        assert_eq!(proof.body_sha256.len(), 71);
+        assert!(public_key
+            .verify(
+                &device_request_payload(
+                    "POST",
+                    "/api/local-support/relay/other",
+                    &proof.session_id,
+                    &proof.device_fingerprint,
+                    &proof.timestamp,
+                    &proof.nonce,
+                    &proof.body_sha256,
+                ),
+                &signature,
+            )
+            .is_err());
+    }
 }
 
 #[cfg(all(test, windows))]
