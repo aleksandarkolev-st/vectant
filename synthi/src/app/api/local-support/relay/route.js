@@ -7,6 +7,7 @@ import {
   readLocalSupportPolicy,
   verifyRequestEnvelopeSignature,
 } from "@/lib/local-support/controlPlane";
+import { enqueueRelayRequest } from "@/lib/local-support/relayStore";
 
 export const runtime = "nodejs";
 
@@ -39,6 +40,28 @@ export async function POST(req) {
     return jsonNoStore(decision, 403);
   }
 
+  try {
+    await enqueueRelayRequest(body, decision);
+  } catch (error) {
+    if (error?.code === "P2002") {
+      return jsonNoStore({
+        decision: "denied",
+        reason: "request_replay_detected",
+        relay_forward: false,
+        raw_body_included: false,
+        bytes_sent: 0,
+      }, 409);
+    }
+    return jsonNoStore({
+      decision: "denied",
+      reason: "relay_unavailable",
+      relay_forward: false,
+      raw_body_included: false,
+      bytes_sent: 0,
+      user_visible_message: "Local Support relay is temporarily unavailable.",
+    }, 503);
+  }
+
   if (policy.enabled) {
     const replayDecision = enforceRequestEnvelopeReplayProtection(body);
     if (replayDecision.decision === "denied") {
@@ -46,7 +69,7 @@ export async function POST(req) {
     }
   }
 
-  return jsonNoStore(decision, 200);
+  return jsonNoStore({ ...decision, decision: "relay_queued", relay_forward: true }, 202);
 }
 
 function jsonNoStore(body, status = 200) {

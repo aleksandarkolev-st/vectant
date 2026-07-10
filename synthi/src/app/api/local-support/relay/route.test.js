@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const relayStore = vi.hoisted(() => ({
+  enqueueRelayRequest: vi.fn(async () => ({ requestId: "req_relay_123" })),
+}));
+
+vi.mock("@/lib/local-support/relayStore", () => relayStore);
 
 import {
   clearAdminRevocationStore,
@@ -16,6 +22,8 @@ afterEach(() => {
   process.env = { ...OLD_ENV };
   clearAdminRevocationStore();
   clearRequestEnvelopeReplayCache();
+  relayStore.enqueueRelayRequest.mockReset();
+  relayStore.enqueueRelayRequest.mockResolvedValue({ requestId: "req_relay_123" });
 });
 
 function enableLocalSupport() {
@@ -131,9 +139,9 @@ describe("local support relay route", () => {
 
     const body = signedEnvelope({ request_id: "req_relay_replay" });
     const first = await POST(request(body));
-    expect(first.status).toBe(200);
+    expect(first.status).toBe(202);
     await expect(first.json()).resolves.toMatchObject({
-      decision: "relay_ready",
+      decision: "relay_queued",
       relay_forward: true,
       bytes_sent: 0,
     });
@@ -226,9 +234,9 @@ describe("local support relay route", () => {
       request_id: requestId,
       capability: "workspace.log.read",
     })));
-    expect(valid.status).toBe(200);
+    expect(valid.status).toBe(202);
     await expect(valid.json()).resolves.toMatchObject({
-      decision: "relay_ready",
+      decision: "relay_queued",
       relay_forward: true,
       bytes_sent: 0,
     });
@@ -240,10 +248,10 @@ describe("local support relay route", () => {
     const response = await POST(request(signedEnvelope()));
     const json = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(json).toMatchObject({
-      decision: "relay_ready",
+      decision: "relay_queued",
       relay_forward: true,
       raw_body_included: false,
       response_body_included: false,
@@ -260,5 +268,44 @@ describe("local support relay route", () => {
     expect(json.target_hash).toMatch(/^sha256:/);
     expect(json.target_display).toContain("authorization: [REDACTED]");
     expect(JSON.stringify(json)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    expect(relayStore.enqueueRelayRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ request_id: "req_relay_123" }),
+      expect.objectContaining({ target_hash: expect.stringMatching(/^sha256:/) }),
+    );
+  });
+
+  it("fails closed when durable relay persistence is unavailable", async () => {
+    enableLocalSupport();
+    relayStore.enqueueRelayRequest.mockRejectedValueOnce(new Error("database unavailable"));
+
+    const response = await POST(request(signedEnvelope({ request_id: "req_relay_store_down" })));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "relay_unavailable",
+      relay_forward: false,
+      raw_body_included: false,
+      bytes_sent: 0,
+    });
+
+    relayStore.enqueueRelayRequest.mockResolvedValueOnce({ requestId: "req_relay_store_down" });
+    const retry = await POST(request(signedEnvelope({ request_id: "req_relay_store_down" })));
+    expect(retry.status).toBe(202);
+  });
+
+  it("uses the durable request id constraint as a second replay barrier", async () => {
+    enableLocalSupport();
+    relayStore.enqueueRelayRequest.mockRejectedValueOnce({ code: "P2002" });
+
+    const response = await POST(request(signedEnvelope({ request_id: "req_relay_durable_replay" })));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "request_replay_detected",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
   });
 });
