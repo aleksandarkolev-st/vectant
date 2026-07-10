@@ -6,12 +6,19 @@ import { findActivePairedSession } from "@/lib/local-support/sessionStore";
 const MAX_CLOCK_SKEW_SECONDS = 30;
 const NONCE_TTL_MS = 2 * 60 * 1000;
 
-export async function authenticateLocalSupportDevice(req, expectedPath, client = prisma, now = new Date()) {
+export async function authenticateLocalSupportDevice(
+  req,
+  expectedPath,
+  expectedBodySha256,
+  client = prisma,
+  now = new Date(),
+) {
   const headers = readProofHeaders(req.headers);
   if (!headers) return denied("device_proof_missing");
   if (req.method !== "POST" || new URL(req.url).pathname !== expectedPath) {
     return denied("device_proof_context_mismatch");
   }
+  if (headers.bodySha256 !== expectedBodySha256) return denied("device_proof_body_mismatch");
 
   const timestampSeconds = Number(headers.timestamp);
   if (!Number.isSafeInteger(timestampSeconds)
@@ -52,7 +59,7 @@ export async function authenticateLocalSupportDevice(req, expectedPath, client =
   return { ok: true, session };
 }
 
-export function deviceRequestPayload(method, path, sessionId, deviceFingerprint, timestamp, nonce) {
+export function deviceRequestPayload(method, path, sessionId, deviceFingerprint, timestamp, nonce, bodySha256) {
   return lengthPrefixed([
     "VECTANT-LOCAL-SUPPORT-DEVICE-V1",
     method,
@@ -61,6 +68,7 @@ export function deviceRequestPayload(method, path, sessionId, deviceFingerprint,
     deviceFingerprint,
     String(timestamp),
     nonce,
+    bodySha256,
   ]);
 }
 
@@ -71,12 +79,16 @@ function readProofHeaders(headers) {
     timestamp: headers.get("x-vectant-device-timestamp") || "",
     nonce: headers.get("x-vectant-device-nonce") || "",
     signature: headers.get("x-vectant-device-signature") || "",
+    bodySha256: headers.get("x-vectant-body-sha256") || "",
   };
   if (!/^sess_[A-Za-z0-9_-]{8,120}$/.test(values.sessionId)
     || !/^sha256:[0-9a-f]{16}$/i.test(values.deviceFingerprint)
     || !/^\d{10}$/.test(values.timestamp)
     || !/^[0-9a-f]{32}$/i.test(values.nonce)
     || !/^[0-9a-f]{128}$/i.test(values.signature)) {
+    return null;
+  }
+  if (!/^sha256:[0-9a-f]{64}$/i.test(values.bodySha256)) {
     return null;
   }
   return values;
@@ -102,6 +114,7 @@ function verifyDeviceRequestSignature(headers, method, path, publicKeyHex) {
         headers.deviceFingerprint,
         headers.timestamp,
         headers.nonce,
+        headers.bodySha256,
       ),
       publicKey,
       Buffer.from(headers.signature, "hex"),
