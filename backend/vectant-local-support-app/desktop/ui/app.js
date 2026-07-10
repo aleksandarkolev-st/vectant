@@ -39,10 +39,15 @@ const fallbackState = {
 
 function activateTab(name) {
   tabs.forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.tab === name);
+    const active = tab.dataset.tab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
   });
   panels.forEach((panel) => {
-    panel.classList.toggle("active", panel.dataset.panel === name);
+    const active = panel.dataset.panel === name;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
   });
 }
 
@@ -268,6 +273,23 @@ async function refreshDesktopState() {
 
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => activateTab(tab.dataset.tab));
+  tab.addEventListener("keydown", (event) => {
+    const currentIndex = tabs.indexOf(tab);
+    const targetIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : event.key === "ArrowRight"
+          ? (currentIndex + 1) % tabs.length
+          : event.key === "ArrowLeft"
+            ? (currentIndex - 1 + tabs.length) % tabs.length
+            : -1;
+    if (targetIndex < 0) return;
+    event.preventDefault();
+    const target = tabs[targetIndex];
+    activateTab(target.dataset.tab);
+    target.focus();
+  });
 });
 
 document.querySelectorAll("[data-action]").forEach((button) => {

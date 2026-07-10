@@ -37,6 +37,7 @@ button {
   min-height: 38px;
   padding: 0 14px;
   transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  white-space: nowrap;
 }
 
 button:hover:not(:disabled) {
@@ -138,6 +139,15 @@ h2 {
   color: oklch(0.36 0.08 75);
 }
 
+.status-pill::before {
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  height: 6px;
+  margin-right: 7px;
+  width: 6px;
+}
+
 .status-pill.paused {
   background: var(--accent-soft);
   color: oklch(0.34 0.13 255);
@@ -162,7 +172,7 @@ h2 {
 .copy,
 .approval-preview p {
   line-height: 1.55;
-  max-width: 72ch;
+  max-width: 65ch;
 }
 
 .banner-actions,
@@ -198,9 +208,27 @@ h2 {
   display: grid;
 }
 
+.overview-grid {
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.75fr);
+}
+
+.side-stack {
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto 1fr;
+}
+
 .panel {
   min-height: 190px;
   padding: 18px;
+}
+
+.compact-panel {
+  min-height: 0;
+}
+
+.session-panel {
+  min-height: 318px;
 }
 
 .span-2 {
@@ -255,6 +283,18 @@ dd {
   align-items: stretch;
   flex-direction: column;
   margin-top: 14px;
+}
+
+.control-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.full-control {
+  margin-top: 8px;
+  width: 100%;
 }
 
 .approval-preview {
@@ -359,5 +399,14 @@ dd {
 
   .workflow-list li {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

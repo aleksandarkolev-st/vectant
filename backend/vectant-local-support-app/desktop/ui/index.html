@@ -23,7 +23,7 @@
       <section class="banner" aria-label="Security boundary">
         <div>
           <h2>You control what Vectant can see.</h2>
-          <p>Workspace selection is not consent. Browser preview is not AI page reading. Raw secrets stay local unless a future reviewed permission model says otherwise.</p>
+          <p>Choose one workspace. Sensitive files stay blocked locally. Browser preview never grants Vectant AI access to the page.</p>
         </div>
         <div class="banner-actions">
           <button class="primary" type="button" data-action="pick-workspace">Choose workspace</button>
@@ -31,16 +31,16 @@
         </div>
       </section>
 
-      <nav class="tabs" aria-label="Desktop sections">
-        <button class="tab active" type="button" data-tab="overview">Overview</button>
-        <button class="tab" type="button" data-tab="workflow">First run</button>
-        <button class="tab" type="button" data-tab="approvals">Approvals</button>
-        <button class="tab" type="button" data-tab="ports">Ports</button>
-        <button class="tab" type="button" data-tab="activity">Activity</button>
+      <nav class="tabs" aria-label="Desktop sections" role="tablist">
+        <button class="tab active" type="button" role="tab" tabindex="0" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Overview</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-workflow" data-tab="workflow">First run</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-approvals" data-tab="approvals">Approvals</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-ports" data-tab="ports">Ports</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-activity" data-tab="activity">Activity</button>
       </nav>
 
-      <section class="grid active" data-panel="overview">
-        <article class="panel span-2">
+      <section class="grid overview-grid active" id="panel-overview" role="tabpanel" data-panel="overview">
+        <article class="panel session-panel">
           <div class="panel-head">
             <div>
               <p class="label">Session</p>
@@ -56,29 +56,31 @@
           </dl>
         </article>
 
-        <article class="panel">
-          <p class="label">Release safety</p>
-          <h2>Update required below 0.1.0</h2>
-          <p class="copy">Old or blocked app versions cannot become trusted support bridges. Signed update proof is still a release gate.</p>
-        </article>
+        <div class="side-stack">
+          <article class="panel compact-panel">
+            <p class="label">Release safety</p>
+            <h2>Update required below 0.1.0</h2>
+            <p class="copy">Old or blocked versions cannot connect. Signed updates remain a release gate.</p>
+          </article>
 
-        <article class="panel">
-          <p class="label">Controls</p>
-          <div class="control-stack">
-            <button type="button" data-action="pause">Pause</button>
-            <button type="button" data-action="disconnect" disabled>Disconnect</button>
-            <button type="button" data-action="revoke" disabled>Revoke session approvals</button>
-          </div>
-          <p class="hint" data-bridge-status>Desktop IPC unavailable, showing safe disconnected state.</p>
-        </article>
+          <article class="panel compact-panel">
+            <p class="label">Session controls</p>
+            <div class="control-row">
+              <button type="button" data-action="pause">Pause</button>
+              <button type="button" data-action="disconnect" disabled>Disconnect</button>
+            </div>
+            <button class="full-control" type="button" data-action="revoke" disabled>Revoke session approvals</button>
+            <p class="hint" data-bridge-status>Desktop IPC unavailable, showing safe disconnected state.</p>
+          </article>
+        </div>
       </section>
 
-      <section class="grid" data-panel="workflow">
+      <section class="grid" id="panel-workflow" role="tabpanel" hidden data-panel="workflow">
         <article class="panel span-2">
           <div class="panel-head">
             <div>
               <p class="label">Secure first run</p>
-              <h2>Investor demo path without pretending to be paired</h2>
+              <h2>Set up Local Support</h2>
             </div>
             <span class="tag warn" data-workflow-summary>Safe disconnected state</span>
           </div>
@@ -121,13 +123,13 @@
           </ol>
         </article>
         <article class="panel">
-          <p class="label">Demo honesty</p>
+          <p class="label">What stays local</p>
           <h2 data-workflow-guard-title>No bytes sent in this view</h2>
           <p class="copy" data-workflow-guard-copy">Disconnected mode is a safe preview of the controls. Live state appears only after sanitized desktop IPC responds.</p>
         </article>
       </section>
 
-      <section class="grid" data-panel="approvals">
+      <section class="grid" id="panel-approvals" role="tabpanel" hidden data-panel="approvals">
         <article class="panel span-2">
           <div class="panel-head">
             <div>
@@ -155,7 +157,7 @@
         </article>
       </section>
 
-      <section class="grid" data-panel="ports">
+      <section class="grid" id="panel-ports" role="tabpanel" hidden data-panel="ports">
         <article class="panel span-2">
           <div class="panel-head">
             <div>
@@ -181,7 +183,7 @@
         </article>
       </section>
 
-      <section class="grid" data-panel="activity">
+      <section class="grid" id="panel-activity" role="tabpanel" hidden data-panel="activity">
         <article class="panel span-2">
           <div class="panel-head">
             <div>
