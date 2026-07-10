@@ -735,11 +735,27 @@ model LocalSupportRelayRequest {
   updatedAt            DateTime  @updatedAt
 
   auditEntries LocalSupportCloudAudit[]
+  payload      LocalSupportRelayPayload?
 
   @@index([sessionId, status, expiresAt])
   @@index([deviceFingerprint, status, expiresAt])
   @@index([status, leaseExpiresAt])
   @@index([createdAt])
+}
+
+model LocalSupportRelayPayload {
+  requestId       String   @id
+  ciphertext      String
+  byteCount       Int
+  contentSha256   String
+  redactionCount  Int      @default(0)
+  scannerVersion  String
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+
+  request LocalSupportRelayRequest @relation(fields: [requestId], references: [requestId], onDelete: Cascade)
+
+  @@index([expiresAt])
 }
 
 // Product/security audit summaries are deliberately separate from relay
