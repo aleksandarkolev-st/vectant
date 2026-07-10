@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
 
+import { authOptions } from "@/app/auth";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   completePairingChallenge,
@@ -25,8 +27,28 @@ export async function POST(req) {
   const body = bodyResult.value;
   const action = typeof body?.action === "string" ? body.action : "";
   const policy = readLocalSupportPolicy();
+  let createBody = body;
+  if (action === "create") {
+    const session = await getServerSession(authOptions);
+    const authenticatedUserId = session?.user?.id || session?.user?.email;
+    if (!authenticatedUserId) {
+      return jsonNoStore({
+        decision: "denied",
+        reason: "authentication_required",
+        bytes_sent: 0,
+        user_visible_message: "Sign in before starting Local Support pairing.",
+      }, 401);
+    }
+    createBody = {
+      ...body,
+      account_id: authenticatedUserId,
+      requested_user_id: authenticatedUserId,
+      org_id: policy.org_id || body.org_id,
+    };
+  }
+
   const result = action === "create"
-    ? createPairingChallenge(body, policy)
+    ? createPairingChallenge(createBody, policy)
     : action === "claim"
       ? claimPairingChallenge(body, policy)
       : action === "complete"

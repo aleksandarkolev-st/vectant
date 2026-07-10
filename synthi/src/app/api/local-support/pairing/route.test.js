@@ -1,12 +1,30 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+const { getServerSessionMock } = vi.hoisted(() => ({
+  getServerSessionMock: vi.fn(),
+}));
+
+vi.mock("next-auth", () => ({
+  getServerSession: getServerSessionMock,
+}));
+
+vi.mock("@/app/auth", () => ({ authOptions: {} }));
 
 import { clearAdminRevocationStore, clearPairingChallengeStore } from "@/lib/local-support/controlPlane";
 
 import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
+
+beforeEach(() => {
+  getServerSessionMock.mockReset();
+  getServerSessionMock.mockResolvedValue({
+    user: { id: "acct_pair", email: "pair@example.test" },
+  });
+});
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -97,7 +115,7 @@ describe("local support pairing route", () => {
       org_id: "org_pair",
       workspace_id: "wk_pair",
       browser_session_id: "browser_pair",
-      requested_user_id: "user_pair",
+      requested_user_id: "acct_pair",
       raw_body_included: false,
       bytes_sent: 0,
     });
@@ -131,7 +149,7 @@ describe("local support pairing route", () => {
       org_id: "org_pair",
       workspace_id: "wk_pair",
       browser_session_id: "browser_pair",
-      requested_user_id: "user_pair",
+      requested_user_id: "acct_pair",
       raw_body_included: false,
       bytes_sent: 0,
       local_enforcement_required: true,
@@ -164,6 +182,15 @@ describe("local support pairing route", () => {
     await expect(crossSite.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "bad_origin",
+      bytes_sent: 0,
+    });
+
+    getServerSessionMock.mockResolvedValueOnce(null);
+    const unauthenticated = await POST(request(createBody()));
+    expect(unauthenticated.status).toBe(401);
+    await expect(unauthenticated.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "authentication_required",
       bytes_sent: 0,
     });
 
