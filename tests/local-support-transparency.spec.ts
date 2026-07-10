@@ -63,4 +63,36 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("This page will not fake local storage actions.")).toBeVisible();
     await expect(page.getByText("Paired browser session with fingerprint")).toHaveCount(0);
   });
+
+  test("creates and displays a live one-time pairing challenge", async ({ page }) => {
+    await page.route("**/api/local-support/policy", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true, policy_version: "2026.07.05" }),
+      });
+    });
+    await page.route("**/api/local-support/pairing", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          decision: "pairing_challenge_created",
+          code: "ABCD2345WXYZ",
+          fingerprint: "1a2b-3c4d-5e6f",
+          expires_in_seconds: 120,
+          raw_body_included: false,
+          bytes_sent: 0,
+        }),
+      });
+    });
+    await page.goto(`${baseURL}/local-support`);
+
+    await page.getByRole("button", { name: "Start pairing" }).click();
+
+    await expect(page.getByText("ABCD2345WXYZ", { exact: true })).toBeVisible();
+    await expect(page.getByText("Expires in 2 minutes", { exact: true })).toBeVisible();
+    await expect(page.getByText("1a2b-3c4d-5e6f", { exact: true })).toBeVisible();
+    await expect(page.getByText("Confirm only if this fingerprint appears in the desktop app.")).toBeVisible();
+  });
 });

@@ -197,6 +197,11 @@ export default function LocalSupportTransparency() {
   const [approvalsRevoked, setApprovalsRevoked] = useState(false);
   const [revokedPorts, setRevokedPorts] = useState([]);
   const [controlActionStatus, setControlActionStatus] = useState(null);
+  const [pairingState, setPairingState] = useState({
+    status: "idle",
+    challenge: null,
+    error: null,
+  });
   const [policyState, setPolicyState] = useState({
     status: "loading",
     policy: null,
@@ -336,6 +341,37 @@ export default function LocalSupportTransparency() {
         text: error instanceof Error ? error.message : "Local control request failed.",
       });
       return null;
+    }
+  }
+
+  async function startPairing() {
+    setPairingState({ status: "loading", challenge: null, error: null });
+    try {
+      const browserSessionId = `browser_${crypto.randomUUID().replaceAll("-", "")}`;
+      const response = await fetch("/api/local-support/pairing", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          account_id: "server_authenticated",
+          org_id: livePolicy?.org_id || "org_personal",
+          workspace_id: liveWorkspace.workspace_id || "wk_pending_local_selection",
+          browser_session_id: browserSessionId,
+          requested_user_id: "server_authenticated",
+        }),
+      });
+      const challenge = await response.json();
+      if (!response.ok || challenge.decision !== "pairing_challenge_created") {
+        throw new Error(challenge.user_visible_message || challenge.reason || "Pairing could not start.");
+      }
+      setPairingState({ status: "ready", challenge, error: null });
+    } catch (error) {
+      setPairingState({
+        status: "error",
+        challenge: null,
+        error: error instanceof Error ? error.message : "Pairing could not start.",
+      });
     }
   }
 
@@ -490,6 +526,52 @@ export default function LocalSupportTransparency() {
           </TabsList>
 
           <TabsContent value="overview" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
+            <Panel
+              className="lg:col-span-2"
+              title="Pair this browser with the desktop app"
+              description="The code expires quickly and can be used once. Compare the fingerprint in both places before confirming."
+              action={(
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={startPairing}
+                  disabled={pairingState.status === "loading" || connected || livePolicy?.enabled === false}
+                >
+                  <KeyRound className="size-4" aria-hidden="true" />
+                  {pairingState.status === "loading" ? "Starting pairing" : "Start pairing"}
+                </Button>
+              )}
+            >
+              {pairingState.status === "ready" ? (
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)]">
+                  <div className="rounded-lg border border-sky-400/20 bg-sky-400/[0.07] p-4">
+                    <div className="text-xs uppercase tracking-[0.08em] text-sky-200">One-time code</div>
+                    <div className="mt-2 font-mono text-2xl font-semibold tracking-[0.16em] text-zinc-50">
+                      {pairingState.challenge.code}
+                    </div>
+                    <p className="mt-2 text-xs text-sky-100/80">
+                      Expires in {Math.max(1, Math.ceil(Number(pairingState.challenge.expires_in_seconds || 0) / 60))} minutes
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">Pairing fingerprint</div>
+                    <div className="mt-2 font-mono text-lg font-semibold text-zinc-100">
+                      {pairingState.challenge.fingerprint}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-zinc-400">
+                      Enter the code in Vectant Local Support. Confirm only if this fingerprint appears in the desktop app.
+                    </p>
+                  </div>
+                </div>
+              ) : pairingState.status === "error" ? (
+                <p role="alert" className="text-sm text-red-200">{pairingState.error}</p>
+              ) : (
+                <p className="text-sm leading-6 text-zinc-400">
+                  No pairing challenge is active. Starting one does not grant file, log, or localhost access.
+                </p>
+              )}
+            </Panel>
+
             <Panel title="Session boundary" description="One support session, one selected workspace, short lived approvals, and immediate revoke controls.">
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
