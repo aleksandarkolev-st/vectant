@@ -805,11 +805,35 @@ async fn desktop_status_state_reports_disconnected_sessions_truthfully() {
     let desktop_state = build_desktop_status_state(&state).await;
 
     assert_eq!(desktop_state["connected"], false);
+    assert_eq!(desktop_state["workspace"]["selected"], false);
     assert_eq!(desktop_state["session"]["account_id"], "not paired");
     assert_eq!(
         desktop_state["session"]["workspace_id"],
         "No folder selected"
     );
+}
+
+#[tokio::test]
+async fn desktop_status_exposes_only_a_safe_selected_workspace_summary() {
+    let dir = tempdir().unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_selected", SecretScanner::default()).unwrap();
+    let mut session = SessionGuard::new_bound_device(
+        "not_paired",
+        "not_paired",
+        "wk_selected",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    session.disconnect();
+    let state = AppState::new(session, policy);
+
+    let desktop_state = build_desktop_status_state(&state).await;
+    let serialized = serde_json::to_string(&desktop_state).unwrap();
+
+    assert_eq!(desktop_state["connected"], false);
+    assert_eq!(desktop_state["workspace"]["selected"], true);
+    assert_eq!(desktop_state["workspace"]["root_path_included"], false);
+    assert!(!serialized.contains(&dir.path().display().to_string()));
 }
 
 #[test]

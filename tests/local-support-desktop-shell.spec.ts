@@ -252,4 +252,38 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("2 approval requests pending")).toBeVisible();
     await expect(page.getByRole("button", { name: "Open approval review" })).toBeEnabled();
   });
+
+  test("shows a native-selected workspace without exposing its absolute path", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__TAURI__ = {
+        core: {
+          invoke: async () => ({
+            connected: false,
+            paused: true,
+            session: {
+              account_id: "not paired",
+              workspace_id: "wk_private",
+              device_fingerprint: "sha256:3333333333333333",
+            },
+            workspace: {
+              selected: true,
+              display: "vectant-app",
+              root_hash: "sha256:4444444444444444",
+              root_path_included: false,
+            },
+            approvals: { pending_count: 0, content_included: false },
+            ports: [],
+            activity: [{ summary: "Workspace selected locally. No files were sent." }],
+          }),
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+    await page.getByRole("button", { name: "First run", exact: true }).click();
+
+    await expect(page.getByText("Workspace vectant-app is selected for this support session only.")).toBeVisible();
+    await expect(page.getByText("C:\\Users\\private\\vectant-app")).toHaveCount(0);
+    await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
+  });
 });

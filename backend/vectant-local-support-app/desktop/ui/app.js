@@ -141,7 +141,7 @@ async function invokeStateAction(command, unavailableMessage) {
 }
 
 function renderWorkflow(state) {
-  const hasWorkspace = state.connected && state.session.workspace !== fallbackState.session.workspace;
+  const hasWorkspace = state.session.workspace !== fallbackState.session.workspace;
   const hasApprovals = state.approvals.length > 0;
   const hasPorts = state.ports.length > 0;
   const hasActivity = state.activity.length > 0;
@@ -210,12 +210,16 @@ function updateWorkflowStep(step, status, copy, complete) {
 function normalizeState(rawState) {
   const raw = rawState && typeof rawState === "object" ? rawState : {};
   const session = raw.session && typeof raw.session === "object" ? raw.session : {};
+  const workspace = raw.workspace && typeof raw.workspace === "object" ? raw.workspace : {};
   return {
     connected: raw.connected === true,
     paused: raw.paused === true || session.paused === true,
     session: {
       account: sanitizeText(session.account || session.account_id, fallbackState.session.account),
-      workspace: sanitizeText(session.workspace || session.workspace_id, fallbackState.session.workspace),
+      workspace: sanitizeText(
+        session.workspace || (workspace.selected === true ? workspace.display : "") || session.workspace_id,
+        fallbackState.session.workspace,
+      ),
       device: sanitizeText(session.device || session.device_fingerprint, fallbackState.session.device),
       mode: sanitizeText(session.mode, fallbackState.session.mode),
     },

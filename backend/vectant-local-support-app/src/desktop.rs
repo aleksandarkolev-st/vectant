@@ -78,6 +78,7 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
             "mode": "Balanced review before send"
         },
         "workspace": {
+            "selected": workspace.workspace_id != "not_selected",
             "workspace_id": workspace.workspace_id,
             "display": workspace.display,
             "root_hash": workspace.root_hash,
