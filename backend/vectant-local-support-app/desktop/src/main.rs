@@ -196,6 +196,43 @@ async fn local_support_ipc(
             )
             .await?;
         }
+        "approval.file.review" => {}
+        "approval.file.approve" => {
+            let approval_id = payload
+                .get("approval_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let granted = app_state
+                .approvals
+                .lock()
+                .await
+                .grant_for_local_release(approval_id);
+            if !granted {
+                return Err("Approval is no longer pending. Nothing was sent.".to_string());
+            }
+            append_control_event(
+                &app_state,
+                &request_id,
+                "File review approved locally. The payload remains local until request-bound release.",
+            )
+            .await?;
+        }
+        "approval.file.deny" => {
+            let approval_id = payload
+                .get("approval_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let denied = app_state.approvals.lock().await.deny(approval_id);
+            if !denied {
+                return Err("Approval is no longer pending. Nothing was sent.".to_string());
+            }
+            append_control_event(
+                &app_state,
+                &request_id,
+                "File review denied locally. Nothing was sent.",
+            )
+            .await?;
+        }
         "approval.revoke_session" => {
             app_state.approvals.lock().await.revoke_all();
             let session_id = app_state.session.lock().await.session_id().to_string();

@@ -10,6 +10,22 @@ use crate::audit::ConsentReceipt;
 use crate::policy::Classification;
 use crate::workspace::{FileReadRequest, FileReadResponse};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalReviewSummary {
+    pub approval_id: String,
+    pub request_id: String,
+    pub actor: String,
+    pub reason: String,
+    pub capability: String,
+    pub target_display: String,
+    pub classification: Classification,
+    pub expires_at: String,
+    pub content_sha256: Option<String>,
+    pub redactions: Vec<String>,
+    pub redacted_preview: String,
+    pub bytes_sent: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalStatus {
     Pending,
@@ -185,6 +201,51 @@ impl ApprovalQueue {
         true
     }
 
+    pub fn grant_for_local_release(&mut self, approval_id: &str) -> bool {
+        if !is_safe_approval_id(approval_id) {
+            return false;
+        }
+        let Some(queued) = self.pending.get_mut(approval_id) else {
+            return false;
+        };
+        let unexpired = DateTime::parse_from_rfc3339(&queued.request.expires_at)
+            .map(|expires| expires.with_timezone(&Utc) > Utc::now())
+            .unwrap_or(false);
+        if queued.status != ApprovalStatus::Pending || queued.local_review.content.is_none() {
+            return false;
+        }
+        if !unexpired {
+            queued.local_review.content = None;
+            return false;
+        }
+        queued.status = ApprovalStatus::Approved;
+        true
+    }
+
+    pub fn pending_review_summaries(&self) -> Vec<ApprovalReviewSummary> {
+        let mut summaries = self
+            .pending
+            .values()
+            .filter(|queued| queued.status == ApprovalStatus::Pending)
+            .map(|queued| ApprovalReviewSummary {
+                approval_id: queued.approval_id.clone(),
+                request_id: queued.request.request_id.clone(),
+                actor: queued.request.actor.clone(),
+                reason: queued.request.reason.clone(),
+                capability: queued.request.capability.clone(),
+                target_display: queued.local_review.path_display.clone(),
+                classification: queued.local_review.classification.clone(),
+                expires_at: queued.request.expires_at.clone(),
+                content_sha256: queued.local_review.content_sha256.clone(),
+                redactions: queued.local_review.redactions.clone(),
+                redacted_preview: queued.local_review.content.clone().unwrap_or_default(),
+                bytes_sent: 0,
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+        summaries
+    }
+
     pub fn deny_with_secret(&mut self, approval_id: &str, local_approval_secret: &str) -> bool {
         if !is_safe_approval_id(approval_id) {
             return false;
@@ -197,7 +258,10 @@ impl ApprovalQueue {
 
     pub fn revoke_all(&mut self) {
         for queued in self.pending.values_mut() {
-            if queued.status == ApprovalStatus::Pending {
+            if matches!(
+                queued.status,
+                ApprovalStatus::Pending | ApprovalStatus::Approved
+            ) {
                 queued.status = ApprovalStatus::Revoked;
                 queued.local_review.content = None;
             }

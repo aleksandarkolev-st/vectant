@@ -153,6 +153,21 @@
           <div class="approval-preview">
             <p data-field="approval-copy">When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.</p>
           </div>
+          <div class="approval-review-detail" hidden data-approval-review-detail>
+            <dl class="approval-facts">
+              <div><dt>Target</dt><dd data-approval-field="target"></dd></div>
+              <div><dt>Actor</dt><dd data-approval-field="actor"></dd></div>
+              <div><dt>Classification</dt><dd data-approval-field="classification"></dd></div>
+              <div><dt>Expires</dt><dd data-approval-field="expires"></dd></div>
+            </dl>
+            <p class="hint" data-approval-field="reason"></p>
+            <pre class="approval-content" data-approval-field="preview"></pre>
+            <p class="hint" data-approval-field="redactions"></p>
+            <div class="control-row">
+              <button class="primary" type="button" data-action="approve-file">Approve locally</button>
+              <button type="button" data-action="deny-file">Deny</button>
+            </div>
+          </div>
         </article>
         <article class="panel">
           <p class="label">Denied by default</p>

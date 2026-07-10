@@ -61,7 +61,7 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
     let session = session_guard.state();
     drop(session_guard);
     let workspace = state.workspace.summary();
-    let pending_approvals = state.approvals.lock().await.pending_len();
+    let approval_reviews = state.approvals.lock().await.pending_review_summaries();
     let ports = state.port_approvals.lock().await.approvals();
     let events = state.audit.lock().await.events().to_vec();
 
@@ -87,8 +87,10 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
             "scanner_version": workspace.scanner_version
         },
         "approvals": {
-            "pending_count": pending_approvals,
-            "content_included": false
+            "pending_count": approval_reviews.len(),
+            "items": approval_reviews,
+            "content_included": true,
+            "content_is_redacted_review_only": true
         },
         "ports": ports,
         "activity": events,
@@ -132,6 +134,8 @@ pub fn plan_desktop_ipc_action(
         | "workspace.pick"
         | "workspace.inventory"
         | "approval.file.review"
+        | "approval.file.approve"
+        | "approval.file.deny"
         | "approval.port.review" => DesktopIpcActionPlan {
             command,
             daemon_method: None,

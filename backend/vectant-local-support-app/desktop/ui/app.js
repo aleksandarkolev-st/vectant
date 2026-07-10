@@ -22,6 +22,8 @@ const pairingConfirm = document.querySelector("[data-pairing-confirm]");
 const pairingFingerprint = document.querySelector("[data-pairing-fingerprint]");
 const pairingIdentity = document.querySelector("[data-pairing-identity]");
 const pairingStatus = document.querySelector("[data-pairing-status]");
+const approvalPreview = document.querySelector(".approval-preview");
+const approvalReviewDetail = document.querySelector("[data-approval-review-detail]");
 
 const defaultApprovalCopy = "When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.";
 const defaultPortsCopy = "Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.";
@@ -124,6 +126,7 @@ function renderState(rawState) {
 
   renderWorkflow(state);
   renderPairing(state);
+  renderApproval(state);
   actionButtons.pickWorkspace.disabled = false;
   actionButtons.pairSession.disabled = false;
   actionButtons.reviewFileApproval.disabled = !state.connected || state.approvals.length === 0;
@@ -222,6 +225,24 @@ function renderPairing(state) {
   );
 }
 
+function renderApproval(state) {
+  const review = state.approvals.find((item) => item.approvalId);
+  if (approvalPreview) approvalPreview.hidden = Boolean(review);
+  if (approvalReviewDetail) approvalReviewDetail.hidden = !review;
+  if (!review) return;
+  setText('[data-approval-field="target"]', review.target);
+  setText('[data-approval-field="actor"]', review.actor);
+  setText('[data-approval-field="classification"]', review.classification);
+  setText('[data-approval-field="expires"]', review.expiresAt);
+  setText('[data-approval-field="reason"]', "Reason: " + review.reason);
+  setText('[data-approval-field="redactions"]', review.redactions.length
+    ? review.redactions.length + " sensitive value(s) redacted locally."
+    : "No sensitive values detected.");
+  const preview = document.querySelector('[data-approval-field="preview"]');
+  if (preview) preview.textContent = review.preview;
+  approvalReviewDetail.dataset.approvalId = review.approvalId;
+}
+
 function updateWorkflowStep(step, status, copy, complete) {
   const item = document.querySelector(`[data-workflow-step="${step}"]`);
   const statusNode = item?.querySelector(".step-status");
@@ -276,6 +297,21 @@ function normalizeState(rawState) {
 function normalizeApprovals(rawApprovals) {
   if (Array.isArray(rawApprovals)) return rawApprovals.slice(0, 20);
   if (!rawApprovals || typeof rawApprovals !== "object") return [];
+  if (Array.isArray(rawApprovals.items)) {
+    return rawApprovals.items.slice(0, 20).map((item) => ({
+      approvalId: sanitizeText(item.approval_id, ""),
+      requestId: sanitizeText(item.request_id, ""),
+      target: sanitizeText(item.target_display, "local item"),
+      actor: sanitizeText(item.actor, "unknown actor"),
+      classification: sanitizeText(item.classification, "unknown"),
+      reason: sanitizeText(item.reason, "No reason supplied."),
+      expiresAt: sanitizeText(item.expires_at, "unknown"),
+      redactions: Array.isArray(item.redactions) ? item.redactions.slice(0, 100) : [],
+      preview: typeof item.redacted_preview === "string"
+        ? item.redacted_preview.slice(0, 262144)
+        : "Preview unavailable.",
+    }));
+  }
   const pendingCount = Number(rawApprovals.pending_count);
   if (!Number.isSafeInteger(pendingCount) || pendingCount <= 0) return [];
   return Array.from({ length: Math.min(pendingCount, 20) }, () => ({}));
@@ -338,6 +374,14 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     }
     if (button.dataset.action === "review-file-approval") {
       await invokeStateAction("approval.file.review", "Approval review needs a live local request. Nothing was sent.");
+    }
+    if (button.dataset.action === "approve-file") {
+      const approvalId = approvalReviewDetail?.dataset.approvalId || "";
+      await invokeStateAction("approval.file.approve", "Approval is no longer pending.", { approval_id: approvalId });
+    }
+    if (button.dataset.action === "deny-file") {
+      const approvalId = approvalReviewDetail?.dataset.approvalId || "";
+      await invokeStateAction("approval.file.deny", "Approval is no longer pending.", { approval_id: approvalId });
     }
     if (button.dataset.action === "review-port-approval") {
       await invokeStateAction("approval.port.review", "Port review needs a live local request. No preview was exposed.");

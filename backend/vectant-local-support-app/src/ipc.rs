@@ -24,6 +24,8 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "workspace.pick",
     "workspace.inventory",
     "approval.file.review",
+    "approval.file.approve",
+    "approval.file.deny",
     "approval.port.review",
     "approval.revoke_session",
     "history.export",

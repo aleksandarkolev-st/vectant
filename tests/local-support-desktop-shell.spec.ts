@@ -259,7 +259,9 @@ test.describe("local support desktop shell", () => {
     await page.addInitScript(() => {
       window.__TAURI__ = {
         core: {
-          invoke: async () => ({
+          invoke: async (_command, args) => {
+            window.__lastIpcArgs = args;
+            return {
             connected: true,
             paused: false,
             session: {
@@ -267,10 +269,29 @@ test.describe("local support desktop shell", () => {
               workspace_id: "wk_live",
               device_fingerprint: "sha256:2222222222222222",
             },
-            approvals: { pending_count: 2, content_included: false },
+            approvals: {
+              pending_count: 1,
+              content_included: true,
+              content_is_redacted_review_only: true,
+              items: [{
+                approval_id: "appr_live_12345678",
+                request_id: "req_live_12345678",
+                actor: "vectant_ai",
+                reason: "Debug the local startup failure",
+                capability: "workspace.log.read",
+                target_display: "server.log",
+                classification: "L3",
+                expires_at: "2026-07-10T20:00:00Z",
+                content_sha256: "sha256:1111",
+                redactions: ["authorization_header"],
+                redacted_preview: "Authorization: [REDACTED:authorization_header]",
+                bytes_sent: 0,
+              }],
+            },
             ports: [],
             activity: [],
-          }),
+            };
+          },
         },
       };
     });
@@ -278,8 +299,18 @@ test.describe("local support desktop shell", () => {
     await page.goto(desktopShellUrl);
     await page.getByRole("tab", { name: "Approvals", exact: true }).click();
 
-    await expect(page.getByText("2 approval requests pending")).toBeVisible();
+    await expect(page.getByText("1 approval request pending")).toBeVisible();
+    await expect(page.getByText("server.log", { exact: true })).toBeVisible();
+    await expect(page.getByText("vectant_ai", { exact: true })).toBeVisible();
+    await expect(page.getByText("Debug the local startup failure", { exact: false })).toBeVisible();
+    await expect(page.getByText("Authorization: [REDACTED:authorization_header]", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open approval review" })).toBeEnabled();
+    await page.getByRole("button", { name: "Approve locally" }).click();
+    const ipc = await page.evaluate(() => window.__lastIpcArgs);
+    expect(ipc).toMatchObject({
+      command: "approval.file.approve",
+      payload: { approval_id: "appr_live_12345678" },
+    });
   });
 
   test("shows a native-selected workspace without exposing its absolute path", async ({ page }) => {

@@ -779,7 +779,11 @@ async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payl
         "wk_desktop_state"
     );
     assert_eq!(desktop_state["approvals"]["pending_count"], 1);
-    assert_eq!(desktop_state["approvals"]["content_included"], false);
+    assert_eq!(desktop_state["approvals"]["content_included"], true);
+    assert_eq!(
+        desktop_state["approvals"]["content_is_redacted_review_only"],
+        true
+    );
     assert_eq!(desktop_state["ports"][0]["port"], 5173);
     assert!(!serialized.contains("preview_token"));
     assert!(!serialized.contains("preview_token_hash"));
@@ -1098,6 +1102,34 @@ fn approval_queue_deny_and_revoke_invalidate_queued_content() {
     assert_eq!(revoked.status, ApprovalStatus::Revoked);
     assert!(revoked.local_review.content.is_none());
     assert_eq!(queue.pending_len(), 0);
+}
+
+#[test]
+fn local_approval_grant_keeps_redacted_payload_queued_until_release() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("app.rs"), "const answer = 42;\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let request = request("app.rs");
+    let mut queue = ApprovalQueue::new();
+    let public = queue.queue_file_review(request.clone(), policy.read_file_for_review(&request));
+    let approval_id = public.approval_id.unwrap();
+
+    let summaries = queue.pending_review_summaries();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].bytes_sent, 0);
+    assert_eq!(summaries[0].actor, "vectant_ai");
+    assert!(summaries[0].redacted_preview.contains("const answer = 42"));
+
+    assert!(queue.grant_for_local_release(&approval_id));
+    assert_eq!(queue.pending_len(), 0);
+    let granted = queue.get(&approval_id).unwrap();
+    assert_eq!(granted.status, ApprovalStatus::Approved);
+    assert!(granted.local_review.content.is_some());
+
+    queue.revoke_all();
+    let revoked = queue.get(&approval_id).unwrap();
+    assert_eq!(revoked.status, ApprovalStatus::Revoked);
+    assert!(revoked.local_review.content.is_none());
 }
 
 #[test]
