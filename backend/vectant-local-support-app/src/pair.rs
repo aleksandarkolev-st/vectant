@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 
 const MAX_PAIRING_FIELD_BYTES: usize = 128;
 const MAX_REQUESTED_USER_ID_BYTES: usize = 256;
+#[cfg(windows)]
+const DPAPI_FILE_PREFIX: &[u8] = b"VECTANT-DPAPI-V1\0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingCode {
@@ -133,18 +135,19 @@ impl DeviceIdentityStore {
     }
 
     pub fn load(&self) -> Result<DeviceIdentity, DeviceIdentityStoreError> {
-        let raw = fs::read_to_string(&self.path).map_err(|err| {
+        let raw = fs::read(&self.path).map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 DeviceIdentityStoreError::NotFound
             } else {
                 DeviceIdentityStoreError::Io
             }
         })?;
-        if raw.len() > 4096 {
+        if raw.len() > 8192 {
             return Err(DeviceIdentityStoreError::InvalidFormat);
         }
-        let stored: StoredDeviceIdentity =
-            serde_json::from_str(&raw).map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
+        let (plaintext, migrate) = decode_stored_identity(&raw)?;
+        let stored: StoredDeviceIdentity = serde_json::from_slice(&plaintext)
+            .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
         if stored.version != 1 {
             return Err(DeviceIdentityStoreError::InvalidFormat);
         }
@@ -154,6 +157,9 @@ impl DeviceIdentityStore {
             || stored.device_fingerprint != public.device_fingerprint
         {
             return Err(DeviceIdentityStoreError::PublicIdentityMismatch);
+        }
+        if migrate {
+            self.persist(&identity)?;
         }
         Ok(identity)
     }
@@ -169,8 +175,9 @@ impl DeviceIdentityStore {
             device_public_key: public.device_public_key,
             device_fingerprint: public.device_fingerprint,
         };
-        let raw = serde_json::to_vec_pretty(&stored)
+        let plaintext = serde_json::to_vec_pretty(&stored)
             .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?;
+        let raw = encode_stored_identity(&plaintext)?;
         write_private_identity_file(&self.path, &raw)
     }
 
@@ -182,6 +189,102 @@ impl DeviceIdentityStore {
         self.persist(&identity)?;
         Ok(identity)
     }
+}
+
+#[cfg(not(windows))]
+fn encode_stored_identity(plaintext: &[u8]) -> Result<Vec<u8>, DeviceIdentityStoreError> {
+    Ok(plaintext.to_vec())
+}
+
+#[cfg(not(windows))]
+fn decode_stored_identity(raw: &[u8]) -> Result<(Vec<u8>, bool), DeviceIdentityStoreError> {
+    Ok((raw.to_vec(), false))
+}
+
+#[cfg(windows)]
+fn encode_stored_identity(plaintext: &[u8]) -> Result<Vec<u8>, DeviceIdentityStoreError> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: plaintext
+            .len()
+            .try_into()
+            .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?,
+        pbData: plaintext.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let protected = unsafe {
+        CryptProtectData(
+            &input,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if protected == 0 || output.pbData.is_null() {
+        return Err(DeviceIdentityStoreError::Io);
+    }
+    let ciphertext =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        LocalFree(output.pbData.cast());
+    }
+    let mut encoded = Vec::with_capacity(DPAPI_FILE_PREFIX.len() + ciphertext.len());
+    encoded.extend_from_slice(DPAPI_FILE_PREFIX);
+    encoded.extend_from_slice(&ciphertext);
+    Ok(encoded)
+}
+
+#[cfg(windows)]
+fn decode_stored_identity(raw: &[u8]) -> Result<(Vec<u8>, bool), DeviceIdentityStoreError> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    let Some(ciphertext) = raw.strip_prefix(DPAPI_FILE_PREFIX) else {
+        return Ok((raw.to_vec(), true));
+    };
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: ciphertext
+            .len()
+            .try_into()
+            .map_err(|_| DeviceIdentityStoreError::InvalidFormat)?,
+        pbData: ciphertext.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let mut description = ptr::null_mut();
+    let unprotected = unsafe {
+        CryptUnprotectData(
+            &input,
+            &mut description,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if unprotected == 0 || output.pbData.is_null() {
+        return Err(DeviceIdentityStoreError::InvalidFormat);
+    }
+    let plaintext =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        LocalFree(output.pbData.cast());
+        if !description.is_null() {
+            LocalFree(description.cast());
+        }
+    }
+    Ok((plaintext, false))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,4 +546,35 @@ fn pairing_challenge_payload(
         framed
     })
     .collect()
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn plaintext_device_identity_is_migrated_to_dpapi_on_load() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy-device-identity.json");
+        let identity = DeviceIdentity::generate();
+        let public = identity.public_identity();
+        let legacy = StoredDeviceIdentity {
+            version: 1,
+            private_key_hex: identity.private_key_hex(),
+            device_public_key: public.device_public_key,
+            device_fingerprint: public.device_fingerprint.clone(),
+        };
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = DeviceIdentityStore::new(&path).load().unwrap();
+        let migrated = fs::read(&path).unwrap();
+
+        assert_eq!(
+            loaded.public_identity().device_fingerprint,
+            public.device_fingerprint
+        );
+        assert!(migrated.starts_with(DPAPI_FILE_PREFIX));
+        assert!(!String::from_utf8_lossy(&migrated).contains("private_key_hex"));
+    }
 }

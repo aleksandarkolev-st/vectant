@@ -2129,9 +2129,20 @@ fn device_identity_store_persists_rotates_and_fails_closed() {
 
     let first = store.load_or_create().unwrap();
     let first_public = first.public_identity();
-    let raw = fs::read_to_string(store.path()).unwrap();
-    assert!(raw.contains(&first_public.device_public_key));
-    assert!(raw.contains(&first_public.device_fingerprint));
+    let raw = fs::read(store.path()).unwrap();
+    #[cfg(windows)]
+    {
+        assert!(raw.starts_with(b"VECTANT-DPAPI-V1\0"));
+        let raw_text = String::from_utf8_lossy(&raw);
+        assert!(!raw_text.contains(&first_public.device_public_key));
+        assert!(!raw_text.contains(&first_public.device_fingerprint));
+    }
+    #[cfg(not(windows))]
+    {
+        let raw_text = String::from_utf8(raw.clone()).unwrap();
+        assert!(raw_text.contains(&first_public.device_public_key));
+        assert!(raw_text.contains(&first_public.device_fingerprint));
+    }
     assert!(!serde_json::to_string(&first_public)
         .unwrap()
         .contains("private_key"));
@@ -2156,14 +2167,28 @@ fn device_identity_store_persists_rotates_and_fails_closed() {
 
     let identity = DeviceIdentity::generate();
     store.persist(&identity).unwrap();
-    let mut stored: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    stored["device_fingerprint"] = serde_json::json!("sha256:0000000000000000");
-    fs::write(&path, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
-    assert_eq!(
-        store.load().unwrap_err(),
-        DeviceIdentityStoreError::PublicIdentityMismatch
-    );
+    #[cfg(not(windows))]
+    {
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        stored["device_fingerprint"] = serde_json::json!("sha256:0000000000000000");
+        fs::write(&path, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        assert_eq!(
+            store.load().unwrap_err(),
+            DeviceIdentityStoreError::PublicIdentityMismatch
+        );
+    }
+    #[cfg(windows)]
+    {
+        let mut encrypted = fs::read(&path).unwrap();
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x01;
+        fs::write(&path, encrypted).unwrap();
+        assert_eq!(
+            store.load().unwrap_err(),
+            DeviceIdentityStoreError::InvalidFormat
+        );
+    }
 }
 
 #[test]
