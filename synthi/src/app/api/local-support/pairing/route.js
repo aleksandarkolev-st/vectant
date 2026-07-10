@@ -9,6 +9,7 @@ import {
   claimPairingChallenge,
   readLocalSupportPolicy,
 } from "@/lib/local-support/controlPlane";
+import { persistPairedSession } from "@/lib/local-support/sessionStore";
 
 export const runtime = "nodejs";
 
@@ -54,6 +55,19 @@ export async function POST(req) {
       : action === "complete"
         ? completePairingChallenge(body, policy)
         : deniedJson("invalid_pairing_action", "Pairing action was not accepted.", 400).body;
+  if (action === "complete" && result.decision === "pairing_complete") {
+    try {
+      await persistPairedSession(result, body.proof);
+    } catch {
+      return jsonNoStore({
+        decision: "denied",
+        reason: "pairing_session_persistence_failed",
+        bytes_sent: 0,
+        raw_body_included: false,
+        user_visible_message: "Pairing could not be secured. Start a new pairing challenge.",
+      }, 503);
+    }
+  }
   const status = result.decision === "denied" ? statusForDeniedReason(result.reason) : 200;
   return jsonNoStore(result, status);
 }

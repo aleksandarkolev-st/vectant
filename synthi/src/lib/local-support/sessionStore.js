@@ -1,0 +1,43 @@
+import prisma from "@/lib/prisma";
+
+export async function persistPairedSession(completed, proof, client = prisma) {
+  if (completed?.decision !== "pairing_complete" || !validPublicKey(proof?.device_public_key)) {
+    throw new Error("Pairing session was not safe to persist.");
+  }
+  if (proof.device_fingerprint !== completed.device_fingerprint) {
+    throw new Error("Pairing device identity did not match completion.");
+  }
+
+  return client.localSupportSession.create({
+    data: {
+      sessionId: completed.session_id,
+      pairingId: completed.pairing_id,
+      browserSessionId: completed.browser_session_id,
+      accountId: completed.account_id,
+      orgId: completed.org_id,
+      workspaceId: completed.workspace_id,
+      deviceFingerprint: completed.device_fingerprint,
+      devicePublicKey: proof.device_public_key.toLowerCase(),
+      capabilitiesJson: JSON.stringify(completed.capabilities || []),
+      policyVersion: completed.policy_version,
+      protocolVersion: completed.protocol_version,
+      expiresAt: new Date(completed.expires_at),
+    },
+  });
+}
+
+export async function findActivePairedSession(sessionId, deviceFingerprint, client = prisma, now = new Date()) {
+  return client.localSupportSession.findFirst({
+    where: {
+      sessionId,
+      deviceFingerprint,
+      status: "active",
+      revokedAt: null,
+      expiresAt: { gt: now },
+    },
+  });
+}
+
+function validPublicKey(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}

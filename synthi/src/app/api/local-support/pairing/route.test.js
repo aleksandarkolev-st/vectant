@@ -3,8 +3,9 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { vi } from "vitest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-const { getServerSessionMock } = vi.hoisted(() => ({
+const { getServerSessionMock, persistPairedSessionMock } = vi.hoisted(() => ({
   getServerSessionMock: vi.fn(),
+  persistPairedSessionMock: vi.fn(),
 }));
 
 vi.mock("next-auth", () => ({
@@ -12,6 +13,9 @@ vi.mock("next-auth", () => ({
 }));
 
 vi.mock("@/app/auth", () => ({ authOptions: {} }));
+vi.mock("@/lib/local-support/sessionStore", () => ({
+  persistPairedSession: persistPairedSessionMock,
+}));
 
 import { clearAdminRevocationStore, clearPairingChallengeStore } from "@/lib/local-support/controlPlane";
 
@@ -24,6 +28,8 @@ beforeEach(() => {
   getServerSessionMock.mockResolvedValue({
     user: { id: "acct_pair", email: "pair@example.test" },
   });
+  persistPairedSessionMock.mockReset();
+  persistPairedSessionMock.mockResolvedValue({ sessionId: "sess_pair" });
 });
 
 afterEach(() => {
@@ -164,6 +170,10 @@ describe("local support pairing route", () => {
     expect(paired.device_fingerprint).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(paired.consent_receipt.device_fingerprint).toBe(paired.device_fingerprint);
     expect(JSON.stringify(paired)).not.toContain("PRIVATE KEY");
+    expect(persistPairedSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "pairing_complete", session_id: paired.session_id }),
+      expect.objectContaining({ device_public_key: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+    );
 
     const replay = await POST(request(completeBody(challenge)));
     expect(replay.status).toBe(409);
@@ -171,6 +181,24 @@ describe("local support pairing route", () => {
       decision: "denied",
       reason: "pairing_code_consumed",
       bytes_sent: 0,
+    });
+  });
+
+  it("fails closed when the verified paired session cannot be persisted", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = "pairing-proof-secret";
+    const created = await POST(request(createBody()));
+    const challenge = await created.json();
+    persistPairedSessionMock.mockRejectedValueOnce(new Error("database unavailable"));
+
+    const response = await POST(request(completeBody(challenge)));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "pairing_session_persistence_failed",
+      bytes_sent: 0,
+      raw_body_included: false,
     });
   });
 

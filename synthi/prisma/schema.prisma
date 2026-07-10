@@ -774,3 +774,27 @@ model LocalSupportCloudAudit {
   @@index([logClass, createdAt])
   @@index([decision, createdAt])
 }
+
+model LocalSupportSession {
+  sessionId          String   @id
+  pairingId          String   @unique
+  browserSessionId   String
+  accountId          String
+  orgId              String
+  workspaceId        String
+  deviceFingerprint  String
+  devicePublicKey    String
+  capabilitiesJson   String
+  policyVersion      String
+  protocolVersion    String
+  status              String   @default("active")
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  lastDeviceProofAt   DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([deviceFingerprint, status, expiresAt])
+  @@index([accountId, orgId, status])
+  @@index([expiresAt])
+}
