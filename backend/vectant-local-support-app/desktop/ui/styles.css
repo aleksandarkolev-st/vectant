@@ -297,6 +297,51 @@ dd {
   width: 100%;
 }
 
+.pairing-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.pairing-form label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.pairing-form input {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  font: 650 1rem ui-monospace, "Cascadia Code", Consolas, monospace;
+  letter-spacing: 0.12em;
+  min-height: 42px;
+  padding: 0 12px;
+  text-transform: uppercase;
+}
+
+.pairing-form input:focus-visible {
+  border-color: var(--accent);
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.pairing-confirm {
+  background: var(--accent-soft);
+  border: 1px solid oklch(0.82 0.05 255);
+  border-radius: 7px;
+  margin-top: 16px;
+  padding: 14px;
+}
+
+.pairing-fingerprint {
+  display: block;
+  font: 700 1.15rem ui-monospace, "Cascadia Code", Consolas, monospace;
+  letter-spacing: 0.08em;
+  margin-top: 6px;
+}
+
 .approval-preview {
   background: var(--surface-2);
   border: 1px solid oklch(0.89 0.01 250);

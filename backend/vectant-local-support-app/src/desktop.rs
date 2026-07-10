@@ -128,6 +128,7 @@ pub fn plan_desktop_ipc_action(
         "history.export" => control_plan(command, "GET", "/v1/history/export/{request_id}", true),
         "history.delete" => control_plan(command, "POST", "/v1/history/delete/{request_id}", true),
         "pairing.start"
+        | "pairing.confirm"
         | "workspace.pick"
         | "workspace.inventory"
         | "approval.file.review"

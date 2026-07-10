@@ -16,8 +16,12 @@ const actionButtons = {
   deleteHistory: document.querySelector('[data-action="delete-history"]'),
 };
 const workflowSummary = document.querySelector("[data-workflow-summary]");
-const workflowGuardTitle = document.querySelector("[data-workflow-guard-title]");
-const workflowGuardCopy = document.querySelector("[data-workflow-guard-copy]");
+const pairingForm = document.querySelector("[data-pairing-form]");
+const pairingCode = document.querySelector("[data-pairing-code]");
+const pairingConfirm = document.querySelector("[data-pairing-confirm]");
+const pairingFingerprint = document.querySelector("[data-pairing-fingerprint]");
+const pairingIdentity = document.querySelector("[data-pairing-identity]");
+const pairingStatus = document.querySelector("[data-pairing-status]");
 
 const defaultApprovalCopy = "When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.";
 const defaultPortsCopy = "Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.";
@@ -119,6 +123,7 @@ function renderState(rawState) {
   );
 
   renderWorkflow(state);
+  renderPairing(state);
   actionButtons.pickWorkspace.disabled = false;
   actionButtons.pairSession.disabled = false;
   actionButtons.reviewFileApproval.disabled = !state.connected || state.approvals.length === 0;
@@ -130,19 +135,20 @@ function renderState(rawState) {
   actionButtons.deleteHistory.disabled = !state.historyControlsAvailable;
 }
 
-async function invokeStateAction(command, unavailableMessage) {
+async function invokeStateAction(command, unavailableMessage, payload = {}) {
   try {
-    const result = await invokeDesktop(command);
+    const result = await invokeDesktop(command, payload);
     if (result) {
       bridgeStatus.textContent = "Desktop IPC connected. Renderer received sanitized state only.";
       renderState(result);
-      return;
+      return result;
     }
   } catch {
     bridgeStatus.textContent = "Desktop IPC denied this action. No local data was sent.";
-    return;
+    return null;
   }
   bridgeStatus.textContent = unavailableMessage;
+  return null;
 }
 
 function renderWorkflow(state) {
@@ -193,12 +199,27 @@ function renderWorkflow(state) {
   );
 
   if (workflowSummary) workflowSummary.textContent = state.connected ? "Live sanitized state" : "Safe disconnected state";
-  if (workflowGuardTitle) workflowGuardTitle.textContent = state.connected ? "Renderer sees summaries only" : "No bytes sent in this view";
-  if (workflowGuardCopy) {
-    workflowGuardCopy.textContent = state.connected
-      ? "The desktop renderer receives account, workspace, device fingerprint, counts, and scrubbed event summaries. Tokens and private keys stay outside this UI."
-      : "Disconnected mode is a safe preview of the controls. Live state appears only after sanitized desktop IPC responds.";
+}
+
+function renderPairing(state) {
+  const pending = state.pairing?.status === "awaiting_confirmation";
+  if (pairingForm) pairingForm.hidden = state.connected || pending;
+  if (pairingConfirm) pairingConfirm.hidden = !pending;
+  if (pairingFingerprint) pairingFingerprint.textContent = pending ? state.pairing.fingerprint : "";
+  if (pairingIdentity) {
+    pairingIdentity.textContent = pending
+      ? "Account " + state.pairing.account + ". Organization " + state.pairing.org + "."
+      : "";
   }
+  setText("[data-pairing-title]", state.connected ? "Pairing complete" : pending ? "Confirm this fingerprint" : "Enter the browser code");
+  setText(
+    "[data-pairing-copy]",
+    state.connected
+      ? "This desktop app is paired to the support session shown in Overview."
+      : pending
+        ? "Compare this fingerprint with the browser. Confirm only when both values match."
+        : "Start pairing in Vectant, then enter the 12-character one-time code here.",
+  );
 }
 
 function updateWorkflowStep(step, status, copy, complete) {
@@ -241,6 +262,14 @@ function normalizeState(rawState) {
         }))
       : [],
     historyControlsAvailable: raw.history_controls_available === true || raw.connected === true,
+    pairing: raw.pairing && typeof raw.pairing === "object"
+      ? {
+          status: sanitizeText(raw.pairing.status, ""),
+          fingerprint: sanitizeText(raw.pairing.fingerprint, ""),
+          account: sanitizeText(raw.pairing.account_id, "unknown account"),
+          org: sanitizeText(raw.pairing.org_id, "unknown organization"),
+        }
+      : null,
   };
 }
 
@@ -299,7 +328,13 @@ document.querySelectorAll("[data-action]").forEach((button) => {
       await invokeStateAction("workspace.pick", "Workspace picker needs the paired desktop daemon. No local paths were exposed.");
     }
     if (button.dataset.action === "pair-session") {
-      await invokeStateAction("pairing.start", "Pairing needs a cloud challenge and local confirmation. No session was trusted.");
+      activateTab("workflow");
+      pairingCode?.focus();
+    }
+    if (button.dataset.action === "confirm-pairing") {
+      pairingStatus.textContent = "Confirming signed device proof...";
+      const result = await invokeStateAction("pairing.confirm", "Pairing confirmation needs a claimed browser challenge.");
+      pairingStatus.textContent = result?.connected ? "Pairing confirmed. Local Support is connected." : "Pairing was not confirmed.";
     }
     if (button.dataset.action === "review-file-approval") {
       await invokeStateAction("approval.file.review", "Approval review needs a live local request. Nothing was sent.");
@@ -333,6 +368,23 @@ document.querySelectorAll("[data-action]").forEach((button) => {
       if (result) renderState(result);
     }
   });
+});
+
+pairingForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const code = pairingCode.value.trim().toUpperCase();
+  pairingStatus.textContent = "Checking one-time code...";
+  const result = await invokeStateAction(
+    "pairing.start",
+    "Pairing needs a live browser challenge. No session was trusted.",
+    { code },
+  );
+  if (result?.pairing?.status === "awaiting_confirmation") {
+    pairingCode.value = "";
+    pairingStatus.textContent = "Code accepted. Compare the fingerprint before confirming.";
+  } else {
+    pairingStatus.textContent = "Code was not accepted. Nothing was paired.";
+  }
 });
 
 refreshDesktopState();

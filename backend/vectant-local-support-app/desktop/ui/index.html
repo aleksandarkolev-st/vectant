@@ -123,9 +123,21 @@
           </ol>
         </article>
         <article class="panel">
-          <p class="label">What stays local</p>
-          <h2 data-workflow-guard-title>No bytes sent in this view</h2>
-          <p class="copy" data-workflow-guard-copy">Disconnected mode is a safe preview of the controls. Live state appears only after sanitized desktop IPC responds.</p>
+          <p class="label">Secure pairing</p>
+          <h2 data-pairing-title>Enter the browser code</h2>
+          <p class="copy" data-pairing-copy>Start pairing in Vectant, then enter the 12-character one-time code here.</p>
+          <form class="pairing-form" data-pairing-form>
+            <label for="pairing-code">One-time code</label>
+            <input id="pairing-code" name="pairing-code" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" minlength="12" maxlength="12" pattern="[A-HJ-NP-Z2-9]{12}" placeholder="ABCD2345WXYZ" required data-pairing-code>
+            <button class="primary" type="submit">Check code</button>
+          </form>
+          <div class="pairing-confirm" hidden data-pairing-confirm>
+            <span class="label">Compare fingerprint</span>
+            <strong class="pairing-fingerprint" data-pairing-fingerprint></strong>
+            <p class="hint" data-pairing-identity></p>
+            <button class="primary full-control" type="button" data-action="confirm-pairing">Confirm fingerprint</button>
+          </div>
+          <p class="hint" role="status" data-pairing-status></p>
         </article>
       </section>
 

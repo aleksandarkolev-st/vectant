@@ -295,6 +295,24 @@ describe("local support pairing route", () => {
       bytes_sent: 0,
     });
   });
+
+  it("binds a pending browser challenge to the desktop-selected workspace", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    const created = await POST(request(createBody({ workspace_id: "wk_pending_local_selection" })));
+    const challenge = await created.json();
+
+    const claimed = await POST(request({
+      action: "claim",
+      code: challenge.code,
+      workspace_id: "wk_desktop_selected",
+    }));
+
+    expect(claimed.status).toBe(200);
+    await expect(claimed.json()).resolves.toMatchObject({
+      decision: "pairing_challenge_claimed",
+      workspace_id: "wk_desktop_selected",
+    });
+  });
 });
 
 function deviceFingerprint(devicePublicKeyHex) {

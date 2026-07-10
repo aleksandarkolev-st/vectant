@@ -4680,10 +4680,15 @@ name = "vectant-local-support-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "chrono",
+ "reqwest 0.12.28",
  "rfd",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
  "uuid",
  "vectant-local-support-app",
 ]

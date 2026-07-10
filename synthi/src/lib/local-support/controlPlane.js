@@ -454,6 +454,7 @@ export function claimPairingChallenge(input, policy = readLocalSupportPolicy(), 
   prunePairingSessions(nowMs);
   const body = input && typeof input === "object" ? input : {};
   const code = typeof body.code === "string" ? body.code : "";
+  const claimedWorkspaceId = typeof body.workspace_id === "string" ? body.workspace_id : "";
   if (!isValidPairingCode(code)) {
     return deny("invalid_pairing_schema", "Pairing code shape was not accepted.");
   }
@@ -466,6 +467,16 @@ export function claimPairingChallenge(input, policy = readLocalSupportPolicy(), 
   ));
   if (!pairing) {
     return deny("pairing_challenge_not_found", "Pairing challenge was not found or already expired.");
+  }
+  if (claimedWorkspaceId) {
+    if (!isSafeEnvelopeIdentifier(claimedWorkspaceId)) {
+      return deny("invalid_pairing_schema", "Pairing workspace identifier was not accepted.");
+    }
+    if (pairing.workspace_id === "wk_pending_local_selection") {
+      pairing.workspace_id = claimedWorkspaceId;
+    } else if (pairing.workspace_id !== claimedWorkspaceId) {
+      return deny("workspace_mismatch", "This pairing challenge is for a different workspace.");
+    }
   }
   pairing.attempts += 1;
   if (pairing.attempts > MAX_PAIRING_ATTEMPTS) {

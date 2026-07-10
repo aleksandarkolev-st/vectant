@@ -21,13 +21,13 @@ test.describe("local support desktop shell", () => {
     await page.getByRole("button", { name: "Choose workspace" }).click();
     await expect(page.getByText("Workspace picker needs the paired desktop daemon. No local paths were exposed.")).toBeVisible();
     await page.getByRole("button", { name: "Pair session" }).click();
-    await expect(page.getByText("Pairing needs a cloud challenge and local confirmation. No session was trusted.")).toBeVisible();
+    await expect(page.getByLabel("One-time code")).toBeFocused();
 
     await page.getByRole("tab", { name: "Overview", exact: true }).focus();
     await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("tab", { name: "First run", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByText("Set up Local Support")).toBeVisible();
-    await expect(page.getByText("No bytes sent in this view")).toBeVisible();
+    await expect(page.getByText("Enter the browser code")).toBeVisible();
     await expect(page.getByText("Choose one workspace", { exact: true })).toBeVisible();
     await expect(page.getByText("Confirm pairing fingerprint")).toBeVisible();
     await expect(page.getByText("No folder is selected. This screen sends no workspace bytes while disconnected.")).toBeVisible();
@@ -91,6 +91,27 @@ test.describe("local support desktop shell", () => {
               };
             }
             if (args.command === "pairing.start") {
+              return {
+                connected: false,
+                paused: true,
+                session: {
+                  account_id: "not paired",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                pairing: {
+                  status: "awaiting_confirmation",
+                  fingerprint: "1a2b-3c4d-5e6f",
+                  account_id: "acct_demo",
+                  org_id: "org_demo",
+                },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Pairing code claimed locally." }],
+              };
+            }
+            if (args.command === "pairing.confirm") {
               return {
                 connected: true,
                 paused: false,
@@ -184,6 +205,12 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Workspace selected locally. No files were sent.")).toBeVisible();
     await page.getByRole("tab", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: "Pair session" }).click();
+    await page.getByLabel("One-time code").fill("ABCD2345WXYZ");
+    await page.getByRole("button", { name: "Check code" }).click();
+    await expect(page.getByText("1a2b-3c4d-5e6f", { exact: true })).toBeVisible();
+    await expect(page.getByText("Account acct_demo. Organization org_demo.")).toBeVisible();
+    await expect(page.getByLabel("One-time code")).toHaveValue("");
+    await page.getByRole("button", { name: "Confirm fingerprint" }).click();
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("Pairing fingerprint confirmed locally.")).toBeVisible();
     await page.getByRole("tab", { name: "Overview", exact: true }).click();

@@ -20,6 +20,7 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "session.resume",
     "session.disconnect",
     "pairing.start",
+    "pairing.confirm",
     "workspace.pick",
     "workspace.inventory",
     "approval.file.review",
