@@ -104,6 +104,23 @@ describe("local support pairing route", () => {
     expect(challenge.code).toMatch(/^[A-Z2-9]{12}$/);
     expect(challenge.fingerprint).toMatch(/^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/);
 
+    const claimedResponse = await POST(request({ action: "claim", code: challenge.code }));
+    const claimed = await claimedResponse.json();
+
+    expect(claimedResponse.status).toBe(200);
+    expect(claimed).toMatchObject({
+      decision: "pairing_challenge_claimed",
+      pairing_id: challenge.pairing_id,
+      fingerprint: challenge.fingerprint,
+      server_nonce: challenge.server_nonce,
+      account_id: "acct_pair",
+      org_id: "org_pair",
+      workspace_id: "wk_pair",
+      raw_body_included: false,
+      bytes_sent: 0,
+    });
+    expect(claimed).not.toHaveProperty("code");
+
     const completed = await POST(request(completeBody(challenge)));
     const paired = await completed.json();
 
@@ -214,6 +231,30 @@ describe("local support pairing route", () => {
         bytes_sent: 0,
       });
     }
+  });
+
+  it("rejects malformed and unknown desktop claim codes without challenge details", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    await POST(request(createBody()));
+
+    const malformed = await POST(request({ action: "claim", code: "short" }));
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "invalid_pairing_schema",
+      bytes_sent: 0,
+    });
+
+    const unknown = await POST(request({ action: "claim", code: "ZZZZZZZZZZZZ" }));
+    expect(unknown.status).toBe(404);
+    const unknownBody = await unknown.json();
+    expect(unknownBody).toMatchObject({
+      decision: "denied",
+      reason: "pairing_challenge_not_found",
+      bytes_sent: 0,
+    });
+    expect(unknownBody).not.toHaveProperty("pairing_id");
+    expect(unknownBody).not.toHaveProperty("fingerprint");
   });
 });
 

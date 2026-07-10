@@ -441,6 +441,48 @@ export function createPairingChallenge(input, policy = readLocalSupportPolicy(),
   };
 }
 
+export function claimPairingChallenge(input, policy = readLocalSupportPolicy(), nowMs = Date.now()) {
+  if (!policy.enabled) {
+    return deny("feature_disabled", "Local Support pairing is disabled by policy.");
+  }
+  prunePairingSessions(nowMs);
+  const body = input && typeof input === "object" ? input : {};
+  const code = typeof body.code === "string" ? body.code : "";
+  if (!isValidPairingCode(code)) {
+    return deny("invalid_pairing_schema", "Pairing code shape was not accepted.");
+  }
+
+  const pairing = [...pairingSessions.values()].find((candidate) => (
+    !candidate.consumed && constantTimeStringEqual(code, candidate.code)
+  ));
+  if (!pairing) {
+    return deny("pairing_challenge_not_found", "Pairing challenge was not found or already expired.");
+  }
+  pairing.attempts += 1;
+  if (pairing.attempts > MAX_PAIRING_ATTEMPTS) {
+    return deny("pairing_rate_limited", "Too many pairing attempts. Start a new pairing challenge.");
+  }
+
+  return {
+    decision: "pairing_challenge_claimed",
+    reason: "confirm_pairing_fingerprint_locally",
+    pairing_id: pairing.pairing_id,
+    fingerprint: pairing.fingerprint,
+    server_nonce: pairing.server_nonce,
+    browser_session_id: pairing.browser_session_id,
+    requested_user_id: pairing.requested_user_id,
+    account_id: pairing.account_id,
+    org_id: pairing.org_id,
+    workspace_id: pairing.workspace_id,
+    expires_at: new Date(pairing.expires_at_ms).toISOString(),
+    raw_body_included: false,
+    bytes_sent: 0,
+    policy_version: policy.policy_version,
+    protocol_version: policy.protocol_version,
+    user_visible_message: "Compare this fingerprint with the browser, then confirm pairing locally.",
+  };
+}
+
 export function completePairingChallenge(input, policy = readLocalSupportPolicy(), nowMs = Date.now()) {
   if (!policy.enabled) {
     return deny("feature_disabled", "Local Support pairing is disabled by policy.");

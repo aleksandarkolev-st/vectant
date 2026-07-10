@@ -4,6 +4,7 @@ import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/loca
 import {
   completePairingChallenge,
   createPairingChallenge,
+  claimPairingChallenge,
   readLocalSupportPolicy,
 } from "@/lib/local-support/controlPlane";
 
@@ -26,9 +27,11 @@ export async function POST(req) {
   const policy = readLocalSupportPolicy();
   const result = action === "create"
     ? createPairingChallenge(body, policy)
-    : action === "complete"
-      ? completePairingChallenge(body, policy)
-      : deniedJson("invalid_pairing_action", "Pairing action was not accepted.", 400).body;
+    : action === "claim"
+      ? claimPairingChallenge(body, policy)
+      : action === "complete"
+        ? completePairingChallenge(body, policy)
+        : deniedJson("invalid_pairing_action", "Pairing action was not accepted.", 400).body;
   const status = result.decision === "denied" ? statusForDeniedReason(result.reason) : 200;
   return jsonNoStore(result, status);
 }
