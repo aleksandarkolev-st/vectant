@@ -917,7 +917,7 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
       policy_version: policy.policy_version,
       scanner_version: scrubTelemetryValue(state.scanner_version || "scanner-2026.07.05"),
       raw_bodies_included: false,
-      audit_chain_verified: true,
+      audit_chain_verified: state.export_metadata?.audit_chain_verified === true,
       audit_chain_head: activityChainHead,
     },
   };

@@ -1,8 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ session: vi.fn(), cloudState: vi.fn() }));
+vi.mock("next-auth", () => ({ getServerSession: mocks.session }));
+vi.mock("@/app/auth", () => ({ authOptions: {} }));
+vi.mock("@/lib/local-support/transparencyStore", () => ({
+  readCloudTransparencyState: mocks.cloudState,
+}));
 
 import { GET } from "./route";
 
 const OLD_ENV = { ...process.env };
+
+beforeEach(() => {
+  mocks.session.mockReset();
+  mocks.cloudState.mockReset();
+  mocks.session.mockResolvedValue(null);
+  mocks.cloudState.mockResolvedValue({
+    inventory: [], sent_payloads: [], blocked_items: [], activity: [], ports: [],
+  });
+});
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -36,9 +52,10 @@ describe("local support transparency state route", () => {
     });
   });
 
-  it("scrubs secrets and hides preview tokens from renderer state", async () => {
+  it("scrubs live cloud summaries and hides preview tokens from renderer state", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
-    process.env.VECTANT_LOCAL_SUPPORT_TRANSPARENCY_STATE_JSON = JSON.stringify({
+    mocks.session.mockResolvedValue({ user: { id: "acct_live" } });
+    mocks.cloudState.mockResolvedValue({
       scanner_version: "scanner Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
       session: {
         connected: true,
@@ -133,7 +150,7 @@ describe("local support transparency state route", () => {
       ],
       export_metadata: {
         raw_bodies_included: false,
-        audit_chain_verified: true,
+        audit_chain_verified: false,
       },
     });
     expect(json.activity[0]).toMatchObject({
@@ -145,6 +162,7 @@ describe("local support transparency state route", () => {
     expect(serialized).not.toContain("abcdefghijklmnopqrstuvwxyz");
     expect(serialized).not.toContain("postgres://user:pass");
     expect(serialized).not.toContain("raw-preview-token");
+    expect(mocks.cloudState).toHaveBeenCalledWith("acct_live");
   });
 
   it("maps live loopback daemon status without exposing preview tokens", async () => {

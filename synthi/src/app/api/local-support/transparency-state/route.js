@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
 
+import { authOptions } from "@/app/auth";
 import { readLocalSupportPolicy, summarizeTransparencyState } from "@/lib/local-support/controlPlane";
+import { readCloudTransparencyState } from "@/lib/local-support/transparencyStore";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   const policy = readLocalSupportPolicy();
   const localState = await readLocalDaemonTransparencyState();
-  return jsonNoStore(summarizeTransparencyState(localState || parseTransparencyStateEnv(), policy));
+  const session = await getServerSession(authOptions);
+  const accountId = session?.user?.id || session?.user?.email || null;
+  const cloudState = await readCloudTransparencyState(accountId);
+  return jsonNoStore(summarizeTransparencyState(localState || cloudState, policy));
 }
 
 function jsonNoStore(body, status = 200) {
@@ -17,15 +23,6 @@ function jsonNoStore(body, status = 200) {
       "Cache-Control": "no-store",
     },
   });
-}
-
-function parseTransparencyStateEnv() {
-  try {
-    const parsed = JSON.parse(process.env.VECTANT_LOCAL_SUPPORT_TRANSPARENCY_STATE_JSON || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 async function readLocalDaemonTransparencyState(env = process.env) {
@@ -106,7 +103,7 @@ function mapLocalDaemonStatus(status) {
   return {
     scanner_version: workspace.scanner_version,
     session: {
-      connected: Boolean(session.session_id),
+      connected: typeof session.session_id === "string" && session.session_id.startsWith("sess_"),
       paused: session.paused === true,
       account_id: session.account_id,
       org_id: session.org_id,

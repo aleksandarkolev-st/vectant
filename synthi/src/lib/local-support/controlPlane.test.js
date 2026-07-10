@@ -715,7 +715,7 @@ describe("local support control plane policy", () => {
         }),
       ],
       export_metadata: {
-        audit_chain_verified: true,
+        audit_chain_verified: false,
       },
     });
     expect(state.activity).toHaveLength(2);
