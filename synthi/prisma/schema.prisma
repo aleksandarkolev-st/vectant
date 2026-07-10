@@ -2,29 +2,26 @@ generator client {
   provider = "prisma-client-js"
 }
 
-
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-
 model Workspace {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  repoUrl   String?
-  
+  id      String  @id @default(cuid())
+  name    String
+  slug    String  @unique
+  repoUrl String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   memberships WorkspaceMembership[]
 }
 
-
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
+  id    String @id @default(cuid())
+  email String @unique
 
   // AES-256-GCM blob for the user's GitHub PAT, format: "<iv_b64>:<authTag_b64>:<ciphertext_b64>".
   // Decrypted on the server only (in NextAuth session callback) and never persisted in the JWT.
@@ -42,14 +39,14 @@ model User {
 }
 
 model WorkspaceMembership {
-  id          String    @id @default(cuid())
-  userId      String
-  workspaceId String
+  id             String   @id @default(cuid())
+  userId         String
+  workspaceId    String
   // Workspace authorization role: 'owner' | 'admin' | 'member'. Backfill sets the
   // earliest membership per workspace to 'owner' (Workspace has no creatorId). (Plan 1a R1-9)
-  role        String    @default("member")
+  role           String   @default("member")
   invitedByEmail String?
-  createdAt   DateTime  @default(now())
+  createdAt      DateTime @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -69,29 +66,29 @@ model EncryptedSecret {
   updatedAt DateTime @updatedAt
 
   connection         McpConnection?
-  gitProvider        GitProvider? @relation("GitProviderSecret")
-  gitProviderRefresh GitProvider? @relation("GitProviderRefresh")
+  gitProvider        GitProvider?   @relation("GitProviderSecret")
+  gitProviderRefresh GitProvider?   @relation("GitProviderRefresh")
 }
 
 model McpConnection {
-  id            String   @id @default(cuid())
-  name          String
-  url           String
-  transport     String   @default("http") // 'http' | 'sse'
-  scope         String                     // 'personal' | 'workspace'
-  ownerUserId   String?
-  workspaceSlug String?
-  authType      String   @default("none")  // 'none' | 'bearer' | 'header'
-  headerName    String?
-  secretId      String?  @unique
-  secret        EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  id              String           @id @default(cuid())
+  name            String
+  url             String
+  transport       String           @default("http") // 'http' | 'sse'
+  scope           String // 'personal' | 'workspace'
+  ownerUserId     String?
+  workspaceSlug   String?
+  authType        String           @default("none") // 'none' | 'bearer' | 'header'
+  headerName      String?
+  secretId        String?          @unique
+  secret          EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
   // Tool names the AI may call. Empty array = none enabled (fail-closed). (R1-1)
-  toolAllowlist String[] @default([])
-  enabled       Boolean  @default(true)
+  toolAllowlist   String[]         @default([])
+  enabled         Boolean          @default(true)
   lastHealthState String?
   lastHealthAt    DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   audits McpCallAudit[]
 
@@ -100,28 +97,28 @@ model McpConnection {
 }
 
 model McpCallAudit {
-  id            String   @id @default(cuid())
-  connectionId  String?                    // null for unknown-alias audit rows
-  connection    McpConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
-  serverName    String
-  toolName      String                     // original MCP tool name
-  userId        String?
-  workspaceSlug String?
-  outcome       String                     // 'ok' | 'error' | 'blocked'
-  errorCode     String?
+  id                       String         @id @default(cuid())
+  connectionId             String? // null for unknown-alias audit rows
+  connection               McpConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  serverName               String
+  toolName                 String // original MCP tool name
+  userId                   String?
+  workspaceSlug            String?
+  outcome                  String // 'ok' | 'error' | 'blocked'
+  errorCode                String?
   // Richer audit columns (R1-8) — never store raw secrets or full payloads.
-  alias         String?                    // the ext_<i> alias presented to the model
-  callerType    String?                    // 'chat' | 'cli'
-  durationMs    Int?
-  argsHash      String?                    // sha256 hex of the JSON args (NOT raw args)
-  argsBytes     Int?
-  resultBytes   Int?
-  codeSiteProjectId       String?
-  codeSiteTransactionId   String?
-  codeSiteMutationLeaseId String?
-  codeSiteAgentSessionId  String?
+  alias                    String? // the ext_<i> alias presented to the model
+  callerType               String? // 'chat' | 'cli'
+  durationMs               Int?
+  argsHash                 String? // sha256 hex of the JSON args (NOT raw args)
+  argsBytes                Int?
+  resultBytes              Int?
+  codeSiteProjectId        String?
+  codeSiteTransactionId    String?
+  codeSiteMutationLeaseId  String?
+  codeSiteAgentSessionId   String?
   codeSiteEvidenceRefsJson String?
-  createdAt     DateTime @default(now())
+  createdAt                DateTime       @default(now())
 
   @@index([connectionId])
   @@index([createdAt])
@@ -145,46 +142,46 @@ model PersonalAccessToken {
 }
 
 model GitProvider {
-  id                   String    @id @default(cuid())
+  id                   String           @id @default(cuid())
   name                 String
-  providerType         String                       // 'github' | 'gitlab' | 'generic'
+  providerType         String // 'github' | 'gitlab' | 'generic'
   baseUrl              String?
-  scope                String                        // 'personal' | 'workspace'
+  scope                String // 'personal' | 'workspace'
   ownerUserId          String?
   workspaceSlug        String?
-  authType             String    @default("pat")     // 'oauth' | 'pat'
-  secretId             String?   @unique
+  authType             String           @default("pat") // 'oauth' | 'pat'
+  secretId             String?          @unique
   secret               EncryptedSecret? @relation("GitProviderSecret", fields: [secretId], references: [id], onDelete: SetNull)
-  refreshSecretId      String?   @unique
+  refreshSecretId      String?          @unique
   refreshSecret        EncryptedSecret? @relation("GitProviderRefresh", fields: [refreshSecretId], references: [id], onDelete: SetNull)
   accessTokenExpiresAt DateTime?
-  oauthScopes          String[]  @default([])
+  oauthScopes          String[]         @default([])
   accountLogin         String?
-  enabled              Boolean   @default(true)
-  needsRelink          Boolean   @default(false)
+  enabled              Boolean          @default(true)
+  needsRelink          Boolean          @default(false)
   lastHealthState      String?
   lastHealthAt         DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   @@index([ownerUserId])
   @@index([workspaceSlug])
 }
 
 model MarketplaceProgram {
-  id            String   @id @default(cuid())
-  packageId     String   @unique
-  publisher     String
-  verified      Boolean  @default(false)
-  latestVersion String
+  id                String   @id @default(cuid())
+  packageId         String   @unique
+  publisher         String
+  verified          Boolean  @default(false)
+  latestVersion     String
   // Phase 5 (open marketplace): publish + reputation metadata. publishedByUserId
   // is the user who published; installCount is the denormalized reputation signal.
   displayName       String?
   description       String?
   publishedByUserId String?
   installCount      Int      @default(0)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   versions ProgramVersion[]
   installs ProgramInstall[]
@@ -227,20 +224,20 @@ model ProgramInstall {
 }
 
 model ProgramSession {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   installId       String?
   workspaceSlug   String
   runtimeType     String
-  state           String   @default("starting")
+  state           String    @default("starting")
   startedByUserId String
-  startedAt       DateTime @default(now())
+  startedAt       DateTime  @default(now())
   endedAt         DateTime?
   lastHealthState String?
   lastHealthAt    DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  install ProgramInstall? @relation(fields: [installId], references: [id], onDelete: SetNull)
+  install ProgramInstall?       @relation(fields: [installId], references: [id], onDelete: SetNull)
   events  ProgramRuntimeEvent[]
 
   @@index([installId])
@@ -265,16 +262,16 @@ model PermissionGrant {
 }
 
 model ProgramRuntimeEvent {
-  id                         String   @id @default(cuid())
-  sessionId                  String
-  type                       String
-  dataJson                   String?
-  codeSiteProjectId          String?
-  codeSiteTransactionId      String?
-  codeSiteMutationLeaseId    String?
-  codeSiteAgentSessionId     String?
-  codeSiteEvidenceRefsJson   String?
-  createdAt                  DateTime @default(now())
+  id                       String   @id @default(cuid())
+  sessionId                String
+  type                     String
+  dataJson                 String?
+  codeSiteProjectId        String?
+  codeSiteTransactionId    String?
+  codeSiteMutationLeaseId  String?
+  codeSiteAgentSessionId   String?
+  codeSiteEvidenceRefsJson String?
+  createdAt                DateTime @default(now())
 
   session ProgramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
@@ -335,25 +332,25 @@ model CodeSiteMutationZone {
 }
 
 model CodeSiteAgentSession {
-  id                  String   @id @default(cuid())
-  projectId           String
-  ownerUserId         String
-  agentProvider       String
-  agentRuntime        String?
-  providerSessionRef  String?
-  displayCallsign     String
-  status              String
-  permissionsJson     String
-  redactionPolicyJson String?
-  dojoPilotLicenseRef String?
-  dojoProofRef        String?
-  dojoEvidenceRefsJson String?
-  dojoDecisionDigest  String?
+  id                       String    @id @default(cuid())
+  projectId                String
+  ownerUserId              String
+  agentProvider            String
+  agentRuntime             String?
+  providerSessionRef       String?
+  displayCallsign          String
+  status                   String
+  permissionsJson          String
+  redactionPolicyJson      String?
+  dojoPilotLicenseRef      String?
+  dojoProofRef             String?
+  dojoEvidenceRefsJson     String?
+  dojoDecisionDigest       String?
   pilotLicenseSnapshotJson String?
-  createdAt           DateTime @default(now())
-  endedAt             DateTime?
+  createdAt                DateTime  @default(now())
+  endedAt                  DateTime?
 
-  project        CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project        CodeSiteProject               @relation(fields: [projectId], references: [id], onDelete: Cascade)
   executionPlans CodeSiteExecutionPlan[]
   mutationLeases CodeSiteMutationLease[]
   mutationTxns   CodeSiteMutationTransaction[]
@@ -366,7 +363,7 @@ model CodeSiteAgentSession {
 }
 
 model CodeSiteExecutionPlan {
-  id                  String   @id @default(cuid())
+  id                  String    @id @default(cuid())
   projectId           String
   agentSessionId      String
   displayCallsign     String
@@ -378,11 +375,11 @@ model CodeSiteExecutionPlan {
   abortJson           String
   requestedToolsJson  String
   estimatedDurationMs Int?
-  filedAt             DateTime @default(now())
+  filedAt             DateTime  @default(now())
   closedAt            DateTime?
 
-  project        CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  agentSession   CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  project        CodeSiteProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSession   CodeSiteAgentSession    @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   mutationLeases CodeSiteMutationLease[]
   inspectionRuns CodeSiteInspectionRun[]
 
@@ -393,7 +390,7 @@ model CodeSiteExecutionPlan {
 }
 
 model CodeSiteMutationLease {
-  id                       String   @id @default(cuid())
+  id                       String    @id @default(cuid())
   projectId                String
   executionPlanId          String
   agentSessionId           String
@@ -406,13 +403,13 @@ model CodeSiteMutationLease {
   dojoLedgerCheckpointHash String?
   dojoDecisionDigest       String?
   implementationStatusJson String?
-  issuedAt                 DateTime @default(now())
+  issuedAt                 DateTime  @default(now())
   expiresAt                DateTime?
   revokedAt                DateTime?
 
-  project         CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  executionPlan   CodeSiteExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
-  agentSession    CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  project         CodeSiteProject               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan   CodeSiteExecutionPlan         @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  agentSession    CodeSiteAgentSession          @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   events          CodeSiteEvent[]
   policyDecisions CodeSitePolicyDecision[]
   mutationTxns    CodeSiteMutationTransaction[]
@@ -425,7 +422,7 @@ model CodeSiteMutationLease {
 }
 
 model CodeSiteMutationTransaction {
-  id                         String   @id @default(cuid())
+  id                         String    @id @default(cuid())
   projectId                  String
   mutationLeaseId            String
   agentSessionId             String
@@ -442,12 +439,12 @@ model CodeSiteMutationTransaction {
   assumptionRefsJson         String
   commitDecisionJson         String?
   proofBundleDigest          String?
-  openedAt                   DateTime @default(now())
+  openedAt                   DateTime  @default(now())
   closedAt                   DateTime?
 
-  project        CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  mutationLease  CodeSiteMutationLease @relation(fields: [mutationLeaseId], references: [id], onDelete: Cascade)
-  agentSession   CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  project        CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease  CodeSiteMutationLease    @relation(fields: [mutationLeaseId], references: [id], onDelete: Cascade)
+  agentSession   CodeSiteAgentSession     @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
   proofBundles   CodeSiteProofBundle[]
   lineProvenance CodeSiteLineProvenance[]
 
@@ -459,7 +456,7 @@ model CodeSiteMutationTransaction {
 }
 
 model CodeSiteAssumptionLease {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   projectId       String
   ownerSessionId  String
   displayCallsign String
@@ -469,7 +466,7 @@ model CodeSiteAssumptionLease {
   status          String
   invalidatedBy   String?
   invalidatedAt   DateTime?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -490,7 +487,7 @@ model CodeSitePolicyDecision {
   decisionJson    String
   createdAt       DateTime @default(now())
 
-  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project       CodeSiteProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   mutationLease CodeSiteMutationLease? @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
@@ -501,21 +498,21 @@ model CodeSitePolicyDecision {
 }
 
 model CodeSiteProofBundle {
-  id                    String   @id @default(cuid())
-  projectId             String
-  transactionId         String
-  commitSha             String?
-  readSetDigest         String
-  writeSetDigest        String
-  invariantsJson        String
-  evidenceRefsJson      String
-  dojoEvidenceRefsJson  String?
-  repoStateJson         String?
-  incidentReplayDigest  String?
-  bundleDigest          String
-  createdAt             DateTime @default(now())
+  id                   String   @id @default(cuid())
+  projectId            String
+  transactionId        String
+  commitSha            String?
+  readSetDigest        String
+  writeSetDigest       String
+  invariantsJson       String
+  evidenceRefsJson     String
+  dojoEvidenceRefsJson String?
+  repoStateJson        String?
+  incidentReplayDigest String?
+  bundleDigest         String
+  createdAt            DateTime @default(now())
 
-  project     CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     CodeSiteProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
@@ -541,7 +538,7 @@ model CodeSiteLineProvenance {
   promptSummary       String?
   createdAt           DateTime @default(now())
 
-  project     CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     CodeSiteProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
@@ -553,7 +550,7 @@ model CodeSiteLineProvenance {
 }
 
 model CodeSiteInspectionRun {
-  id                    String   @id @default(cuid())
+  id                    String    @id @default(cuid())
   projectId             String
   executionPlanId       String?
   displayCallsign       String
@@ -561,10 +558,10 @@ model CodeSiteInspectionRun {
   changedPathsJson      String
   inspectionSignalsJson String
   evidenceRefsJson      String
-  requestedAt           DateTime @default(now())
+  requestedAt           DateTime  @default(now())
   completedAt           DateTime?
 
-  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project       CodeSiteProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   executionPlan CodeSiteExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
@@ -595,17 +592,17 @@ model CodeSiteIncident {
 }
 
 model CodeSiteDocument {
-  id          String   @id @default(cuid())
-  projectId   String
-  kind        String
-  status      String
-  title       String
-  bodyJson    String
-  blocking    Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  resolvedAt  DateTime?
+  id         String    @id @default(cuid())
+  projectId  String
+  kind       String
+  status     String
+  title      String
+  bodyJson   String
+  blocking   Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
 
-  project    CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project    CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   inboxItems CodeSiteAgentInboxItem[]
 
   @@index([projectId])
@@ -614,49 +611,49 @@ model CodeSiteDocument {
 }
 
 model CodeSiteEvent {
-  id                  String   @id @default(cuid())
-  projectId           String
-  mutationLeaseId     String?
-  eventType           String
-  displayCallsign     String?
-  actorType           String?
-  actorId             String?
-  detailsJson         String
-  evidenceRefsJson    String?
-  logicalTime         Int?
-  createdAt           DateTime @default(now())
+  id               String   @id @default(cuid())
+  projectId        String
+  mutationLeaseId  String?
+  eventType        String
+  displayCallsign  String?
+  actorType        String?
+  actorId          String?
+  detailsJson      String
+  evidenceRefsJson String?
+  logicalTime      Int?
+  createdAt        DateTime @default(now())
 
-  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  mutationLease CodeSiteMutationLease? @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
+  project       CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease CodeSiteMutationLease?   @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
   inboxItems    CodeSiteAgentInboxItem[]
 
+  @@unique([projectId, logicalTime])
   @@index([projectId])
   @@index([mutationLeaseId])
   @@index([displayCallsign])
   @@index([eventType])
   @@index([createdAt])
   @@index([projectId, logicalTime])
-  @@unique([projectId, logicalTime])
 }
 
 model CodeSiteAgentInboxItem {
-  id                 String    @id @default(cuid())
-  projectId          String
-  agentSessionId     String
-  recipientUserId    String
-  eventId            String?
-  documentId         String?
-  kind               String
-  requiresResponse   Boolean   @default(false)
-  status             String    @default("pending")
+  id                  String    @id @default(cuid())
+  projectId           String
+  agentSessionId      String
+  recipientUserId     String
+  eventId             String?
+  documentId          String?
+  kind                String
+  requiresResponse    Boolean   @default(false)
+  status              String    @default("pending")
   redactedPayloadJson String
-  createdAt          DateTime  @default(now())
-  acknowledgedAt     DateTime?
+  createdAt           DateTime  @default(now())
+  acknowledgedAt      DateTime?
 
-  project      CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project      CodeSiteProject      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   agentSession CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
-  event        CodeSiteEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
-  document     CodeSiteDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  event        CodeSiteEvent?       @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  document     CodeSiteDocument?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
   @@index([agentSessionId])
@@ -666,17 +663,17 @@ model CodeSiteAgentInboxItem {
 }
 
 model CodeSiteCounterfactualRun {
-  id                    String   @id @default(cuid())
-  projectId             String
-  shadowJobRef          String?
-  baseSnapshot          String
-  universesJson         String
-  arbiterVerdictJson    String?
-  userChoiceJson        String?
-  laterManualEditsJson  String?
-  validityStrength      String
-  evidenceRefsJson      String
-  createdAt             DateTime @default(now())
+  id                   String   @id @default(cuid())
+  projectId            String
+  shadowJobRef         String?
+  baseSnapshot         String
+  universesJson        String
+  arbiterVerdictJson   String?
+  userChoiceJson       String?
+  laterManualEditsJson String?
+  validityStrength     String
+  evidenceRefsJson     String
+  createdAt            DateTime @default(now())
 
   project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -686,7 +683,7 @@ model CodeSiteCounterfactualRun {
 }
 
 model CodeSitePolicyDelta {
-  id                       String   @id @default(cuid())
+  id                       String    @id @default(cuid())
   projectId                String
   learnedFromIncidentsJson String
   affectedZoneKey          String?
@@ -696,7 +693,7 @@ model CodeSitePolicyDelta {
   confidence               Float
   promotionState           String
   replayRefsJson           String
-  createdAt                DateTime @default(now())
+  createdAt                DateTime  @default(now())
   promotedAt               DateTime?
 
   project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -704,4 +701,76 @@ model CodeSitePolicyDelta {
   @@index([projectId])
   @@index([affectedZoneKey])
   @@index([promotionState])
+}
+
+// Durable Local Support relay state. This table stores only the signed request
+// envelope and scrubbed target metadata; local response bodies are never
+// persisted in the cloud control plane.
+model LocalSupportRelayRequest {
+  requestId            String    @id
+  sessionId            String
+  accountId            String
+  orgId                String
+  workspaceId          String
+  deviceFingerprint    String
+  actor                String
+  capability           String
+  targetDisplay        String
+  targetHash           String
+  targetClassification String
+  redactionCount       Int       @default(0)
+  scannerVersion       String
+  policyVersion        String
+  protocolVersion      String
+  appVersion           String
+  deviceProof          String
+  envelopeSignature    String
+  status               String    @default("queued")
+  leaseId              String?
+  leaseExpiresAt       DateTime?
+  deliveryAttempts     Int       @default(0)
+  expiresAt            DateTime
+  completedAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  auditEntries LocalSupportCloudAudit[]
+
+  @@index([sessionId, status, expiresAt])
+  @@index([deviceFingerprint, status, expiresAt])
+  @@index([status, leaseExpiresAt])
+  @@index([createdAt])
+}
+
+// Product/security audit summaries are deliberately separate from relay
+// delivery state so retention and access policy can differ. There is no raw
+// request or response body column in this model.
+model LocalSupportCloudAudit {
+  id                   String   @id @default(cuid())
+  requestId            String
+  sessionId            String
+  accountId            String
+  orgId                String
+  workspaceId          String
+  deviceFingerprint    String
+  actor                String
+  capability           String
+  targetDisplay        String
+  targetHash           String
+  targetClassification String
+  decision             String
+  bytesSent            Int      @default(0)
+  redactionCount       Int      @default(0)
+  policyVersion        String
+  scannerVersion       String
+  logClass             String
+  reason               String?
+  createdAt            DateTime @default(now())
+
+  request LocalSupportRelayRequest @relation(fields: [requestId], references: [requestId], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([accountId, orgId, createdAt])
+  @@index([logClass, createdAt])
+  @@index([decision, createdAt])
 }
