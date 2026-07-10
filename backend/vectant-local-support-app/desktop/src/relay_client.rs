@@ -4,6 +4,7 @@ use serde_json::Value;
 use vectant_local_support_app::pair::DeviceIdentity;
 
 const DEVICE_RELAY_PATH: &str = "/api/local-support/relay/device";
+const DEVICE_PAYLOAD_PATH: &str = "/api/local-support/relay/device/payload";
 const MAX_RELAY_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
@@ -42,6 +43,14 @@ pub struct RelayOutcome<'a> {
     pub redaction_count: usize,
     pub scanner_version: &'a str,
     pub reason: &'a str,
+}
+
+pub struct ApprovedRelayPayload<'a> {
+    pub request_id: &'a str,
+    pub content: &'a str,
+    pub content_sha256: &'a str,
+    pub redaction_count: usize,
+    pub scanner_version: &'a str,
 }
 
 #[derive(Clone)]
@@ -101,7 +110,9 @@ impl RelayClient {
     ) -> Result<RelayPoll, String> {
         let body = serde_json::to_vec(&serde_json::json!({ "action": "poll" }))
             .map_err(|_| "Relay poll could not be serialized.".to_string())?;
-        let value = self.post_signed(identity, session_id, body).await?;
+        let value = self
+            .post_signed(identity, session_id, DEVICE_RELAY_PATH, body)
+            .await?;
         match value.get("decision").and_then(Value::as_str) {
             Some("relay_idle") => Ok(RelayPoll::Idle),
             Some("relay_delivery") => {
@@ -135,23 +146,59 @@ impl RelayClient {
             "reason": outcome.reason,
         }))
         .map_err(|_| "Relay outcome could not be serialized.".to_string())?;
-        let response = self.post_signed(identity, session_id, body).await?;
+        let response = self
+            .post_signed(identity, session_id, DEVICE_RELAY_PATH, body)
+            .await?;
         if response.get("decision").and_then(Value::as_str) != Some(outcome.decision) {
             return Err("Relay outcome was not accepted.".to_string());
         }
         Ok(())
     }
 
+    pub async fn upload_approved_payload(
+        &self,
+        identity: &DeviceIdentity,
+        session_id: &str,
+        payload: &ApprovedRelayPayload<'_>,
+    ) -> Result<usize, String> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "action": "upload",
+            "request_id": payload.request_id,
+            "content": payload.content,
+            "content_sha256": payload.content_sha256,
+            "redaction_count": payload.redaction_count,
+            "scanner_version": payload.scanner_version,
+        }))
+        .map_err(|_| "Approved payload could not be serialized.".to_string())?;
+        if body.len() > 384 * 1024 {
+            return Err("Approved payload exceeded the relay limit.".to_string());
+        }
+        let response = self
+            .post_signed(identity, session_id, DEVICE_PAYLOAD_PATH, body)
+            .await?;
+        if response.get("decision").and_then(Value::as_str) != Some("sent") {
+            return Err("Approved payload was not accepted.".to_string());
+        }
+        response
+            .get("bytes_sent")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "Approved payload receipt was invalid.".to_string())
+    }
+
     async fn post_signed(
         &self,
         identity: &DeviceIdentity,
         session_id: &str,
+        path: &str,
         body: Vec<u8>,
     ) -> Result<Value, String> {
-        let proof = identity.sign_device_request("POST", DEVICE_RELAY_PATH, session_id, &body);
+        let proof = identity.sign_device_request("POST", path, session_id, &body);
+        let mut endpoint = self.endpoint.clone();
+        endpoint.set_path(path);
         let response = self
             .client
-            .post(self.endpoint.clone())
+            .post(endpoint)
             .header("Origin", &self.origin)
             .header("Sec-Fetch-Site", "same-origin")
             .header("Content-Type", "application/json")
@@ -225,7 +272,13 @@ impl RelayDelivery {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use axum::{body::Bytes, extract::State, http::HeaderMap, routing::post, Router};
+    use axum::{
+        body::Bytes,
+        extract::{OriginalUri, State},
+        http::HeaderMap,
+        routing::post,
+        Router,
+    };
     use vectant_local_support_app::pair::{verify_device_request_proof, DeviceRequestProof};
 
     use super::*;
@@ -237,6 +290,7 @@ mod tests {
         let verified = Arc::new(Mutex::new(false));
         let app = Router::new()
             .route(DEVICE_RELAY_PATH, post(verify_request))
+            .route(DEVICE_PAYLOAD_PATH, post(verify_request))
             .with_state((public_key, verified.clone()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -264,13 +318,30 @@ mod tests {
             )
             .await
             .unwrap();
+        let content_sha256 = format!("sha256:{}", "11".repeat(32));
+        let bytes_sent = client
+            .upload_approved_payload(
+                &identity,
+                "sess_12345678",
+                &ApprovedRelayPayload {
+                    request_id: "req_12345678",
+                    content: "token=[REDACTED]",
+                    content_sha256: &content_sha256,
+                    redaction_count: 1,
+                    scanner_version: "scanner-1",
+                },
+            )
+            .await
+            .unwrap();
 
         assert!(matches!(poll, RelayPoll::Idle));
+        assert_eq!(bytes_sent, 16);
         assert!(*verified.lock().unwrap());
     }
 
     async fn verify_request(
         State((public_key, verified)): State<(String, Arc<Mutex<bool>>)>,
+        OriginalUri(uri): OriginalUri,
         headers: HeaderMap,
         body: Bytes,
     ) -> String {
@@ -283,9 +354,16 @@ mod tests {
             signature: header(&headers, "x-vectant-device-signature"),
         };
         *verified.lock().unwrap() =
-            verify_device_request_proof(&proof, "POST", DEVICE_RELAY_PATH, &body, &public_key);
+            verify_device_request_proof(&proof, "POST", uri.path(), &body, &public_key);
         let body: Value = serde_json::from_slice(&body).unwrap();
-        if body.get("action").and_then(Value::as_str) == Some("outcome") {
+        if body.get("action").and_then(Value::as_str) == Some("upload") {
+            serde_json::json!({
+                "decision": "sent",
+                "raw_body_included": false,
+                "bytes_sent": 16
+            })
+            .to_string()
+        } else if body.get("action").and_then(Value::as_str) == Some("outcome") {
             serde_json::json!({
                 "decision": body.get("decision").and_then(Value::as_str).unwrap(),
                 "raw_body_included": false,

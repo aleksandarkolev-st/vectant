@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use pairing_client::{ClaimedPairing, PairingClient};
-use relay_client::{RelayClient, RelayDelivery, RelayOutcome, RelayPoll};
+use relay_client::{ApprovedRelayPayload, RelayClient, RelayDelivery, RelayOutcome, RelayPoll};
 use tauri::{Manager, State};
 use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
@@ -29,7 +29,13 @@ struct DesktopRuntime {
     pairing_client: PairingClient,
     relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
-    pending_relay_approvals: RwLock<HashMap<String, String>>,
+    pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
+}
+
+#[derive(Clone)]
+struct PendingRelayApproval {
+    approval_id: String,
+    delivery: RelayDelivery,
 }
 
 #[tauri::command]
@@ -226,12 +232,23 @@ async fn local_support_ipc(
             if !granted {
                 return Err("Approval is no longer pending. Nothing was sent.".to_string());
             }
-            append_control_event(
-                &app_state,
-                &request_id,
-                "File review approved locally. The payload remains local until request-bound release.",
-            )
-            .await?;
+            let pending_relay = runtime
+                .pending_relay_approvals
+                .read()
+                .map_err(|_| "Relay state lock failed closed.".to_string())?
+                .values()
+                .find(|pending| pending.approval_id == approval_id)
+                .cloned();
+            if let Some(pending) = pending_relay {
+                release_relay_approval(&runtime, &app_state, approval_id, &pending).await?;
+            } else {
+                append_control_event(
+                    &app_state,
+                    &request_id,
+                    "File review approved locally. The payload remains local until request-bound release.",
+                )
+                .await?;
+            }
         }
         "approval.file.deny" => {
             let approval_id = payload
@@ -557,7 +574,13 @@ async fn handle_relay_delivery(
         .pending_relay_approvals
         .write()
         .map_err(|_| "Relay state lock failed closed.".to_string())?
-        .insert(delivery.request_id.clone(), approval_id);
+        .insert(
+            delivery.request_id.clone(),
+            PendingRelayApproval {
+                approval_id,
+                delivery: delivery.clone(),
+            },
+        );
     append_control_event(
         state,
         &delivery.request_id,
@@ -607,6 +630,83 @@ async fn report_relay_outcome(
             },
         )
         .await
+}
+
+async fn release_relay_approval(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    approval_id: &str,
+    pending: &PendingRelayApproval,
+) -> Result<(), String> {
+    let queued_request = state
+        .approvals
+        .lock()
+        .await
+        .request_for_approval(approval_id)
+        .ok_or_else(|| {
+            "Approved relay request was no longer available. Nothing was sent.".to_string()
+        })?;
+    let current_review = state.workspace.read_file_for_review(&queued_request);
+    let released = state
+        .approvals
+        .lock()
+        .await
+        .release_granted_at(approval_id, current_review, Utc::now())
+        .ok_or_else(|| {
+            "Approved file changed or expired before release. Nothing was sent.".to_string()
+        })?;
+    let (response, receipt) = released;
+    let content = response
+        .content
+        .as_deref()
+        .ok_or_else(|| "Approved relay payload was empty. Nothing was sent.".to_string())?;
+    let content_sha256 = response
+        .content_sha256
+        .as_deref()
+        .ok_or_else(|| "Approved relay payload hash was missing. Nothing was sent.".to_string())?;
+    let bytes_sent = runtime
+        .relay_client
+        .upload_approved_payload(
+            &runtime.device_identity,
+            &pending.delivery.session_id,
+            &ApprovedRelayPayload {
+                request_id: &pending.delivery.request_id,
+                content,
+                content_sha256,
+                redaction_count: response.redactions.len(),
+                scanner_version: &response.scanner_version,
+            },
+        )
+        .await?;
+    if bytes_sent != content.len() {
+        return Err(
+            "Relay payload receipt byte count did not match. Session should be disconnected."
+                .to_string(),
+        );
+    }
+
+    runtime
+        .pending_relay_approvals
+        .write()
+        .map_err(|_| "Relay state lock failed closed.".to_string())?
+        .remove(&pending.delivery.request_id);
+    let mut audit = state.audit.lock().await;
+    audit.record_consent(receipt);
+    audit.append(
+        AuditClass::Data,
+        Some(pending.delivery.request_id.clone()),
+        format!(
+            "Approved redacted file payload sent after final hash revalidation. {bytes_sent} bytes sent; {} redactions.",
+            response.redactions.len()
+        ),
+        true,
+    );
+    if let Some(store) = &state.audit_store {
+        store
+            .persist(&audit)
+            .map_err(|_| "Sent activity could not be persisted locally.".to_string())?;
+    }
+    Ok(())
 }
 
 fn disconnected_state_for_workspace(
