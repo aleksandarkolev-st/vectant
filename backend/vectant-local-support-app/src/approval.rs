@@ -128,7 +128,7 @@ impl ApprovalQueue {
         approval_id: &str,
         now: DateTime<Utc>,
     ) -> Option<(FileReadResponse, ConsentReceipt)> {
-        self.approve_at_inner(approval_id, now, None)
+        self.approve_at_inner(approval_id, now, None, ApprovalStatus::Pending)
     }
 
     pub fn approve_revalidated_at(
@@ -137,7 +137,26 @@ impl ApprovalQueue {
         current_review: FileReadResponse,
         now: DateTime<Utc>,
     ) -> Option<(FileReadResponse, ConsentReceipt)> {
-        self.approve_at_inner(approval_id, now, Some(current_review))
+        self.approve_at_inner(
+            approval_id,
+            now,
+            Some(current_review),
+            ApprovalStatus::Pending,
+        )
+    }
+
+    pub fn release_granted_at(
+        &mut self,
+        approval_id: &str,
+        current_review: FileReadResponse,
+        now: DateTime<Utc>,
+    ) -> Option<(FileReadResponse, ConsentReceipt)> {
+        self.approve_at_inner(
+            approval_id,
+            now,
+            Some(current_review),
+            ApprovalStatus::Approved,
+        )
     }
 
     fn approve_at_inner(
@@ -145,12 +164,13 @@ impl ApprovalQueue {
         approval_id: &str,
         now: DateTime<Utc>,
         current_review: Option<FileReadResponse>,
+        required_status: ApprovalStatus,
     ) -> Option<(FileReadResponse, ConsentReceipt)> {
         if !is_safe_approval_id(approval_id) {
             return None;
         }
         let mut queued = self.pending.remove(approval_id)?;
-        if queued.status != ApprovalStatus::Pending {
+        if queued.status != required_status {
             return None;
         }
         let expires_at = DateTime::parse_from_rfc3339(&queued.request.expires_at)

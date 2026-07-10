@@ -177,14 +177,15 @@ impl WorkspacePolicy {
                 };
                 if !scan.findings.is_empty() {
                     let redacted = self.scanner.redact(&content, &scan);
+                    let redacted_sha = content_sha256(&redacted);
                     return FileReadResponse {
                         request_id: request.request_id.clone(),
                         approval_id: None,
                         decision: "redact_then_approval".to_string(),
                         path_display: path_display.clone(),
                         classification: scan.classification,
-                        bytes_sent: redacted.len(),
-                        content_sha256: Some(sha),
+                        bytes_sent: 0,
+                        content_sha256: Some(redacted_sha),
                         redactions: scan.findings.into_iter().map(|f| f.kind).collect(),
                         scanner_version: scan.scanner_version,
                         policy_version: crate::POLICY_VERSION.to_string(),
@@ -202,7 +203,7 @@ impl WorkspacePolicy {
                     decision: "approval_required".to_string(),
                     path_display,
                     classification: scan.classification,
-                    bytes_sent: content.len(),
+                    bytes_sent: 0,
                     content_sha256: Some(sha),
                     redactions: Vec::new(),
                     scanner_version: scan.scanner_version,
@@ -303,6 +304,12 @@ impl WorkspacePolicy {
         let sha = format!("sha256:{}", hex::encode(hasher.finalize()));
         Ok((content, sha))
     }
+}
+
+fn content_sha256(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 pub fn resolve_relative(root: &Path, requested_path: &str) -> Result<PathBuf> {

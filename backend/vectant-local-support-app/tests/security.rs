@@ -6,6 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use vectant_local_support_app::approval::{
     denied_approval_response, ApprovalQueue, ApprovalStatus,
@@ -982,6 +983,13 @@ fn redacts_secrets_before_review_payload() {
     let response = policy.read_file_for_review(&req);
 
     assert_eq!(response.decision, "redact_then_approval");
+    assert_eq!(response.bytes_sent, 0);
+    let expected_hash = response.content.as_ref().map(|content| {
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        format!("sha256:{}", hex::encode(hasher.finalize()))
+    });
+    assert_eq!(response.content_sha256, expected_hash);
     let content = response.content.unwrap();
     assert!(content.contains("[REDACTED:authorization_header]"));
     assert!(content.contains("[REDACTED:database_url]"));
@@ -1126,10 +1134,35 @@ fn local_approval_grant_keeps_redacted_payload_queued_until_release() {
     assert_eq!(granted.status, ApprovalStatus::Approved);
     assert!(granted.local_review.content.is_some());
 
-    queue.revoke_all();
-    let revoked = queue.get(&approval_id).unwrap();
-    assert_eq!(revoked.status, ApprovalStatus::Revoked);
-    assert!(revoked.local_review.content.is_none());
+    let current_review = policy.read_file_for_review(&request);
+    let (released, receipt) = queue
+        .release_granted_at(&approval_id, current_review, chrono::Utc::now())
+        .unwrap();
+    assert!(released.content.is_some());
+    assert_eq!(released.bytes_sent, 0);
+    assert_eq!(receipt.approval_id, approval_id);
+    assert!(queue.get(&approval_id).is_none());
+}
+
+#[test]
+fn granted_approval_release_fails_closed_after_toctou_change() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("app.rs");
+    fs::write(&path, "const answer = 42;\n").unwrap();
+    let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
+    let request = request("app.rs");
+    let mut queue = ApprovalQueue::new();
+    let public = queue.queue_file_review(request.clone(), policy.read_file_for_review(&request));
+    let approval_id = public.approval_id.unwrap();
+    assert!(queue.grant_for_local_release(&approval_id));
+
+    fs::write(&path, "const answer = 43;\n").unwrap();
+    let changed_review = policy.read_file_for_review(&request);
+
+    assert!(queue
+        .release_granted_at(&approval_id, changed_review, chrono::Utc::now())
+        .is_none());
+    assert!(queue.get(&approval_id).is_none());
 }
 
 #[test]
