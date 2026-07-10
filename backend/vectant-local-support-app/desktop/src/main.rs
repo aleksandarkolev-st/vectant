@@ -1,13 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pairing_client;
+mod relay_client;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use pairing_client::{ClaimedPairing, PairingClient};
+use relay_client::{RelayClient, RelayDelivery, RelayOutcome, RelayPoll};
 use tauri::{Manager, State};
 use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
@@ -17,13 +20,16 @@ use vectant_local_support_app::ipc::IpcRequest;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
+use vectant_local_support_app::workspace::FileReadRequest;
 use vectant_local_support_app::workspace::WorkspacePolicy;
 
 struct DesktopRuntime {
     app_state: RwLock<AppState>,
     device_identity: DeviceIdentity,
     pairing_client: PairingClient,
+    relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
+    pending_relay_approvals: RwLock<HashMap<String, String>>,
 }
 
 #[tauri::command]
@@ -82,6 +88,11 @@ async fn local_support_ipc(
                 .pending_pairing
                 .write()
                 .map_err(|_| "Pairing state lock failed closed.".to_string())? = None;
+            runtime
+                .pending_relay_approvals
+                .write()
+                .map_err(|_| "Relay state lock failed closed.".to_string())?
+                .clear();
         }
         "workspace.pick" => {
             let Some(path) = rfd::FileDialog::new()
@@ -111,6 +122,11 @@ async fn local_support_ipc(
                 .pending_pairing
                 .write()
                 .map_err(|_| "Pairing state lock failed closed.".to_string())? = None;
+            runtime
+                .pending_relay_approvals
+                .write()
+                .map_err(|_| "Relay state lock failed closed.".to_string())?
+                .clear();
             return desktop_status(&runtime, &replacement).await;
         }
         "pairing.start" => {
@@ -385,11 +401,18 @@ fn main() -> anyhow::Result<()> {
         )?),
         device_identity: identity,
         pairing_client: PairingClient::from_environment().map_err(anyhow::Error::msg)?,
+        relay_client: RelayClient::from_environment().map_err(anyhow::Error::msg)?,
         pending_pairing: RwLock::new(None),
+        pending_relay_approvals: RwLock::new(HashMap::new()),
     };
     let app = tauri::Builder::default()
         .manage(runtime)
         .invoke_handler(tauri::generate_handler![local_support_ipc])
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { relay_poll_loop(app_handle).await });
+            Ok(())
+        })
         .build(tauri::generate_context!())?;
 
     app.run(|app_handle, event| {
@@ -402,6 +425,188 @@ fn main() -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+async fn relay_poll_loop(app_handle: tauri::AppHandle) {
+    loop {
+        let runtime = app_handle.state::<DesktopRuntime>();
+        if let Ok(app_state) = current_app_state(&runtime) {
+            let session_state = {
+                let session = app_state.session.lock().await;
+                if session.is_active() {
+                    Some(session.state())
+                } else {
+                    None
+                }
+            };
+            if let Some(session) =
+                session_state.filter(|state| !state.paused && state.session_id.starts_with("sess_"))
+            {
+                if let Ok(RelayPoll::Delivery(delivery)) = runtime
+                    .relay_client
+                    .poll(&runtime.device_identity, &session.session_id)
+                    .await
+                {
+                    let _ = handle_relay_delivery(&runtime, &app_state, &session, *delivery).await;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn handle_relay_delivery(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    session: &vectant_local_support_app::session::SessionState,
+    delivery: RelayDelivery,
+) -> Result<(), String> {
+    let already_pending = runtime
+        .pending_relay_approvals
+        .read()
+        .map_err(|_| "Relay state lock failed closed.".to_string())?
+        .contains_key(&delivery.request_id);
+    if already_pending {
+        return report_relay_outcome(
+            runtime,
+            session,
+            &delivery,
+            "review_pending",
+            0,
+            0,
+            "local_review_required",
+        )
+        .await;
+    }
+
+    let expires_at = DateTime::parse_from_rfc3339(&delivery.expires_at)
+        .map_err(|_| "Relay request expiry was invalid.".to_string())?
+        .with_timezone(&Utc);
+    let context_valid = delivery.session_id == session.session_id
+        && delivery.account_id == session.account_id
+        && delivery.org_id == session.org_id
+        && delivery.workspace_id == session.workspace_id
+        && delivery.workspace_id == state.workspace.workspace_id()
+        && delivery.device_fingerprint == session.device_fingerprint
+        && delivery.protocol_version == vectant_local_support_app::APP_PROTOCOL_VERSION
+        && delivery.policy_version == vectant_local_support_app::POLICY_VERSION
+        && delivery.app_version == env!("CARGO_PKG_VERSION")
+        && expires_at > Utc::now()
+        && matches!(
+            delivery.capability.as_str(),
+            "workspace.file.source.read" | "workspace.log.read"
+        );
+    if !context_valid {
+        return report_relay_outcome(
+            runtime,
+            session,
+            &delivery,
+            "denied",
+            0,
+            0,
+            "local_context_validation_failed",
+        )
+        .await;
+    }
+
+    let request = FileReadRequest {
+        request_id: delivery.request_id.clone(),
+        session_id: delivery.session_id.clone(),
+        account_id: delivery.account_id.clone(),
+        org_id: delivery.org_id.clone(),
+        workspace_id: delivery.workspace_id.clone(),
+        device_fingerprint: delivery.device_fingerprint.clone(),
+        capability: delivery.capability.clone(),
+        path: delivery.target_display.clone(),
+        max_bytes: Some(256 * 1024),
+        reason: "Vectant support requested this local item.".to_string(),
+        actor: delivery.actor.clone(),
+        expires_at: delivery.expires_at.clone(),
+    };
+    let local_review = state.workspace.read_file_for_review(&request);
+    let scanner_version = local_review.scanner_version.clone();
+    let redaction_count = local_review.redactions.len();
+    let response = state
+        .approvals
+        .lock()
+        .await
+        .queue_file_review(request, local_review);
+    if response.decision == "denied" {
+        append_control_event(
+            state,
+            &delivery.request_id,
+            "Relay file request was denied by local policy. Nothing was sent.",
+        )
+        .await?;
+        return report_relay_outcome(
+            runtime,
+            session,
+            &delivery,
+            "denied",
+            0,
+            redaction_count,
+            "local_policy_denied",
+        )
+        .await;
+    }
+
+    let approval_id = response
+        .approval_id
+        .ok_or_else(|| "Relay review did not create a local approval.".to_string())?;
+    runtime
+        .pending_relay_approvals
+        .write()
+        .map_err(|_| "Relay state lock failed closed.".to_string())?
+        .insert(delivery.request_id.clone(), approval_id);
+    append_control_event(
+        state,
+        &delivery.request_id,
+        "Relay file request is waiting for local review. No file content was sent.",
+    )
+    .await?;
+    runtime
+        .relay_client
+        .report_outcome(
+            &runtime.device_identity,
+            &session.session_id,
+            &RelayOutcome {
+                request_id: &delivery.request_id,
+                lease_id: &delivery.lease_id,
+                decision: "review_pending",
+                bytes_sent: 0,
+                redaction_count,
+                scanner_version: &scanner_version,
+                reason: "local_review_required",
+            },
+        )
+        .await
+}
+
+async fn report_relay_outcome(
+    runtime: &DesktopRuntime,
+    session: &vectant_local_support_app::session::SessionState,
+    delivery: &RelayDelivery,
+    decision: &str,
+    bytes_sent: usize,
+    redaction_count: usize,
+    reason: &str,
+) -> Result<(), String> {
+    runtime
+        .relay_client
+        .report_outcome(
+            &runtime.device_identity,
+            &session.session_id,
+            &RelayOutcome {
+                request_id: &delivery.request_id,
+                lease_id: &delivery.lease_id,
+                decision,
+                bytes_sent,
+                redaction_count,
+                scanner_version: &delivery.scanner_version,
+                reason,
+            },
+        )
+        .await
 }
 
 fn disconnected_state_for_workspace(

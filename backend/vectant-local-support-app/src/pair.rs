@@ -47,6 +47,56 @@ pub struct DeviceRequestProof {
     pub signature: String,
 }
 
+pub fn verify_device_request_proof(
+    proof: &DeviceRequestProof,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    device_public_key: &str,
+) -> bool {
+    if !fixed_hex(device_public_key, 64)
+        || !fixed_hex(&proof.nonce, 32)
+        || !fixed_hex(&proof.signature, 128)
+        || !proof.timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        || proof.timestamp.len() != 10
+        || proof.body_sha256 != format!("sha256:{}", hex::encode(Sha256::digest(body)))
+    {
+        return false;
+    }
+    let Ok(public_key_bytes) = hex::decode(device_public_key).and_then(|bytes| {
+        bytes
+            .try_into()
+            .map_err(|_| hex::FromHexError::InvalidStringLength)
+    }) else {
+        return false;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(&public_key_bytes) else {
+        return false;
+    };
+    if proof.device_fingerprint != device_fingerprint(&verifying_key) {
+        return false;
+    }
+    let Ok(signature) = Signature::from_slice(
+        &hex::decode(&proof.signature).unwrap_or_default(),
+    ) else {
+        return false;
+    };
+    verifying_key
+        .verify(
+            &device_request_payload(
+                method,
+                path,
+                &proof.session_id,
+                &proof.device_fingerprint,
+                &proof.timestamp,
+                &proof.nonce,
+                &proof.body_sha256,
+            ),
+            &signature,
+        )
+        .is_ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceIdentity {
     signing_key: SigningKey,
