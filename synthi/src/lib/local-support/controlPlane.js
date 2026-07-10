@@ -56,6 +56,10 @@ const revokedSessions = new Set();
 const revokedDevices = new Set();
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 const MAX_PAIRING_ATTEMPTS = 5;
+const PAIRING_CLAIM_WINDOW_MS = 60 * 1000;
+const MAX_PAIRING_CLAIMS_PER_WINDOW = 20;
+let pairingClaimWindowStartedAt = 0;
+let pairingClaimAttempts = 0;
 
 export const POLICY_PRECEDENCE = [
   "hardcoded_safety_baseline",
@@ -252,6 +256,8 @@ export function clearRequestEnvelopeReplayCache() {
 
 export function clearPairingChallengeStore() {
   pairingSessions.clear();
+  pairingClaimWindowStartedAt = 0;
+  pairingClaimAttempts = 0;
 }
 
 export function clearAdminRevocationStore() {
@@ -451,6 +457,9 @@ export function claimPairingChallenge(input, policy = readLocalSupportPolicy(), 
   if (!isValidPairingCode(code)) {
     return deny("invalid_pairing_schema", "Pairing code shape was not accepted.");
   }
+  if (!allowPairingClaim(nowMs)) {
+    return deny("pairing_rate_limited", "Too many pairing attempts. Try again later.");
+  }
 
   const pairing = [...pairingSessions.values()].find((candidate) => (
     !candidate.consumed && constantTimeStringEqual(code, candidate.code)
@@ -481,6 +490,15 @@ export function claimPairingChallenge(input, policy = readLocalSupportPolicy(), 
     protocol_version: policy.protocol_version,
     user_visible_message: "Compare this fingerprint with the browser, then confirm pairing locally.",
   };
+}
+
+function allowPairingClaim(nowMs) {
+  if (pairingClaimWindowStartedAt === 0 || nowMs - pairingClaimWindowStartedAt >= PAIRING_CLAIM_WINDOW_MS) {
+    pairingClaimWindowStartedAt = nowMs;
+    pairingClaimAttempts = 0;
+  }
+  pairingClaimAttempts += 1;
+  return pairingClaimAttempts <= MAX_PAIRING_CLAIMS_PER_WINDOW;
 }
 
 export function completePairingChallenge(input, policy = readLocalSupportPolicy(), nowMs = Date.now()) {

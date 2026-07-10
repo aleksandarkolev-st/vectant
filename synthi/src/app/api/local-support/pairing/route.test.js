@@ -255,6 +255,18 @@ describe("local support pairing route", () => {
     });
     expect(unknownBody).not.toHaveProperty("pairing_id");
     expect(unknownBody).not.toHaveProperty("fingerprint");
+
+    for (let index = 1; index < 20; index += 1) {
+      const attempt = await POST(request({ action: "claim", code: "ZZZZZZZZZZZZ" }));
+      expect(attempt.status).toBe(404);
+    }
+    const limited = await POST(request({ action: "claim", code: "ZZZZZZZZZZZZ" }));
+    expect(limited.status).toBe(429);
+    await expect(limited.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "pairing_rate_limited",
+      bytes_sent: 0,
+    });
   });
 });
 
