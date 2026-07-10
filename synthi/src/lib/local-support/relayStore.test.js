@@ -102,4 +102,24 @@ describe("durable local support relay store", () => {
     expect(audit).toMatchObject({ decision: "denied", bytesSent: 0, logClass: "local_support.data" });
     expect(JSON.stringify(audit)).not.toContain("must never persist");
   });
+
+  it("ends the delivery lease while local review remains pending", async () => {
+    const { tx, client } = fakeClient();
+    const result = await recordRelayOutcome({
+      requestId: "req_123",
+      leaseId: "lease-1",
+      decision: "review_pending",
+      bytesSent: 500,
+      redactionCount: 3,
+      scannerVersion: "scanner-2",
+      reason: "local_review_required",
+    }, client, new Date("2030-01-01T00:00:01.000Z"));
+
+    expect(result).toMatchObject({ decision: "review_pending", bytes_sent: 0 });
+    expect(tx.localSupportRelayRequest.updateMany.mock.calls.at(-1)[0].data).toMatchObject({
+      status: "review_pending",
+      leaseId: null,
+      leaseExpiresAt: null,
+    });
+  });
 });

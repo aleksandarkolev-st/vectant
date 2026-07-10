@@ -77,7 +77,7 @@ export async function POST(req) {
 function validOutcome(body) {
   return safeId(body.request_id)
     && typeof body.lease_id === "string" && /^[0-9a-f-]{16,64}$/i.test(body.lease_id)
-    && ["sent", "denied"].includes(body.decision)
+    && ["sent", "denied", "review_pending"].includes(body.decision)
     && Number.isSafeInteger(body.bytes_sent) && body.bytes_sent >= 0
     && Number.isSafeInteger(body.redaction_count) && body.redaction_count >= 0
     && typeof body.scanner_version === "string" && body.scanner_version.length <= 128

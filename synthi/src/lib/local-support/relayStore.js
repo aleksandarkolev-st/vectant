@@ -84,7 +84,7 @@ export async function recordRelayOutcome(
   client = prisma,
   now = new Date(),
 ) {
-  const safeDecision = decision === "sent" ? "sent" : "denied";
+  const safeDecision = ["sent", "review_pending"].includes(decision) ? decision : "denied";
   const safeBytes = safeDecision === "sent" ? boundedInteger(bytesSent, 0, 10 * 1024 * 1024) : 0;
 
   return client.$transaction(async (tx) => {

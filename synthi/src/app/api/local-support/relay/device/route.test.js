@@ -86,6 +86,25 @@ describe("device-authenticated relay endpoint", () => {
     expect(mocks.outcome).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a body-free local review pending outcome", async () => {
+    authenticate();
+    mocks.outcome.mockResolvedValue({ decision: "review_pending", bytes_sent: 0, audit_id: "audit-2" });
+
+    const response = await POST(request({
+      action: "outcome",
+      request_id: "req_12345678",
+      lease_id: "11111111-1111-1111-1111-111111111111",
+      decision: "review_pending",
+      bytes_sent: 0,
+      redaction_count: 2,
+      scanner_version: "scanner-1",
+      reason: "local_review_required",
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ decision: "review_pending", bytes_sent: 0 });
+  });
+
   it("fails closed for invalid proof, oversized input, and stale leases", async () => {
     mocks.authenticate.mockResolvedValueOnce({ ok: false, reason: "device_signature_invalid" });
     expect((await POST(request({ action: "poll" }))).status).toBe(403);
