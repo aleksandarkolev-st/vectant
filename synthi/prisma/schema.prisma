@@ -794,7 +794,22 @@ model LocalSupportSession {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  deviceNonces LocalSupportDeviceNonce[]
+
   @@index([deviceFingerprint, status, expiresAt])
   @@index([accountId, orgId, status])
+  @@index([expiresAt])
+}
+
+model LocalSupportDeviceNonce {
+  id        String   @id @default(cuid())
+  sessionId String
+  nonce     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  session LocalSupportSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@unique([sessionId, nonce])
   @@index([expiresAt])
 }
