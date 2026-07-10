@@ -191,6 +191,10 @@ impl SessionGuard {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        Instant::now() <= self.expires_at
+    }
+
     pub fn validate(&mut self, token: &str, request_id: &str) -> Result<(), SessionError> {
         self.validate_inner(token, request_id, false)
     }

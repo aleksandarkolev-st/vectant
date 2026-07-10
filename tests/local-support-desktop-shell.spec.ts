@@ -17,6 +17,7 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("No workspace selected")).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Pause" })).toBeDisabled();
     await page.getByRole("button", { name: "Choose workspace" }).click();
     await expect(page.getByText("Workspace picker needs the paired desktop daemon. No local paths were exposed.")).toBeVisible();
     await page.getByRole("button", { name: "Pair session" }).click();
@@ -48,9 +49,7 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByRole("button", { name: "Delete local history" })).toBeDisabled();
 
     await page.getByRole("button", { name: "Overview", exact: true }).click();
-    await page.getByRole("button", { name: "Pause" }).click();
-    await expect(page.getByText("Paused", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
+    await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
   });
 
   test("renders sanitized desktop IPC state without exposing local secrets", async ({ page }) => {
@@ -225,5 +224,32 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Paused", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Activity", exact: true }).click();
     await expect(page.getByText("Session paused by local user.")).toBeVisible();
+  });
+
+  test("renders the real daemon approval summary shape", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__TAURI__ = {
+        core: {
+          invoke: async () => ({
+            connected: true,
+            paused: false,
+            session: {
+              account_id: "acct_live",
+              workspace_id: "wk_live",
+              device_fingerprint: "sha256:2222222222222222",
+            },
+            approvals: { pending_count: 2, content_included: false },
+            ports: [],
+            activity: [],
+          }),
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+    await page.getByRole("button", { name: "Approvals", exact: true }).click();
+
+    await expect(page.getByText("2 approval requests pending")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open approval review" })).toBeEnabled();
   });
 });

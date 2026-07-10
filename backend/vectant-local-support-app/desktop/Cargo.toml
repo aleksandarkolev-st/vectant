@@ -1,0 +1,18 @@
+[package]
+name = "vectant-local-support-desktop"
+version = "0.1.0"
+description = "Vectant Local Support desktop control surface"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+tauri = { version = "2", features = [] }
+uuid = { version = "1", features = ["v4"] }
+vectant-local-support-app = { path = ".." }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

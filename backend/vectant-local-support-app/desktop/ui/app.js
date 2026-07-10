@@ -118,6 +118,7 @@ function renderState(rawState) {
   actionButtons.pairSession.disabled = false;
   actionButtons.reviewFileApproval.disabled = !state.connected || state.approvals.length === 0;
   actionButtons.reviewPortApproval.disabled = !state.connected || state.ports.length === 0;
+  actionButtons.pause.disabled = !state.connected;
   actionButtons.disconnect.disabled = !state.connected;
   actionButtons.revoke.disabled = !state.connected;
   actionButtons.exportHistory.disabled = !state.connected;
@@ -218,7 +219,7 @@ function normalizeState(rawState) {
       device: sanitizeText(session.device || session.device_fingerprint, fallbackState.session.device),
       mode: sanitizeText(session.mode, fallbackState.session.mode),
     },
-    approvals: Array.isArray(raw.approvals) ? raw.approvals.slice(0, 20) : [],
+    approvals: normalizeApprovals(raw.approvals),
     ports: Array.isArray(raw.ports)
       ? raw.ports.slice(0, 20).map((port) => ({
           port: Number(port.port) || 0,
@@ -231,6 +232,14 @@ function normalizeState(rawState) {
         }))
       : [],
   };
+}
+
+function normalizeApprovals(rawApprovals) {
+  if (Array.isArray(rawApprovals)) return rawApprovals.slice(0, 20);
+  if (!rawApprovals || typeof rawApprovals !== "object") return [];
+  const pendingCount = Number(rawApprovals.pending_count);
+  if (!Number.isSafeInteger(pendingCount) || pendingCount <= 0) return [];
+  return Array.from({ length: Math.min(pendingCount, 20) }, () => ({}));
 }
 
 async function invokeDesktop(command, payload = {}) {

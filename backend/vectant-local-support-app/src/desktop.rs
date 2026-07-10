@@ -56,20 +56,23 @@ impl DesktopSecurityReport {
 }
 
 pub async fn build_desktop_status_state(state: &AppState) -> Value {
-    let session = state.session.lock().await.state();
+    let session_guard = state.session.lock().await;
+    let connected = session_guard.is_active();
+    let session = session_guard.state();
+    drop(session_guard);
     let workspace = state.workspace.summary();
     let pending_approvals = state.approvals.lock().await.pending_len();
     let ports = state.port_approvals.lock().await.approvals();
     let events = state.audit.lock().await.events().to_vec();
 
     sanitize_desktop_ipc_state(&serde_json::json!({
-        "connected": true,
+        "connected": connected,
         "paused": session.paused,
         "session": {
             "session_id": session.session_id,
-            "account_id": session.account_id,
-            "org_id": session.org_id,
-            "workspace_id": session.workspace_id,
+            "account_id": if connected { session.account_id.as_str() } else { "not paired" },
+            "org_id": if connected { session.org_id.as_str() } else { "not paired" },
+            "workspace_id": if connected { session.workspace_id.as_str() } else { "No folder selected" },
             "device_fingerprint": session.device_fingerprint,
             "protocol_version": session.protocol_version,
             "mode": "Balanced review before send"

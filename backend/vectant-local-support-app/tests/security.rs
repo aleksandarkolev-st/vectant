@@ -787,6 +787,31 @@ async fn desktop_status_state_uses_real_daemon_state_and_sanitizes_renderer_payl
     assert!(!serialized.contains("Authorization: Bearer"));
 }
 
+#[tokio::test]
+async fn desktop_status_state_reports_disconnected_sessions_truthfully() {
+    let dir = tempdir().unwrap();
+    let policy =
+        WorkspacePolicy::new(dir.path(), "not_selected", SecretScanner::default()).unwrap();
+    let mut session = SessionGuard::new_bound_device(
+        "not_paired",
+        "not_paired",
+        "not_selected",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    session.disconnect();
+    let state = AppState::new(session, policy);
+
+    let desktop_state = build_desktop_status_state(&state).await;
+
+    assert_eq!(desktop_state["connected"], false);
+    assert_eq!(desktop_state["session"]["account_id"], "not paired");
+    assert_eq!(
+        desktop_state["session"]["workspace_id"],
+        "No folder selected"
+    );
+}
+
 #[test]
 fn blocks_traversal_and_secret_files() {
     let dir = tempdir().unwrap();
