@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { storeApprovedRelayPayload, takeApprovedRelayPayload } from "./relayPayloadStore";
+import {
+  denyReviewedRelayRequest,
+  storeApprovedRelayPayload,
+  takeApprovedRelayPayload,
+} from "./relayPayloadStore";
 import { relayPayloadSha256 } from "./relayPayloadCrypto";
 
 const NOW = new Date("2030-01-01T00:00:00.000Z");
@@ -99,5 +103,22 @@ describe("one-time encrypted relay payload store", () => {
       contentSha256: `sha256:${"00".repeat(32)}`,
     }, client, NOW)).resolves.toBeNull();
     expect(tx.localSupportRelayPayload.create).not.toHaveBeenCalled();
+  });
+
+  it("records a local denial without creating payload storage", async () => {
+    const { tx, client } = fakeClient();
+    const result = await denyReviewedRelayRequest({
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      deviceFingerprint: request.deviceFingerprint,
+    }, client, NOW);
+
+    expect(result).toEqual({ decision: "denied", bytes_sent: 0 });
+    expect(tx.localSupportRelayPayload.create).not.toHaveBeenCalled();
+    expect(tx.localSupportCloudAudit.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      decision: "denied",
+      bytesSent: 0,
+      reason: "local_user_denied",
+    }) });
   });
 });

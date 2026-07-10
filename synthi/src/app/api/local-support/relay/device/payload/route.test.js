@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), store: vi.fn() }));
+const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), store: vi.fn(), deny: vi.fn() }));
 vi.mock("@/lib/local-support/deviceAuth", () => ({ authenticateLocalSupportDevice: mocks.authenticate }));
-vi.mock("@/lib/local-support/relayPayloadStore", () => ({ storeApprovedRelayPayload: mocks.store }));
+vi.mock("@/lib/local-support/relayPayloadStore", () => ({
+  storeApprovedRelayPayload: mocks.store,
+  denyReviewedRelayRequest: mocks.deny,
+}));
 
 import { POST } from "./route";
 
@@ -61,5 +64,27 @@ describe("device approved payload upload", () => {
     const stale = await POST(request(validBody()));
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ reason: "payload_request_not_pending", bytes_sent: 0 });
+  });
+
+  it("records an exact body-free local denial", async () => {
+    mocks.authenticate.mockResolvedValue({
+      ok: true,
+      session: { sessionId: "sess_12345678", deviceFingerprint: "sha256:1111111111111111" },
+    });
+    mocks.deny.mockResolvedValue({ decision: "denied", bytes_sent: 0 });
+
+    const response = await POST(request({
+      action: "deny",
+      request_id: "req_12345678",
+      reason: "local_user_denied",
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.deny).toHaveBeenCalledWith({
+      requestId: "req_12345678",
+      sessionId: "sess_12345678",
+      deviceFingerprint: "sha256:1111111111111111",
+    });
+    await expect(response.json()).resolves.toMatchObject({ decision: "denied", bytes_sent: 0 });
   });
 });

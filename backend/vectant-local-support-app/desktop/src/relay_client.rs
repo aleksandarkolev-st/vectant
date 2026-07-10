@@ -186,6 +186,29 @@ impl RelayClient {
             .ok_or_else(|| "Approved payload receipt was invalid.".to_string())
     }
 
+    pub async fn deny_reviewed_request(
+        &self,
+        identity: &DeviceIdentity,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<(), String> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "action": "deny",
+            "request_id": request_id,
+            "reason": "local_user_denied",
+        }))
+        .map_err(|_| "Relay denial could not be serialized.".to_string())?;
+        let response = self
+            .post_signed(identity, session_id, DEVICE_PAYLOAD_PATH, body)
+            .await?;
+        if response.get("decision").and_then(Value::as_str) != Some("denied")
+            || response.get("bytes_sent").and_then(Value::as_u64) != Some(0)
+        {
+            return Err("Relay denial was not accepted.".to_string());
+        }
+        Ok(())
+    }
+
     async fn post_signed(
         &self,
         identity: &DeviceIdentity,
@@ -333,6 +356,10 @@ mod tests {
             )
             .await
             .unwrap();
+        client
+            .deny_reviewed_request(&identity, "sess_12345678", "req_12345678")
+            .await
+            .unwrap();
 
         assert!(matches!(poll, RelayPoll::Idle));
         assert_eq!(bytes_sent, 16);
@@ -356,7 +383,14 @@ mod tests {
         *verified.lock().unwrap() =
             verify_device_request_proof(&proof, "POST", uri.path(), &body, &public_key);
         let body: Value = serde_json::from_slice(&body).unwrap();
-        if body.get("action").and_then(Value::as_str) == Some("upload") {
+        if body.get("action").and_then(Value::as_str) == Some("deny") {
+            serde_json::json!({
+                "decision": "denied",
+                "raw_body_included": false,
+                "bytes_sent": 0
+            })
+            .to_string()
+        } else if body.get("action").and_then(Value::as_str) == Some("upload") {
             serde_json::json!({
                 "decision": "sent",
                 "raw_body_included": false,

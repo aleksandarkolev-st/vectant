@@ -100,6 +100,36 @@ export async function takeApprovedRelayPayload(requestId, accountId, client = pr
   });
 }
 
+export async function denyReviewedRelayRequest(input, client = prisma, now = new Date()) {
+  return client.$transaction(async (tx) => {
+    const request = await tx.localSupportRelayRequest.findFirst({
+      where: {
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        deviceFingerprint: input.deviceFingerprint,
+        status: "review_pending",
+        expiresAt: { gt: now },
+      },
+    });
+    if (!request) return null;
+    const updated = await tx.localSupportRelayRequest.updateMany({
+      where: { requestId: request.requestId, status: "review_pending" },
+      data: { status: "denied", completedAt: now },
+    });
+    if (updated.count !== 1) return null;
+    await tx.localSupportCloudAudit.create({
+      data: auditData(request, {
+        decision: "denied",
+        bytesSent: 0,
+        redactionCount: request.redactionCount,
+        scannerVersion: request.scannerVersion,
+        reason: "local_user_denied",
+      }),
+    });
+    return { decision: "denied", bytes_sent: 0 };
+  });
+}
+
 function payloadContext(request) {
   return {
     requestId: request.requestId,

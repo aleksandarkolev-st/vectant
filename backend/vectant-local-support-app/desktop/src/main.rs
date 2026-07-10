@@ -255,6 +255,13 @@ async fn local_support_ipc(
                 .get("approval_id")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
+            let pending_relay = runtime
+                .pending_relay_approvals
+                .read()
+                .map_err(|_| "Relay state lock failed closed.".to_string())?
+                .values()
+                .find(|pending| pending.approval_id == approval_id)
+                .cloned();
             let denied = app_state.approvals.lock().await.deny(approval_id);
             if !denied {
                 return Err("Approval is no longer pending. Nothing was sent.".to_string());
@@ -265,6 +272,21 @@ async fn local_support_ipc(
                 "File review denied locally. Nothing was sent.",
             )
             .await?;
+            if let Some(pending) = pending_relay {
+                runtime
+                    .relay_client
+                    .deny_reviewed_request(
+                        &runtime.device_identity,
+                        &pending.delivery.session_id,
+                        &pending.delivery.request_id,
+                    )
+                    .await?;
+                runtime
+                    .pending_relay_approvals
+                    .write()
+                    .map_err(|_| "Relay state lock failed closed.".to_string())?
+                    .remove(&pending.delivery.request_id);
+            }
         }
         "approval.revoke_session" => {
             app_state.approvals.lock().await.revoke_all();

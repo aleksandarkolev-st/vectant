@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { authenticateLocalSupportDevice } from "@/lib/local-support/deviceAuth";
-import { storeApprovedRelayPayload } from "@/lib/local-support/relayPayloadStore";
+import {
+  denyReviewedRelayRequest,
+  storeApprovedRelayPayload,
+} from "@/lib/local-support/relayPayloadStore";
 
 export const runtime = "nodejs";
 
@@ -12,6 +15,7 @@ const MAX_UPLOAD_BODY_BYTES = 384 * 1024;
 const ALLOWED_FIELDS = new Set([
   "action", "request_id", "content", "content_sha256", "redaction_count", "scanner_version",
 ]);
+const DENIAL_FIELDS = new Set(["action", "request_id", "reason"]);
 
 export async function POST(req) {
   const raw = Buffer.from(await req.arrayBuffer());
@@ -33,9 +37,21 @@ export async function POST(req) {
   } catch {
     return jsonNoStore(denied("invalid_payload_upload"), 400);
   }
-  if (!validUpload(body)) return jsonNoStore(denied("invalid_payload_upload"), 400);
+  if (!body || Array.isArray(body) || typeof body !== "object"
+    || (!validUpload(body) && !validDenial(body))) {
+    return jsonNoStore(denied("invalid_payload_upload"), 400);
+  }
 
   try {
+    if (validDenial(body)) {
+      const result = await denyReviewedRelayRequest({
+        requestId: body.request_id,
+        sessionId: authentication.session.sessionId,
+        deviceFingerprint: authentication.session.deviceFingerprint,
+      });
+      if (!result) return jsonNoStore(denied("payload_request_not_pending"), 409);
+      return jsonNoStore({ ...result, raw_body_included: false });
+    }
     const result = await storeApprovedRelayPayload({
       requestId: body.request_id,
       sessionId: authentication.session.sessionId,
@@ -50,6 +66,13 @@ export async function POST(req) {
   } catch {
     return jsonNoStore(denied("relay_unavailable"), 503);
   }
+}
+
+function validDenial(body) {
+  return Object.keys(body).every((key) => DENIAL_FIELDS.has(key))
+    && body.action === "deny"
+    && typeof body.request_id === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(body.request_id)
+    && body.reason === "local_user_denied";
 }
 
 function validUpload(body) {
