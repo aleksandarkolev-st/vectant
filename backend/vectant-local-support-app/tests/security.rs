@@ -825,7 +825,12 @@ async fn desktop_status_exposes_only_a_safe_selected_workspace_summary() {
         std::time::Duration::from_secs(300),
     );
     session.disconnect();
-    let state = AppState::new(session, policy);
+    let audit_store = LocalAuditStore::new(
+        dir.path().join("desktop-audit.json"),
+        30,
+        SecretScanner::default(),
+    );
+    let state = AppState::new_with_audit_store(session, policy, audit_store);
 
     let desktop_state = build_desktop_status_state(&state).await;
     let serialized = serde_json::to_string(&desktop_state).unwrap();
@@ -833,6 +838,7 @@ async fn desktop_status_exposes_only_a_safe_selected_workspace_summary() {
     assert_eq!(desktop_state["connected"], false);
     assert_eq!(desktop_state["workspace"]["selected"], true);
     assert_eq!(desktop_state["workspace"]["root_path_included"], false);
+    assert_eq!(desktop_state["history_controls_available"], true);
     assert!(!serialized.contains(&dir.path().display().to_string()));
 }
 

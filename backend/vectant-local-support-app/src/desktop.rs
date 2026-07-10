@@ -92,6 +92,7 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
         },
         "ports": ports,
         "activity": events,
+        "history_controls_available": state.audit_store.is_some(),
         "raw_bodies_included": false
     }))
 }

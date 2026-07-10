@@ -99,6 +99,83 @@ async fn local_support_ipc(
                 replacement.clone();
             return Ok(build_desktop_status_state(&replacement).await);
         }
+        "approval.revoke_session" => {
+            app_state.approvals.lock().await.revoke_all();
+            let session_id = app_state.session.lock().await.session_id().to_string();
+            app_state
+                .port_approvals
+                .lock()
+                .await
+                .disconnect_session(&session_id);
+            append_control_event(
+                &app_state,
+                &request_id,
+                "Session approvals and approved ports were revoked locally.",
+            )
+            .await?;
+        }
+        "history.export" => {
+            let Some(path) = rfd::FileDialog::new()
+                .set_title("Export scrubbed Local Support history")
+                .set_file_name("vectant-local-support-history.json")
+                .add_filter("JSON", &["json"])
+                .save_file()
+            else {
+                return Ok(build_desktop_status_state(&app_state).await);
+            };
+            let retention_days = app_state
+                .audit_store
+                .as_ref()
+                .map(|store| store.retention_days())
+                .unwrap_or(30);
+            let export = app_state
+                .audit
+                .lock()
+                .await
+                .export_incident_bundle(retention_days);
+            let bytes = serde_json::to_vec_pretty(&export)
+                .map_err(|_| "Scrubbed history export could not be serialized.".to_string())?;
+            std::fs::write(path, bytes)
+                .map_err(|_| "Scrubbed history export could not be written.".to_string())?;
+            append_control_event(
+                &app_state,
+                &request_id,
+                "Scrubbed local history was exported by the desktop user.",
+            )
+            .await?;
+        }
+        "history.delete" => {
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("Delete local activity history?")
+                .set_description(
+                    "This removes Local Support events and approval receipts stored on this computer.",
+                )
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .set_level(rfd::MessageLevel::Warning)
+                .show();
+            if !matches!(confirmed, rfd::MessageDialogResult::Yes) {
+                return Ok(build_desktop_status_state(&app_state).await);
+            }
+            let Some(store) = &app_state.audit_store else {
+                return Err(
+                    "Local history storage is unavailable. Nothing was deleted.".to_string()
+                );
+            };
+            store
+                .delete()
+                .map_err(|_| "Local history deletion failed closed.".to_string())?;
+            let mut audit = app_state.audit.lock().await;
+            audit.clear();
+            audit.append(
+                AuditClass::Control,
+                Some(request_id.clone()),
+                "Local support history deleted according to retention policy.",
+                true,
+            );
+            store
+                .persist(&audit)
+                .map_err(|_| "Local history deletion marker could not be persisted.".to_string())?;
+        }
         _ => {
             return Err(format!(
                 "{} is not available until its local workflow is connected.",

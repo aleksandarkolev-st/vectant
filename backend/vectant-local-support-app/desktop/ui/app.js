@@ -126,8 +126,8 @@ function renderState(rawState) {
   actionButtons.pause.disabled = !state.connected;
   actionButtons.disconnect.disabled = !state.connected;
   actionButtons.revoke.disabled = !state.connected;
-  actionButtons.exportHistory.disabled = !state.connected;
-  actionButtons.deleteHistory.disabled = !state.connected;
+  actionButtons.exportHistory.disabled = !state.historyControlsAvailable;
+  actionButtons.deleteHistory.disabled = !state.historyControlsAvailable;
 }
 
 async function invokeStateAction(command, unavailableMessage) {
@@ -240,6 +240,7 @@ function normalizeState(rawState) {
           summary: sanitizeText(event.summary, "Local event recorded."),
         }))
       : [],
+    historyControlsAvailable: raw.history_controls_available === true || raw.connected === true,
   };
 }
 

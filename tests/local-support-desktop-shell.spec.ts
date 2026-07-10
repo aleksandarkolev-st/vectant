@@ -276,6 +276,7 @@ test.describe("local support desktop shell", () => {
             approvals: { pending_count: 0, content_included: false },
             ports: [],
             activity: [{ summary: "Workspace selected locally. No files were sent." }],
+            history_controls_available: true,
           }),
         },
       };
@@ -287,6 +288,9 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Workspace vectant-app is selected for this support session only.")).toBeVisible();
     await expect(page.getByText("C:\\Users\\private\\vectant-app")).toHaveCount(0);
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Delete local history" })).toBeEnabled();
   });
 
   test("keeps controls reachable in a narrow desktop window", async ({ page }) => {
