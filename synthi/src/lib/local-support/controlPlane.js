@@ -1295,7 +1295,7 @@ function normalizeTransparencyState(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
 }
 
-function verifyDevicePairingProof(proof, pairing) {
+export function verifyDevicePairingProof(proof, pairing) {
   const required = [
     "pairing_id",
     "server_nonce",
@@ -1366,7 +1366,7 @@ function verifyDevicePairingProof(proof, pairing) {
 }
 
 function pairingChallengePayload(...parts) {
-  return Buffer.concat(parts.map((part) => {
+  return Buffer.concat(["vectant-local-support-pairing-proof-v1", ...parts].map((part) => {
     const bytes = Buffer.from(String(part), "utf8");
     const length = Buffer.alloc(8);
     length.writeBigUInt64BE(BigInt(bytes.length));

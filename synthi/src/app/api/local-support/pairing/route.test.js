@@ -3,9 +3,10 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { vi } from "vitest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-const { getServerSessionMock, persistPairedSessionMock } = vi.hoisted(() => ({
+const { getServerSessionMock, persistPairingChallengeMock, pairingPersistenceFailure } = vi.hoisted(() => ({
   getServerSessionMock: vi.fn(),
-  persistPairedSessionMock: vi.fn(),
+  persistPairingChallengeMock: vi.fn(),
+  pairingPersistenceFailure: { active: false },
 }));
 
 vi.mock("next-auth", () => ({
@@ -13,9 +14,21 @@ vi.mock("next-auth", () => ({
 }));
 
 vi.mock("@/app/auth", () => ({ authOptions: {} }));
-vi.mock("@/lib/local-support/sessionStore", () => ({
-  persistPairedSession: persistPairedSessionMock,
-}));
+vi.mock("@/lib/local-support/pairingStore", async (importOriginal) => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return {
+    ...(await importOriginal()),
+    persistPairingChallenge: persistPairingChallengeMock,
+    claimPairingChallengeDurably: async (body, policy) => {
+      if (pairingPersistenceFailure.active) throw new Error("database unavailable");
+      return controlPlane.claimPairingChallenge(body, policy);
+    },
+    completePairingChallengeDurably: async (body, policy) => {
+      if (pairingPersistenceFailure.active) throw new Error("database unavailable");
+      return controlPlane.completePairingChallenge(body, policy);
+    },
+  };
+});
 
 import { clearAdminRevocationStore, clearPairingChallengeStore } from "@/lib/local-support/controlPlane";
 
@@ -28,8 +41,9 @@ beforeEach(() => {
   getServerSessionMock.mockResolvedValue({
     user: { id: "acct_pair", email: "pair@example.test" },
   });
-  persistPairedSessionMock.mockReset();
-  persistPairedSessionMock.mockResolvedValue({ sessionId: "sess_pair" });
+  persistPairingChallengeMock.mockReset();
+  persistPairingChallengeMock.mockResolvedValue({ pairingId: "pair_1" });
+  pairingPersistenceFailure.active = false;
 });
 
 afterEach(() => {
@@ -170,9 +184,8 @@ describe("local support pairing route", () => {
     expect(paired.device_fingerprint).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(paired.consent_receipt.device_fingerprint).toBe(paired.device_fingerprint);
     expect(JSON.stringify(paired)).not.toContain("PRIVATE KEY");
-    expect(persistPairedSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: "pairing_complete", session_id: paired.session_id }),
-      expect.objectContaining({ device_public_key: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+    expect(persistPairingChallengeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "pairing_challenge_created", pairing_id: challenge.pairing_id }),
     );
 
     const replay = await POST(request(completeBody(challenge)));
@@ -189,7 +202,7 @@ describe("local support pairing route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET = "pairing-proof-secret";
     const created = await POST(request(createBody()));
     const challenge = await created.json();
-    persistPairedSessionMock.mockRejectedValueOnce(new Error("database unavailable"));
+    pairingPersistenceFailure.active = true;
 
     const response = await POST(request(completeBody(challenge)));
 
@@ -352,7 +365,7 @@ function deviceFingerprint(devicePublicKeyHex) {
 }
 
 function pairingChallengePayload(...parts) {
-  return Buffer.concat(parts.map((part) => {
+  return Buffer.concat(["vectant-local-support-pairing-proof-v1", ...parts].map((part) => {
     const bytes = Buffer.from(String(part), "utf8");
     const length = Buffer.alloc(8);
     length.writeBigUInt64BE(BigInt(bytes.length));

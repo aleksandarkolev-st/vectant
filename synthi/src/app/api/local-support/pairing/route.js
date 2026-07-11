@@ -4,12 +4,14 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/auth";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
-  completePairingChallenge,
   createPairingChallenge,
-  claimPairingChallenge,
   readLocalSupportPolicy,
 } from "@/lib/local-support/controlPlane";
-import { persistPairedSession } from "@/lib/local-support/sessionStore";
+import {
+  claimPairingChallengeDurably,
+  completePairingChallengeDurably,
+  persistPairingChallenge,
+} from "@/lib/local-support/pairingStore";
 
 export const runtime = "nodejs";
 
@@ -48,28 +50,43 @@ export async function POST(req) {
     };
   }
 
-  const result = action === "create"
-    ? createPairingChallenge(createBody, policy)
-    : action === "claim"
-      ? claimPairingChallenge(body, policy)
-      : action === "complete"
-        ? completePairingChallenge(body, policy)
-        : deniedJson("invalid_pairing_action", "Pairing action was not accepted.", 400).body;
-  if (action === "complete" && result.decision === "pairing_complete") {
-    try {
-      await persistPairedSession(result, body.proof);
-    } catch {
-      return jsonNoStore({
-        decision: "denied",
-        reason: "pairing_session_persistence_failed",
-        bytes_sent: 0,
-        raw_body_included: false,
-        user_visible_message: "Pairing could not be secured. Start a new pairing challenge.",
-      }, 503);
+  let result;
+  if (action === "create") {
+    result = createPairingChallenge(createBody, policy);
+    if (result.decision === "pairing_challenge_created") {
+      try {
+        await persistPairingChallenge(result);
+      } catch {
+        return pairingPersistenceFailure();
+      }
     }
+  } else if (action === "claim") {
+    try {
+      result = await claimPairingChallengeDurably(body, policy);
+    } catch {
+      return pairingPersistenceFailure();
+    }
+  } else if (action === "complete") {
+    try {
+      result = await completePairingChallengeDurably(body, policy);
+    } catch {
+      return pairingPersistenceFailure();
+    }
+  } else {
+    result = deniedJson("invalid_pairing_action", "Pairing action was not accepted.", 400).body;
   }
   const status = result.decision === "denied" ? statusForDeniedReason(result.reason) : 200;
   return jsonNoStore(result, status);
+}
+
+function pairingPersistenceFailure() {
+  return jsonNoStore({
+    decision: "denied",
+    reason: "pairing_session_persistence_failed",
+    bytes_sent: 0,
+    raw_body_included: false,
+    user_visible_message: "Pairing could not be secured. Start a new pairing challenge.",
+  }, 503);
 }
 
 function statusForDeniedReason(reason) {

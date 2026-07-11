@@ -82,7 +82,13 @@ impl PairingClient {
             return Err("Pairing code or workspace identifier was invalid.".to_string());
         }
         let value = self
-            .post(serde_json::json!({ "action": "claim", "code": code, "workspace_id": workspace_id }))
+            .post(serde_json::json!({
+                "action": "claim",
+                "code": code,
+                "workspace_id": workspace_id,
+                "app_version": env!("CARGO_PKG_VERSION"),
+                "protocol_version": vectant_local_support_app::APP_PROTOCOL_VERSION,
+            }))
             .await?;
         parse_claimed_pairing(value, code)
     }
