@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -11,6 +13,7 @@ use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use futures_util::Stream;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,6 +26,7 @@ use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
     preview_path_allowed, sanitize_response_headers, validate_preview_response_size, PortApproval,
     PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard,
+    MAX_PREVIEW_RESPONSE_BYTES,
 };
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
@@ -658,13 +662,9 @@ async fn preview_gateway(
         }
     }
     let target_url = preview_target_url(port, &preview_path, query.target_query.as_deref())?;
-    let result = fetch_preview_response(&method, &target_url, &approval, &preview_path).await;
-    state
-        .preview_traffic
-        .lock()
-        .await
-        .end_stream(&approval.preview_host);
-    result
+    let stream_lease =
+        PreviewStreamLease::new(state.preview_traffic.clone(), approval.preview_host.clone());
+    fetch_preview_response(&method, &target_url, &approval, &preview_path, stream_lease).await
 }
 
 async fn fetch_preview_response(
@@ -672,6 +672,7 @@ async fn fetch_preview_response(
     target_url: &str,
     approval: &PortApproval,
     preview_path: &str,
+    stream_lease: PreviewStreamLease,
 ) -> Result<Response<Body>, (StatusCode, Json<serde_json::Value>)> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -704,16 +705,14 @@ async fn fetch_preview_response(
             return preview_redirect_response(approval, preview_path, location, status);
         }
     }
-    let bytes = if *method == Method::HEAD {
-        Bytes::new()
+    let body = if *method == Method::HEAD {
+        Body::empty()
     } else {
-        response
-            .bytes()
-            .await
-            .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_target_read_failed"))?
+        Body::from_stream(CappedPreviewBodyStream::new(
+            response.bytes_stream(),
+            stream_lease,
+        ))
     };
-    validate_preview_response_size(None, bytes.len() as u64)
-        .map_err(|reason| denied(StatusCode::PAYLOAD_TOO_LARGE, reason))?;
     let mut builder = Response::builder().status(status);
     for (name, value) in sanitize_response_headers(&response_headers) {
         if let (Ok(name), Ok(value)) = (
@@ -724,8 +723,87 @@ async fn fetch_preview_response(
         }
     }
     builder
-        .body(Body::from(bytes))
+        .body(body)
         .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_response_build_failed"))
+}
+
+struct PreviewStreamLease {
+    traffic: Arc<Mutex<PreviewTrafficGuard>>,
+    preview_host: String,
+}
+
+impl PreviewStreamLease {
+    fn new(traffic: Arc<Mutex<PreviewTrafficGuard>>, preview_host: String) -> Self {
+        Self {
+            traffic,
+            preview_host,
+        }
+    }
+}
+
+impl Drop for PreviewStreamLease {
+    fn drop(&mut self) {
+        let traffic = self.traffic.clone();
+        let preview_host = self.preview_host.clone();
+        tokio::spawn(async move {
+            traffic.lock().await.end_stream(&preview_host);
+        });
+    }
+}
+
+struct CappedPreviewBodyStream<S> {
+    inner: Pin<Box<S>>,
+    bytes_seen: u64,
+    terminated: bool,
+    _lease: PreviewStreamLease,
+}
+
+impl<S> CappedPreviewBodyStream<S> {
+    fn new(inner: S, lease: PreviewStreamLease) -> Self {
+        Self {
+            inner: Box::pin(inner),
+            bytes_seen: 0,
+            terminated: false,
+            _lease: lease,
+        }
+    }
+}
+
+impl<S, E> Stream for CappedPreviewBodyStream<S>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.terminated {
+            return Poll::Ready(None);
+        }
+        match self.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                self.bytes_seen = self.bytes_seen.saturating_add(bytes.len() as u64);
+                if self.bytes_seen > MAX_PREVIEW_RESPONSE_BYTES {
+                    self.terminated = true;
+                    return Poll::Ready(Some(Err(std::io::Error::other(
+                        "preview_response_too_large",
+                    ))));
+                }
+                Poll::Ready(Some(Ok(bytes)))
+            }
+            Poll::Ready(Some(Err(_))) => {
+                self.terminated = true;
+                Poll::Ready(Some(Err(std::io::Error::other(
+                    "preview_target_read_failed",
+                ))))
+            }
+            Poll::Ready(None) => {
+                self.terminated = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 fn preview_redirect_response(

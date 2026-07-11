@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
+use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -445,6 +446,15 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
                     );
                     (StatusCode::FOUND, headers, "").into_response()
                 }),
+            )
+            .route(
+                "/oversized-stream",
+                get(|| async {
+                    let chunks = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                        Bytes::from(vec![b'x'; MAX_PREVIEW_RESPONSE_BYTES as usize + 1]),
+                    )]);
+                    axum::response::Response::new(Body::from_stream(chunks))
+                }),
             );
         let _ = axum::serve(target_listener, app).await;
     });
@@ -501,6 +511,22 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
         preview_with_browser_host.text().await.unwrap(),
         "local preview body"
     );
+
+    let oversized_stream = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/oversized-stream?request_id=req_http_preview_stream_cap&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers(http_preview_headers(
+            &token,
+            &preview_grant.approval.preview_host,
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(oversized_stream.status(), StatusCode::OK);
+    assert!(oversized_stream.bytes().await.is_err());
 
     let preview_cookie = client
         .get(format!(
