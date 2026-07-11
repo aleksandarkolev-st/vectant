@@ -7,6 +7,7 @@ import {
   validateRequestEnvelope,
   verifyRequestEnvelopeSignature,
 } from "@/lib/local-support/controlPlane";
+import { authorizeRelaySession } from "@/lib/local-support/sessionStore";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,25 @@ export async function POST(req) {
   const decision = validateRequestEnvelope(body, policy);
   if (decision.decision === "denied") {
     return jsonNoStore(decision, 403);
+  }
+
+  try {
+    const authorization = await authorizeRelaySession(body);
+    if (!authorization.ok) {
+      return jsonNoStore({
+        decision: "denied",
+        reason: authorization.reason,
+        raw_body_included: false,
+        bytes_sent: 0,
+      }, 403);
+    }
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "request_authorization_unavailable",
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
   }
 
   if (policy.enabled) {

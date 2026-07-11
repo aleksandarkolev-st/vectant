@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const adminStore = vi.hoisted(() => ({
   read: vi.fn(),
   revoke: vi.fn(),
+  authorize: vi.fn(),
 }));
 
 vi.mock("@/lib/local-support/adminStore", async () => {
@@ -14,6 +15,9 @@ vi.mock("@/lib/local-support/adminStore", async () => {
     ),
   };
 });
+vi.mock("@/lib/local-support/sessionStore", () => ({
+  authorizeRelaySession: adminStore.authorize,
+}));
 
 import {
   clearAdminRevocationStore,
@@ -38,6 +42,8 @@ beforeEach(() => {
     }
   });
   adminStore.revoke.mockClear();
+  adminStore.authorize.mockReset();
+  adminStore.authorize.mockResolvedValue({ ok: true, session: { sessionId: "sess_123" } });
 });
 
 afterEach(() => {

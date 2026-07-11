@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const sessionStore = vi.hoisted(() => ({ authorize: vi.fn() }));
+vi.mock("@/lib/local-support/sessionStore", () => ({
+  authorizeRelaySession: sessionStore.authorize,
+}));
 
 import {
   clearAdminRevocationStore,
@@ -11,6 +16,11 @@ import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
 const DEVICE_PROOF_SECRET = "test-device-proof-secret";
+
+beforeEach(() => {
+  sessionStore.authorize.mockReset();
+  sessionStore.authorize.mockResolvedValue({ ok: true, session: { sessionId: "sess_123" } });
+});
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
