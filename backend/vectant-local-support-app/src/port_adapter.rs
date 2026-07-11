@@ -142,6 +142,13 @@ fn hash_process_identity(value: &str) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
+pub fn native_listener_identity_matches(port: u16, expected_identity: &str) -> bool {
+    !expected_identity.is_empty()
+        && expected_identity.starts_with("pid=")
+        && detect_loopback_listener(port)
+            .is_ok_and(|detected| detected.process_identity == expected_identity)
+}
+
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
@@ -158,5 +165,13 @@ mod windows_tests {
         assert!(detected.process_identity_hash.starts_with("sha256:"));
         assert!(!detected.process_identity.is_empty());
         assert!(!serde_json::to_string(&detected).unwrap().contains("path="));
+        assert!(native_listener_identity_matches(
+            port,
+            &detected.process_identity
+        ));
+        assert!(!native_listener_identity_matches(
+            port,
+            "pid=1;created=0;path=fake"
+        ));
     }
 }

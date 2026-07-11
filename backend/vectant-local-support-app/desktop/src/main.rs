@@ -19,7 +19,9 @@ use vectant_local_support_app::desktop::{build_desktop_status_state, plan_deskto
 use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::ipc::IpcRequest;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
-use vectant_local_support_app::port_adapter::detect_loopback_listener;
+use vectant_local_support_app::port_adapter::{
+    detect_loopback_listener, native_listener_identity_matches,
+};
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
 use vectant_local_support_app::workspace::FileReadRequest;
@@ -600,6 +602,7 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
     loop {
         let runtime = app_handle.state::<DesktopRuntime>();
         if let Ok(app_state) = current_app_state(&runtime) {
+            let _ = revoke_stale_preview_contexts(&runtime, &app_state).await;
             let session_state = {
                 let session = app_state.session.lock().await;
                 if session.is_active() {
@@ -622,6 +625,40 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn revoke_stale_preview_contexts(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+) -> Result<(), String> {
+    let contexts = runtime
+        .preview_contexts
+        .read()
+        .map_err(|_| "Preview state lock failed closed.".to_string())?
+        .iter()
+        .map(|(port, context)| (*port, context.process_identity.clone()))
+        .collect::<Vec<_>>();
+    for (port, identity) in contexts {
+        if native_listener_identity_matches(port, &identity) {
+            continue;
+        }
+        state.port_approvals.lock().await.revoke_port(port);
+        state.preview_traffic.lock().await.clear_all();
+        runtime
+            .preview_contexts
+            .write()
+            .map_err(|_| "Preview state lock failed closed.".to_string())?
+            .remove(&port);
+        append_control_event(
+            state,
+            &format!("port_closed_{port}"),
+            &format!(
+                "Browser preview approval for 127.0.0.1:{port} was revoked because its listener closed or changed process."
+            ),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn handle_relay_delivery(

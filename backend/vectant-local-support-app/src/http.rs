@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
 use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
+use crate::port_adapter::native_listener_identity_matches;
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
     preview_path_allowed, sanitize_response_headers, validate_preview_response_size, PortApproval,
@@ -615,6 +616,16 @@ async fn preview_gateway(
             .approval_for(&session_id, port, &query.process_identity)
             .cloned()
     };
+    if query.process_identity.starts_with("pid=")
+        && !native_listener_identity_matches(port, &query.process_identity)
+    {
+        state.port_approvals.lock().await.revoke_port(port);
+        state.preview_traffic.lock().await.clear_all();
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "preview_process_identity_changed",
+        ));
+    }
     let filtered_headers = preview_validation_headers(&headers);
     match decide_preview_request_from_header_list_with_token(
         approval.as_ref(),
