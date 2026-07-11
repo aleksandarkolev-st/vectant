@@ -203,8 +203,14 @@
             <li>POST, PUT, PATCH, DELETE</li>
             <li>Private network proxying</li>
           </ul>
+          <div class="pairing-form port-form">
+            <label for="preview-port">Loopback port</label>
+            <input id="preview-port" data-preview-port type="number" min="1" max="65535" inputmode="numeric" value="3000" autocomplete="off">
+          </div>
           <div class="control-stack">
-            <button type="button" data-action="review-port-approval" disabled>Review port approval</button>
+            <button type="button" data-action="review-port-approval" disabled>Approve browser-only preview</button>
+            <button type="button" data-action="open-port-preview" disabled>Open in system browser</button>
+            <button type="button" data-action="revoke-port-approval" disabled>Revoke port approval</button>
           </div>
           <p class="hint">Port review stays local and browser-only. The renderer never receives preview tokens.</p>
         </article>

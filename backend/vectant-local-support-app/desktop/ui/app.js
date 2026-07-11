@@ -9,6 +9,8 @@ const actionButtons = {
   pairSession: document.querySelector('[data-action="pair-session"]'),
   reviewFileApproval: document.querySelector('[data-action="review-file-approval"]'),
   reviewPortApproval: document.querySelector('[data-action="review-port-approval"]'),
+  openPortPreview: document.querySelector('[data-action="open-port-preview"]'),
+  revokePortApproval: document.querySelector('[data-action="revoke-port-approval"]'),
   pause: document.querySelector('[data-action="pause"]'),
   disconnect: document.querySelector('[data-action="disconnect"]'),
   revoke: document.querySelector('[data-action="revoke"]'),
@@ -24,6 +26,8 @@ const pairingIdentity = document.querySelector("[data-pairing-identity]");
 const pairingStatus = document.querySelector("[data-pairing-status]");
 const approvalPreview = document.querySelector(".approval-preview");
 const approvalReviewDetail = document.querySelector("[data-approval-review-detail]");
+const previewPortInput = document.querySelector("[data-preview-port]");
+let renderedState = null;
 
 const defaultApprovalCopy = "When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.";
 const defaultPortsCopy = "Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.";
@@ -78,6 +82,7 @@ function sanitizeText(value, fallback) {
 
 function renderState(rawState) {
   const state = normalizeState(rawState);
+  renderedState = state;
   shell.dataset.connected = String(state.connected);
   setPaused(state.paused);
   statusPill.textContent = state.connected ? (state.paused ? "Paused" : "Connected") : "Disconnected";
@@ -130,7 +135,9 @@ function renderState(rawState) {
   actionButtons.pickWorkspace.disabled = false;
   actionButtons.pairSession.disabled = false;
   actionButtons.reviewFileApproval.disabled = !state.connected || state.approvals.length === 0;
-  actionButtons.reviewPortApproval.disabled = !state.connected || state.ports.length === 0;
+  actionButtons.reviewPortApproval.disabled = !state.connected;
+  actionButtons.openPortPreview.disabled = !state.connected || state.ports.length === 0;
+  actionButtons.revokePortApproval.disabled = !state.connected || state.ports.length === 0;
   actionButtons.pause.disabled = !state.connected;
   actionButtons.disconnect.disabled = !state.connected;
   actionButtons.revoke.disabled = !state.connected;
@@ -384,7 +391,20 @@ document.querySelectorAll("[data-action]").forEach((button) => {
       await invokeStateAction("approval.file.deny", "Approval is no longer pending.", { approval_id: approvalId });
     }
     if (button.dataset.action === "review-port-approval") {
-      await invokeStateAction("approval.port.review", "Port review needs a live local request. No preview was exposed.");
+      const port = Number(previewPortInput?.value);
+      await invokeStateAction(
+        "approval.port.review",
+        "Enter a loopback port owned by a live local process. No preview was exposed.",
+        { port },
+      );
+    }
+    if (button.dataset.action === "open-port-preview") {
+      const port = renderedState?.ports?.[0]?.port;
+      await invokeStateAction("approval.port.open", "Approve a port before opening preview.", { port });
+    }
+    if (button.dataset.action === "revoke-port-approval") {
+      const port = renderedState?.ports?.[0]?.port;
+      await invokeStateAction("approval.port.revoke", "No approved port was available to revoke.", { port });
     }
     if (button.dataset.action === "pause") {
       const command = shell.dataset.paused === "true" ? "session.resume" : "session.pause";

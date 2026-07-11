@@ -27,6 +27,8 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "approval.file.approve",
     "approval.file.deny",
     "approval.port.review",
+    "approval.port.open",
+    "approval.port.revoke",
     "approval.revoke_session",
     "history.export",
     "history.delete",

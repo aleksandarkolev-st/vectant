@@ -42,7 +42,9 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("No ports approved")).toBeVisible();
     await expect(page.getByText("Browser only")).toBeVisible();
     await expect(page.getByText("AI page body reading")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Review port approval" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Approve browser-only preview" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Open in system browser" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeDisabled();
 
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("History is empty")).toBeVisible();
@@ -56,10 +58,12 @@ test.describe("local support desktop shell", () => {
 
   test("renders sanitized desktop IPC state without exposing local secrets", async ({ page }) => {
     await page.addInitScript(() => {
+      (window as any).__ipcCalls = [];
       window.__TAURI__ = {
         core: {
           invoke: async (command, args) => {
             if (command !== "local_support_ipc") throw new Error("unexpected command");
+            (window as any).__ipcCalls.push(args);
             if (args.command === "session.status") {
               return {
                 connected: true,
@@ -234,8 +238,14 @@ test.describe("local support desktop shell", () => {
     await page.getByRole("tab", { name: "Ports", exact: true }).click();
     await expect(page.getByText("1 browser preview port approved")).toBeVisible();
     await expect(page.getByText("127.0.0.1:5173 via br-local-p5173.vectant-preview.dev")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Review port approval" })).toBeEnabled();
-    await page.getByRole("button", { name: "Review port approval" }).click();
+    await expect(page.getByRole("button", { name: "Approve browser-only preview" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Open in system browser" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeEnabled();
+    await page.getByRole("button", { name: "Approve browser-only preview" }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__ipcCalls.at(-1))).toMatchObject({
+      command: "approval.port.review",
+      payload: { port: 3000 },
+    });
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("Opened browser-only port approval review. Preview token stayed hidden.")).toBeVisible();
     await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);

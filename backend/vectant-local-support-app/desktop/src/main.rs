@@ -4,6 +4,7 @@ mod pairing_client;
 mod relay_client;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -15,9 +16,10 @@ use tauri::{Manager, State};
 use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
 use vectant_local_support_app::desktop::{build_desktop_status_state, plan_desktop_ipc_action};
-use vectant_local_support_app::http::{shutdown_cleanup, AppState};
+use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::ipc::IpcRequest;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
+use vectant_local_support_app::port_adapter::detect_loopback_listener;
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::SessionGuard;
 use vectant_local_support_app::workspace::FileReadRequest;
@@ -30,12 +32,21 @@ struct DesktopRuntime {
     relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
+    preview_contexts: RwLock<HashMap<u16, PreviewContext>>,
+    local_api_address: RwLock<Option<SocketAddr>>,
 }
 
 #[derive(Clone)]
 struct PendingRelayApproval {
     approval_id: String,
     delivery: RelayDelivery,
+}
+
+#[derive(Clone)]
+struct PreviewContext {
+    preview_host: String,
+    preview_token: String,
+    process_identity: String,
 }
 
 #[tauri::command]
@@ -99,6 +110,11 @@ async fn local_support_ipc(
                 .write()
                 .map_err(|_| "Relay state lock failed closed.".to_string())?
                 .clear();
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .clear();
         }
         "workspace.pick" => {
             let Some(path) = rfd::FileDialog::new()
@@ -132,6 +148,11 @@ async fn local_support_ipc(
                 .pending_relay_approvals
                 .write()
                 .map_err(|_| "Relay state lock failed closed.".to_string())?
+                .clear();
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
                 .clear();
             return desktop_status(&runtime, &replacement).await;
         }
@@ -288,6 +309,88 @@ async fn local_support_ipc(
                     .remove(&pending.delivery.request_id);
             }
         }
+        "approval.port.review" => {
+            let port = required_port(&payload)?;
+            let detected = detect_loopback_listener(port).map_err(|_| {
+                "No loopback-only listening process owns that port. Nothing was exposed."
+                    .to_string()
+            })?;
+            let session = app_state.session.lock().await;
+            if !session.is_active() || session.state().paused {
+                return Err("Connect and resume Local Support before approving a port.".to_string());
+            }
+            let session_id = session.session_id().to_string();
+            drop(session);
+            let grant = app_state
+                .port_approvals
+                .lock()
+                .await
+                .approve_browser_port_grant(&session_id, port, &detected.process_identity);
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .insert(
+                    port,
+                    PreviewContext {
+                        preview_host: grant.approval.preview_host.clone(),
+                        preview_token: grant.preview_token,
+                        process_identity: detected.process_identity,
+                    },
+                );
+            append_control_event(
+                &app_state,
+                &request_id,
+                &format!(
+                    "Browser-only preview approved for 127.0.0.1:{port} owned by {}. AI and support page reading remain off.",
+                    detected.service
+                ),
+            )
+            .await?;
+        }
+        "approval.port.open" => {
+            let port = required_port(&payload)?;
+            let context = runtime
+                .preview_contexts
+                .read()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .get(&port)
+                .cloned()
+                .ok_or_else(|| "That port is not approved for browser preview.".to_string())?;
+            let address = runtime
+                .local_api_address
+                .read()
+                .map_err(|_| "Local API state lock failed closed.".to_string())?
+                .ok_or_else(|| "The local preview gateway is not ready.".to_string())?;
+            let mut url = reqwest::Url::parse(&format!(
+                "http://{}:{}/v1/preview/{port}/",
+                context.preview_host,
+                address.port()
+            ))
+            .map_err(|_| "Preview URL could not be created safely.".to_string())?;
+            url.query_pairs_mut()
+                .append_pair("request_id", &request_id)
+                .append_pair("preview_token", &context.preview_token)
+                .append_pair("process_identity", &context.process_identity);
+            open::that_detached(url.as_str())
+                .map_err(|_| "The system browser could not open the preview.".to_string())?;
+        }
+        "approval.port.revoke" => {
+            let port = required_port(&payload)?;
+            app_state.port_approvals.lock().await.revoke_port(port);
+            app_state.preview_traffic.lock().await.clear_all();
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .remove(&port);
+            append_control_event(
+                &app_state,
+                &request_id,
+                &format!("Browser-only preview approval for 127.0.0.1:{port} was revoked."),
+            )
+            .await?;
+        }
         "approval.revoke_session" => {
             app_state.approvals.lock().await.revoke_all();
             let session_id = app_state.session.lock().await.session_id().to_string();
@@ -296,6 +399,11 @@ async fn local_support_ipc(
                 .lock()
                 .await
                 .disconnect_session(&session_id);
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .clear();
             append_control_event(
                 &app_state,
                 &request_id,
@@ -443,12 +551,25 @@ fn main() -> anyhow::Result<()> {
         relay_client: RelayClient::from_environment().map_err(anyhow::Error::msg)?,
         pending_pairing: RwLock::new(None),
         pending_relay_approvals: RwLock::new(HashMap::new()),
+        preview_contexts: RwLock::new(HashMap::new()),
+        local_api_address: RwLock::new(None),
     };
     let app = tauri::Builder::default()
         .manage(runtime)
         .invoke_handler(tauri::generate_handler![local_support_ipc])
         .setup(|app| {
             let app_handle = app.handle().clone();
+            let local_api_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let runtime = local_api_handle.state::<DesktopRuntime>();
+                if let Ok(state) = current_app_state(&runtime) {
+                    if let Ok(address) = bind_loopback(state).await {
+                        if let Ok(mut stored) = runtime.local_api_address.write() {
+                            *stored = Some(address);
+                        }
+                    }
+                }
+            });
             tauri::async_runtime::spawn(async move { relay_poll_loop(app_handle).await });
             Ok(())
         })
@@ -464,6 +585,15 @@ fn main() -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+fn required_port(payload: &serde_json::Value) -> Result<u16, String> {
+    payload
+        .get("port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "Port identifier was invalid.".to_string())
 }
 
 async fn relay_poll_loop(app_handle: tauri::AppHandle) {

@@ -327,6 +327,11 @@ dd {
   outline-offset: 2px;
 }
 
+.port-form input {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .pairing-confirm {
   background: var(--accent-soft);
   border: 1px solid oklch(0.82 0.05 255);
