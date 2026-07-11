@@ -766,11 +766,14 @@ fn validate_preview_query(
 fn preview_host_from_headers(
     headers: &HeaderMap,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
-    let host = headers
+    let authority = headers
         .get("x-vectant-preview-host")
         .or_else(|| headers.get("host"))
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+        .unwrap_or("")
+        .parse::<axum::http::uri::Authority>()
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "preview_host_invalid"))?;
+    let host = authority.host();
     if host.len() > 160
         || !host.ends_with(".vectant-preview.dev")
         || host

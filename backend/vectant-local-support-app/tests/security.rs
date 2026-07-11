@@ -476,6 +476,32 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     let preview_body = preview_ok.text().await.unwrap();
     assert_eq!(preview_body, "local preview body");
 
+    let preview_with_browser_host = client
+        .get(format!(
+            "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_browser_host&preview_token={}&process_identity=vite-preview:pid123",
+            target_addr.port(),
+            preview_grant.preview_token
+        ))
+        .headers({
+            let mut headers = http_preview_headers(&token, &preview_grant.approval.preview_host);
+            headers.remove("x-vectant-preview-host");
+            headers.insert(
+                "host",
+                format!("{}:{}", preview_grant.approval.preview_host, addr.port())
+                    .parse()
+                    .unwrap(),
+            );
+            headers
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_with_browser_host.status(), StatusCode::OK);
+    assert_eq!(
+        preview_with_browser_host.text().await.unwrap(),
+        "local preview body"
+    );
+
     let preview_cookie = client
         .get(format!(
             "http://{addr}/v1/preview/{}/ok?request_id=req_http_preview_cookie&preview_token={}&process_identity=vite-preview:pid123",
