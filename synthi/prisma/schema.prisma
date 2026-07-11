@@ -791,6 +791,28 @@ model LocalSupportCloudAudit {
   @@index([decision, createdAt])
 }
 
+model LocalSupportSecurityEvent {
+  id            String   @id @default(cuid())
+  dedupeKey     String
+  eventType     String
+  severity      String
+  alert         Boolean  @default(false)
+  alertRoute    String
+  accountId     String
+  sessionId     String
+  requestId     String
+  targetDisplay String
+  targetHash    String
+  count         Int      @default(1)
+  logClass      String
+  createdAt     DateTime @default(now())
+
+  @@index([severity, createdAt])
+  @@index([eventType, createdAt])
+  @@index([accountId, createdAt])
+  @@index([dedupeKey, createdAt])
+}
+
 model LocalSupportSession {
   sessionId          String   @id
   pairingId          String   @unique

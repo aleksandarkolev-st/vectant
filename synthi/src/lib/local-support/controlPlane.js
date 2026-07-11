@@ -784,6 +784,7 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
   const state = input && typeof input === "object" ? input : {};
   const devices = Array.isArray(state.devices) ? state.devices : [];
   const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+  const alerts = Array.isArray(state.alerts) ? state.alerts : [];
   const revokedSessionIds = uniqueStrings([
     ...(policy.revoked_sessions || []),
     ...revokedSessions,
@@ -829,6 +830,20 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
       approved_ports_count: clampNumber(session.approved_ports_count, 0, 100, 0),
       last_active_at: scrubTelemetryValue(session.last_active_at || ""),
       revoked: session.revoked === true,
+    })),
+    security_alerts: alerts.slice(0, 100).map((alert) => ({
+      event_id: scrubTelemetryValue(alert.event_id || alert.id || ""),
+      event_type: scrubTelemetryValue(alert.event_type || ""),
+      severity: scrubTelemetryValue(alert.severity || ""),
+      alert_route: scrubTelemetryValue(alert.alert_route || ""),
+      account_id: scrubTelemetryValue(alert.account_id || ""),
+      session_id: scrubTelemetryValue(alert.session_id || ""),
+      request_id: scrubTelemetryValue(alert.request_id || ""),
+      target_display: scrubTelemetryValue(alert.target_display || ""),
+      target_hash: scrubTelemetryValue(alert.target_hash || ""),
+      count: clampNumber(alert.count, 1, 100, 1),
+      at: scrubTelemetryValue(alert.at || ""),
+      raw_body_included: false,
     })),
   };
 }

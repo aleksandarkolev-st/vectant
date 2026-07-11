@@ -24,6 +24,19 @@ describe("durable local support admin state", () => {
   it("derives paired devices and sessions from persisted pairing rows", async () => {
     const state = await readDurableAdminState({
       localSupportSession: { findMany: vi.fn(async () => [session]) },
+      localSupportSecurityEvent: { findMany: vi.fn(async () => [{
+        id: "event-1",
+        eventType: "denied_secret_request",
+        severity: "critical",
+        alertRoute: "local_support.security.critical",
+        accountId: "acct_1",
+        sessionId: session.sessionId,
+        requestId: "req_1",
+        targetDisplay: ".env",
+        targetHash: "sha256:target",
+        count: 1,
+        createdAt: now,
+      }]) },
     });
 
     expect(state.devices).toEqual([expect.objectContaining({
@@ -33,6 +46,11 @@ describe("durable local support admin state", () => {
       revoked: false,
     })]);
     expect(state.sessions).toEqual([expect.objectContaining({ session_id: session.sessionId, revoked: false })]);
+    expect(state.alerts).toEqual([expect.objectContaining({
+      event_type: "denied_secret_request",
+      severity: "critical",
+      target_hash: "sha256:target",
+    })]);
   });
 
   it("atomically revokes sessions, queued relay work, and encrypted payloads", async () => {

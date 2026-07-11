@@ -4,10 +4,17 @@ import { buildAdminRevokeDecision } from "@/lib/local-support/controlPlane";
 const REVOCABLE_RELAY_STATUSES = ["queued", "leased", "review_pending"];
 
 export async function readDurableAdminState(client = prisma) {
-  const sessions = await client.localSupportSession.findMany({
-    orderBy: { createdAt: "desc" },
-    take: 500,
-  });
+  const [sessions, alerts] = await Promise.all([
+    client.localSupportSession.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    }),
+    client.localSupportSecurityEvent.findMany({
+      where: { alert: true },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    }),
+  ]);
   const deviceMap = new Map();
   for (const session of sessions) {
     const current = deviceMap.get(session.deviceFingerprint) || {
@@ -47,6 +54,19 @@ export async function readDurableAdminState(client = prisma) {
     revoked_devices: [...deviceMap.values()]
       .filter((device) => device.revoked)
       .map((device) => device.device_id),
+    alerts: alerts.map((alert) => ({
+      event_id: alert.id,
+      event_type: alert.eventType,
+      severity: alert.severity,
+      alert_route: alert.alertRoute,
+      account_id: alert.accountId,
+      session_id: alert.sessionId,
+      request_id: alert.requestId,
+      target_display: alert.targetDisplay,
+      target_hash: alert.targetHash,
+      count: alert.count,
+      at: alert.createdAt.toISOString(),
+    })),
   };
 }
 

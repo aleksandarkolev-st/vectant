@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({
+  session: vi.fn(async () => ({ user: { id: "acct_1" } })),
+  persist: vi.fn(async () => ({ id: "event-1" })),
+}));
+vi.mock("next-auth", () => ({ getServerSession: mocks.session }));
+vi.mock("@/app/auth", () => ({ authOptions: {} }));
+vi.mock("@/lib/local-support/securityEventStore", () => ({ persistSecurityEvent: mocks.persist }));
+
 function request(body, { origin = "http://localhost:3000" } = {}) {
   return new Request("http://localhost:3000/api/local-support/security-event", {
     method: "POST",
@@ -27,6 +35,10 @@ function rawRequest(body, { origin = "http://localhost:3000" } = {}) {
 describe("local support security event route", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    mocks.session.mockReset();
+    mocks.session.mockResolvedValue({ user: { id: "acct_1" } });
+    mocks.persist.mockReset();
+    mocks.persist.mockResolvedValue({ id: "event-1" });
   });
 
   it("rejects cross-origin telemetry submissions", async () => {
@@ -41,6 +53,21 @@ describe("local support security event route", () => {
     expect(json).toMatchObject({
       decision: "denied",
       reason: "bad_origin",
+      bytes_sent: 0,
+    });
+  });
+
+  it("requires an authenticated account for telemetry submission", async () => {
+    vi.stubEnv("VECTANT_LOCAL_SUPPORT_ENABLED", "true");
+    mocks.session.mockResolvedValueOnce(null);
+    const { POST } = await import("./route");
+
+    const response = await POST(request({ event_type: "bad_origin" }));
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "authentication_required",
       bytes_sent: 0,
     });
   });
