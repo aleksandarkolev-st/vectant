@@ -152,6 +152,7 @@ function claimedResponse(challenge, workspaceId, policy) {
     bytes_sent: 0,
     policy_version: policy.policy_version,
     protocol_version: policy.protocol_version,
+    app_version: challenge.appVersion,
     user_visible_message: "Compare this fingerprint with the browser, then confirm pairing locally.",
   };
 }
@@ -188,6 +189,7 @@ function completedResponse(challenge, proof, policy) {
     local_enforcement_required: true,
     policy_version: policy.policy_version,
     protocol_version: policy.protocol_version,
+    app_version: challenge.appVersion,
     user_visible_message: "Pairing proof verified. The local app remains final authority for every request.",
   };
 }

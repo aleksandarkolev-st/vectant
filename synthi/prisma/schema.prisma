@@ -803,6 +803,7 @@ model LocalSupportSession {
   capabilitiesJson   String
   policyVersion      String
   protocolVersion    String
+  appVersion         String   @default("unknown")
   status              String   @default("active")
   expiresAt           DateTime
   revokedAt           DateTime?

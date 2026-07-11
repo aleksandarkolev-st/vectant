@@ -1,4 +1,19 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const adminStore = vi.hoisted(() => ({
+  read: vi.fn(),
+  revoke: vi.fn(),
+}));
+
+vi.mock("@/lib/local-support/adminStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return {
+    readDurableAdminState: adminStore.read,
+    recordDurableAdminRevocation: adminStore.revoke.mockImplementation(
+      async (input, policy) => controlPlane.recordAdminRevocation(input, policy),
+    ),
+  };
+});
 
 import {
   clearAdminRevocationStore,
@@ -12,6 +27,18 @@ import { GET, POST } from "./route";
 
 const OLD_ENV = { ...process.env };
 const DEVICE_PROOF_SECRET = "test-device-proof-secret";
+
+beforeEach(() => {
+  adminStore.read.mockReset();
+  adminStore.read.mockImplementation(async () => {
+    try {
+      return JSON.parse(process.env.VECTANT_LOCAL_SUPPORT_ADMIN_STATE_JSON || "{}");
+    } catch {
+      return {};
+    }
+  });
+  adminStore.revoke.mockClear();
+});
 
 afterEach(() => {
   process.env = { ...OLD_ENV };

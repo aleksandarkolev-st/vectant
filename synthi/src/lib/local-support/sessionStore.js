@@ -21,6 +21,7 @@ export async function persistPairedSession(completed, proof, client = prisma) {
       capabilitiesJson: JSON.stringify(completed.capabilities || []),
       policyVersion: completed.policy_version,
       protocolVersion: completed.protocol_version,
+      appVersion: completed.app_version || "unknown",
       expiresAt: new Date(completed.expires_at),
     },
   });

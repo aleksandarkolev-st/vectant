@@ -4,9 +4,12 @@ import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/loca
 import {
   constantTimeStringEqual,
   readLocalSupportPolicy,
-  recordAdminRevocation,
   summarizeAdminState,
 } from "@/lib/local-support/controlPlane";
+import {
+  readDurableAdminState,
+  recordDurableAdminRevocation,
+} from "@/lib/local-support/adminStore";
 
 export const runtime = "nodejs";
 
@@ -18,8 +21,17 @@ export async function GET(req) {
     return jsonNoStore(denied.body, denied.status);
   }
 
-  const state = parseAdminStateEnv();
-  return jsonNoStore(summarizeAdminState(state, readLocalSupportPolicy()));
+  try {
+    const state = await readDurableAdminState();
+    return jsonNoStore(summarizeAdminState(state, readLocalSupportPolicy()));
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "admin_state_unavailable",
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
+  }
 }
 
 export async function POST(req) {
@@ -36,7 +48,17 @@ export async function POST(req) {
     return jsonNoStore(denied.body, denied.status);
   }
 
-  const decision = recordAdminRevocation(bodyResult.value, readLocalSupportPolicy());
+  let decision;
+  try {
+    decision = await recordDurableAdminRevocation(bodyResult.value, readLocalSupportPolicy());
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "admin_revocation_unavailable",
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
+  }
   const status = decision.decision === "denied" ? 400 : 200;
   return jsonNoStore(decision, status);
 }
@@ -66,15 +88,6 @@ function jsonNoStore(body, status = 200) {
       "Cache-Control": "no-store",
     },
   });
-}
-
-function parseAdminStateEnv() {
-  try {
-    const parsed = JSON.parse(process.env.VECTANT_LOCAL_SUPPORT_ADMIN_STATE_JSON || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 function isSafeAdminToken(value) {

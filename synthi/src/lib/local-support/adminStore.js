@@ -1,0 +1,88 @@
+import prisma from "@/lib/prisma";
+import { buildAdminRevokeDecision } from "@/lib/local-support/controlPlane";
+
+const REVOCABLE_RELAY_STATUSES = ["queued", "leased", "review_pending"];
+
+export async function readDurableAdminState(client = prisma) {
+  const sessions = await client.localSupportSession.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 500,
+  });
+  const deviceMap = new Map();
+  for (const session of sessions) {
+    const current = deviceMap.get(session.deviceFingerprint) || {
+      device_id: session.deviceFingerprint,
+      account_id: session.accountId,
+      org_id: session.orgId,
+      app_version: session.appVersion,
+      last_active_at: (session.lastDeviceProofAt || session.updatedAt).toISOString(),
+      policy_version: session.policyVersion,
+      active_sessions: 0,
+      approved_ports_count: 0,
+      revoked: true,
+    };
+    if (session.status === "active" && !session.revokedAt && session.expiresAt > new Date()) {
+      current.active_sessions += 1;
+      current.revoked = false;
+    }
+    deviceMap.set(session.deviceFingerprint, current);
+  }
+  return {
+    devices: [...deviceMap.values()],
+    sessions: sessions.map((session) => ({
+      session_id: session.sessionId,
+      device_id: session.deviceFingerprint,
+      account_id: session.accountId,
+      org_id: session.orgId,
+      workspace_id: session.workspaceId,
+      app_version: session.appVersion,
+      policy_version: session.policyVersion,
+      approved_ports_count: 0,
+      last_active_at: (session.lastDeviceProofAt || session.updatedAt).toISOString(),
+      revoked: session.status === "revoked" || Boolean(session.revokedAt),
+    })),
+    revoked_sessions: sessions
+      .filter((session) => session.status === "revoked" || session.revokedAt)
+      .map((session) => session.sessionId),
+    revoked_devices: [...deviceMap.values()]
+      .filter((device) => device.revoked)
+      .map((device) => device.device_id),
+  };
+}
+
+export async function recordDurableAdminRevocation(input, policy, client = prisma, now = new Date()) {
+  const decision = buildAdminRevokeDecision(input, policy);
+  if (decision.decision === "denied") return decision;
+
+  return client.$transaction(async (tx) => {
+    const sessionWhere = decision.target_type === "session"
+      ? { sessionId: decision.target_id }
+      : { deviceFingerprint: decision.target_id };
+    const sessions = await tx.localSupportSession.findMany({ where: sessionWhere });
+    if (sessions.length === 0) {
+      return { ...decision, decision: "denied", reason: "admin_revoke_target_not_found" };
+    }
+    const sessionIds = sessions.map((session) => session.sessionId);
+    await tx.localSupportSession.updateMany({
+      where: { sessionId: { in: sessionIds } },
+      data: { status: "revoked", revokedAt: now },
+    });
+    await tx.localSupportRelayPayload.deleteMany({
+      where: { request: { sessionId: { in: sessionIds } } },
+    });
+    await tx.localSupportRelayRequest.updateMany({
+      where: { sessionId: { in: sessionIds }, status: { in: REVOCABLE_RELAY_STATUSES } },
+      data: { status: "revoked", completedAt: now, leaseId: null, leaseExpiresAt: null },
+    });
+    const [revokedSessionsCount, revokedDevices] = await Promise.all([
+      tx.localSupportSession.count({ where: { status: "revoked" } }),
+      tx.localSupportSession.findMany({ where: { status: "revoked" }, select: { deviceFingerprint: true } }),
+    ]);
+    return {
+      ...decision,
+      revocation_recorded: true,
+      revoked_sessions_count: revokedSessionsCount,
+      revoked_devices_count: new Set(revokedDevices.map((item) => item.deviceFingerprint)).size,
+    };
+  });
+}

@@ -787,10 +787,12 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
   const revokedSessionIds = uniqueStrings([
     ...(policy.revoked_sessions || []),
     ...revokedSessions,
+    ...(state.revoked_sessions || []),
   ]).slice(0, 500);
   const revokedDeviceFingerprints = uniqueStrings([
     ...(policy.revoked_devices || []),
     ...revokedDevices,
+    ...(state.revoked_devices || []),
   ]).slice(0, 500);
 
   return {
