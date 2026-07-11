@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod lifecycle;
 pub mod pair;
 pub mod policy;
+pub mod port_adapter;
 pub mod preview;
 pub mod scanner;
 pub mod session;
