@@ -11,6 +11,7 @@ const MAX_RELAY_RESPONSE_BYTES: usize = 64 * 1024;
 pub enum RelayPoll {
     Idle,
     Delivery(Box<RelayDelivery>),
+    Revoked,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,9 +111,14 @@ impl RelayClient {
     ) -> Result<RelayPoll, String> {
         let body = serde_json::to_vec(&serde_json::json!({ "action": "poll" }))
             .map_err(|_| "Relay poll could not be serialized.".to_string())?;
-        let value = self
+        let value = match self
             .post_signed(identity, session_id, DEVICE_RELAY_PATH, body)
-            .await?;
+            .await
+        {
+            Ok(value) => value,
+            Err(error) if error == "relay_session_denied" => return Ok(RelayPoll::Revoked),
+            Err(error) => return Err(error),
+        };
         match value.get("decision").and_then(Value::as_str) {
             Some("relay_idle") => Ok(RelayPoll::Idle),
             Some("relay_delivery") => {
@@ -235,6 +241,9 @@ impl RelayClient {
             .send()
             .await
             .map_err(|_| "Relay service could not be reached.".to_string())?;
+        if matches!(response.status().as_u16(), 401 | 403) {
+            return Err("relay_session_denied".to_string());
+        }
         if !response.status().is_success() {
             return Err("Relay request was denied.".to_string());
         }
@@ -364,6 +373,29 @@ mod tests {
         assert!(matches!(poll, RelayPoll::Idle));
         assert_eq!(bytes_sent, 16);
         assert!(*verified.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn treats_cloud_session_denial_as_terminal_revocation() {
+        let app = Router::new().route(
+            DEVICE_RELAY_PATH,
+            post(|| async { (axum::http::StatusCode::FORBIDDEN, "denied") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = RelayClient::new(&format!(
+            "http://127.0.0.1:{}/api/local-support/relay/device",
+            address.port()
+        ))
+        .unwrap();
+
+        let result = client
+            .poll(&DeviceIdentity::generate(), "sess_12345678")
+            .await
+            .unwrap();
+
+        assert!(matches!(result, RelayPoll::Revoked));
     }
 
     async fn verify_request(

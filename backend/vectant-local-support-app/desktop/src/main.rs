@@ -614,12 +614,25 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
             if let Some(session) =
                 session_state.filter(|state| !state.paused && state.session_id.starts_with("sess_"))
             {
-                if let Ok(RelayPoll::Delivery(delivery)) = runtime
+                match runtime
                     .relay_client
                     .poll(&runtime.device_identity, &session.session_id)
                     .await
                 {
-                    let _ = handle_relay_delivery(&runtime, &app_state, &session, *delivery).await;
+                    Ok(RelayPoll::Delivery(delivery)) => {
+                        let _ =
+                            handle_relay_delivery(&runtime, &app_state, &session, *delivery).await;
+                    }
+                    Ok(RelayPoll::Revoked) => {
+                        let _ = shutdown_cleanup(&app_state, "cloud_session_revoked").await;
+                        if let Ok(mut pending) = runtime.pending_relay_approvals.write() {
+                            pending.clear();
+                        }
+                        if let Ok(mut contexts) = runtime.preview_contexts.write() {
+                            contexts.clear();
+                        }
+                    }
+                    Ok(RelayPoll::Idle) | Err(_) => {}
                 }
             }
         }
