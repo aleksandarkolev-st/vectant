@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const relayStore = vi.hoisted(() => ({
   enqueueRelayRequest: vi.fn(async () => ({ requestId: "req_relay_123" })),
+  authorizeRelaySession: vi.fn(async () => ({ ok: true, session: { sessionId: "sess_relay_123" } })),
 }));
 
 vi.mock("@/lib/local-support/relayStore", () => relayStore);
+vi.mock("@/lib/local-support/sessionStore", () => ({
+  authorizeRelaySession: relayStore.authorizeRelaySession,
+}));
 
 import {
   clearAdminRevocationStore,
@@ -24,6 +28,8 @@ afterEach(() => {
   clearRequestEnvelopeReplayCache();
   relayStore.enqueueRelayRequest.mockReset();
   relayStore.enqueueRelayRequest.mockResolvedValue({ requestId: "req_relay_123" });
+  relayStore.authorizeRelaySession.mockReset();
+  relayStore.authorizeRelaySession.mockResolvedValue({ ok: true, session: { sessionId: "sess_relay_123" } });
 });
 
 function enableLocalSupport() {
@@ -307,5 +313,24 @@ describe("local support relay route", () => {
       relay_forward: false,
       bytes_sent: 0,
     });
+  });
+
+  it("refuses valid signatures outside the durable pairing consent boundary", async () => {
+    enableLocalSupport();
+    relayStore.authorizeRelaySession.mockResolvedValueOnce({
+      ok: false,
+      reason: "session_capability_not_granted",
+    });
+
+    const response = await POST(request(signedEnvelope({ request_id: "req_relay_ungranted" })));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "session_capability_not_granted",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
+    expect(relayStore.enqueueRelayRequest).not.toHaveBeenCalled();
   });
 });

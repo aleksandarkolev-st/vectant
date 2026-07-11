@@ -38,6 +38,32 @@ export async function findActivePairedSession(sessionId, deviceFingerprint, clie
   });
 }
 
+export async function authorizeRelaySession(decision, client = prisma, now = new Date()) {
+  const session = await client.localSupportSession.findFirst({
+    where: {
+      sessionId: decision.session_id,
+      accountId: decision.account_id,
+      orgId: decision.org_id,
+      workspaceId: decision.workspace_id,
+      deviceFingerprint: decision.device_fingerprint,
+      status: "active",
+      revokedAt: null,
+      expiresAt: { gt: now },
+    },
+  });
+  if (!session) return { ok: false, reason: "paired_session_not_found" };
+  let capabilities;
+  try {
+    capabilities = JSON.parse(session.capabilitiesJson);
+  } catch {
+    return { ok: false, reason: "paired_session_capabilities_invalid" };
+  }
+  if (!Array.isArray(capabilities) || !capabilities.includes(decision.capability)) {
+    return { ok: false, reason: "session_capability_not_granted" };
+  }
+  return { ok: true, session };
+}
+
 function validPublicKey(value) {
   return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
 }

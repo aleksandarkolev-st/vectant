@@ -8,6 +8,7 @@ import {
   verifyRequestEnvelopeSignature,
 } from "@/lib/local-support/controlPlane";
 import { enqueueRelayRequest } from "@/lib/local-support/relayStore";
+import { authorizeRelaySession } from "@/lib/local-support/sessionStore";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,27 @@ export async function POST(req) {
   const decision = buildRelayForwardDecision(body, policy);
   if (decision.decision === "denied") {
     return jsonNoStore(decision, 403);
+  }
+
+  try {
+    const authorization = await authorizeRelaySession(decision);
+    if (!authorization.ok) {
+      return jsonNoStore({
+        decision: "denied",
+        reason: authorization.reason,
+        relay_forward: false,
+        raw_body_included: false,
+        bytes_sent: 0,
+      }, 403);
+    }
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "relay_authorization_unavailable",
+      relay_forward: false,
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
   }
 
   try {
