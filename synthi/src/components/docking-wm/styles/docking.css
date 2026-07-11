@@ -24,6 +24,8 @@
   --dock-accent: var(--accent-primary, #3a8574);
   --dock-focus-border: color-mix(in srgb, var(--accent-primary, #3a8574) 40%, transparent);
   --dock-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-editor) 92%, white 2%), color-mix(in srgb, var(--bg-app) 72%, black 28%));
 }
 
 .dock-container--dragging {
@@ -34,6 +36,136 @@
   cursor: grabbing !important;
 }
 
+/* ─── Activity Rail — grouped command center ─────────── */
+
+.dock-activitybar-root {
+  box-shadow:
+    inset -1px 0 0 color-mix(in srgb, white 3%, transparent),
+    10px 0 38px -34px rgba(0, 0, 0, 0.95);
+}
+
+.dock-activitybar-folder {
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 78%, transparent);
+  padding: 4px 0;
+}
+
+.dock-activitybar-folder__label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 20px;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: color var(--motion-fast), transform var(--motion-fast);
+}
+
+.dock-activitybar-folder__label:hover {
+  color: var(--text-secondary);
+}
+
+.dock-activitybar-folder__label:active {
+  transform: translateY(1px);
+}
+
+.dock-activitybar-folder__chevron {
+  width: 10px;
+  height: 10px;
+  opacity: 0.72;
+  transition: transform var(--motion-fast), opacity var(--motion-fast);
+}
+
+.dock-activitybar-folder__chevron[data-collapsed="true"] {
+  transform: rotate(-90deg);
+  opacity: 0.45;
+}
+
+.dock-activitybar-folder__items {
+  display: grid;
+  gap: 1px;
+}
+
+.dock-activitybar-button {
+  border: 0;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 0%, transparent), transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.dock-activitybar-button:hover {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 8%, transparent), transparent 86%);
+  color: var(--text-primary) !important;
+}
+
+.dock-activitybar-button:active {
+  transform: translateY(1px);
+}
+
+.dock-activitybar-button[data-active="true"],
+.dock-activitybar-button.is-active {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--attention-purple) 15%, transparent), transparent 92%);
+}
+
+.dock-activitybar-button__bar {
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 0 999px 999px 0;
+  background: transparent;
+  transition: background var(--motion-fast), box-shadow var(--motion-fast), opacity var(--motion-fast);
+}
+
+.dock-activitybar-tooltip {
+  margin-left: 12px;
+  box-shadow: var(--shadow-dropdown);
+  transform: translate3d(-3px, -50%, 0);
+  transition:
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.dock-activitybar-button:hover .dock-activitybar-tooltip {
+  transform: translate3d(0, -50%, 0);
+}
+
+.dock-activitybar-customizer {
+  position: absolute;
+  left: calc(100% + 10px);
+  bottom: 10px;
+  z-index: 80;
+  width: 294px;
+  overflow: hidden;
+  transform-origin: left bottom;
+  animation: dock-customizer-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes dock-customizer-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-6px, 6px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 /* ─── Tab Bar — the docking system's region tab strip ── */
 
 .dock-tab-bar {
@@ -41,7 +173,7 @@
   border-bottom: 1px solid color-mix(in srgb, var(--dock-border) 86%, transparent) !important;
   box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
   box-sizing: border-box;
-  padding: 0 6px;
+  padding: 0 7px;
   position: relative;
   user-select: none;
 }
@@ -69,7 +201,13 @@
 .dock-tab {
   cursor: grab !important;
   position: relative;
-  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  border-radius: 0 !important;
+  transition:
+    background-color var(--motion-fast),
+    color var(--motion-fast),
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    transform var(--motion-fast);
 }
 
 .dock-tab:hover {
@@ -90,8 +228,22 @@
 .dock-tab--active {
   font-weight: 500;
   color: var(--dock-tab-active-fg, #e8eaf0) !important;
-  background-color: var(--dock-tab-active-bg) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--attention-purple) 14%, transparent), transparent),
+    var(--dock-tab-active-bg) !important;
   box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.dock-tab--active::after {
+  content: '';
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 0;
+  background: var(--brand-gradient-horizontal);
+  box-shadow: 0 0 10px -3px color-mix(in srgb, var(--brand-stop-3) 70%, transparent);
 }
 
 .dock-tab--active:hover {
@@ -256,6 +408,7 @@
 .dock-tab-group--collapsed > * {
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
 }
 
 .dock-tab-group[data-sidebar-edge="left"].dock-tab-group--collapsed > * {
@@ -398,10 +551,11 @@
 /* ─── Floating Window ────────────────────────────────── */
 
 .dock-floating-window {
-  border: 1px solid var(--dock-border);
-  border-radius: 6px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(58, 133, 116, 0.15);
+  border: 1px solid color-mix(in srgb, var(--dock-border) 76%, var(--accent-primary, #3a8574) 16%);
+  border-radius: 9px;
   overflow: hidden;
+  transform-origin: 28px 18px;
+  will-change: transform, opacity;
 }
 
 .dock-floating-window__titlebar:hover {
@@ -409,7 +563,8 @@
 }
 
 .dock-floating-window--dragging {
-  opacity: 0.9;
+  opacity: 0.94;
+  transform: translate3d(0, -1px, 0) scale(1.006);
 }
 
 .dock-floating-window button:hover {
@@ -605,18 +760,23 @@
 
 /* ─── Floating Window Entrance ───────────────────────── */
 
-.dock-floating-window--entering {
-  animation: dock-float-in 0.2s ease-out;
+.dock-floating-window--entering,
+.dock-floating-window--summoned {
+  animation: dock-float-in 440ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes dock-float-in {
-  from {
+  0% {
     opacity: 0;
-    transform: scale(0.9) translateY(10px);
+    transform: translate3d(-12px, 10px, 0) scale(0.92);
   }
-  to {
+  62% {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translate3d(1px, -2px, 0) scale(1.006);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 

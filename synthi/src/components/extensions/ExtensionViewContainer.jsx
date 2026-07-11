@@ -170,7 +170,7 @@ function WelcomeEntry({ contents, onExecuteCommand }) {
         <button
           key={i}
           onClick={() => onExecuteCommand?.(cmd.commandId)}
-          className="w-full px-3 py-1.5 text-[12px] font-medium text-white bg-[#4aba9a]/20 hover:bg-[#4aba9a]/30 border border-[#4aba9a]/40 rounded transition-colors text-center"
+          className="th-focus-ring th-btn-primary w-full px-3 py-1.5 text-center text-[12px] font-medium"
         >
           {cmd.text}
         </button>
@@ -178,14 +178,14 @@ function WelcomeEntry({ contents, onExecuteCommand }) {
     } else {
       // Render as inline content (mixed text + links)
       elements.push(
-        <p key={i} className="text-[11px] text-[#9ba2b8] leading-relaxed">
+        <p key={i} className="text-[11px] leading-relaxed text-[var(--text-muted)]">
           {parts.map((part, j) => {
             if (part.type === 'command') {
               return (
                 <button
                   key={j}
                   onClick={() => onExecuteCommand?.(part.commandId)}
-                  className="text-[#4aba9a] hover:underline cursor-pointer inline"
+                  className="inline cursor-pointer text-[var(--attention-purple)] hover:underline"
                 >
                   {part.text}
                 </button>
@@ -198,7 +198,7 @@ function WelcomeEntry({ contents, onExecuteCommand }) {
                   href={part.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[#4aba9a] hover:underline"
+                  className="text-[var(--attention-purple)] hover:underline"
                 >
                   {part.text}
                 </a>
@@ -229,16 +229,16 @@ function TreeViewSection({ view, treeData, welcomeEntries, contextValues, onRequ
   });
 
   return (
-    <div className="border-b border-[#1a1b24] last:border-b-0">
+    <div className="border-b border-[var(--border-subtle)] last:border-b-0">
       {/* Section header */}
       <button
-        className="w-full flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold text-[#9ba2b8] uppercase tracking-wider hover:bg-[#0c0d12] transition-colors"
+        className="vt-command-item flex w-full items-center gap-1.5 rounded-none px-3 py-2 text-[11px] font-semibold uppercase tracking-wider"
         onClick={() => setCollapsed(!collapsed)}
       >
         {collapsed ? (
-          <ChevronRight className="w-3 h-3 text-[#4a5060]" />
+          <ChevronRight className="w-3 h-3 text-[var(--text-muted)]" />
         ) : (
-          <ChevronDown className="w-3 h-3 text-[#4a5060]" />
+          <ChevronDown className="w-3 h-3 text-[var(--text-muted)]" />
         )}
         {view.name}
       </button>
@@ -255,7 +255,7 @@ function TreeViewSection({ view, treeData, welcomeEntries, contextValues, onRequ
           ) : filteredWelcome && filteredWelcome.length > 0 ? (
             <WelcomeContent entries={filteredWelcome} onExecuteCommand={onExecuteCommand} />
           ) : (
-            <div className="text-[11px] text-[#4a5060] italic py-3 text-center">
+            <div className="vt-empty-state min-h-[120px] py-3 text-center text-[11px] italic">
               {view.type === 'webview' ? (
                 <div className="flex flex-col items-center gap-1.5">
                   <Globe className="w-4 h-4" />
@@ -308,16 +308,16 @@ function TreeItem({ item, depth, onExecuteCommand }) {
   return (
     <>
       <div
-        className="flex items-center gap-1 py-0.5 px-1 rounded hover:bg-[#1a1b24] cursor-pointer text-[12px] text-[#e8eaed] transition-colors"
+        className="vt-command-item flex cursor-pointer items-center gap-1 px-1 py-0.5 text-[12px]"
         style={{ paddingLeft: `${indent + 4}px` }}
         onClick={handleClick}
         title={item.tooltip || undefined}
       >
         {isCollapsible ? (
           expanded ? (
-            <ChevronDown className="w-3 h-3 text-[#4a5060] shrink-0" />
+            <ChevronDown className="w-3 h-3 shrink-0 text-[var(--text-muted)]" />
           ) : (
-            <ChevronRight className="w-3 h-3 text-[#4a5060] shrink-0" />
+            <ChevronRight className="w-3 h-3 shrink-0 text-[var(--text-muted)]" />
           )
         ) : (
           <span className="w-3 shrink-0" />
@@ -325,7 +325,7 @@ function TreeItem({ item, depth, onExecuteCommand }) {
         {renderIcon()}
         <span className="truncate">{item.label || item.id}</span>
         {item.description && (
-          <span className="text-[#4a5060] text-[10px] truncate ml-1">{item.description}</span>
+          <span className="ml-1 truncate text-[10px] text-[var(--text-muted)]">{item.description}</span>
         )}
       </div>
       {expanded && hasChildren && (
@@ -374,7 +374,7 @@ function WebviewPanelEmbed({ viewId, webviewManager }) {
   return (
     <div
       ref={containerRef}
-      className="flex-1 min-h-[200px] relative bg-[#0c0d12]"
+      className="relative min-h-[200px] flex-1 bg-[var(--bg-app)]"
     />
   );
 }
@@ -427,22 +427,22 @@ export default function ExtensionViewContainer({
   const isRemote = extInfo?.remote === true;
 
   return (
-    <div className="h-full flex flex-col bg-[#09090b] text-[#e8eaed]">
+    <div className="vt-panel-frame flex h-full flex-col rounded-none border-0">
       {/* Container header */}
-      <div className="px-3 pt-3 pb-2 border-b border-[#1a1b24]">
+      <div className="vt-panel-header h-auto min-h-0 flex-col items-start px-3 py-3">
         <div className="flex items-center gap-1.5 mb-1">
           {container?.icon && (container.icon.startsWith('http') || container.icon.startsWith('data:')) ? (
             <img src={container.icon} alt="" className="w-4 h-4" />
           ) : (
-            <Box className="w-4 h-4 text-[#4aba9a]" />
+            <Box className="w-4 h-4 text-[var(--attention-purple)]" />
           )}
-          <span className="text-[13px] font-semibold tracking-tight">
+          <span className="text-[13px] font-semibold tracking-tight text-[var(--text-primary)]">
             {container?.title || containerId}
           </span>
         </div>
-        <div className="flex items-center gap-2 text-[10px] text-[#6b7280]">
-          <span className={isActive ? 'text-emerald-400' : isPendingRemote ? 'text-blue-400' : 'text-yellow-400'}>
-            {isActive ? (isRemote ? '● Remote' : '● Active') : isPendingRemote ? '◌ Connecting…' : '◌ Inactive'}
+        <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+          <span className="vt-state-pill">
+            {isActive ? (isRemote ? 'Remote' : 'Active') : isPendingRemote ? 'Connecting' : 'Inactive'}
           </span>
           {extInfo && (
             <span className="truncate">
@@ -456,32 +456,32 @@ export default function ExtensionViewContainer({
       <div className="flex-1 overflow-y-auto">
         {isPendingRemote ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <Loader2 className="w-5 h-5 text-blue-400 mb-2 animate-spin" />
-            <div className="text-[12px] text-[#9ba2b8] mb-1">Connecting to remote host…</div>
-            <div className="text-[11px] text-[#4a5060]">
+            <Loader2 className="mb-2 h-5 w-5 animate-spin text-[var(--attention-purple)]" />
+            <div className="mb-1 text-[12px] text-[var(--text-secondary)]">Connecting to remote host…</div>
+            <div className="text-[11px] text-[var(--text-muted)]">
               This extension requires Node.js and will run on
               the remote extension host once connected.
             </div>
           </div>
         ) : !isActive ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <AlertTriangle className="w-6 h-6 text-[#4a5060] mb-2" />
-            <div className="text-[12px] text-[#6b7280] mb-1">Extension not active</div>
-            <div className="text-[11px] text-[#4a5060]">
+            <AlertTriangle className="mb-2 h-6 w-6 text-[var(--text-muted)]" />
+            <div className="mb-1 text-[12px] text-[var(--text-secondary)]">Extension not active</div>
+            <div className="text-[11px] text-[var(--text-muted)]">
               The extension providing this view is not running.
               Activate it from the Extensions panel.
             </div>
           </div>
         ) : views.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <Box className="w-6 h-6 text-[#2a2b34] mb-2" />
-            <div className="text-[12px] text-[#6b7280]">No views registered</div>
+            <Box className="mb-2 h-6 w-6 text-[var(--text-muted)]" />
+            <div className="text-[12px] text-[var(--text-secondary)]">No views registered</div>
           </div>
         ) : (
           <>
             {isRemote && (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0d1117] border-b border-[#1a1b24] text-[10px] text-[#6b7280]">
-                <Server className="w-3 h-3 text-emerald-500/60" />
+              <div className="flex items-center gap-1.5 border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-3 py-1.5 text-[10px] text-[var(--text-muted)]">
+                <Server className="w-3 h-3 text-[var(--accent-secondary)]" />
                 <span>Running on remote extension host</span>
               </div>
             )}
@@ -506,8 +506,8 @@ export default function ExtensionViewContainer({
             // a webview view provider for this view at runtime)
             if (webviewPanel && (view.type === 'webview' || webviewPanel.viewId)) {
               return (
-                <div key={view.id} className="border-b border-[#1a1b24]">
-                  <div className="px-3 py-2 text-[11px] font-semibold text-[#9ba2b8] uppercase tracking-wider">
+                <div key={view.id} className="border-b border-[var(--border-subtle)]">
+                  <div className="vt-panel-kicker px-3 py-2">
                     {view.name}
                   </div>
                   <WebviewPanelEmbed
@@ -547,8 +547,8 @@ export default function ExtensionViewContainer({
           return p.extensionId?.toLowerCase() === container.extensionId.toLowerCase();
         })
         .map(panel => (
-          <div key={panel.viewId} className="border-t border-[#1a1b24]">
-            <div className="px-3 py-2 text-[11px] font-semibold text-[#9ba2b8] uppercase tracking-wider flex items-center gap-1.5">
+          <div key={panel.viewId} className="border-t border-[var(--border-subtle)]">
+            <div className="vt-panel-kicker flex items-center gap-1.5 px-3 py-2">
               <Globe className="w-3 h-3" />
               {_humanizeViewType(panel.title || panel.viewType)}
             </div>

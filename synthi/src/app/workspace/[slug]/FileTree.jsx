@@ -50,6 +50,7 @@ import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import FileItem from "./FileItem";
 import { useVirtualizedTree } from "@/hooks/useVirtualizedTree";
 import { useNewProjectPicker } from "@/components/NewProjectPicker";
+import { useConfirmDialog } from "@/components/ui/useConfirmDialog";
 import { gitClient } from "@/services/gitClient";
 import collabSessionService from "@/services/collabSessionService";
 
@@ -254,7 +255,7 @@ function ExplorerStatePanel({
       aria-live={isLoading || isError ? "polite" : undefined}
     >
       <div
-        className="w-full rounded-lg border px-3 py-3.5"
+        className="vt-agent-card w-full px-3 py-3.5"
         style={{
           borderColor: "color-mix(in srgb, var(--border-medium) 78%, transparent)",
           background: "color-mix(in srgb, var(--bg-sidebar) 82%, var(--bg-editor) 18%)",
@@ -300,7 +301,7 @@ function ExplorerStatePanel({
                 {...tapProps}
                 type="button"
                 onClick={onRetry}
-                className="th-focus-ring flex h-8 items-center gap-2 rounded-md border px-2.5 text-left text-[11px] font-semibold transition-colors hover:bg-white/[0.05]"
+                className="vt-command-item th-focus-ring flex h-8 items-center gap-2 border px-2.5 text-left text-[11px] font-semibold"
                 style={{
                   color: "var(--text-primary)",
                   borderColor: "color-mix(in srgb, var(--accent-warning) 34%, var(--border-subtle))",
@@ -315,7 +316,7 @@ function ExplorerStatePanel({
                 {...tapProps}
                 type="button"
                 onClick={onRequestFileOps}
-                className="th-focus-ring flex h-8 items-center gap-2 rounded-md border px-2.5 text-left text-[11px] font-semibold transition-colors hover:bg-white/[0.05]"
+                className="vt-command-item th-focus-ring flex h-8 items-center gap-2 border px-2.5 text-left text-[11px] font-semibold"
                 style={{
                   color: "var(--text-primary)",
                   borderColor: "color-mix(in srgb, var(--attention-purple) 28%, var(--border-subtle))",
@@ -332,7 +333,7 @@ function ExplorerStatePanel({
                 onClick={onUpload}
                 disabled={isUploading}
                 aria-label="Upload files to workspace root"
-                className="th-focus-ring flex h-8 items-center gap-2 rounded-md border px-2.5 text-left text-[11px] font-semibold transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                className="vt-command-item th-focus-ring flex h-8 items-center gap-2 border px-2.5 text-left text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                 style={{
                   color: "var(--text-primary)",
                   borderColor: "color-mix(in srgb, var(--attention-purple) 28%, var(--border-subtle))",
@@ -354,7 +355,7 @@ function ExplorerStatePanel({
                   type="button"
                   onClick={onNewFile}
                   aria-label="Create file from template"
-                  className="th-focus-ring flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors hover:bg-white/[0.05]"
+                  className="vt-command-item th-focus-ring flex h-8 items-center gap-1.5 border px-2 text-[11px]"
                   style={{
                     color: "var(--text-secondary)",
                     borderColor: "var(--border-subtle)",
@@ -369,7 +370,7 @@ function ExplorerStatePanel({
                   type="button"
                   onClick={onNewFolder}
                   aria-label="Create folder in workspace root"
-                  className="th-focus-ring flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors hover:bg-white/[0.05]"
+                  className="vt-command-item th-focus-ring flex h-8 items-center gap-1.5 border px-2 text-[11px]"
                   style={{
                     color: "var(--text-secondary)",
                     borderColor: "var(--border-subtle)",
@@ -444,6 +445,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   const { canFileOps, role } = useSessionPermissions();
   const canMutateFiles = canFileOps !== false;
   const { openPicker } = useNewProjectPicker();
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   // inputRef retained ONLY for root-level creation (target: null)
   const inputRef = useRef(null);
@@ -558,12 +560,21 @@ const FileTreeView = ({ onToggleOrientation }) => {
     } else if (action === "rename") {
       dispatch(startRename(item));
     } else if (action === "delete") {
+      const allowed = await confirm({
+        title: item?.isFolder ? `Delete folder ${item.name}?` : `Delete file ${item?.name}?`,
+        message: item?.isFolder
+          ? `${item?.path || item?.name} and all nested contents will be removed from this workspace.`
+          : `${item?.path || item?.name} will be removed from this workspace.`,
+        confirmLabel: item?.isFolder ? "Delete folder" : "Delete file",
+        tone: "danger",
+      });
+      if (!allowed) return;
       const res = await dispatch(deleteItemThunk(item));
       if (deleteItemThunk.rejected.match(res)) {
         toast.error(`Delete failed: ${res.error?.message || "Unknown error"}`);
       }
     }
-  }, [canMutateFiles, dispatch, files, openPicker]);
+  }, [canMutateFiles, confirm, dispatch, files, openPicker]);
 
   // Action handlers passed down to FileItem
   const handleKeyDown = useCallback(async (e) => {
@@ -900,7 +911,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
     if (row.isCreateInput) {
       return (
         <div
-          className="file-item relative flex items-center py-1.5 px-2"
+          className="vt-file-row-input relative mx-1 flex items-center py-1.5 px-2"
           style={{ paddingLeft: `${row.level * 16 + 8}px` }}
         >
           <div className="w-3.5 h-3.5 mr-2.5 flex-shrink-0 flex items-center justify-center text-sm opacity-95">
@@ -959,6 +970,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, handleExternalFilesDrop, handleExternalFolderDragTarget, externalDropTargetFolder, canMutateFiles, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
 
   return (
+    <>
     <ContextMenu
       onOpenAutoFocus={onOpenMenu}
       onOpenChange={(open) => {
@@ -967,11 +979,9 @@ const FileTreeView = ({ onToggleOrientation }) => {
     >
       <ContextMenuTrigger asChild>
         <div
-          className="relative w-full h-full select-none flex flex-col border-r"
+          className="vt-panel-frame vt-file-tree relative w-full h-full select-none flex flex-col border-r"
           style={{
-            background: "var(--bg-sidebar)",
             color: "var(--text-primary)",
-            borderColor: "var(--border-medium)",
           }}
           onClick={() => {
             setContextTarget(null);
@@ -994,11 +1004,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
             disabled={!canMutateFiles}
           />
           <div
-            className={`flex shrink-0 items-center gap-2 border-b px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}
-            style={{
-              borderColor: "var(--border-subtle)",
-              background: "color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)",
-            }}
+            className={`vt-panel-header flex shrink-0 items-center gap-2 border-b px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}
           >
             <FolderOpen
               size={14}
@@ -1021,7 +1027,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
                 disabled={isUploading || !canMutateFiles}
                 title="Upload files"
                 aria-label="Upload files to workspace root"
-                className="th-focus-ring p-1.5 rounded-lg transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
+                className="vt-icon-button th-focus-ring disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ color: isUploading ? "var(--attention-purple)" : "var(--text-muted)" }}
               >
                 {isUploading ? (
@@ -1035,7 +1041,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
                 onClick={onToggleOrientation}
                 title={isRightSide ? "Move to left" : "Move to right"}
                 aria-label={isRightSide ? "Move explorer to left" : "Move explorer to right"}
-                className="th-focus-ring p-1.5 rounded-lg transition-colors hover:bg-white/[0.06]"
+                className="vt-icon-button th-focus-ring"
                 style={{ color: "var(--text-muted)" }}
               >
                 {isRightSide ? (
@@ -1134,12 +1140,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
           // the blur fires immediately and cancels the create.
           e.preventDefault();
         }}
-        className="w-52 shadow-xl rounded-lg border"
-        style={{
-          background: "var(--bg-panel)",
-          borderColor: "var(--border-medium)",
-          color: "var(--text-primary)",
-        }}
+        className="vt-command-popover w-52"
       >
         {contextTarget ? (
           contextTarget.isFolder ? (
@@ -1147,14 +1148,14 @@ const FileTreeView = ({ onToggleOrientation }) => {
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-file", contextTarget)}
                 disabled={!canMutateFiles}
-                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
               >
                 New File
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-folder", contextTarget)}
                 disabled={!canMutateFiles}
-                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
               >
                 New Folder
               </ContextMenuItem>
@@ -1165,14 +1166,14 @@ const FileTreeView = ({ onToggleOrientation }) => {
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
                 disabled={!canMutateFiles}
-                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
               >
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("delete", contextTarget)}
                 disabled={!canMutateFiles}
-                className="px-3 py-2.5 text-sm hover:bg-[#f87171]/10 hover:text-[#f87171] cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1 text-[var(--accent-danger)]"
               >
                 Delete
               </ContextMenuItem>
@@ -1189,7 +1190,9 @@ const FileTreeView = ({ onToggleOrientation }) => {
                     el.setAttribute("data-loading", "true");
                     const spinner = document.createElement("div");
                     spinner.className =
-                      "ml-2 h-3 w-3 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin";
+                      "ml-2 h-3 w-3 rounded-full border-2 border-t-transparent animate-spin";
+                    spinner.style.borderColor = "var(--attention-purple)";
+                    spinner.style.borderTopColor = "transparent";
                     spinner.setAttribute("data-spinner", "true");
                     const content = el.querySelector(".file-content");
                     if (content) {
@@ -1204,7 +1207,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
                   // Then load the file
                   onFileSelectHandler(contextTarget);
                 }}
-                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
               >
                 Open
               </ContextMenuItem>
@@ -1215,14 +1218,14 @@ const FileTreeView = ({ onToggleOrientation }) => {
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
                 disabled={!canMutateFiles}
-                className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
               >
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("delete", contextTarget)}
                 disabled={!canMutateFiles}
-                className="px-3 py-2.5 text-sm hover:bg-[#f87171]/10 hover:text-[#f87171] cursor-pointer rounded-md mx-1"
+                className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1 text-[var(--accent-danger)]"
               >
                 Delete
               </ContextMenuItem>
@@ -1233,14 +1236,14 @@ const FileTreeView = ({ onToggleOrientation }) => {
             <ContextMenuItem
               onClick={() => handleTreeAction("new-file-root")}
               disabled={!canMutateFiles}
-              className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+              className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
             >
               New File
             </ContextMenuItem>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-folder-root")}
               disabled={!canMutateFiles}
-              className="px-3 py-2.5 text-sm th-dropdown-item cursor-pointer rounded-md mx-1"
+              className="vt-command-item px-3 py-2.5 text-sm cursor-pointer mx-1"
             >
               New Folder
             </ContextMenuItem>
@@ -1248,6 +1251,8 @@ const FileTreeView = ({ onToggleOrientation }) => {
         )}
       </ContextMenuContent>
     </ContextMenu>
+    {confirmDialog}
+    </>
   );
 };
 export default memo(FileTreeView);

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useState, useMemo } from 'react';
-import { Home, Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw } from 'lucide-react';
+import { Home, Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw, Columns2, Rows2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
@@ -100,8 +100,7 @@ function TopNav({
 
   return (
     <div
-      className="topnav-root vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]"
-      style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+      className="topnav-root vt-workbench-chrome vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]"
     >
       {/* Vectant wordmark — left-anchored so the centered slot can host
           the lifted file-tab strip without collision. Dark theme is +2px
@@ -192,40 +191,30 @@ function TopNav({
               title="Split editor"
               aria-label="Split editor"
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
-                <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
+              <Columns2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
             </Button>
           </PopoverTrigger>
           <PopoverContent
             align="end"
             sideOffset={6}
-            className="w-40 p-1"
-            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
+            className="vt-command-popover w-40 p-1"
           >
             <button
               type="button"
               onClick={() => handleSplit('right')}
-              className="th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              className="vt-command-item th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer"
               style={{ color: 'var(--text-secondary)' }}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
-                <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
+              <Columns2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
               Split right
             </button>
             <button
               type="button"
               onClick={() => handleSplit('bottom')}
-              className="th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              className="vt-command-item th-focus-ring w-full flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer"
               style={{ color: 'var(--text-secondary)' }}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
-                <path d="M2.6 7H11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
+              <Rows2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
               Split down
             </button>
           </PopoverContent>
@@ -292,7 +281,8 @@ function TopNav({
                 {/* Mobile-only: stop + restart in topnav */}
                 <Button
                     size="sm"
-                    className="th-focus-ring sm:hidden h-7 w-7 p-0 transition-colors rounded-md th-bg-app th-btn-ghost cursor-pointer text-red-500 hover:text-red-400"
+                    className="th-focus-ring sm:hidden h-7 w-7 p-0 transition-colors rounded-md th-bg-app th-btn-ghost cursor-pointer"
+                    style={{ color: 'var(--accent-danger)' }}
                     onClick={onStop}
                     aria-label="Stop running app"
                     title="Stop"
@@ -303,7 +293,7 @@ function TopNav({
                     size="sm"
                     className="th-focus-ring sm:hidden h-7 w-7 p-0 transition-colors rounded-md th-bg-app th-btn-ghost cursor-pointer"
                     onClick={onReload}
-                    style={{ color: '#3d6dff' }}
+                    style={{ color: 'var(--attention-purple)' }}
                     aria-label="Restart running app"
                     title="Restart"
                 >
@@ -316,7 +306,7 @@ function TopNav({
                     aria-disabled="true"
                     aria-label="App is running"
                     className="hidden sm:inline-flex h-7 w-7 p-0 rounded-md th-bg-app cursor-not-allowed opacity-40"
-                    title="Running — use the stop/restart controls"
+                    title="Running - use the stop/restart controls"
                 >
                     <Play className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={2} />
                 </Button>

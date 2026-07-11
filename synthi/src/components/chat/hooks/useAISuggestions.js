@@ -174,6 +174,7 @@ export const useAISuggestions = ({
     aiModel = null,
     aiApiKey = null,
     aiProvider = null,
+    confirmAction = null,
 }) => {
     const clientReady = true;
     const [isLoading, setIsLoading] = useState(false);
@@ -202,6 +203,12 @@ export const useAISuggestions = ({
     const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
     const activeFileRef = useRef(activeFile);
     const chatSessionsRef = useRef(chatSessions);
+    const requestFileAction = useCallback(async (options) => {
+        if (typeof confirmAction === 'function') {
+            return Boolean(await confirmAction(options));
+        }
+        return true;
+    }, [confirmAction]);
 
     // ── Context Window ──────────────────────────────────────────────
     const {
@@ -939,7 +946,7 @@ export const useAISuggestions = ({
                             resolvedPath,
                             diffText: null,
                             status: 'error',
-                            error: 'AI returned a partial file fragment instead of SEARCH/REPLACE blocks, which would cause data loss. Please try again.',
+                            error: 'Model returned a partial file fragment instead of SEARCH/REPLACE blocks, which would cause data loss. Please try again.',
                         });
                         continue;
                     }
@@ -972,7 +979,7 @@ export const useAISuggestions = ({
 
                     if (partial && partial.applied > 0) {
                         const failNote = partial.failed > 0
-                            ? `${partial.applied}/${partial.total} SEARCH/REPLACE blocks applied successfully. ${partial.failed} block(s) could not be matched — review the diff carefully.`
+                            ? `${partial.applied}/${partial.total} SEARCH/REPLACE blocks applied successfully. ${partial.failed} block(s) could not be matched. Review the diff carefully.`
                             : undefined;
                         console.warn(`[SEARCH/REPLACE] Partial apply for ${block.path}: ${partial.applied}/${partial.total} succeeded`);
                         hydrated.push({
@@ -1011,7 +1018,7 @@ export const useAISuggestions = ({
                             isFolder: false,
                             chunks: writeReplace ? computeDiffChunks(currentContent || '', replaceOnly) : [],
                             status: writeReplace ? 'pending' : 'error',
-                            error: writeReplace ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
+                            error: writeReplace ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below. Review carefully before applying.',
                             intendedContent: replaceOnly,
                         });
                     } else {
@@ -1064,7 +1071,7 @@ export const useAISuggestions = ({
                     resolvedPath,
                     diffText: block.diffText,
                     status: 'error',
-                    error: 'AI response did not include usable diff or content. Ask again with a specific file path.',
+                    error: 'Model response did not include usable diff or content. Ask again with a specific file path.',
                 });
                 continue;
             }
@@ -1079,7 +1086,7 @@ export const useAISuggestions = ({
                     resolvedPath,
                     diffText: block.diffText,
                     status: 'error',
-                    error: baseIsMissing ? 'File not found; unable to apply AI diff.' : 'Failed to apply AI diff to the current file contents.',
+                    error: baseIsMissing ? 'File not found; unable to apply model diff.' : 'Failed to apply model diff to the current file contents.',
                 });
                 continue;
             }
@@ -1166,7 +1173,7 @@ export const useAISuggestions = ({
             mutateSession(sessionId, (s) => ({
                 ...s,
                 fileSuggestions: s.fileSuggestions.map((fs) =>
-                    fs.path === path ? { ...fs, status: 'error', error: 'Missing updated content from AI response.' } : fs
+                    fs.path === path ? { ...fs, status: 'error', error: 'Missing updated content from model response.' } : fs
                 ),
             }));
             return;
@@ -1189,9 +1196,12 @@ export const useAISuggestions = ({
                     ),
                 }));
                 try {
-                    const allowed = typeof window !== 'undefined'
-                        ? window.confirm(`Create new ${suggestion.isFolder ? 'folder' : 'file'} "${targetPath}" from AI suggestion?`)
-                        : true;
+                    const allowed = await requestFileAction({
+                        title: `Create ${suggestion.isFolder ? 'folder' : 'file'} from agent suggestion?`,
+                        message: targetPath,
+                        confirmLabel: suggestion.isFolder ? 'Create folder' : 'Create file',
+                        tone: 'warning',
+                    });
                     if (!allowed) {
                         mutateSession(sessionId, (s) => ({
                             ...s,
@@ -1206,9 +1216,12 @@ export const useAISuggestions = ({
                 }
             }
             if (suggestion.deleteFile) {
-                const allowedDelete = typeof window !== 'undefined'
-                    ? window.confirm(`Delete file "${targetPath}" from AI suggestion?`)
-                    : true;
+                const allowedDelete = await requestFileAction({
+                    title: 'Delete file from agent suggestion?',
+                    message: targetPath,
+                    confirmLabel: 'Delete file',
+                    tone: 'danger',
+                });
                 if (!allowedDelete) {
                     mutateSession(sessionId, (s) => ({
                         ...s,
@@ -1269,9 +1282,12 @@ export const useAISuggestions = ({
             } else if (workspaceSlug && suggestion.deleteFolder) {
                 try {
                     try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
-                    const allowedDelete = typeof window !== 'undefined'
-                        ? window.confirm(`Delete folder "${targetPath}" from AI suggestion?`)
-                        : true;
+                    const allowedDelete = await requestFileAction({
+                        title: 'Delete folder from agent suggestion?',
+                        message: targetPath,
+                        confirmLabel: 'Delete folder',
+                        tone: 'danger',
+                    });
                     if (!allowedDelete) {
                         mutateSession(sessionId, (s) => ({
                             ...s,
@@ -1327,7 +1343,7 @@ export const useAISuggestions = ({
             ),
         }));
     }
-    }, [applyContentToPath, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
+    }, [applyContentToPath, mutateSession, openFileByPath, requestFileAction, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
 
     // Mark a file suggestion as rejected and notify listeners.
     const handleRejectFileSuggestion = useCallback((sessionId, path) => {
@@ -1630,11 +1646,11 @@ export const useAISuggestions = ({
                             onLog?.(`Agent: ${step.agentName}`);
                         },
                         onStepComplete: (result) => {
-                            const status = result.status === 'completed' ? '✓' : '✗';
+                            const status = result.status === 'completed' ? 'Done' : 'Failed';
                             appendProgressLog(`${status} ${result.agentName}: ${result.status}`);
                         },
                         onPlanReady: (plan) => {
-                            appendProgressLog(`Plan: ${plan.steps.length} steps — ${plan.reasoning}`);
+                            appendProgressLog(`Plan: ${plan.steps.length} steps. ${plan.reasoning}`);
                         },
                     });
                     agentContext = pipelineResult.agentContext || '';
@@ -1924,7 +1940,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             });
 
             if (!resp.ok) {
-                throw new Error(`AI request failed (status ${resp.status})`);
+                throw new Error(`Model request failed (status ${resp.status})`);
             }
             const traceSummary = resp.headers.get('x-code-intel-trace-summary');
             const traceCount = resp.headers.get('x-code-intel-trace-count');
@@ -1961,7 +1977,7 @@ If image attachments are present, read/ocr the images and extract any text or co
 
             const reader = resp.body?.pipeThrough(new TextDecoderStream()).getReader();
             if (!reader) {
-                throw new Error('No response stream received from AI');
+                throw new Error('No response stream received from model');
             }
 
             let summaryBuffer = '';
@@ -2326,11 +2342,11 @@ If image attachments are present, read/ocr the images and extract any text or co
                         if (!validation.isValid && validation.errors.length > 0) {
                             console.warn('[Validation] Multi-file suggestions failed validation:', validation.errors);
                             // Log to user
-                            appendProgressLog(`⚠️ Suggestion validation failed: ${validation.errors[0]}`);
+                            appendProgressLog(`Suggestion validation failed: ${validation.errors[0]}`);
                             
                             // Reject bad suggestions - show error instead
                             multiFileSuggestions = [];
-                            displayedContent = `⚠️ AI response was malformed or contained contradictory changes:\n${validation.errors.slice(0, 2).join('\n')}\n\nPlease try again or provide more specific instructions.`;
+                            displayedContent = `Model response was malformed or contained contradictory changes:\n${validation.errors.slice(0, 2).join('\n')}\n\nPlease try again or provide more specific instructions.`;
                         } else if (validation.warnings.length > 0) {
                             // Log warnings but allow suggestions to pass
                             validation.warnings.forEach(w => console.warn('[Validation Warning]', w));
@@ -2359,10 +2375,10 @@ If image attachments are present, read/ocr the images and extract any text or co
             // the Gemini call silently 4xx'd (rate limit / safety filter / no
             // API key / network) and the user had no clue what went wrong.
             const emptyFallback = streamErrorMessage
-                ? `Vectant AI could not complete this request: ${streamErrorMessage}`
-                : 'No response received from Vectant AI. The model may have hit a rate limit or safety filter. Try rephrasing or sending again.';
+                ? `Vectant could not complete this request: ${streamErrorMessage}`
+                : 'No model response received. The request may have hit a rate limit or safety filter. Try rephrasing or sending again.';
             let displayedContent = suggestion || (hasStructuredFileSuggestions
-                ? `AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`
+                ? `Agent proposed changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`
                 : emptyFallback);
             const isPlaceholderText = (text = '') => {
                 const normalized = text.toLowerCase();
@@ -2393,12 +2409,12 @@ If image attachments are present, read/ocr the images and extract any text or co
                     if (typeof onSuggest === 'function') onSuggest(null);
                 } catch (e) {}
                 const prefix = summaryText ? `${summaryText}\n\n` : '';
-                displayedContent = `${prefix}AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
+                displayedContent = `${prefix}Agent proposed changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else if (hasStructuredFileSuggestions) {
                 // Structured fileBlocks already populated suggestions during streaming.
                 // Don't clear them — just set the display content.
                 const prefix = summaryText ? `${summaryText}\n\n` : '';
-                displayedContent = `${prefix}AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
+                displayedContent = `${prefix}Agent proposed changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else {
                 // Clear any existing suggestions
                 mutateSession(activeSession.id, (session) => ({
@@ -2428,14 +2444,14 @@ If image attachments are present, read/ocr the images and extract any text or co
                         displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
                         displayedContent = displayedContent.trim();
                         if (!displayedContent) {
-                            displayedContent = 'AI suggested code changes — preview shown below.';
+                            displayedContent = 'Agent proposed code changes. Preview shown below.';
                         }
                     } else {
                         codeOnly = null;
                         if (summaryText) {
                             displayedContent = summaryText;
                         } else if (isPlaceholderText(suggestion || '')) {
-                            displayedContent = 'AI could not produce changes for the active file. Please clarify the request or provide file content.';
+                            displayedContent = 'Model could not produce changes for the active file. Please clarify the request or provide file content.';
                         }
                     }
                 } else {
@@ -2459,7 +2475,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                     }));
                 }
                 if (filtered.length === 0) {
-                    displayedContent = 'AI could not produce usable changes. Please provide more context or a specific path.';
+                    displayedContent = 'Model could not produce usable changes. Please provide more context or a specific path.';
                 }
             }
 

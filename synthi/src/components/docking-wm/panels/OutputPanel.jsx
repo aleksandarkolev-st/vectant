@@ -15,7 +15,7 @@
  */
 
 import { memo, useState, useEffect, useRef, useCallback } from 'react';
-import { Trash2, ArrowDownToLine, Lock, Unlock, ChevronDown } from 'lucide-react';
+import { Trash2, Lock, Unlock, ChevronDown, TerminalSquare } from 'lucide-react';
 
 // ────────────────────────────────────────────────────────
 //  Constants
@@ -195,18 +195,18 @@ const OutputPanel = memo(function OutputPanel() {
   };
 
   return (
-    <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-terminal, var(--bg-sidebar))', color: 'var(--text-primary)' }}>
+    <div className="vt-panel-frame h-full w-full flex flex-col" style={{ color: 'var(--text-primary)' }}>
       {/* ── Toolbar ─────────────────────────────────── */}
       <div
-        className="h-9 flex items-center justify-between px-2 border-b shrink-0 select-none"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }}
+        className="vt-panel-header h-9 flex items-center justify-between border-b shrink-0 select-none"
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+          <TerminalSquare className="h-3.5 w-3.5 text-[var(--text-muted)]" strokeWidth={1.6} />
+          <span className="vt-panel-title">
             Output
           </span>
           {lines.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-hover)', color: 'var(--text-muted)' }}>
+            <span className="vt-state-pill">
               {lines.length} line{lines.length !== 1 ? 's' : ''}
             </span>
           )}
@@ -214,7 +214,7 @@ const OutputPanel = memo(function OutputPanel() {
         <div className="flex items-center gap-0.5">
           {/* Auto-scroll toggle */}
           <button
-            className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors"
+            className="vt-icon-button th-focus-ring"
             onClick={() => setAutoScroll((v) => !v)}
             title={autoScroll ? 'Auto-scroll ON (click to disable)' : 'Auto-scroll OFF (click to enable)'}
           >
@@ -226,7 +226,7 @@ const OutputPanel = memo(function OutputPanel() {
           {/* Scroll to bottom */}
           {!autoScroll && (
             <button
-              className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors"
+              className="vt-icon-button th-focus-ring"
               onClick={scrollToBottom}
               title="Scroll to bottom"
             >
@@ -235,7 +235,7 @@ const OutputPanel = memo(function OutputPanel() {
           )}
           {/* Clear */}
           <button
-            className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors"
+            className="vt-icon-button th-focus-ring"
             onClick={handleClear}
             title="Clear Output"
           >
@@ -247,13 +247,17 @@ const OutputPanel = memo(function OutputPanel() {
       {/* ── Content area ────────────────────────────── */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-1 font-mono text-xs leading-5"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-2 font-mono text-xs leading-5"
         onScroll={handleScroll}
-        style={{ background: 'var(--bg-terminal, var(--bg-sidebar))' }}
+        style={{ background: 'color-mix(in srgb, var(--bg-app) 72%, var(--bg-editor) 28%)' }}
       >
         {lines.length === 0 ? (
-          <div className="flex h-full items-center justify-center" style={{ color: 'var(--text-disabled)' }}>
-            No output yet — run your program to see output here.
+          <div className="vt-empty-state h-full min-h-0 text-center">
+            <div>
+              <TerminalSquare className="mx-auto mb-3 h-5 w-5 text-[var(--text-muted)]" strokeWidth={1.5} />
+              <div className="text-[12px] font-semibold text-[var(--text-primary)]">No process output yet</div>
+              <div className="mt-1 text-[11px] text-[var(--text-muted)]">Run a program or build to stream logs here.</div>
+            </div>
           </div>
         ) : (
           lines.map((entry) => (

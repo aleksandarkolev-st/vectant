@@ -30,8 +30,7 @@ const INLINE_RULES = [
   // Links
   { pattern: /\[([^\]]+)\]\(([^)]+)\)/, render: (m, k) => (
     <a key={k} href={m[2]} target="_blank" rel="noopener noreferrer"
-      className="underline decoration-1 underline-offset-2 hover:opacity-80 transition"
-      style={{ color: 'var(--accent-primary, #60a5fa)' }}>{m[1]}</a>
+      className="text-[var(--attention-purple)] underline decoration-1 underline-offset-2 transition hover:text-[var(--text-primary)]">{m[1]}</a>
   )},
   // Bold + italic ***text***
   { pattern: /\*\*\*(.+?)\*\*\*/, render: (m, k) => (
@@ -48,25 +47,22 @@ const INLINE_RULES = [
   { pattern: /~~(.+?)~~/, render: (m, k) => <del key={k} className="opacity-60">{m[1]}</del> },
   // Inline code `text`
   { pattern: /`([^`]+)`/, render: (m, k) => (
-    <code key={k} className="font-mono text-[0.85em] px-1 py-0.5 rounded"
-      style={{ background: 'var(--bg-app, #18181b)', color: 'var(--accent-primary, #60a5fa)' }}>{m[1]}</code>
+    <code key={k} className="rounded border border-[var(--border-subtle)] bg-[var(--bg-app)] px-1 py-0.5 font-mono text-[0.85em] text-[var(--attention-purple)]">{m[1]}</code>
   )},
   // @mention
   { pattern: /@([a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)/, render: (m, k) => (
     <a key={k} href={`https://github.com/${m[1]}`} target="_blank" rel="noopener noreferrer"
-      className="font-semibold hover:underline"
-      style={{ color: 'var(--accent-primary, #60a5fa)' }}>@{m[1]}</a>
+      className="font-semibold text-[var(--attention-purple)] hover:underline">@{m[1]}</a>
   )},
   // #issue/PR reference
   { pattern: /#(\d+)/, render: (m, k) => (
     <span key={k} className="font-semibold cursor-pointer hover:underline"
-      style={{ color: 'var(--accent-primary, #60a5fa)' }}>#{m[1]}</span>
+      style={{ color: 'var(--attention-purple)' }}>#{m[1]}</span>
   )},
   // Bare URLs
   { pattern: /(https?:\/\/[^\s<>)"']+)/, render: (m, k) => (
     <a key={k} href={m[1]} target="_blank" rel="noopener noreferrer"
-      className="underline decoration-1 underline-offset-2 hover:opacity-80"
-      style={{ color: 'var(--accent-primary, #60a5fa)' }}>{m[1]}</a>
+      className="text-[var(--attention-purple)] underline decoration-1 underline-offset-2 hover:text-[var(--text-primary)]">{m[1]}</a>
   )},
 ];
 
@@ -309,21 +305,17 @@ function CodeBlock({ lang, content }) {
   }, [content, resolvedLang]);
 
   return (
-    <div className="rounded-lg border overflow-hidden my-2 group/code"
-      style={{ borderColor: 'var(--border-subtle, #27272a)' }}>
+    <div className="vt-workflow-card group/code my-2 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1 border-b"
-        style={{ background: 'var(--bg-panel, #1a1a1e)', borderColor: 'var(--border-subtle, #27272a)' }}>
-        <span className="text-[10px] font-mono opacity-50">{lang || 'text'}</span>
+      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-3 py-1">
+        <span className="font-mono text-[10px] text-[var(--text-muted)]">{lang || 'text'}</span>
         <button onClick={handleCopy}
-          className="text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover/code:opacity-100 transition hover:opacity-80"
-          style={{ color: 'var(--text-muted, #71717a)' }}>
-          {copied ? '✓ Copied' : 'Copy'}
+          className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] opacity-0 transition group-hover/code:opacity-100">
+          {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
       {/* Code */}
-      <pre className="text-[11px] font-mono px-3 py-2 overflow-x-auto leading-relaxed"
-        style={{ background: 'var(--bg-app, #09090b)', color: 'var(--text-secondary, #d4d4d8)' }}>
+      <pre className="vt-code-surface overflow-x-auto px-3 py-2 text-[11px] leading-relaxed">
         {highlighted || content.split('\n').map((line, i) => (
           <div key={i} className="flex">
             <span className="select-none pr-3 text-right min-w-[2.5em] opacity-30">{i + 1}</span>
@@ -346,7 +338,7 @@ function renderBlock(block, idx) {
       return (
         <Tag key={idx}
           className={`${sizes[block.level]} ${weights[block.level]} mt-3 mb-1 pb-1 ${block.level <= 2 ? 'border-b' : ''}`}
-          style={{ color: 'var(--text-primary)', borderColor: 'var(--border-subtle, #27272a)' }}>
+          style={{ color: 'var(--text-primary)', borderColor: 'var(--border-subtle)' }}>
           {parseInline(block.content)}
         </Tag>
       );
@@ -355,7 +347,7 @@ function renderBlock(block, idx) {
     case 'paragraph':
       return (
         <p key={idx} className="text-xs leading-relaxed my-1.5"
-          style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+          style={{ color: 'var(--text-secondary)' }}>
           {parseInline(block.content)}
         </p>
       );
@@ -366,8 +358,8 @@ function renderBlock(block, idx) {
     case 'blockquote':
       return (
         <blockquote key={idx}
-          className="border-l-2 pl-3 my-2 italic"
-          style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-muted, #71717a)' }}>
+          className="vt-workflow-alert my-2 border-l-2 py-2 pl-3 pr-2 italic text-[var(--text-muted)]"
+          style={{ '--workflow-alert-color': 'var(--attention-purple)' }}>
           <MarkdownRenderer text={block.content} />
         </blockquote>
       );
@@ -376,8 +368,7 @@ function renderBlock(block, idx) {
       return (
         <ul key={idx} className="my-1.5 space-y-0.5">
           {block.items.map((item, j) => (
-            <li key={j} className="flex items-start gap-1.5 text-xs"
-              style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+            <li key={j} className="flex items-start gap-1.5 text-xs text-[var(--text-secondary)]">
               {item.isTask ? (
                 <span
                   className="mt-0.5 w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center text-[9px]"
@@ -404,8 +395,7 @@ function renderBlock(block, idx) {
       return (
         <ol key={idx} className="my-1.5 space-y-0.5">
           {block.items.map((item, j) => (
-            <li key={j} className="flex items-start gap-1.5 text-xs"
-              style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+            <li key={j} className="flex items-start gap-1.5 text-xs text-[var(--text-secondary)]">
               <span className="text-[10px] font-mono opacity-50 mt-0.5 flex-shrink-0 min-w-[1.2em] text-right">
                 {j + 1}.
               </span>
@@ -417,14 +407,13 @@ function renderBlock(block, idx) {
 
     case 'table':
       return (
-        <div key={idx} className="my-2 overflow-x-auto rounded-lg border"
-          style={{ borderColor: 'var(--border-subtle, #27272a)' }}>
+        <div key={idx} className="vt-workflow-card my-2 overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr style={{ background: 'var(--bg-panel, #1a1a1e)' }}>
+              <tr className="bg-[var(--surface-panel-subtle)]">
                 {block.headers.map((h, j) => (
                   <th key={j} className="px-2.5 py-1.5 font-semibold border-b text-left"
-                    style={{ borderColor: 'var(--border-subtle, #27272a)', textAlign: block.aligns[j] || 'left', color: 'var(--text-primary)' }}>
+                    style={{ borderColor: 'var(--border-subtle)', textAlign: block.aligns[j] || 'left', color: 'var(--text-primary)' }}>
                     {parseInline(h)}
                   </th>
                 ))}
@@ -432,11 +421,11 @@ function renderBlock(block, idx) {
             </thead>
             <tbody>
               {block.rows.map((row, j) => (
-                <tr key={j} className="border-b last:border-b-0 hover:opacity-80"
-                  style={{ borderColor: 'var(--border-subtle, #27272a)' }}>
+                <tr key={j} className="vt-workflow-row border-b last:border-b-0"
+                  style={{ borderColor: 'var(--border-subtle)' }}>
                   {row.map((cell, k) => (
                     <td key={k} className="px-2.5 py-1.5"
-                      style={{ textAlign: block.aligns[k] || 'left', color: 'var(--text-secondary, #a1a1aa)' }}>
+                      style={{ textAlign: block.aligns[k] || 'left', color: 'var(--text-secondary)' }}>
                       {parseInline(cell)}
                     </td>
                   ))}
@@ -448,7 +437,7 @@ function renderBlock(block, idx) {
       );
 
     case 'hr':
-      return <hr key={idx} className="my-3 border-0 h-px" style={{ background: 'var(--border-subtle, #27272a)' }} />;
+      return <hr key={idx} className="my-3 h-px border-0 bg-[var(--border-subtle)]" />;
 
     case 'empty':
       return <div key={idx} className="h-2" />;
@@ -591,14 +580,12 @@ export function MarkdownToolbar({ textareaRef }) {
   }, [textareaRef]);
 
   return (
-    <div className="flex items-center gap-0.5 px-2 py-1 border-b overflow-x-auto"
-      style={{ borderColor: 'var(--border-subtle, #27272a)' }}>
+    <div className="flex items-center gap-0.5 overflow-x-auto border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-2 py-1">
       {MD_TOOLBAR_ITEMS.map((item, i) => {
-        if (item.sep) return <div key={i} className="w-px h-3 mx-0.5" style={{ background: 'var(--border-subtle, #27272a)' }} />;
+        if (item.sep) return <div key={i} className="mx-0.5 h-3 w-px bg-[var(--border-subtle)]" />;
         return (
           <button key={i} onClick={() => handleInsert(item)} title={item.title}
-            className={`px-1.5 py-0.5 rounded text-[10px] font-medium hover:opacity-80 transition ${item.className || ''}`}
-            style={{ color: 'var(--text-muted, #71717a)' }}>
+            className={`th-focus-ring th-btn-ghost rounded-[var(--radius-control)] px-1.5 py-0.5 text-[10px] font-medium transition ${item.className || ''}`}>
             {item.label}
           </button>
         );
@@ -624,29 +611,15 @@ export function MarkdownEditor({ value, onChange, placeholder = 'Write…', rows
   const textareaRef = React.useRef(null);
 
   return (
-    <div className={`rounded-lg border overflow-hidden ${className}`}
-      style={{ borderColor: 'var(--border-medium, #3f3f46)' }}>
+    <div className={`vt-workflow-card overflow-hidden ${className}`}>
       {/* Tabs */}
-      <div className="flex items-center border-b"
-        style={{ background: 'var(--bg-panel, #1a1a1e)', borderColor: 'var(--border-subtle, #27272a)' }}>
+      <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-2 py-1">
         <button onClick={() => setMode('write')}
-          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition ${
-            mode === 'write' ? '' : 'border-transparent'
-          }`}
-          style={{
-            borderBottomColor: mode === 'write' ? 'var(--accent-primary, #3b82f6)' : 'transparent',
-            color: mode === 'write' ? 'var(--text-primary)' : 'var(--text-muted)',
-          }}>
+          className={`th-focus-ring rounded-[var(--radius-control)] px-3 py-1.5 text-xs font-medium transition ${mode === 'write' ? 'th-btn-active' : 'th-btn-ghost'}`}>
           Write
         </button>
         <button onClick={() => setMode('preview')}
-          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition ${
-            mode === 'preview' ? '' : 'border-transparent'
-          }`}
-          style={{
-            borderBottomColor: mode === 'preview' ? 'var(--accent-primary, #3b82f6)' : 'transparent',
-            color: mode === 'preview' ? 'var(--text-primary)' : 'var(--text-muted)',
-          }}>
+          className={`th-focus-ring rounded-[var(--radius-control)] px-3 py-1.5 text-xs font-medium transition ${mode === 'preview' ? 'th-btn-active' : 'th-btn-ghost'}`}>
           Preview
         </button>
       </div>
@@ -663,16 +636,14 @@ export function MarkdownEditor({ value, onChange, placeholder = 'Write…', rows
           onKeyDown={e => handleMarkdownKeyDown(e, textareaRef)}
           placeholder={placeholder}
           rows={rows}
-          className="w-full px-3 py-2 text-xs resize-y outline-none font-mono min-h-[80px]"
-          style={{ background: 'var(--bg-app, #09090b)', color: 'var(--text-primary, #e4e4e7)' }}
+          className="th-input min-h-[80px] w-full resize-y border-0 px-3 py-2 font-mono text-xs outline-none"
         />
       ) : (
-        <div className="px-3 py-2 min-h-[80px]"
-          style={{ background: 'var(--bg-app, #09090b)' }}>
+        <div className="min-h-[80px] bg-[var(--bg-app)] px-3 py-2">
           {value?.trim() ? (
             <MarkdownRenderer text={value} />
           ) : (
-            <p className="text-xs italic" style={{ color: 'var(--text-muted, #71717a)' }}>Nothing to preview</p>
+            <p className="text-xs italic text-[var(--text-muted)]">Nothing to preview</p>
           )}
         </div>
       )}
@@ -687,7 +658,7 @@ export function MarkdownRenderer({ text }) {
 
   if (!text?.trim()) {
     return (
-      <span className="text-xs opacity-50 italic" style={{ color: 'var(--text-muted, #71717a)' }}>
+      <span className="text-xs italic text-[var(--text-muted)] opacity-60">
         No description.
       </span>
     );

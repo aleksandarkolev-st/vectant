@@ -8,52 +8,67 @@ export default function EmulatorFrame({
   children,
 }) {
   const isLandscape = orientation === 'landscape';
+  const frameStyle = {
+    borderColor: 'color-mix(in srgb, var(--border-medium) 78%, transparent)',
+    background:
+      'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 88%, white 4%), color-mix(in srgb, var(--bg-editor) 84%, black 16%))',
+    boxShadow:
+      'inset 0 1px 0 color-mix(in srgb, white 7%, transparent), 0 22px 54px -36px rgba(0, 0, 0, 0.9)',
+  };
+  const screenStyle = {
+    background: 'var(--bg-editor)',
+    borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  };
 
   // When responsive (real streaming), let the video fill the space naturally
   if (responsive) {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-black p-2">
+      <div
+        className="flex h-full w-full items-center justify-center p-2"
+        style={{ background: 'var(--bg-app)' }}
+      >
         <div 
           className={
-            "relative bg-[#0c0c0e] border-2 border-[#1a1a1e] rounded-[2rem] shadow-sm overflow-hidden flex-shrink-0 " +
+            'relative flex-shrink-0 overflow-hidden rounded-[1.35rem] border ' +
             (isLandscape
-              ? "w-full max-w-full h-auto max-h-full aspect-[19.5/9]"
-              : "h-full max-h-full w-auto max-w-full aspect-[9/19.5]")
+              ? 'aspect-[19.5/9] h-auto max-h-full w-full max-w-full'
+              : 'aspect-[9/19.5] h-full max-h-full w-auto max-w-full')
           }
+          style={frameStyle}
         >
-          {/* Screen area - let children fill */}
-          <div className="absolute inset-[8px] rounded-[1.5rem] bg-black overflow-hidden">
+          <div className="absolute inset-[8px] overflow-hidden rounded-[1rem] border" style={screenStyle}>
             {children}
           </div>
-          {/* Speaker notch (decorative) */}
-          <div className="absolute top-[4px] left-1/2 -translate-x-1/2 w-12 h-[4px] rounded-full bg-[#151519]" />
+          <div
+            className="absolute left-1/2 top-[4px] h-[4px] w-12 -translate-x-1/2 rounded-full"
+            style={{ background: 'color-mix(in srgb, var(--text-primary) 10%, transparent)' }}
+          />
         </div>
       </div>
     );
   }
 
-  // Non-responsive (placeholder/mock) - fixed size
+  // Non-responsive standby mode keeps a stable preview size.
   return (
-    <div className="w-full h-full flex items-center justify-center p-4">
+    <div className="flex h-full w-full items-center justify-center p-4">
       <div className="relative select-none">
         <div
           className={
-            "bg-[#0c0c0e] border-2 border-[#1a1a1e] rounded-[2.25rem] shadow-sm overflow-hidden " +
+            'relative overflow-hidden rounded-[1.5rem] border ' +
             (isLandscape
               ? 'aspect-[19.5/9] w-[420px] max-w-[70vw]'
               : 'aspect-[9/19.5] w-[280px] max-w-[70vw]')
           }
+          style={frameStyle}
         >
-          {/* Bezel */}
-          <div className="absolute inset-0 bg-[#050506]" />
-
-          {/* Screen cutout */}
-          <div className="absolute inset-[10px] rounded-[1.75rem] bg-black overflow-hidden">
+          <div className="absolute inset-[10px] overflow-hidden rounded-[1.05rem] border" style={screenStyle}>
             {children}
           </div>
 
-          {/* Speaker notch (decorative) */}
-          <div className="absolute top-[6px] left-1/2 -translate-x-1/2 w-16 h-[5px] rounded-full bg-[#151519]" />
+          <div
+            className="absolute left-1/2 top-[6px] h-[5px] w-16 -translate-x-1/2 rounded-full"
+            style={{ background: 'color-mix(in srgb, var(--text-primary) 10%, transparent)' }}
+          />
         </div>
       </div>
     </div>

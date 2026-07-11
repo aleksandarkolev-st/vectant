@@ -37,15 +37,15 @@ export default function PortsPanel() {
   }, [urlFor]);
 
   return (
-    <div className="h-full w-full overflow-y-auto p-3" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+    <div className="h-full w-full overflow-y-auto p-3" style={{ color: 'var(--text-primary)' }}>
       <div className="flex items-center gap-2 mb-3">
         <Network size={16} />
         <span className="text-sm font-medium">Ports</span>
       </div>
       {!slug ? (
-        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No workspace.</div>
+        <div className="vt-empty-state text-sm">No workspace.</div>
       ) : ports.length === 0 ? (
-        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
+        <div className="vt-empty-state text-sm text-center">
           No forwarded ports. Start a server in the terminal (e.g. <code>npm run dev</code>, binding 0.0.0.0) and it will appear here.
         </div>
       ) : (
@@ -54,18 +54,16 @@ export default function PortsPanel() {
             <div
               key={port}
               data-testid={`port-row-${port}`}
-              className="rounded-md border px-3 py-2 flex items-center justify-between gap-3"
-              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}
+              className="vt-shell-panel flex items-center justify-between gap-3 px-3 py-2"
             >
-              <span className="text-sm">Port {port}</span>
+              <span className="vt-mono text-sm">Port {port}</span>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   data-testid={`open-port-${port}`}
                   onClick={() => open(port)}
                   title="Open in browser"
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded"
-                  style={{ background: 'color-mix(in srgb, #60a5fa 18%, transparent)' }}
+                  className="th-focus-ring th-btn-primary inline-flex items-center gap-1 px-2 py-1 text-xs"
                 >
                   <ExternalLink size={13} /> Open
                 </button>
@@ -73,8 +71,7 @@ export default function PortsPanel() {
                   type="button"
                   onClick={() => copy(port)}
                   title="Copy URL"
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded"
-                  style={{ background: 'var(--bg-elevated, rgba(255,255,255,0.06))' }}
+                  className="th-focus-ring th-btn-ghost inline-flex items-center gap-1 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2 py-1 text-xs"
                 >
                   <Copy size={13} />
                 </button>

@@ -14,16 +14,16 @@ import {
  * Permission toggle labels and icons.
  */
 const PERM_CONFIG = [
-  { key: 'canEdit',     label: 'Edit Code',     icon: FileEdit,   risk: 'low',    desc: 'Allow editing files via Yjs' },
-  { key: 'canFileOps',  label: 'File Ops',       icon: FolderEdit, risk: 'medium', desc: 'Create, delete, rename files' },
-  { key: 'canTerminal', label: 'Terminal',        icon: Terminal,   risk: 'high',   desc: 'Run commands in the terminal' },
-  { key: 'canGit',      label: 'Git Control',     icon: GitBranch,  risk: 'high',   desc: 'Commit, push, pull, checkout' },
+  { key: 'canEdit',     label: 'Edit',     icon: FileEdit,   risk: 'low',    desc: 'Change workspace files' },
+  { key: 'canFileOps',  label: 'Files',    icon: FolderEdit, risk: 'medium', desc: 'Create, rename, and remove files' },
+  { key: 'canTerminal', label: 'Terminal', icon: Terminal,   risk: 'high',   desc: 'Run shell commands' },
+  { key: 'canGit',      label: 'Git',      icon: GitBranch,  risk: 'high',   desc: 'Change branches and publish commits' },
 ];
 
 const RISK_COLORS = {
-  low:    'text-[#4ade80]',
-  medium: 'text-[#fbbf24]',
-  high:   'text-[#ff5757]',
+  low:    'text-[var(--accent-success)]',
+  medium: 'text-[var(--accent-warning)]',
+  high:   'text-[var(--accent-danger)]',
 };
 
 /**
@@ -78,16 +78,16 @@ export default function SessionControlPanel({ slug }) {
     } catch (_) {}
   }, [session?.inviteLink]);
 
-  // ── Not hosting: show "Share Session" button ──────────────────────────
+  // ── Not hosting: show "Start session" button ──────────────────────────
 
   if (role === 'idle' && !showCreate) {
     return (
       <button
         onClick={() => setShowCreate(true)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#101118] border border-[#1a1b24] hover:border-[#3a8574] hover:bg-[#3a857410] text-[#9ba2b8] hover:text-[#e0e4ec] transition-all text-sm font-medium"
+        className="th-focus-ring th-btn-ghost flex items-center gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-3 py-1.5 text-sm font-medium"
       >
         <Users className="w-4 h-4" />
-        Share Session
+        Start session
       </button>
     );
   }
@@ -105,68 +105,68 @@ export default function SessionControlPanel({ slug }) {
   if (!isHost || role !== 'hosting') return null;
 
   return (
-    <div className="flex flex-col bg-[#0d0e14] border border-[#ff575780] rounded-xl shadow-2xl shadow-red-500/5 overflow-hidden min-w-[320px] max-w-[380px]">
+    <div className="vt-dialog-surface flex min-w-[320px] max-w-[380px] flex-col overflow-hidden">
       {/* ── Header: Live indicator ──────────────────────────────────── */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between px-4 py-3 bg-[#0d0e14] hover:bg-[#101118] transition-colors"
+        className="vt-command-item flex items-center justify-between rounded-none px-4 py-3"
       >
         <div className="flex items-center gap-3">
           <div className="relative">
-            <Radio className="w-4 h-4 text-[#ff5757]" />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-[#ff5757] rounded-full animate-pulse" />
+            <Radio className="w-4 h-4 text-[var(--accent-danger)]" />
+            <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--accent-danger)]" />
           </div>
-          <span className="text-[#ff5757] font-semibold text-sm">
-            LIVE
+          <span className="text-sm font-semibold text-[var(--accent-danger)]">
+            Live session
           </span>
-          <span className="text-[#5a6178] text-sm">
-            {guests.length} Guest{guests.length !== 1 ? 's' : ''}
+          <span className="text-sm text-[var(--text-muted)]">
+            {guests.length} peer{guests.length !== 1 ? 's' : ''}
           </span>
           {pendingKnocks.length > 0 && (
-            <span className="flex items-center gap-1 px-2 py-0.5 bg-[#fbbf2420] rounded-full text-[#fbbf24] text-xs font-medium animate-pulse">
+            <span className="vt-workflow-chip animate-pulse text-xs" style={{ '--chip-color': 'var(--accent-warning)' }}>
               <Bell className="w-3 h-3" />
               {pendingKnocks.length}
             </span>
           )}
         </div>
         {expanded ? (
-          <ChevronUp className="w-4 h-4 text-[#5a6178]" />
+          <ChevronUp className="w-4 h-4 text-[var(--text-muted)]" />
         ) : (
-          <ChevronDown className="w-4 h-4 text-[#5a6178]" />
+          <ChevronDown className="w-4 h-4 text-[var(--text-muted)]" />
         )}
       </button>
 
       {expanded && (
-        <div className="flex flex-col divide-y divide-[#1a1b24]">
+        <div className="flex flex-col divide-y divide-[var(--border-subtle)]">
           {/* ── Invite Link ──────────────────────────────────────────── */}
           <div className="px-4 py-3">
             <div className="flex items-center gap-2 mb-2">
-              <Link2 className="w-4 h-4 text-[#3a8574]" />
-              <span className="text-xs text-[#5a6178] font-medium uppercase tracking-wider">Invite Link</span>
+              <Link2 className="w-4 h-4 text-[var(--accent-secondary)]" />
+              <span className="vt-panel-kicker">Invite URL</span>
             </div>
             <div className="flex items-center gap-2">
               <input
                 readOnly
                 value={session?.inviteLink || ''}
-                className="flex-1 bg-[#101118] border border-[#1a1b24] rounded-md px-3 py-1.5 text-xs text-[#9ba2b8] font-mono truncate focus:outline-none"
+                className="th-input flex-1 truncate rounded-[var(--radius-control)] border px-3 py-1.5 font-mono text-xs focus:outline-none"
               />
               <button
                 onClick={handleCopyLink}
-                className="p-1.5 rounded-md bg-[#101118] border border-[#1a1b24] hover:border-[#3a8574] transition-colors"
+                className={`vt-icon-button th-focus-ring h-8 min-w-8 ${copied ? 'th-btn-active' : ''}`}
                 title="Copy invite link"
               >
                 {copied ? (
-                  <Check className="w-4 h-4 text-[#4ade80]" />
+                  <Check className="w-4 h-4" />
                 ) : (
-                  <Copy className="w-4 h-4 text-[#5a6178]" />
+                  <Copy className="w-4 h-4" />
                 )}
               </button>
               <button
                 onClick={regenerateInvite}
-                className="p-1.5 rounded-md bg-[#101118] border border-[#1a1b24] hover:border-[#fbbf24] transition-colors"
+                className="vt-icon-button th-focus-ring h-8 min-w-8"
                 title="Regenerate invite link"
               >
-                <RefreshCw className="w-4 h-4 text-[#5a6178]" />
+                <RefreshCw className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -175,36 +175,36 @@ export default function SessionControlPanel({ slug }) {
           {pendingKnocks.length > 0 && (
             <div className="px-4 py-3">
               <div className="flex items-center gap-2 mb-2">
-                <Bell className="w-4 h-4 text-[#fbbf24]" />
-                <span className="text-xs text-[#fbbf24] font-medium uppercase tracking-wider">Requesting Access</span>
+                <Bell className="w-4 h-4 text-[var(--accent-warning)]" />
+                <span className="vt-panel-kicker text-[var(--accent-warning)]">Join requests</span>
               </div>
               <div className="space-y-2">
                 {pendingKnocks.map((knock) => (
-                  <div key={knock.guestId} className="flex items-center justify-between p-2 bg-[#fbbf2408] border border-[#fbbf2420] rounded-lg">
+                  <div key={knock.guestId} className="vt-workflow-alert flex items-center justify-between p-2">
                     <div className="flex items-center gap-2">
                       {knock.avatarUrl ? (
                         <img src={knock.avatarUrl} alt="" className="w-6 h-6 rounded-full" />
                       ) : (
-                        <div className="w-6 h-6 rounded-full bg-[#fbbf24] flex items-center justify-center text-[#0d0e14] text-xs font-bold">
+                        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--accent-warning)] text-xs font-bold text-[var(--bg-app)]">
                           {knock.displayName?.[0]?.toUpperCase() || '?'}
                         </div>
                       )}
-                      <span className="text-sm text-[#e0e4ec] font-medium">{knock.displayName}</span>
+                      <span className="text-sm font-medium text-[var(--text-primary)]">{knock.displayName}</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => admitGuest(knock.guestId)}
-                        className="p-1 rounded bg-[#4ade8020] hover:bg-[#4ade8030] transition-colors"
+                        className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-success)]"
                         title="Allow"
                       >
-                        <Check className="w-4 h-4 text-[#4ade80]" />
+                        <Check className="w-4 h-4" />
                       </button>
                       <button
                         onClick={() => denyKnock(knock.guestId)}
-                        className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730] transition-colors"
+                        className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-danger)]"
                         title="Deny"
                       >
-                        <X className="w-4 h-4 text-[#ff5757]" />
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
@@ -213,14 +213,14 @@ export default function SessionControlPanel({ slug }) {
             </div>
           )}
 
-          {/* ── Connected Guests ─────────────────────────────────────── */}
+          {/* ── Connected peers ──────────────────────────────────────── */}
           <div className="px-4 py-3">
             <div className="flex items-center gap-2 mb-2">
-              <Users className="w-4 h-4 text-[#3a8574]" />
-              <span className="text-xs text-[#5a6178] font-medium uppercase tracking-wider">Connected Guests</span>
+              <Users className="w-4 h-4 text-[var(--accent-secondary)]" />
+              <span className="vt-panel-kicker">Connected peers</span>
             </div>
             {guests.length === 0 ? (
-              <p className="text-xs text-[#5a6178] italic py-2">No guests connected yet</p>
+              <p className="py-2 text-xs text-[var(--text-muted)]">No peers connected.</p>
             ) : (
               <div className="space-y-3">
                 {guests.map((guest) => (
@@ -239,16 +239,17 @@ export default function SessionControlPanel({ slug }) {
           <div className="px-4 py-3">
             <button
               onClick={terminateSession}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[#ff575715] hover:bg-[#ff575725] border border-[#ff575740] rounded-lg text-[#ff5757] font-semibold text-sm transition-all"
+              className="th-focus-ring th-btn-ghost flex w-full items-center justify-center gap-2 rounded-[var(--radius-control)] border px-4 py-2 text-sm font-semibold text-[var(--accent-danger)]"
+              style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 32%, transparent)' }}
             >
               <X className="w-4 h-4" />
-              Stop Sharing
+              End session
             </button>
           </div>
 
           {/* ── Error display ─────────────────────────────────────────── */}
           {error && (
-            <div className="px-4 py-2 bg-[#ff575710] text-[#ff5757] text-xs">
+            <div className="vt-workflow-alert vt-workflow-alert--danger rounded-none border-x-0 border-b-0 px-4 py-2 text-xs text-[var(--accent-danger)]">
               {error}
             </div>
           )}
@@ -268,69 +269,63 @@ function GuestCard({ guest, onUpdatePermissions, onKick }) {
   };
 
   return (
-    <div className="bg-[#101118] border border-[#1a1b24] rounded-lg overflow-hidden">
+    <div className="vt-workflow-card overflow-hidden">
       {/* Guest header */}
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-2">
           {guest.avatarUrl ? (
             <img src={guest.avatarUrl} alt="" className="w-6 h-6 rounded-full" />
           ) : (
-            <div className="w-6 h-6 rounded-full bg-[#3a8574] flex items-center justify-center text-[#0d0e14] text-xs font-bold">
+            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--accent-secondary)] text-xs font-bold text-[var(--bg-app)]">
               {guest.displayName?.[0]?.toUpperCase() || '?'}
             </div>
           )}
-          <span className="text-sm text-[#e0e4ec] font-medium">{guest.displayName}</span>
+          <span className="text-sm font-medium text-[var(--text-primary)]">{guest.displayName}</span>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={() => setShowPerms(!showPerms)}
-            className="p-1 rounded hover:bg-[#1a1b24] transition-colors"
+            className={`vt-icon-button th-focus-ring h-7 min-w-7 ${showPerms ? 'th-btn-active' : ''}`}
             title="Permissions"
           >
             {showPerms ? (
-              <Shield className="w-4 h-4 text-[#3a8574]" />
+              <Shield className="w-4 h-4" />
             ) : (
-              <ShieldOff className="w-4 h-4 text-[#5a6178]" />
+              <ShieldOff className="w-4 h-4" />
             )}
           </button>
           <button
             onClick={onKick}
-            className="p-1 rounded hover:bg-[#ff575720] transition-colors"
+            className="vt-icon-button th-focus-ring h-7 min-w-7 text-[var(--accent-danger)]"
             title="Remove guest"
           >
-            <UserX className="w-4 h-4 text-[#5a6178] hover:text-[#ff5757]" />
+            <UserX className="w-4 h-4" />
           </button>
         </div>
       </div>
 
       {/* Permission toggles (expandable) */}
       {showPerms && (
-        <div className="px-3 pb-3 space-y-2 border-t border-[#1a1b24] pt-2">
+        <div className="space-y-2 border-t border-[var(--border-subtle)] px-3 pb-3 pt-2">
           {PERM_CONFIG.map(({ key, label, icon: Icon, risk, desc }) => {
             const enabled = guest.permissions[key];
             return (
               <button
                 key={key}
                 onClick={() => handleToggle(key)}
-                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md transition-all ${
-                  enabled
-                    ? 'bg-[#3a857415] border border-[#3a857430]'
-                    : 'bg-[#08090d] border border-[#1a1b24] hover:border-[#2a2b38]'
-                }`}
+                className={`th-focus-ring flex w-full items-center justify-between rounded-[var(--radius-control)] border px-2.5 py-1.5 transition-all ${enabled ? 'th-btn-active' : 'th-btn-ghost border-[var(--border-subtle)]'}`}
                 title={desc}
               >
                 <div className="flex items-center gap-2">
-                  <Icon className={`w-3.5 h-3.5 ${enabled ? 'text-[#3a8574]' : 'text-[#5a6178]'}`} />
-                  <span className={`text-xs font-medium ${enabled ? 'text-[#e0e4ec]' : 'text-[#5a6178]'}`}>
+                  <Icon className="w-3.5 h-3.5" />
+                  <span className="text-xs font-medium">
                     {label}
                   </span>
                   <span className={`text-[10px] ${RISK_COLORS[risk]}`}>
-                    {risk === 'high' && '⚠'}
+                    {risk === 'high' && 'High'}
                   </span>
                 </div>
-                <div className={`w-8 h-4 rounded-full relative transition-colors ${
-                  enabled ? 'bg-[#3a8574]' : 'bg-[#2a2b38]'
-                }`}>
+                <div className={`relative h-4 w-8 rounded-full transition-colors ${enabled ? 'th-toggle-on' : 'th-toggle-off'}`}>
                   <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
                     enabled ? 'translate-x-4' : 'translate-x-0.5'
                   }`} />
@@ -355,21 +350,20 @@ function CreateSessionModal({ onClose, onCreate }) {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-[#0d0e14] border border-[#1a1b24] rounded-2xl shadow-2xl p-6 w-[400px]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,black_68%,transparent)] backdrop-blur-sm">
+      <div className="vt-dialog-surface w-[400px] p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-[#e0e4ec] flex items-center gap-2">
-            <Users className="w-5 h-5 text-[#3a8574]" />
-            Share Session
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--text-primary)]">
+            <Users className="w-5 h-5 text-[var(--accent-primary)]" />
+            Start session
           </h2>
-          <button onClick={onClose} className="p-1 rounded hover:bg-[#1a1b24]">
-            <X className="w-5 h-5 text-[#5a6178]" />
+          <button onClick={onClose} className="vt-icon-button th-focus-ring h-8 min-w-8">
+            <X className="w-5 h-5" />
           </button>
         </div>
 
-        <p className="text-sm text-[#5a6178] mb-4">
-          Set default permissions for guests who join your session.
-          You can change these per-user after they connect.
+        <p className="mb-4 text-sm text-[var(--text-muted)]">
+          Set the initial access profile. You can tighten permissions per peer after they connect.
         </p>
 
         <div className="space-y-2 mb-6">
@@ -377,27 +371,21 @@ function CreateSessionModal({ onClose, onCreate }) {
             <button
               key={key}
               onClick={() => setPerms(p => ({ ...p, [key]: !p[key] }))}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all ${
-                perms[key]
-                  ? 'bg-[#3a857415] border border-[#3a857430]'
-                  : 'bg-[#101118] border border-[#1a1b24] hover:border-[#2a2b38]'
-              }`}
+              className={`th-focus-ring flex w-full items-center justify-between rounded-[var(--radius-control)] border px-3 py-2.5 transition-all ${perms[key] ? 'th-btn-active' : 'th-btn-ghost border-[var(--border-subtle)]'}`}
             >
               <div className="flex items-center gap-3">
-                <Icon className={`w-4 h-4 ${perms[key] ? 'text-[#3a8574]' : 'text-[#5a6178]'}`} />
+                <Icon className="w-4 h-4" />
                 <div className="text-left">
-                  <span className={`text-sm font-medium ${perms[key] ? 'text-[#e0e4ec]' : 'text-[#5a6178]'}`}>
+                  <span className="text-sm font-medium">
                     {label}
                   </span>
-                  <p className="text-xs text-[#5a6178]">{desc}</p>
+                  <p className="text-xs text-[var(--text-muted)]">{desc}</p>
                 </div>
                 {risk === 'high' && (
-                  <span className="text-xs text-[#ff5757] bg-[#ff575710] px-1.5 py-0.5 rounded">High Risk</span>
+                  <span className="vt-session-risk">Privileged</span>
                 )}
               </div>
-              <div className={`w-9 h-5 rounded-full relative transition-colors ${
-                perms[key] ? 'bg-[#3a8574]' : 'bg-[#2a2b38]'
-              }`}>
+              <div className={`relative h-5 w-9 rounded-full transition-colors ${perms[key] ? 'th-toggle-on' : 'th-toggle-off'}`}>
                 <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
                   perms[key] ? 'translate-x-4' : 'translate-x-0.5'
                 }`} />
@@ -408,10 +396,10 @@ function CreateSessionModal({ onClose, onCreate }) {
 
         <button
           onClick={() => onCreate(perms)}
-          className="w-full py-2.5 bg-[#3a8574] hover:bg-[#327464] text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+          className="th-focus-ring th-btn-primary flex w-full items-center justify-center gap-2 py-2.5 font-semibold"
         >
           <Radio className="w-4 h-4" />
-          Start Sharing
+          Start session
         </button>
       </div>
     </div>

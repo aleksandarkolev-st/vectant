@@ -42,8 +42,8 @@ export default function LibraryView({
             type="button"
             data-testid="open-store"
             onClick={onOpenStore}
-            className="inline-flex items-center gap-1.5 cursor-pointer"
-            style={{ fontSize: '10px', color: '#c6b8ff', border: '1px solid var(--border-medium)', borderRadius: '7px', padding: '3px 8px' }}
+            className="th-focus-ring th-btn-ghost inline-flex cursor-pointer items-center gap-1.5"
+            style={{ fontSize: '10px', color: 'var(--attention-purple)', border: '1px solid var(--border-medium)', borderRadius: '7px', padding: '3px 8px' }}
           >
             Store <ExternalLink className="w-3 h-3" />
           </button>
@@ -71,7 +71,7 @@ export default function LibraryView({
         <section className="flex flex-col gap-2">
           <SectionLabel count={running.length}>Running</SectionLabel>
           {loading ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading...</div>
           ) : running.length === 0 ? (
             <div className="rounded-lg px-3 py-4" style={{ ...PROGRAM_STYLE.surfaceCard, fontSize: '12px', color: 'var(--text-muted)' }}>Nothing running.</div>
           ) : (
@@ -114,7 +114,16 @@ export default function LibraryView({
               className="flex flex-col items-center justify-center gap-1.5 cursor-pointer"
               style={{ border: '1px dashed var(--border-medium)', borderRadius: '10px', padding: '10px 7px', color: 'var(--text-secondary)' }}
             >
-              <span className="flex items-center justify-center" style={{ width: '32px', height: '32px', borderRadius: '9px', background: 'linear-gradient(135deg, rgba(162,61,255,0.28), rgba(61,109,255,0.28))', color: '#c6b8ff' }}>
+              <span
+                className="flex items-center justify-center"
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '9px',
+                  background: 'color-mix(in srgb, var(--attention-purple) 18%, var(--bg-panel))',
+                  color: 'var(--attention-purple)',
+                }}
+              >
                 <Store className="w-4 h-4" />
               </span>
               <span style={{ fontSize: '11px' }}>Browse store</span>

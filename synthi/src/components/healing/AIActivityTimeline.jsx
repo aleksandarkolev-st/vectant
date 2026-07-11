@@ -7,10 +7,10 @@
 import React, { useMemo } from 'react';
 
 const ACTION_META = {
-  applied:      { icon: '✅', label: 'Applied',      color: '#238636' },
-  auto_applied: { icon: '⚡', label: 'Auto-applied', color: '#1f6feb' },
-  dismissed:    { icon: '❌', label: 'Dismissed',     color: '#da3633' },
-  modified:     { icon: '✏️', label: 'Modified',      color: '#e3b341' },
+  applied:      { label: 'Applied',      color: 'var(--accent-success)' },
+  auto_applied: { label: 'Auto-applied', color: 'var(--attention-purple)' },
+  dismissed:    { label: 'Dismissed',    color: 'var(--accent-danger)' },
+  modified:     { label: 'Modified',     color: 'var(--accent-warning)' },
 };
 
 function relativeTime(ts) {
@@ -39,7 +39,7 @@ export function AIActivityTimeline({ entries = [], maxItems = 15, filterFile }) 
   if (visible.length === 0) {
     return (
       <div style={{ padding: 12, fontSize: 12, opacity: 0.5, textAlign: 'center' }}>
-        No AI fix activity yet.
+        No fix activity yet.
       </div>
     );
   }
@@ -58,9 +58,21 @@ export function AIActivityTimeline({ entries = [], maxItems = 15, filterFile }) 
               padding: '4px 8px',
               borderLeft: `2px solid ${meta.color}`,
               marginBottom: 2,
+              background: 'color-mix(in srgb, var(--text-primary) 3%, transparent)',
+              borderRadius: 'var(--radius-control)',
             }}
           >
-            <span style={{ flexShrink: 0, fontSize: 13 }}>{meta.icon}</span>
+            <span
+              aria-hidden="true"
+              style={{
+                flexShrink: 0,
+                width: 7,
+                height: 7,
+                marginTop: 5,
+                borderRadius: 999,
+                background: meta.color,
+              }}
+            />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {entry.description || entry.ruleId || 'AI fix'}
@@ -68,7 +80,7 @@ export function AIActivityTimeline({ entries = [], maxItems = 15, filterFile }) 
               <div style={{ opacity: 0.6, fontSize: 11 }}>
                 {entry.filePath ? entry.filePath.split('/').pop() : ''}{' '}
                 {entry.line != null ? `L${entry.line + 1}` : ''}{' '}
-                · {relativeTime(entry.timestamp)}
+                - {relativeTime(entry.timestamp)}
               </div>
             </div>
             <span

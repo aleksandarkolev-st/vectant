@@ -19,147 +19,147 @@ import { getPreviewState, subscribePreviewStore, isPreviewBusy, isPreviewError }
 
 const STATUS_CONFIGS = {
     idle: {
-        color: 'bg-[#71717a]',
+        color: 'bg-[var(--text-muted)]',
         text: '',
         show: false,
     },
     compiling: {
-        color: 'bg-[#eab308] animate-pulse',
+        color: 'bg-[var(--accent-warning)] animate-pulse',
         text: 'Compiling...',
         show: true,
         // No autoHide - will be replaced by compile result
     },
     applied: {
-        color: 'bg-[#22c55e]',
+        color: 'bg-[var(--accent-success)]',
         text: 'HMR Applied',
         show: true,
         autoHide: 2000,
     },
     'shim-applied': {
-        color: 'bg-[#327464]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'Auto-shim enabled',
         show: true,
         autoHide: 3000,
     },
     'state-migrated': {
-        color: 'bg-[#22c55e]',
+        color: 'bg-[var(--accent-success)]',
         text: 'State Migrated',
         show: true,
         autoHide: 3000,
     },
     'crash-recovered': {
-        color: 'bg-[#f97316]',
+        color: 'bg-[var(--accent-warning)]',
         text: 'Crash Recovered',
         show: true,
         autoHide: 5000,
     },
     'crash-fatal': {
-        color: 'bg-[#ef4444]',
+        color: 'bg-[var(--accent-danger)]',
         text: 'Fatal Crash - Restart Required',
         show: true,
     },
     'host-kv-preserved': {
-        color: 'bg-[#3d8b78]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'State Preserved',
         show: true,
         autoHide: 2000,
     },
     'host-kv-reset-schema': {
-        color: 'bg-[#eab308]',
+        color: 'bg-[var(--accent-warning)]',
         text: 'Schema Changed - Namespace Reset',
         show: true,
         autoHide: 4000,
     },
     // Fast Refresh boundary statuses
     'boundary-violation': {
-        color: 'bg-[#f97316]',
+        color: 'bg-[var(--accent-warning)]',
         text: 'Fast Refresh Boundary Crossed',
         show: true,
         autoHide: 5000,
     },
     // Widget-level HMR statuses
     'widgets-detected': {
-        color: 'bg-[#327464]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'Widgets Detected',
         show: true,
         autoHide: 2000,
     },
     'widget-compiled': {
-        color: 'bg-[#3d8b78]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'Widget Updated',
         show: true,
         autoHide: 1500,
     },
     'widgets-compiled': {
-        color: 'bg-[#3d8b78]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'Widget HMR Complete',
         show: true,
         autoHide: 2500,
     },
     'widget-compile-error': {
-        color: 'bg-[#ef4444]',
+        color: 'bg-[var(--accent-danger)]',
         text: 'Widget Compile Error',
         show: true,
         autoHide: 4000,
     },
     check: {
-        color: 'bg-[#eab308] animate-pulse',
+        color: 'bg-[var(--accent-warning)] animate-pulse',
         text: 'Checking...',
         show: true,
     },
     prepare: {
-        color: 'bg-[#eab308] animate-pulse',
+        color: 'bg-[var(--accent-warning)] animate-pulse',
         text: 'Preparing...',
         show: true,
     },
     dispose: {
-        color: 'bg-[#eab308] animate-pulse',
+        color: 'bg-[var(--accent-warning)] animate-pulse',
         text: 'Disposing...',
         show: true,
     },
     apply: {
-        color: 'bg-[#eab308] animate-pulse',
+        color: 'bg-[var(--accent-warning)] animate-pulse',
         text: 'Applying...',
         show: true,
     },
     'reload-planned': {
-        color: 'bg-[#0ea5a4]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'Reload Planned',
         show: true,
         autoHide: 3000,
     },
     'full-reload-required': {
-        color: 'bg-[#f97316]',
+        color: 'bg-[var(--accent-warning)]',
         text: 'Full Reload Required',
         show: true,
         autoHide: 4000,
     },
     rejected: {
-        color: 'bg-[#ef4444]',
+        color: 'bg-[var(--accent-danger)]',
         text: 'HMR Failed',
         show: true,
         autoHide: 4000,
     },
     fail: {
-        color: 'bg-[#ef4444]',
+        color: 'bg-[var(--accent-danger)]',
         text: 'HMR Failed',
         show: true,
         autoHide: 4000,
     },
     'compile-error': {
-        color: 'bg-[#ef4444]',
+        color: 'bg-[var(--accent-danger)]',
         text: 'Compile Error',
         show: true,
         // No autoHide - user needs to see this
     },
     'compile-warning': {
-        color: 'bg-[#eab308]',
+        color: 'bg-[var(--accent-warning)]',
         text: 'Compiled with Warnings',
         show: true,
         autoHide: 4000,
     },
     'capability-detected': {
-        color: 'bg-[#327464]',
+        color: 'bg-[var(--accent-secondary)]',
         text: 'Module Analyzed',
         show: true,
         autoHide: 2000,
@@ -361,7 +361,7 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
     return (
         <div 
             className={cn(
-                "fixed bottom-4 right-4 z-50 flex items-center gap-2 px-3 py-2 rounded shadow-lg bg-[#09090b]/95 backdrop-blur-sm border border-[#1a1a1e] transition-all duration-300 cursor-pointer",
+                "vt-command-popover fixed bottom-4 right-4 z-50 flex cursor-pointer items-center gap-2 px-3 py-2 transition-all duration-300",
                 expanded && "flex-col items-start",
                 className
             )}
@@ -371,54 +371,54 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
             <div className={cn("w-2.5 h-2.5 rounded-full", config.color)} />
             
             {/* Status Text */}
-            <span className="text-sm text-[#fafafa] font-medium">
+            <span className="text-sm font-medium text-[var(--text-primary)]">
                 {displayText}
             </span>
             
             {/* Expanded Details */}
             {expanded && details && (
-                <div className="text-xs text-[#71717a] mt-2 space-y-1 max-w-xs">
+                <div className="mt-2 max-w-xs space-y-1 text-xs text-[var(--text-muted)]">
                     {details.module && (
-                        <div>Module: <span className="text-[#a1a1aa]">{details.module}</span></div>
+                        <div>Module: <span className="text-[var(--text-secondary)]">{details.module}</span></div>
                     )}
                     {details.capability && (
-                        <div>Capability: <span className="text-[#a1a1aa]">{details.capability}</span></div>
+                        <div>Capability: <span className="text-[var(--text-secondary)]">{details.capability}</span></div>
                     )}
                     {details.reason && (
-                        <div>Reason: <span className="text-[#a1a1aa]">{details.reason}</span></div>
+                        <div>Reason: <span className="text-[var(--text-secondary)]">{details.reason}</span></div>
                     )}
                     {details.reasonBundle?.decision_reason && (
-                        <div>Planner: <span className="text-[#a1a1aa]">{details.reasonBundle.decision_reason}</span></div>
+                        <div>Planner: <span className="text-[var(--text-secondary)]">{details.reasonBundle.decision_reason}</span></div>
                     )}
                     {details.message && (
                         <div>{details.message}</div>
                     )}
                     {details.warnings && details.warnings.length > 0 && (
-                        <div className="text-[#eab308]">
+                        <div className="text-[var(--accent-warning)]">
                             {details.warnings.map((w, i) => (
-                                <div key={i}>⚠️ {w}</div>
+                                <div key={i}>Warning: {w}</div>
                             ))}
                         </div>
                     )}
                     {details.state_preserved !== undefined && (
                         <div>
-                            State: <span className={details.state_preserved ? "text-[#22c55e]" : "text-[#eab308]"}>
+                            State: <span className={details.state_preserved ? "text-[var(--accent-success)]" : "text-[var(--accent-warning)]"}>
                                 {details.state_preserved ? "Preserved" : "Reset"}
                             </span>
                         </div>
                     )}
                     {pipelineDetails?.adapterFamily && pipelineDetails.adapterFamily !== 'none' && (
-                        <div>Adapter: <span className="text-[#a1a1aa]">{pipelineDetails.adapterFamily} ({pipelineDetails.adapterHealth || 'unknown'})</span></div>
+                        <div>Adapter: <span className="text-[var(--text-secondary)]">{pipelineDetails.adapterFamily} ({pipelineDetails.adapterHealth || 'unknown'})</span></div>
                     )}
                     {pipelineDetails?.restorePhase && pipelineDetails.restorePhase !== 'idle' && (
-                        <div>Restore: <span className="text-[#a1a1aa]">{pipelineDetails.restorePhase}{pipelineDetails.restoreStrategy ? ` (${pipelineDetails.restoreStrategy})` : ''}</span></div>
+                        <div>Restore: <span className="text-[var(--text-secondary)]">{pipelineDetails.restorePhase}{pipelineDetails.restoreStrategy ? ` (${pipelineDetails.restoreStrategy})` : ''}</span></div>
                     )}
                     {pipelineDetails?.gpuHmrStatus?.reloadPlan && (
-                        <div>GPU Reload: <span className="text-[#a1a1aa]">{pipelineDetails.gpuHmrStatus.reloadPlan}{pipelineDetails.gpuHmrStatus.reloadReason ? ` (${pipelineDetails.gpuHmrStatus.reloadReason})` : ''}</span></div>
+                        <div>GPU Reload: <span className="text-[var(--text-secondary)]">{pipelineDetails.gpuHmrStatus.reloadPlan}{pipelineDetails.gpuHmrStatus.reloadReason ? ` (${pipelineDetails.gpuHmrStatus.reloadReason})` : ''}</span></div>
                     )}
                     {pipelineDetails?.gpuHmrStatus?.snapshotTier && (
                         <div>
-                            GPU Snapshot: <span className="text-[#a1a1aa]">
+                            GPU Snapshot: <span className="text-[var(--text-secondary)]">
                                 tier {pipelineDetails.gpuHmrStatus.snapshotTier}
                                 {pipelineDetails.gpuHmrStatus.snapshotMs != null ? `, ${pipelineDetails.gpuHmrStatus.snapshotMs} ms` : ''}
                                 {pipelineDetails.gpuHmrStatus.snapshotBytes != null ? `, ${pipelineDetails.gpuHmrStatus.snapshotBytes} bytes` : ''}
@@ -428,32 +428,32 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
                     )}
                     {pipelineDetails?.gpuHmrStatus?.ptxas && (
                         <div>
-                            PTXAS: <span className="text-[#a1a1aa]">
+                            PTXAS: <span className="text-[var(--text-secondary)]">
                                 {pipelineDetails.gpuHmrStatus.ptxas.registers != null ? `${pipelineDetails.gpuHmrStatus.ptxas.registers} regs` : 'registers unknown'}
                                 {pipelineDetails.gpuHmrStatus.ptxas.spillBytes != null ? `, ${pipelineDetails.gpuHmrStatus.ptxas.spillBytes} B spill` : ''}
                             </span>
                         </div>
                     )}
                     {pipelineDetails?.gpuHmrStatus?.runtimeError && (
-                        <div>GPU Runtime: <span className="text-[#ef4444]">{pipelineDetails.gpuHmrStatus.runtimeError.kind || 'unknown'}</span></div>
+                        <div>GPU Runtime: <span className="text-[var(--accent-danger)]">{pipelineDetails.gpuHmrStatus.runtimeError.kind || 'unknown'}</span></div>
                     )}
                     {pipelineDetails?.candidatePhase && pipelineDetails.candidateGeneration > 0 && (
-                        <div>Candidate: <span className="text-[#a1a1aa]">g{pipelineDetails.candidateGeneration} {pipelineDetails.candidatePhase}</span></div>
+                        <div>Candidate: <span className="text-[var(--text-secondary)]">g{pipelineDetails.candidateGeneration} {pipelineDetails.candidatePhase}</span></div>
                     )}
                     {pipelineDetails?.aiRequestPhase && pipelineDetails.aiRequestPhase !== 'idle' && (
-                        <div>AI Loop: <span className="text-[#a1a1aa]">{pipelineDetails.aiCircuitState || 'closed'} / {pipelineDetails.aiRequestPhase}</span></div>
+                        <div>AI Loop: <span className="text-[var(--text-secondary)]">{pipelineDetails.aiCircuitState || 'closed'} / {pipelineDetails.aiRequestPhase}</span></div>
                     )}
                     {pipelineDetails?.overallHealth && pipelineDetails.overallHealth !== 'unknown' && (
-                        <div>Health: <span className="text-[#a1a1aa]">{pipelineDetails.overallHealth}</span></div>
+                        <div>Health: <span className="text-[var(--text-secondary)]">{pipelineDetails.overallHealth}</span></div>
                     )}
                     {pipelineDetails?.historyCount > 0 && (
-                        <div>Updates: <span className="text-[#a1a1aa]">{pipelineDetails.historyCount}</span></div>
+                        <div>Updates: <span className="text-[var(--text-secondary)]">{pipelineDetails.historyCount}</span></div>
                     )}
                     {pipelineDetails?.lastUpdateAt && (
-                        <div>Last Update: <span className="text-[#a1a1aa]">{new Date(pipelineDetails.lastUpdateAt).toLocaleTimeString()}</span></div>
+                        <div>Last Update: <span className="text-[var(--text-secondary)]">{new Date(pipelineDetails.lastUpdateAt).toLocaleTimeString()}</span></div>
                     )}
                     {pipelineDetails?.healthErrors?.length > 0 && (
-                        <div className="text-[#ef4444]">{pipelineDetails.healthErrors[pipelineDetails.healthErrors.length - 1]}</div>
+                        <div className="text-[var(--accent-danger)]">{pipelineDetails.healthErrors[pipelineDetails.healthErrors.length - 1]}</div>
                     )}
                 </div>
             )}

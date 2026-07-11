@@ -50,75 +50,47 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// SYNTHI PREMIUM DARK PALETTE - Blue-Gray with Teal Accent
-const COLORS = {
-  // Error colors - tinted to match blue-gray theme
-  errorBg: '#1a0f14',        // Blue-tinted dark red background
-  errorText: '#f4f5f8',      // Synthi text-primary
-  errorAccent: '#ff6b6b',    // Synthi error red
-  errorHoverBg: '#241419',   // Slightly lighter
-  
-  // Warning colors - tinted to match theme
-  warningBg: '#1a1508',      // Blue-tinted dark amber
-  warningAccent: '#fbbf24',  // Synthi warning amber
-  warningHoverBg: '#24200e', // Slightly lighter
-  
-  // Info colors - Synthi teal accent
-  infoBg: '#0d0e14',         // Synthi bg-card
-  infoAccent: '#3a8574',     // Synthi teal accent
-  infoHoverBg: '#101118',    // Synthi bg-panel
-  
-  // General - Synthi theme colors
-  border: '#1a1b24',         // Synthi border-subtle
-  borderMedium: '#2a2b38',   // Synthi border-medium
-  panelBg: '#0d0e14',        // Synthi bg-card
-  headerBg: '#08090d',       // Synthi bg-app
-  text: '#f4f5f8',           // Synthi text-primary
-  textMuted: '#9ba2b8',      // Synthi text-secondary
-  textDim: '#5a6178',        // Synthi text-muted
-};
-
 // Severity configuration with Synthi theme colors
 const SEVERITY_CONFIG = {
   error: {
     icon: AlertCircle,
     label: 'Error',
-    textClass: 'text-[#f4f5f8]',
-    iconClass: 'text-[#ff6b6b]',
-    bgClass: 'bg-[#1a0f14] border-l-[#ff6b6b]',
-    badgeBg: 'bg-[#1a0f14]',
-    dotClass: 'bg-[#ff6b6b]',
-    hoverBg: 'hover:bg-[#241419]',
+    textClass: 'text-[var(--text-primary)]',
+    iconClass: 'vt-diag-icon vt-diag-row--error',
+    bgClass: 'vt-diag-row vt-diag-row--error',
+    badgeBg: 'vt-diag-badge vt-diag-badge--error',
+    dotClass: 'vt-diag-dot vt-diag-dot--error',
+    hoverBg: '',
   },
   warning: {
     icon: AlertTriangle,
     label: 'Warning',
-    textClass: 'text-[#f4f5f8]',
-    iconClass: 'text-[#fbbf24]',
-    bgClass: 'bg-[#1a1508] border-l-[#fbbf24]',
-    badgeBg: 'bg-[#1a1508]',
-    dotClass: 'bg-[#fbbf24]',
-    hoverBg: 'hover:bg-[#24200e]',
+    textClass: 'text-[var(--text-primary)]',
+    iconClass: 'vt-diag-icon vt-diag-row--warning',
+    bgClass: 'vt-diag-row vt-diag-row--warning',
+    badgeBg: 'vt-diag-badge vt-diag-badge--warning',
+    dotClass: 'vt-diag-dot vt-diag-dot--warning',
+    hoverBg: '',
   },
   info: {
     icon: Info,
     label: 'Info',
-    textClass: 'text-[#f4f5f8]',
-    iconClass: 'text-[#3a8574]',
-    bgClass: 'bg-[#0d0e14] border-l-[#3a8574]',
-    badgeBg: 'bg-[#0f1a17]',
-    dotClass: 'bg-[#3a8574]',
-    hoverBg: 'hover:bg-[#101118]',
+    textClass: 'text-[var(--text-primary)]',
+    iconClass: 'vt-diag-icon vt-diag-row--info',
+    bgClass: 'vt-diag-row vt-diag-row--info',
+    badgeBg: 'vt-diag-badge vt-diag-badge--info',
+    dotClass: 'vt-diag-dot vt-diag-dot--info',
+    hoverBg: '',
   },
   hint: {
     icon: Lightbulb,
     label: 'Hint',
-    textClass: 'text-[#f4f5f8]',
-    iconClass: 'text-[#4ade80]',
-    bgClass: 'bg-[#0d0e14] border-l-[#4ade80]',
-    badgeBg: 'bg-[#0f1a14]',
-    dotClass: 'bg-[#4ade80]',
-    hoverBg: 'hover:bg-[#101118]',
+    textClass: 'text-[var(--text-primary)]',
+    iconClass: 'vt-diag-icon vt-diag-row--hint',
+    bgClass: 'vt-diag-row vt-diag-row--hint',
+    badgeBg: 'vt-diag-badge vt-diag-badge--hint',
+    dotClass: 'vt-diag-dot vt-diag-dot--hint',
+    hoverBg: '',
   },
 };
 
@@ -126,17 +98,17 @@ const SEVERITY_CONFIG = {
 const TIER_CONFIG = {
   static: {
     label: 'Static',
-    className: 'bg-[#1a1b24] text-[#9ba2b8]',
+    className: 'vt-state-pill',
     description: 'Syntax and compile-time errors',
   },
   semantic: {
     label: 'Semantic',
-    className: 'bg-[#0f1a17] text-[#3a8574]',
+    className: 'vt-state-pill',
     description: 'Type checking and semantic analysis',
   },
   ai: {
     label: 'AI',
-    className: 'bg-[#0f1a17] text-[#3a8574]',
+    className: 'vt-state-pill',
     icon: Sparkles,
     description: 'AI-powered code insights',
   },
@@ -255,8 +227,8 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         'border-l-2',
         severityConfig.bgClass,
         severityConfig.hoverBg,
-        'focus:outline-none focus:ring-1 focus:ring-[#3a8574] focus:ring-inset',
-        isSelected && 'ring-1 ring-[#3a8574] ring-inset',
+        'focus:outline-none focus:ring-1 focus:ring-[var(--attention-purple)] focus:ring-inset',
+        isSelected && 'ring-1 ring-[var(--attention-purple)] ring-inset',
       )}
     >
       {/* Severity Icon */}
@@ -271,13 +243,13 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Explanation (AI diagnostics) */}
         {diagnostic.explanation && (
-          <p className="text-xs text-[#9ba2b8] mt-1 break-words">
+          <p className="mt-1 break-words text-xs text-[var(--text-muted)]">
             {diagnostic.explanation}
           </p>
         )}
         
         {/* Meta info */}
-        <div className="flex items-center gap-2 mt-1 text-xs text-[#5a6178]">
+        <div className="mt-1 flex items-center gap-2 text-xs text-[var(--text-muted)]">
           {/* Location - show range for multi-line diagnostics */}
           <span className="flex items-center gap-1">
             <FileCode className="h-3 w-3" />
@@ -307,7 +279,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
           
           {/* Confidence (AI only) */}
           {diagnostic.confidence && diagnostic.confidence < 1 && (
-            <span className="text-[#3a8574]">
+            <span className="text-[var(--accent-secondary)]">
               {Math.round(diagnostic.confidence * 100)}%
             </span>
           )}
@@ -315,8 +287,8 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Cross-file references */}
         {diagnostic.crossFileRefs?.length > 0 && (
-          <div className="mt-1 text-xs text-[#5a6178]">
-            <span className="text-[#9ba2b8]">Related: </span>
+          <div className="mt-1 text-xs text-[var(--text-muted)]">
+            <span className="text-[var(--text-secondary)]">Related: </span>
             {diagnostic.crossFileRefs.map((ref, idx) => (
               <button
                 key={idx}
@@ -330,7 +302,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
                     });
                   }
                 }}
-                className="text-[#3a8574] hover:text-[#4aba9a] hover:underline ml-1"
+                className="ml-1 text-[var(--accent-secondary)] hover:underline"
               >
                 {ref.filePath?.split('/').pop() || ref.file?.split('/').pop()}:{(ref.location?.line ?? ref.line ?? 0) + 1}
               </button>
@@ -340,7 +312,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Quick fixes available indicator */}
         {diagnostic.fixes?.length > 0 && (
-          <div className="flex items-center gap-1 mt-1 text-xs text-[#4ade80]">
+          <div className="mt-1 flex items-center gap-1 text-xs text-[var(--accent-success)]">
             <Lightbulb className="h-3 w-3" />
             {diagnostic.fixes.length} quick fix{diagnostic.fixes.length > 1 ? 'es' : ''} available
           </div>
@@ -354,33 +326,33 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
     {ctxMenu && (
       <div
         onClick={(e) => { e.stopPropagation(); }}
-        className="fixed z-[100] min-w-[220px] py-1 bg-[#0d0e14] border border-[#2a2b38] rounded-md shadow-xl"
+        className="vt-command-popover fixed z-[100] min-w-[220px] py-1"
         style={{ left: ctxMenu.x, top: ctxMenu.y }}
       >
-        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#5a6178] border-b border-[#2a2b38]">
+        <div className="vt-panel-kicker border-b border-[var(--border-subtle)] px-3 py-1.5">
           Rule for this kind of issue
         </div>
         <button
           onClick={() => handleCreateRule(RuleAction.IGNORE)}
-          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+          className="vt-command-item w-full px-3 py-1.5 text-left text-xs"
         >
           Never heal this
         </button>
         <button
           onClick={() => handleCreateRule(RuleAction.AUTO_APPLY)}
-          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+          className="vt-command-item w-full px-3 py-1.5 text-left text-xs"
         >
           Always fix this
         </button>
         <button
           onClick={() => handleCreateRule(RuleAction.SUGGEST)}
-          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+          className="vt-command-item w-full px-3 py-1.5 text-left text-xs"
         >
           Suggest a fix
         </button>
         <button
           onClick={() => handleCreateRule(RuleAction.AI_ESCALATE)}
-          className="w-full px-3 py-1.5 text-left text-xs text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+          className="vt-command-item w-full px-3 py-1.5 text-left text-xs"
         >
           Ask AI for these
         </button>
@@ -400,23 +372,23 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle, to
   const hintCount = diagnostics.filter(d => d.severity === 'hint').length;
   
   return (
-    <div className="border-b border-[#1a1b24] last:border-b-0">
+    <div className="border-b border-[var(--border-subtle)] last:border-b-0">
       {/* File header */}
       <button
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-[#101118] text-left transition-colors"
+        className="vt-command-item w-full px-3 py-2 flex items-center gap-2 text-left"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-[#5a6178]" />
+          <ChevronDown className="h-4 w-4 text-[var(--text-muted)]" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-[#5a6178]" />
+          <ChevronRight className="h-4 w-4 text-[var(--text-muted)]" />
         )}
         
-        <FileCode className="h-4 w-4 text-[#9ba2b8]" />
-        <span className="text-sm text-[#f4f5f8] truncate flex-1">{filePath}</span>
+        <FileCode className="h-4 w-4 text-[var(--text-muted)]" />
+        <span className="truncate flex-1 text-sm text-[var(--text-primary)]">{filePath}</span>
         
         {/* Total count badge */}
-        <span className="text-xs text-[#5a6178] mr-2">
+        <span className="mr-2 text-xs text-[var(--text-muted)]">
           {diagnostics.length}{totalInFile && totalInFile !== diagnostics.length ? ` / ${totalInFile}` : ''}
         </span>
         
@@ -424,28 +396,28 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle, to
         <div className="flex items-center gap-1.5">
           {errorCount > 0 && (
             <span className="flex items-center gap-1 text-xs">
-              <span className="w-5 h-5 rounded bg-[#1a0f14] flex items-center justify-center text-[#ff6b6b] font-medium">
+              <span className="vt-diag-badge vt-diag-badge--error">
                 {errorCount}
               </span>
             </span>
           )}
           {warningCount > 0 && (
             <span className="flex items-center gap-1 text-xs">
-              <span className="w-5 h-5 rounded bg-[#1a1508] flex items-center justify-center text-[#fbbf24] font-medium">
+              <span className="vt-diag-badge vt-diag-badge--warning">
                 {warningCount}
               </span>
             </span>
           )}
           {infoCount > 0 && (
             <span className="flex items-center gap-1 text-xs">
-              <span className="w-5 h-5 rounded bg-[#0f1a17] flex items-center justify-center text-[#3a8574] font-medium">
+              <span className="vt-diag-badge vt-diag-badge--info">
                 {infoCount}
               </span>
             </span>
           )}
           {hintCount > 0 && (
             <span className="flex items-center gap-1 text-xs">
-              <span className="w-5 h-5 rounded bg-[#0f1a14] flex items-center justify-center text-[#4ade80] font-medium">
+              <span className="vt-diag-badge vt-diag-badge--hint">
                 {hintCount}
               </span>
             </span>
@@ -455,7 +427,7 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle, to
       
       {/* Diagnostics list */}
       {isExpanded && (
-        <div className="bg-[#0d0e14]">
+        <div className="bg-[color-mix(in_srgb,var(--bg-app)_48%,transparent)]">
           {diagnostics.map((diagnostic, index) => (
             <DiagnosticItem
               key={`${diagnostic.code}-${diagnostic.location?.line}-${index}`}
@@ -478,7 +450,7 @@ function SearchInput({ value, onChange, placeholder = "Filter problems..." }) {
   
   return (
     <div className="relative flex-1 min-w-0">
-      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#5a6178]" />
+      <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
       <input
         ref={inputRef}
         type="text"
@@ -486,16 +458,14 @@ function SearchInput({ value, onChange, placeholder = "Filter problems..." }) {
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         className={cn(
-          "w-full pl-7 pr-7 py-1 text-xs rounded bg-[#0d0e14] border border-[#1a1b24]",
-          "text-[#f4f5f8] placeholder-[#5a6178]",
-          "focus:outline-none focus:border-[#3a8574] focus:ring-1 focus:ring-[#3a8574]/30",
+          "th-input w-full rounded-[var(--radius-control)] border py-1 pl-7 pr-7 text-xs",
           "transition-colors"
         )}
       />
       {value && (
         <button
           onClick={() => onChange('')}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-[#5a6178] hover:text-[#9ba2b8]"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -529,7 +499,7 @@ function DropdownMenu({ trigger, children, align = 'right' }) {
       {isOpen && (
         <div className={cn(
           "absolute top-full mt-1 z-50 min-w-[180px] py-1",
-          "bg-[#0d0e14] border border-[#2a2b38] rounded-md shadow-xl",
+          "vt-command-popover",
           align === 'right' ? 'right-0' : 'left-0'
         )}>
           {React.Children.map(children, child => 
@@ -550,24 +520,24 @@ function MenuItem({ icon: Icon, label, description, onClick, onClose, isActive, 
       className={cn(
         "w-full px-3 py-1.5 flex items-center gap-2 text-left text-xs transition-colors",
         danger 
-          ? "text-[#ff6b6b] hover:bg-[#1a0f14]"
+          ? "text-[var(--accent-danger)]"
           : isActive
-            ? "bg-[#0f1a17] text-[#3a8574]"
-            : "text-[#9ba2b8] hover:bg-[#101118] hover:text-[#f4f5f8]"
+            ? "text-[var(--text-primary)] bg-[color-mix(in_srgb,var(--attention-purple)_12%,transparent)]"
+            : "vt-command-item"
       )}
     >
       {Icon && <Icon className="h-3.5 w-3.5" />}
       <div className="flex-1">
         <div>{label}</div>
-        {description && <div className="text-[10px] text-[#5a6178]">{description}</div>}
+        {description && <div className="text-[10px] text-[var(--text-muted)]">{description}</div>}
       </div>
-      {isActive && <span className="w-1.5 h-1.5 rounded-full bg-[#3a8574]" />}
+      {isActive && <span className="vt-state-dot" />}
     </button>
   );
 }
 
 function MenuDivider() {
-  return <div className="my-1 border-t border-[#1a1b24]" />;
+  return <div className="my-1 border-t border-[var(--border-subtle)]" />;
 }
 
 /**
@@ -589,10 +559,10 @@ function FilterBar({
   showOptions = true,
 }) {
   return (
-    <div className="border-b border-[#1a1b24] bg-[#08090d]">
+    <div className="border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-panel)_76%,var(--bg-app)_24%)]">
       {/* Main filter row */}
       <div className="flex items-center gap-2 px-3 py-2">
-        <Filter className="h-3.5 w-3.5 text-[#5a6178] flex-shrink-0" />
+        <Filter className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
         
         {/* Severity filters with FILTERED counts */}
         {Object.entries(SEVERITY_CONFIG).map(([severity, config]) => {
@@ -606,13 +576,13 @@ function FilterBar({
               onClick={() => onFilterChange('severity', severity)}
               title={`${config.label}: ${filteredCount} of ${totalCount} shown`}
               className={cn(
-                'flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors',
+                'vt-diag-filter px-2 py-0.5 text-xs',
                 isActive
-                  ? config.badgeBg + ' ' + config.textClass
-                  : 'bg-transparent hover:bg-[#1a1b24] text-[#5a6178]',
+                  ? `${config.badgeBg} is-active ${config.textClass}`
+                  : '',
               )}
             >
-              <span className={cn('w-2 h-2 rounded-full', isActive ? config.dotClass : 'bg-[#5a6178]')} />
+              <span className={cn('h-2 w-2 rounded-full', isActive ? config.dotClass : 'bg-[var(--text-dim)]')} />
               <span className={cn(
                 'font-medium tabular-nums',
                 !isActive && 'opacity-50'
@@ -621,14 +591,14 @@ function FilterBar({
               </span>
               {/* Show total if different from filtered and filter is active */}
               {isActive && filteredCount !== totalCount && (
-                <span className="text-[#5a6178] text-[10px]">/{totalCount}</span>
+                <span className="text-[10px] text-[var(--text-muted)]">/{totalCount}</span>
               )}
             </button>
           );
         })}
         
         {/* Separator */}
-        <div className="h-4 border-l border-[#1a1b24]" />
+        <div className="h-4 border-l border-[var(--border-subtle)]" />
         
         {/* Tier filters */}
         {Object.entries(TIER_CONFIG).map(([tier, config]) => {
@@ -641,10 +611,10 @@ function FilterBar({
               onClick={() => onFilterChange('tier', tier)}
               title={config.description}
               className={cn(
-                'px-2 py-0.5 rounded text-xs transition-colors flex items-center gap-1',
+                'vt-diag-filter px-2 py-0.5 text-xs',
                 isActive
                   ? config.className
-                  : 'bg-transparent hover:bg-[#1a1b24] text-[#5a6178]',
+                  : '',
               )}
             >
               {TierIcon && <TierIcon className="h-3 w-3" />}
@@ -660,7 +630,7 @@ function FilterBar({
         {showOptions && (
           <DropdownMenu
             trigger={
-              <button className="p-1 rounded hover:bg-[#1a1b24] text-[#5a6178] hover:text-[#9ba2b8] transition-colors">
+              <button className="vt-icon-button th-focus-ring h-7 w-7">
                 <MoreVertical className="h-4 w-4" />
               </button>
             }
@@ -686,7 +656,7 @@ function FilterBar({
       </div>
       
       {/* Search and sort row */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-[#1a1b24]/50">
+      <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] px-3 py-1.5">
         <SearchInput
           value={searchQuery}
           onChange={onSearchChange}
@@ -696,7 +666,7 @@ function FilterBar({
         {/* Sort dropdown */}
         <DropdownMenu
           trigger={
-            <button className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-[#0d0e14] border border-[#1a1b24] text-[#9ba2b8] hover:border-[#2a2b38] hover:text-[#f4f5f8] transition-colors">
+            <button className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-2 py-1 text-xs">
               <SlidersHorizontal className="h-3 w-3" />
               <span>Sort</span>
               <ChevronDown className="h-3 w-3" />
@@ -927,7 +897,7 @@ export function ProblemsPanel({
   
   return (
     <div className={cn(
-      'flex flex-col bg-[#0d0e14] border border-[#1a1b24] rounded-md overflow-hidden',
+      'vt-panel-frame flex flex-col overflow-hidden rounded-none border-0',
       className,
     )}>
       
@@ -949,27 +919,27 @@ export function ProblemsPanel({
       
       {/* Tier progress indicators */}
       {isAnalyzing && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-[#08090d] border-b border-[#1a1b24] text-xs">
-          <Loader2 className="h-3 w-3 animate-spin text-[#3a8574]" />
-          <span className="text-[#9ba2b8]">Analyzing...</span>
+        <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_62%,transparent)] px-3 py-1.5 text-xs">
+          <Loader2 className="h-3 w-3 animate-spin text-[var(--accent-secondary)]" />
+          <span className="text-[var(--text-muted)]">Analyzing...</span>
           {Object.entries(tierStatus).map(([tier, status]) => {
             const config = TIER_CONFIG[tier];
             if (!config) return null;
             
             return (
-              <span key={tier} className="flex items-center gap-1 text-[#5a6178]">
+              <span key={tier} className="flex items-center gap-1 text-[var(--text-muted)]">
                 {status.status === 'running' ? (
-                  <Loader2 className="h-3 w-3 animate-spin text-[#3a8574]" />
+                  <Loader2 className="h-3 w-3 animate-spin text-[var(--accent-secondary)]" />
                 ) : status.status === 'completed' ? (
-                  <span className="w-2 h-2 rounded-full bg-[#4ade80]" />
+                  <span className="h-2 w-2 rounded-full bg-[var(--accent-success)]" />
                 ) : status.status === 'error' ? (
-                  <span className="w-2 h-2 rounded-full bg-[#ff6b6b]" />
+                  <span className="h-2 w-2 rounded-full bg-[var(--accent-danger)]" />
                 ) : (
-                  <span className="w-2 h-2 rounded-full bg-[#5a6178]" />
+                  <span className="h-2 w-2 rounded-full bg-[var(--text-dim)]" />
                 )}
                 {config.label}
                 {status.elapsed > 0 && (
-                  <span className="text-[#3a3b48]">({Math.round(status.elapsed)}ms)</span>
+                  <span className="text-[var(--text-dim)]">({Math.round(status.elapsed)}ms)</span>
                 )}
               </span>
             );
@@ -981,21 +951,21 @@ export function ProblemsPanel({
       {/* Diagnostics list */}
       <div className="flex-1 overflow-auto">
         {sortedDiagnostics.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-[#5a6178]">
+          <div className="vt-empty-state m-3 flex flex-col items-center justify-center py-8 text-[var(--text-muted)]">
             {diagnostics.length === 0 ? (
               <>
-                <AlertCircle className="h-8 w-8 mb-2 text-[#4ade80]/50" />
-                <p className="text-sm text-[#f4f5f8]">No problems detected</p>
-                <p className="text-xs text-[#5a6178] mt-1">Your code looks good!</p>
+                <AlertCircle className="mb-2 h-8 w-8 text-[var(--accent-success)] opacity-60" />
+                <p className="text-sm text-[var(--text-primary)]">No problems detected</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">The current analysis pass is clean.</p>
               </>
             ) : searchQuery ? (
               <>
                 <Search className="h-8 w-8 mb-2" />
-                <p className="text-sm text-[#f4f5f8]">No matching problems</p>
-                <p className="text-xs text-[#5a6178] mt-1">Try a different search term</p>
+                <p className="text-sm text-[var(--text-primary)]">No matching problems</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Try a different search term.</p>
                 <button
                   onClick={() => setSearchQuery('')}
-                  className="mt-2 px-3 py-1 text-xs bg-[#1a1b24] hover:bg-[#2a2b38] text-[#9ba2b8] rounded transition-colors"
+                  className="th-focus-ring th-btn-ghost mt-2 rounded-[var(--radius-control)] px-3 py-1 text-xs"
                 >
                   Clear search
                 </button>
@@ -1003,14 +973,14 @@ export function ProblemsPanel({
             ) : (
               <>
                 <Filter className="h-8 w-8 mb-2" />
-                <p className="text-sm text-[#f4f5f8]">No problems match filters</p>
-                <p className="text-xs text-[#5a6178] mt-1">Adjust filters to see results</p>
+                <p className="text-sm text-[var(--text-primary)]">No problems match filters</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Adjust filters to see results.</p>
                 <button
                   onClick={() => setFilters({
                     severities: ['error', 'warning', 'info', 'hint'],
                     tiers: ['static', 'semantic', 'ai'],
                   })}
-                  className="mt-2 px-3 py-1 text-xs bg-[#1a1b24] hover:bg-[#2a2b38] text-[#9ba2b8] rounded transition-colors"
+                  className="th-focus-ring th-btn-ghost mt-2 rounded-[var(--radius-control)] px-3 py-1 text-xs"
                 >
                   Reset filters
                 </button>
@@ -1041,10 +1011,12 @@ export function ProblemsPanel({
       </div>
       
       {/* Footer with keyboard shortcuts hint */}
-      <div className="px-3 py-1.5 bg-[#08090d] border-t border-[#1a1b24] text-[10px] text-[#5a6178] flex items-center justify-between">
-        <span>Click to navigate • Double-click for quick fix</span>
+      <div className="flex items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] px-3 py-1.5 text-[10px] text-[var(--text-tertiary)]">
+        <span>Click to navigate. Double-click for quick fix.</span>
         <span className="flex items-center gap-2">
-          <kbd className="px-1 py-0.5 bg-[#1a1b24] rounded text-[9px]">F8</kbd>
+          <kbd className="rounded border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-1 py-0.5 text-[9px] text-[var(--text-secondary)]">
+            F8
+          </kbd>
           <span>Next problem</span>
         </span>
       </div>

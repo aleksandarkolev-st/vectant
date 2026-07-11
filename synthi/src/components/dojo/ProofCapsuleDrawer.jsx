@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke, busy = false }) {
@@ -51,19 +53,19 @@ export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke,
       </dl>
 
       {proof.revocationReason ? (
-        <div className="mt-3 rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--accent-warning)' }}>
+        <div className="mt-3 rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', color: 'var(--accent-warning)' }}>
           {proof.revocationReason}
         </div>
       ) : null}
 
       {proof.revocationEvidenceRefs?.length ? (
-        <div className="mt-2 rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+        <div className="mt-2 rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', color: 'var(--text-muted)' }}>
           <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>Revocation evidence</span>
           <div className="mt-1 truncate">{proof.revocationEvidenceRefs.join(', ')}</div>
         </div>
       ) : null}
 
-      <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <h3 className="flex items-center gap-2 text-xs font-semibold">
           <ShieldOff size={13} aria-hidden="true" />
           Revoke Proof
@@ -73,7 +75,7 @@ export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke,
           <input
             type="text"
             className="mt-1 h-8 w-full rounded-md border px-2 text-xs outline-none"
-            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+            style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', background: 'var(--bg-app)', color: 'var(--text-primary)' }}
             value={revocationReason}
             onChange={(event) => setRevocationReason(event.target.value)}
             placeholder="Required for audit"
@@ -100,7 +102,7 @@ export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke,
         {claims.length ? (
           <div className="grid gap-2">
             {claims.map((claim) => (
-              <div key={claim.claim} className="rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div key={claim.claim} className="rounded-md border p-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <span className="min-w-0 truncate font-semibold">{claim.claim}</span>
                   <span>{claim.satisfied ? 'satisfied' : claim.status || 'required'}</span>
@@ -124,7 +126,7 @@ export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke,
         {proof.validationTimeline?.length ? (
           <ol className="grid gap-2">
             {proof.validationTimeline.map((event, index) => (
-              <li key={`${event.label}-${index}`} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
+              <li key={`${event.label}-${index}`} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
                 <div className="font-semibold">{event.label || event.status}</div>
                 <div className="mt-1" style={{ color: 'var(--text-muted)' }}>
                   {[event.status, event.at ? String(event.at).slice(0, 19) : ''].filter(Boolean).join(' / ')}

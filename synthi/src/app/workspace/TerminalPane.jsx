@@ -1299,7 +1299,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
-      {/* Connection status — viewport-centred floating panel (portal to body) */}
+      {/* Connection status — contained in the terminal pane so workspace dialogs stay on top. */}
       <AnimatePresence>
         {(state === 'error' || state === 'closed') && (
           <ConnectionStatusPanel
@@ -1697,33 +1697,46 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           <pre
             className="mb-2 max-h-[220px] overflow-auto rounded-md border p-2 font-mono text-[11px] leading-5 whitespace-pre"
             style={{
-              background: 'var(--bg-app, #0a0b10)',
-              borderColor: 'var(--border-subtle, #2a2b38)',
-              color: 'var(--text-primary, #e4e4e7)',
+              background: 'var(--bg-app)',
+              borderColor: 'var(--border-subtle)',
+              color: 'var(--text-primary)',
             }}
           >
             {preview}
           </pre>
 
           {truncated && (
-            <p className="mb-2 text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+            <p className="mb-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
               Preview truncated. The full payload will still be pasted.
             </p>
           )}
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <label
-              className="flex items-center gap-2 text-[11px] cursor-pointer select-none"
-              style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoApprove}
+              onClick={() => setAutoApprove((value) => !value)}
+              className="th-focus-ring flex items-center gap-2 rounded-[var(--radius-control)] border px-2 py-1 text-left text-[11px]"
+              style={{
+                borderColor: autoApprove
+                  ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                  : 'var(--border-subtle)',
+                background: autoApprove
+                  ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                  : 'transparent',
+                color: 'var(--text-secondary)',
+              }}
             >
-              <input
-                type="checkbox"
-                checked={autoApprove}
-                onChange={(e) => setAutoApprove(e.target.checked)}
-                className="cursor-pointer"
+              <span
+                className="grid h-4 w-4 place-items-center rounded border"
+                style={{
+                  borderColor: autoApprove ? 'var(--accent-primary)' : 'var(--border-medium)',
+                  background: autoApprove ? 'color-mix(in srgb, var(--accent-primary) 18%, transparent)' : 'transparent',
+                }}
               />
               Trust multi-line pastes for this page session
-            </label>
+            </button>
 
             <div className="flex items-center justify-end gap-2">
               <button
@@ -1731,7 +1744,7 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
                 onClick={onCancel}
                 autoFocus
                 className="h-8 rounded-md border px-3 text-xs font-medium transition-colors hover:bg-white/[0.04]"
-                style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+                style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)' }}
               >
                 Cancel
                 <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
@@ -1926,48 +1939,28 @@ function TerminalColorPanel({ baseTheme, overrides, onClose }) {
 }
 
 /**
- * ConnectionStatusPanel — viewport-centred floating panel (portal to body)
- * shown when the terminal disconnects or the shell exits. No backdrop, so
- * the rest of the IDE stays usable; draggable by the titlebar.
+ * ConnectionStatusPanel — terminal-scoped status panel shown when the
+ * runtime disconnects or the shell exits. It is intentionally contained
+ * here instead of portaled to the body so global dialogs and menus keep
+ * the correct layer priority.
  */
 function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepairRuntime }) {
-  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
   const reduceMotion = useReducedMotion();
 
-  if (typeof document === 'undefined') return null;
-
-  const placement = pos
-    ? { left: pos.x, top: pos.y }
-    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
-
   const isClosed = state === 'closed';
-  const title = isClosed ? 'Terminal session ended' : 'Runtime terminal unavailable';
+  const title = isClosed ? 'Session ended' : 'Runtime unavailable';
   const body = isClosed
     ? 'The shell process exited. Workspace files are preserved.'
-    : 'The editor is still usable. The workspace runtime is unavailable, so terminal commands cannot start yet.';
-  const actionLabel = isClosed ? 'New session' : repairing ? 'Repairing runtime' : 'Repair runtime';
+    : 'Editor remains usable while the workspace runtime reconnects.';
+  const actionLabel = isClosed ? 'New session' : repairing ? 'Repairing' : 'Repair';
   const actionHandler = isClosed ? onReconnect : onRepairRuntime;
-  const statusItems = isClosed
-    ? [
-        ['Session', 'Exited'],
-        ['Workspace', 'Files preserved'],
-      ]
-    : [
-        ['Runtime', 'Unavailable'],
-        ['Repair path', 'Restart workspace runtime'],
-        ['Workspace', 'Files preserved'],
-      ];
   const iconColor = isClosed ? 'var(--text-secondary, #a1a1aa)' : 'var(--accent-warning, #d89b2b)';
 
-  return createPortal(
+  return (
     <div
-      ref={panelRef}
-      className="fixed"
+      className="pointer-events-none absolute inset-x-3 top-3 flex justify-center lg:left-auto lg:right-3 lg:w-[380px] lg:justify-end"
       style={{
-        ...placement,
-        width: 404,
-        maxWidth: 'calc(100vw - 16px)',
-        zIndex: 120,
+        zIndex: 3,
       }}
     >
       <motion.div
@@ -1977,8 +1970,10 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.985 }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: TERMINAL_MOTION_EASE }}
-        className="flex flex-col overflow-hidden rounded-lg border shadow-none"
+        className="pointer-events-auto flex flex-col overflow-hidden rounded-lg border shadow-none"
         style={{
+          width: 'min(380px, 100%)',
+          maxHeight: 'calc(100% - 24px)',
           background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 94%, var(--bg-app, #0a0b10))',
           borderColor: 'var(--border-medium, #3f3f46)',
           color: 'var(--text-primary, #e4e4e7)',
@@ -1991,15 +1986,10 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           style={{ background: 'var(--brand-gradient-horizontal)' }}
         />
         <div
-          onMouseDown={onTitleMouseDown}
-          className="flex items-start gap-3 border-b px-3.5 py-3.5 select-none"
-          style={{
-            borderColor: 'var(--border-subtle, #2a2b38)',
-            cursor: 'move',
-          }}
+          className="flex items-start gap-3 px-3.5 py-2 select-none"
         >
           <div
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
             style={{
               borderColor: 'color-mix(in srgb, var(--accent-warning, #d89b2b) 26%, var(--border-medium, #3f3f46))',
               color: iconColor,
@@ -2010,7 +2000,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-[13px] font-semibold">{title}</div>
+              <div className="truncate text-[13px] font-semibold">{title}</div>
               <span
                 className="shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-medium"
                 style={{
@@ -2022,39 +2012,17 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
                 {state}
               </span>
             </div>
-            <p className="mt-1.5 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
               {body}
             </p>
           </div>
-        </div>
-
-        <div className="px-3.5 py-3">
-          <div className="grid gap-1.5">
-            {statusItems.map(([label, value]) => (
-              <div key={label} className="grid grid-cols-[86px_1fr] items-center gap-3 text-[10.5px]">
-                <span style={{ color: 'var(--text-muted, #6b7089)' }}>{label}</span>
-                <span className="truncate" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-                  {value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div
-          className="flex items-center justify-between gap-3 border-t px-3.5 py-2.5"
-          style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
-        >
-          <span className="text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
-            Workspace stays editable
-          </span>
           <motion.button
             type="button"
             whileTap={reduceMotion ? undefined : { scale: 0.97 }}
             onClick={actionHandler}
             disabled={repairing}
             aria-label={actionLabel}
-            className="th-focus-ring flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
+            className="th-focus-ring flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
             style={{
               background: 'var(--text-primary, #f4f5f8)',
               color: 'var(--bg-app, #0a0b10)',
@@ -2070,9 +2038,9 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
             {actionLabel}
           </motion.button>
         </div>
+
       </motion.div>
-    </div>,
-    document.body
+    </div>
   );
 }
 

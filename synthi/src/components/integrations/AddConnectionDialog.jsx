@@ -5,6 +5,13 @@ import { Plug, Eye, EyeOff } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
 import { createConnection } from './integrationsClient';
 
@@ -17,6 +24,7 @@ export default function AddConnectionDialog({ workspaceSlug, onCreated }) {
   });
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const setValue = (k) => (value) => setForm((f) => ({ ...f, [k]: value }));
 
   const submit = async () => {
     if (!form.name.trim() || !form.url.trim()) {
@@ -49,12 +57,6 @@ export default function AddConnectionDialog({ workspaceSlug, onCreated }) {
 
   const labelCls = 'text-[11px] uppercase tracking-wider';
   const labelStyle = { color: 'var(--text-muted)' };
-  const fieldStyle = {
-    background: 'var(--bg-input, var(--bg-editor))',
-    borderColor: 'var(--border-subtle)',
-    color: 'var(--text-primary)',
-  };
-
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -78,34 +80,46 @@ export default function AddConnectionDialog({ workspaceSlug, onCreated }) {
             <Input value={form.url} onChange={set('url')} placeholder="https://example.com/mcp" />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1">
-              <span className={labelCls} style={labelStyle}>Transport</span>
-              <select value={form.transport} onChange={set('transport')}
-                className="h-9 rounded-md border px-2 text-sm" style={fieldStyle}>
-                <option value="http">Streamable HTTP</option>
-                <option value="sse">SSE</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className={labelCls} style={labelStyle}>Scope</span>
-              <select value={form.scope} onChange={set('scope')}
-                className="h-9 rounded-md border px-2 text-sm" style={fieldStyle}>
-                <option value="personal">Personal</option>
-                <option value="workspace" disabled={!workspaceSlug}>Workspace</option>
-              </select>
-            </div>
-          </div>
+	          <div className="grid grid-cols-2 gap-3">
+	            <div className="flex flex-col gap-1">
+	              <span className={labelCls} style={labelStyle}>Transport</span>
+	              <Select value={form.transport} onValueChange={setValue('transport')}>
+	                <SelectTrigger className="h-9 w-full text-sm">
+	                  <SelectValue />
+	                </SelectTrigger>
+	                <SelectContent align="start">
+	                  <SelectItem value="http">Streamable HTTP</SelectItem>
+	                  <SelectItem value="sse">SSE</SelectItem>
+	                </SelectContent>
+	              </Select>
+	            </div>
+	            <div className="flex flex-col gap-1">
+	              <span className={labelCls} style={labelStyle}>Scope</span>
+	              <Select value={form.scope} onValueChange={setValue('scope')}>
+	                <SelectTrigger className="h-9 w-full text-sm">
+	                  <SelectValue />
+	                </SelectTrigger>
+	                <SelectContent align="start">
+	                  <SelectItem value="personal">Personal</SelectItem>
+	                  <SelectItem value="workspace" disabled={!workspaceSlug}>Workspace</SelectItem>
+	                </SelectContent>
+	              </Select>
+	            </div>
+	          </div>
 
-          <div className="flex flex-col gap-1">
-            <span className={labelCls} style={labelStyle}>Auth</span>
-            <select value={form.authType} onChange={set('authType')}
-              className="h-9 rounded-md border px-2 text-sm" style={fieldStyle}>
-              <option value="none">None</option>
-              <option value="bearer">Bearer token</option>
-              <option value="header">Custom header</option>
-            </select>
-          </div>
+	          <div className="flex flex-col gap-1">
+	            <span className={labelCls} style={labelStyle}>Auth</span>
+	            <Select value={form.authType} onValueChange={setValue('authType')}>
+	              <SelectTrigger className="h-9 w-full text-sm">
+	                <SelectValue />
+	              </SelectTrigger>
+	              <SelectContent align="start">
+	                <SelectItem value="none">None</SelectItem>
+	                <SelectItem value="bearer">Bearer token</SelectItem>
+	                <SelectItem value="header">Custom header</SelectItem>
+	              </SelectContent>
+	            </Select>
+	          </div>
 
           {form.authType === 'header' && (
             <div className="flex flex-col gap-1">
@@ -131,7 +145,7 @@ export default function AddConnectionDialog({ workspaceSlug, onCreated }) {
 
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button size="sm" onClick={submit} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+	          <Button size="sm" onClick={submit} disabled={saving}>{saving ? 'Saving...' : 'Save'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -11,8 +11,10 @@ import ProofCapsuleDrawer from './ProofCapsuleDrawer';
 import RefusalExplainerDrawer from './RefusalExplainerDrawer';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function SkillPassport({
@@ -81,12 +83,12 @@ export default function SkillPassport({
 
   return (
     <main
-      className="min-h-screen px-5 py-5 text-sm"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      className="dojo-page min-h-[100dvh] px-5 py-5 text-sm"
+      style={{ color: 'var(--text-primary)' }}
       data-testid="skill-passport"
     >
       <div className="mx-auto flex max-w-6xl flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <div className="min-w-0">
             <a
               href={backHref}
@@ -114,7 +116,7 @@ export default function SkillPassport({
         {actionState.message || actionState.error ? (
           <section
             className="rounded-md border p-3 text-xs"
-            style={{ ...panelStyle, color: actionState.error ? 'var(--accent-danger, #ef4444)' : 'var(--accent-success, #22c55e)' }}
+            style={{ ...panelStyle, color: actionState.error ? 'var(--accent-danger)' : 'var(--accent-success)' }}
             role="status"
             data-testid="skill-passport-action-status"
           >
@@ -275,7 +277,7 @@ function ScopePanel({ title, items = [], empty }) {
       {items.length ? (
         <ul className="grid gap-2 text-sm">
           {items.map((item) => (
-            <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               {item}
             </li>
           ))}
@@ -298,7 +300,7 @@ function ProofPanel({ skill }) {
       {skill.proofRequirements?.length ? (
         <ul className="grid gap-2 text-sm">
           {skill.proofRequirements.map((requirement) => (
-            <li key={requirement} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <li key={requirement} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               {requirement}
             </li>
           ))}
@@ -320,7 +322,7 @@ function ToolsPanel({ tools = [] }) {
       {tools.length ? (
         <div className="grid gap-2 text-xs">
           {tools.map((tool) => (
-            <div key={`${tool.name}-${tool.version || 'current'}`} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div key={`${tool.name}-${tool.version || 'current'}`} className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               <div className="truncate font-semibold">{tool.name}</div>
               <div className="mt-1 flex justify-between gap-3" style={{ color: 'var(--text-muted)' }}>
                 <span>{tool.version || 'current'}</span>
@@ -343,7 +345,7 @@ function TimelinePanel({ entries = [] }) {
       {entries.length ? (
         <ol className="grid gap-2 text-sm">
           {entries.map((entry, index) => (
-            <li key={`${entry.label}-${entry.at}-${index}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <li key={`${entry.label}-${entry.at}-${index}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
               <div className="font-semibold">{entry.level || entry.label}</div>
               <div className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
                 {[entry.label, entry.at ? String(entry.at).slice(0, 10) : ''].filter(Boolean).join(' / ')}

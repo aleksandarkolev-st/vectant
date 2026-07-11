@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
-import { X, ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info, Lightbulb, Copy, Check, RefreshCw, FileCode, Keyboard, Wand2 } from 'lucide-react';
+import { X, ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info, Lightbulb, Copy, Check, RefreshCw, FileCode, Wand2 } from 'lucide-react';
 import { PreviewLifecycleState } from '@/lib/preview-lifecycle';
 import { getPreviewState, subscribePreviewStore } from '@/lib/preview-store';
 import { normalizeDiagnosticsPayload } from '@/lib/diagnostics-normalizer';
@@ -10,16 +10,8 @@ import { normalizeDiagnosticsPayload } from '@/lib/diagnostics-normalizer';
 /**
  * Error Overlay Component
  * 
- * Displays compile/runtime errors in a Next.js-style full-screen overlay.
+ * Displays compile/runtime errors in a Vectant recovery overlay.
  * Shows source code snippets, file:line info, suggestions, and allows dismiss.
- * 
- * Keyboard shortcuts:
- * - Escape: Dismiss overlay
- * - Enter: Go to first error location
- * - N / Arrow Down: Next error
- * - P / Arrow Up: Previous error
- * - F: Apply first fix (if available)
- * - R: Retry compilation
  */
 
 // Quick fix action types
@@ -35,37 +27,37 @@ const QUICK_FIX_TYPES = {
 const SEVERITY_CONFIGS = {
     error: {
         icon: AlertCircle,
-        color: 'text-red-400',
-        bgColor: 'bg-red-500/10',
-        borderColor: 'border-red-500/30',
+        tone: 'var(--accent-danger)',
+        bg: 'color-mix(in srgb, var(--accent-danger) 10%, var(--bg-panel) 90%)',
+        border: 'color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))',
         label: 'Error',
     },
     warning: {
         icon: AlertTriangle,
-        color: 'text-yellow-400',
-        bgColor: 'bg-yellow-500/10',
-        borderColor: 'border-yellow-500/30',
+        tone: 'var(--accent-warning)',
+        bg: 'color-mix(in srgb, var(--accent-warning) 10%, var(--bg-panel) 90%)',
+        border: 'color-mix(in srgb, var(--accent-warning) 42%, var(--border-subtle))',
         label: 'Warning',
     },
     note: {
         icon: Info,
-        color: 'text-blue-400',
-        bgColor: 'bg-blue-500/10',
-        borderColor: 'border-blue-500/30',
+        tone: 'var(--accent-secondary)',
+        bg: 'color-mix(in srgb, var(--accent-secondary) 9%, var(--bg-panel) 91%)',
+        border: 'color-mix(in srgb, var(--accent-secondary) 34%, var(--border-subtle))',
         label: 'Note',
     },
     help: {
         icon: Lightbulb,
-        color: 'text-green-400',
-        bgColor: 'bg-green-500/10',
-        borderColor: 'border-green-500/30',
+        tone: 'var(--accent-success)',
+        bg: 'color-mix(in srgb, var(--accent-success) 10%, var(--bg-panel) 90%)',
+        border: 'color-mix(in srgb, var(--accent-success) 36%, var(--border-subtle))',
         label: 'Help',
     },
     info: {
         icon: Info,
-        color: 'text-gray-400',
-        bgColor: 'bg-gray-500/10',
-        borderColor: 'border-gray-500/30',
+        tone: 'var(--text-secondary)',
+        bg: 'color-mix(in srgb, var(--bg-elevated) 58%, var(--bg-panel) 42%)',
+        border: 'var(--border-subtle)',
         label: 'Info',
     },
 };
@@ -148,7 +140,14 @@ function CodeSnippet({ code, highlightLine, startLine = 1, language = 'cpp' }) {
     const lines = code.split('\n');
     
     return (
-        <div className="font-mono text-sm bg-gray-950 rounded-lg overflow-hidden border border-gray-800">
+        <div
+            className="overflow-hidden rounded-[var(--radius-control)] border font-mono text-sm"
+            style={{
+                background: 'var(--bg-editor)',
+                borderColor: 'var(--border-subtle)',
+                color: 'var(--text-secondary)',
+            }}
+        >
             <div className="overflow-x-auto">
                 <table className="w-full">
                     <tbody>
@@ -158,21 +157,28 @@ function CodeSnippet({ code, highlightLine, startLine = 1, language = 'cpp' }) {
                             return (
                                 <tr 
                                     key={idx}
-                                    className={cn(
-                                        "hover:bg-gray-800/50",
-                                        isHighlighted && "bg-red-500/20"
-                                    )}
+                                    style={{
+                                        background: isHighlighted
+                                            ? 'color-mix(in srgb, var(--accent-danger) 15%, transparent)'
+                                            : 'transparent',
+                                    }}
                                 >
-                                    <td className={cn(
-                                        "px-3 py-0.5 text-right select-none border-r border-gray-800 text-gray-500",
-                                        isHighlighted && "text-red-400 bg-red-500/10"
-                                    )}>
+                                    <td
+                                        className="select-none border-r px-3 py-0.5 text-right"
+                                        style={{
+                                            borderColor: 'var(--border-subtle)',
+                                            background: isHighlighted
+                                                ? 'color-mix(in srgb, var(--accent-danger) 10%, transparent)'
+                                                : 'transparent',
+                                            color: isHighlighted ? 'var(--accent-danger)' : 'var(--text-tertiary)',
+                                        }}
+                                    >
                                         {lineNum}
                                     </td>
-                                    <td className={cn(
-                                        "px-4 py-0.5 whitespace-pre",
-                                        isHighlighted && "text-red-200"
-                                    )}>
+                                    <td
+                                        className="whitespace-pre px-4 py-0.5"
+                                        style={{ color: isHighlighted ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                                    >
                                         {line || ' '}
                                     </td>
                                 </tr>
@@ -190,9 +196,12 @@ function QuickFixButton({ fix, onApply }) {
     return (
         <button
             onClick={() => onApply(fix)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 
-                       border border-blue-500/30 rounded text-sm text-blue-300 hover:text-blue-200 
-                       transition-colors"
+            className="th-focus-ring flex items-center gap-2 rounded-[var(--radius-control)] border px-3 py-1.5 text-sm transition-colors"
+            style={{
+                background: 'color-mix(in srgb, var(--accent-secondary) 14%, transparent)',
+                borderColor: 'color-mix(in srgb, var(--accent-secondary) 34%, var(--border-subtle))',
+                color: 'var(--accent-secondary)',
+            }}
         >
             <Wand2 size={14} />
             {fix.label}
@@ -227,39 +236,48 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
     }, [location, onGoToFile]);
     
     return (
-        <div className={cn(
-            "rounded-lg border transition-all",
-            config.bgColor,
-            config.borderColor,
-            isSelected && "ring-2 ring-blue-500/50 ring-offset-2 ring-offset-gray-950"
-        )}>
+        <div
+            className={cn(
+                "rounded-[var(--radius-panel)] border transition-all",
+                isSelected && "outline outline-1 outline-offset-0"
+            )}
+            style={{
+                background: config.bg,
+                borderColor: config.border,
+                outlineColor: isSelected ? 'color-mix(in srgb, var(--attention-purple) 60%, transparent)' : 'transparent',
+                boxShadow: isSelected ? 'var(--attention-rim)' : 'none',
+            }}
+        >
             {/* Header */}
             <div 
-                className="flex items-center gap-3 p-4 cursor-pointer hover:bg-white/5"
+                className="flex cursor-pointer items-center gap-3 p-4"
                 onClick={onToggle}
             >
-                <button className="text-gray-400 hover:text-white">
+                <button
+                    className="vt-icon-button th-focus-ring h-7 w-7"
+                    style={{ color: 'var(--text-secondary)' }}
+                >
                     {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
-                <Icon className={cn("w-5 h-5", config.color)} />
+                <Icon className="h-5 w-5" style={{ color: config.tone }} />
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                        <span className={cn("text-xs font-semibold uppercase", config.color)}>
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em]" style={{ color: config.tone }}>
                             {config.label}
                         </span>
                         {diagnostic.code && (
-                            <span className="text-xs text-gray-500 font-mono">
+                            <span className="font-mono text-xs" style={{ color: 'var(--text-tertiary)' }}>
                                 [{diagnostic.code}]
                             </span>
                         )}
                     </div>
-                    <p className="text-white mt-1 break-words">{diagnostic.message}</p>
+                    <p className="mt-1 break-words" style={{ color: 'var(--text-primary)' }}>{diagnostic.message}</p>
                 </div>
                 <div className="flex items-center gap-2">
                     {location && (
                         <button
                             onClick={(e) => { e.stopPropagation(); handleGoToFile(); }}
-                            className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-blue-400"
+                            className="vt-icon-button th-focus-ring h-7 w-7"
                             title="Go to file"
                         >
                             <FileCode size={14} />
@@ -267,7 +285,7 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
                     )}
                     <button 
                         onClick={(e) => { e.stopPropagation(); handleCopy(); }}
-                        className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-white"
+                        className="vt-icon-button th-focus-ring h-7 w-7"
                         title="Copy error"
                     >
                         {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -280,7 +298,8 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
                 <div className="px-4 pb-2 -mt-2">
                     <button
                         onClick={handleGoToFile}
-                        className="text-sm text-blue-400 hover:text-blue-300 hover:underline font-mono"
+                        className="th-focus-ring font-mono text-sm hover:underline"
+                        style={{ color: 'var(--accent-secondary)' }}
                     >
                         {locationString}
                     </button>
@@ -302,12 +321,25 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
                     {/* Suggestions */}
                     {diagnostic.suggestions && diagnostic.suggestions.length > 0 && (
                         <div className="space-y-2">
-                            <p className="text-sm text-gray-400">Suggested fixes:</p>
+                            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Suggested fixes</p>
                             {diagnostic.suggestions.map((suggestion, idx) => (
-                                <div key={idx} className="bg-green-500/10 border border-green-500/30 rounded p-3">
-                                    <p className="text-sm text-green-400">{suggestion.message}</p>
+                                <div
+                                    key={idx}
+                                    className="rounded-[var(--radius-control)] border p-3"
+                                    style={{
+                                        background: 'color-mix(in srgb, var(--accent-success) 9%, transparent)',
+                                        borderColor: 'color-mix(in srgb, var(--accent-success) 32%, var(--border-subtle))',
+                                    }}
+                                >
+                                    <p className="text-sm" style={{ color: 'var(--accent-success)' }}>{suggestion.message}</p>
                                     {suggestion.replacement && (
-                                        <pre className="mt-2 text-sm text-green-200 font-mono bg-gray-950 p-2 rounded overflow-x-auto">
+                                        <pre
+                                            className="mt-2 overflow-x-auto rounded-[var(--radius-control)] p-2 font-mono text-sm"
+                                            style={{
+                                                background: 'var(--bg-editor)',
+                                                color: 'var(--text-primary)',
+                                            }}
+                                        >
                                             {suggestion.replacement}
                                         </pre>
                                     )}
@@ -319,7 +351,7 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
                     {/* Quick fixes (auto-generated) */}
                     {quickFixes.length > 0 && (
                         <div className="space-y-2">
-                            <p className="text-sm text-gray-400">Quick fixes:</p>
+                            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Quick fixes</p>
                             <div className="flex flex-wrap gap-2">
                                 {quickFixes.map((fix, idx) => (
                                     <QuickFixButton 
@@ -334,12 +366,15 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
                                             detail: { diagnostic }
                                         }));
                                     }}
-                                    className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 
-                                               border border-purple-500/30 rounded text-sm text-purple-300 hover:text-purple-200 
-                                               transition-colors"
+                                    className="th-focus-ring flex items-center gap-2 rounded-[var(--radius-control)] border px-3 py-1.5 text-sm transition-colors"
+                                    style={{
+                                        background: 'color-mix(in srgb, var(--attention-purple) 14%, transparent)',
+                                        borderColor: 'color-mix(in srgb, var(--attention-purple) 36%, var(--border-subtle))',
+                                        color: 'var(--attention-purple)',
+                                    }}
                                 >
                                     <Wand2 size={14} />
-                                    Fix with AI
+                                    Dispatch fix agent
                                 </button>
                             </div>
                         </div>
@@ -353,23 +388,26 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
                                     detail: { diagnostic }
                                 }));
                             }}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 
-                                       border border-purple-500/30 rounded text-sm text-purple-300 hover:text-purple-200 
-                                       transition-colors"
+                            className="th-focus-ring flex items-center gap-2 rounded-[var(--radius-control)] border px-3 py-1.5 text-sm transition-colors"
+                            style={{
+                                background: 'color-mix(in srgb, var(--attention-purple) 14%, transparent)',
+                                borderColor: 'color-mix(in srgb, var(--attention-purple) 36%, var(--border-subtle))',
+                                color: 'var(--attention-purple)',
+                            }}
                         >
                             <Wand2 size={14} />
-                            Fix with AI
+                            Dispatch fix agent
                         </button>
                     )}
                     
                     {/* Related diagnostics */}
                     {diagnostic.related && diagnostic.related.length > 0 && (
-                        <div className="space-y-2 pl-4 border-l-2 border-gray-700">
+                        <div className="space-y-2 border-l-2 pl-4" style={{ borderColor: 'var(--border-medium)' }}>
                             {diagnostic.related.map((related, idx) => (
                                 <div key={idx} className="text-sm">
-                                    <span className="text-gray-400">
+                                    <span style={{ color: 'var(--text-secondary)' }}>
                                         {related.location && (
-                                            <span className="font-mono text-blue-400">
+                                            <span className="font-mono" style={{ color: 'var(--accent-secondary)' }}>
                                                 {related.location.file}:{related.location.line}:{related.location.column}:{' '}
                                             </span>
                                         )}
@@ -388,32 +426,41 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyF
 // Crash info display for runtime errors
 function CrashInfoCard({ crashInfo, onDismiss }) {
     return (
-        <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-4">
+        <div
+            className="rounded-[var(--radius-panel)] border p-4"
+            style={{
+                background: 'color-mix(in srgb, var(--accent-danger) 10%, var(--bg-panel) 90%)',
+                borderColor: 'color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle))',
+            }}
+        >
             <div className="flex items-start gap-3">
-                <AlertCircle className="w-6 h-6 text-red-400 flex-shrink-0 mt-0.5" />
+                <AlertCircle className="mt-0.5 h-6 w-6 flex-shrink-0" style={{ color: 'var(--accent-danger)' }} />
                 <div className="flex-1">
-                    <h3 className="text-lg font-semibold text-red-400">
+                    <h3 className="text-lg font-semibold" style={{ color: 'var(--accent-danger)' }}>
                         Runtime Crash: {crashInfo.signal_name || 'Unknown Signal'}
                     </h3>
-                    <p className="text-gray-300 mt-1">
-                        Module <span className="font-mono text-yellow-400">{crashInfo.module_name}</span> crashed
+                    <p className="mt-1" style={{ color: 'var(--text-secondary)' }}>
+                        Module <span className="font-mono" style={{ color: 'var(--accent-warning)' }}>{crashInfo.module_name}</span> crashed
                         {crashInfo.address && (
-                            <span className="text-gray-500"> at address 0x{crashInfo.address.toString(16)}</span>
+                            <span style={{ color: 'var(--text-tertiary)' }}> at address 0x{crashInfo.address.toString(16)}</span>
                         )}
                     </p>
                     
                     {/* Source location if available */}
                     {crashInfo.source_location && (
-                        <div className="mt-3 bg-gray-950 rounded p-3 font-mono text-sm">
-                            <span className="text-blue-400">
+                        <div
+                            className="mt-3 rounded-[var(--radius-control)] p-3 font-mono text-sm"
+                            style={{ background: 'var(--bg-editor)' }}
+                        >
+                            <span style={{ color: 'var(--accent-secondary)' }}>
                                 {crashInfo.source_location.file}:{crashInfo.source_location.line}
                                 {crashInfo.source_location.column > 0 && `:${crashInfo.source_location.column}`}
                             </span>
                             {crashInfo.source_location.function && (
-                                <span className="text-gray-400"> in </span>
+                                <span style={{ color: 'var(--text-secondary)' }}> in </span>
                             )}
                             {crashInfo.source_location.function && (
-                                <span className="text-yellow-400">{crashInfo.source_location.function}</span>
+                                <span style={{ color: 'var(--accent-warning)' }}>{crashInfo.source_location.function}</span>
                             )}
                         </div>
                     )}
@@ -421,18 +468,21 @@ function CrashInfoCard({ crashInfo, onDismiss }) {
                     {/* Stack frames */}
                     {crashInfo.source_frames && crashInfo.source_frames.length > 0 && (
                         <div className="mt-3">
-                            <p className="text-sm text-gray-400 mb-2">Stack trace:</p>
-                            <div className="bg-gray-950 rounded p-3 font-mono text-xs space-y-1 max-h-48 overflow-y-auto">
+                            <p className="mb-2 text-sm" style={{ color: 'var(--text-secondary)' }}>Stack trace</p>
+                            <div
+                                className="max-h-48 space-y-1 overflow-y-auto rounded-[var(--radius-control)] p-3 font-mono text-xs"
+                                style={{ background: 'var(--bg-editor)' }}
+                            >
                                 {crashInfo.source_frames.map((frame, idx) => (
-                                    <div key={idx} className="text-gray-300">
-                                        <span className="text-gray-500">{idx}:</span>{' '}
-                                        <span className="text-blue-400">
+                                    <div key={idx} style={{ color: 'var(--text-secondary)' }}>
+                                        <span style={{ color: 'var(--text-tertiary)' }}>{idx}:</span>{' '}
+                                        <span style={{ color: 'var(--accent-secondary)' }}>
                                             {frame.file}:{frame.line}
                                         </span>
                                         {frame.function && (
                                             <>
-                                                <span className="text-gray-500"> in </span>
-                                                <span className="text-yellow-400">{frame.function}</span>
+                                                <span style={{ color: 'var(--text-tertiary)' }}> in </span>
+                                                <span style={{ color: 'var(--accent-warning)' }}>{frame.function}</span>
                                             </>
                                         )}
                                     </div>
@@ -444,17 +494,23 @@ function CrashInfoCard({ crashInfo, onDismiss }) {
                     {/* Raw backtrace fallback */}
                     {!crashInfo.source_frames?.length && crashInfo.backtrace && (
                         <details className="mt-3">
-                            <summary className="text-sm text-gray-400 cursor-pointer hover:text-gray-300">
+                            <summary className="cursor-pointer text-sm" style={{ color: 'var(--text-secondary)' }}>
                                 Raw backtrace
                             </summary>
-                            <pre className="mt-2 bg-gray-950 rounded p-3 text-xs text-gray-400 overflow-x-auto max-h-48 overflow-y-auto">
+                            <pre
+                                className="mt-2 max-h-48 overflow-x-auto overflow-y-auto rounded-[var(--radius-control)] p-3 text-xs"
+                                style={{
+                                    background: 'var(--bg-editor)',
+                                    color: 'var(--text-secondary)',
+                                }}
+                            >
                                 {crashInfo.backtrace}
                             </pre>
                         </details>
                     )}
                     
-                    <p className="mt-3 text-sm text-green-400">
-                        ✓ Old module continues running. Fix the issue and save to retry.
+                    <p className="mt-3 text-sm" style={{ color: 'var(--accent-success)' }}>
+                        Previous module remains live. Patch the fault and save to retry.
                     </p>
                 </div>
             </div>
@@ -733,42 +789,61 @@ export function ErrorOverlay({ className }) {
         <div 
             ref={overlayRef}
             className={cn(
-                "fixed inset-0 z-[100] bg-gray-950/95 backdrop-blur-sm overflow-hidden flex flex-col",
+                "fixed inset-0 z-[100] flex flex-col overflow-hidden backdrop-blur-sm",
                 className
             )}
+            style={{
+                background:
+                    'linear-gradient(135deg, color-mix(in srgb, var(--bg-app) 96%, transparent), color-mix(in srgb, var(--bg-panel) 94%, transparent))',
+                color: 'var(--text-primary)',
+            }}
         >
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 bg-gray-900/50">
+            <div
+                className="flex items-center justify-between border-b px-6 py-4"
+                style={{
+                    borderColor: 'var(--border-subtle)',
+                    background: 'color-mix(in srgb, var(--bg-panel) 76%, transparent)',
+                }}
+            >
                 <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2">
-                        <AlertCircle className="w-6 h-6 text-red-400" />
-                        <h2 className="text-xl font-semibold text-white">
-                            {crashInfo ? 'Runtime Error' : 'Compilation Failed'}
+                        <span
+                            className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] border"
+                            style={{
+                                background: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)',
+                                borderColor: 'color-mix(in srgb, var(--accent-danger) 38%, var(--border-subtle))',
+                            }}
+                        >
+                            <AlertCircle className="h-5 w-5" style={{ color: 'var(--accent-danger)' }} />
+                        </span>
+                        <h2 className="text-xl font-semibold">
+                            {crashInfo ? 'Runtime recovery' : 'Compile gate failed'}
                         </h2>
                     </div>
                     {!crashInfo && (
                         <div className="flex items-center gap-3 text-sm">
                             {errorCount > 0 && (
-                                <span className="text-red-400">
+                                <span style={{ color: 'var(--accent-danger)' }}>
                                     {errorCount} error{errorCount !== 1 ? 's' : ''}
                                 </span>
                             )}
                             {warningCount > 0 && (
-                                <span className="text-yellow-400">
+                                <span style={{ color: 'var(--accent-warning)' }}>
                                     {warningCount} warning{warningCount !== 1 ? 's' : ''}
                                 </span>
                             )}
                         </div>
                     )}
                     {module && (
-                        <span className="text-sm text-gray-500">
-                            in <span className="font-mono text-gray-400">{module}</span>
+                        <span className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
+                            target <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{module}</span>
                         </span>
                     )}
                 </div>
                 <button
                     onClick={handleDismiss}
-                    className="p-2 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"
+                    className="vt-icon-button th-focus-ring h-9 w-9"
                     title="Dismiss (Esc)"
                 >
                     <X size={20} />
@@ -799,45 +874,35 @@ export function ErrorOverlay({ className }) {
             </div>
             
             {/* Footer */}
-            <div className="px-6 py-3 border-t border-gray-800 bg-gray-900/50">
-                <div className="flex items-center justify-between text-sm text-gray-400">
-                    <div className="flex items-center gap-4">
-                        <span className="flex items-center gap-1.5">
-                            <Keyboard size={14} />
-                            Shortcuts:
-                        </span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">Esc</kbd> dismiss
-                        </span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">↑↓</kbd> navigate
-                        </span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">Enter</kbd> go to file
-                        </span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">f</kbd> quick fix
-                        </span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">a</kbd> AI fix
-                        </span>
-                        <span>
-                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">r</kbd> retry
-                        </span>
+            <div
+                className="border-t px-6 py-3"
+                style={{
+                    borderColor: 'var(--border-subtle)',
+                    background: 'color-mix(in srgb, var(--bg-panel) 76%, transparent)',
+                }}
+            >
+                <div className="flex items-center justify-between text-sm" style={{ color: 'var(--text-secondary)' }}>
+                    <div className="flex items-center gap-3">
+                        <span className="vt-state-dot" style={{ background: 'var(--accent-success)' }} />
+                        <span>Previous snapshot remains live while this gate is repaired.</span>
                     </div>
                     <div className="flex items-center gap-3">
                         <button
                             onClick={handleRetryCompilation}
                             disabled={isRetrying}
                             className={cn(
-                                "flex items-center gap-1.5 px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 transition-colors",
+                                "th-focus-ring flex items-center gap-1.5 rounded-[var(--radius-control)] border px-3 py-1 transition-colors",
                                 isRetrying && "opacity-50 cursor-not-allowed"
                             )}
+                            style={{
+                                background: 'var(--bg-elevated)',
+                                borderColor: 'var(--border-subtle)',
+                                color: 'var(--text-primary)',
+                            }}
                         >
                             <RefreshCw size={14} className={cn(isRetrying && "animate-spin")} />
                             {isRetrying ? 'Retrying...' : 'Retry'}
                         </button>
-                        <span className="text-gray-500">Previous version still running</span>
                     </div>
                 </div>
             </div>

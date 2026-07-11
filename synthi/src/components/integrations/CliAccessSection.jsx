@@ -37,16 +37,15 @@ export default function CliAccessSection() {
   const copy = (text) => { navigator.clipboard?.writeText(text); toast.success('Copied'); };
 
   return (
-    <div className="rounded-lg border" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
-      <div className="flex items-center gap-2 px-2.5 py-2 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+    <div className="vt-workflow-card">
+      <div className="vt-panel-kicker flex items-center gap-2 px-2.5 py-2">
         <KeyRound className="w-3.5 h-3.5" /> CLI Access (Personal Access Tokens)
       </div>
 
       <div className="px-2.5 pb-2 flex items-center gap-1.5">
         <input
           value={name} onChange={(e) => setName(e.target.value)} placeholder="Token name (e.g. laptop / claude-code)"
-          className="flex-1 text-xs rounded px-2 py-1 outline-none"
-          style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+          className="th-input flex-1 rounded-[var(--radius-control)] border px-2 py-1 text-xs outline-none"
         />
         <Button variant="ghost" size="icon" onClick={onCreate} disabled={creating} title="Generate token">
           <Plus className="w-3.5 h-3.5" />
@@ -54,7 +53,7 @@ export default function CliAccessSection() {
       </div>
 
       {justCreated && (
-        <div className="mx-2.5 mb-2 rounded p-2 text-[11px]" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+        <div className="vt-inset-panel mx-2.5 mb-2 p-2 text-[11px] text-[var(--text-secondary)]">
           <div style={{ color: 'var(--text-muted)' }}>Copy this token now — it is shown only once:</div>
           <div className="flex items-center gap-1.5 mt-1">
             <code className="flex-1 break-all font-mono">{justCreated.token}</code>
@@ -69,7 +68,7 @@ export default function CliAccessSection() {
           <div key={t.id} className="flex items-center justify-between text-xs">
             <span className="truncate">
               {t.name} <span className="font-mono" style={{ color: 'var(--text-dim)' }}>…{t.last4}</span>
-              {t.revokedAt && <span style={{ color: 'var(--accent-danger, #ff5757)' }}> (revoked)</span>}
+              {t.revokedAt && <span className="text-[var(--accent-danger)]"> (revoked)</span>}
             </span>
             {!t.revokedAt && (
               <Button variant="ghost" size="icon" onClick={() => onRevoke(t.id)} title="Revoke"><Trash2 className="w-3.5 h-3.5" /></Button>

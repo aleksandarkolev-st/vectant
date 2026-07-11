@@ -48,6 +48,13 @@ import {
   simulateCodeSiteShadowMerge,
   subscribeCodeSiteProjectEvents,
 } from "./codesiteClient";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const POLL_MS = 5000;
 const MOTION_EASE = [0.16, 1, 0.3, 1];
@@ -1669,7 +1676,7 @@ function TowerNowStrip({
   return (
     <div
       data-testid="codesite-tower-now"
-      className="grid grid-cols-2 gap-1.5 rounded-lg border p-1.5 sm:grid-cols-3 xl:grid-cols-6"
+      className="flex gap-1.5 overflow-x-auto rounded-[var(--radius-panel)] border p-1.5"
       style={{
         borderColor:
           "color-mix(in srgb, var(--border-subtle) 62%, var(--accent-primary) 38%)",
@@ -1690,7 +1697,7 @@ function TowerNowStrip({
             data-testid={`codesite-tower-now-${card.key}`}
             aria-label={`${card.label}: ${card.value}. ${card.detail}`}
             onClick={() => onSelect?.(card.section)}
-            className="group min-w-0 rounded-md border px-2.5 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
+            className="group min-w-[9.25rem] flex-1 rounded-[var(--radius-control)] border px-2.5 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
             style={{
               borderColor:
                 "color-mix(in srgb, var(--border-subtle) 78%, var(--text-primary) 10%)",
@@ -1775,19 +1782,28 @@ function CodeSiteOperatingModel({
   onSelect,
 }) {
   const reduceMotion = useReducedMotion();
-  const cards = [
+  const flightCount = asArray(activeFlights).length;
+  const leaseCount = asArray(activeLeases).length;
+  const documentReviewCount = asArray(documents).filter(documentNeedsReview).length;
+  const routeReviewCount = asArray(routeRevisions).filter(routeRevisionCanReview).length;
+  const proofCount = asArray(proofBundles).length;
+  const rows = [
     {
       key: "scope",
-      label: "Work scope",
-      value: `${asArray(activeFlights).length} workstream${asArray(activeFlights).length === 1 ? "" : "s"}`,
-      detail: "Owned paths, risk areas, and active changes",
+      label: "Workstreams",
+      status: flightCount ? "active" : "idle",
+      owner: asArray(activeFlights).map((flight) => flight.displayCallsign).filter(Boolean).slice(0, 2).join(", ") || "unassigned",
+      evidence: `${leaseCount} locks`,
+      detail: `${flightCount} active / owned paths and risk areas`,
       icon: CodeSiteIcons.workspaceGraph,
       section: "radar",
     },
     {
       key: "activity",
       label: "Activity",
-      value: "Live events",
+      status: flightCount ? "live" : "quiet",
+      owner: "tower",
+      evidence: "event stream",
       detail: "Agent updates, blockers, and system guardrails",
       icon: CodeSiteIcons.activity,
       section: "tower",
@@ -1795,15 +1811,19 @@ function CodeSiteOperatingModel({
     {
       key: "governance",
       label: "Governance",
-      value: `${asArray(activeLeases).length} approval${asArray(activeLeases).length === 1 ? "" : "s"}`,
-      detail: "Permits, document review, and plan changes",
+      status: documentReviewCount + routeReviewCount ? "review" : "clear",
+      owner: `${documentReviewCount} docs`,
+      evidence: `${routeReviewCount} route reviews`,
+      detail: `${leaseCount} approvals / permit and document review`,
       icon: CodeSiteIcons.governance,
       section: "governance",
     },
     {
       key: "evidence",
       label: "Evidence",
-      value: `${asArray(proofBundles).length} bundle${asArray(proofBundles).length === 1 ? "" : "s"}`,
+      status: proofCount ? "available" : "pending",
+      owner: "recorder",
+      evidence: `${proofCount} bundles`,
       detail: `${asArray(documents).length} docs / ${asArray(routeRevisions).length} plan changes`,
       icon: CodeSiteIcons.evidence,
       section: "evidence",
@@ -1811,72 +1831,76 @@ function CodeSiteOperatingModel({
   ];
 
   return (
-    <div
+    <section
       data-testid="codesite-operating-model"
-      className="grid gap-2 md:grid-cols-2 xl:grid-cols-4"
+      className="overflow-hidden rounded-lg border"
+      style={{
+        borderColor: "color-mix(in srgb, var(--border-subtle) 84%, transparent)",
+        background: "color-mix(in srgb, var(--bg-surface) 92%, transparent)",
+      }}
     >
-      {cards.map((card, index) => {
-        const Icon = card.icon;
-        return (
-          <motion.button
-            key={card.key}
-            type="button"
-            onClick={() => onSelect?.(card.section)}
-            whileHover={reduceMotion ? undefined : { y: -1 }}
-            whileTap={reduceMotion ? undefined : { scale: 0.99 }}
-            transition={{
-              duration: reduceMotion ? 0 : 0.18,
-              ease: MOTION_EASE,
-            }}
-            className="group grid min-h-[92px] grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-lg border px-3 py-3 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
-            style={{
-              borderColor:
-                "color-mix(in srgb, var(--border-subtle) 84%, var(--accent-primary) 16%)",
-              background:
-                index % 2
-                  ? "color-mix(in srgb, var(--bg-surface) 94%, var(--bg-editor) 6%)"
-                  : "linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 94%, var(--accent-primary) 5%), var(--bg-surface))",
-            }}
-          >
-            <span
-              className="grid h-8 w-8 place-items-center rounded-md border"
+      <div className="grid gap-2 border-b px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)" }}>
+        <div className="min-w-0">
+          <div className="text-xs font-semibold">Operating queue</div>
+          <div className="mt-0.5 truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
+            Saved views for active work, approvals, and replay evidence
+          </div>
+        </div>
+        <div className="flex min-w-0 gap-1 overflow-x-auto" aria-label="CodeSite saved views">
+          {["Active", "Review", "Evidence"].map((view) => (
+            <button
+              key={view}
+              type="button"
+              className="h-7 shrink-0 rounded-md border px-2 text-[11px]"
               style={{
-                borderColor:
-                  "color-mix(in srgb, var(--border-subtle) 74%, var(--accent-primary) 26%)",
-                background:
-                  "color-mix(in srgb, var(--accent-primary) 9%, transparent)",
+                borderColor: "var(--border-subtle)",
+                background: view === "Active" ? "color-mix(in srgb, var(--primary) 9%, transparent)" : "transparent",
+                color: view === "Active" ? "var(--text-primary)" : "var(--text-muted)",
               }}
             >
-              <Icon
-                className="h-3.5 w-3.5"
-                style={{ color: "var(--accent-primary)" }}
-              />
-            </span>
-            <span className="min-w-0">
-              <span
-                className="block text-xs font-semibold"
-                style={{ color: "var(--text-primary)" }}
-              >
-                {card.label}
+              {view}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="hidden grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] gap-2 border-b px-3 py-2 text-[10px] uppercase tracking-normal md:grid" style={{ borderColor: "color-mix(in srgb, var(--border-subtle) 72%, transparent)", color: "var(--text-muted)" }}>
+        <span>Queue</span>
+        <span>Status</span>
+        <span>Owner</span>
+        <span>Evidence</span>
+        <span>Open</span>
+      </div>
+      <div className="divide-y divide-[color-mix(in_srgb,var(--border-subtle)_72%,transparent)]">
+        {rows.map((row) => {
+          const Icon = row.icon;
+          return (
+            <motion.button
+              key={row.key}
+              type="button"
+              onClick={() => onSelect?.(row.section)}
+              whileHover={reduceMotion ? undefined : { x: 2 }}
+              whileTap={reduceMotion ? undefined : { scale: 0.995 }}
+              transition={{ duration: reduceMotion ? 0 : 0.16, ease: MOTION_EASE }}
+              className="grid min-h-14 w-full gap-2 px-3 py-2 text-left outline-none transition-[background] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--primary)] md:grid-cols-[1.1fr_0.7fr_0.8fr_1fr_auto] md:items-center"
+            >
+              <span className="grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-2">
+                <span className="grid h-7 w-7 place-items-center rounded-md border" style={{ borderColor: "var(--border-subtle)", background: "var(--bg-editor)" }}>
+                  <Icon className="h-3.5 w-3.5" style={{ color: "var(--primary)" }} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-semibold">{row.label}</span>
+                  <span className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{row.detail}</span>
+                </span>
               </span>
-              <span
-                className="mt-1 block truncate font-mono text-[11px]"
-                style={{ color: "var(--text-secondary)" }}
-                title={card.value}
-              >
-                {card.value}
-              </span>
-              <span
-                className="mt-1 block text-[11px] leading-4"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {card.detail}
-              </span>
-            </span>
-          </motion.button>
-        );
-      })}
-    </div>
+              <span><Pill tone={row.status}>{row.status}</Pill></span>
+              <span className="truncate font-mono text-[11px]" style={{ color: "var(--text-secondary)" }}>{row.owner}</span>
+              <span className="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{row.evidence}</span>
+              <span className="font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>{row.section}</span>
+            </motion.button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -2377,7 +2401,7 @@ function TowerSimulatorDeck({
           className="rounded border px-2 py-1 text-[11px]"
           style={{
             borderColor:
-              "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+              "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
             color: "var(--text-primary)",
           }}
         >
@@ -2617,9 +2641,9 @@ function AssumptionInvalidatorPanel({
       className="grid min-w-0 gap-2 rounded-lg border p-3 text-xs"
       style={{
         borderColor:
-          "color-mix(in srgb, #fbbf24 34%, var(--border-subtle))",
+          "color-mix(in srgb, var(--accent-warning) 34%, var(--border-subtle))",
         background:
-          "linear-gradient(180deg, color-mix(in srgb, #fbbf24 8%, var(--bg-surface)), var(--bg-editor))",
+          "linear-gradient(180deg, color-mix(in srgb, var(--accent-warning) 8%, var(--bg-surface)), var(--bg-editor))",
       }}
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -2763,7 +2787,7 @@ function SerializableIsolationDeck({
             style={{
               borderColor:
                 result === "aborted"
-                  ? "color-mix(in srgb, #ff5757 42%, var(--border-subtle))"
+                  ? "color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle))"
                   : "var(--border-subtle)",
               background: "var(--bg-surface)",
             }}
@@ -2950,7 +2974,7 @@ function SerializableIsolationDeck({
                     className="h-4 w-4"
                     style={{
                       color:
-                        "color-mix(in srgb, #4ade80 70%, var(--text-primary))",
+                        "color-mix(in srgb, var(--accent-success) 70%, var(--text-primary))",
                     }}
                   />
                 </div>
@@ -3072,7 +3096,7 @@ function PilotLicenseHealthPanel({ records }) {
               />
             </div>
             <div className="min-w-0">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-wrap gap-2">
                 {[
                   [
                     "Commits",
@@ -3096,7 +3120,7 @@ function PilotLicenseHealthPanel({ records }) {
                 ].map(([label, value, tone]) => (
                   <div
                     key={label}
-                    className="min-w-0 border-t pt-1"
+                    className="min-w-[5.75rem] flex-1 border-l pl-2"
                     style={{ borderColor: "var(--border-subtle)" }}
                   >
                     <div
@@ -3435,7 +3459,7 @@ function QuarantineReviewPanel({
         data-testid="codesite-quarantine-fetch-error"
         className="rounded border px-3 py-2 text-xs"
         style={{
-          borderColor: "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+          borderColor: "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
           background: "var(--bg-surface)",
         }}
       >
@@ -3599,14 +3623,14 @@ function QuarantineReviewPanel({
                   className="h-2.5 w-2.5 rounded-full border"
                   style={{
                     borderColor: value
-                      ? "color-mix(in srgb, #4ade80 72%, var(--border-subtle))"
+                      ? "color-mix(in srgb, var(--accent-success) 72%, var(--border-subtle))"
                       : "var(--border-subtle)",
                     background: value
-                      ? "color-mix(in srgb, #4ade80 34%, transparent)"
+                      ? "color-mix(in srgb, var(--accent-success) 34%, transparent)"
                       : "var(--bg-editor)",
                     boxShadow:
                       value && index === selectedTraceSteps.length - 1
-                        ? "0 0 0 4px color-mix(in srgb, #4ade80 12%, transparent)"
+                        ? "0 0 0 4px color-mix(in srgb, var(--accent-success) 12%, transparent)"
                         : "none",
                   }}
                 />
@@ -3733,7 +3757,7 @@ function QuarantineReviewPanel({
                 className="rounded border px-2 py-1 text-[11px]"
                 style={{
                   borderColor:
-                    "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+                    "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
                 }}
               >
                 {reviewMessage}
@@ -3748,10 +3772,14 @@ function QuarantineReviewPanel({
                 const path = quarantinePath(change);
                 const checked = selectedSet.has(path);
                 return (
-                  <label
+                  <button
                     key={`${selected.quarantineId}-${path}-${quarantineEvidenceRef(change)}`}
                     data-testid="codesite-quarantine-change-row"
-                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded border px-2 py-1.5"
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    onClick={() => onTogglePath(path)}
+                    className="grid min-h-12 cursor-pointer grid-cols-[22px_minmax(0,1fr)] gap-2 rounded-[var(--radius-control)] border px-2 py-1.5 text-left outline-none transition-[background,border-color] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--attention-purple)]"
                     style={{
                       borderColor: checked
                         ? "color-mix(in srgb, var(--accent-primary) 44%, var(--border-subtle))"
@@ -3761,13 +3789,26 @@ function QuarantineReviewPanel({
                         : "var(--bg-editor)",
                     }}
                   >
-                    <input
+                    <span
                       data-testid="codesite-quarantine-path-toggle"
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => onTogglePath(path)}
-                      className="mt-1 h-4 w-4"
-                    />
+                      className="mt-1 grid h-4 w-4 place-items-center rounded border"
+                      style={{
+                        borderColor: checked
+                          ? "color-mix(in srgb, var(--accent-primary) 66%, var(--border-subtle))"
+                          : "var(--border-medium)",
+                        background: checked
+                          ? "color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))"
+                          : "color-mix(in srgb, var(--bg-panel) 70%, transparent)",
+                      }}
+                    >
+                      {checked ? (
+                        <CheckCircle2
+                          aria-hidden="true"
+                          className="h-3 w-3"
+                          style={{ color: "var(--accent-primary)" }}
+                        />
+                      ) : null}
+                    </span>
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-1">
                         <code
@@ -3802,7 +3843,7 @@ function QuarantineReviewPanel({
                         />
                       </div>
                     </div>
-                  </label>
+                  </button>
                 );
               })}
             </div>
@@ -3813,7 +3854,7 @@ function QuarantineReviewPanel({
                 className="rounded border px-3 py-2"
                 style={{
                   borderColor:
-                    "color-mix(in srgb, #fbbf24 36%, var(--border-subtle))",
+                    "color-mix(in srgb, var(--accent-warning) 36%, var(--border-subtle))",
                   background: "var(--bg-editor)",
                 }}
               >
@@ -3874,7 +3915,7 @@ function QuarantineReviewPanel({
                         className="grid gap-2 rounded border px-2 py-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
                         style={{
                           borderColor:
-                            "color-mix(in srgb, #ff5757 36%, var(--border-subtle))",
+                            "color-mix(in srgb, var(--accent-danger) 36%, var(--border-subtle))",
                         }}
                       >
                         <code
@@ -3905,7 +3946,7 @@ function QuarantineReviewPanel({
                 className="rounded border px-3 py-2"
                 style={{
                   borderColor:
-                    "color-mix(in srgb, #4ade80 36%, var(--border-subtle))",
+                    "color-mix(in srgb, var(--accent-success) 36%, var(--border-subtle))",
                   background: "var(--bg-editor)",
                 }}
               >
@@ -4048,6 +4089,107 @@ function EmptyLine({ children = "None" }) {
       }}
     >
       {children}
+    </div>
+  );
+}
+
+function DesktopSectionRail({ sections, activeSection, onSelect, status, streamStatus }) {
+  const reduceMotion = useReducedMotion();
+  const activeIndex = Math.max(
+    0,
+    sections.findIndex((section) => section.key === activeSection),
+  );
+  return (
+    <div
+      data-testid="codesite-desktop-section-rail"
+      className="sticky top-0 z-20 hidden border-b px-4 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.14)] md:block"
+      style={{
+        borderColor: "color-mix(in srgb, var(--border-subtle) 78%, var(--accent-primary) 22%)",
+        background: "color-mix(in srgb, var(--bg-sidebar) 96%, var(--accent-primary) 4%)",
+      }}
+    >
+      <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_280px] xl:items-center">
+        <div
+          className="flex min-w-0 gap-1 overflow-x-auto rounded-lg border p-1"
+          role="tablist"
+          aria-label="CodeSite sections"
+          style={{
+            borderColor: "var(--border-subtle)",
+            background: "color-mix(in srgb, var(--bg-editor) 76%, transparent)",
+          }}
+        >
+          {sections.map((section) => {
+            const Icon = section.icon || CodeSiteIcons.liveState;
+            const active = activeSection === section.key;
+            return (
+              <button
+                key={section.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls={`codesite-section-${section.key}`}
+                data-testid="codesite-desktop-section-tab"
+                onClick={() => onSelect(section.key)}
+                className="relative inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-[background,border-color,transform] hover:-translate-y-px"
+                style={{
+                  borderColor: active
+                    ? "color-mix(in srgb, var(--accent-primary) 54%, var(--border-subtle))"
+                    : "var(--border-subtle)",
+                  background: active
+                    ? "color-mix(in srgb, var(--accent-primary) 14%, var(--bg-elevated))"
+                    : "var(--bg-elevated)",
+                  color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                }}
+              >
+                {active && !reduceMotion ? (
+                  <motion.span
+                    layoutId="codesite-desktop-active-section"
+                    className="absolute inset-0 rounded-md"
+                    style={{
+                      border: "1px solid color-mix(in srgb, var(--accent-primary) 48%, transparent)",
+                    }}
+                    transition={{ duration: 0.2, ease: MOTION_EASE }}
+                  />
+                ) : null}
+                <Icon className="relative h-3.5 w-3.5 shrink-0" />
+                <span className="relative">{section.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div
+          className="grid gap-1 rounded-lg border px-3 py-2 text-[11px]"
+          style={{
+            borderColor: "var(--border-subtle)",
+            background: "color-mix(in srgb, var(--bg-elevated) 78%, transparent)",
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span style={{ color: "var(--text-muted)" }}>Focused section</span>
+            <Pill tone={status}>{toneLabel(status)}</Pill>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="truncate font-semibold">
+              {sections.find((section) => section.key === activeSection)?.label || "Graph"}
+            </span>
+            <span className="font-mono" style={{ color: "var(--text-muted)" }}>
+              {streamStatus}
+            </span>
+          </div>
+          <div className="h-1 overflow-hidden rounded-full" style={{ background: "var(--bg-editor)" }}>
+            <motion.div
+              className="h-full rounded-full"
+              style={{
+                background: "var(--accent-primary)",
+                transformOrigin: "left center",
+              }}
+              initial={false}
+              animate={{ scaleX: (activeIndex + 1) / Math.max(1, sections.length) }}
+              transition={{ duration: reduceMotion ? 0 : 0.2, ease: MOTION_EASE }}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4969,10 +5111,10 @@ function GovernanceConsole({
           className="rounded-lg border p-3"
           style={{
             borderColor: maydayIncidents.length
-              ? "color-mix(in srgb, #ff5757 42%, var(--border-subtle))"
+              ? "color-mix(in srgb, var(--accent-danger) 42%, var(--border-subtle))"
               : "color-mix(in srgb, var(--border-subtle) 82%, var(--accent-primary) 18%)",
             background: maydayIncidents.length
-              ? "linear-gradient(180deg, color-mix(in srgb, #ff5757 10%, var(--bg-surface)), var(--bg-surface))"
+              ? "linear-gradient(180deg, color-mix(in srgb, var(--accent-danger) 10%, var(--bg-surface)), var(--bg-surface))"
               : "var(--bg-surface)",
           }}
         >
@@ -5025,7 +5167,7 @@ function GovernanceConsole({
                         style={{
                           color: inspectionRunIds.length
                             ? "var(--text-muted)"
-                            : "#ff8f8f",
+                            : "var(--accent-danger)",
                         }}
                       >
                         {inspectionRunIds.length
@@ -5106,8 +5248,8 @@ function GovernanceConsole({
             className="rounded border px-3 py-2 text-xs"
             style={{
               borderColor: actionState.error
-                ? "color-mix(in srgb, #ff5757 40%, var(--border-subtle))"
-                : "color-mix(in srgb, #4ade80 40%, var(--border-subtle))",
+                ? "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))"
+                : "color-mix(in srgb, var(--accent-success) 40%, var(--border-subtle))",
               background: "var(--bg-surface)",
             }}
           >
@@ -6122,7 +6264,7 @@ function LineProvenanceDeck({
                     className="rounded border px-2 py-1 text-[11px]"
                     style={{
                       borderColor:
-                        "color-mix(in srgb, #ff5757 40%, var(--border-subtle))",
+                        "color-mix(in srgb, var(--accent-danger) 40%, var(--border-subtle))",
                       color: "var(--text-primary)",
                     }}
                   >
@@ -6853,24 +6995,27 @@ export default function CodeSitePanel({ workspaceSlug }) {
         const scrollContainer = scrollContainerRef.current;
         if (!target || !scrollContainer) {
           target?.scrollIntoView({
-            behavior: "auto",
+            behavior: reduceMotion ? "auto" : "smooth",
             block: "start",
           });
           return;
         }
-        const stickyTabs = scrollContainer.querySelector(
+        const stickyHeight = [
           '[data-testid="codesite-mobile-section-tabs"]',
-        );
+          '[data-testid="codesite-desktop-section-rail"]',
+        ].reduce((height, selector) => {
+          const rail = scrollContainer.querySelector(selector);
+          return height + (rail?.getBoundingClientRect().height || 0);
+        }, 0);
         if (typeof scrollContainer.scrollTo !== "function") {
           target?.scrollIntoView?.({
-            behavior: "auto",
+            behavior: reduceMotion ? "auto" : "smooth",
             block: "start",
           });
           return;
         }
         const containerRect = scrollContainer.getBoundingClientRect();
         const targetRect = target.getBoundingClientRect();
-        const stickyHeight = stickyTabs?.getBoundingClientRect().height || 0;
         scrollContainer.scrollTo({
           top: Math.max(
             0,
@@ -6880,11 +7025,11 @@ export default function CodeSitePanel({ workspaceSlug }) {
               stickyHeight -
               12,
           ),
-          behavior: "auto",
+          behavior: reduceMotion ? "auto" : "smooth",
         });
       }
     },
-    [],
+    [reduceMotion],
   );
 
   const handleRequiredActionReview = useCallback(
@@ -7560,7 +7705,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   return (
     <div
       data-testid="codesite-panel"
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden"
       style={{
         "--accent-primary": "oklch(73% 0.13 196)",
         "--attention-purple": "oklch(73% 0.13 196)",
@@ -7634,29 +7779,32 @@ export default function CodeSitePanel({ workspaceSlug }) {
               <label htmlFor="codesite-project-select" className="sr-only">
                 CodeSite project
               </label>
-              <select
-                id="codesite-project-select"
-                data-testid="codesite-project-select"
-                value={radarState.selectedProjectId || ""}
-                onChange={(event) =>
-                  setSelectedProjectId(event.target.value || null)
-                }
-                className="h-11 w-full min-w-0 truncate rounded border px-2 text-xs outline-none focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-[var(--attention-purple)] focus:[outline-style:solid]"
-                style={{
-                  borderColor: "var(--border-subtle)",
-                  background: "var(--bg-elevated)",
-                  color: "var(--text-primary)",
-                }}
+              <Select
+                value={radarState.selectedProjectId ? String(radarState.selectedProjectId) : undefined}
+                onValueChange={(value) => setSelectedProjectId(value || null)}
               >
-                {radarState.projects.map((project, index) => (
-                  <option
-                    key={project.id || project.slug || `project-${index}`}
-                    value={project.id}
-                  >
-                    {project.title}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  id="codesite-project-select"
+                  data-testid="codesite-project-select"
+                  className="h-11 w-full min-w-0 truncate text-xs"
+                  aria-label="CodeSite project"
+                >
+                  <SelectValue placeholder="Select operation" />
+                </SelectTrigger>
+                <SelectContent align="start" className="min-w-[220px]">
+                  {radarState.projects.map((project, index) => {
+                    const value = String(project.id || project.slug || `project-${index}`);
+                    return (
+                      <SelectItem
+                        key={value}
+                        value={value}
+                      >
+                        {project.title}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
 
@@ -7701,16 +7849,23 @@ export default function CodeSitePanel({ workspaceSlug }) {
             activeSection={activeSection}
             onSelect={handleSelectSection}
           />
+          <DesktopSectionRail
+            sections={mobileSections}
+            activeSection={activeSection}
+            onSelect={handleSelectSection}
+            status={latestStatus}
+            streamStatus={streamStatus}
+          />
           {error ? (
             <div
               data-testid="codesite-error-state"
               className="m-3 grid gap-3 rounded-lg border px-3 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
               style={{
                 borderColor:
-                  "color-mix(in srgb, #ff5757 38%, var(--border-subtle))",
+                  "color-mix(in srgb, var(--accent-danger) 38%, var(--border-subtle))",
                 color: "var(--text-primary)",
                 background:
-                  "color-mix(in srgb, var(--bg-surface) 90%, #ff5757 4%)",
+                  "color-mix(in srgb, var(--bg-surface) 90%, var(--accent-danger) 4%)",
               }}
             >
               <div className="min-w-0">
@@ -8478,7 +8633,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
                           className="rounded border px-3 py-2 text-xs"
                           style={{
                             borderColor:
-                              "color-mix(in srgb, #ff5757 36%, var(--border-subtle))",
+                              "color-mix(in srgb, var(--accent-danger) 36%, var(--border-subtle))",
                             background: "var(--bg-surface)",
                           }}
                         >

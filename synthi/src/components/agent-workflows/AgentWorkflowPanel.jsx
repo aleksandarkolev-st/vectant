@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -60,19 +61,19 @@ const DEFAULT_WORKSPACE_LABEL = 'Current workspace';
 
 const STATUS_STYLES = {
   ok: {
-    color: 'var(--success-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--success, #238636) 14%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--success, #238636) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-success) 34%, var(--border-subtle))',
   },
   warn: {
-    color: 'var(--warning-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--warning, #b7791f) 13%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--warning, #b7791f) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-warning) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-warning) 34%, var(--border-subtle))',
   },
   danger: {
-    color: 'var(--error-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--error, #d73a49) 13%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--error, #d73a49) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-danger) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-danger) 34%, var(--border-subtle))',
   },
   neutral: {
     color: 'var(--text-muted)',
@@ -590,7 +591,7 @@ function buildActions(model) {
       },
       {
         action: WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER,
-        label: 'Universe',
+        label: 'Capability',
         icon: 'manifest',
         enabled: dojoSkillReady,
         disabledReason: 'License or preview a skill first',
@@ -604,7 +605,7 @@ function buildActions(model) {
       },
       {
         action: WORKFLOW_ACTIONS.RUN_WIND_TUNNEL,
-        label: 'Wind',
+        label: 'Hardening',
         icon: 'run',
         enabled: dojoSkillReady,
         disabledReason: 'License or preview a skill first',
@@ -618,6 +619,61 @@ function buildActions(model) {
       },
     ],
   };
+}
+
+function buildAgentModes(model, summary, localRecording) {
+  const traceReady = hasRecordedTrace(model);
+  const compiled = hasCompiledContract(model);
+  const scriptReady = hasGeneratedScript(model);
+  const unresolvedCount = unresolvedQuestionCount(model);
+  const reviewCount = Number(summary.blockerCount || 0);
+
+  return [
+    {
+      id: 'plan',
+      label: 'Plan',
+      status: compiled ? 'Contract' : traceReady ? 'Trace' : 'Draft',
+      detail: unresolvedCount > 0
+        ? `${unresolvedCount} contract decisions`
+        : traceReady
+          ? 'Trace can be compiled'
+          : 'Attach, observe, teach',
+      tone: compiled ? 'ok' : traceReady ? 'warn' : 'neutral',
+      icon: Route,
+      section: 'runbook',
+    },
+    {
+      id: 'execute',
+      label: 'Execute',
+      status: localRecording ? 'Recording' : scriptReady ? 'Replay' : 'Manual',
+      detail: localRecording
+        ? 'Browser events are captured'
+        : scriptReady
+          ? 'Replay artifact is ready'
+          : 'Controlled browser actions',
+      tone: localRecording || scriptReady ? 'ok' : 'neutral',
+      icon: Play,
+      section: 'runbook',
+    },
+    {
+      id: 'debug',
+      label: 'Debug',
+      status: traceReady ? `${summary.stepCount} events` : 'No trace',
+      detail: traceReady ? 'Inspect trace and replay state' : 'Teach a workflow first',
+      tone: traceReady ? 'ok' : 'neutral',
+      icon: Gauge,
+      section: 'trace',
+    },
+    {
+      id: 'review',
+      label: 'Review',
+      status: reviewCount > 0 ? `${reviewCount} gates` : 'Clear',
+      detail: reviewCount > 0 ? 'Resolve hardening gates' : 'Policy gates are clear',
+      tone: reviewCount > 0 ? 'warn' : 'ok',
+      icon: ShieldCheck,
+      section: reviewCount > 0 ? 'hardening' : 'dojo',
+    },
+  ];
 }
 
 export function createDefaultWorkflowViewModel(workspaceSlug) {
@@ -788,6 +844,129 @@ function ReadinessRow({ row }) {
   );
 }
 
+function WorkflowCommandStrip({ items, activeId, onSelect }) {
+  return (
+    <div
+      data-testid="agent-workflow-command-strip"
+      className="grid gap-1 rounded-md border p-1 sm:grid-cols-4"
+      style={{
+        borderColor: 'var(--border-subtle)',
+        background: 'color-mix(in srgb, var(--bg-panel) 72%, transparent)',
+      }}
+      role="tablist"
+      aria-label="Workflow sections"
+    >
+      {items.map((item) => {
+        const active = activeId === item.id;
+        const Icon = item.icon || Workflow;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className="th-focus-ring grid min-h-11 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
+            style={{
+              borderColor: active
+                ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                : 'color-mix(in srgb, var(--border-subtle) 74%, transparent)',
+              background: active
+                ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                : 'color-mix(in srgb, var(--bg-app) 34%, transparent)',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            }}
+            onClick={() => onSelect?.(item.id)}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+            <span className="min-w-0">
+              <span className="block truncate font-semibold">{item.label}</span>
+              <span className="block truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                {item.detail}
+              </span>
+            </span>
+            <span className="font-mono text-[10px]" style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
+              {item.count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentModeStrip({ modes, activeId, onSelect, reducedMotion = false }) {
+  const activeMode = modes.find((mode) => mode.id === activeId) || modes[0];
+
+  return (
+    <section
+      data-testid="agent-workflow-mode-strip"
+      className="rounded-md border p-1"
+      style={{
+        borderColor: 'var(--border-subtle)',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 74%, transparent), color-mix(in srgb, var(--bg-panel) 88%, transparent))',
+      }}
+      aria-label="Agent operating mode"
+    >
+      <div className="grid grid-cols-2 gap-1" role="tablist" aria-label="Agent modes">
+        {modes.map((mode) => {
+          const active = activeId === mode.id;
+          const Icon = mode.icon || Workflow;
+          const statusStyle = toneStyle(mode.tone);
+          return (
+            <button
+              key={mode.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className="th-focus-ring relative min-h-[58px] overflow-hidden rounded-[var(--radius-control)] border px-2.5 py-2 text-left transition-[border-color,color,transform] hover:-translate-y-px"
+              style={{
+                borderColor: active
+                  ? 'color-mix(in srgb, var(--primary) 42%, var(--border-subtle))'
+                  : 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              }}
+              onClick={() => onSelect?.(mode.id)}
+            >
+              {active ? (
+                <motion.span
+                  layoutId="agent-workflow-mode-active"
+                  className="absolute inset-0"
+                  style={{
+                    background: 'linear-gradient(135deg, color-mix(in srgb, var(--primary) 13%, var(--bg-panel)), color-mix(in srgb, var(--bg-surface) 84%, transparent))',
+                  }}
+                  transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
+                />
+              ) : null}
+              <span className="relative z-10 grid min-w-0 gap-1">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+                  <span className="truncate text-xs font-semibold">{mode.label}</span>
+                </span>
+                <span
+                  className="w-fit max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                  style={statusStyle}
+                >
+                  {mode.status}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {activeMode ? (
+        <div className="mt-1 flex min-h-8 items-center justify-between gap-3 border-t px-2 pt-1.5 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+          <span className="truncate" style={{ color: 'var(--text-muted)' }}>
+            Operating mode
+          </span>
+          <span className="min-w-0 truncate text-right font-medium">
+            {activeMode.label}: {activeMode.detail}
+          </span>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ActionButton({
   action,
   label,
@@ -813,8 +992,8 @@ function ActionButton({
       ].join(' ')}
       style={{
         borderColor: 'var(--border-subtle)',
-        background: primary ? 'var(--accent-primary)' : 'var(--bg-panel)',
-        color: primary ? 'var(--accent-foreground, var(--bg-app))' : 'var(--text-primary)',
+        background: primary ? 'var(--primary)' : 'var(--bg-panel)',
+        color: primary ? 'var(--primary-foreground)' : 'var(--text-primary)',
       }}
       disabled={disabled}
       title={disabledMessage}
@@ -894,38 +1073,98 @@ function ProfileField({ label, value, onChange, multiline = false }) {
   );
 }
 
-function WorkflowStage({ stage, onAction, isBusy = false }) {
+function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSelect }) {
   const Icon = STAGE_ICONS[stage.id] || Workflow;
   const style = toneStyle(stage.tone);
   const disabled = isBusy || !stage.actionEnabled;
   const disabledMessage = disabled ? (stage.disabledReason || (isBusy ? 'Workflow action in progress...' : undefined)) : undefined;
 
   return (
-    <div className="grid min-h-16 grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
-      <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
-        <Icon className="h-3.5 w-3.5" strokeWidth={2} />
-      </div>
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold">{stage.title}</div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
-            {stage.label}
-          </span>
-          <p className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{stage.detail}</p>
+    <div
+      className="grid min-h-16 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2 text-left transition-[background,border-color] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]"
+      style={{
+        borderColor: selected
+          ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+          : 'var(--border-subtle)',
+        background: selected
+          ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)'
+          : 'transparent',
+      }}
+    >
+      <button
+        type="button"
+        data-workflow-stage-selector={stage.id}
+        className="th-focus-ring grid min-h-12 min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-3 rounded-md bg-transparent py-1 text-left"
+        style={{ color: 'var(--text-primary)' }}
+        aria-pressed={selected}
+        onClick={() => onSelect?.(stage.id)}
+      >
+        <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
+          <Icon className="h-3.5 w-3.5" strokeWidth={2} />
         </div>
-      </div>
+        <div className="min-w-0">
+          <div className="truncate text-xs font-semibold">{stage.title}</div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
+              {stage.label}
+            </span>
+            <p className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{stage.detail}</p>
+          </div>
+        </div>
+      </button>
       <button
         type="button"
         className="inline-flex h-7 min-w-16 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
         style={{ ...style, minWidth: 64 }}
         disabled={disabled}
         title={disabledMessage}
-        onClick={() => onAction?.(stage.action, { stageId: stage.id })}
+        onClick={() => {
+          onAction?.(stage.action, { stageId: stage.id });
+        }}
       >
         {stage.action === WORKFLOW_ACTIONS.END_TEACH ? <Square className="h-3.5 w-3.5" strokeWidth={2} /> : <Play className="h-3.5 w-3.5" strokeWidth={2} />}
         <span className="truncate">{stage.actionLabel}</span>
       </button>
     </div>
+  );
+}
+
+function WorkflowStageInspector({ stage, onAction, isBusy }) {
+  if (!stage) return null;
+  const Icon = STAGE_ICONS[stage.id] || Workflow;
+  return (
+    <section
+      data-testid="agent-workflow-stage-inspector"
+      className="mt-3 rounded-md border px-3 py-3"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--accent-primary) 30%, var(--border-subtle))',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--accent-primary) 6%), color-mix(in srgb, var(--bg-app) 70%, transparent))',
+      }}
+    >
+      <div className="grid gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border" style={toneStyle(stage.tone)}>
+            <Icon className="h-4 w-4" strokeWidth={2} />
+          </span>
+          <div className="min-w-0">
+            <div className="vt-panel-kicker">{stage.label}</div>
+            <h4 className="mt-0.5 truncate text-sm font-semibold">{stage.title}</h4>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
+              {stage.detail}
+            </p>
+          </div>
+        </div>
+        <ActionButton
+          action={stage.action}
+          label={stage.actionLabel}
+          enabled={stage.actionEnabled}
+          disabledReason={stage.disabledReason}
+          icon={stage.id}
+          isBusy={isBusy}
+          onAction={(action) => onAction?.(action, { stageId: stage.id, source: 'stage-inspector' })}
+        />
+      </div>
+    </section>
   );
 }
 
@@ -977,7 +1216,7 @@ function ReviewQueue({ items, blockers }) {
   return (
     <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-review">
       <div className="flex items-center gap-2 px-3 py-2">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--warning, #b7791f)' }} />
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--accent-warning)' }} />
         <h3 className="truncate text-xs font-semibold">Publish Hardening</h3>
       </div>
       <ul>
@@ -1004,7 +1243,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
   const blocked = dojo.skillCard?.willNotDo?.length ? dojo.skillCard.willNotDo : dojo.license?.blockedActions || [];
 
   return (
-    <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-dojo">
+    <section className="mt-3 scroll-mt-4 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-dojo" data-workflow-section="dojo">
       <div className="flex items-center justify-between gap-3 px-3 py-2">
         <div className="min-w-0">
           <h3 className="truncate text-xs font-semibold">Dojo Skill</h3>
@@ -1061,7 +1300,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
           </dd>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <dt style={{ color: 'var(--text-muted)' }}>Wind tunnel</dt>
+          <dt style={{ color: 'var(--text-muted)' }}>Adversarial runs</dt>
           <dd className="min-w-0 truncate text-right">
             {dojo.windTunnel?.runCount || 0} runs
           </dd>
@@ -1071,7 +1310,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
           <dd className="min-w-0 truncate text-right">{dojo.artifactCount || 0} exported</dd>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <dt style={{ color: 'var(--text-muted)' }}>Evil twin</dt>
+          <dt style={{ color: 'var(--text-muted)' }}>Escape rate</dt>
           <dd className="min-w-0 truncate text-right">{Math.round(Number(dojo.attackSuccessRate || 0) * 100)}% escaped</dd>
         </div>
         {dojo.licenseExpiresAt ? (
@@ -1098,7 +1337,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
           <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Dry-run:</span> {dojo.proofDryRun.status}</div>
         ) : null}
         {dojo.blockExplanation?.refusal ? (
-          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Why:</span> {dojo.blockExplanation.refusal}</div>
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Block reason:</span> {dojo.blockExplanation.refusal}</div>
         ) : null}
         {dojo.permissionUpgrade?.requiredSteps?.length ? (
           <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Upgrade:</span> {dojo.permissionUpgrade.requiredSteps.slice(0, 3).join(', ')}</div>
@@ -1161,7 +1400,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
         />
         <ActionButton
           action={WORKFLOW_ACTIONS.EXPLAIN_BLOCK}
-          label="Why"
+          label="Block Reason"
           icon="manifest"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
@@ -1179,7 +1418,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
       <div className="grid grid-cols-3 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
         <ActionButton
           action={WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER}
-          label="Universe"
+          label="Capability"
           icon="manifest"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
@@ -1195,7 +1434,7 @@ function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
         />
         <ActionButton
           action={WORKFLOW_ACTIONS.RUN_WIND_TUNNEL}
-          label="Wind"
+          label="Hardening"
           icon="run"
           enabled={Boolean(dojo.skillId)}
           disabledReason="License or preview a skill first"
@@ -1363,14 +1602,37 @@ function IsolationProfileCard({ isolation, traceReady, onAction }) {
           </div>
           <ProfileField label="Working directory" value={form.workingDirectory} onChange={updateForm('workingDirectory')} />
           <ProfileField label="Auth provider" value={form.authProviderId} onChange={updateForm('authProviderId')} />
-          <label className="flex min-h-8 items-center gap-2 text-[11px]">
-            <input
-              type="checkbox"
-              checked={form.allowMutationReplay}
-              onChange={(event) => updateForm('allowMutationReplay')(event.target.checked)}
-            />
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.allowMutationReplay}
+            onClick={() => updateForm('allowMutationReplay')(!form.allowMutationReplay)}
+            className="th-focus-ring flex min-h-8 items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-[11px]"
+            style={{
+              borderColor: form.allowMutationReplay
+                ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                : 'var(--border-subtle)',
+              background: form.allowMutationReplay
+                ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                : 'transparent',
+            }}
+          >
+            <span
+              className="grid h-4 w-7 rounded-full border p-0.5"
+              style={{
+                borderColor: form.allowMutationReplay ? 'var(--accent-primary)' : 'var(--border-medium)',
+              }}
+            >
+              <span
+                className="h-2.5 w-2.5 rounded-full transition-transform"
+                style={{
+                  transform: form.allowMutationReplay ? 'translateX(12px)' : 'translateX(0)',
+                  background: form.allowMutationReplay ? 'var(--accent-primary)' : 'var(--text-muted)',
+                }}
+              />
+            </span>
             <span>Allow mutation replay in isolated CI</span>
-          </label>
+          </button>
           <div className="flex gap-2">
             <button
               type="submit"
@@ -1425,6 +1687,10 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   isBusy = false,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
+  const [activeAgentMode, setActiveAgentMode] = useState('plan');
+  const [activeWorkflowSection, setActiveWorkflowSection] = useState('runbook');
+  const [selectedStageId, setSelectedStageId] = useState('');
+  const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
     const externalTeachState = workflowState?.teach?.state;
@@ -1458,6 +1724,39 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   const headerTone = summary.blockerCount > 0 ? 'warn' : hasGeneratedScript(model) ? 'ok' : 'neutral';
   const headerLabel = localRecording ? 'Teaching' : model.workflow?.label || 'Workflow draft';
   const traceReady = hasRecordedTrace(model);
+  const agentModes = useMemo(
+    () => buildAgentModes(model, summary, localRecording),
+    [localRecording, model, summary],
+  );
+  const selectedStage = useMemo(() => (
+    model.stages.find((stage) => stage.id === selectedStageId) || model.stages[0] || null
+  ), [model.stages, selectedStageId]);
+  const workflowSections = useMemo(() => ([
+    { id: 'runbook', label: 'Runbook', detail: headerLabel, count: model.stages.length, icon: Workflow },
+    { id: 'trace', label: 'Trace', detail: traceReady ? 'Captured' : 'Waiting', count: summary.stepCount, icon: Route },
+    { id: 'hardening', label: 'Hardening', detail: summary.blockerCount ? 'Needs review' : 'Clear', count: summary.blockerCount, icon: ShieldCheck },
+    { id: 'dojo', label: 'Dojo', detail: model.dojo?.published ? 'Licensed' : model.dojo?.status || 'Draft', count: model.dojo?.readinessLevel ?? 0, icon: BadgeCheck },
+  ]), [headerLabel, model.dojo?.published, model.dojo?.readinessLevel, model.dojo?.status, model.stages.length, summary.blockerCount, summary.stepCount, traceReady]);
+
+  useEffect(() => {
+    if (!model.stages.length) {
+      setSelectedStageId('');
+      return;
+    }
+    setSelectedStageId((current) => (
+      model.stages.some((stage) => stage.id === current) ? current : model.stages[0].id
+    ));
+  }, [model.stages]);
+
+  useEffect(() => {
+    if (localRecording) {
+      setActiveAgentMode('execute');
+      return;
+    }
+    setActiveAgentMode((current) => (
+      agentModes.some((mode) => mode.id === current) ? current : agentModes[0]?.id || 'plan'
+    ));
+  }, [agentModes, localRecording]);
 
   const emitWorkflowAction = useCallback((action, payload = {}) => {
     if (!action) return;
@@ -1477,13 +1776,26 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
     }
   }, [onWorkflowAction, workspaceSlug]);
 
+  const selectWorkflowSection = useCallback((sectionId) => {
+    setActiveWorkflowSection(sectionId);
+    if (typeof document === 'undefined') return;
+    const target = document.querySelector(`[data-workflow-section="${sectionId}"]`);
+    target?.scrollIntoView?.({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' });
+  }, [prefersReducedMotion]);
+
+  const selectAgentMode = useCallback((modeId) => {
+    const mode = agentModes.find((item) => item.id === modeId);
+    setActiveAgentMode(modeId);
+    if (mode?.section) selectWorkflowSection(mode.section);
+  }, [agentModes, selectWorkflowSection]);
+
   return (
     <section
       data-testid="agent-workflow-panel"
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}
+      className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden"
+      style={{ color: 'var(--text-primary)' }}
     >
-      <header className="border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <header className="vt-toolbar px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Workflow className="h-4 w-4 shrink-0" strokeWidth={2} style={{ color: 'var(--accent-tertiary)' }} />
@@ -1499,13 +1811,28 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div className="grid gap-2" data-testid="agent-workflow-readiness">
+        <AgentModeStrip
+          modes={agentModes}
+          activeId={activeAgentMode}
+          onSelect={selectAgentMode}
+          reducedMotion={prefersReducedMotion}
+        />
+
+        <div className="mt-3 grid gap-2" data-testid="agent-workflow-readiness">
           {model.readiness.map((row) => (
             <ReadinessRow key={row.label} row={row} />
           ))}
         </div>
 
-        <section className="mt-4 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="mt-3">
+          <WorkflowCommandStrip
+            items={workflowSections}
+            activeId={activeWorkflowSection}
+            onSelect={selectWorkflowSection}
+          />
+        </div>
+
+        <section className="vt-shell-panel mt-4 scroll-mt-4" data-workflow-section="runbook">
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="min-w-0">
               <h3 className="truncate text-xs font-semibold">{model.workflow.title}</h3>
@@ -1518,14 +1845,25 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
             />
           </div>
 
+          <div className="px-3 pb-2">
+            <WorkflowStageInspector stage={selectedStage} onAction={emitWorkflowAction} isBusy={isBusy} />
+          </div>
+
           <div data-testid="agent-workflow-stages">
             {model.stages.map((stage) => (
-              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} isBusy={isBusy} />
+              <WorkflowStage
+                key={stage.id}
+                stage={stage}
+                selected={selectedStage?.id === stage.id}
+                onSelect={setSelectedStageId}
+                onAction={emitWorkflowAction}
+                isBusy={isBusy}
+              />
             ))}
           </div>
         </section>
 
-        <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-steps">
+        <section className="vt-shell-panel mt-3 scroll-mt-4" data-testid="agent-workflow-steps" data-workflow-section="trace">
           <div className="flex items-center gap-2 px-3 py-2">
             <Route className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--text-muted)' }} />
             <h3 className="truncate text-xs font-semibold">Recorded Trace</h3>
@@ -1537,15 +1875,17 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           </ol>
         </section>
 
-        <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+        <div className="scroll-mt-4" data-workflow-section="hardening">
+          <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+          {shouldShowIsolationProfile(model) ? (
+            <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
+          ) : null}
+        </div>
         <DojoSkillCredential dojo={model.dojo} traceReady={traceReady} onAction={emitWorkflowAction} workspaceSlug={workspaceSlug} />
-        {shouldShowIsolationProfile(model) ? (
-          <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
-        ) : null}
         <HistoryList history={model.history} />
       </div>
 
-      <footer className="grid gap-2 border-t p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <footer className="grid gap-2 border-t p-3" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 72%, transparent)' }}>
         <ActionButton
           action={model.actions.primary?.action}
           label={model.actions.primary?.label || 'Attach'}

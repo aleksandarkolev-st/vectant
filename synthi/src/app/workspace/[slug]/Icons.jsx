@@ -1,40 +1,38 @@
 "use client"
-import { Folder, FolderOpen, FileCode2, FileJson, FileType, FileText } from 'lucide-react';
+import { ChevronRight, Folder, FolderOpen, FileCode2, FileJson, FileType, FileText } from 'lucide-react';
 
 export const ChevronIcon = ({ isOpen, isSelected }) => (
-    <svg
-        className={`w-3 h-3 mr-1 transition-transform duration-200 ${isSelected? 'text-white' : 'text-gray-400'} ${isOpen? 'rotate-90' : ''}`}
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-        xmlns="http://www.w3.org/2000/svg"
-    >
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-    </svg>
+    <ChevronRight
+        className={`mr-1 h-3 w-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
+        style={{ color: isSelected ? 'var(--text-primary)' : 'var(--text-muted)' }}
+        strokeWidth={2}
+    />
 );
 
 export const FileIcon = ({ node, isSelected }) => {
+    const color = (selected, normal) => isSelected ? selected : normal;
+
     if (node.isFolder) {
         // Note: node.__open is a side-effect on the prop, replaced with local state in FileItem
         return node.__open? ( 
-            <FolderOpen className={`w-4 h-4 mr-2 ${isSelected? 'text-gray-100' : 'text-gray-300'}`} />
+            <FolderOpen className="mr-2 h-4 w-4" style={{ color: color('var(--text-primary)', 'var(--text-secondary)') }} />
         ) : (
-            <Folder className={`w-4 h-4 mr-2 ${isSelected? 'text-gray-100' : 'text-gray-300'}`} />
+            <Folder className="mr-2 h-4 w-4" style={{ color: color('var(--text-primary)', 'var(--text-secondary)') }} />
         );
     }
     
     // Fallback for file icons
     const name = node.name.toLowerCase();
-    if (name.endsWith('.json')) return <FileJson className={`w-4 h-4 mr-2 ${isSelected? 'text-green-300' : 'text-green-400'}`} />;
-    if (name.endsWith('.md')) return <FileText className={`w-4 h-4 mr-2 ${isSelected? 'text-blue-300' : 'text-blue-400'}`} />;
+    if (name.endsWith('.json')) return <FileJson className="mr-2 h-4 w-4" style={{ color: color('var(--accent-success)', 'var(--accent-success)') }} />;
+    if (name.endsWith('.md')) return <FileText className="mr-2 h-4 w-4" style={{ color: color('var(--accent-info)', 'var(--accent-info)') }} />;
     if (name.endsWith('.js') || 
         name.endsWith('.ts') || 
         name.endsWith('.tsx')) 
-        return <FileCode2 className={`w-4 h-4 mr-2 ${isSelected? 'text-yellow-200' : 'text-yellow-300'}`} />;
+        return <FileCode2 className="mr-2 h-4 w-4" style={{ color: color('var(--accent-warning)', 'var(--accent-warning)') }} />;
     if (name.endsWith('.cpp') || 
         name.endsWith('.h') || 
         name.endsWith('.hpp')) 
-        return <FileType className={`w-4 h-4 mr-2 ${isSelected? 'text-cyan-200' : 'text-cyan-300'}`} />;
+        return <FileType className="mr-2 h-4 w-4" style={{ color: color('var(--attention-purple)', 'var(--attention-purple)') }} />;
         
-    return <FileText className={`w-4 h-4 mr-2 ${isSelected? 'text-gray-200' : 'text-gray-400'}`} />;
+    return <FileText className="mr-2 h-4 w-4" style={{ color: color('var(--text-secondary)', 'var(--text-muted)') }} />;
 };

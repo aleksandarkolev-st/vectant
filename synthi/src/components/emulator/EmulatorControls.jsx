@@ -10,12 +10,12 @@ export default function EmulatorControls({
   disabled = false,
 }) {
   return (
-    <div className="flex items-center justify-center gap-2 p-2 border-t border-[#1a1a1e] bg-[#09090b]">
+    <div className="flex items-center justify-center gap-2 border-t border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] p-2">
       <Button
         type="button"
         variant="outline"
         size="sm"
-        className="h-8 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+        className="th-btn-ghost h-8 border-[var(--border-subtle)] text-[var(--text-secondary)]"
         onClick={onPower}
         disabled={disabled}
       >
@@ -25,7 +25,7 @@ export default function EmulatorControls({
         type="button"
         variant="outline"
         size="sm"
-        className="h-8 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+        className="th-btn-ghost h-8 border-[var(--border-subtle)] text-[var(--text-secondary)]"
         onClick={onHome}
         disabled={disabled}
       >
@@ -35,7 +35,7 @@ export default function EmulatorControls({
         type="button"
         variant="outline"
         size="sm"
-        className="h-8 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+        className="th-btn-ghost h-8 border-[var(--border-subtle)] text-[var(--text-secondary)]"
         onClick={onRotate}
         disabled={disabled}
       >

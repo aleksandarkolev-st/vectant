@@ -18,14 +18,14 @@ import { ExtensionState, getStateDescription } from '../extensions/core/Extensio
  * Status badge colors
  */
 const STATUS_COLORS = {
-  [ExtensionState.ACTIVE]: 'bg-green-500',
-  [ExtensionState.INSTALLED]: 'bg-gray-400',
-  [ExtensionState.LOADED]: 'bg-blue-400',
-  [ExtensionState.ACTIVATING]: 'bg-yellow-500 animate-pulse',
-  [ExtensionState.SUSPENDED]: 'bg-orange-400',
-  [ExtensionState.CRASHED]: 'bg-red-500',
-  [ExtensionState.QUARANTINED]: 'bg-red-700',
-  [ExtensionState.DISABLED]: 'bg-gray-600'
+  [ExtensionState.ACTIVE]: 'var(--accent-success)',
+  [ExtensionState.INSTALLED]: 'var(--text-muted)',
+  [ExtensionState.LOADED]: 'var(--brand-stop-4)',
+  [ExtensionState.ACTIVATING]: 'var(--accent-warning)',
+  [ExtensionState.SUSPENDED]: 'var(--accent-warning)',
+  [ExtensionState.CRASHED]: 'var(--accent-danger)',
+  [ExtensionState.QUARANTINED]: 'var(--accent-danger)',
+  [ExtensionState.DISABLED]: 'var(--text-muted)'
 };
 
 const STATUS_ICONS = {
@@ -43,12 +43,13 @@ const STATUS_ICONS = {
  * Extension Status Badge
  */
 function StatusBadge({ state }) {
-  const colorClass = STATUS_COLORS[state] || 'bg-gray-400';
+  const color = STATUS_COLORS[state] || 'var(--text-muted)';
   const icon = STATUS_ICONS[state] || '?';
   
   return (
     <span 
-      className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium text-white ${colorClass}`}
+      className="vt-workflow-chip text-xs"
+      style={{ '--chip-color': color }}
       title={getStateDescription(state)}
     >
       <span className="mr-1">{icon}</span>
@@ -67,33 +68,33 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
   const hasCrashes = extension.crashCount > 0;
 
   return (
-    <div className="border border-gray-700 rounded-lg mb-2 overflow-hidden">
+    <div className="vt-workflow-card mb-2 overflow-hidden">
       {/* Header - clickable */}
       <div 
-        className="flex items-center justify-between p-3 bg-gray-800 cursor-pointer hover:bg-gray-750"
+        className="vt-command-item flex cursor-pointer items-center justify-between rounded-none p-3"
         onClick={onToggle}
       >
         <div className="flex items-center space-x-3">
           {/* Extension Icon */}
-          <div className="w-8 h-8 bg-gray-700 rounded flex items-center justify-center text-lg">
+          <div className="vt-agent-card flex h-8 w-8 items-center justify-center text-lg">
             {extension.icon || '🧩'}
           </div>
           
           {/* Extension Info */}
           <div>
             <div className="flex items-center space-x-2">
-              <span className="font-medium text-white">{extension.name}</span>
-              <span className="text-xs text-gray-400">v{extension.version}</span>
+              <span className="font-medium text-[var(--text-primary)]">{extension.name}</span>
+              <span className="text-xs text-[var(--text-muted)]">v{extension.version}</span>
             </div>
-            <div className="text-xs text-gray-400">{extension.publisher || 'Unknown Publisher'}</div>
+            <div className="text-xs text-[var(--text-muted)]">{extension.publisher || 'Unknown Publisher'}</div>
           </div>
         </div>
         
         <div className="flex items-center space-x-3">
           {/* Warning indicators */}
           {hasCrashes && (
-            <span className="text-yellow-500 text-sm" title={`${extension.crashCount} crashes`}>
-              ⚠ {extension.crashCount}
+            <span className="vt-workflow-chip text-sm" style={{ '--chip-color': 'var(--accent-warning)' }} title={`${extension.crashCount} crashes`}>
+              {extension.crashCount}
             </span>
           )}
           
@@ -101,7 +102,7 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
           <StatusBadge state={extension.state} />
           
           {/* Expand arrow */}
-          <span className={`text-gray-400 transform transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
+          <span className={`text-[var(--text-muted)] transform transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
             ▼
           </span>
         </div>
@@ -109,27 +110,27 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
       
       {/* Expanded content */}
       {isExpanded && (
-        <div className="p-3 bg-gray-850 border-t border-gray-700">
+        <div className="border-t border-[var(--border-subtle)] bg-[var(--surface-panel-subtle)] p-3">
           {/* Description */}
-          <p className="text-sm text-gray-300 mb-3">
+          <p className="mb-3 text-sm text-[var(--text-secondary)]">
             {extension.description || 'No description available.'}
           </p>
           
           {/* Stats */}
           <div className="grid grid-cols-3 gap-2 mb-3 text-xs">
-            <div className="bg-gray-700 p-2 rounded">
-              <div className="text-gray-400">Activations</div>
-              <div className="text-white font-medium">{extension.activationCount || 0}</div>
+            <div className="vt-inset-panel p-2">
+              <div className="text-[var(--text-muted)]">Activations</div>
+              <div className="font-medium text-[var(--text-primary)]">{extension.activationCount || 0}</div>
             </div>
-            <div className="bg-gray-700 p-2 rounded">
-              <div className="text-gray-400">Crashes</div>
-              <div className={`font-medium ${hasCrashes ? 'text-red-400' : 'text-white'}`}>
+            <div className="vt-inset-panel p-2">
+              <div className="text-[var(--text-muted)]">Crashes</div>
+              <div className={`font-medium ${hasCrashes ? 'text-[var(--accent-danger)]' : 'text-[var(--text-primary)]'}`}>
                 {extension.crashCount || 0}
               </div>
             </div>
-            <div className="bg-gray-700 p-2 rounded">
-              <div className="text-gray-400">Last Active</div>
-              <div className="text-white font-medium">
+            <div className="vt-inset-panel p-2">
+              <div className="text-[var(--text-muted)]">Last Active</div>
+              <div className="font-medium text-[var(--text-primary)]">
                 {extension.lastActiveTime 
                   ? new Date(extension.lastActiveTime).toLocaleTimeString() 
                   : 'Never'}
@@ -139,12 +140,12 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
           
           {/* Quarantine warning */}
           {isQuarantined && (
-            <div className="bg-red-900/30 border border-red-700 rounded p-2 mb-3 text-sm">
-              <div className="font-medium text-red-400">⚠ Extension Quarantined</div>
-              <div className="text-red-300">
+            <div className="vt-workflow-alert vt-workflow-alert--danger mb-3 p-2 text-sm">
+              <div className="font-medium text-[var(--accent-danger)]">Extension Quarantined</div>
+              <div className="text-[var(--text-secondary)]">
                 This extension was blocked due to repeated failures or security issues.
               </div>
-              <div className="text-red-300 mt-1">
+              <div className="mt-1 text-[var(--text-secondary)]">
                 Reason: {extension.quarantineReason || 'Unknown'}
               </div>
             </div>
@@ -155,14 +156,14 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
             {isQuarantined || isDisabled ? (
               <button 
                 onClick={() => onEnable(extension.id)}
-                className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded"
+                className="th-focus-ring th-btn-primary px-3 py-1 text-sm"
               >
                 Enable
               </button>
             ) : (
               <button 
                 onClick={() => onDisable(extension.id)}
-                className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded"
+                className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] border border-[var(--border-subtle)] px-3 py-1 text-sm"
               >
                 Disable
               </button>
@@ -171,7 +172,7 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
             {!isQuarantined && !isDisabled && (
               <button 
                 onClick={() => onRestart(extension.id)}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded"
+                className="th-focus-ring th-btn-active px-3 py-1 text-sm"
               >
                 Restart
               </button>
@@ -179,7 +180,8 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
             
             <button 
               onClick={() => onUninstall(extension.id)}
-              className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded"
+              className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] border px-3 py-1 text-sm text-[var(--accent-danger)]"
+              style={{ borderColor: 'color-mix(in srgb, var(--accent-danger) 28%, transparent)' }}
             >
               Uninstall
             </button>
@@ -195,29 +197,29 @@ function ExtensionItem({ extension, onEnable, onDisable, onUninstall, onRestart,
  */
 function ErrorItem({ error, onDismiss }) {
   const severityColors = {
-    error: 'border-red-500 bg-red-900/20',
-    warning: 'border-yellow-500 bg-yellow-900/20',
-    info: 'border-blue-500 bg-blue-900/20'
+    error: 'vt-workflow-alert vt-workflow-alert--danger',
+    warning: 'vt-workflow-alert',
+    info: 'vt-workflow-alert vt-workflow-alert--muted'
   };
   
   return (
-    <div className={`border-l-4 rounded p-3 mb-2 ${severityColors[error.severity]}`}>
+    <div className={`mb-2 border-l-4 p-3 ${severityColors[error.severity]}`}>
       <div className="flex justify-between items-start">
-        <div className="font-medium text-white">{error.title}</div>
+        <div className="font-medium text-[var(--text-primary)]">{error.title}</div>
         <button 
           onClick={() => onDismiss(error)}
-          className="text-gray-400 hover:text-white"
+          className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
         >
           ×
         </button>
       </div>
-      <div className="text-sm text-gray-300 mt-1">{error.message}</div>
+      <div className="mt-1 text-sm text-[var(--text-secondary)]">{error.message}</div>
       {error.suggestion && (
-        <div className="text-xs text-gray-400 mt-2">
-          💡 {error.suggestion}
+        <div className="mt-2 text-xs text-[var(--text-muted)]">
+          {error.suggestion}
         </div>
       )}
-      <div className="text-xs text-gray-500 mt-1">
+      <div className="mt-1 text-xs text-[var(--text-muted)]">
         {new Date(error.timestamp).toLocaleTimeString()}
       </div>
     </div>
@@ -267,14 +269,14 @@ export function ExtensionPanel({
   ).length;
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 text-white">
+    <div className="vt-panel-frame flex h-full flex-col rounded-none border-0">
       {/* Header */}
-      <div className="p-4 border-b border-gray-700">
+      <div className="vt-panel-header h-auto min-h-0 flex-col items-stretch p-4">
         <div className="flex justify-between items-center mb-3">
-          <h2 className="text-lg font-semibold">Extensions</h2>
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">Extensions</h2>
           <button 
             onClick={onRefresh}
-            className="text-gray-400 hover:text-white p-1"
+            className="vt-icon-button th-focus-ring h-8 min-w-8"
             title="Refresh"
           >
             ⟳
@@ -283,10 +285,10 @@ export function ExtensionPanel({
         
         {/* Summary */}
         <div className="flex space-x-4 text-sm">
-          <span className="text-green-400">{activeCount} active</span>
-          <span className="text-gray-400">{extensions.length} total</span>
+          <span className="text-[var(--accent-success)]">{activeCount} active</span>
+          <span className="text-[var(--text-muted)]">{extensions.length} total</span>
           {issueCount > 0 && (
-            <span className="text-red-400">{issueCount} with issues</span>
+            <span className="text-[var(--accent-danger)]">{issueCount} with issues</span>
           )}
         </div>
         
@@ -296,10 +298,10 @@ export function ExtensionPanel({
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className={`px-3 py-1 text-sm rounded ${
+              className={`th-focus-ring rounded-[var(--radius-control)] px-3 py-1 text-sm ${
                 filter === f 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  ? 'th-btn-active'
+                  : 'th-btn-ghost'
               }`}
             >
               {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -310,14 +312,14 @@ export function ExtensionPanel({
 
       {/* Recent Errors Section */}
       {errors.length > 0 && (
-        <div className="border-b border-gray-700">
+        <div className="border-b border-[var(--border-subtle)]">
           <div 
-            className="p-3 flex justify-between items-center cursor-pointer hover:bg-gray-800"
+            className="vt-command-item flex cursor-pointer items-center justify-between rounded-none p-3"
             onClick={() => setShowErrors(!showErrors)}
           >
             <div className="flex items-center space-x-2">
-              <span className="text-red-400">⚠</span>
-              <span className="font-medium">Recent Issues ({errors.length})</span>
+              <span className="text-[var(--accent-danger)]">!</span>
+              <span className="font-medium text-[var(--text-primary)]">Recent Issues ({errors.length})</span>
             </div>
             <span className={`transform transition-transform ${showErrors ? 'rotate-180' : ''}`}>
               ▼
@@ -341,7 +343,7 @@ export function ExtensionPanel({
       {/* Extension List */}
       <div className="flex-1 overflow-y-auto p-3">
         {filteredExtensions.length === 0 ? (
-          <div className="text-center text-gray-400 py-8">
+          <div className="vt-empty-state py-8 text-center">
             {filter !== 'all' 
               ? 'No extensions match this filter.' 
               : 'No extensions installed.'}
@@ -363,7 +365,7 @@ export function ExtensionPanel({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-gray-700 text-xs text-gray-500">
+      <div className="border-t border-[var(--border-subtle)] p-3 text-xs text-[var(--text-muted)]">
         Extension system v1.0 • {extensions.length} extensions loaded
       </div>
     </div>
@@ -384,13 +386,13 @@ export function ExtensionStatusIndicator({ extensions = [], errors = [], onClick
   return (
     <button 
       onClick={onClick}
-      className="flex items-center space-x-1 px-2 py-1 text-xs hover:bg-gray-700 rounded"
+      className="vt-state-pill th-focus-ring"
       title="Extension Status"
     >
-      <span className={hasRecentErrors ? 'text-red-400' : 'text-gray-400'}>🧩</span>
-      <span className="text-gray-300">{activeCount}</span>
+      <span className={hasRecentErrors ? 'text-[var(--accent-danger)]' : 'text-[var(--text-muted)]'}>EXT</span>
+      <span className="text-[var(--text-secondary)]">{activeCount}</span>
       {issueCount > 0 && (
-        <span className="text-red-400">({issueCount}⚠)</span>
+        <span className="text-[var(--accent-danger)]">({issueCount})</span>
       )}
     </button>
   );

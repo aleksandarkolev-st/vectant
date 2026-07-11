@@ -9,8 +9,10 @@ import SourceAffordancePrPlan from './SourceAffordancePrPlan';
 import SubstrateLadderView from './SubstrateLadderView';
 
 const panelStyle = {
-  borderColor: 'var(--border-subtle)',
-  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
 };
 
 export default function SourceApiDashboard({
@@ -53,12 +55,12 @@ export default function SourceApiDashboard({
 
   return (
     <main
-      className="min-h-screen px-5 py-5 text-sm"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      className="dojo-page min-h-[100dvh] px-5 py-5 text-sm"
+      style={{ color: 'var(--text-primary)' }}
       data-testid="dojo-source-api"
     >
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
@@ -120,7 +122,7 @@ function UiContractPanel({ contract }) {
   const actions = contract?.actions || [];
   return (
     <section className="rounded-md border" style={panelStyle} data-testid="agent-ready-ui-contract">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck size={15} aria-hidden="true" />
@@ -131,7 +133,7 @@ function UiContractPanel({ contract }) {
         <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{actions.length} actions</span>
       </div>
       {actions.length ? (
-        <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="divide-y" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
           {actions.map((action) => (
             <article key={action.actionId} className="px-4 py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">

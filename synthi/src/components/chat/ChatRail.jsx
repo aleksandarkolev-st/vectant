@@ -32,7 +32,7 @@ export default function ChatRail({
       <aside className={`vx-rail ${open ? 'is-open' : ''}`} aria-hidden={!open}>
         <div className="vx-rail-head">
           <span className="vx-rail-orb" aria-hidden="true" />
-          <span className="vx-rail-name">Vectant AI</span>
+          <span className="vx-rail-name">Vectant Console</span>
           <button
             type="button"
             className="vx-rail-collapse th-focus-ring"

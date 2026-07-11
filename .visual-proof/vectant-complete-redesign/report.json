@@ -1,0 +1,827 @@
+{
+  "generatedAt": "2026-07-07T13:03:37.774Z",
+  "route": "/workspace/visual-workspace",
+  "baseURL": "http://127.0.0.1:3000",
+  "cases": [
+    {
+      "name": "workspace-desktop",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/workspace-desktop.png",
+      "screenshotBytes": 92137,
+      "metrics": {
+        "name": "workspace-desktop",
+        "title": "Vectant ADE",
+        "textLength": 781,
+        "visibleElementCount": 570,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "branch-selector-open",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/branch-selector-open.png",
+      "screenshotBytes": 116589,
+      "metrics": {
+        "name": "branch-selector-open",
+        "title": "Vectant ADE",
+        "textLength": 889,
+        "visibleElementCount": 621,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "session-control-idle",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/session-control-idle.png",
+      "screenshotBytes": 158167,
+      "metrics": {
+        "name": "session-control-idle",
+        "title": "Vectant ADE",
+        "textLength": 871,
+        "visibleElementCount": 556,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": true,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "floating-summon-animation",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/floating-summon-animation.png",
+      "screenshotBytes": 159743,
+      "metrics": {
+        "name": "floating-summon-animation",
+        "title": "Vectant ADE",
+        "textLength": 845,
+        "visibleElementCount": 605,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "floating-material",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/floating-material.png",
+      "screenshotBytes": 144620,
+      "metrics": {
+        "name": "floating-material",
+        "title": "Vectant ADE",
+        "textLength": 796,
+        "visibleElementCount": 535,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "workflow-agent-modes",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/workflow-agent-modes.png",
+      "screenshotBytes": 218965,
+      "metrics": {
+        "name": "workflow-agent-modes",
+        "title": "Vectant ADE",
+        "textLength": 3353,
+        "visibleElementCount": 1161,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "agent-workflows",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": true,
+        "hasWorkflowModeStrip": true,
+        "hasWorkflowInspector": true,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "workflow-console-interactive",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/workflow-console-interactive.png",
+      "screenshotBytes": 185386,
+      "metrics": {
+        "name": "workflow-console-interactive",
+        "title": "Vectant ADE",
+        "textLength": 3312,
+        "visibleElementCount": 1093,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "agent-workflows",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": true,
+        "hasWorkflowModeStrip": true,
+        "hasWorkflowInspector": true,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "settings-panel",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/settings-panel.png",
+      "screenshotBytes": 178931,
+      "metrics": {
+        "name": "settings-panel",
+        "title": "Vectant ADE",
+        "textLength": 2237,
+        "visibleElementCount": 649,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "agent-workflows",
+          "settings",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": true,
+        "hasWorkflowModeStrip": true,
+        "hasWorkflowInspector": true,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "theme-picker",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/theme-picker.png",
+      "screenshotBytes": 149638,
+      "metrics": {
+        "name": "theme-picker",
+        "title": "Vectant ADE",
+        "textLength": 2434,
+        "visibleElementCount": 746,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "agent-workflows",
+          "settings",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": true,
+        "hasWorkflowModeStrip": true,
+        "hasWorkflowInspector": true,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": true,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "theme-creator",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/theme-creator.png",
+      "screenshotBytes": 182577,
+      "metrics": {
+        "name": "theme-creator",
+        "title": "Vectant ADE",
+        "textLength": 2673,
+        "visibleElementCount": 820,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "agent-workflows",
+          "settings",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": true,
+        "hasWorkflowModeStrip": true,
+        "hasWorkflowInspector": true,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": true,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "file-delete-confirm",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/file-delete-confirm.png",
+      "screenshotBytes": 120209,
+      "metrics": {
+        "name": "file-delete-confirm",
+        "title": "Vectant ADE",
+        "textLength": 977,
+        "visibleElementCount": 646,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": true,
+        "hasConfirmDialog": true,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "workspace-tablet",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/workspace-tablet.png",
+      "screenshotBytes": 78554,
+      "metrics": {
+        "name": "workspace-tablet",
+        "title": "Vectant ADE",
+        "textLength": 763,
+        "visibleElementCount": 532,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 900,
+          "height": 1024
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "workspace-mobile",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/workspace-mobile.png",
+      "screenshotBytes": 37800,
+      "metrics": {
+        "name": "workspace-mobile",
+        "title": "Vectant ADE",
+        "textLength": 338,
+        "visibleElementCount": 366,
+        "panels": [
+          "explorer",
+          "search",
+          "git",
+          "extensions",
+          "editor",
+          "terminal",
+          "output"
+        ],
+        "hasWorkspaceRoot": true,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": true,
+        "hasEditor": true,
+        "hasTerminal": true,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "dojo-interactive-rail",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/dojo-interactive-rail.png",
+      "screenshotBytes": 177952,
+      "metrics": {
+        "name": "dojo-interactive-rail",
+        "title": "Vectant ADE",
+        "textLength": 847,
+        "visibleElementCount": 224,
+        "panels": [],
+        "hasWorkspaceRoot": false,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": true,
+        "hasDojoCapabilityRegistry": true,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": false,
+        "hasEditor": false,
+        "hasTerminal": false,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "cortex-node-rail",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/cortex-node-rail.png",
+      "screenshotBytes": 340304,
+      "metrics": {
+        "name": "cortex-node-rail",
+        "title": "Vectant ADE",
+        "textLength": 1172,
+        "visibleElementCount": 737,
+        "panels": [],
+        "hasWorkspaceRoot": false,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": true,
+        "hasCortexRail": true,
+        "hasCortexInspectorMetrics": true,
+        "hasCodeSitePanel": false,
+        "hasCodeSiteDesktopRail": false,
+        "hasCodeSiteOperatingQueue": false,
+        "hasExplorer": false,
+        "hasEditor": false,
+        "hasTerminal": false,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    },
+    {
+      "name": "codesite-desktop-command-rail",
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/vectant-complete-redesign/codesite-desktop-command-rail.png",
+      "screenshotBytes": 174935,
+      "metrics": {
+        "name": "codesite-desktop-command-rail",
+        "title": "Vectant ADE",
+        "textLength": 6854,
+        "visibleElementCount": 1559,
+        "panels": [],
+        "hasWorkspaceRoot": false,
+        "hasWorkflowCommandStrip": false,
+        "hasWorkflowModeStrip": false,
+        "hasWorkflowInspector": false,
+        "hasDojoShell": false,
+        "hasDojoCapabilityRegistry": false,
+        "hasCortexView": false,
+        "hasCortexRail": false,
+        "hasCortexInspectorMetrics": false,
+        "hasCodeSitePanel": true,
+        "hasCodeSiteDesktopRail": true,
+        "hasCodeSiteOperatingQueue": true,
+        "hasExplorer": false,
+        "hasEditor": false,
+        "hasTerminal": false,
+        "hasDialogSurface": false,
+        "hasConfirmDialog": false,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "bodyBackground": "rgb(5, 6, 9)"
+      }
+    }
+  ],
+  "consoleMessages": [
+    {
+      "type": "error",
+      "text": "Auto-connect failed Event"
+    },
+    {
+      "type": "warning",
+      "text": "CompilerClient ws closed"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    },
+    {
+      "type": "error",
+      "text": "WebSocket connection to 'ws://localhost:7070/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to trigger initial workspace analysis SynthiException: Gateway connection closed: The connection to the analyzer gateway was closed.\n    at WebSocket._handleClose (http://127.0.0.1:3000/_next/static/chunks/app/workspace/%5Bslug%5D/page-c554f73970cb9d76.js:1:736199)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "error",
+      "text": "WebSocket connection to 'ws://localhost:1234/notifications?slug=visual-workspace&userId=visual-user&email=alex%40vectant.dev' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "warning",
+      "text": "[Tokenizer] Failed to register custom grammar for \"html\": Cannot set configuration for unknown language html"
+    },
+    {
+      "type": "warning",
+      "text": "[Tokenizer] Failed to register custom grammar for \"css\": Cannot set configuration for unknown language css"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "warning",
+      "text": "Could not create web worker(s). Falling back to loading web worker code in main thread, which might cause UI freezes. Please see https://github.com/microsoft/monaco-editor#faq"
+    },
+    {
+      "type": "warning",
+      "text": "Cannot read properties of undefined (reading 'toString')"
+    },
+    {
+      "type": "error",
+      "text": "WebSocket connection to 'ws://localhost:7070/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "Failed to trigger initial workspace analysis SynthiException: Gateway connection closed: The connection to the analyzer gateway was closed.\n    at WebSocket._handleClose (http://127.0.0.1:3000/_next/static/chunks/app/workspace/%5Bslug%5D/page-c554f73970cb9d76.js:1:736199)"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "error",
+      "text": "WebSocket connection to 'ws://127.0.0.1:3000/signal' failed: Connection closed before receiving a handshake response"
+    },
+    {
+      "type": "error",
+      "text": "CompilerClient ws error Event"
+    },
+    {
+      "type": "error",
+      "text": "Auto-connect failed Event"
+    },
+    {
+      "type": "warning",
+      "text": "CompilerClient ws closed"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "warning",
+      "text": "[Tokenizer] Failed to register custom grammar for \"html\": Cannot set configuration for unknown language html"
+    },
+    {
+      "type": "warning",
+      "text": "[Tokenizer] Failed to register custom grammar for \"css\": Cannot set configuration for unknown language css"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "warning",
+      "text": "Could not create web worker(s). Falling back to loading web worker code in main thread, which might cause UI freezes. Please see https://github.com/microsoft/monaco-editor#faq"
+    },
+    {
+      "type": "warning",
+      "text": "Cannot read properties of undefined (reading 'toString')"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    },
+    {
+      "type": "error",
+      "text": "WebSocket connection to 'ws://localhost:1234/notifications?slug=visual-workspace&userId=visual-user&email=alex%40vectant.dev' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "type": "error",
+      "text": "WebSocket connection to 'ws://127.0.0.1:3000/signal' failed: Connection closed before receiving a handshake response"
+    },
+    {
+      "type": "error",
+      "text": "CompilerClient ws error Event"
+    },
+    {
+      "type": "error",
+      "text": "Auto-connect failed Event"
+    },
+    {
+      "type": "warning",
+      "text": "CompilerClient ws closed"
+    },
+    {
+      "type": "warning",
+      "text": "[useExtensions] connectVSCodeServer: WebRTC not connected yet"
+    }
+  ],
+  "pageErrors": [],
+  "ok": true
+}

@@ -11,12 +11,12 @@
 //   // later...
 //   disposable.dispose();
 
-const SEVERITY_EMOJI = {
-  critical: '🔴',
-  high: '🟠',
-  moderate: '🟡',
-  low: '🔵',
-  trivial: '⚪',
+const SEVERITY_LABEL = {
+  critical: 'Critical',
+  high: 'High',
+  moderate: 'Medium',
+  low: 'Low',
+  trivial: 'Trivial',
 };
 
 /**
@@ -24,21 +24,21 @@ const SEVERITY_EMOJI = {
  */
 function buildHoverMarkdown(fix) {
   const severity = fix.severity || 'moderate';
-  const emoji = SEVERITY_EMOJI[severity] || '🟡';
+  const severityLabel = SEVERITY_LABEL[severity] || 'Medium';
   const confidence = Math.round((fix.confidence ?? 0) * 100);
   const category = (fix.category || fix.rule_id || 'unknown').replace(/_/g, ' ');
-  const desc = fix.description || 'AI-detected issue';
+  const desc = fix.description || 'Detected issue';
   const isSafe = fix.is_safe ?? false;
 
   const lines = [
-    `${emoji} **AI Fix** — ${desc}`,
+    `**Fix candidate** - ${desc}`,
     '',
     `| | |`,
     `|---|---|`,
-    `| **Severity** | ${severity} |`,
+    `| **Severity** | ${severityLabel} |`,
     `| **Confidence** | ${confidence}% |`,
     `| **Category** | ${category} |`,
-    `| **Safe to auto-apply** | ${isSafe ? '✅ yes' : '⚠️ no'} |`,
+    `| **Safe to auto-apply** | ${isSafe ? 'yes' : 'no'} |`,
   ];
 
   if (fix.original_text) {
@@ -48,7 +48,7 @@ function buildHoverMarkdown(fix) {
     lines.push('', '**Replacement:**', '```', fix.replacement_text, '```');
   }
 
-  lines.push('', '---', '*Ctrl+Shift+H* — toggle panel · *Ctrl+Shift+A* — analyze');
+  lines.push('', '---', '*Ctrl+Shift+H* - toggle panel, *Ctrl+Shift+A* - analyze');
 
   return lines.join('\n');
 }

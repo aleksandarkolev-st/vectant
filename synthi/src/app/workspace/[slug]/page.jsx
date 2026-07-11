@@ -34,8 +34,13 @@ import dynamic from 'next/dynamic';
 const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
     ssr: false,
     loading: () => (
-        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#18181b]">
-            <div className="h-full w-full bg-[#18181b]" />
+        <ResizablePanel
+            defaultSize={76}
+            minSize={20}
+            className="min-w-0"
+            style={{ background: 'var(--bg-editor, var(--bg-panel))' }}
+        >
+            <div className="h-full w-full" style={{ background: 'var(--bg-editor, var(--bg-panel))' }} />
         </ResizablePanel>
     ),
 });
@@ -2764,12 +2769,7 @@ export default function EditorPage({ params }) {
         if (activeSessionId) {
             const result = await client.cancelBuild(activeSessionId);
             if (!result || !result.cancelled) {
-                if (typeof window !== 'undefined' && window.alert) {
-                    window.alert(
-                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
-                        `Please wait a moment and try again.`
-                    );
-                }
+                toast.error(`Build did not fully stop yet. Session ${activeSessionId} is still closing.`);
                 return;
             }
         }
@@ -2798,12 +2798,7 @@ export default function EditorPage({ params }) {
         if (activeSessionId) {
             const result = await client.cancelBuild(activeSessionId);
             if (!result || !result.cancelled) {
-                if (typeof window !== 'undefined' && window.alert) {
-                    window.alert(
-                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
-                        `Please wait a moment and try again.`
-                    );
-                }
+                toast.error(`Build did not fully stop yet. Session ${activeSessionId} is still closing.`);
                 return;
             }
         }
@@ -3193,7 +3188,13 @@ export default function EditorPage({ params }) {
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#1a1a1e] bg-[#09090b] min-w-0">
+        <ResizablePanel
+            defaultSize={24}
+            minSize={20}
+            maxSize={45}
+            className="min-w-0 border-l"
+            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+        >
             <AIChatWindow
                 docked={true}
                 isVisible={floatingChatVisible}
@@ -3226,7 +3227,7 @@ export default function EditorPage({ params }) {
         let chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
 
         if (!chatPanel) {
-            dockingHandlers?.chat?.();
+            dockingHandlers?.openChatPanel?.();
             layout = store.getState()?.layout;
             chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
         }
@@ -3236,7 +3237,11 @@ export default function EditorPage({ params }) {
         const sidebarGroupId = findDockGroup(layout, 'sidebar');
         const dockRightTargetNodeId = findDockRightRailTarget(layout);
 
-        if (dockRightTargetNodeId && chatPanel.groupId === sidebarGroupId) {
+        // Dock the chat to the right of the editor whenever a right target exists.
+        // Don't gate on chatPanel.groupId === sidebarGroupId: the chat opens in its
+        // OWN sidebar-category group, which findDockGroup('sidebar') may not return,
+        // so that check was flaky and silently skipped the split (chat stayed left).
+        if (dockRightTargetNodeId && chatPanel.groupId !== dockRightTargetNodeId) {
             dispatch(splitNodeAction({
                 targetNodeId: dockRightTargetNodeId,
                 tabId: chatPanel.tabId,
@@ -3277,6 +3282,14 @@ export default function EditorPage({ params }) {
         if (ensureDockedChatRight()) {
             setFloatingChatVisible(false);
         }
+    }, [ensureDockedChatRight]);
+
+    // Activity-bar "AI Chat" docks the chat as a full panel on the right of the
+    // editor. The navbar button opens the floating right popup (handleToggleChat).
+    useEffect(() => {
+        const onDockChatRight = () => { ensureDockedChatRight(); };
+        window.addEventListener('synthi:dock-chat-right', onDockChatRight);
+        return () => window.removeEventListener('synthi:dock-chat-right', onDockChatRight);
     }, [ensureDockedChatRight]);
 
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
@@ -3424,14 +3437,13 @@ export default function EditorPage({ params }) {
     return (
         <DockablePanelProvider workspaceId={slug}>
             <div
-                className={cn('workspace-root relative flex flex-col h-screen overflow-hidden', viewportClass)}
+                className={cn('workspace-root vt-workbench-shell relative flex h-[100dvh] flex-col overflow-hidden', viewportClass)}
                 style={{
-                    background: 'var(--bg-sidebar)',
                     color: 'var(--text-primary)',
                     '--workspace-statusbar-terminal-clearance': 'clamp(160px, 24vh, 260px)',
                 }}
             >
-                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
+                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'transparent', color: 'var(--text-primary)' }}>
                     {/* Suppress native right-click menu inside the workspace
                         so the user can spam right-click to discover which
                         surfaces ship a custom menu. Skips text inputs so
@@ -3472,12 +3484,12 @@ export default function EditorPage({ params }) {
                     <GuestBanner />
 
                     {buildLogs.length > 0 && (
-                        <div className="border-b border-[#1a1a1e] bg-[#09090b]">
-                            <div className="flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wide text-[#7d7d85]">
+                        <div className="vt-ambient-bottom border-b" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 84%, transparent)' }}>
+                            <div className="flex items-center justify-between px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: 'var(--text-muted)' }}>
                                 <button
                                     type="button"
                                     onClick={() => setBuildLogsCollapsed((v) => !v)}
-                                    className="flex items-center gap-1 hover:text-[#D7DAE0]"
+                                    className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[6px] px-1.5 py-0.5"
                                     title={buildLogsCollapsed ? 'Show build logs' : 'Hide build logs'}
                                 >
                                     <span aria-hidden="true">{buildLogsCollapsed ? '▸' : '▾'}</span>
@@ -3486,14 +3498,14 @@ export default function EditorPage({ params }) {
                                 <button
                                     type="button"
                                     onClick={() => setBuildLogs([])}
-                                    className="hover:text-[#D7DAE0]"
+                                    className="th-focus-ring th-btn-ghost rounded-[6px] px-1.5 py-0.5"
                                     title="Clear build logs"
                                 >
-                                    ✕
+                                    Clear
                                 </button>
                             </div>
                             {!buildLogsCollapsed && (
-                                <div className="px-3 pb-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                                <div className="vt-mono max-h-28 overflow-auto px-3 pb-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
                                     {buildLogs.map((line, idx) => (
                                         <div key={idx} className="leading-5 whitespace-pre-wrap">
                                             {line}
@@ -3554,13 +3566,13 @@ export default function EditorPage({ params }) {
                                         <>
                                             {EditorPanelComponent}
 
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                            <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
 
                                             {FileTreePanel}
 
                                             {floatingChatVisible && (
                                                 <>
-                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
                                                     {ChatPanel}
                                                 </>
                                             )}
@@ -3569,13 +3581,13 @@ export default function EditorPage({ params }) {
                                         <>
                                             {FileTreePanel}
 
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                            <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
 
                                             {EditorPanelComponent}
 
                                             {floatingChatVisible && (
                                                 <>
-                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
                                                     {ChatPanel}
                                                 </>
                                             )}
@@ -3590,7 +3602,7 @@ export default function EditorPage({ params }) {
                             className={cn(
                                 "!pointer-events-auto h-px z-50 transition-all duration-300",
                                 showProblemsPanel && isProblemsPanelDocked
-                                    ? "bg-[#1a1a1e] hover:bg-[#3A7AFE]"
+                                    ? "vt-workspace-resize-handle"
                                     : "opacity-0 pointer-events-none"
                             )}
                         />
@@ -3613,7 +3625,7 @@ export default function EditorPage({ params }) {
                                         ? "opacity-100 transition-opacity duration-200 delay-100"
                                         : "opacity-0 transition-opacity duration-150"
                                 )}
-                                style={{ borderColor: 'var(--border-medium, #1a1a1e)' }}
+                                style={{ borderColor: 'var(--border-medium)' }}
                                 id="problems-panel-dock-slot"
                             />
                         </ResizablePanel>

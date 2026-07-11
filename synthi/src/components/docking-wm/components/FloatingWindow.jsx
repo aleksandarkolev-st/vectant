@@ -5,7 +5,7 @@
 
 'use client';
 
-import React, { useMemo, memo } from 'react';
+import React, { useEffect, useState, memo } from 'react';
 import { useSelector } from 'react-redux';
 import { selectTabs } from '../state/layout-slice';
 import { useFloatingWindow } from '../hooks/use-floating-window';
@@ -33,6 +33,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
   const tab = tabs[tabId];
   const { dockFloat, closeTab, popoutTab, updateFloat, registry } = useDockingActions();
   const { menuState, openMenu, closeMenu } = useContextMenu();
+  const [isSummoning, setIsSummoning] = useState(true);
 
   const {
     isDragging,
@@ -48,6 +49,12 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
   });
 
   const panelDef = tab ? registry.get(tab.panelType) : null;
+
+  useEffect(() => {
+    setIsSummoning(true);
+    const timeoutId = window.setTimeout(() => setIsSummoning(false), 460);
+    return () => window.clearTimeout(timeoutId);
+  }, [id]);
 
   if (!tab) return null;
 
@@ -114,7 +121,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
 
   return (
     <div
-      className={`dock-floating-window ${isDragging ? 'dock-floating-window--dragging' : ''}`}
+      className={`dock-floating-window ${isSummoning ? 'dock-floating-window--summoned' : ''} ${isDragging ? 'dock-floating-window--dragging' : ''}`}
       onMouseDown={handleFocus}
       style={{
         position: 'absolute',
@@ -125,11 +132,15 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
         zIndex,
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: '6px',
+        borderRadius: '9px',
         overflow: 'hidden',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)',
-        border: '1px solid var(--dock-border, #2d2d2d)',
-        backgroundColor: 'var(--dock-panel-bg, #1e1e1e)',
+        boxShadow:
+          '0 24px 64px -42px rgba(0,0,0,0.92), ' +
+          '0 0 0 1px color-mix(in srgb, var(--accent-primary, #3a8574) 8%, transparent), ' +
+          'inset 0 1px 0 color-mix(in srgb, white 7%, transparent)',
+        border: '1px solid color-mix(in srgb, var(--dock-border, #2d2d2d) 88%, var(--accent-primary, #3a8574) 8%)',
+        background:
+          'color-mix(in srgb, var(--dock-panel-bg, #1e1e1e) 96%, var(--dock-tab-bar-bg, #252526) 4%)',
       }}
     >
       {/* Title bar */}
@@ -144,8 +155,8 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
           height: '35px',
           minHeight: '35px',
           padding: '0 8px',
-          backgroundColor: 'var(--dock-tab-bar-bg, #252526)',
-          borderBottom: '1px solid var(--dock-border, #2d2d2d)',
+          background: 'color-mix(in srgb, var(--dock-tab-bar-bg, #252526) 88%, var(--dock-panel-bg, #1e1e1e) 12%)',
+          borderBottom: '1px solid color-mix(in srgb, var(--dock-border, #2d2d2d) 80%, transparent)',
           cursor: 'move',
           userSelect: 'none',
           fontSize: '12px',
@@ -182,6 +193,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
               title="Window actions"
+              aria-label="Window actions"
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -202,22 +214,22 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
           <DropdownMenuContent
             align="end"
             sideOffset={4}
-            className="min-w-[140px] bg-[#1e1e1e] border-[#2d2d2d] text-[#ccc]"
+            className="vt-command-popover min-w-[150px] p-1"
             style={{ zIndex: 99999 }}
           >
             <DropdownMenuItem
               onClick={() => dockFloat(id, null)}
-              className="gap-2 text-xs cursor-pointer hover:bg-[#2a2d2e] focus:bg-[#2a2d2e]"
+              className="vt-command-item gap-2 text-xs cursor-pointer"
             >
               <ArrowDownToLine size={14} />
               Dock back
             </DropdownMenuItem>
-            <DropdownMenuSeparator className="bg-[#2d2d2d]" />
+            <DropdownMenuSeparator />
             {tab.closable !== false && (
               <DropdownMenuItem
                 onClick={() => closeTab(tabId)}
                 variant="destructive"
-                className="gap-2 text-xs cursor-pointer hover:bg-[#2a2d2e] focus:bg-[#2a2d2e]"
+                className="vt-command-item gap-2 text-xs cursor-pointer"
               >
                 <X size={14} />
                 Close

@@ -68,7 +68,7 @@ function UniverseRow({ universe, onApply, onReview, reviewed }) {
                 <span className="genome-universe__id">Universe {id}</span>
                 <span className="genome-universe__model">
                     {modelGen}
-                    {modelCritic && modelGen !== modelCritic ? ` -> ${modelCritic} critic` : ''}
+                    {modelCritic && modelGen !== modelCritic ? ` to ${modelCritic} critic` : ''}
                 </span>
                 <span className="genome-universe__style">{style}</span>
                 <span className={`genome-universe__status genome-universe__status--${verified ? 'ok' : stage}`}>
@@ -115,13 +115,13 @@ function UniverseRow({ universe, onApply, onReview, reviewed }) {
                 <div className="genome-universe__actions">
                     <button
                         type="button"
-                        className={reviewed ? 'genome-universe__review genome-universe__review--done' : 'genome-universe__review'}
+                        className={reviewed ? 'genome-universe__review genome-universe__review--done th-focus-ring' : 'genome-universe__review th-focus-ring'}
                         onClick={() => onReview(id)}
                     >
                         <Eye className="w-3.5 h-3.5" aria-hidden="true" />
                         {reviewed ? 'Reviewed' : 'Mark reviewed'}
                     </button>
-                    <button type="button" onClick={() => onApply(id)} disabled={!verified}>Apply</button>
+                    <button type="button" className="th-focus-ring" onClick={() => onApply(id)} disabled={!verified}>Apply</button>
                 </div>
             ) : null}
         </div>
@@ -138,10 +138,10 @@ export function MultiverseCard({ jobId }) {
     return (
         <div className="genome-card">
             <header className="genome-card__head">
-                <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} /> Verify panel</span>
+                <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-[var(--attention-purple)]" strokeWidth={2} /> Verify panel</span>
                 {verify.tier ? <span className="genome-card__tier">tier: {verify.tier}</span> : null}
                 {!verify.finished && (
-                    <button type="button" className="genome-card__cancel" onClick={() => verify.cancel()}>
+                    <button type="button" className="genome-card__cancel th-focus-ring" onClick={() => verify.cancel()}>
                         cancel
                     </button>
                 )}
@@ -165,7 +165,7 @@ export function MultiverseCard({ jobId }) {
                 </div>
             ) : null}
             {universes.length === 0 ? (
-                <div className="genome-card__empty">starting universe...</div>
+                <div className="genome-card__empty">waiting for branch telemetry...</div>
             ) : (
                 universes.map((u) => (
                     <UniverseRow
