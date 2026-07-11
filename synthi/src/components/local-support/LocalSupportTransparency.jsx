@@ -244,7 +244,10 @@ export default function LocalSupportTransparency() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let loading = false;
     async function loadTransparencyState() {
+      if (loading || document.visibilityState === "hidden") return;
+      loading = true;
       try {
         const response = await fetch("/api/local-support/transparency-state", {
           cache: "no-store",
@@ -265,10 +268,16 @@ export default function LocalSupportTransparency() {
             error: error instanceof Error ? error.message : "transparency_state_unavailable",
           });
         }
+      } finally {
+        loading = false;
       }
     }
     loadTransparencyState();
-    return () => controller.abort();
+    const interval = window.setInterval(loadTransparencyState, 3_000);
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+    };
   }, []);
 
   const liveState = transparencyState.state;

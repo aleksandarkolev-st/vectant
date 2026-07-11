@@ -95,4 +95,52 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("1a2b-3c4d-5e6f", { exact: true })).toBeVisible();
     await expect(page.getByText("Confirm only if this fingerprint appears in the desktop app.")).toBeVisible();
   });
+
+  test("refreshes durable transparency state without reloading the page", async ({ page }) => {
+    let stateReads = 0;
+    await page.route("**/api/local-support/policy", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true, policy_version: "2026.07.05" }),
+      });
+    });
+    await page.route("**/api/local-support/transparency-state", async (route) => {
+      stateReads += 1;
+      const connected = stateReads > 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          decision: "transparency_state_ready",
+          session: connected
+            ? {
+                connected: true,
+                paused: false,
+                account_id: "acct_live",
+                session_id: "sess_live_12345678",
+                device_fingerprint: "sha256:1111111111111111",
+              }
+            : { connected: false, session_id: "not_paired" },
+          workspace: connected
+            ? { workspace_id: "wk_live_12345678", display: "Live relay workspace" }
+            : { workspace_id: "not_selected", display: "No workspace selected" },
+          inventory: [],
+          sent_payloads: [],
+          blocked_items: [],
+          activity: [],
+          ports: [],
+          export_metadata: { raw_bodies_included: false, audit_chain_verified: false },
+        }),
+      });
+    });
+
+    await page.goto(`${baseURL}/local-support`);
+    await expect(page.getByText("Workspace: No workspace selected. Account: not_paired. Session: not_paired.")).toBeVisible();
+
+    await expect(page.getByText("Workspace: Live relay workspace. Account: acct_live. Session: sess_live_12345678."))
+      .toBeVisible({ timeout: 6_000 });
+    await expect(page.getByText("Connected").first()).toBeVisible();
+    expect(stateReads).toBeGreaterThan(1);
+  });
 });
