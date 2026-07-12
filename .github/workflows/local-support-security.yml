@@ -9,6 +9,7 @@ on:
       - "synthi/src/lib/local-support/**"
       - "synthi/prisma/**"
       - "tests/local-support-admin.spec.ts"
+      - "tests/local-support-desktop-shell.spec.ts"
       - "tests/local-support-transparency.spec.ts"
       - ".github/workflows/local-support-security.yml"
       - ".github/workflows/local-support-release.yml"
@@ -24,6 +25,7 @@ on:
       - "synthi/src/lib/local-support/**"
       - "synthi/prisma/**"
       - "tests/local-support-admin.spec.ts"
+      - "tests/local-support-desktop-shell.spec.ts"
       - "tests/local-support-transparency.spec.ts"
       - ".github/workflows/local-support-security.yml"
       - ".github/workflows/local-support-release.yml"
@@ -126,6 +128,7 @@ jobs:
             } while ((Get-Date) -lt $deadline)
             npx playwright test tests/local-support-transparency.spec.ts --project=chromium --reporter=line
             npx playwright test tests/local-support-admin.spec.ts --project=chromium --reporter=line
+            npx playwright test tests/local-support-desktop-shell.spec.ts --project=chromium --reporter=line
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
             Get-Content $out -ErrorAction SilentlyContinue
