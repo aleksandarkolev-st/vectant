@@ -19,6 +19,10 @@ impl PendingApprovalQueue {
         self.pending_ids.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.pending_ids.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.pending_ids.clear();
     }

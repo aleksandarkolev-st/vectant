@@ -1363,17 +1363,18 @@ pub fn validate_file_request_authorization(
     if auth.device_fingerprint != session.device_fingerprint() {
         return Err(LocalAuthorizationError::DeviceMismatch);
     }
-    let expected_device_proof = session.request_device_proof_for_context(
-        &request.request_id,
-        &request.account_id,
-        &request.org_id,
-        &request.workspace_id,
-        &request.capability,
-        &request.actor,
-        &request.expires_at,
-        &auth.protocol_version,
-        &auth.policy_version,
-    );
+    let expected_device_proof =
+        session.request_device_proof_for_context(&crate::session::DeviceProofContext {
+            request_id: &request.request_id,
+            account_id: &request.account_id,
+            org_id: &request.org_id,
+            workspace_id: &request.workspace_id,
+            capability: &request.capability,
+            actor: &request.actor,
+            expires_at: &request.expires_at,
+            protocol_version: &auth.protocol_version,
+            policy_version: &auth.policy_version,
+        });
     if !constant_time_eq(
         auth.device_proof.as_bytes(),
         expected_device_proof.as_bytes(),

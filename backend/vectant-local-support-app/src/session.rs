@@ -17,6 +17,18 @@ pub struct SessionState {
     pub protocol_version: String,
 }
 
+pub struct DeviceProofContext<'a> {
+    pub request_id: &'a str,
+    pub account_id: &'a str,
+    pub org_id: &'a str,
+    pub workspace_id: &'a str,
+    pub capability: &'a str,
+    pub actor: &'a str,
+    pub expires_at: &'a str,
+    pub protocol_version: &'a str,
+    pub policy_version: &'a str,
+}
+
 #[derive(Debug)]
 pub struct SessionGuard {
     session_id: String,
@@ -173,31 +185,20 @@ impl SessionGuard {
     }
 
     pub fn request_device_proof(&self, request_id: &str) -> String {
-        self.request_device_proof_for_context(
+        self.request_device_proof_for_context(&DeviceProofContext {
             request_id,
-            self.account_id.as_str(),
-            self.org_id.as_str(),
-            self.workspace_id.as_str(),
-            "",
-            "",
-            "",
-            crate::APP_PROTOCOL_VERSION,
-            crate::POLICY_VERSION,
-        )
+            account_id: self.account_id.as_str(),
+            org_id: self.org_id.as_str(),
+            workspace_id: self.workspace_id.as_str(),
+            capability: "",
+            actor: "",
+            expires_at: "",
+            protocol_version: crate::APP_PROTOCOL_VERSION,
+            policy_version: crate::POLICY_VERSION,
+        })
     }
 
-    pub fn request_device_proof_for_context(
-        &self,
-        request_id: &str,
-        account_id: &str,
-        org_id: &str,
-        workspace_id: &str,
-        capability: &str,
-        actor: &str,
-        expires_at: &str,
-        protocol_version: &str,
-        policy_version: &str,
-    ) -> String {
+    pub fn request_device_proof_for_context(&self, context: &DeviceProofContext<'_>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(b"vectant-local-support-device-proof-v1");
         hasher.update(b"\0");
@@ -205,25 +206,25 @@ impl SessionGuard {
         hasher.update(b"\0");
         hasher.update(self.session_id.as_bytes());
         hasher.update(b"\0");
-        hasher.update(request_id.as_bytes());
+        hasher.update(context.request_id.as_bytes());
         hasher.update(b"\0");
         hasher.update(self.device_fingerprint.as_bytes());
         hasher.update(b"\0");
-        hasher.update(account_id.as_bytes());
+        hasher.update(context.account_id.as_bytes());
         hasher.update(b"\0");
-        hasher.update(org_id.as_bytes());
+        hasher.update(context.org_id.as_bytes());
         hasher.update(b"\0");
-        hasher.update(workspace_id.as_bytes());
+        hasher.update(context.workspace_id.as_bytes());
         hasher.update(b"\0");
-        hasher.update(capability.as_bytes());
+        hasher.update(context.capability.as_bytes());
         hasher.update(b"\0");
-        hasher.update(actor.as_bytes());
+        hasher.update(context.actor.as_bytes());
         hasher.update(b"\0");
-        hasher.update(expires_at.as_bytes());
+        hasher.update(context.expires_at.as_bytes());
         hasher.update(b"\0");
-        hasher.update(protocol_version.as_bytes());
+        hasher.update(context.protocol_version.as_bytes());
         hasher.update(b"\0");
-        hasher.update(policy_version.as_bytes());
+        hasher.update(context.policy_version.as_bytes());
         format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 

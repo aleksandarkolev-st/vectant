@@ -42,7 +42,7 @@ use vectant_local_support_app::preview::{
     MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
 };
 use vectant_local_support_app::scanner::SecretScanner;
-use vectant_local_support_app::session::{SessionError, SessionGuard};
+use vectant_local_support_app::session::{DeviceProofContext, SessionError, SessionGuard};
 use vectant_local_support_app::update::{
     signed_test_manifest, signed_test_package, verify_update_manifest, verify_update_package,
     UpdateError,
@@ -74,17 +74,17 @@ fn local_auth(session: &SessionGuard, request: &FileReadRequest) -> LocalRequest
         device_fingerprint: session.device_fingerprint().to_string(),
         device_proof: String::new(),
     };
-    auth.device_proof = session.request_device_proof_for_context(
-        &request.request_id,
-        &request.account_id,
-        &request.org_id,
-        &request.workspace_id,
-        &request.capability,
-        &request.actor,
-        &request.expires_at,
-        &auth.protocol_version,
-        &auth.policy_version,
-    );
+    auth.device_proof = session.request_device_proof_for_context(&DeviceProofContext {
+        request_id: &request.request_id,
+        account_id: &request.account_id,
+        org_id: &request.org_id,
+        workspace_id: &request.workspace_id,
+        capability: &request.capability,
+        actor: &request.actor,
+        expires_at: &request.expires_at,
+        protocol_version: &auth.protocol_version,
+        policy_version: &auth.policy_version,
+    });
     auth
 }
 
@@ -143,17 +143,17 @@ fn http_headers(
     headers.insert(
         "x-vectant-device-proof",
         session
-            .request_device_proof_for_context(
-                &request.request_id,
-                &request.account_id,
-                &request.org_id,
-                &request.workspace_id,
-                &request.capability,
-                &request.actor,
-                &request.expires_at,
-                vectant_local_support_app::APP_PROTOCOL_VERSION,
-                vectant_local_support_app::POLICY_VERSION,
-            )
+            .request_device_proof_for_context(&DeviceProofContext {
+                request_id: &request.request_id,
+                account_id: &request.account_id,
+                org_id: &request.org_id,
+                workspace_id: &request.workspace_id,
+                capability: &request.capability,
+                actor: &request.actor,
+                expires_at: &request.expires_at,
+                protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION,
+                policy_version: vectant_local_support_app::POLICY_VERSION,
+            })
             .parse()
             .unwrap(),
     );
@@ -593,19 +593,16 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     let revoke_body: serde_json::Value = port_revoke.json().await.unwrap();
     assert_eq!(revoke_body["decision"], "port_revoked");
     assert_eq!(revoke_body["bytes_sent"], 0);
-    assert_eq!(
-        shared_state
-            .port_approvals
-            .lock()
-            .await
-            .approval_for(
-                port_body["session_id"].as_str().unwrap(),
-                5173,
-                "vite:5173:pid123"
-            )
-            .is_none(),
-        true
-    );
+    assert!(shared_state
+        .port_approvals
+        .lock()
+        .await
+        .approval_for(
+            port_body["session_id"].as_str().unwrap(),
+            5173,
+            "vite:5173:pid123"
+        )
+        .is_none());
 
     let pause = client
         .post(format!("http://{addr}/v1/session/pause/req_http_pause"))
@@ -1339,7 +1336,7 @@ fn approval_queue_revalidates_file_hash_before_releasing_content() {
             &approval_id,
             "desktop-confirmation-secret",
             unchanged_review,
-            now.clone(),
+            now,
         )
         .unwrap();
     assert!(approved
@@ -1358,7 +1355,7 @@ fn approval_queue_revalidates_file_hash_before_releasing_content() {
             &second_approval_id,
             "desktop-confirmation-secret",
             changed_review,
-            now.clone(),
+            now,
         )
         .is_none());
     assert!(queue.get(&second_approval_id).is_none());
@@ -1764,7 +1761,7 @@ fn desktop_ipc_allows_only_narrow_commands() {
             session_id: "sess_123".to_string(),
         });
         assert_eq!(denied.decision, "deny");
-        assert_eq!(denied.user_visible, true);
+        assert!(denied.user_visible);
     }
 
     let dangerous_delete = decide_ipc_request(&IpcRequest {

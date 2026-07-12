@@ -76,9 +76,8 @@ pub fn verify_device_request_proof(
     if proof.device_fingerprint != device_fingerprint(&verifying_key) {
         return false;
     }
-    let Ok(signature) = Signature::from_slice(
-        &hex::decode(&proof.signature).unwrap_or_default(),
-    ) else {
+    let Ok(signature) = Signature::from_slice(&hex::decode(&proof.signature).unwrap_or_default())
+    else {
         return false;
     };
     verifying_key
