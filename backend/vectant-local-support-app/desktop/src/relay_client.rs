@@ -302,7 +302,10 @@ impl RelayDelivery {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     use axum::{
         body::Bytes,
@@ -396,6 +399,48 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result, RelayPoll::Revoked));
+    }
+
+    #[tokio::test]
+    async fn reconnects_after_a_transient_real_socket_failure() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = attempts.clone();
+        let app = Router::new().route(
+            DEVICE_RELAY_PATH,
+            post(move || {
+                let attempt = server_attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        return (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            "temporarily unavailable",
+                        );
+                    }
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"decision":"relay_idle","raw_body_included":false,"bytes_sent":0}"#,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = RelayClient::new(&format!(
+            "http://127.0.0.1:{}/api/local-support/relay/device",
+            address.port()
+        ))
+        .unwrap();
+        let identity = DeviceIdentity::generate();
+
+        assert_eq!(
+            client.poll(&identity, "sess_12345678").await.unwrap_err(),
+            "Relay request was denied."
+        );
+        let recovered = client.poll(&identity, "sess_12345678").await.unwrap();
+
+        assert!(matches!(recovered, RelayPoll::Idle));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     async fn verify_request(
