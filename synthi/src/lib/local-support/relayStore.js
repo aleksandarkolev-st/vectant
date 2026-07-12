@@ -120,8 +120,51 @@ export async function recordRelayOutcome(
         reason,
       }),
     });
+    if (safeDecision === "denied") {
+      await tx.localSupportSecurityEvent.create({
+        data: denialAlertData(request, reason, now),
+      });
+    }
     return { decision: safeDecision, bytes_sent: safeBytes, audit_id: audit.id };
   });
+}
+
+function denialAlertData(request, reason, now) {
+  const safeReason = typeof reason === "string" ? reason.slice(0, 128).toLowerCase() : "local_request_denied";
+  const classification = String(request.targetClassification || "").toUpperCase();
+  let eventType = "local_request_denied";
+  let severity = "medium";
+  if (safeReason.includes("scanner")) {
+    eventType = "scanner_failure";
+    severity = "high";
+  } else if (safeReason.includes("secret") || ["L4", "L5"].includes(classification)) {
+    eventType = "denied_secret";
+    severity = "high";
+  } else if (safeReason.includes("traversal") || safeReason.includes("path_escape")) {
+    eventType = "traversal_attempt";
+    severity = "high";
+  } else if (safeReason.includes("rate")) {
+    eventType = "rate_limit";
+  } else if (safeReason.includes("preview_redirect")) {
+    eventType = "preview_redirect_block";
+  } else if (safeReason.includes("version")) {
+    eventType = "old_version";
+  }
+  return {
+    dedupeKey: `${eventType}:${request.sessionId}:${request.requestId}`.slice(0, 256),
+    eventType,
+    severity,
+    alert: true,
+    alertRoute: severity === "high" ? "security_ops_immediate" : "security_ops_monitor",
+    accountId: String(request.accountId || "").slice(0, 256),
+    sessionId: String(request.sessionId || "").slice(0, 128),
+    requestId: String(request.requestId || "").slice(0, 128),
+    targetDisplay: String(request.targetDisplay || "").slice(0, 512),
+    targetHash: String(request.targetHash || "").slice(0, 128),
+    count: 1,
+    logClass: `local_support.security.${severity}`,
+    createdAt: now,
+  };
 }
 
 function relayRequestData(envelope, decision) {

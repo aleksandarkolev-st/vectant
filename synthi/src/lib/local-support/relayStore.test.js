@@ -42,6 +42,9 @@ function fakeClient(overrides = {}) {
     localSupportCloudAudit: {
       create: vi.fn(async ({ data }) => ({ id: "audit-1", ...data })),
     },
+    localSupportSecurityEvent: {
+      create: vi.fn(async ({ data }) => ({ id: "event-1", ...data })),
+    },
     ...overrides,
   };
   return { tx, client: { $transaction: vi.fn(async (callback) => callback(tx)) } };
@@ -101,6 +104,51 @@ describe("durable local support relay store", () => {
     expect(result).toMatchObject({ decision: "denied", bytes_sent: 0 });
     expect(audit).toMatchObject({ decision: "denied", bytesSent: 0, logClass: "local_support.data" });
     expect(JSON.stringify(audit)).not.toContain("must never persist");
+    expect(tx.localSupportSecurityEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventType: "local_request_denied",
+        severity: "medium",
+        alert: true,
+        requestId: "req_123",
+        targetHash: "sha256:target",
+        logClass: "local_support.security.medium",
+      }),
+    });
+  });
+
+  it("routes scanner and secret denials as immediate scrubbed alerts", async () => {
+    const { tx, client } = fakeClient({
+      localSupportRelayRequest: {
+        create: vi.fn(),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        findFirst: vi.fn(async () => requestRecord({
+          targetClassification: "L5",
+          targetDisplay: "config/[REDACTED]",
+        })),
+        findUnique: vi.fn(),
+      },
+    });
+
+    await recordRelayOutcome({
+      requestId: "req_123",
+      leaseId: "lease-1",
+      decision: "denied",
+      bytesSent: 0,
+      redactionCount: 0,
+      scannerVersion: "scanner-2",
+      reason: "scanner_failure",
+      rawBody: "OPENAI_API_KEY=must-never-persist",
+    }, client, new Date("2030-01-01T00:00:01.000Z"));
+
+    const alert = tx.localSupportSecurityEvent.create.mock.calls[0][0].data;
+    expect(alert).toMatchObject({
+      eventType: "scanner_failure",
+      severity: "high",
+      alertRoute: "security_ops_immediate",
+      targetDisplay: "config/[REDACTED]",
+      targetHash: "sha256:target",
+    });
+    expect(JSON.stringify(alert)).not.toContain("must-never-persist");
   });
 
   it("ends the delivery lease while local review remains pending", async () => {
@@ -121,5 +169,6 @@ describe("durable local support relay store", () => {
       leaseId: null,
       leaseExpiresAt: null,
     });
+    expect(tx.localSupportSecurityEvent.create).not.toHaveBeenCalled();
   });
 });
