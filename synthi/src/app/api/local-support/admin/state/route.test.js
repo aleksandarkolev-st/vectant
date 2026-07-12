@@ -246,6 +246,11 @@ describe("local support admin state route", () => {
     expect(json).toMatchObject({
       decision: "admin_state_ready",
       raw_body_included: false,
+      policy: expect.objectContaining({
+        enabled: true,
+        agent_access_disabled: true,
+        min_app_version: "0.1.0",
+      }),
       paired_devices: [
         expect.objectContaining({
           account_id: "acct_123",
