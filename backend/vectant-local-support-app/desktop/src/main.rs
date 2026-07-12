@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use pairing_client::{ClaimedPairing, DesktopPolicyStatus, PairingClient};
 use relay_client::{ApprovedRelayPayload, RelayClient, RelayDelivery, RelayOutcome, RelayPoll};
 use tauri::{Manager, State};
+use tauri_plugin_updater::UpdaterExt;
 use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
 use vectant_local_support_app::desktop::{build_desktop_status_state, plan_desktop_ipc_action};
@@ -32,6 +33,7 @@ struct DesktopRuntime {
     device_identity: DeviceIdentity,
     pairing_client: PairingClient,
     cloud_policy: RwLock<DesktopPolicyStatus>,
+    available_update_version: RwLock<Option<String>>,
     relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
@@ -56,6 +58,7 @@ struct PreviewContext {
 async fn local_support_ipc(
     command: String,
     payload: serde_json::Value,
+    app: tauri::AppHandle,
     runtime: State<'_, DesktopRuntime>,
 ) -> Result<serde_json::Value, String> {
     if !payload.is_object() {
@@ -490,6 +493,57 @@ async fn local_support_ipc(
                 .persist(&audit)
                 .map_err(|_| "Local history deletion marker could not be persisted.".to_string())?;
         }
+        "update.check" => {
+            let update = app
+                .updater()
+                .map_err(|_| "Signed updater configuration is unavailable.".to_string())?
+                .check()
+                .await
+                .map_err(|_| "Signed update check failed safely.".to_string())?;
+            *runtime
+                .available_update_version
+                .write()
+                .map_err(|_| "Update state lock failed closed.".to_string())? =
+                update.map(|candidate| candidate.version);
+        }
+        "update.install" => {
+            let expected_version = runtime
+                .available_update_version
+                .read()
+                .map_err(|_| "Update state lock failed closed.".to_string())?
+                .clone()
+                .ok_or_else(|| "Check for a signed update before installing.".to_string())?;
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("Install signed Local Support update?")
+                .set_description(format!(
+                    "Version {expected_version} will be downloaded, signature-verified, and installed. Local Support will restart."
+                ))
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .set_level(rfd::MessageLevel::Info)
+                .show();
+            if !matches!(confirmed, rfd::MessageDialogResult::Yes) {
+                return desktop_status(&runtime, &app_state).await;
+            }
+            let update = app
+                .updater()
+                .map_err(|_| "Signed updater configuration is unavailable.".to_string())?
+                .check()
+                .await
+                .map_err(|_| "Signed update recheck failed safely.".to_string())?
+                .ok_or_else(|| "The checked update is no longer available.".to_string())?;
+            if update.version != expected_version {
+                return Err(
+                    "The available update changed. Check again before installing.".to_string(),
+                );
+            }
+            update
+                .download_and_install(|_, _| {}, || {})
+                .await
+                .map_err(|_| {
+                    "Signed update verification or installation failed safely.".to_string()
+                })?;
+            app.restart();
+        }
         _ => {
             return Err(format!(
                 "{} is not available until its local workflow is connected.",
@@ -532,6 +586,16 @@ async fn desktop_status(
             "update_policy".to_string(),
             serde_json::to_value(&*policy)
                 .map_err(|_| "Policy state could not be sanitized.".to_string())?,
+        );
+        let available_version = runtime
+            .available_update_version
+            .read()
+            .map_err(|_| "Update state lock failed closed.".to_string())?
+            .clone();
+        map.insert(
+            "available_update_version".to_string(),
+            serde_json::to_value(available_version)
+                .map_err(|_| "Update state could not be sanitized.".to_string())?,
         );
     }
     Ok(status)
@@ -577,6 +641,7 @@ fn main() -> anyhow::Result<()> {
         device_identity: identity,
         pairing_client: PairingClient::from_environment().map_err(anyhow::Error::msg)?,
         cloud_policy: RwLock::new(DesktopPolicyStatus::unavailable()),
+        available_update_version: RwLock::new(None),
         relay_client: RelayClient::from_environment().map_err(anyhow::Error::msg)?,
         pending_pairing: RwLock::new(None),
         pending_relay_approvals: RwLock::new(HashMap::new()),
@@ -584,6 +649,7 @@ fn main() -> anyhow::Result<()> {
         local_api_address: RwLock::new(None),
     };
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(runtime)
         .invoke_handler(tauri::generate_handler![local_support_ipc])
         .setup(|app| {

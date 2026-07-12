@@ -64,6 +64,11 @@
               <span class="tag warn" data-update-tag>Fail closed</span>
             </div>
             <p class="copy" data-update-copy>New pairing stays disabled until cloud version policy is available.</p>
+            <div class="control-row update-actions">
+              <button type="button" data-action="check-update">Check for signed update</button>
+              <button class="primary" type="button" data-action="install-update" disabled>Install update</button>
+            </div>
+            <p class="hint" role="status" data-update-status>Updates are signature-verified natively before installation.</p>
           </article>
 
           <article class="panel compact-panel">

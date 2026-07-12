@@ -16,6 +16,8 @@ const actionButtons = {
   revoke: document.querySelector('[data-action="revoke"]'),
   exportHistory: document.querySelector('[data-action="export-history"]'),
   deleteHistory: document.querySelector('[data-action="delete-history"]'),
+  checkUpdate: document.querySelector('[data-action="check-update"]'),
+  installUpdate: document.querySelector('[data-action="install-update"]'),
 };
 const workflowSummary = document.querySelector("[data-workflow-summary]");
 const pairingForm = document.querySelector("[data-pairing-form]");
@@ -25,6 +27,7 @@ const pairingFingerprint = document.querySelector("[data-pairing-fingerprint]");
 const pairingIdentity = document.querySelector("[data-pairing-identity]");
 const pairingStatus = document.querySelector("[data-pairing-status]");
 const pairingSubmit = document.querySelector("[data-pairing-submit]");
+const updateStatus = document.querySelector("[data-update-status]");
 const approvalPreview = document.querySelector(".approval-preview");
 const approvalReviewDetail = document.querySelector("[data-approval-review-detail]");
 const previewPortInput = document.querySelector("[data-preview-port]");
@@ -157,10 +160,17 @@ function renderState(rawState) {
   actionButtons.revoke.disabled = !state.connected;
   actionButtons.exportHistory.disabled = !state.historyControlsAvailable;
   actionButtons.deleteHistory.disabled = !state.historyControlsAvailable;
+  actionButtons.checkUpdate.disabled = false;
+  actionButtons.installUpdate.disabled = !state.availableUpdateVersion;
+  actionButtons.installUpdate.textContent = state.availableUpdateVersion
+    ? `Install ${state.availableUpdateVersion}`
+    : "Install update";
 }
 
 function renderUpdatePolicy(policy) {
-  const title = policy.updateRequired
+  const title = renderedState?.availableUpdateVersion
+    ? `Signed update ${renderedState.availableUpdateVersion} available`
+    : policy.updateRequired
     ? "Signed update required"
     : !policy.available
       ? "Policy check unavailable"
@@ -323,6 +333,7 @@ function normalizeState(rawState) {
         }))
       : [],
     historyControlsAvailable: raw.history_controls_available === true || raw.connected === true,
+    availableUpdateVersion: sanitizeText(raw.available_update_version, ""),
     updatePolicy,
     pairing: raw.pairing && typeof raw.pairing === "object"
       ? {
@@ -486,6 +497,19 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     if (button.dataset.action === "delete-history") {
       const result = await invokeDesktop("history.delete");
       if (result) renderState(result);
+    }
+    if (button.dataset.action === "check-update") {
+      if (updateStatus) updateStatus.textContent = "Checking the signed update endpoint...";
+      const result = await invokeStateAction("update.check", "Signed update check is unavailable in this build.");
+      if (updateStatus) {
+        updateStatus.textContent = result?.available_update_version
+          ? `Signed update ${result.available_update_version} is ready to install.`
+          : "No newer signed update is available.";
+      }
+    }
+    if (button.dataset.action === "install-update") {
+      if (updateStatus) updateStatus.textContent = "Waiting for native confirmation and signature verification...";
+      await invokeStateAction("update.install", "The signed update was not installed.");
     }
   });
 });

@@ -20,6 +20,8 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Pause" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Check for signed update" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Install update" })).toBeDisabled();
     await page.getByRole("button", { name: "Choose workspace" }).click();
     await expect(page.getByText("Workspace picker needs the paired desktop daemon. No local paths were exposed.")).toBeVisible();
     await page.getByRole("button", { name: "Pair session" }).click();
@@ -213,6 +215,27 @@ test.describe("local support desktop shell", () => {
                 activity: [{ summary: "Deleted local activity history." }],
               };
             }
+            if (args.command === "update.check" || args.command === "update.install") {
+              return {
+                connected: true,
+                paused: false,
+                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                approvals: [],
+                ports: [],
+                activity: [],
+                available_update_version: "0.2.0",
+                update_policy: {
+                  available: true,
+                  enabled: true,
+                  pairing_disabled: false,
+                  update_required: false,
+                  current_version: "0.1.0",
+                  minimum_version: "0.1.0",
+                  reason: "policy_current",
+                  user_visible_message: "This Local Support version satisfies current policy.",
+                },
+              };
+            }
             return { connected: true, paused: false, session: { account_id: "acct_demo", workspace_id: "wk_demo" } };
           },
         },
@@ -225,6 +248,14 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Desktop IPC connected. Renderer received sanitized state only.")).toBeVisible();
     await expect(page.getByText("Version 0.1.0 is current")).toBeVisible();
     await expect(page.getByText("Minimum 0.1.0")).toBeVisible();
+    await page.getByRole("button", { name: "Check for signed update" }).click();
+    await expect(page.getByText("Signed update 0.2.0 available")).toBeVisible();
+    await expect(page.getByText("Signed update 0.2.0 is ready to install.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Install 0.2.0" })).toBeEnabled();
+    await page.getByRole("button", { name: "Install 0.2.0" }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__ipcCalls.at(-1))).toMatchObject({
+      command: "update.install",
+    });
     await expect(page.getByText("acct_demo", { exact: true })).toBeVisible();
     await expect(page.getByText("wk_demo", { exact: true }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeEnabled();

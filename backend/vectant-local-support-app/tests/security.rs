@@ -1737,6 +1737,15 @@ fn desktop_ipc_allows_only_narrow_commands() {
     });
     assert_eq!(allowed_revoke.decision, "allow");
 
+    for command in ["update.check", "update.install"] {
+        let allowed_update = decide_ipc_request(&IpcRequest {
+            command: command.to_string(),
+            request_id: format!("req_{}", command.replace('.', "_")),
+            session_id: "sess_123".to_string(),
+        });
+        assert_eq!(allowed_update.decision, "allow");
+    }
+
     let allowed_pairing = decide_ipc_request(&IpcRequest {
         command: "pairing.start".to_string(),
         request_id: "req_pairing_start".to_string(),
@@ -1801,6 +1810,19 @@ fn desktop_ipc_action_plans_map_renderer_commands_to_narrow_daemon_routes() {
     );
     assert!(revoke.requires_local_control);
     assert!(revoke.user_visible);
+
+    let update_check = plan_desktop_ipc_action(&IpcRequest {
+        command: "update.check".to_string(),
+        request_id: "req_update_check".to_string(),
+        session_id: "sess_123".to_string(),
+    })
+    .unwrap();
+    assert_eq!(update_check.daemon_method.as_deref(), Some("NATIVE"));
+    assert_eq!(
+        update_check.daemon_path_template.as_deref(),
+        Some("signed-updater/check")
+    );
+    assert!(update_check.returns_sanitized_state);
 
     let workspace_pick = plan_desktop_ipc_action(&IpcRequest {
         command: "workspace.pick".to_string(),

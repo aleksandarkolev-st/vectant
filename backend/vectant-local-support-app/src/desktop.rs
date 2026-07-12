@@ -129,6 +129,8 @@ pub fn plan_desktop_ipc_action(
         ),
         "history.export" => control_plan(command, "GET", "/v1/history/export/{request_id}", true),
         "history.delete" => control_plan(command, "POST", "/v1/history/delete/{request_id}", true),
+        "update.check" => control_plan(command, "NATIVE", "signed-updater/check", true),
+        "update.install" => control_plan(command, "NATIVE", "signed-updater/install", false),
         "pairing.start"
         | "pairing.confirm"
         | "workspace.pick"

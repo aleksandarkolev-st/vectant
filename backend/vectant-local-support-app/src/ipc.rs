@@ -32,6 +32,8 @@ const ALLOWED_IPC_COMMANDS: &[&str] = &[
     "approval.revoke_session",
     "history.export",
     "history.delete",
+    "update.check",
+    "update.install",
 ];
 
 const DANGEROUS_COMMAND_FRAGMENTS: &[&str] = &[
