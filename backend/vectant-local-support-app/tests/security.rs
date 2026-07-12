@@ -44,7 +44,8 @@ use vectant_local_support_app::preview::{
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::{SessionError, SessionGuard};
 use vectant_local_support_app::update::{
-    signed_test_manifest, verify_update_manifest, UpdateError,
+    signed_test_manifest, signed_test_package, verify_update_manifest, verify_update_package,
+    UpdateError,
 };
 use vectant_local_support_app::workspace::{resolve_relative, FileReadRequest, WorkspacePolicy};
 
@@ -3232,5 +3233,28 @@ fn update_manifest_supports_emergency_version_revocation() {
     assert_eq!(
         verify_update_manifest(&trusted_key, "0.1.0", &manifest),
         Err(UpdateError::UnsupportedCurrentVersion)
+    );
+}
+
+#[test]
+fn update_package_binds_signature_channel_and_downloaded_artifact() {
+    let artifact = b"signed windows installer bytes";
+    let (trusted_key, manifest) =
+        signed_test_package("0.2.0", "0.1.0", "beta", Vec::new(), artifact);
+
+    assert!(verify_update_package(&trusted_key, "0.1.0", "beta", &manifest, artifact).is_ok());
+    assert_eq!(
+        verify_update_package(&trusted_key, "0.1.0", "stable", &manifest, artifact),
+        Err(UpdateError::ChannelMismatch)
+    );
+    assert_eq!(
+        verify_update_package(
+            &trusted_key,
+            "0.1.0",
+            "beta",
+            &manifest,
+            b"tampered installer bytes",
+        ),
+        Err(UpdateError::ArtifactHashMismatch)
     );
 }

@@ -4,6 +4,7 @@ use ed25519_dalek::{Signer, SigningKey};
 #[cfg(any(test, debug_assertions))]
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateManifest {
@@ -22,9 +23,29 @@ pub enum UpdateError {
     InvalidArtifactHash,
     InvalidVersion,
     UnsupportedChannel,
+    ChannelMismatch,
+    ArtifactHashMismatch,
     Downgrade,
     VersionRevoked,
     UnsupportedCurrentVersion,
+}
+
+pub fn verify_update_package(
+    trusted_public_key_hex: &str,
+    current_version: &str,
+    current_channel: &str,
+    manifest: &UpdateManifest,
+    artifact: &[u8],
+) -> Result<(), UpdateError> {
+    verify_update_manifest(trusted_public_key_hex, current_version, manifest)?;
+    if manifest.channel != current_channel {
+        return Err(UpdateError::ChannelMismatch);
+    }
+    let actual_hash = format!("sha256:{:x}", Sha256::digest(artifact));
+    if actual_hash != manifest.artifact_sha256.to_ascii_lowercase() {
+        return Err(UpdateError::ArtifactHashMismatch);
+    }
+    Ok(())
 }
 
 pub fn verify_update_manifest(
@@ -89,6 +110,30 @@ pub fn signed_test_manifest(
         app_version: app_version.to_string(),
         channel: "stable".to_string(),
         artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+        minimum_supported_version: current_minimum.to_string(),
+        emergency_revoked_versions: revoked_versions,
+        signature: String::new(),
+    };
+    manifest.signature = hex::encode(signing_key.sign(&manifest_payload(&manifest)).to_bytes());
+    (
+        hex::encode(signing_key.verifying_key().to_bytes()),
+        manifest,
+    )
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn signed_test_package(
+    app_version: &str,
+    current_minimum: &str,
+    channel: &str,
+    revoked_versions: Vec<String>,
+    artifact: &[u8],
+) -> (String, UpdateManifest) {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let mut manifest = UpdateManifest {
+        app_version: app_version.to_string(),
+        channel: channel.to_string(),
+        artifact_sha256: format!("sha256:{:x}", Sha256::digest(artifact)),
         minimum_supported_version: current_minimum.to_string(),
         emergency_revoked_versions: revoked_versions,
         signature: String::new(),
