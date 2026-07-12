@@ -2,13 +2,24 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/app/auth";
-import { readLocalSupportPolicy, summarizeTransparencyState } from "@/lib/local-support/controlPlane";
+import { summarizeTransparencyState } from "@/lib/local-support/controlPlane";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 import { readCloudTransparencyState } from "@/lib/local-support/transparencyStore";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const policy = readLocalSupportPolicy();
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy();
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "policy_store_unavailable",
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
+  }
   const localState = await readLocalDaemonTransparencyState();
   const session = await getServerSession(authOptions);
   const accountId = session?.user?.id || session?.user?.email || null;

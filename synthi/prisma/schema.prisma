@@ -813,6 +813,21 @@ model LocalSupportSecurityEvent {
   @@index([dedupeKey, createdAt])
 }
 
+model LocalSupportPolicyState {
+  id                     String   @id
+  globalEnabled          Boolean  @default(false)
+  orgDisabled            Boolean  @default(false)
+  pairingDisabled        Boolean  @default(false)
+  previewDisabled        Boolean  @default(false)
+  agentAccessDisabled    Boolean  @default(true)
+  minAppVersion          String   @default("0.1.0")
+  vulnerableVersionsJson String   @default("[]")
+  retentionDays          Int      @default(30)
+  updatedBy              String
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
 model LocalSupportSession {
   sessionId          String   @id
   pairingId          String   @unique

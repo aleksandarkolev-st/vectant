@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   buildTransparencyActionDecision,
-  readLocalSupportPolicy,
 } from "@/lib/local-support/controlPlane";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -24,12 +24,24 @@ export async function POST(req) {
     return jsonNoStore(denied.body, denied.status);
   }
 
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy();
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "policy_store_unavailable",
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
+  }
+
   const localStatus = await readLocalDaemonStatus();
   const currentState = localStatus?.state || parseTransparencyStateEnv();
   const decision = buildTransparencyActionDecision(
     bodyResult.value,
     currentState,
-    readLocalSupportPolicy(),
+    policy,
   );
   if (decision.decision === "denied") {
     return jsonNoStore(decision, 403);

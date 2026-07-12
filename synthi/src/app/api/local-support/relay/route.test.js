@@ -9,6 +9,10 @@ vi.mock("@/lib/local-support/relayStore", () => relayStore);
 vi.mock("@/lib/local-support/sessionStore", () => ({
   authorizeRelaySession: relayStore.authorizeRelaySession,
 }));
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
+});
 
 import {
   clearAdminRevocationStore,

@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("next-auth", () => ({ getServerSession: mocks.session }));
 vi.mock("@/app/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/local-support/securityEventStore", () => ({ persistSecurityEvent: mocks.persist }));
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
+});
 
 function request(body, { origin = "http://localhost:3000" } = {}) {
   return new Request("http://localhost:3000/api/local-support/security-event", {

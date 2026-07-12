@@ -4,9 +4,9 @@ import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/loca
 import {
   buildPreviewGatewayDecision,
   enforceRequestEnvelopeReplayProtection,
-  readLocalSupportPolicy,
   verifyRequestEnvelopeSignature,
 } from "@/lib/local-support/controlPlane";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -23,7 +23,15 @@ export async function POST(req) {
   }
 
   const body = bodyResult.value;
-  const policy = readLocalSupportPolicy();
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy();
+  } catch {
+    return jsonNoStore({
+      decision: "denied", reason: "policy_store_unavailable", preview_forward: false,
+      raw_body_included: false, bytes_sent: 0,
+    }, 503);
+  }
   if (policy.enabled) {
     const signatureDecision = verifyRequestEnvelopeSignature(
       body,

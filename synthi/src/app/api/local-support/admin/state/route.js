@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
-import {
-  constantTimeStringEqual,
-  readLocalSupportPolicy,
-  summarizeAdminState,
-} from "@/lib/local-support/controlPlane";
+import { constantTimeStringEqual, summarizeAdminState } from "@/lib/local-support/controlPlane";
 import {
   readDurableAdminState,
   recordDurableAdminRevocation,
 } from "@/lib/local-support/adminStore";
+import {
+  readDurableLocalSupportPolicy,
+  updateDurableLocalSupportPolicy,
+} from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -22,8 +22,11 @@ export async function GET(req) {
   }
 
   try {
-    const state = await readDurableAdminState();
-    return jsonNoStore(summarizeAdminState(state, readLocalSupportPolicy()));
+    const [state, policy] = await Promise.all([
+      readDurableAdminState(),
+      readDurableLocalSupportPolicy(),
+    ]);
+    return jsonNoStore(summarizeAdminState(state, policy));
   } catch {
     return jsonNoStore({
       decision: "denied",
@@ -50,7 +53,12 @@ export async function POST(req) {
 
   let decision;
   try {
-    decision = await recordDurableAdminRevocation(bodyResult.value, readLocalSupportPolicy());
+    if (bodyResult.value.action === "update_policy") {
+      decision = await updateDurableLocalSupportPolicy(bodyResult.value, "admin_api");
+    } else {
+      const policy = await readDurableLocalSupportPolicy();
+      decision = await recordDurableAdminRevocation(bodyResult.value, policy);
+    }
   } catch {
     return jsonNoStore({
       decision: "denied",

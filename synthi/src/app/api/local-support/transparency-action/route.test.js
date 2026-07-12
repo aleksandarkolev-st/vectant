@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
+});
+
 import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };

@@ -14,6 +14,10 @@ vi.mock("next-auth", () => ({
 }));
 
 vi.mock("@/app/auth", () => ({ authOptions: {} }));
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
+});
 vi.mock("@/lib/local-support/pairingStore", async (importOriginal) => {
   const controlPlane = await import("@/lib/local-support/controlPlane");
   return {

@@ -5,13 +5,13 @@ import { authOptions } from "@/app/auth";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   createPairingChallenge,
-  readLocalSupportPolicy,
 } from "@/lib/local-support/controlPlane";
 import {
   claimPairingChallengeDurably,
   completePairingChallengeDurably,
   persistPairingChallenge,
 } from "@/lib/local-support/pairingStore";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -29,7 +29,12 @@ export async function POST(req) {
 
   const body = bodyResult.value;
   const action = typeof body?.action === "string" ? body.action : "";
-  const policy = readLocalSupportPolicy();
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy();
+  } catch {
+    return pairingPersistenceFailure("pairing_policy_unavailable");
+  }
   let createBody = body;
   if (action === "create") {
     const session = await getServerSession(authOptions);
@@ -79,10 +84,10 @@ export async function POST(req) {
   return jsonNoStore(result, status);
 }
 
-function pairingPersistenceFailure() {
+function pairingPersistenceFailure(reason = "pairing_session_persistence_failed") {
   return jsonNoStore({
     decision: "denied",
-    reason: "pairing_session_persistence_failed",
+    reason,
     bytes_sent: 0,
     raw_body_included: false,
     user_visible_message: "Pairing could not be secured. Start a new pairing challenge.",

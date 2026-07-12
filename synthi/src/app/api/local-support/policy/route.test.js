@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
+});
 
 import { GET } from "./route";
 

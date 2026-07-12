@@ -3,11 +3,11 @@ import { NextResponse } from "next/server";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   enforceRequestEnvelopeReplayProtection,
-  readLocalSupportPolicy,
   validateRequestEnvelope,
   verifyRequestEnvelopeSignature,
 } from "@/lib/local-support/controlPlane";
 import { authorizeRelaySession } from "@/lib/local-support/sessionStore";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -24,7 +24,15 @@ export async function POST(req) {
   }
 
   const body = bodyResult.value;
-  const policy = readLocalSupportPolicy();
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy();
+  } catch {
+    return jsonNoStore({
+      decision: "denied", reason: "policy_store_unavailable",
+      raw_body_included: false, bytes_sent: 0,
+    }, 503);
+  }
   if (policy.enabled) {
     const signatureDecision = verifyRequestEnvelopeSignature(
       body,

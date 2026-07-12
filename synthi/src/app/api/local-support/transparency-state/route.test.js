@@ -6,6 +6,10 @@ vi.mock("@/app/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/local-support/transparencyStore", () => ({
   readCloudTransparencyState: mocks.cloudState,
 }));
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return { readDurableLocalSupportPolicy: async () => controlPlane.readLocalSupportPolicy() };
+});
 
 import { GET } from "./route";
 

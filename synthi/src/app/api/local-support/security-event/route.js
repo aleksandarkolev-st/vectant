@@ -3,7 +3,8 @@ import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/app/auth";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
-import { readLocalSupportPolicy, summarizeSecurityEvent } from "@/lib/local-support/controlPlane";
+import { summarizeSecurityEvent } from "@/lib/local-support/controlPlane";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 import { persistSecurityEvent } from "@/lib/local-support/securityEventStore";
 
 export const runtime = "nodejs";
@@ -30,8 +31,20 @@ export async function POST(req) {
     return jsonNoStore(denied.body, denied.status);
   }
 
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy();
+  } catch {
+    return jsonNoStore({
+      decision: "denied",
+      reason: "policy_store_unavailable",
+      raw_body_included: false,
+      bytes_sent: 0,
+    }, 503);
+  }
+
   const body = bodyResult.value;
-  const result = summarizeSecurityEvent(body, readLocalSupportPolicy());
+  const result = summarizeSecurityEvent(body, policy);
   if (result.decision !== "denied") {
     try {
       await persistSecurityEvent(result, accountId);

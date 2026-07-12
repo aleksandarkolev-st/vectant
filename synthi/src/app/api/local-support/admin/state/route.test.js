@@ -4,6 +4,8 @@ const adminStore = vi.hoisted(() => ({
   read: vi.fn(),
   revoke: vi.fn(),
   authorize: vi.fn(),
+  readPolicy: vi.fn(),
+  updatePolicy: vi.fn(),
 }));
 
 vi.mock("@/lib/local-support/adminStore", async () => {
@@ -18,6 +20,15 @@ vi.mock("@/lib/local-support/adminStore", async () => {
 vi.mock("@/lib/local-support/sessionStore", () => ({
   authorizeRelaySession: adminStore.authorize,
 }));
+vi.mock("@/lib/local-support/policyStore", async () => {
+  const controlPlane = await import("@/lib/local-support/controlPlane");
+  return {
+    readDurableLocalSupportPolicy: adminStore.readPolicy.mockImplementation(
+      async () => controlPlane.readLocalSupportPolicy(),
+    ),
+    updateDurableLocalSupportPolicy: adminStore.updatePolicy,
+  };
+});
 
 import {
   clearAdminRevocationStore,
@@ -44,6 +55,9 @@ beforeEach(() => {
   adminStore.revoke.mockClear();
   adminStore.authorize.mockReset();
   adminStore.authorize.mockResolvedValue({ ok: true, session: { sessionId: "sess_123" } });
+  adminStore.readPolicy.mockClear();
+  adminStore.updatePolicy.mockReset();
+  adminStore.updatePolicy.mockResolvedValue({ decision: "policy_updated", bytes_sent: 0 });
 });
 
 afterEach(() => {
@@ -285,6 +299,35 @@ describe("local support admin state route", () => {
     await expect(invalid.json()).resolves.toMatchObject({
       decision: "denied",
       reason: "invalid_admin_revoke_target",
+      bytes_sent: 0,
+    });
+  });
+
+  it("applies validated persistent kill switches through the admin API", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+    adminStore.updatePolicy.mockResolvedValueOnce({
+      decision: "policy_updated",
+      pairing_disabled: true,
+      preview_disabled: true,
+      min_app_version: "0.2.0",
+      raw_body_included: false,
+      bytes_sent: 0,
+    });
+    const body = {
+      action: "update_policy",
+      pairing_disabled: true,
+      preview_disabled: true,
+      min_app_version: "0.2.0",
+    };
+
+    const response = await POST(adminPost(body, { "x-vectant-admin-token": "admin-secret" }));
+
+    expect(response.status).toBe(200);
+    expect(adminStore.updatePolicy).toHaveBeenCalledWith(body, "admin_api");
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "policy_updated",
+      pairing_disabled: true,
+      preview_disabled: true,
       bytes_sent: 0,
     });
   });
