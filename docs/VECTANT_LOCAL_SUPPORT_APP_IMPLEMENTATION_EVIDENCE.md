@@ -1,0 +1,103 @@
+# Vectant Local Support Implementation Evidence
+
+Last local verification: 2026-07-12 on Windows.
+
+This file indexes executable evidence. It does not make static acceptance mappings count as completion, and it does not authorize public beta. Re-run every command from the reviewed commit and attach immutable CI/deployment evidence before release.
+
+## Repository implementation
+
+### Desktop and local authority
+
+- Tauri desktop UI implements workspace selection, browser/cloud pairing fingerprint confirmation, local review approve/deny, pause/resume/disconnect, approval revocation, native loopback port detection/approval/open/revoke, scrubbed history export/delete, live policy/update-required state, and signed update check/install.
+- Renderer IPC is an exact allowlist. Filesystem, shell, clipboard, keychain, token, private-key, raw-audit, and arbitrary path commands are denied. Renderer state is sanitized before serialization.
+- Device identity uses Windows DPAPI in production. The native app owns tokens, private keys, approval content, port process identities, updater access, file dialogs, and the loopback listener.
+- Exit, disconnect, cloud revocation, policy disable, listener close, and listener process-identity change revoke the applicable sessions, approvals, tokens, streams, and ports.
+
+Evidence:
+
+```powershell
+cargo fmt --manifest-path backend/vectant-local-support-app/Cargo.toml --check
+cargo clippy --manifest-path backend/vectant-local-support-app/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml
+cargo fmt --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --check
+cargo clippy --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml
+npx playwright test tests/local-support-desktop-shell.spec.ts --project=chromium
+```
+
+Verified locally: 77 parent/unit/security tests, 9 desktop tests including real loopback pairing/policy/relay sockets, and 6 desktop Chromium flows.
+
+### Pairing, sessions, relay, and cloud controls
+
+- Pairing challenges, attempts, sessions, device nonces, relay leases, encrypted one-time payloads, revocations, security events, and enterprise policy are durable Prisma models with migrations.
+- Pairing binds browser session, account, organization, workspace, device fingerprint/public key, capabilities, policy/protocol/app versions, expiry, and confirmation receipt.
+- Every relay request uses body-bound Ed25519 proof, nonce/replay protection, exact session scope, expiry/version/policy checks, and a minimized signed envelope. The desktop is outbound-only and recovers after transient relay failure; cloud 401/403 is terminal local revocation.
+- Global/org/pairing/preview/agent disables, minimum version, vulnerable-version blocklist, and retention are durable. Desktop pairing and preview recheck live policy; preview disable/unavailable revokes local ports, tokens, and streams.
+- Denied relay outcomes atomically create scrubbed routed security alerts without raw local bodies.
+
+Evidence:
+
+```powershell
+$env:DATABASE_URL='postgresql://validation:validation@127.0.0.1:5432/validation'
+npx prisma validate --schema synthi/prisma/schema.prisma
+npm run test --workspace synthi -- src/lib/local-support src/app/api/local-support
+```
+
+The focused CI command in `.github/workflows/local-support-security.yml` is authoritative for the selected cloud suite. Verified locally: 122 tests across 21 focused files. A live migration/deployment test still requires a running PostgreSQL environment.
+
+### Review-before-send, scanner, audit, and preview
+
+- Source/log bodies remain in the native approval queue until local approval and request-bound release. Denial/revocation clears queued content; release rechecks expiry, identity, file hash, and file metadata.
+- Secret fixtures cover GitHub/OpenAI/AWS keys, JWT, private keys, database URLs, cookies, authorization headers, npm tokens, and Firebase service accounts. Scanner failure and uncertain/unsafe content fail closed.
+- Workspace reads block traversal, absolute/device/UNC paths, symlink/junction escape, ignored/generated artifacts, archives, binary/large/sparse files, and TOCTOU replacement.
+- Local audit storage is hash chained, size bounded, symlink safe, retained, scrubbed, exportable, deletable, and contains consent receipts without raw bodies.
+- Preview is loopback-only, host/token/session/process bound, GET/HEAD-only, rate/stream/size limited, and strips credentials/cookies/hop-by-hop headers. It blocks service workers, WebSockets, smuggling, private/metadata redirects, unsafe schemes/userinfo, and process changes. Browser preview never grants AI/support page reads.
+
+The parent Rust security suite is the executable evidence for these invariants. Preview tests include a real upstream server and Windows native listener ownership.
+
+### Transparency and operations UI
+
+- `/local-support` polls live local/cloud transparency state, distinguishes locally available/review-required/blocked/sent data, and forwards export/delete/session/port controls to the local daemon.
+- `/local-support/admin` loads durable policy, paired devices, active sessions, revocations, and routed alerts; it applies policy and confirms device/session revocation. The operations token is kept only in component memory.
+
+Evidence:
+
+```powershell
+npm run build --workspace synthi
+$env:VECTANT_TEST_BASE_URL='http://127.0.0.1:3000'
+npx playwright test tests/local-support-transparency.spec.ts tests/local-support-admin.spec.ts --project=chromium
+```
+
+Verified locally against a real production Next server: 5 web Chromium flows. Desktop and web totals: 11 Chromium flows.
+
+### Packaging and updater
+
+- Tauri produces MSI and NSIS bundles with the declared Windows icon set.
+- `tauri-plugin-updater` is registered in Rust. Check/install are narrow native IPC commands; install requires native confirmation, rechecks the candidate, relies on Tauri signature verification and downgrade protection, installs, then restarts.
+- The independent package verifier binds Ed25519-signed metadata to channel, version policy, emergency revocation, and exact artifact SHA-256 bytes.
+- `.github/workflows/local-support-release.yml` requires the protected signing environment, builds updater artifacts, Authenticode-signs installers, verifies them, generates checksums/SBOM, removes the ephemeral certificate, smoke-tests signed install/uninstall, and re-verifies on a clean runner.
+
+Hands-on unsigned packaging smoke command:
+
+```powershell
+cd backend/vectant-local-support-app/desktop
+cargo tauri build --no-sign
+cd ../../..
+& backend/vectant-local-support-app/scripts/windows-installer-smoke.ps1 `
+  -InstallerPath 'backend/vectant-local-support-app/desktop/target/release/bundle/nsis/Vectant Local Support_0.1.0_x64-setup.exe'
+```
+
+Verified locally: MSI and NSIS were produced; NSIS installed into a unique temporary directory; the installed executable opened only a random `127.0.0.1` listener; silent uninstall removed the executable and left no Local Support process.
+
+## Public-beta gates requiring external evidence
+
+These are not complete merely because workflow/runbook code exists:
+
+1. Provision the `local-support-signing` protected GitHub environment with a CA-issued Windows certificate and production Tauri updater key/HTTPS endpoint.
+2. Require two-person/security-owner review for signing workflow, updater, and key/config changes through repository environment and branch protection.
+3. Run `Local Support Signed Release`; preserve the clean-runner signature, checksum, SBOM, install/uninstall, unsigned/tampered/wrong-channel/downgrade/revocation rejection evidence.
+4. Apply Prisma migrations to the intended deployment and run browser-cloud-desktop pairing, relay approval/denial, policy disable, device/session revoke, transparency, and preview scenarios against that live environment.
+5. Exercise `VECTANT_LOCAL_SUPPORT_INCIDENT_RESPONSE.md` as a dated tabletop, including emergency disable and signing-key rotation; close all findings.
+6. Complete independent red-team scenarios from the remaining-goals plan and close every critical/high finding before public beta.
+
+Until all six have immutable evidence and security-owner sign-off, the signed public-beta acceptance criteria remain unproven and release must stay blocked.
