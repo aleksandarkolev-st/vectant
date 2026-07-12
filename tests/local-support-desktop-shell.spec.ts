@@ -15,6 +15,8 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Sensitive files stay blocked locally.")).toBeVisible();
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
     await expect(page.getByText("No workspace selected")).toBeVisible();
+    await expect(page.getByText("Policy check unavailable")).toBeVisible();
+    await expect(page.getByText("New pairing is disabled until it can be checked.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Pause" })).toBeDisabled();
@@ -22,6 +24,7 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Workspace picker needs the paired desktop daemon. No local paths were exposed.")).toBeVisible();
     await page.getByRole("button", { name: "Pair session" }).click();
     await expect(page.getByLabel("One-time code")).toBeFocused();
+    await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
 
     await page.getByRole("tab", { name: "Overview", exact: true }).focus();
     await page.keyboard.press("ArrowRight");
@@ -77,6 +80,16 @@ test.describe("local support desktop shell", () => {
                 approvals: [{ request_id: "req_file_review" }],
                 ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
                 activity: [{ summary: "Blocked .env locally. Nothing was sent." }],
+                update_policy: {
+                  available: true,
+                  enabled: true,
+                  pairing_disabled: false,
+                  update_required: false,
+                  current_version: "0.1.0",
+                  minimum_version: "0.1.0",
+                  reason: "policy_current",
+                  user_visible_message: "This Local Support version satisfies current policy.",
+                },
               };
             }
             if (args.command === "workspace.pick") {
@@ -92,6 +105,16 @@ test.describe("local support desktop shell", () => {
                 approvals: [],
                 ports: [],
                 activity: [{ summary: "Workspace selected locally. No files were sent." }],
+                update_policy: {
+                  available: true,
+                  enabled: true,
+                  pairing_disabled: false,
+                  update_required: false,
+                  current_version: "0.1.0",
+                  minimum_version: "0.1.0",
+                  reason: "policy_current",
+                  user_visible_message: "This Local Support version satisfies current policy.",
+                },
               };
             }
             if (args.command === "pairing.start") {
@@ -200,6 +223,8 @@ test.describe("local support desktop shell", () => {
 
     await expect(page.getByText("Connected", { exact: true })).toBeVisible();
     await expect(page.getByText("Desktop IPC connected. Renderer received sanitized state only.")).toBeVisible();
+    await expect(page.getByText("Version 0.1.0 is current")).toBeVisible();
+    await expect(page.getByText("Minimum 0.1.0")).toBeVisible();
     await expect(page.getByText("acct_demo", { exact: true })).toBeVisible();
     await expect(page.getByText("wk_demo", { exact: true }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Disconnect" })).toBeEnabled();
@@ -263,6 +288,50 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Paused", { exact: true })).toBeVisible();
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("Session paused by local user.")).toBeVisible();
+  });
+
+  test("blocks pairing submission when cloud policy requires an update", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as any).__ipcCalls = [];
+      window.__TAURI__ = {
+        core: {
+          invoke: async (_command, args) => {
+            (window as any).__ipcCalls.push(args);
+            return {
+              connected: false,
+              paused: false,
+              session: { workspace_id: "wk_selected" },
+              approvals: [],
+              ports: [],
+              activity: [],
+              update_policy: {
+                available: true,
+                enabled: true,
+                pairing_disabled: false,
+                update_required: true,
+                current_version: "0.1.0",
+                minimum_version: "0.2.0",
+                reason: "version_too_old",
+                user_visible_message: "Install a signed update before pairing.",
+              },
+            };
+          },
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+
+    await expect(page.getByText("Signed update required")).toBeVisible();
+    await expect(page.getByText("Install a signed update before pairing.")).toBeVisible();
+    await expect(page.getByText("Blocked", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Pair session" }).click();
+    await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
+    await page.getByLabel("One-time code").fill("ABCD2345WXYZ");
+    await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
+    const calls = await page.evaluate(() => (window as any).__ipcCalls);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("session.status");
   });
 
   test("renders the real daemon approval summary shape", async ({ page }) => {

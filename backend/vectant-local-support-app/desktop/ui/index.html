@@ -59,8 +59,11 @@
         <div class="side-stack">
           <article class="panel compact-panel">
             <p class="label">Release safety</p>
-            <h2>Update required below 0.1.0</h2>
-            <p class="copy">Old or blocked versions cannot connect. Signed updates remain a release gate.</p>
+            <div class="panel-head release-policy-head">
+              <h2 data-update-title>Checking signed update policy</h2>
+              <span class="tag warn" data-update-tag>Fail closed</span>
+            </div>
+            <p class="copy" data-update-copy>New pairing stays disabled until cloud version policy is available.</p>
           </article>
 
           <article class="panel compact-panel">
@@ -129,7 +132,7 @@
           <form class="pairing-form" data-pairing-form>
             <label for="pairing-code">One-time code</label>
             <input id="pairing-code" name="pairing-code" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" minlength="12" maxlength="12" pattern="[A-HJ-NP-Z2-9]{12}" placeholder="ABCD2345WXYZ" required data-pairing-code>
-            <button class="primary" type="submit">Check code</button>
+            <button class="primary" type="submit" data-pairing-submit disabled>Check code</button>
           </form>
           <div class="pairing-confirm" hidden data-pairing-confirm>
             <span class="label">Compare fingerprint</span>

@@ -24,6 +24,7 @@ const pairingConfirm = document.querySelector("[data-pairing-confirm]");
 const pairingFingerprint = document.querySelector("[data-pairing-fingerprint]");
 const pairingIdentity = document.querySelector("[data-pairing-identity]");
 const pairingStatus = document.querySelector("[data-pairing-status]");
+const pairingSubmit = document.querySelector("[data-pairing-submit]");
 const approvalPreview = document.querySelector(".approval-preview");
 const approvalReviewDetail = document.querySelector("[data-approval-review-detail]");
 const previewPortInput = document.querySelector("[data-preview-port]");
@@ -45,6 +46,17 @@ const fallbackState = {
   approvals: [],
   ports: [],
   activity: [],
+  updatePolicy: {
+    available: false,
+    enabled: false,
+    pairingDisabled: true,
+    updateRequired: false,
+    pairingAllowed: false,
+    currentVersion: "unknown",
+    minimumVersion: "unknown",
+    reason: "policy_unavailable",
+    message: "Cloud policy is unavailable. New pairing is disabled until it can be checked.",
+  },
 };
 
 function activateTab(name) {
@@ -91,6 +103,7 @@ function renderState(rawState) {
   setText('[data-field="workspace"]', state.session.workspace);
   setText('[data-field="device"]', state.session.device);
   setText('[data-field="mode"]', state.session.mode);
+  renderUpdatePolicy(state.updatePolicy);
 
   setText(
     '[data-field="approval-title"]',
@@ -134,6 +147,7 @@ function renderState(rawState) {
   renderApproval(state);
   actionButtons.pickWorkspace.disabled = false;
   actionButtons.pairSession.disabled = false;
+  if (pairingSubmit) pairingSubmit.disabled = !state.updatePolicy.pairingAllowed;
   actionButtons.reviewFileApproval.disabled = !state.connected || state.approvals.length === 0;
   actionButtons.reviewPortApproval.disabled = !state.connected;
   actionButtons.openPortPreview.disabled = !state.connected || state.ports.length === 0;
@@ -143,6 +157,24 @@ function renderState(rawState) {
   actionButtons.revoke.disabled = !state.connected;
   actionButtons.exportHistory.disabled = !state.historyControlsAvailable;
   actionButtons.deleteHistory.disabled = !state.historyControlsAvailable;
+}
+
+function renderUpdatePolicy(policy) {
+  const title = policy.updateRequired
+    ? "Signed update required"
+    : !policy.available
+      ? "Policy check unavailable"
+      : !policy.enabled || policy.pairingDisabled
+        ? "Pairing disabled by policy"
+        : `Version ${policy.currentVersion} is current`;
+  const tag = policy.updateRequired
+    ? "Blocked"
+    : policy.pairingAllowed
+      ? `Minimum ${policy.minimumVersion}`
+      : "Fail closed";
+  setText("[data-update-title]", title);
+  setText("[data-update-tag]", tag);
+  setText("[data-update-copy]", policy.message);
 }
 
 async function invokeStateAction(command, unavailableMessage, payload = {}) {
@@ -265,6 +297,7 @@ function normalizeState(rawState) {
   const raw = rawState && typeof rawState === "object" ? rawState : {};
   const session = raw.session && typeof raw.session === "object" ? raw.session : {};
   const workspace = raw.workspace && typeof raw.workspace === "object" ? raw.workspace : {};
+  const updatePolicy = normalizeUpdatePolicy(raw.update_policy);
   return {
     connected: raw.connected === true,
     paused: raw.paused === true || session.paused === true,
@@ -290,6 +323,7 @@ function normalizeState(rawState) {
         }))
       : [],
     historyControlsAvailable: raw.history_controls_available === true || raw.connected === true,
+    updatePolicy,
     pairing: raw.pairing && typeof raw.pairing === "object"
       ? {
           status: sanitizeText(raw.pairing.status, ""),
@@ -298,6 +332,28 @@ function normalizeState(rawState) {
           org: sanitizeText(raw.pairing.org_id, "unknown organization"),
         }
       : null,
+  };
+}
+
+function normalizeUpdatePolicy(rawPolicy) {
+  const raw = rawPolicy && typeof rawPolicy === "object" ? rawPolicy : {};
+  const available = raw.available === true;
+  const enabled = raw.enabled === true;
+  const pairingDisabled = raw.pairing_disabled !== false;
+  const updateRequired = raw.update_required === true;
+  return {
+    available,
+    enabled,
+    pairingDisabled,
+    updateRequired,
+    pairingAllowed: available && enabled && !pairingDisabled && !updateRequired,
+    currentVersion: sanitizeText(raw.current_version, "unknown"),
+    minimumVersion: sanitizeText(raw.minimum_version, "unknown"),
+    reason: sanitizeText(raw.reason, "policy_unavailable"),
+    message: sanitizeText(
+      raw.user_visible_message,
+      "Cloud policy is unavailable. New pairing is disabled until it can be checked.",
+    ),
   };
 }
 
