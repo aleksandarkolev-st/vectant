@@ -126,6 +126,13 @@ jobs:
           cargo cyclonedx --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --format json
           Copy-Item -LiteralPath "backend/vectant-local-support-app/desktop/vectant-local-support-desktop.cdx.json" -Destination (Join-Path $bundle "desktop-sbom.cdx.json")
 
+      - name: Smoke-test signed install and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "backend/vectant-local-support-app/desktop/target/release/bundle/nsis" -File -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Signed NSIS installer was not produced." }
+          & "backend/vectant-local-support-app/scripts/windows-installer-smoke.ps1" -InstallerPath $installer.FullName
+
       - name: Remove signing certificate from runner
         if: ${{ always() && steps.certificate.outputs.thumbprint != '' }}
         shell: pwsh
