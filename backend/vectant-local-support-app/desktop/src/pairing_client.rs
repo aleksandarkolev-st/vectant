@@ -36,6 +36,8 @@ pub struct DesktopPolicyStatus {
     pub available: bool,
     pub enabled: bool,
     pub pairing_disabled: bool,
+    pub preview_disabled: bool,
+    pub agent_access_disabled: bool,
     pub update_required: bool,
     pub current_version: String,
     pub minimum_version: String,
@@ -49,6 +51,8 @@ impl DesktopPolicyStatus {
             available: false,
             enabled: false,
             pairing_disabled: true,
+            preview_disabled: true,
+            agent_access_disabled: true,
             update_required: false,
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             minimum_version: "unknown".to_string(),
@@ -61,6 +65,10 @@ impl DesktopPolicyStatus {
 
     pub fn pairing_allowed(&self) -> bool {
         self.available && self.enabled && !self.pairing_disabled && !self.update_required
+    }
+
+    pub fn preview_allowed(&self) -> bool {
+        self.available && self.enabled && !self.preview_disabled
     }
 }
 
@@ -235,6 +243,14 @@ pub fn parse_policy_status(
         .pointer("/emergency_controls/pairing_disabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let preview_disabled = value
+        .pointer("/emergency_controls/preview_gateway_disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let agent_access_disabled = value
+        .pointer("/emergency_controls/agent_access_disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let vulnerable = vulnerable_versions
         .iter()
         .filter_map(Value::as_str)
@@ -274,6 +290,8 @@ pub fn parse_policy_status(
         available: true,
         enabled,
         pairing_disabled,
+        preview_disabled,
+        agent_access_disabled,
         update_required,
         current_version: current_version.to_string(),
         minimum_version: minimum_version.to_string(),
@@ -505,12 +523,19 @@ mod tests {
                 "enabled": true,
                 "min_app_version": "0.1.0",
                 "vulnerable_versions": [],
-                "emergency_controls": { "pairing_disabled": false },
+                "emergency_controls": {
+                    "pairing_disabled": false,
+                    "preview_gateway_disabled": false,
+                    "agent_access_disabled": true
+                },
             }),
             "0.1.0",
         )
         .unwrap();
         assert!(current.pairing_allowed());
+        assert!(!current.preview_disabled);
+        assert!(current.agent_access_disabled);
+        assert!(current.preview_allowed());
         assert_eq!(current.reason, "policy_current");
 
         let old = parse_policy_status(
@@ -562,6 +587,7 @@ mod tests {
         )
         .is_err());
         assert!(!DesktopPolicyStatus::unavailable().pairing_allowed());
+        assert!(!DesktopPolicyStatus::unavailable().preview_allowed());
     }
 
     #[tokio::test]

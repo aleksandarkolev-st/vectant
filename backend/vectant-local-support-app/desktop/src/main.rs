@@ -330,6 +330,7 @@ async fn local_support_ipc(
             }
         }
         "approval.port.review" => {
+            require_live_preview_policy(&runtime).await?;
             let port = required_port(&payload)?;
             let detected = detect_loopback_listener(port).map_err(|_| {
                 "No loopback-only listening process owns that port. Nothing was exposed."
@@ -369,6 +370,7 @@ async fn local_support_ipc(
             .await?;
         }
         "approval.port.open" => {
+            require_live_preview_policy(&runtime).await?;
             let port = required_port(&payload)?;
             let context = runtime
                 .preview_contexts
@@ -609,6 +611,24 @@ fn current_app_state(runtime: &DesktopRuntime) -> Result<AppState, String> {
         .map_err(|_| "Desktop state lock failed closed.".to_string())
 }
 
+async fn require_live_preview_policy(runtime: &DesktopRuntime) -> Result<(), String> {
+    let policy = runtime
+        .pairing_client
+        .policy()
+        .await
+        .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+    let allowed = policy.preview_allowed();
+    let message = policy.user_visible_message.clone();
+    *runtime
+        .cloud_policy
+        .write()
+        .map_err(|_| "Policy state lock failed closed.".to_string())? = policy;
+    if !allowed {
+        return Err(format!("Browser preview is disabled. {message}"));
+    }
+    Ok(())
+}
+
 async fn append_control_event(
     state: &AppState,
     request_id: &str,
@@ -692,10 +712,25 @@ async fn policy_poll_loop(app_handle: tauri::AppHandle) {
             .policy()
             .await
             .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+        let preview_disabled = !policy.preview_allowed();
         if let Ok(mut current) = runtime.cloud_policy.write() {
             *current = policy;
         }
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        if preview_disabled {
+            if let Ok(state) = current_app_state(&runtime) {
+                let session_id = state.session.lock().await.session_id().to_string();
+                state
+                    .port_approvals
+                    .lock()
+                    .await
+                    .disconnect_session(&session_id);
+                state.preview_traffic.lock().await.clear_all();
+                if let Ok(mut contexts) = runtime.preview_contexts.write() {
+                    contexts.clear();
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
