@@ -7,6 +7,8 @@ on:
       - "synthi/src/app/api/local-support/**"
       - "synthi/src/components/local-support/**"
       - "synthi/src/lib/local-support/**"
+      - "synthi/prisma/**"
+      - "tests/local-support-admin.spec.ts"
       - "tests/local-support-transparency.spec.ts"
       - ".github/workflows/local-support-security.yml"
   push:
@@ -19,6 +21,8 @@ on:
       - "synthi/src/app/api/local-support/**"
       - "synthi/src/components/local-support/**"
       - "synthi/src/lib/local-support/**"
+      - "synthi/prisma/**"
+      - "tests/local-support-admin.spec.ts"
       - "tests/local-support-transparency.spec.ts"
       - ".github/workflows/local-support-security.yml"
 
@@ -47,6 +51,15 @@ jobs:
       - name: Run security tests
         run: cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml
 
+      - name: Check desktop formatting
+        run: cargo fmt --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --check
+
+      - name: Run desktop clippy
+        run: cargo clippy --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run desktop integration tests
+        run: cargo test --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml
+
   web-local-support:
     name: Web local support gates
     runs-on: windows-latest
@@ -68,7 +81,15 @@ jobs:
           npm run test --workspace synthi --
           src/lib/local-support/acceptance.test.js
           src/lib/local-support/controlPlane.test.js
+          src/lib/local-support/adminStore.test.js
           src/lib/local-support/nextConfigHeaders.test.js
+          src/lib/local-support/pairingStore.test.js
+          src/lib/local-support/policyStore.test.js
+          src/lib/local-support/relayPayloadStore.test.js
+          src/lib/local-support/relayStore.test.js
+          src/lib/local-support/securityEventStore.test.js
+          src/lib/local-support/sessionStore.test.js
+          src/lib/local-support/transparencyStore.test.js
           src/app/api/local-support/httpGuards.test.js
           src/app/api/local-support/request-envelope/route.test.js
           src/app/api/local-support/relay/route.test.js
@@ -76,6 +97,7 @@ jobs:
           src/app/api/local-support/admin/state/route.test.js
           src/app/api/local-support/policy/route.test.js
           src/app/api/local-support/security-event/route.test.js
+          src/app/api/local-support/transparency-action/route.test.js
           src/app/api/local-support/transparency-state/route.test.js
           src/app/api/local-support/pairing/route.test.js
 
@@ -101,6 +123,7 @@ jobs:
               }
             } while ((Get-Date) -lt $deadline)
             npx playwright test tests/local-support-transparency.spec.ts --project=chromium --reporter=line
+            npx playwright test tests/local-support-admin.spec.ts --project=chromium --reporter=line
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
             Get-Content $out -ErrorAction SilentlyContinue
