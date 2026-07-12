@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const MAX_PAIRING_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_POLICY_RESPONSE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimedPairing {
@@ -28,6 +29,39 @@ pub struct CompletedPairing {
     pub workspace_id: String,
     pub device_fingerprint: String,
     pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DesktopPolicyStatus {
+    pub available: bool,
+    pub enabled: bool,
+    pub pairing_disabled: bool,
+    pub update_required: bool,
+    pub current_version: String,
+    pub minimum_version: String,
+    pub reason: String,
+    pub user_visible_message: String,
+}
+
+impl DesktopPolicyStatus {
+    pub fn unavailable() -> Self {
+        Self {
+            available: false,
+            enabled: false,
+            pairing_disabled: true,
+            update_required: false,
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            minimum_version: "unknown".to_string(),
+            reason: "policy_unavailable".to_string(),
+            user_visible_message:
+                "Cloud policy is unavailable. New pairing is disabled until it can be checked."
+                    .to_string(),
+        }
+    }
+
+    pub fn pairing_allowed(&self) -> bool {
+        self.available && self.enabled && !self.pairing_disabled && !self.update_required
+    }
 }
 
 #[derive(Clone)]
@@ -110,6 +144,33 @@ impl PairingClient {
         parse_completed_pairing(value)
     }
 
+    pub async fn policy(&self) -> Result<DesktopPolicyStatus, String> {
+        let mut endpoint = self.endpoint.clone();
+        endpoint.set_path("/api/local-support/policy");
+        let response = self
+            .client
+            .get(endpoint)
+            .header("Origin", &self.origin)
+            .header("Sec-Fetch-Site", "same-origin")
+            .send()
+            .await
+            .map_err(|_| "Local Support policy could not be reached.".to_string())?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|_| "Local Support policy could not be read.".to_string())?;
+        if bytes.len() > MAX_POLICY_RESPONSE_BYTES {
+            return Err("Local Support policy response was too large.".to_string());
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "Local Support policy response was invalid.".to_string())?;
+        if !status.is_success() {
+            return Err("Local Support policy is unavailable.".to_string());
+        }
+        parse_policy_status(value, env!("CARGO_PKG_VERSION"))
+    }
+
     async fn post(&self, body: Value) -> Result<Value, String> {
         let response = self
             .client
@@ -140,6 +201,116 @@ impl PairingClient {
         }
         Ok(value)
     }
+}
+
+pub fn parse_policy_status(
+    value: Value,
+    current_version: &str,
+) -> Result<DesktopPolicyStatus, String> {
+    let enabled = value
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "Local Support policy omitted its enabled state.".to_string())?;
+    let minimum_version = value
+        .get("min_app_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Local Support policy omitted its minimum version.".to_string())?;
+    if !valid_numeric_version(current_version) || !valid_numeric_version(minimum_version) {
+        return Err("Local Support policy contained an invalid version.".to_string());
+    }
+    let vulnerable_versions = value
+        .get("vulnerable_versions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Local Support policy omitted its vulnerable versions.".to_string())?;
+    if vulnerable_versions.len() > 100
+        || vulnerable_versions.iter().any(|version| {
+            version
+                .as_str()
+                .is_none_or(|version| !valid_numeric_version(version))
+        })
+    {
+        return Err("Local Support policy contained invalid vulnerable versions.".to_string());
+    }
+    let pairing_disabled = value
+        .pointer("/emergency_controls/pairing_disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let vulnerable = vulnerable_versions
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|version| version == current_version);
+    let too_old = compare_numeric_versions(current_version, minimum_version).is_lt();
+    let update_required = vulnerable || too_old;
+    let reason = if vulnerable {
+        "version_vulnerable"
+    } else if too_old {
+        "version_too_old"
+    } else if !enabled {
+        "feature_disabled"
+    } else if pairing_disabled {
+        "pairing_disabled"
+    } else {
+        "policy_current"
+    };
+    let default_message = if update_required {
+        "This Local Support version is blocked. Install a signed update before pairing."
+    } else if !enabled || pairing_disabled {
+        "Local Support pairing is disabled by organization policy."
+    } else {
+        "This Local Support version satisfies current policy."
+    };
+    let message = value
+        .get("user_visible_message")
+        .and_then(Value::as_str)
+        .filter(|message| {
+            !message.is_empty()
+                && message.len() <= 240
+                && !message
+                    .chars()
+                    .any(|character| matches!(character, '\r' | '\n'))
+        })
+        .unwrap_or(default_message);
+    Ok(DesktopPolicyStatus {
+        available: true,
+        enabled,
+        pairing_disabled,
+        update_required,
+        current_version: current_version.to_string(),
+        minimum_version: minimum_version.to_string(),
+        reason: reason.to_string(),
+        user_visible_message: message.to_string(),
+    })
+}
+
+fn valid_numeric_version(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    (2..=4).contains(&parts.len())
+        && value.len() <= 32
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 8 && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn compare_numeric_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = left
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(u32::MAX))
+        .collect::<Vec<_>>();
+    let right = right
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(u32::MAX))
+        .collect::<Vec<_>>();
+    for index in 0..left.len().max(right.len()) {
+        match left
+            .get(index)
+            .unwrap_or(&0)
+            .cmp(right.get(index).unwrap_or(&0))
+        {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 fn pairing_denial_message(reason: &str) -> String {
@@ -254,7 +425,11 @@ fn future_expiry(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::State, routing::post, Json, Router};
+    use axum::{
+        extract::State,
+        routing::{get, post},
+        Json, Router,
+    };
     use std::sync::{Arc, Mutex};
     use vectant_local_support_app::pair::{verify_pairing_proof, DeviceIdentity, PairingProof};
 
@@ -321,6 +496,121 @@ mod tests {
             "expires_at": "2020-01-01T00:00:00Z",
         }))
         .is_err());
+    }
+
+    #[test]
+    fn evaluates_live_version_and_pairing_policy_fail_closed() {
+        let current = parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "0.1.0",
+                "vulnerable_versions": [],
+                "emergency_controls": { "pairing_disabled": false },
+            }),
+            "0.1.0",
+        )
+        .unwrap();
+        assert!(current.pairing_allowed());
+        assert_eq!(current.reason, "policy_current");
+
+        let old = parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "0.2.0",
+                "vulnerable_versions": [],
+                "emergency_controls": { "pairing_disabled": false },
+            }),
+            "0.1.9",
+        )
+        .unwrap();
+        assert!(old.update_required);
+        assert!(!old.pairing_allowed());
+        assert_eq!(old.reason, "version_too_old");
+
+        let vulnerable = parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "0.1.0",
+                "vulnerable_versions": ["0.1.1"],
+                "emergency_controls": { "pairing_disabled": false },
+            }),
+            "0.1.1",
+        )
+        .unwrap();
+        assert_eq!(vulnerable.reason, "version_vulnerable");
+
+        let disabled = parse_policy_status(
+            serde_json::json!({
+                "enabled": false,
+                "min_app_version": "0.1.0",
+                "vulnerable_versions": [],
+                "emergency_controls": { "pairing_disabled": true },
+            }),
+            "0.1.0",
+        )
+        .unwrap();
+        assert!(!disabled.pairing_allowed());
+        assert_eq!(disabled.reason, "feature_disabled");
+
+        assert!(parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "latest",
+                "vulnerable_versions": [],
+            }),
+            "0.1.0"
+        )
+        .is_err());
+        assert!(!DesktopPolicyStatus::unavailable().pairing_allowed());
+    }
+
+    #[tokio::test]
+    async fn fetches_bounded_policy_over_a_real_loopback_connection() {
+        let app = Router::new().route(
+            "/api/local-support/policy",
+            get(|| async {
+                Json(serde_json::json!({
+                    "enabled": true,
+                    "min_app_version": "0.1.0",
+                    "vulnerable_versions": [],
+                    "emergency_controls": { "pairing_disabled": false },
+                    "user_visible_message": "Local Support is available.",
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client =
+            PairingClient::new(&format!("http://{address}/api/local-support/pairing")).unwrap();
+
+        let policy = client.policy().await.unwrap();
+
+        assert!(policy.available);
+        assert!(policy.pairing_allowed());
+        assert_eq!(policy.user_visible_message, "Local Support is available.");
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_policy_from_a_real_loopback_connection() {
+        let app = Router::new().route(
+            "/api/local-support/policy",
+            get(|| async { "x".repeat(MAX_POLICY_RESPONSE_BYTES + 1) }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client =
+            PairingClient::new(&format!("http://{address}/api/local-support/pairing")).unwrap();
+
+        assert_eq!(
+            client.policy().await.unwrap_err(),
+            "Local Support policy response was too large."
+        );
     }
 
     #[tokio::test]

@@ -10,7 +10,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use pairing_client::{ClaimedPairing, PairingClient};
+use pairing_client::{ClaimedPairing, DesktopPolicyStatus, PairingClient};
 use relay_client::{ApprovedRelayPayload, RelayClient, RelayDelivery, RelayOutcome, RelayPoll};
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -31,6 +31,7 @@ struct DesktopRuntime {
     app_state: RwLock<AppState>,
     device_identity: DeviceIdentity,
     pairing_client: PairingClient,
+    cloud_policy: RwLock<DesktopPolicyStatus>,
     relay_client: RelayClient,
     pending_pairing: RwLock<Option<ClaimedPairing>>,
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
@@ -162,6 +163,20 @@ async fn local_support_ipc(
             let workspace = app_state.workspace.summary();
             if workspace.workspace_id == "not_selected" {
                 return Err("Choose one workspace before pairing.".to_string());
+            }
+            let policy = runtime
+                .pairing_client
+                .policy()
+                .await
+                .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+            let pairing_allowed = policy.pairing_allowed();
+            let policy_message = policy.user_visible_message.clone();
+            *runtime
+                .cloud_policy
+                .write()
+                .map_err(|_| "Policy state lock failed closed.".to_string())? = policy;
+            if !pairing_allowed {
+                return Err(policy_message);
             }
             let code = payload
                 .get("code")
@@ -508,6 +523,17 @@ async fn desktop_status(
             }),
         );
     }
+    if let Some(map) = status.as_object_mut() {
+        let policy = runtime
+            .cloud_policy
+            .read()
+            .map_err(|_| "Policy state lock failed closed.".to_string())?;
+        map.insert(
+            "update_policy".to_string(),
+            serde_json::to_value(&*policy)
+                .map_err(|_| "Policy state could not be sanitized.".to_string())?,
+        );
+    }
     Ok(status)
 }
 
@@ -550,6 +576,7 @@ fn main() -> anyhow::Result<()> {
         )?),
         device_identity: identity,
         pairing_client: PairingClient::from_environment().map_err(anyhow::Error::msg)?,
+        cloud_policy: RwLock::new(DesktopPolicyStatus::unavailable()),
         relay_client: RelayClient::from_environment().map_err(anyhow::Error::msg)?,
         pending_pairing: RwLock::new(None),
         pending_relay_approvals: RwLock::new(HashMap::new()),
@@ -561,6 +588,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![local_support_ipc])
         .setup(|app| {
             let app_handle = app.handle().clone();
+            let policy_handle = app.handle().clone();
             let local_api_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let runtime = local_api_handle.state::<DesktopRuntime>();
@@ -573,6 +601,7 @@ fn main() -> anyhow::Result<()> {
                 }
             });
             tauri::async_runtime::spawn(async move { relay_poll_loop(app_handle).await });
+            tauri::async_runtime::spawn(async move { policy_poll_loop(policy_handle).await });
             Ok(())
         })
         .build(tauri::generate_context!())?;
@@ -587,6 +616,21 @@ fn main() -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+async fn policy_poll_loop(app_handle: tauri::AppHandle) {
+    loop {
+        let runtime = app_handle.state::<DesktopRuntime>();
+        let policy = runtime
+            .pairing_client
+            .policy()
+            .await
+            .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+        if let Ok(mut current) = runtime.cloud_policy.write() {
+            *current = policy;
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
 }
 
 fn required_port(payload: &serde_json::Value) -> Result<u16, String> {
