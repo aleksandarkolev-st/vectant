@@ -51,6 +51,13 @@ jobs:
           if (-not $env:UPDATER_ENDPOINT.StartsWith("https://")) {
             throw "Updater endpoint must use HTTPS."
           }
+          $config = Get-Content "backend/vectant-local-support-app/desktop/tauri.conf.json" -Raw | ConvertFrom-Json
+          if (-not $config.bundle.createUpdaterArtifacts -or -not $config.plugins.updater.active) {
+            throw "The checked-in desktop configuration must keep signed updater support active."
+          }
+          if ($config.plugins.updater.pubkey -match '^0+$') {
+            Write-Warning "Checked-in updater key is a non-production sentinel; the protected release override must replace it."
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

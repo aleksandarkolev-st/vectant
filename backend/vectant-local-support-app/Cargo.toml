@@ -2,14 +2,19 @@
 name = "vectant-local-support-app"
 version = "0.1.0"
 edition = "2021"
+autobins = false
 
 [lib]
 name = "vectant_local_support_app"
 path = "src/lib.rs"
 
 [[bin]]
-name = "vectant-local-support-app"
-path = "src/main.rs"
+name = "local-support-test-daemon"
+path = "src/bin/local_support_test_daemon.rs"
+required-features = ["live-test-daemon"]
+
+[features]
+live-test-daemon = []
 
 [dependencies]
 anyhow = "1"

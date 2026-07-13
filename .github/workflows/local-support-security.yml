@@ -55,6 +55,14 @@ jobs:
       - name: Run security tests
         run: cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml
 
+      - name: Confirm production package excludes the live test daemon
+        shell: pwsh
+        run: |
+          cargo build --manifest-path backend/vectant-local-support-app/Cargo.toml --release
+          if (Test-Path backend/vectant-local-support-app/target/release/local-support-test-daemon.exe) {
+            throw "Feature-gated live test daemon leaked into the production package."
+          }
+
       - name: Check desktop formatting
         run: cargo fmt --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --check
 
@@ -133,6 +141,10 @@ jobs:
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
             Get-Content $out -ErrorAction SilentlyContinue
             Get-Content $err -ErrorAction SilentlyContinue
+
+      - name: Run real loopback daemon Playwright gate
+        shell: pwsh
+        run: npx playwright test tests/local-support-live-daemon.spec.ts --project=chromium --reporter=line
           }
 
       - name: Audit production web dependencies

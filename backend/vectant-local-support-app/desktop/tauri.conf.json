@@ -37,7 +37,7 @@
     ],
     "publisher": "Vectant",
     "copyright": "Copyright Vectant",
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "shell": {
@@ -53,10 +53,10 @@
       "enabled": false
     },
     "updater": {
-      "active": false,
+      "active": true,
       "dialog": false,
-      "pubkey": "",
-      "endpoints": []
+      "pubkey": "0000000000000000000000000000000000000000000000000000000000000000",
+      "endpoints": ["https://updates.vectant.dev/local-support/{{target}}/{{current_version}}"]
     }
   }
 }
