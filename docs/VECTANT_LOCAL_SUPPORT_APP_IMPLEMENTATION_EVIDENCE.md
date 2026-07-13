@@ -111,4 +111,6 @@ These are not complete merely because workflow/runbook code exists:
 
 External host check performed with Playwright on 2026-07-13: `https://beta.vectant.dev/local-support` reached Google IAP and could not be exercised without an authorized staging account; `https://app.vectant.dev` and `https://updates.vectant.dev` failed TLS negotiation from the validation host. No authenticated staging desktop/cloud run was claimed from that check.
 
+`.github/workflows/local-support-staging-e2e.yml` now provides the protected-environment gate for the missing deployment proof. It requires `LOCAL_SUPPORT_STAGING_BASE_URL` and `LOCAL_SUPPORT_STAGING_ADMIN_TOKEN`, rejects auth redirects, exercises durable emergency disable and a denied relay boundary, and restores the prior policy. It has been syntax/list-checked locally but has not been run without staging credentials.
+
 Until all six have immutable evidence and security-owner sign-off, the signed public-beta acceptance criteria remain unproven and release must stay blocked.
