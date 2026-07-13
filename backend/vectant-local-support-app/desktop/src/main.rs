@@ -770,20 +770,6 @@ fn validate_private_target(target_host: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validate_private_target;
-
-    #[test]
-    fn preview_target_validation_accepts_only_loopback() {
-        assert!(validate_private_target("127.0.0.1").is_ok());
-        assert!(validate_private_target("::1").is_ok());
-        assert!(validate_private_target("10.0.0.5").is_err());
-        assert!(validate_private_target("192.168.1.10").is_err());
-        assert!(validate_private_target("169.254.169.254").is_err());
-    }
-}
-
 async fn relay_poll_loop(app_handle: tauri::AppHandle) {
     loop {
         let runtime = app_handle.state::<DesktopRuntime>();
@@ -1188,4 +1174,18 @@ fn app_data_root() -> anyhow::Result<PathBuf> {
             .join("vectant-local-support"));
     }
     Ok(std::env::current_dir()?.join(".vectant-local-support"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_private_target;
+
+    #[test]
+    fn preview_target_validation_accepts_only_loopback() {
+        assert!(validate_private_target("127.0.0.1").is_ok());
+        assert!(validate_private_target("::1").is_ok());
+        assert!(validate_private_target("10.0.0.5").is_err());
+        assert!(validate_private_target("192.168.1.10").is_err());
+        assert!(validate_private_target("169.254.169.254").is_err());
+    }
 }

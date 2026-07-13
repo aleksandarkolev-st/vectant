@@ -38,7 +38,7 @@ pub struct PortApproval {
     pub process_identity_hash: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PortApprovalOptions {
     pub agent_read_allowed: bool,
     pub support_agent_read_allowed: bool,
@@ -47,20 +47,6 @@ pub struct PortApprovalOptions {
     pub send_screenshot_allowed: bool,
     pub send_console_errors_allowed: bool,
     pub state_changing_methods_allowed: bool,
-}
-
-impl Default for PortApprovalOptions {
-    fn default() -> Self {
-        Self {
-            agent_read_allowed: false,
-            support_agent_read_allowed: false,
-            agent_interact_allowed: false,
-            send_response_body_allowed: false,
-            send_screenshot_allowed: false,
-            send_console_errors_allowed: false,
-            state_changing_methods_allowed: false,
-        }
-    }
 }
 
 impl PortApproval {
