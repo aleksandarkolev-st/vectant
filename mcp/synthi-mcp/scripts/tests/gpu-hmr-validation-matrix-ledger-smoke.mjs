@@ -2380,6 +2380,310 @@ function randomColdBuildExecutionPlanFixture({
   };
 }
 
+function randomColdBuildCommandSpecFixture({
+  command = 'generic-build-tool',
+  args = ['--build', '.'],
+  cwd = '.',
+  timeoutMs = 120000,
+  executionTransport = 'isolated_worker_container',
+  workerImage = 'synthi-gpu-hmr-cold-build-worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+} = {}) {
+  const commandSpecSeed = {
+    command,
+    args,
+    cwd,
+    timeoutMs,
+    envNames: [],
+    envValueHashes: {},
+    executionTransport,
+    workerImage: executionTransport === 'isolated_worker_container' ? workerImage : null,
+    shell: false,
+  };
+  const commandSpecHash = contentHashFor(commandSpecSeed);
+  return {
+    ...commandSpecSeed,
+    timeout_ms: timeoutMs,
+    env_names: [],
+    env_value_hashes: {},
+    execution_transport: executionTransport,
+    worker_image: commandSpecSeed.workerImage,
+    commandSpecHash,
+    command_spec_hash: commandSpecHash,
+  };
+}
+
+function randomColdBuildExecutionObservationFixture({
+  candidateId = 'direct-random-arbitrary-cold',
+  candidateSource = 'direct_source_url_commit',
+  immutableCommit = '1111111111111111111111111111111111111111',
+  sourceIntakeEvidence = {},
+  directInputEvidence = {},
+  command = 'generic-build-tool',
+  args = ['--build', '.'],
+  cwd = '.',
+  timeoutMs = 120000,
+  stdoutCapture = 'generic cold build completed\n',
+  stderrCapture = '',
+  startedAt = '2026-07-01T10:00:00.000Z',
+  finishedAt = '2026-07-01T10:00:01.000Z',
+  executionTransport = 'isolated_worker_container',
+  commandSpec: suppliedCommandSpec = null,
+  executionEnvironmentOverrides = {},
+  overrides = {},
+} = {}) {
+  const commandSpec = suppliedCommandSpec ?? randomColdBuildCommandSpecFixture({
+    command,
+    args,
+    cwd,
+    timeoutMs,
+    executionTransport,
+  });
+  const commandSpecHash = commandSpec.commandSpecHash;
+  const effectiveCwd = commandSpec.cwd;
+  const effectiveTimeoutMs = commandSpec.timeoutMs;
+  const effectiveExecutionTransport = commandSpec.executionTransport;
+  const sourceBinding = {
+    candidateId,
+    candidateSource,
+    immutableCommit,
+    sourceListingHash: sourceIntakeEvidence.sourceListingHash,
+    sourceIntakeFacetHash: sourceIntakeEvidence.facetHash,
+    coldBuildExecutionPlanHash: sourceIntakeEvidence.coldBuildExecutionPlan?.planHash,
+    directSourceIdentityHash: directInputEvidence.sourceIdentityHash ?? null,
+    sourceRootPathHash: hashValue(`${candidateId}:materialized-source-root`),
+    repoRelativeCwd: effectiveCwd,
+    observedCommitBefore: immutableCommit,
+    sourceWorktreeCleanBefore: true,
+    sourceWorktreeStatusHash: hashValue(''),
+  };
+  const sourceBindingHash = contentHashFor(sourceBinding);
+  const wrapperStartedAt = startedAt;
+  const wrapperExecutionId = contentHashFor({
+    commandSpecHash,
+    sourceBindingHash,
+    startedAt: wrapperStartedAt,
+  });
+  const processObservation = {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    processStarted: true,
+    completed: true,
+    error: null,
+    stdoutCapture,
+    stdoutCaptureHash: hashValue(stdoutCapture),
+    stdoutCaptureTruncated: false,
+    stderrCapture,
+    stderrCaptureHash: hashValue(stderrCapture),
+    stderrCaptureTruncated: false,
+    startedAt,
+    finishedAt,
+  };
+  const wrapperEvents = [
+    `[synthi-cold-build] start execution_id=${wrapperExecutionId} command_spec_hash=${commandSpecHash} source_binding_hash=${sourceBindingHash}`,
+    `[synthi-cold-build] finish execution_id=${wrapperExecutionId} exit_code=0 commit_after=${immutableCommit}`,
+  ];
+  const wrapperEventStreamHash = hashValue(wrapperEvents.join('\n'));
+  const workerImageId = commandSpec.workerImage?.includes('@sha256:')
+    ? commandSpec.workerImage.slice(commandSpec.workerImage.indexOf('@') + 1)
+    : hashValue(commandSpec.workerImage ?? 'missing-worker-image');
+  const containerConfig = {
+    imageId: workerImageId,
+    networkMode: 'none',
+    readOnlyRootfs: true,
+    capDrop: ['ALL'],
+    securityOpt: ['no-new-privileges'],
+    pidsLimit: 1024,
+    ipcMode: 'private',
+    tmpfsMounts: ['/tmp'],
+    workingDirectory: effectiveCwd === '.'
+      ? '/workspace/source'
+      : `/workspace/source/${effectiveCwd}`,
+    entrypoint: [commandSpec.command],
+    command: commandSpec.args,
+    mounts: [
+      { type: 'bind', destination: '/workspace/build', readWrite: true },
+      { type: 'bind', destination: '/workspace/source', readWrite: false },
+    ].sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+  };
+  const executionEnvironment = {
+    transport: effectiveExecutionTransport,
+    isolated: effectiveExecutionTransport === 'isolated_worker_container',
+    inheritedHostEnvironment: false,
+    baselineEnvironmentNames: ['HOME', 'TMPDIR'],
+    declaredEnvironmentNames: [],
+    sourceMountReadOnly: effectiveExecutionTransport === 'isolated_worker_container',
+    networkIsolated: effectiveExecutionTransport === 'isolated_worker_container',
+    workerImageReference: commandSpec.workerImage,
+    workerImageId: effectiveExecutionTransport === 'isolated_worker_container'
+      ? workerImageId
+      : null,
+    containerIdHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? hashValue(`${candidateId}:container-id`)
+      : null,
+    containerConfig: effectiveExecutionTransport === 'isolated_worker_container'
+      ? containerConfig
+      : null,
+    containerConfigHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? contentHashFor(containerConfig)
+      : null,
+    sourceMountPathHash: sourceBinding.sourceRootPathHash,
+    buildOutputRootHash: effectiveExecutionTransport === 'isolated_worker_container'
+      ? hashValue(`${candidateId}:build-output-root`)
+      : null,
+    dockerInspectAccepted: effectiveExecutionTransport === 'isolated_worker_container',
+    containerRemoved: effectiveExecutionTransport === 'isolated_worker_container',
+    ...executionEnvironmentOverrides,
+  };
+  const executionEnvironmentHash = contentHashFor(executionEnvironment);
+  const lifecycleSeed = {
+    schemaVersion: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    schema_version: 'synthi.real_rocm.upstream_lifecycle_failure.v1',
+    proofAuthority: 'explicit_cold_build_command_lifecycle_only_not_gpu_hmr_success',
+    proof_authority: 'explicit_cold_build_command_lifecycle_only_not_gpu_hmr_success',
+    status: 'explicit_cold_build_command_succeeded_support_only',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsColdBuildExecutionEvidence: true,
+    accepted_as_cold_build_execution_evidence: true,
+    acceptedAsRefusalEvidence: false,
+    accepted_as_refusal_evidence: false,
+    observedBuildExecution: true,
+    observed_build_execution: true,
+    candidateId,
+    candidate_id: candidateId,
+    commandSpecHash,
+    command_spec_hash: commandSpecHash,
+    cwd: effectiveCwd,
+    repoRelativeCwd: effectiveCwd,
+    repo_relative_cwd: effectiveCwd,
+    timeoutMs: effectiveTimeoutMs,
+    timeout_ms: effectiveTimeoutMs,
+    exitCode: 0,
+    exit_code: 0,
+    signal: null,
+    timedOut: false,
+    timed_out: false,
+    buildExitCodeText: '0',
+    build_exit_code_text: '0',
+    runExitCodeText: 'not-run',
+    run_exit_code_text: 'not-run',
+    timings: 'configure_exit_code=0 post_configure_exit_code=0 build_exit_code=0 run_exit_code=not-run',
+    buildLogTail: [
+      ...wrapperEvents,
+      'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
+      stdoutCapture,
+    ].filter(Boolean).join('\n'),
+    runLogTail: 'upstream run skipped after configure_status=0 post_configure_status=0 build_status=0 run_status=not-run',
+    reasons: [],
+    startedAt,
+    started_at: startedAt,
+    finishedAt,
+    finished_at: finishedAt,
+  };
+  lifecycleSeed.build_log_tail = lifecycleSeed.buildLogTail;
+  lifecycleSeed.run_log_tail = lifecycleSeed.runLogTail;
+  const lifecycleHash = contentHashFor(lifecycleSeed);
+  const upstreamLifecycleFailure = {
+    ...lifecycleSeed,
+    facetHash: lifecycleHash,
+    facet_hash: lifecycleHash,
+  };
+  const observationSeed = {
+    schemaVersion: 'synthi.gpu_hmr.cold_build_execution_observation.v1',
+    commandSpecHash,
+    sourceBindingHash,
+    processObservation,
+    observedCommitAfter: immutableCommit,
+    sourceWorktreeCleanAfter: true,
+    sourceWorktreeStatusAfterHash: hashValue(''),
+    executionEnvironmentHash,
+    wrapperStartedAt,
+    wrapperExecutionId,
+    wrapperEventStreamHash,
+  };
+  const observationHash = contentHashFor(observationSeed);
+  const facet = {
+    schemaVersion: 'synthi.gpu_hmr.cold_build_execution_observation.v1',
+    schema_version: 'synthi.gpu_hmr.cold_build_execution_observation.v1',
+    proofAuthority: 'explicit_cold_build_process_observation_only_not_gpu_hmr_success',
+    proof_authority: 'explicit_cold_build_process_observation_only_not_gpu_hmr_success',
+    status: 'explicit_cold_build_command_succeeded_support_only',
+    accepted: true,
+    acceptedAsSupportEvidence: true,
+    accepted_as_support_evidence: true,
+    acceptedAsColdBuildExecutionEvidence: true,
+    accepted_as_cold_build_execution_evidence: true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    observedBuildExecution: true,
+    observed_build_execution: true,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    candidateId,
+    candidate_id: candidateId,
+    commandSpec,
+    command_spec: commandSpec,
+    commandSpecHash,
+    command_spec_hash: commandSpecHash,
+    sourceBinding,
+    source_binding: sourceBinding,
+    sourceBindingHash,
+    source_binding_hash: sourceBindingHash,
+    processObservation,
+    process_observation: processObservation,
+    expectedImmutableCommit: immutableCommit,
+    expected_immutable_commit: immutableCommit,
+    observedCommitBefore: immutableCommit,
+    observed_commit_before: immutableCommit,
+    observedCommitAfter: immutableCommit,
+    observed_commit_after: immutableCommit,
+    commitPreserved: true,
+    commit_preserved: true,
+    sourceWorktreeCleanAfter: true,
+    source_worktree_clean_after: true,
+    sourceWorktreeStatusAfterHash: hashValue(''),
+    source_worktree_status_after_hash: hashValue(''),
+    executionEnvironment,
+    execution_environment: executionEnvironment,
+    executionEnvironmentHash,
+    execution_environment_hash: executionEnvironmentHash,
+    wrapperEvents,
+    wrapper_events: wrapperEvents,
+    wrapperExecutionId,
+    wrapper_execution_id: wrapperExecutionId,
+    wrapperStartedAt,
+    wrapper_started_at: wrapperStartedAt,
+    wrapperEventStreamHash,
+    wrapper_event_stream_hash: wrapperEventStreamHash,
+    upstreamLifecycleFailure,
+    upstream_lifecycle_failure: upstreamLifecycleFailure,
+    observationHash,
+    observation_hash: observationHash,
+    blockingGaps: [],
+    blocking_gaps: [],
+    facetHash: observationHash,
+    facet_hash: observationHash,
+  };
+  return { ...facet, ...overrides };
+}
+
 function randomColdRuntimeSupportClosureFixture(overrides = {}) {
   const possibleOutcomes = [
     'api_interpose',
@@ -2880,6 +3184,7 @@ function randomColdPathManifest({
   directInputEvidenceOverrides = null,
   sourceListingManifestOptions = {},
   buildMetadataSemanticSummary = null,
+  coldBuildCommandSpec = null,
   resultOverrides = {},
   topLevelOverrides = {},
 } = {}) {
@@ -2892,6 +3197,8 @@ function randomColdPathManifest({
     }),
     ...(directInputEvidenceOverrides ?? {}),
   };
+  const coldBuildCommandConfigured = coldBuildCommandSpec !== null;
+  const coldBuildCommandDescriptorHash = coldBuildCommandSpec?.commandSpecHash ?? null;
   const sourceListingManifest = randomColdSourceListingManifestFixture({
     targetId: candidateId,
     fileCount: 2445,
@@ -3201,6 +3508,12 @@ function randomColdPathManifest({
     cold_build_execution_plan: coldBuildExecutionPlan,
     coldBuildExecutionPlanAccepted: true,
     cold_build_execution_plan_accepted: true,
+    coldBuildCommandConfigured,
+    cold_build_command_configured: coldBuildCommandConfigured,
+    coldBuildCommandSpec,
+    cold_build_command_spec: coldBuildCommandSpec,
+    coldBuildCommandDescriptorHash,
+    cold_build_command_descriptor_hash: coldBuildCommandDescriptorHash,
     sizeSignals,
     size_signals: sizeSignals,
     sourceIntakeEvidence,
@@ -3352,6 +3665,10 @@ function randomColdPathManifest({
       repo_path: repoPath,
       immutableCommit,
       immutable_commit: immutableCommit,
+      coldBuildCommandConfigured,
+      cold_build_command_configured: coldBuildCommandConfigured,
+      coldBuildCommandDescriptorHash,
+      cold_build_command_descriptor_hash: coldBuildCommandDescriptorHash,
       sizeSignals,
       size_signals: sizeSignals,
     }],
@@ -3371,6 +3688,10 @@ function randomColdPathManifest({
       repo_path: repoPath,
       immutableCommit,
       immutable_commit: immutableCommit,
+      coldBuildCommandConfigured,
+      cold_build_command_configured: coldBuildCommandConfigured,
+      coldBuildCommandDescriptorHash,
+      cold_build_command_descriptor_hash: coldBuildCommandDescriptorHash,
       sizeSignals,
       size_signals: sizeSignals,
     }],
@@ -3386,6 +3707,8 @@ function randomColdPathManifest({
     source_intake: true,
     sourceIntakeTimeoutMs: 120000,
     source_intake_timeout_ms: 120000,
+    coldBuildCommandSpec,
+    cold_build_command_spec: coldBuildCommandSpec,
     pendingManifestHash: hashValue(`${candidateId}:pending-manifest`),
     pending_manifest_hash: hashValue(`${candidateId}:pending-manifest`),
     results: [result],
@@ -4899,10 +5222,12 @@ const fileBackedProof = {
 };
 await writeJson(fileBackedProofPath, fileBackedProof);
 const fileBackedProofHash = jsonFileHash(fileBackedProof);
+const fileBackedColdBuildCommandSpec = randomColdBuildCommandSpecFixture();
 const fileBackedColdBaseManifest = randomColdPathManifest({
   candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import',
   sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import.git',
   immutableCommit: sha256Hex('runtime-bridge-file-backed-import:commit').slice(0, 40),
+  coldBuildCommandSpec: fileBackedColdBuildCommandSpec,
 });
 const fileBackedColdBaseResult = fileBackedColdBaseManifest.results[0];
 const fileBackedAcceptedColdBuildLifecycle = {
@@ -4920,6 +5245,14 @@ const fileBackedAcceptedColdBuildLifecycle = {
   buildLogTail: 'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
   build_log_tail: 'upstream build skipped after configure_status=0 post_configure_status=0 build_status=0',
 };
+const fileBackedAcceptedColdBuildObservation = randomColdBuildExecutionObservationFixture({
+  candidateId: fileBackedColdBaseResult.candidateId,
+  candidateSource: fileBackedColdBaseResult.candidateSource,
+  immutableCommit: fileBackedColdBaseResult.immutableCommit,
+  sourceIntakeEvidence: fileBackedColdBaseResult.sourceIntakeEvidence,
+  directInputEvidence: fileBackedColdBaseResult.directInputEvidence,
+  commandSpec: fileBackedColdBuildCommandSpec,
+});
 const fileBackedRuntimeBoundaryPlanBinding = randomColdRuntimeBoundaryPlanBindingFixture({
   appHookMaterializationPlan: fileBackedColdBaseResult.runtimeAppHookMaterializationPlan,
   sourceIntakeEvidence: fileBackedColdBaseResult.sourceIntakeEvidence,
@@ -4982,9 +5315,12 @@ await writeJson(
     candidateId: 'direct-random-arbitrary-runtime-bridge-file-backed-import',
     sourceUrl: 'https://example.invalid/arbitrary/runtime-bridge-file-backed-import.git',
     immutableCommit: sha256Hex('runtime-bridge-file-backed-import:commit').slice(0, 40),
+    coldBuildCommandSpec: fileBackedColdBuildCommandSpec,
     resultOverrides: {
-      upstreamLifecycleFailure: fileBackedAcceptedColdBuildLifecycle,
-      upstream_lifecycle_failure: fileBackedAcceptedColdBuildLifecycle,
+      coldBuildExecutionObservation: fileBackedAcceptedColdBuildObservation,
+      cold_build_execution_observation: fileBackedAcceptedColdBuildObservation,
+      coldBuildCommandExecution: fileBackedAcceptedColdBuildObservation,
+      cold_build_command_execution: fileBackedAcceptedColdBuildObservation,
       runtimeProfileProofBridge: randomColdRuntimeProfileProofBridgeFixture({
         runtimeProfileAdapterResultPath: fileBackedAdapterResultRelPath,
         runtime_profile_adapter_result_path: fileBackedAdapterResultRelPath,
@@ -6237,6 +6573,310 @@ assert.ok(randomColdRuntimeClosure.openGaps.includes(
 ));
 assert.ok(randomColdRuntimeClosure.openGaps.includes(
   'large_arbitrary_project_output_or_visual_oracle_required',
+));
+
+const explicitColdBuildCommandDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-explicit-command-build',
+);
+const explicitColdBuildCandidateId = 'direct-random-explicit-command-build';
+const explicitColdBuildCommit = sha256Hex('explicit-command-build:commit').slice(0, 40);
+const explicitColdBuildCommandSpec = randomColdBuildCommandSpecFixture();
+const explicitColdBuildCommandManifest = randomColdPathManifest({
+  candidateId: explicitColdBuildCandidateId,
+  sourceUrl: 'https://example.invalid/arbitrary/explicit-command-build.git',
+  immutableCommit: explicitColdBuildCommit,
+  coldBuildCommandSpec: explicitColdBuildCommandSpec,
+});
+const explicitColdBuildCommandResult = explicitColdBuildCommandManifest.results[0];
+const explicitColdBuildObservation = randomColdBuildExecutionObservationFixture({
+  candidateId: explicitColdBuildCandidateId,
+  candidateSource: explicitColdBuildCommandResult.candidateSource,
+  immutableCommit: explicitColdBuildCommit,
+  sourceIntakeEvidence: explicitColdBuildCommandResult.sourceIntakeEvidence,
+  directInputEvidence: explicitColdBuildCommandResult.directInputEvidence,
+  commandSpec: explicitColdBuildCommandSpec,
+});
+explicitColdBuildCommandResult.coldBuildExecutionObservation = explicitColdBuildObservation;
+explicitColdBuildCommandResult.cold_build_execution_observation = explicitColdBuildObservation;
+explicitColdBuildCommandResult.coldBuildCommandExecution = explicitColdBuildObservation;
+explicitColdBuildCommandResult.cold_build_command_execution = explicitColdBuildObservation;
+await writeJson(
+  path.join(explicitColdBuildCommandDir, 'random-cold-explicit-command-build.json'),
+  explicitColdBuildCommandManifest,
+);
+const explicitColdBuildCommandLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [explicitColdBuildCommandDir],
+});
+const explicitColdBuildCommandRow = explicitColdBuildCommandLedger.rows.find(
+  (row) => row.targetId === explicitColdBuildCandidateId,
+);
+assert.equal(explicitColdBuildCommandRow?.randomColdBuildExecutionObservation?.accepted, true);
+assert.equal(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation.matrixRecomputed,
+  true,
+);
+assert.equal(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation.proofAuthority,
+  'explicit_cold_build_process_observation_only_not_gpu_hmr_success',
+);
+assert.equal(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation.acceptedForGpuHmr,
+  false,
+);
+assert.equal(explicitColdBuildCommandRow.randomColdBuildExecutionObservation.gpuHmrSuccess, false);
+assert.equal(
+  explicitColdBuildCommandRow.randomColdBuildExecutionObservation.canSatisfyRuntimeProof,
+  false,
+);
+assert.equal(explicitColdBuildCommandRow.randomColdBuildCommandExecution, undefined);
+assert.equal(
+  explicitColdBuildCommandRow.openGaps.includes('build_command_execution_not_observed'),
+  false,
+);
+assert.ok(explicitColdBuildCommandRow.openGaps.includes('strict_runtime_ledger_missing'));
+assert.ok(explicitColdBuildCommandRow.openGaps.includes('output_oracle_unproven'));
+const explicitColdBuildCommandClosure = explicitColdBuildCommandLedger.summary.planCoverage
+  .find((entry) => entry.id === 'large_arbitrary_project_runtime_closure');
+assert.equal(explicitColdBuildCommandClosure.coldBuildExecutionAcceptedCount, 1);
+assert.equal(explicitColdBuildCommandClosure.coldBuildExecutionObservedCount, 1);
+assert.equal(explicitColdBuildCommandClosure.gateCoverage.cold_build_execution.accepted, true);
+assert.equal(explicitColdBuildCommandClosure.gateCoverage.cold_build_execution.observed, true);
+assert.equal(
+  explicitColdBuildCommandClosure.openGaps.includes(
+    'large_arbitrary_project_cold_build_execution_required',
+  ),
+  false,
+);
+assert.ok(explicitColdBuildCommandClosure.openGaps.includes(
+  'large_arbitrary_project_output_or_visual_oracle_required',
+));
+assert.equal(explicitColdBuildCommandClosure.acceptedForGpuHmr, false);
+assert.equal(explicitColdBuildCommandClosure.gpuHmrSuccess, false);
+
+const hostProcessColdBuildDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-host-process-build',
+);
+const hostProcessColdBuildManifest = randomColdPathManifest({
+  candidateId: 'direct-random-host-process-build',
+  sourceUrl: 'https://example.invalid/arbitrary/host-process-build.git',
+  immutableCommit: sha256Hex('host-process-build:commit').slice(0, 40),
+  coldBuildCommandSpec: randomColdBuildCommandSpecFixture({
+    executionTransport: 'self_check_host_process',
+  }),
+});
+const hostProcessColdBuildResult = hostProcessColdBuildManifest.results[0];
+const hostProcessColdBuildObservation = randomColdBuildExecutionObservationFixture({
+  candidateId: hostProcessColdBuildResult.candidateId,
+  candidateSource: hostProcessColdBuildResult.candidateSource,
+  immutableCommit: hostProcessColdBuildResult.immutableCommit,
+  sourceIntakeEvidence: hostProcessColdBuildResult.sourceIntakeEvidence,
+  directInputEvidence: hostProcessColdBuildResult.directInputEvidence,
+  commandSpec: hostProcessColdBuildResult.coldBuildCommandSpec,
+});
+hostProcessColdBuildResult.coldBuildExecutionObservation = hostProcessColdBuildObservation;
+hostProcessColdBuildResult.cold_build_execution_observation = hostProcessColdBuildObservation;
+await writeJson(
+  path.join(hostProcessColdBuildDir, 'random-cold-host-process-build.json'),
+  hostProcessColdBuildManifest,
+);
+const hostProcessColdBuildLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [hostProcessColdBuildDir],
+});
+const hostProcessColdBuildRow = hostProcessColdBuildLedger.rows.find(
+  (row) => row.targetId === hostProcessColdBuildResult.candidateId,
+);
+assert.equal(hostProcessColdBuildRow.randomColdBuildExecutionObservation.accepted, false);
+assert.ok(hostProcessColdBuildRow.randomColdBuildExecutionObservation.failedGates.includes(
+  'random_cold_build_command_execution_transport_not_isolated',
+));
+assert.ok(hostProcessColdBuildRow.randomColdBuildExecutionObservation.failedGates.includes(
+  'random_cold_build_command_execution_environment_not_isolated',
+));
+const hostProcessColdBuildClosure = hostProcessColdBuildLedger.summary.planCoverage
+  .find((entry) => entry.id === 'large_arbitrary_project_runtime_closure');
+assert.equal(hostProcessColdBuildClosure.coldBuildExecutionAcceptedCount, 0);
+assert.ok(hostProcessColdBuildClosure.openGaps.includes(
+  'large_arbitrary_project_cold_build_execution_required',
+));
+
+const inconsistentAcceptanceColdBuildDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-inconsistent-acceptance',
+);
+const inconsistentAcceptanceColdBuildManifest = structuredClone(
+  explicitColdBuildCommandManifest,
+);
+const inconsistentAcceptanceColdBuildResult = inconsistentAcceptanceColdBuildManifest.results[0];
+inconsistentAcceptanceColdBuildResult.coldBuildExecutionObservation.acceptedAsSupportEvidence = false;
+inconsistentAcceptanceColdBuildResult.coldBuildExecutionObservation.accepted_as_support_evidence = false;
+inconsistentAcceptanceColdBuildResult.cold_build_execution_observation =
+  inconsistentAcceptanceColdBuildResult.coldBuildExecutionObservation;
+inconsistentAcceptanceColdBuildResult.coldBuildCommandExecution =
+  inconsistentAcceptanceColdBuildResult.coldBuildExecutionObservation;
+inconsistentAcceptanceColdBuildResult.cold_build_command_execution =
+  inconsistentAcceptanceColdBuildResult.coldBuildExecutionObservation;
+await writeJson(
+  path.join(inconsistentAcceptanceColdBuildDir, 'random-cold-inconsistent-acceptance.json'),
+  inconsistentAcceptanceColdBuildManifest,
+);
+const inconsistentAcceptanceColdBuildLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [inconsistentAcceptanceColdBuildDir],
+});
+const inconsistentAcceptanceColdBuildRow = inconsistentAcceptanceColdBuildLedger.rows.find(
+  (row) => row.targetId === explicitColdBuildCandidateId,
+);
+assert.equal(
+  inconsistentAcceptanceColdBuildRow.randomColdBuildExecutionObservation.accepted,
+  false,
+);
+assert.ok(
+  inconsistentAcceptanceColdBuildRow.randomColdBuildExecutionObservation.failedGates.includes(
+    'random_cold_build_command_execution_support_acceptance_missing',
+  ),
+);
+
+const lifecycleOnlyColdBuildDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-lifecycle-only-build',
+);
+const lifecycleOnlyColdBuildManifest = randomColdPathManifest({
+  candidateId: 'direct-random-lifecycle-only-build',
+  sourceUrl: 'https://example.invalid/arbitrary/lifecycle-only-build.git',
+  immutableCommit: sha256Hex('lifecycle-only-build:commit').slice(0, 40),
+  resultOverrides: {
+    upstreamLifecycleFailure: fileBackedAcceptedColdBuildLifecycle,
+    upstream_lifecycle_failure: fileBackedAcceptedColdBuildLifecycle,
+  },
+});
+await writeJson(
+  path.join(lifecycleOnlyColdBuildDir, 'random-cold-lifecycle-only-build.json'),
+  lifecycleOnlyColdBuildManifest,
+);
+const lifecycleOnlyColdBuildLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [lifecycleOnlyColdBuildDir],
+});
+const lifecycleOnlyColdBuildRow = lifecycleOnlyColdBuildLedger.rows.find(
+  (row) => row.targetId === 'direct-random-lifecycle-only-build',
+);
+assert.equal(lifecycleOnlyColdBuildRow?.randomColdBuildExecutionObservation, null);
+const lifecycleOnlyColdBuildClosure = lifecycleOnlyColdBuildLedger.summary.planCoverage
+  .find((entry) => entry.id === 'large_arbitrary_project_runtime_closure');
+assert.equal(lifecycleOnlyColdBuildClosure.coldBuildExecutionAcceptedCount, 0);
+assert.equal(lifecycleOnlyColdBuildClosure.gateCoverage.cold_build_execution.accepted, false);
+assert.ok(lifecycleOnlyColdBuildClosure.openGaps.includes(
+  'large_arbitrary_project_cold_build_execution_required',
+));
+
+const forgedColdBuildObservationDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-forged-observation',
+);
+const forgedColdBuildObservationManifest = randomColdPathManifest({
+  candidateId: 'direct-random-forged-observation',
+  sourceUrl: 'https://example.invalid/arbitrary/forged-observation.git',
+  immutableCommit: sha256Hex('forged-observation:commit').slice(0, 40),
+  coldBuildCommandSpec: randomColdBuildCommandSpecFixture(),
+});
+const forgedColdBuildObservationResult = forgedColdBuildObservationManifest.results[0];
+const forgedColdBuildObservation = randomColdBuildExecutionObservationFixture({
+  candidateId: forgedColdBuildObservationResult.candidateId,
+  candidateSource: forgedColdBuildObservationResult.candidateSource,
+  immutableCommit: forgedColdBuildObservationResult.immutableCommit,
+  sourceIntakeEvidence: forgedColdBuildObservationResult.sourceIntakeEvidence,
+  directInputEvidence: forgedColdBuildObservationResult.directInputEvidence,
+  commandSpec: forgedColdBuildObservationResult.coldBuildCommandSpec,
+});
+forgedColdBuildObservation.processObservation.stdoutCapture = 'forged output\n';
+forgedColdBuildObservation.process_observation = forgedColdBuildObservation.processObservation;
+forgedColdBuildObservationResult.coldBuildExecutionObservation = forgedColdBuildObservation;
+forgedColdBuildObservationResult.cold_build_execution_observation = forgedColdBuildObservation;
+await writeJson(
+  path.join(forgedColdBuildObservationDir, 'random-cold-forged-observation.json'),
+  forgedColdBuildObservationManifest,
+);
+const forgedColdBuildObservationLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedColdBuildObservationDir],
+});
+const forgedColdBuildObservationRow = forgedColdBuildObservationLedger.rows.find(
+  (row) => row.targetId === forgedColdBuildObservationResult.candidateId,
+);
+assert.equal(forgedColdBuildObservationRow.randomColdBuildExecutionObservation.accepted, false);
+assert.ok(forgedColdBuildObservationRow.randomColdBuildExecutionObservation.failedGates.includes(
+  'random_cold_build_command_execution_stdout_hash_mismatch',
+));
+
+const blockedColdBuildObservationDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-blocked-observation',
+);
+const blockedColdBuildObservationManifest = structuredClone(explicitColdBuildCommandManifest);
+const blockedColdBuildObservationResult = blockedColdBuildObservationManifest.results[0];
+const blockedColdBuildObservation = blockedColdBuildObservationResult
+  .coldBuildExecutionObservation;
+blockedColdBuildObservation.blockingGaps = ['compiler_trace_missing'];
+blockedColdBuildObservation.blocking_gaps = ['compiler_trace_missing'];
+for (const key of [
+  'cold_build_execution_observation',
+  'coldBuildCommandExecution',
+  'cold_build_command_execution',
+]) {
+  blockedColdBuildObservationResult[key] = blockedColdBuildObservation;
+}
+await writeJson(
+  path.join(blockedColdBuildObservationDir, 'random-cold-blocked-observation.json'),
+  blockedColdBuildObservationManifest,
+);
+const blockedColdBuildObservationLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [blockedColdBuildObservationDir],
+});
+const blockedColdBuildObservationRow = blockedColdBuildObservationLedger.rows.find(
+  (row) => row.targetId === explicitColdBuildCandidateId,
+);
+assert.equal(blockedColdBuildObservationRow.randomColdBuildExecutionObservation.accepted, false);
+assert.ok(blockedColdBuildObservationRow.randomColdBuildExecutionObservation.failedGates.includes(
+  'random_cold_build_command_execution_blocking_gaps_present',
+));
+
+const conflictingColdBuildObservationDir = path.join(
+  tmpRoot,
+  'random-large-project-cold-path-conflicting-observation-aliases',
+);
+const conflictingColdBuildObservationManifest = structuredClone(explicitColdBuildCommandManifest);
+const conflictingColdBuildObservationResult = conflictingColdBuildObservationManifest.results[0];
+conflictingColdBuildObservationResult.cold_build_execution_observation = {
+  ...conflictingColdBuildObservationResult.coldBuildExecutionObservation,
+  proofAuthority: 'forged_alias_authority',
+  proof_authority: 'forged_alias_authority',
+};
+await writeJson(
+  path.join(conflictingColdBuildObservationDir, 'random-cold-conflicting-aliases.json'),
+  conflictingColdBuildObservationManifest,
+);
+const conflictingColdBuildObservationLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [conflictingColdBuildObservationDir],
+});
+const conflictingColdBuildObservationRow = conflictingColdBuildObservationLedger.rows.find(
+  (row) => row.targetId === explicitColdBuildCandidateId,
+);
+assert.equal(conflictingColdBuildObservationRow.randomColdBuildExecutionObservation.accepted, false);
+assert.ok(conflictingColdBuildObservationRow.randomColdBuildExecutionObservation.failedGates.includes(
+  'random_cold_build_command_execution_alias_conflict',
 ));
 
 const resultOnlyDirectInputPathDir = path.join(

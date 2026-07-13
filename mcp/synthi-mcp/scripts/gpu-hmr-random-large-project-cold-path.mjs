@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION } from './lib/gpu-hmr-runtime-profile.mjs';
@@ -35,6 +35,16 @@ const BUILD_METADATA_BACKEND_SIGNAL_AUTHORITY =
 const COLD_BUILD_EXECUTION_PLAN_SCHEMA = 'synthi.gpu_hmr.cold_build_execution_plan.v1';
 const COLD_BUILD_EXECUTION_PLAN_AUTHORITY =
   'cold_build_execution_plan_only_not_gpu_hmr_success';
+const COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA =
+  'synthi.gpu_hmr.cold_build_execution_observation.v1';
+const COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY =
+  'explicit_cold_build_process_observation_only_not_gpu_hmr_success';
+const COLD_BUILD_EXECUTION_LIFECYCLE_SCHEMA =
+  'synthi.real_rocm.upstream_lifecycle_failure.v1';
+const COLD_BUILD_EXECUTION_LIFECYCLE_AUTHORITY =
+  'explicit_cold_build_command_lifecycle_only_not_gpu_hmr_success';
+const DEFAULT_COLD_BUILD_TIMEOUT_MS = 120000;
+const MAX_COLD_BUILD_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const RUNTIME_BOUNDARY_EXPECTATION_SCHEMA = 'synthi.gpu_hmr.cold_runtime_boundary_expectation.v1';
 const RUNTIME_BOUNDARY_EXPECTATION_AUTHORITY = 'runtime_boundary_expectation_only_not_gpu_hmr_success';
 const RUNTIME_BOUNDARY_EVENT_SCHEMA = 'synthi.gpu_hmr.runtime_boundary_event.v1';
@@ -502,6 +512,8 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--source-id') out.sourceId = argv[++i];
     else if (arg === '--backend-family') out.backendFamily = argv[++i];
     else if (arg === '--runtime-profile' || arg === '--runtime-profile-path') out.runtimeProofProfilePath = argv[++i];
+    else if (arg === '--cold-build-command-json') out.coldBuildCommandJson = argv[++i];
+    else if (arg === '--cold-build-timeout-ms') out.coldBuildTimeoutMs = argv[++i];
     else if (arg === '--output-dir') out.outputDir = argv[++i];
     else if (String(arg ?? '').startsWith('-')) throw new Error(`unknown argument: ${arg}`);
     else positionals.push(arg);
@@ -714,7 +726,17 @@ function cleanCandidate(
       ?? candidate.immutable_commit
       ?? candidate.repo?.commit
       ?? '',
-  ).trim();
+  ).trim().toLowerCase();
+  const coldBuildCommand = normalizeColdBuildCommandSpec(
+    candidate.coldBuildCommand
+      ?? candidate.cold_build_command
+      ?? candidate.coldBuildCommandJson
+      ?? candidate.cold_build_command_json,
+    {
+      timeoutMsOverride:
+        candidate.coldBuildTimeoutMs ?? candidate.cold_build_timeout_ms ?? null,
+    },
+  );
   if (!id) throw new Error(`candidate[${index}] id missing`);
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id)) {
     throw new Error(`candidate[${index}] id must be a safe identifier`);
@@ -760,6 +782,12 @@ function cleanCandidate(
     localRepoPath: localRepoPath ? path.resolve(localRepoPath) : null,
     local_repo_path: localRepoPath ? path.resolve(localRepoPath) : null,
     immutableCommit,
+    coldBuildCommand,
+    cold_build_command: coldBuildCommand,
+    coldBuildCommandConfigured: coldBuildCommand !== null,
+    cold_build_command_configured: coldBuildCommand !== null,
+    coldBuildCommandDescriptorHash: coldBuildCommand?.commandSpecHash ?? null,
+    cold_build_command_descriptor_hash: coldBuildCommand?.commandSpecHash ?? null,
     sizeSignals: candidate.sizeSignals ?? candidate.size_signals ?? {},
     buildSystemHints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
     build_system_hints: candidate.buildSystemHints ?? candidate.build_system_hints ?? {},
@@ -861,11 +889,13 @@ function directCandidateFromInput({
   sourceId,
   backendFamily,
   runtimeProofProfilePath,
+  coldBuildCommand = null,
+  coldBuildTimeoutMs = null,
   inputChannels = [],
 } = {}) {
   const url = String(sourceUrl ?? '').trim();
   const repo = String(repoPath ?? '').trim();
-  const commit = String(immutableCommit ?? '').trim();
+  const commit = String(immutableCommit ?? '').trim().toLowerCase();
   if (!url && !repo && !commit) return null;
   if ((!url && !repo) || !commit) {
     throw new Error('direct cold-path source input requires --source-url or --repo-path plus --commit');
@@ -887,6 +917,8 @@ function directCandidateFromInput({
       id,
       backendFamily: backendFamily || 'unknown_gpu_project',
       runtimeProofProfilePath,
+      coldBuildCommand,
+      coldBuildTimeoutMs,
       sourceUrl: effectiveSourceUrl,
       localRepoPath: resolvedRepo,
       immutableCommit: commit,
@@ -932,6 +964,8 @@ function directInputChannelsFromArgsEnv(args = {}, env = process.env) {
   pushChannel('source_id', args.sourceId, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_ID');
   pushChannel('backend_family', args.backendFamily, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BACKEND_FAMILY');
   pushChannel('runtime_profile', args.runtimeProofProfilePath, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_RUNTIME_PROFILE_PATH');
+  pushChannel('cold_build_command', args.coldBuildCommandJson, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BUILD_COMMAND_JSON');
+  pushChannel('cold_build_timeout_ms', args.coldBuildTimeoutMs, 'SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BUILD_TIMEOUT_MS');
   return channels;
 }
 
@@ -1002,6 +1036,17 @@ async function loadDirectCandidates({ candidatesJson, candidatesPath } = {}) {
       immutableCommit: item.immutableCommit ?? item.immutable_commit ?? item.commit ?? item.repo?.commit,
       sourceId: item.sourceId ?? item.source_id ?? item.id,
       backendFamily: item.backendFamily ?? item.backend_family ?? item.backend,
+      runtimeProofProfilePath:
+        item.runtimeProofProfilePath
+        ?? item.runtime_proof_profile_path
+        ?? item.runtimeProfilePath
+        ?? item.runtime_profile_path,
+      coldBuildCommand:
+        item.coldBuildCommand
+        ?? item.cold_build_command
+        ?? item.coldBuildCommandJson
+        ?? item.cold_build_command_json,
+      coldBuildTimeoutMs: item.coldBuildTimeoutMs ?? item.cold_build_timeout_ms,
       inputChannels: ['cli_arg_direct_candidates'],
     });
     if (!direct) throw new Error(`direct candidate[${index}] did not contain a source`);
@@ -1803,6 +1848,683 @@ function runProcess(command, args, options) {
       finish({ exitCode, signal, error: null, stdout, stderr });
     });
   });
+}
+
+function normalizeColdBuildCommandSpec(
+  rawSpec,
+  { timeoutMsOverride = null, allowSelfCheckHostProcess = false } = {},
+) {
+  if (rawSpec === undefined || rawSpec === null) return null;
+  if (typeof rawSpec === 'string' && !rawSpec.trim()) return null;
+  let parsed = rawSpec;
+  if (typeof rawSpec === 'string') {
+    try {
+      parsed = JSON.parse(rawSpec);
+    } catch (error) {
+      throw new Error(`cold build command JSON did not parse: ${error?.message || String(error)}`);
+    }
+  }
+  const spec = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed
+    : {};
+  const command = firstString(spec.command, spec.cmd, spec.executable);
+  if (!command || /[\0\r\n]/.test(command) || command.length > 32768) {
+    throw new Error('cold build command JSON must include a non-empty single-line command');
+  }
+  const rawArgs = spec.args ?? spec.arguments ?? [];
+  if (!Array.isArray(rawArgs) || rawArgs.length > 256) {
+    throw new Error('cold build command JSON args must be an array with at most 256 strings');
+  }
+  const args = rawArgs.map((value, index) => {
+      if (typeof value !== 'string' || /\0/.test(value) || value.length > 32768) {
+        throw new Error(
+          `cold build command JSON args[${index}] must be a bounded string without NUL bytes`,
+        );
+      }
+      return value;
+    });
+  const rawCwd = firstString(spec.cwd, spec.workingDirectory, spec.working_directory, '.') ?? '.';
+  if (
+    path.isAbsolute(rawCwd)
+    || path.win32.isAbsolute(rawCwd)
+    || path.posix.isAbsolute(rawCwd)
+    || /^[A-Za-z]:/.test(rawCwd)
+  ) {
+    throw new Error('cold build command cwd must be relative to the submitted source root');
+  }
+  const cwd = path.normalize(rawCwd);
+  if (
+    cwd === '..'
+    || cwd.startsWith(`..${path.sep}`)
+    || /[\0\r\n]/.test(cwd)
+    || cwd.length > 32768
+  ) {
+    throw new Error('cold build command cwd must stay inside the submitted source root');
+  }
+  const rawTimeoutMs = Number(
+    timeoutMsOverride
+    ?? spec.timeoutMs
+    ?? spec.timeout_ms
+    ?? DEFAULT_COLD_BUILD_TIMEOUT_MS,
+  );
+  if (
+    !Number.isFinite(rawTimeoutMs)
+    || rawTimeoutMs < 1000
+    || rawTimeoutMs > MAX_COLD_BUILD_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `cold build timeout must be between 1000 and ${MAX_COLD_BUILD_TIMEOUT_MS} milliseconds`,
+    );
+  }
+  const timeoutMs = Math.floor(rawTimeoutMs);
+  const executionTransport = firstString(
+    spec.executionTransport,
+    spec.execution_transport,
+    'isolated_worker_container',
+  );
+  if (!['isolated_worker_container', 'self_check_host_process'].includes(executionTransport)) {
+    throw new Error('cold build execution transport must be isolated_worker_container');
+  }
+  if (executionTransport === 'self_check_host_process' && allowSelfCheckHostProcess !== true) {
+    throw new Error('self_check_host_process is reserved for the internal self-check');
+  }
+  const rawEnvironment = spec.env ?? spec.environment ?? {};
+  if (!rawEnvironment || typeof rawEnvironment !== 'object' || Array.isArray(rawEnvironment)) {
+    throw new Error('cold build command env must be an object when provided');
+  }
+  if (Object.keys(rawEnvironment).length > 128) {
+    throw new Error('cold build command env must contain at most 128 variables');
+  }
+  const env = Object.fromEntries(
+      Object.entries(rawEnvironment).map(([key, value]) => {
+        const name = String(key ?? '').trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new Error(`cold build command env key is not safe: ${name}`);
+        }
+        if (typeof value !== 'string' || /\0/.test(value) || value.length > 32768) {
+          throw new Error(
+            `cold build command env value must be a bounded string without NUL bytes: ${name}`,
+          );
+        }
+        return [name, value];
+      }));
+  const publicSpec = {
+    command,
+    args,
+    cwd: cwd.replace(/\\/g, '/'),
+    timeoutMs,
+    envNames: Object.keys(env).sort(),
+    envValueHashes: Object.fromEntries(
+      Object.keys(env)
+        .sort()
+        .map((key) => [key, contentHash(env[key])]),
+    ),
+    executionTransport,
+    shell: false,
+  };
+  return {
+    ...publicSpec,
+    timeout_ms: timeoutMs,
+    env,
+    internalSelfCheckHostProcess: executionTransport === 'self_check_host_process',
+    commandSpecHash: contentHash(stableJson(publicSpec)),
+    command_spec_hash: contentHash(stableJson(publicSpec)),
+  };
+}
+
+function coldBuildCommandSpecFromArgsEnv(args = {}, env = process.env) {
+  const raw = firstString(
+    args.coldBuildCommandJson,
+    env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BUILD_COMMAND_JSON,
+  );
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`cold build command JSON did not parse: ${error?.message || String(error)}`);
+  }
+  return normalizeColdBuildCommandSpec(parsed, {
+    timeoutMsOverride:
+      args.coldBuildTimeoutMs
+      ?? env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_BUILD_TIMEOUT_MS,
+  });
+}
+
+function coldBuildCommandPublicSpec(spec) {
+  if (!spec) return null;
+  return {
+    command: spec.command,
+    args: spec.args,
+    cwd: spec.cwd,
+    timeoutMs: spec.timeoutMs,
+    timeout_ms: spec.timeoutMs,
+    envNames: spec.envNames,
+    env_names: spec.envNames,
+    envValueHashes: spec.envValueHashes,
+    env_value_hashes: spec.envValueHashes,
+    executionTransport: spec.executionTransport,
+    execution_transport: spec.executionTransport,
+    shell: false,
+    commandSpecHash: spec.commandSpecHash,
+    command_spec_hash: spec.commandSpecHash,
+  };
+}
+
+function coldBuildExitCodeText(result = {}) {
+  if (result.timedOut === true) return 'timeout';
+  if (typeof result.exitCode === 'number' && Number.isInteger(result.exitCode)) {
+    return String(result.exitCode);
+  }
+  const signal = firstString(result.signal);
+  if (signal) return `signal:${signal}`;
+  return 'unknown';
+}
+
+function redactColdBuildOutput(value) {
+  return String(value ?? '')
+    .replace(/\bBearer\s+[^\s]+/gi, 'Bearer [REDACTED]')
+    .replace(
+      /((?:api[_-]?key|token|authorization|password|secret|credential)\s*[:=]\s*)[^\s]+/gi,
+      '$1[REDACTED]',
+    );
+}
+
+function coldBuildCommandBlockedFacet(candidate, spec, blockingGaps, extra = {}) {
+  const facet = {
+    schemaVersion: COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA,
+    schema_version: COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA,
+    proofAuthority: COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY,
+    proof_authority: COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY,
+    status: 'explicit_cold_build_command_not_executed_failed_closed',
+    accepted: false,
+    acceptedAsSupportEvidence: false,
+    accepted_as_support_evidence: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsColdBuildExecutionEvidence: false,
+    accepted_as_cold_build_execution_evidence: false,
+    observedBuildExecution: false,
+    observed_build_execution: false,
+    matrixRecomputedFromLogTails: false,
+    matrix_recomputed_from_log_tails: false,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    candidateId: candidate?.id ?? null,
+    candidate_id: candidate?.id ?? null,
+    commandSpec: coldBuildCommandPublicSpec(spec),
+    command_spec: coldBuildCommandPublicSpec(spec),
+    commandSpecHash: spec?.commandSpecHash ?? null,
+    command_spec_hash: spec?.commandSpecHash ?? null,
+    ...extra,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+  return {
+    ...facet,
+    facetHash: contentHash(stableJson(facet)),
+    facet_hash: contentHash(stableJson(facet)),
+  };
+}
+
+async function runExplicitColdBuildCommand(candidate, sourceIntakeEvidence, spec) {
+  if (!spec) return null;
+  if (spec.executionTransport === 'isolated_worker_container') {
+    return coldBuildCommandBlockedFacet(candidate, spec, [
+      'cold_build_isolated_worker_transport_not_materialized',
+    ], {
+      executionTransport: spec.executionTransport,
+      execution_transport: spec.executionTransport,
+    });
+  }
+  if (
+    spec.executionTransport !== 'self_check_host_process'
+    || spec.internalSelfCheckHostProcess !== true
+  ) {
+    return coldBuildCommandBlockedFacet(candidate, spec, [
+      'cold_build_execution_transport_not_isolated',
+    ]);
+  }
+  const intakeAccepted =
+    sourceIntakeEvidence?.acceptedAsIntakeEvidence === true
+    || sourceIntakeEvidence?.accepted_as_intake_evidence === true;
+  const transportEvidence = firstObjectField(
+    sourceIntakeEvidence,
+    'transportEvidence',
+    'transport_evidence',
+  );
+  const repoPath = firstString(
+    transportEvidence.resolvedLocalPath,
+    transportEvidence.resolved_local_path,
+    sourceIntakeEvidence?.localPath
+      ? path.resolve(REPO_ROOT, sourceIntakeEvidence.localPath)
+      : null,
+    sourceIntakeEvidence?.local_path
+      ? path.resolve(REPO_ROOT, sourceIntakeEvidence.local_path)
+      : null,
+    candidate?.localRepoPath,
+    candidate?.local_repo_path,
+  );
+  const sourceListingHash = firstString(
+    sourceIntakeEvidence?.sourceListingHash,
+    sourceIntakeEvidence?.source_listing_hash,
+  );
+  const sourceIntakeFacetHash = firstString(
+    sourceIntakeEvidence?.facetHash,
+    sourceIntakeEvidence?.facet_hash,
+  );
+  const coldBuildExecutionPlan = firstObjectField(
+    sourceIntakeEvidence,
+    'coldBuildExecutionPlan',
+    'cold_build_execution_plan',
+  );
+  const coldBuildExecutionPlanHash = firstString(
+    coldBuildExecutionPlan.planHash,
+    coldBuildExecutionPlan.plan_hash,
+  );
+  const directSourceIdentityHash = firstString(
+    candidate?.directInputEvidence?.sourceIdentityHash,
+    candidate?.directInputEvidence?.source_identity_hash,
+    candidate?.direct_input_evidence?.sourceIdentityHash,
+    candidate?.direct_input_evidence?.source_identity_hash,
+  );
+  const blockingGaps = [
+    repoPath ? null : 'cold_build_command_materialized_source_root_missing',
+    intakeAccepted ? null : 'cold_build_command_source_intake_not_accepted',
+    sourceListingHash ? null : 'cold_build_command_source_listing_hash_missing',
+    sourceIntakeFacetHash ? null : 'cold_build_command_source_intake_hash_missing',
+    coldBuildExecutionPlanHash ? null : 'cold_build_command_execution_plan_hash_missing',
+  ].filter(Boolean);
+  if (blockingGaps.length > 0) {
+    return coldBuildCommandBlockedFacet(candidate, spec, blockingGaps);
+  }
+  let resolvedRepo;
+  let resolvedCwd;
+  try {
+    resolvedRepo = await realpath(path.resolve(repoPath));
+    resolvedCwd = await realpath(path.resolve(resolvedRepo, spec.cwd));
+  } catch (error) {
+    return coldBuildCommandBlockedFacet(
+      candidate,
+      spec,
+      ['cold_build_command_source_or_cwd_unreadable'],
+      { pathResolutionError: redactColdBuildOutput(error?.message || String(error)) },
+    );
+  }
+  if (!isInsideDirectory(resolvedRepo, resolvedCwd)) {
+    return coldBuildCommandBlockedFacet(candidate, spec, [
+      'cold_build_command_cwd_outside_repo',
+    ]);
+  }
+  const commitBeforeResult = await runProcess(
+    'git',
+    ['-C', resolvedRepo, 'rev-parse', 'HEAD'],
+    {
+      cwd: resolvedRepo,
+      timeoutMs: Math.min(spec.timeoutMs, 30000),
+      streamOutput: false,
+    },
+  );
+  const immutableCommit = String(candidate?.immutableCommit ?? '').trim().toLowerCase();
+  const commitBefore = firstString(commitBeforeResult.stdout)?.toLowerCase() ?? null;
+  if (
+    commitBeforeResult.exitCode !== 0
+    || commitBeforeResult.timedOut
+    || commitBeforeResult.error
+    || commitBefore !== immutableCommit
+  ) {
+    return coldBuildCommandBlockedFacet(
+      candidate,
+      spec,
+      ['cold_build_command_source_commit_mismatch_before_execution'],
+      {
+        expectedImmutableCommit: immutableCommit || null,
+        expected_immutable_commit: immutableCommit || null,
+        observedCommitBefore: commitBefore,
+        observed_commit_before: commitBefore,
+      },
+    );
+  }
+  const worktreeStatusResult = await runProcess(
+    'git',
+    ['-C', resolvedRepo, 'status', '--porcelain=v1', '--untracked-files=all'],
+    {
+      cwd: resolvedRepo,
+      timeoutMs: Math.min(spec.timeoutMs, 30000),
+      streamOutput: false,
+    },
+  );
+  const worktreeStatus = String(worktreeStatusResult.stdout ?? '').trim();
+  if (
+    worktreeStatusResult.exitCode !== 0
+    || worktreeStatusResult.timedOut
+    || worktreeStatusResult.error
+    || worktreeStatus
+  ) {
+    return coldBuildCommandBlockedFacet(
+      candidate,
+      spec,
+      [
+        worktreeStatus
+          ? 'cold_build_command_source_worktree_dirty_before_execution'
+          : 'cold_build_command_source_worktree_status_unavailable',
+      ],
+      {
+        sourceWorktreeCleanBefore: false,
+        source_worktree_clean_before: false,
+        sourceWorktreeStatusHash: contentHash(redactColdBuildOutput(worktreeStatus)),
+        source_worktree_status_hash: contentHash(redactColdBuildOutput(worktreeStatus)),
+      },
+    );
+  }
+  const sourceBinding = {
+    candidateId: candidate?.id ?? null,
+    candidateSource: candidate?.candidateSource ?? candidate?.candidate_source ?? null,
+    immutableCommit,
+    sourceListingHash,
+    sourceIntakeFacetHash,
+    coldBuildExecutionPlanHash,
+    directSourceIdentityHash: directSourceIdentityHash ?? null,
+    sourceRootPathHash: contentHash(resolvedRepo),
+    repoRelativeCwd: path.relative(resolvedRepo, resolvedCwd).replace(/\\/g, '/') || '.',
+    observedCommitBefore: commitBefore,
+    sourceWorktreeCleanBefore: true,
+    sourceWorktreeStatusHash: contentHash(''),
+  };
+  const sourceBindingHash = contentHash(stableJson(sourceBinding));
+  const wrapperStartedAt = new Date().toISOString();
+  const wrapperExecutionId = contentHash(stableJson({
+    commandSpecHash: spec.commandSpecHash,
+    sourceBindingHash,
+    startedAt: wrapperStartedAt,
+  }));
+  const baselineEnvironment = Object.fromEntries([
+    ['PATH', process.env.PATH],
+    ['Path', process.env.Path],
+    ['SystemRoot', process.env.SystemRoot],
+    ['WINDIR', process.env.WINDIR],
+    ['ComSpec', process.env.ComSpec],
+    ['PATHEXT', process.env.PATHEXT],
+    ['HOME', process.env.HOME],
+    ['TMPDIR', process.env.TMPDIR],
+    ['TEMP', process.env.TEMP],
+    ['TMP', process.env.TMP],
+  ].filter(([, value]) => typeof value === 'string' && value.length > 0));
+  const executionEnvironment = {
+    transport: 'self_check_host_process',
+    isolated: false,
+    inheritedHostEnvironment: false,
+    baselineEnvironmentNames: Object.keys(baselineEnvironment).sort(),
+    declaredEnvironmentNames: spec.envNames,
+    sourceMountReadOnly: false,
+    networkIsolated: false,
+  };
+  const executionEnvironmentHash = contentHash(stableJson(executionEnvironment));
+  const result = await runProcess(spec.command, spec.args, {
+    cwd: resolvedCwd,
+    env: {
+      ...baselineEnvironment,
+      ...spec.env,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: spec.timeoutMs,
+    streamOutput: false,
+    shell: false,
+    windowsHide: true,
+  });
+  const commitAfterResult = await runProcess(
+    'git',
+    ['-C', resolvedRepo, 'rev-parse', 'HEAD'],
+    {
+      cwd: resolvedRepo,
+      timeoutMs: Math.min(spec.timeoutMs, 30000),
+      streamOutput: false,
+    },
+  );
+  const commitAfter = firstString(commitAfterResult.stdout)?.toLowerCase() ?? null;
+  const worktreeStatusAfterResult = await runProcess(
+    'git',
+    ['-C', resolvedRepo, 'status', '--porcelain=v1', '--untracked-files=all'],
+    {
+      cwd: resolvedRepo,
+      timeoutMs: Math.min(spec.timeoutMs, 30000),
+      streamOutput: false,
+    },
+  );
+  const worktreeStatusAfter = String(worktreeStatusAfterResult.stdout ?? '').trim();
+  const worktreeCleanAfter =
+    worktreeStatusAfterResult.exitCode === 0
+    && !worktreeStatusAfterResult.timedOut
+    && !worktreeStatusAfterResult.error
+    && !worktreeStatusAfter;
+  const exitCodeText = coldBuildExitCodeText(result);
+  const processStarted = Number.isFinite(Number(result.childPid)) && Number(result.childPid) > 0;
+  const commitPreserved =
+    commitAfterResult.exitCode === 0
+    && !commitAfterResult.timedOut
+    && !commitAfterResult.error
+    && commitAfter === immutableCommit;
+  const processSucceeded =
+    processStarted
+    && result.exitCode === 0
+    && result.signal === null
+    && result.timedOut !== true
+    && !result.error
+    && commitPreserved
+    && worktreeCleanAfter;
+  const acceptedAsColdBuildExecutionEvidence =
+    processSucceeded
+    && executionEnvironment.isolated === true;
+  const stdoutCapture = tail(redactColdBuildOutput(result.stdout), 4000);
+  const stderrCapture = tail(redactColdBuildOutput(result.stderr), 4000);
+  const stdoutCaptureHash = contentHash(stdoutCapture);
+  const stderrCaptureHash = contentHash(stderrCapture);
+  const wrapperEvents = [
+    `[synthi-cold-build] start execution_id=${wrapperExecutionId} command_spec_hash=${spec.commandSpecHash} source_binding_hash=${sourceBindingHash}`,
+    `[synthi-cold-build] finish execution_id=${wrapperExecutionId} exit_code=${exitCodeText} commit_after=${commitAfter ?? 'unknown'}`,
+  ];
+  const wrapperEventStreamHash = contentHash(wrapperEvents.join('\n'));
+  const buildLogTail = [
+    ...wrapperEvents,
+    `upstream build skipped after configure_status=0 post_configure_status=0 build_status=${exitCodeText}`,
+    stdoutCapture,
+    stderrCapture,
+  ].filter(Boolean).join('\n');
+  const runLogTail = `upstream run skipped after configure_status=0 post_configure_status=0 build_status=${exitCodeText} run_status=not-run`;
+  const lifecycle = {
+    schemaVersion: COLD_BUILD_EXECUTION_LIFECYCLE_SCHEMA,
+    schema_version: COLD_BUILD_EXECUTION_LIFECYCLE_SCHEMA,
+    proofAuthority: COLD_BUILD_EXECUTION_LIFECYCLE_AUTHORITY,
+    proof_authority: COLD_BUILD_EXECUTION_LIFECYCLE_AUTHORITY,
+    status: acceptedAsColdBuildExecutionEvidence
+      ? 'explicit_cold_build_command_succeeded_support_only'
+      : processSucceeded
+        ? 'explicit_cold_build_process_observed_isolation_unproven'
+        : 'explicit_cold_build_command_failed_closed',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    acceptedAsColdBuildExecutionEvidence,
+    accepted_as_cold_build_execution_evidence: acceptedAsColdBuildExecutionEvidence,
+    acceptedAsRefusalEvidence: !acceptedAsColdBuildExecutionEvidence,
+    accepted_as_refusal_evidence: !acceptedAsColdBuildExecutionEvidence,
+    observedBuildExecution: processStarted,
+    observed_build_execution: processStarted,
+    candidateId: candidate?.id ?? null,
+    candidate_id: candidate?.id ?? null,
+    commandSpecHash: spec.commandSpecHash,
+    command_spec_hash: spec.commandSpecHash,
+    cwd: path.relative(resolvedRepo, resolvedCwd).replace(/\\/g, '/') || '.',
+    repoRelativeCwd: path.relative(resolvedRepo, resolvedCwd).replace(/\\/g, '/') || '.',
+    repo_relative_cwd: path.relative(resolvedRepo, resolvedCwd).replace(/\\/g, '/') || '.',
+    timeoutMs: spec.timeoutMs,
+    timeout_ms: spec.timeoutMs,
+    exitCode: result.exitCode,
+    exit_code: result.exitCode,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    timed_out: result.timedOut,
+    buildExitCodeText: exitCodeText,
+    build_exit_code_text: exitCodeText,
+    runExitCodeText: 'not-run',
+    run_exit_code_text: 'not-run',
+    timings: `configure_exit_code=0 post_configure_exit_code=0 build_exit_code=${exitCodeText} run_exit_code=not-run`,
+    buildLogTail,
+    build_log_tail: buildLogTail,
+    runLogTail,
+    run_log_tail: runLogTail,
+    reasons: processSucceeded ? [] : ['upstream_lifecycle_command_failed'],
+    startedAt: result.startedAt,
+    started_at: result.startedAt,
+    finishedAt: result.finishedAt,
+    finished_at: result.finishedAt,
+  };
+  const lifecycleFacetHash = contentHash(stableJson(lifecycle));
+  const upstreamLifecycleFailure = {
+    ...lifecycle,
+    facetHash: lifecycleFacetHash,
+    facet_hash: lifecycleFacetHash,
+  };
+  const processObservation = {
+    exitCode: result.exitCode,
+    signal: result.signal,
+    timedOut: result.timedOut === true,
+    processStarted,
+    completed: typeof result.exitCode === 'number'
+      && Number.isInteger(result.exitCode)
+      && Boolean(result.finishedAt),
+    error: result.error ? redactColdBuildOutput(result.error) : null,
+    stdoutCapture,
+    stdoutCaptureHash,
+    stdoutCaptureTruncated: result.stdoutTruncated === true,
+    stderrCapture,
+    stderrCaptureHash,
+    stderrCaptureTruncated: result.stderrTruncated === true,
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+  };
+  const observationSeed = {
+    schemaVersion: COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA,
+    commandSpecHash: spec.commandSpecHash,
+    sourceBindingHash,
+    processObservation,
+    observedCommitAfter: commitAfter,
+    sourceWorktreeCleanAfter: worktreeCleanAfter,
+    sourceWorktreeStatusAfterHash: contentHash(redactColdBuildOutput(worktreeStatusAfter)),
+    executionEnvironmentHash,
+    wrapperStartedAt,
+    wrapperExecutionId,
+    wrapperEventStreamHash,
+  };
+  const observationHash = contentHash(stableJson(observationSeed));
+  const observation = {
+    schemaVersion: COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA,
+    schema_version: COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA,
+    proofAuthority: COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY,
+    proof_authority: COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY,
+    status: acceptedAsColdBuildExecutionEvidence
+      ? 'explicit_cold_build_command_succeeded_support_only'
+      : processSucceeded
+        ? 'explicit_cold_build_process_observed_isolation_unproven'
+        : 'explicit_cold_build_command_failed_closed',
+    accepted: acceptedAsColdBuildExecutionEvidence,
+    acceptedAsSupportEvidence: processSucceeded,
+    accepted_as_support_evidence: processSucceeded,
+    acceptedAsColdBuildExecutionEvidence,
+    accepted_as_cold_build_execution_evidence: acceptedAsColdBuildExecutionEvidence,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    observedBuildExecution: processStarted,
+    observed_build_execution: processStarted,
+    targetNameIndependent: true,
+    target_name_independent: true,
+    projectNameWhitelist: [],
+    project_name_whitelist: [],
+    specificTargetIdsAllowed: [],
+    specific_target_ids_allowed: [],
+    candidateId: candidate?.id ?? null,
+    candidate_id: candidate?.id ?? null,
+    commandSpec: coldBuildCommandPublicSpec(spec),
+    command_spec: coldBuildCommandPublicSpec(spec),
+    commandSpecHash: spec.commandSpecHash,
+    command_spec_hash: spec.commandSpecHash,
+    sourceBinding,
+    source_binding: sourceBinding,
+    sourceBindingHash,
+    source_binding_hash: sourceBindingHash,
+    processObservation,
+    process_observation: processObservation,
+    expectedImmutableCommit: immutableCommit,
+    expected_immutable_commit: immutableCommit,
+    observedCommitBefore: commitBefore,
+    observed_commit_before: commitBefore,
+    observedCommitAfter: commitAfter,
+    observed_commit_after: commitAfter,
+    commitPreserved,
+    commit_preserved: commitPreserved,
+    sourceWorktreeCleanAfter: worktreeCleanAfter,
+    source_worktree_clean_after: worktreeCleanAfter,
+    sourceWorktreeStatusAfterHash: contentHash(redactColdBuildOutput(worktreeStatusAfter)),
+    source_worktree_status_after_hash: contentHash(redactColdBuildOutput(worktreeStatusAfter)),
+    executionEnvironment,
+    execution_environment: executionEnvironment,
+    executionEnvironmentHash,
+    execution_environment_hash: executionEnvironmentHash,
+    wrapperEvents,
+    wrapper_events: wrapperEvents,
+    wrapperExecutionId,
+    wrapper_execution_id: wrapperExecutionId,
+    wrapperStartedAt,
+    wrapper_started_at: wrapperStartedAt,
+    wrapperEventStreamHash,
+    wrapper_event_stream_hash: wrapperEventStreamHash,
+    upstreamLifecycleFailure,
+    upstream_lifecycle_failure: upstreamLifecycleFailure,
+    observationHash,
+    observation_hash: observationHash,
+    evidenceRef: `cold-build-execution-observation:${observationHash}`,
+    evidence_ref: `cold-build-execution-observation:${observationHash}`,
+    blockingGaps: acceptedAsColdBuildExecutionEvidence
+      ? []
+      : uniqueSortedStrings([
+        executionEnvironment.isolated === true
+          ? null
+          : 'cold_build_execution_isolation_unproven',
+        processStarted ? null : 'cold_build_command_process_not_started',
+        exitCodeText === '0' ? null : 'cold_build_command_execution_failed',
+        result.timedOut === true ? 'cold_build_command_execution_timed_out' : null,
+        result.error ? 'cold_build_command_execution_error' : null,
+        commitPreserved ? null : 'cold_build_command_source_commit_changed',
+        worktreeCleanAfter ? null : 'cold_build_command_source_worktree_changed',
+      ]),
+  };
+  observation.blocking_gaps = observation.blockingGaps;
+  return {
+    ...observation,
+    facetHash: observationHash,
+    facet_hash: observationHash,
+  };
 }
 
 function sourceListingStdoutMaxBytes() {
@@ -4790,13 +5512,20 @@ async function buildAcceptedSourceIntakeFacet({
   };
 }
 
-async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
+async function runUnprofiledSourceIntake(
+  candidate,
+  { sourceIntakeTimeoutMs, materializeWorktree = false },
+) {
   const startedAt = new Date().toISOString();
   const localPath = sourceIntakePathForCandidate(candidate);
   const relativeLocalPath = path.relative(REPO_ROOT, localPath).replace(/\\/g, '/');
   const liveGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_GIT_FALLBACK === '1';
-  const forceGitFallbackEnabled = process.env.SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK === '1';
-  const fullGitFallbackEnabled = fullGitSourceTreeFallbackEnabled();
+  const forceGitFallbackEnabled =
+    process.env.SYNTHI_GPU_HMR_UNPROFILED_FORCE_GIT_FALLBACK === '1'
+    || materializeWorktree === true;
+  const fullGitFallbackEnabled =
+    fullGitSourceTreeFallbackEnabled()
+    || materializeWorktree === true;
   const directSourceAutomaticGitFallbackEnabled = directUserSourceCanUseAutomaticGitFallback(candidate);
   const base = {
     schemaVersion: SOURCE_INTAKE_SCHEMA,
@@ -4825,6 +5554,8 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     direct_source_automatic_git_fallback_enabled: directSourceAutomaticGitFallbackEnabled,
     fullGitFallbackEnabled,
     full_git_fallback_enabled: fullGitFallbackEnabled,
+    buildWorktreeMaterializationRequested: materializeWorktree === true,
+    build_worktree_materialization_requested: materializeWorktree === true,
     startedAt,
     started_at: startedAt,
   };
@@ -4860,6 +5591,72 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         local_git_listing: localGitListing,
       });
     }
+    let localWorktreeMaterialization = null;
+    let acceptedLocalPath = localGitListing.resolvedTopLevel;
+    if (materializeWorktree === true) {
+      await rm(localPath, { recursive: true, force: true });
+      await mkdir(path.dirname(localPath), { recursive: true });
+      const clone = await runProcess(
+        'git',
+        [
+          'clone',
+          '--no-checkout',
+          '--no-hardlinks',
+          localGitListing.resolvedTopLevel,
+          localPath,
+        ],
+        {
+          cwd: REPO_ROOT,
+          timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
+          stdoutMax: 64000,
+          stderrMax: 64000,
+          streamOutput: false,
+        },
+      );
+      const checkout = clone.exitCode === 0 && !clone.timedOut && !clone.error
+        ? await runProcess(
+          'git',
+          ['-C', localPath, 'checkout', '--detach', candidate.immutableCommit],
+          {
+            cwd: REPO_ROOT,
+            timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
+            stdoutMax: 64000,
+            stderrMax: 64000,
+            streamOutput: false,
+          },
+        )
+        : null;
+      const materialized =
+        clone.exitCode === 0
+        && !clone.timedOut
+        && !clone.error
+        && checkout?.exitCode === 0
+        && !checkout?.timedOut
+        && !checkout?.error;
+      localWorktreeMaterialization = {
+        transport: 'detached_local_git_clone',
+        sourcePathHash: contentHash(localGitListing.resolvedTopLevel),
+        materializedPathHash: contentHash(localPath),
+        immutableCommit: candidate.immutableCommit,
+        clone,
+        checkout,
+        accepted: materialized,
+      };
+      localWorktreeMaterialization.materializationHash = contentHash(
+        stableJson(localWorktreeMaterialization),
+      );
+      if (!materialized) {
+        return fail(
+          'source_intake_local_build_worktree_materialization_failed',
+          'source_tree_local_build_worktree_materialization_failed',
+          {
+            worktreeMaterialization: localWorktreeMaterialization,
+            worktree_materialization: localWorktreeMaterialization,
+          },
+        );
+      }
+      acceptedLocalPath = localPath;
+    }
     return await buildAcceptedSourceIntakeFacet({
       base,
       candidate,
@@ -4870,6 +5667,12 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
         repo_path: localGitListing.repo_path,
         resolvedTopLevel: localGitListing.resolvedTopLevel,
         resolved_top_level: localGitListing.resolved_top_level,
+        resolvedLocalPath: acceptedLocalPath,
+        resolved_local_path: acceptedLocalPath,
+        worktreeMaterialization: localWorktreeMaterialization,
+        worktree_materialization: localWorktreeMaterialization,
+        buildWorktreeMaterialized: materializeWorktree === true,
+        build_worktree_materialized: materializeWorktree === true,
         sourceSnapshotMode: localGitListing.sourceSnapshotMode,
         source_snapshot_mode: localGitListing.source_snapshot_mode,
         worktreeContentConsumed: localGitListing.worktreeContentConsumed,
@@ -4894,6 +5697,7 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       sourceIntakeTimeoutMs,
     });
   }
+  let worktreeMaterialization = null;
   await rm(localPath, { recursive: true, force: true });
   const githubTree = forceGitFallbackEnabled
     ? { attempted: false, skipped: true, reason: 'forced_git_fallback_for_source_tree_intake' }
@@ -5068,6 +5872,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
     return fail('source_intake_fetch_failed', 'source_tree_fetch_failed', {
       fetch,
       fetch_result: fetch,
+      worktreeMaterialization,
+      worktree_materialization: worktreeMaterialization,
+      buildWorktreeMaterialized: materializeWorktree === true,
+      build_worktree_materialized: materializeWorktree === true,
       sourceIntakeProcessCleanup,
       source_intake_process_cleanup: sourceIntakeProcessCleanup,
     });
@@ -5086,6 +5894,43 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       commitCheck,
       commit_check: commitCheck,
     });
+  }
+  if (materializeWorktree === true) {
+    const checkout = await runProcess(
+      'git',
+      ['-C', localPath, 'checkout', '--detach', candidate.immutableCommit],
+      {
+        cwd: REPO_ROOT,
+        timeoutMs: Math.min(sourceIntakeTimeoutMs, 120000),
+        stdoutMax: 64000,
+        stderrMax: 64000,
+        streamOutput: false,
+      },
+    );
+    const materialized =
+      checkout.exitCode === 0
+      && !checkout.timedOut
+      && !checkout.error;
+    worktreeMaterialization = {
+      transport: 'detached_fetched_git_worktree',
+      materializedPathHash: contentHash(localPath),
+      immutableCommit: candidate.immutableCommit,
+      checkout,
+      accepted: materialized,
+    };
+    worktreeMaterialization.materializationHash = contentHash(
+      stableJson(worktreeMaterialization),
+    );
+    if (!materialized) {
+      return fail(
+        'source_intake_build_worktree_materialization_failed',
+        'source_tree_build_worktree_materialization_failed',
+        {
+          worktreeMaterialization,
+          worktree_materialization: worktreeMaterialization,
+        },
+      );
+    }
   }
   const bloblessSizeListing = bloblessGitTreeSizeListingEnabled();
   const sizeListing = fullGitFallbackEnabled || bloblessSizeListing;
@@ -5185,6 +6030,10 @@ async function runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs }) {
       remote_add: remoteAdd,
       fetch,
       fetch_result: fetch,
+      worktreeMaterialization,
+      worktree_materialization: worktreeMaterialization,
+      buildWorktreeMaterialized: materializeWorktree === true,
+      build_worktree_materialized: materializeWorktree === true,
     },
     sourceIntakeTimeoutMs,
   });
@@ -5760,7 +6609,7 @@ async function runRuntimeProfileProofBridge(
 
 async function runSelectedCandidate(
   candidate,
-  { dryRun, timeoutMs, runnerTimeoutMs, sourceIntake, sourceIntakeTimeoutMs },
+  { dryRun, timeoutMs, runnerTimeoutMs, sourceIntake, sourceIntakeTimeoutMs, coldBuildCommandSpec },
 ) {
   if (dryRun) {
     return {
@@ -5790,9 +6639,19 @@ async function runSelectedCandidate(
     };
   }
   if (!candidate.profilePath || candidate.backendFamily !== 'real_rocm') {
+    const effectiveColdBuildCommandSpec =
+      coldBuildCommandSpec ?? candidate.coldBuildCommand ?? candidate.cold_build_command ?? null;
     const sourceIntakeEvidence = sourceIntake === true
-      ? await runUnprofiledSourceIntake(candidate, { sourceIntakeTimeoutMs })
+      ? await runUnprofiledSourceIntake(candidate, {
+        sourceIntakeTimeoutMs,
+        materializeWorktree: effectiveColdBuildCommandSpec !== null,
+      })
       : null;
+    const coldBuildCommandExecution = await runExplicitColdBuildCommand(
+      candidate,
+      sourceIntakeEvidence,
+      effectiveColdBuildCommandSpec,
+    );
     const sourceTreeIntakeAccepted = sourceIntakeEvidence?.acceptedAsIntakeEvidence === true;
     const buildMetadataDiscoveryAccepted = sourceIntakeEvidence?.buildMetadataDiscoveryAccepted === true;
     const buildMetadataContentAccepted = sourceIntakeEvidence?.buildMetadataContentAccepted === true;
@@ -5895,15 +6754,35 @@ async function runSelectedCandidate(
       : (buildMetadataDiscoveryAccepted
         ? 'semantic_build_metadata_verification_missing'
         : 'build_metadata_unverified');
+    const coldBuildCommandObserved =
+      coldBuildCommandExecution?.observedBuildExecution === true
+      || coldBuildCommandExecution?.observed_build_execution === true;
+    const coldBuildCommandSucceeded =
+      coldBuildCommandExecution?.acceptedAsColdBuildExecutionEvidence === true
+      || coldBuildCommandExecution?.accepted_as_cold_build_execution_evidence === true;
+    const rawBuildExecutionPlanGaps = uniqueSortedStrings([
+      ...(Array.isArray(sourceIntakeEvidence?.coldBuildExecutionPlan?.blockingGaps)
+        ? sourceIntakeEvidence.coldBuildExecutionPlan.blockingGaps
+        : []),
+      ...(Array.isArray(sourceIntakeEvidence?.cold_build_execution_plan?.blocking_gaps)
+        ? sourceIntakeEvidence.cold_build_execution_plan.blocking_gaps
+        : []),
+    ]);
     const buildExecutionPlanGaps = coldBuildExecutionPlanAccepted
       ? [
         'cold_build_execution_plan_support_only_not_runtime_proof',
+        ...rawBuildExecutionPlanGaps.filter((gap) =>
+          gap !== 'build_command_execution_not_observed' || !coldBuildCommandSucceeded
+        ),
+        coldBuildCommandObserved && !coldBuildCommandSucceeded
+          ? 'cold_build_command_execution_not_accepted'
+          : null,
         ...uniqueSortedStrings([
-          ...(Array.isArray(sourceIntakeEvidence?.coldBuildExecutionPlan?.blockingGaps)
-            ? sourceIntakeEvidence.coldBuildExecutionPlan.blockingGaps
+          ...(Array.isArray(coldBuildCommandExecution?.blockingGaps)
+            ? coldBuildCommandExecution.blockingGaps
             : []),
-          ...(Array.isArray(sourceIntakeEvidence?.cold_build_execution_plan?.blocking_gaps)
-            ? sourceIntakeEvidence.cold_build_execution_plan.blocking_gaps
+          ...(Array.isArray(coldBuildCommandExecution?.blocking_gaps)
+            ? coldBuildCommandExecution.blocking_gaps
             : []),
         ]),
       ]
@@ -6006,6 +6885,18 @@ async function runSelectedCandidate(
       cold_build_execution_plan: sourceIntakeEvidence?.cold_build_execution_plan ?? null,
       coldBuildExecutionPlanAccepted,
       cold_build_execution_plan_accepted: coldBuildExecutionPlanAccepted,
+      coldBuildCommandConfigured: effectiveColdBuildCommandSpec !== null,
+      cold_build_command_configured: effectiveColdBuildCommandSpec !== null,
+      coldBuildCommandSpec: coldBuildCommandPublicSpec(effectiveColdBuildCommandSpec),
+      cold_build_command_spec: coldBuildCommandPublicSpec(effectiveColdBuildCommandSpec),
+      coldBuildCommandDescriptorHash:
+        effectiveColdBuildCommandSpec?.commandSpecHash ?? null,
+      cold_build_command_descriptor_hash:
+        effectiveColdBuildCommandSpec?.commandSpecHash ?? null,
+      coldBuildExecutionObservation: coldBuildCommandExecution,
+      cold_build_execution_observation: coldBuildCommandExecution,
+      coldBuildCommandExecution,
+      cold_build_command_execution: coldBuildCommandExecution,
       runtimeBoundaryExpectationAccepted,
       runtime_boundary_expectation_accepted: runtimeBoundaryExpectationAccepted,
       runtimeBoundaryExpectation: sourceIntakeEvidence?.runtimeBoundaryExpectation ?? null,
@@ -6128,6 +7019,7 @@ async function buildManifest({
   sourceMode = null,
   requireDirectSource = false,
   samplePool = false,
+  coldBuildCommandSpec = null,
   runCandidate = runSelectedCandidate,
 }) {
   const selected = selectCandidates({
@@ -6156,6 +7048,7 @@ async function buildManifest({
       sourceMode,
       requireDirectSource,
       samplePool,
+      coldBuildCommandSpec,
       startedAt,
       finishedAt: null,
       eventType: 'cold_path_pending',
@@ -6179,6 +7072,7 @@ async function buildManifest({
         runnerTimeoutMs,
         sourceIntake,
         sourceIntakeTimeoutMs,
+        coldBuildCommandSpec,
       }));
     } catch (error) {
       results.push({
@@ -6207,6 +7101,7 @@ async function buildManifest({
     sourceMode,
     requireDirectSource,
     samplePool,
+    coldBuildCommandSpec,
     startedAt,
     finishedAt,
     eventType: 'cold_path_complete',
@@ -6233,6 +7128,7 @@ function createManifest({
   sourceMode,
   requireDirectSource = false,
   samplePool = false,
+  coldBuildCommandSpec = null,
   startedAt,
   finishedAt,
   eventType,
@@ -6327,6 +7223,10 @@ function createManifest({
       candidate_source: candidate.candidateSource,
       directInputEvidence: candidate.directInputEvidence,
       direct_input_evidence: candidate.directInputEvidence,
+      coldBuildCommandConfigured: candidate.coldBuildCommandConfigured === true,
+      cold_build_command_configured: candidate.coldBuildCommandConfigured === true,
+      coldBuildCommandDescriptorHash: candidate.coldBuildCommandDescriptorHash,
+      cold_build_command_descriptor_hash: candidate.coldBuildCommandDescriptorHash,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       localRepoPath: candidate.localRepoPath,
@@ -6358,6 +7258,10 @@ function createManifest({
       candidate_source: candidate.candidateSource,
       directInputEvidence: candidate.directInputEvidence,
       direct_input_evidence: candidate.directInputEvidence,
+      coldBuildCommandConfigured: candidate.coldBuildCommandConfigured === true,
+      cold_build_command_configured: candidate.coldBuildCommandConfigured === true,
+      coldBuildCommandDescriptorHash: candidate.coldBuildCommandDescriptorHash,
+      cold_build_command_descriptor_hash: candidate.coldBuildCommandDescriptorHash,
       sourceUrl: candidate.sourceUrl,
       source_url: candidate.sourceUrl,
       localRepoPath: candidate.localRepoPath,
@@ -6393,6 +7297,8 @@ function createManifest({
     source_intake: sourceIntake,
     sourceIntakeTimeoutMs,
     source_intake_timeout_ms: sourceIntakeTimeoutMs,
+    coldBuildCommandSpec: coldBuildCommandPublicSpec(coldBuildCommandSpec),
+    cold_build_command_spec: coldBuildCommandPublicSpec(coldBuildCommandSpec),
     pendingManifestPath: pendingWritten?.filePath ?? null,
     pending_manifest_path: pendingWritten?.filePath ?? null,
     pendingManifestHash: pendingWritten?.hash ?? null,
@@ -6580,6 +7486,9 @@ async function selfCheck() {
   if (
     parseArgs(['--require-direct-source']).requireDirectSource !== true
     || parseArgs(['--sample-pool']).samplePool !== true
+    || parseArgs(['--cold-build-command-json', '{"command":"node","args":["--version"]}'])
+      .coldBuildCommandJson !== '{"command":"node","args":["--version"]}'
+    || parseArgs(['--cold-build-timeout-ms', '1234']).coldBuildTimeoutMs !== '1234'
     || parseArgs([
       '--require-direct-source',
       'https://example.invalid/direct.git',
@@ -7802,6 +8711,15 @@ async function selfCheck() {
     sourceId: 'local-user-project',
     inputChannels: ['cli_arg_repo_path', 'cli_arg_commit', 'cli_arg_source_id'],
   });
+  const localColdBuildCommandSpec = normalizeColdBuildCommandSpec({
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("self-check-cold-build\\n")'],
+    cwd: '.',
+    timeoutMs: 30000,
+    executionTransport: 'self_check_host_process',
+  }, {
+    allowSelfCheckHostProcess: true,
+  });
   const { manifest: localManifest } = await buildManifest({
     seed: 'local-source-self-check-seed',
     count: 1,
@@ -7815,12 +8733,16 @@ async function selfCheck() {
     outputDir: path.join(LOG_DIR, 'self-check'),
     sourceMode: 'direct_local_user_source',
     requireDirectSource: true,
+    coldBuildCommandSpec: localColdBuildCommandSpec,
   });
   const localResult = localManifest.results[0] ?? {};
   const localBuildContentFiles = localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.buildFiles ?? [];
   const localColdBuildExecutionPlan = localResult.sourceIntakeEvidence?.coldBuildExecutionPlan;
+  const localColdBuildCommandExecution = localResult.coldBuildCommandExecution;
   if (
     localManifest.candidates[0]?.candidateSource !== 'direct_local_git_repo_path'
+    || localManifest.coldBuildCommandSpec?.commandSpecHash
+      !== localColdBuildCommandSpec.commandSpecHash
     || localManifest.candidates[0]?.directInputEvidence?.acceptedAsDirectInputEvidence !== true
     || localManifest.candidates[0]?.directInputEvidence?.sourceKind !== 'local_repo_path_commit'
     || localManifest.selectionAudit?.sourceMode !== 'direct_local_user_source'
@@ -7903,6 +8825,77 @@ async function selfCheck() {
     || localColdBuildExecutionPlan?.observedBuildExecution !== false
     || localColdBuildExecutionPlan?.observedCompileDatabase !== false
     || localColdBuildExecutionPlan?.observedDeviceArtifactBuild !== false
+    || localColdBuildCommandExecution?.schemaVersion
+      !== COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA
+    || localColdBuildCommandExecution?.proofAuthority
+      !== COLD_BUILD_EXECUTION_OBSERVATION_AUTHORITY
+    || localColdBuildCommandExecution?.accepted !== false
+    || localColdBuildCommandExecution?.acceptedAsSupportEvidence !== true
+    || localColdBuildCommandExecution?.acceptedAsColdBuildExecutionEvidence !== false
+    || localColdBuildCommandExecution?.observedBuildExecution !== true
+    || localColdBuildCommandExecution?.targetNameIndependent !== true
+    || localColdBuildCommandExecution?.projectNameWhitelist?.length !== 0
+    || localColdBuildCommandExecution?.specificTargetIdsAllowed?.length !== 0
+    || localColdBuildCommandExecution?.acceptedForGpuHmr !== false
+    || localColdBuildCommandExecution?.gpuHmrSuccess !== false
+    || localColdBuildCommandExecution?.canSatisfyRuntimeProof !== false
+    || localColdBuildCommandExecution?.canSatisfyDispatchProof !== false
+    || localColdBuildCommandExecution?.commandSpec?.executionTransport
+      !== 'self_check_host_process'
+    || localColdBuildCommandExecution?.commandSpecHash
+      !== localColdBuildCommandSpec.commandSpecHash
+    || localColdBuildCommandExecution?.sourceBinding?.candidateId !== localCandidate.id
+    || localColdBuildCommandExecution?.sourceBinding?.candidateSource
+      !== 'direct_local_git_repo_path'
+    || localColdBuildCommandExecution?.sourceBinding?.immutableCommit !== localCommit
+    || localColdBuildCommandExecution?.sourceBinding?.sourceListingHash
+      !== localResult.sourceIntakeEvidence?.sourceListingHash
+    || localColdBuildCommandExecution?.sourceBinding?.sourceIntakeFacetHash
+      !== localResult.sourceIntakeEvidence?.facetHash
+    || localColdBuildCommandExecution?.sourceBinding?.coldBuildExecutionPlanHash
+      !== localResult.sourceIntakeEvidence?.coldBuildExecutionPlan?.planHash
+    || localColdBuildCommandExecution?.sourceBinding?.directSourceIdentityHash
+      !== localCandidate.directInputEvidence?.sourceIdentityHash
+    || localColdBuildCommandExecution?.sourceBinding?.sourceWorktreeCleanBefore !== true
+    || localColdBuildCommandExecution?.sourceBinding?.sourceWorktreeStatusHash
+      !== contentHash('')
+    || localColdBuildCommandExecution?.processObservation?.processStarted !== true
+    || localColdBuildCommandExecution?.processObservation?.completed !== true
+    || localColdBuildCommandExecution?.processObservation?.exitCode !== 0
+    || localColdBuildCommandExecution?.processObservation?.timedOut !== false
+    || localColdBuildCommandExecution?.processObservation?.error !== null
+    || localColdBuildCommandExecution?.processObservation?.stdoutCaptureHash
+      !== contentHash(localColdBuildCommandExecution?.processObservation?.stdoutCapture)
+    || localColdBuildCommandExecution?.processObservation?.stderrCaptureHash
+      !== contentHash(localColdBuildCommandExecution?.processObservation?.stderrCapture)
+    || localColdBuildCommandExecution?.commitPreserved !== true
+    || localColdBuildCommandExecution?.sourceWorktreeCleanAfter !== true
+    || localColdBuildCommandExecution?.sourceWorktreeStatusAfterHash !== contentHash('')
+    || localColdBuildCommandExecution?.executionEnvironment?.transport
+      !== 'self_check_host_process'
+    || localColdBuildCommandExecution?.executionEnvironment?.isolated !== false
+    || localColdBuildCommandExecution?.executionEnvironment?.inheritedHostEnvironment !== false
+    || !localColdBuildCommandExecution?.blockingGaps
+      ?.includes('cold_build_execution_isolation_unproven')
+    || localColdBuildCommandExecution?.observedCommitBefore !== localCommit
+    || localColdBuildCommandExecution?.observedCommitAfter !== localCommit
+    || localColdBuildCommandExecution?.observationHash
+      !== localColdBuildCommandExecution?.facetHash
+    || localColdBuildCommandExecution?.upstreamLifecycleFailure?.schemaVersion
+      !== COLD_BUILD_EXECUTION_LIFECYCLE_SCHEMA
+    || localColdBuildCommandExecution?.upstreamLifecycleFailure?.proofAuthority
+      !== COLD_BUILD_EXECUTION_LIFECYCLE_AUTHORITY
+    || localColdBuildCommandExecution?.upstreamLifecycleFailure
+      ?.acceptedAsColdBuildExecutionEvidence !== false
+    || localColdBuildCommandExecution?.upstreamLifecycleFailure?.buildExitCodeText !== '0'
+    || localColdBuildCommandExecution?.upstreamLifecycleFailure?.runExitCodeText !== 'not-run'
+    || !localColdBuildCommandExecution?.upstreamLifecycleFailure?.timings
+      ?.includes('build_exit_code=0')
+    || !localColdBuildCommandExecution?.upstreamLifecycleFailure?.buildLogTail
+      ?.includes('build_status=0')
+    || localResult.coldBuildExecutionObservation?.observationHash
+      !== localColdBuildCommandExecution.observationHash
+    || localResult.upstreamLifecycleFailure !== undefined
     || !localColdBuildExecutionPlan?.planHash?.startsWith('sha256:')
     || !localColdBuildExecutionPlan?.requiredBuildEvidence?.includes(
       'compile_database_or_compiler_trace',
@@ -7971,6 +8964,9 @@ async function selfCheck() {
     || !(localResult.sourceIntakeEvidence?.buildMetadataContentEvidence?.acceptedBuildFileCount >= 1)
     || !localBuildContentFiles.some((file) => file.family === 'cmake' && file.contentHash?.startsWith('sha256:'))
     || !localResult.blockingGaps?.includes('semantic_build_metadata_execution_missing')
+    || !localResult.blockingGaps?.includes('build_command_execution_not_observed')
+    || !localResult.blockingGaps?.includes('cold_build_command_execution_not_accepted')
+    || !localResult.blockingGaps?.includes('cold_build_execution_isolation_unproven')
     || localResult.blockingGaps?.includes('runtime_profile_contract_missing')
     || !localResult.blockingGaps?.includes('same_process_loader_unproven')
     || !localResult.blockingGaps?.includes('dispatch_trace_unproven')
@@ -7980,6 +8976,165 @@ async function selfCheck() {
     || localResult.gpuHmrSuccess !== false
   ) {
     throw new Error('random large-project cold-path local git source intake self-check failed');
+  }
+  let escapedColdBuildCwdRejected = false;
+  try {
+    normalizeColdBuildCommandSpec({
+      command: process.execPath,
+      args: ['--version'],
+      cwd: '../outside-source',
+    });
+  } catch {
+    escapedColdBuildCwdRejected = true;
+  }
+  if (!escapedColdBuildCwdRejected) {
+    throw new Error('random large-project cold-build escaped cwd self-check failed');
+  }
+  const localUrlCandidate = directCandidateFromInput({
+    sourceUrl: pathToFileURL(localRepoPath).href,
+    immutableCommit: localCommit.toUpperCase(),
+    sourceId: 'local-url-materialization',
+    inputChannels: ['self_check_source_url', 'self_check_commit'],
+  });
+  const localUrlIntake = await runUnprofiledSourceIntake(localUrlCandidate, {
+    sourceIntakeTimeoutMs: 30000,
+    materializeWorktree: true,
+  });
+  const localUrlMaterializedPath =
+    localUrlIntake.transportEvidence?.resolvedLocalPath;
+  const localUrlMaterializedHead = await runProcess(
+    'git',
+    ['-C', localUrlMaterializedPath, 'rev-parse', 'HEAD'],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: 30000,
+      streamOutput: false,
+    },
+  );
+  if (
+    localUrlCandidate.immutableCommit !== localCommit
+    || localUrlIntake.acceptedAsIntakeEvidence !== true
+    || localUrlIntake.transport !== 'git_fetch_depth_1_full_tree'
+    || localUrlIntake.transportEvidence?.buildWorktreeMaterialized !== true
+    || localUrlIntake.transportEvidence?.worktreeMaterialization?.accepted !== true
+    || !localUrlMaterializedPath
+    || path.resolve(localUrlMaterializedPath) === path.resolve(localRepoPath)
+    || localUrlMaterializedHead.exitCode !== 0
+    || localUrlMaterializedHead.stdout.trim().toLowerCase() !== localCommit
+  ) {
+    throw new Error('random large-project cold-build URL materialization self-check failed');
+  }
+  const failedColdBuildObservation = await runExplicitColdBuildCommand(
+    localCandidate,
+    localResult.sourceIntakeEvidence,
+    normalizeColdBuildCommandSpec({
+      command: process.execPath,
+      args: ['-e', 'process.exit(7)'],
+      cwd: '.',
+      timeoutMs: 30000,
+      executionTransport: 'self_check_host_process',
+    }, {
+      allowSelfCheckHostProcess: true,
+    }),
+  );
+  if (
+    failedColdBuildObservation?.schemaVersion !== COLD_BUILD_EXECUTION_OBSERVATION_SCHEMA
+    || failedColdBuildObservation?.observedBuildExecution !== true
+    || failedColdBuildObservation?.accepted !== false
+    || failedColdBuildObservation?.processObservation?.exitCode !== 7
+    || !failedColdBuildObservation?.blockingGaps
+      ?.includes('cold_build_command_execution_failed')
+    || failedColdBuildObservation?.acceptedForGpuHmr !== false
+    || failedColdBuildObservation?.gpuHmrSuccess !== false
+  ) {
+    throw new Error('random large-project cold-build nonzero exit self-check failed');
+  }
+  const timedOutColdBuildObservation = await runExplicitColdBuildCommand(
+    localCandidate,
+    localResult.sourceIntakeEvidence,
+    normalizeColdBuildCommandSpec({
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 5000)'],
+      cwd: '.',
+      timeoutMs: 1000,
+      executionTransport: 'self_check_host_process',
+    }, {
+      allowSelfCheckHostProcess: true,
+    }),
+  );
+  if (
+    timedOutColdBuildObservation?.observedBuildExecution !== true
+    || timedOutColdBuildObservation?.accepted !== false
+    || timedOutColdBuildObservation?.processObservation?.timedOut !== true
+    || !timedOutColdBuildObservation?.blockingGaps
+      ?.includes('cold_build_command_execution_timed_out')
+  ) {
+    throw new Error('random large-project cold-build timeout self-check failed');
+  }
+  const mutatedColdBuildObservation = await runExplicitColdBuildCommand(
+    localCandidate,
+    localResult.sourceIntakeEvidence,
+    normalizeColdBuildCommandSpec({
+      command: process.execPath,
+      args: [
+        '-e',
+        'require("node:fs").writeFileSync("kernels/example.hip", "mutated\\n")',
+      ],
+      cwd: '.',
+      timeoutMs: 30000,
+      executionTransport: 'self_check_host_process',
+    }, {
+      allowSelfCheckHostProcess: true,
+    }),
+  );
+  if (
+    mutatedColdBuildObservation?.observedBuildExecution !== true
+    || mutatedColdBuildObservation?.accepted !== false
+    || mutatedColdBuildObservation?.sourceWorktreeCleanAfter !== false
+    || !mutatedColdBuildObservation?.blockingGaps
+      ?.includes('cold_build_command_source_worktree_changed')
+  ) {
+    throw new Error('random large-project cold-build tracked source mutation self-check failed');
+  }
+  const materializedLocalRepoPath =
+    localResult.sourceIntakeEvidence?.transportEvidence?.resolvedLocalPath;
+  const restoreMaterializedSource = await runProcess(
+    'git',
+    ['-C', materializedLocalRepoPath, 'reset', '--hard', localCommit],
+    {
+      cwd: REPO_ROOT,
+      timeoutMs: 30000,
+      streamOutput: false,
+    },
+  );
+  if (
+    restoreMaterializedSource.exitCode !== 0
+    || restoreMaterializedSource.timedOut
+    || restoreMaterializedSource.error
+  ) {
+    throw new Error('random large-project cold-build source restore self-check failed');
+  }
+  const dirtyMarkerPath = path.join(
+    materializedLocalRepoPath,
+    'untracked-cold-build-marker.txt',
+  );
+  await writeFile(dirtyMarkerPath, 'dirty source must fail closed\n', 'utf8');
+  try {
+    const dirtyColdBuildObservation = await runExplicitColdBuildCommand(
+      localCandidate,
+      localResult.sourceIntakeEvidence,
+      localColdBuildCommandSpec,
+    );
+    if (
+      dirtyColdBuildObservation?.accepted !== false
+      || dirtyColdBuildObservation?.observedBuildExecution !== false
+      || !dirtyColdBuildObservation?.blockingGaps
+        ?.includes('cold_build_command_source_worktree_dirty_before_execution')
+    ) {
+      throw new Error('random large-project cold-build dirty source self-check failed');
+    }
+  } finally {
+    await rm(dirtyMarkerPath, { force: true });
   }
   const previousSourceListingStdoutMax = process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES;
   process.env.SYNTHI_GPU_HMR_SOURCE_LISTING_STDOUT_MAX_BYTES = '64';
@@ -8247,6 +9402,7 @@ async function main() {
     process.env.SYNTHI_GPU_HMR_UNPROFILED_SOURCE_INTAKE_TIMEOUT_MS
       ?? Math.max(timeoutMs, 120000),
   );
+  const coldBuildCommandSpec = coldBuildCommandSpecFromArgsEnv(args);
   const requireDirectSource = directSourceRequired(args);
   const directCandidate = directCandidateFromInput({
     sourceUrl: args.sourceUrl ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_SOURCE_URL,
@@ -8257,6 +9413,7 @@ async function main() {
     runtimeProofProfilePath:
       args.runtimeProofProfilePath
       ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_RUNTIME_PROFILE_PATH,
+    coldBuildCommand: coldBuildCommandSpec,
     inputChannels: directInputChannelsFromArgsEnv(args),
   });
   const directCandidates = directCandidate ? [] : await loadDirectCandidates({
@@ -8264,6 +9421,11 @@ async function main() {
     candidatesPath: args.directCandidatesPath
       ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_DIRECT_CANDIDATES_PATH,
   });
+  if (coldBuildCommandSpec && !directCandidate && directCandidates.length === 0) {
+    throw new Error(
+      'an explicit cold build command requires direct --source-url/--repo-path input or a direct-candidates manifest',
+    );
+  }
   const useConfiguredCandidatePool = !directCandidate && directCandidates.length === 0;
   assertConfiguredSamplePoolExplicit({
     useConfiguredCandidatePool,
@@ -8305,6 +9467,7 @@ async function main() {
     sourceMode,
     requireDirectSource,
     samplePool: samplePoolModeRequested(args),
+    coldBuildCommandSpec,
     outputDir: path.resolve(args.outputDir ?? process.env.SYNTHI_GPU_HMR_LARGE_PROJECT_COLD_OUTPUT_DIR ?? LOG_DIR),
   });
   console.log(JSON.stringify({
