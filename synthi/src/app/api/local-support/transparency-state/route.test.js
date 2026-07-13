@@ -269,9 +269,14 @@ describe("local support transparency state route", () => {
       ports: [
         expect.objectContaining({
           port: 5173,
-          aiRead: true,
-          supportRead: true,
-          responseBodies: true,
+          aiRead: false,
+          supportRead: false,
+          responseBodies: false,
+          aiInteract: false,
+          screenshots: false,
+          consoleNetwork: false,
+          persistent: false,
+          methods: "GET, HEAD only",
           token_state: "present_hidden_from_renderer",
         }),
       ],
