@@ -58,14 +58,21 @@ export async function storeApprovedRelayPayload(input, client = prisma, now = ne
   });
 }
 
-export async function takeApprovedRelayPayload(requestId, accountId, client = prisma, now = new Date()) {
+export async function takeApprovedRelayPayload(
+  requestId,
+  accountId,
+  sessionId,
+  workspaceId,
+  client = prisma,
+  now = new Date(),
+) {
   return client.$transaction(async (tx) => {
     await tx.localSupportRelayPayload.deleteMany({ where: { expiresAt: { lte: now } } });
     const payload = await tx.localSupportRelayPayload.findFirst({
       where: {
         requestId,
         expiresAt: { gt: now },
-        request: { accountId, status: "sent" },
+        request: { accountId, sessionId, workspaceId, status: "sent" },
       },
       include: { request: true },
     });

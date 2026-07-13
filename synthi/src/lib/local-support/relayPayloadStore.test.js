@@ -68,7 +68,7 @@ describe("one-time encrypted relay payload store", () => {
     expect(JSON.stringify(tx.localSupportCloudAudit.create.mock.calls[0][0].data)).not.toContain(content);
   });
 
-  it("decrypts once for the bound account and deletes before returning", async () => {
+  it("decrypts once for the bound account, session, and workspace", async () => {
     const { tx, client } = fakeClient();
     const content = "approved redacted content";
     await storeApprovedRelayPayload({
@@ -83,7 +83,27 @@ describe("one-time encrypted relay payload store", () => {
     const stored = tx.localSupportRelayPayload.create.mock.calls[0][0].data;
     tx.localSupportRelayPayload.findFirst.mockResolvedValue({ ...stored, request });
 
-    const result = await takeApprovedRelayPayload(request.requestId, request.accountId, client, NOW);
+    const result = await takeApprovedRelayPayload(
+      request.requestId,
+      request.accountId,
+      request.sessionId,
+      request.workspaceId,
+      client,
+      NOW,
+    );
+
+    expect(tx.localSupportRelayPayload.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        requestId: request.requestId,
+        request: {
+          accountId: request.accountId,
+          sessionId: request.sessionId,
+          workspaceId: request.workspaceId,
+          status: "sent",
+        },
+      }),
+      include: { request: true },
+    });
 
     expect(result).toMatchObject({ content, bytes_sent: Buffer.byteLength(content) });
     expect(tx.localSupportRelayPayload.delete).toHaveBeenCalledWith({ where: { requestId: request.requestId } });

@@ -19,14 +19,23 @@ export async function POST(req) {
   const parsed = await readBoundedJson(req, 4 * 1024);
   if (!parsed.ok) return jsonNoStore(denied(parsed.reason), parsed.status);
   const body = parsed.value;
-  if (Object.keys(body).some((key) => key !== "request_id")
+  if (Object.keys(body).some((key) => !["request_id", "session_id", "workspace_id"].includes(key))
     || typeof body.request_id !== "string"
-    || !/^[A-Za-z0-9_-]{8,128}$/.test(body.request_id)) {
+    || !/^req_[A-Za-z0-9_-]{8,120}$/.test(body.request_id)
+    || typeof body.session_id !== "string"
+    || !/^sess_[A-Za-z0-9_-]{8,120}$/.test(body.session_id)
+    || typeof body.workspace_id !== "string"
+    || !/^[A-Za-z0-9._:-]{3,128}$/.test(body.workspace_id)) {
     return jsonNoStore(denied("invalid_payload_request"), 400);
   }
 
   try {
-    const payload = await takeApprovedRelayPayload(body.request_id, accountId);
+    const payload = await takeApprovedRelayPayload(
+      body.request_id,
+      accountId,
+      body.session_id,
+      body.workspace_id,
+    );
     if (!payload) return jsonNoStore(denied("payload_not_available"), 404);
     return jsonNoStore({ decision: "payload_delivered", ...payload, raw_body_included: true });
   } catch {

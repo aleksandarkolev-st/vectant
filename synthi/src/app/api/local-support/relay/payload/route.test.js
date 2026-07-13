@@ -26,11 +26,20 @@ describe("one-time support payload retrieval", () => {
       scanner_version: "scanner-1",
     });
 
-    const response = await POST(request({ request_id: "req_12345678" }));
+    const response = await POST(request({
+      request_id: "req_12345678",
+      session_id: "sess_12345678",
+      workspace_id: "wk_12345678",
+    }));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(mocks.take).toHaveBeenCalledWith("req_12345678", "acct_123");
+    expect(mocks.take).toHaveBeenCalledWith(
+      "req_12345678",
+      "acct_123",
+      "sess_12345678",
+      "wk_12345678",
+    );
     await expect(response.json()).resolves.toMatchObject({
       decision: "payload_delivered",
       content: "approved redacted content",
@@ -42,12 +51,25 @@ describe("one-time support payload retrieval", () => {
     expect((await POST(request({ request_id: "req_12345678" }, "https://evil.example"))).status).toBe(403);
 
     mocks.session.mockResolvedValueOnce(null);
-    expect((await POST(request({ request_id: "req_12345678" }))).status).toBe(401);
+    expect((await POST(request({
+      request_id: "req_12345678",
+      session_id: "sess_12345678",
+      workspace_id: "wk_12345678",
+    }))).status).toBe(401);
 
     mocks.session.mockResolvedValue({ user: { id: "acct_123" } });
-    expect((await POST(request({ request_id: "req_12345678", include_raw_log: true }))).status).toBe(400);
+    expect((await POST(request({
+      request_id: "req_12345678",
+      session_id: "sess_12345678",
+      workspace_id: "wk_12345678",
+      include_raw_log: true,
+    }))).status).toBe(400);
 
     mocks.take.mockResolvedValueOnce(null);
-    expect((await POST(request({ request_id: "req_12345678" }))).status).toBe(404);
+    expect((await POST(request({
+      request_id: "req_12345678",
+      session_id: "sess_12345678",
+      workspace_id: "wk_12345678",
+    }))).status).toBe(404);
   });
 });
