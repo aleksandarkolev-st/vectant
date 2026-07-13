@@ -4,6 +4,7 @@ import { buildAdminRevokeDecision } from "@/lib/local-support/controlPlane";
 const REVOCABLE_RELAY_STATUSES = ["queued", "leased", "review_pending"];
 
 export async function readDurableAdminState(client = prisma) {
+  const now = new Date();
   const [sessions, alerts] = await Promise.all([
     client.localSupportSession.findMany({
       orderBy: { createdAt: "desc" },
@@ -17,6 +18,8 @@ export async function readDurableAdminState(client = prisma) {
   ]);
   const deviceMap = new Map();
   for (const session of sessions) {
+    const active = isActiveSession(session, now);
+    const approvedPortsCount = active ? countApprovedPorts(session.approvedPortsJson) : 0;
     const current = deviceMap.get(session.deviceFingerprint) || {
       device_id: session.deviceFingerprint,
       account_id: session.accountId,
@@ -28,8 +31,9 @@ export async function readDurableAdminState(client = prisma) {
       approved_ports_count: 0,
       revoked: true,
     };
-    if (session.status === "active" && !session.revokedAt && session.expiresAt > new Date()) {
+    if (active) {
       current.active_sessions += 1;
+      current.approved_ports_count += approvedPortsCount;
       current.revoked = false;
     }
     deviceMap.set(session.deviceFingerprint, current);
@@ -44,12 +48,14 @@ export async function readDurableAdminState(client = prisma) {
       workspace_id: session.workspaceId,
       app_version: session.appVersion,
       policy_version: session.policyVersion,
-      approved_ports_count: 0,
+      approved_ports_count: isActiveSession(session, now)
+        ? countApprovedPorts(session.approvedPortsJson)
+        : 0,
       last_active_at: (session.lastDeviceProofAt || session.updatedAt).toISOString(),
-      revoked: session.status === "revoked" || Boolean(session.revokedAt),
+      revoked: !isActiveSession(session, now),
     })),
     revoked_sessions: sessions
-      .filter((session) => session.status === "revoked" || session.revokedAt)
+      .filter((session) => !isActiveSession(session, now))
       .map((session) => session.sessionId),
     revoked_devices: [...deviceMap.values()]
       .filter((device) => device.revoked)
@@ -68,6 +74,21 @@ export async function readDurableAdminState(client = prisma) {
       at: alert.createdAt.toISOString(),
     })),
   };
+}
+
+function isActiveSession(session, now) {
+  return session.status === "active"
+    && !session.revokedAt
+    && session.expiresAt > now;
+}
+
+function countApprovedPorts(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export async function recordDurableAdminRevocation(input, policy, client = prisma, now = new Date()) {

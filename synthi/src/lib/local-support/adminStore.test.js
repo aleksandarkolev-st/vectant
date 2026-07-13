@@ -17,6 +17,10 @@ const session = {
   lastDeviceProofAt: now,
   updatedAt: now,
   createdAt: now,
+  approvedPortsJson: JSON.stringify([{
+    port: 3000,
+    preview_host: "br-local-p3000.vectant-preview.dev",
+  }]),
 };
 const policy = { enabled: true, policy_version: "policy-1" };
 
@@ -43,9 +47,14 @@ describe("durable local support admin state", () => {
       device_id: session.deviceFingerprint,
       app_version: "0.1.0",
       active_sessions: 1,
+      approved_ports_count: 1,
       revoked: false,
     })]);
-    expect(state.sessions).toEqual([expect.objectContaining({ session_id: session.sessionId, revoked: false })]);
+    expect(state.sessions).toEqual([expect.objectContaining({
+      session_id: session.sessionId,
+      approved_ports_count: 1,
+      revoked: false,
+    })]);
     expect(state.alerts).toEqual([expect.objectContaining({
       event_type: "denied_secret_request",
       severity: "critical",
