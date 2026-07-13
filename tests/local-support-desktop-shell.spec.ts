@@ -11,8 +11,8 @@ test.describe("local support desktop shell", () => {
     await page.goto(desktopShellUrl);
 
     await expect(page.getByRole("heading", { name: "Vectant Local Support" })).toBeVisible();
-    await expect(page.getByText("You control what Vectant can see.")).toBeVisible();
-    await expect(page.getByText("Sensitive files stay blocked locally.")).toBeVisible();
+    await expect(page.getByText("Local enforcement state")).toBeVisible();
+    await expect(page.getByText("Workspace scope, pairing state, approvals, and port grants are controlled here.")).toBeVisible();
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
     await expect(page.getByText("No workspace selected")).toBeVisible();
     await expect(page.getByText("Policy check unavailable")).toBeVisible();
@@ -28,9 +28,9 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByLabel("One-time code")).toBeFocused();
     await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
 
-    await page.getByRole("tab", { name: "Overview", exact: true }).focus();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).focus();
     await page.keyboard.press("ArrowRight");
-    await expect(page.getByRole("tab", { name: "First run", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Bootstrap", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByText("Set up Local Support")).toBeVisible();
     await expect(page.getByText("Enter the browser code")).toBeVisible();
     await expect(page.getByText("Choose one workspace", { exact: true })).toBeVisible();
@@ -57,7 +57,7 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Delete local history" })).toBeDisabled();
 
-    await page.getByRole("tab", { name: "Overview", exact: true }).click();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
   });
 
@@ -263,7 +263,7 @@ test.describe("local support desktop shell", () => {
     await page.getByRole("button", { name: "Choose workspace" }).click();
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("Workspace selected locally. No files were sent.")).toBeVisible();
-    await page.getByRole("tab", { name: "Overview", exact: true }).click();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
     await page.getByRole("button", { name: "Pair session" }).click();
     await page.getByLabel("One-time code").fill("ABCD2345WXYZ");
     await page.getByRole("button", { name: "Check code" }).click();
@@ -273,10 +273,10 @@ test.describe("local support desktop shell", () => {
     await page.getByRole("button", { name: "Confirm fingerprint" }).click();
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("Pairing fingerprint confirmed locally.")).toBeVisible();
-    await page.getByRole("tab", { name: "Overview", exact: true }).click();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
     await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
 
-    await page.getByRole("tab", { name: "First run", exact: true }).click();
+    await page.getByRole("tab", { name: "Bootstrap", exact: true }).click();
     await expect(page.getByText("Live sanitized state")).toBeVisible();
     await expect(page.getByText("Workspace wk_selected is selected for this support session only.")).toBeVisible();
     await expect(page.getByText("Sanitized IPC reports account acct_demo and device sha256:1111111111111111.")).toBeVisible();
@@ -313,7 +313,7 @@ test.describe("local support desktop shell", () => {
     await page.getByRole("button", { name: "Export scrubbed history" }).click();
     await expect(page.getByText("Exported scrubbed history locally.")).toBeVisible();
 
-    await page.getByRole("tab", { name: "Overview", exact: true }).click();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
     await page.getByRole("button", { name: "Pause" }).click();
     await expect(page.getByText("Paused", { exact: true })).toBeVisible();
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
@@ -450,7 +450,7 @@ test.describe("local support desktop shell", () => {
     });
 
     await page.goto(desktopShellUrl);
-    await page.getByRole("tab", { name: "First run", exact: true }).click();
+    await page.getByRole("tab", { name: "Bootstrap", exact: true }).click();
 
     await expect(page.getByText("Workspace vectant-app is selected for this support session only.")).toBeVisible();
     await expect(page.getByText("C:\\Users\\private\\vectant-app")).toHaveCount(0);
