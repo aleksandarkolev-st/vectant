@@ -82,6 +82,7 @@ Supply-chain evidence: `npm audit --workspace synthi --omit=dev --audit-level=hi
 ### Packaging and updater
 
 - Tauri produces MSI and NSIS bundles with the declared Windows icon set.
+- Relay approvals are rechecked immediately before upload against the live unpaused session, selected workspace/device context, current app version, and an available non-blocking cloud policy; a pause, revocation, policy outage, or context change fails closed with zero bytes sent.
 - `tauri-plugin-updater` is registered in Rust. Check/install are narrow native IPC commands; install requires native confirmation, rechecks the candidate, relies on Tauri signature verification and downgrade protection, and requires an available cloud policy whose minimum-version and vulnerable-version rules allow the candidate before installing and restarting.
 - The independent package verifier binds Ed25519-signed metadata to channel, version policy, emergency revocation, and exact artifact SHA-256 bytes.
 - `.github/workflows/local-support-release.yml` requires the protected signing environment, builds updater artifacts, Authenticode-signs installers, verifies them, generates checksums/SBOM, removes the ephemeral certificate, smoke-tests signed install/uninstall, and re-verifies on a clean runner.

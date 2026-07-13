@@ -1127,6 +1127,33 @@ async fn release_relay_approval(
     approval_id: &str,
     pending: &PendingRelayApproval,
 ) -> Result<(), String> {
+    let (session_active, live_session) = {
+        let session = state.session.lock().await;
+        (session.is_active(), session.state())
+    };
+    let policy = runtime
+        .pairing_client
+        .policy()
+        .await
+        .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+    if !relay_release_context_allowed(
+        session_active,
+        &live_session,
+        state.workspace.workspace_id(),
+        &pending.delivery,
+        &policy,
+    ) {
+        return Err(
+            "The support session or cloud policy changed before release. Nothing was sent."
+                .to_string(),
+        );
+    }
+    *runtime
+        .cloud_policy
+        .write()
+        .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
+    apply_policy_to_local_state(state, &policy).await?;
+
     let queued_request = state
         .approvals
         .lock()
@@ -1200,6 +1227,27 @@ async fn release_relay_approval(
     Ok(())
 }
 
+fn relay_release_context_allowed(
+    session_active: bool,
+    session: &vectant_local_support_app::session::SessionState,
+    workspace_id: &str,
+    delivery: &RelayDelivery,
+    policy: &DesktopPolicyStatus,
+) -> bool {
+    session_active
+        && !session.paused
+        && policy.enabled
+        && !policy.update_required
+        && policy.update_version_allowed(env!("CARGO_PKG_VERSION"))
+        && delivery.session_id == session.session_id
+        && delivery.account_id == session.account_id
+        && delivery.org_id == session.org_id
+        && delivery.workspace_id == session.workspace_id
+        && delivery.workspace_id == workspace_id
+        && delivery.device_fingerprint == session.device_fingerprint
+        && delivery.app_version == env!("CARGO_PKG_VERSION")
+}
+
 fn disconnected_state_for_workspace(
     workspace: PathBuf,
     workspace_id: String,
@@ -1245,7 +1293,63 @@ fn app_data_root() -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_private_target;
+    use super::{
+        relay_release_context_allowed, validate_private_target, DesktopPolicyStatus, RelayDelivery,
+    };
+    use vectant_local_support_app::session::SessionState;
+
+    fn release_policy() -> DesktopPolicyStatus {
+        DesktopPolicyStatus {
+            available: true,
+            enabled: true,
+            pairing_disabled: false,
+            preview_disabled: false,
+            agent_access_disabled: true,
+            update_required: false,
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            minimum_version: env!("CARGO_PKG_VERSION").to_string(),
+            vulnerable_versions: Vec::new(),
+            retention_days: 30,
+            reason: "policy_current".to_string(),
+            user_visible_message: "ok".to_string(),
+        }
+    }
+
+    fn release_session() -> SessionState {
+        SessionState {
+            session_id: "sess_12345678".to_string(),
+            account_id: "acct_123".to_string(),
+            org_id: "org_123".to_string(),
+            workspace_id: "wk_123".to_string(),
+            device_fingerprint: "sha256:1111111111111111".to_string(),
+            paused: false,
+            protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION.to_string(),
+            permission_mode: "Balanced mode".to_string(),
+            fast_support_remaining_seconds: 0,
+        }
+    }
+
+    fn release_delivery() -> RelayDelivery {
+        RelayDelivery {
+            request_id: "req_12345678".to_string(),
+            session_id: "sess_12345678".to_string(),
+            account_id: "acct_123".to_string(),
+            org_id: "org_123".to_string(),
+            workspace_id: "wk_123".to_string(),
+            device_fingerprint: "sha256:1111111111111111".to_string(),
+            actor: "support_agent".to_string(),
+            capability: "workspace.log.read".to_string(),
+            target_display: "logs/server.log".to_string(),
+            target_classification: "L3".to_string(),
+            scanner_version: "scanner-1".to_string(),
+            policy_version: vectant_local_support_app::POLICY_VERSION.to_string(),
+            protocol_version: vectant_local_support_app::APP_PROTOCOL_VERSION.to_string(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            expires_at: "2030-01-01T00:01:00Z".to_string(),
+            lease_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            signature: "signature".to_string(),
+        }
+    }
 
     #[test]
     fn preview_target_validation_accepts_only_loopback() {
@@ -1254,5 +1358,38 @@ mod tests {
         assert!(validate_private_target("10.0.0.5").is_err());
         assert!(validate_private_target("192.168.1.10").is_err());
         assert!(validate_private_target("169.254.169.254").is_err());
+    }
+
+    #[test]
+    fn relay_release_requires_live_unpaused_matching_policy_context() {
+        let session = release_session();
+        let delivery = release_delivery();
+        let policy = release_policy();
+        assert!(relay_release_context_allowed(
+            true, &session, "wk_123", &delivery, &policy
+        ));
+        assert!(!relay_release_context_allowed(
+            false, &session, "wk_123", &delivery, &policy
+        ));
+        let mut paused = session.clone();
+        paused.paused = true;
+        assert!(!relay_release_context_allowed(
+            true, &paused, "wk_123", &delivery, &policy
+        ));
+        assert!(!relay_release_context_allowed(
+            true, &session, "wk_other", &delivery, &policy
+        ));
+        assert!(!relay_release_context_allowed(
+            true,
+            &session,
+            "wk_123",
+            &delivery,
+            &DesktopPolicyStatus::unavailable(),
+        ));
+        let mut disabled = policy;
+        disabled.enabled = false;
+        assert!(!relay_release_context_allowed(
+            true, &session, "wk_123", &delivery, &disabled,
+        ));
     }
 }
