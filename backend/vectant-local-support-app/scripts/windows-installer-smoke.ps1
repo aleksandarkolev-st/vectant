@@ -42,7 +42,24 @@ try {
   } while (-not $listener -and (Get-Date) -lt $deadline)
   if (-not $listener) { throw "The installed Local Support app opened no loopback-only listener." }
 
+  $health = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$($listener.LocalPort)/health" -TimeoutSec 5
+  $healthBody = $health.Content | ConvertFrom-Json
+  if ($health.StatusCode -ne 200 -or $healthBody.ok -ne $true -or $healthBody.service -ne "vectant-local-support-app") {
+    throw "The installed Local Support health response was invalid."
+  }
+  $statusAccepted = $false
+  $statusCode = $null
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$($listener.LocalPort)/v1/status/installer-smoke" -TimeoutSec 5 | Out-Null
+    $statusAccepted = $true
+  } catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+  }
+  if ($statusAccepted) { throw "The installed Local Support status endpoint accepted an unprotected request." }
+  if ($statusCode -notin @(401, 403)) { throw "The installed Local Support status boundary returned $statusCode instead of 401/403." }
+
   Write-Output "Installed app launched with loopback listener $($listener.LocalAddress):$($listener.LocalPort)."
+  Write-Output "Installed app health and protected status boundary checks passed."
   Stop-Process -Id $appProcess.Id -Force
   $appProcess = $null
 

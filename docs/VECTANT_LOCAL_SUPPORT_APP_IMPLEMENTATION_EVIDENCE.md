@@ -96,7 +96,7 @@ cd ../../..
 
 Verified locally: MSI and NSIS were produced; NSIS installed into a unique temporary directory; the installed executable opened only a random `127.0.0.1` listener; silent uninstall removed the executable and left no Local Support process.
 
-Re-verified on 2026-07-13 after the updater/package changes with `cargo tauri build --no-sign --bundles nsis` followed by `scripts/windows-installer-smoke.ps1`: the unsigned NSIS installer launched, exposed only a random loopback listener, and uninstalled cleanly. This is packaging evidence only; it is not Authenticode, updater-signature, or production installer evidence.
+Re-verified on 2026-07-13 after the updater/package changes with a Tauri NSIS build followed by `scripts/windows-installer-smoke.ps1`: the installed executable opened only a random loopback listener, returned a valid `/health` response, rejected an unprotected `/v1/status` request, and uninstalled cleanly. This is installed daemon-boundary evidence only; it is not Authenticode, production updater-key, or staging cloud evidence.
 
 ## Public-beta gates requiring external evidence
 
