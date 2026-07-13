@@ -102,13 +102,16 @@ function normalizeSyncedPorts(value) {
       preview_host: port.preview_host,
       process_identity_hash: port.process_identity_hash,
       browser_preview_allowed: port.browser_preview_allowed === true,
-      agent_read_allowed: port.agent_read_allowed === true,
-      support_agent_read_allowed: port.support_agent_read_allowed === true,
-      agent_interact_allowed: port.agent_interact_allowed === true,
-      send_response_body_allowed: port.send_response_body_allowed === true,
-      send_screenshot_allowed: port.send_screenshot_allowed === true,
-      send_console_errors_allowed: port.send_console_errors_allowed === true,
-      state_changing_methods_allowed: port.state_changing_methods_allowed === true,
+      // The current product contract is browser-preview-only. These fields
+      // remain in the schema for forward compatibility, but cloud state must
+      // never elevate a port from a device-supplied boolean.
+      agent_read_allowed: false,
+      support_agent_read_allowed: false,
+      agent_interact_allowed: false,
+      send_response_body_allowed: false,
+      send_screenshot_allowed: false,
+      send_console_errors_allowed: false,
+      state_changing_methods_allowed: false,
       expires_at: port.expires_at,
       persistent: false,
     };
