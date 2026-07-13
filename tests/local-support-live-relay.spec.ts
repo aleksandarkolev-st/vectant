@@ -13,7 +13,7 @@ import {
 } from '../synthi/src/lib/local-support/controlPlane.js';
 
 const enabled = process.env.LOCAL_SUPPORT_LIVE_RELAY_E2E === '1';
-const baseUrl = process.env.VECTANT_TEST_BASE_URL || 'http://localhost:3100';
+const baseUrl = process.env.VECTANT_TEST_BASE_URL;
 const adminToken = process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN || '';
 const envelopeSecret = process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET || '';
 const deviceProofSecret = process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET || '';
@@ -28,6 +28,7 @@ const orgId = `org_live_relay_${runId}`;
 const workspaceId = `wk_live_relay_${runId}`;
 
 test.skip(!enabled, 'Set LOCAL_SUPPORT_LIVE_RELAY_E2E=1 to run the live Rust relay probe.');
+if (enabled && !baseUrl) throw new Error('VECTANT_TEST_BASE_URL is required for live relay E2E.');
 
 test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud state', async ({ page }) => {
   expect(Buffer.from(relayPayloadKey, 'base64')).toHaveLength(32);

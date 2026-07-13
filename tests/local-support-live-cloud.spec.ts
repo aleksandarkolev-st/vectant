@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test';
 
 const enabled = process.env.LOCAL_SUPPORT_LIVE_CLOUD_E2E === '1';
-const baseUrl = process.env.VECTANT_TEST_BASE_URL || 'http://localhost:3100';
+const baseUrl = process.env.VECTANT_TEST_BASE_URL;
 const adminToken = process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN || '';
 
 test.skip(!enabled, 'Set LOCAL_SUPPORT_LIVE_CLOUD_E2E=1 to run against a live Next/PostgreSQL stack.');
+if (enabled && !baseUrl) throw new Error('VECTANT_TEST_BASE_URL is required for live cloud E2E.');
 
 test('browser reaches the real cloud policy route and durable admin controls', async ({ page }) => {
   await page.goto(`${baseUrl}/local-support`, { waitUntil: 'domcontentloaded' });

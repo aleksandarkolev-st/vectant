@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-const baseURL = process.env.VECTANT_TEST_BASE_URL || "http://127.0.0.1:3000";
+const baseURL = process.env.VECTANT_TEST_BASE_URL;
+if (!baseURL) throw new Error("VECTANT_TEST_BASE_URL is required for Local Support browser tests.");
 
 test("operators load live state, update policy, and revoke a session", async ({ page }) => {
   const requests: Array<Record<string, unknown>> = [];
