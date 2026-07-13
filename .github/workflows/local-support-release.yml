@@ -55,8 +55,8 @@ jobs:
           if (-not $config.bundle.createUpdaterArtifacts -or -not $config.plugins.updater.active) {
             throw "The checked-in desktop configuration must keep signed updater support active."
           }
-          if ($config.plugins.updater.pubkey -match '^0+$') {
-            Write-Warning "Checked-in updater key is a non-production sentinel; the protected release override must replace it."
+          if ($env:UPDATER_PUBLIC_KEY -match '^0+$' -or $env:UPDATER_PUBLIC_KEY.Length -lt 32) {
+            throw "Protected updater public key is missing or is the non-production sentinel."
           }
 
       - name: Install Rust
