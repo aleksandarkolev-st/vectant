@@ -45,7 +45,7 @@ npx prisma validate --schema synthi/prisma/schema.prisma
 npm run test --workspace synthi -- src/lib/local-support src/app/api/local-support
 ```
 
-The focused CI command in `.github/workflows/local-support-security.yml` is authoritative for the selected cloud suite. Verified locally: 122 tests across 21 focused files. On 2026-07-13, the full Prisma schema was validated and all 25 migrations were applied successfully to a clean local PostgreSQL 16 container, then the container was removed. This proves migration compatibility, not staging deployment identity or production data safety.
+The focused CI command in `.github/workflows/local-support-security.yml` is authoritative for the selected cloud suite. Verified locally during the current audit: 141 tests passed across 26 focused files, with one explicitly skipped test. On 2026-07-13, the full Prisma schema was validated and all 25 migrations were applied successfully to a clean local PostgreSQL 16 container, then the container was removed. This proves migration compatibility, not staging deployment identity or production data safety.
 
 CI now includes a PostgreSQL service job that runs `prisma validate` and `prisma migrate deploy` against a clean database. It proves migration application in CI; it does not substitute for the intended staging deployment or browser-to-cloud-to-desktop proof.
 
@@ -74,7 +74,9 @@ $env:VECTANT_TEST_BASE_URL='http://127.0.0.1:3000'
 npx playwright test tests/local-support-transparency.spec.ts tests/local-support-admin.spec.ts --project=chromium
 ```
 
-Verified locally against a real production Next server: 5 web Chromium flows. Desktop and web totals: 11 Chromium flows.
+Verified locally during the current audit: 16/16 Chromium tests passed across transparency, admin, desktop-shell, and live-daemon specs against a freshly started server whose listener was verified to belong to this workspace; the server log contained no `EADDRINUSE`. The production Next build also completed successfully. This is local runtime evidence, not authenticated staging deployment evidence.
+
+Supply-chain evidence: `npm audit --workspace synthi --omit=dev --audit-level=high` completed successfully, while reporting 53 moderate/low advisories in the broader dependency tree. `cargo audit --manifest-path backend/vectant-local-support-app/Cargo.toml --deny warnings` could not run because `cargo-audit` is not installed on the local validation host; the CI workflow still declares that gate.
 
 ### Packaging and updater
 

@@ -7,7 +7,7 @@ Status baseline: current implementation is approximately 44% complete. Treat the
 Verified in the current worktree:
 
 - Native backend, desktop, local-support web/API, Chromium desktop, and Chromium live-daemon gates pass for the exercised scenarios.
-- Native clippy gates, the production Next build, and the focused web test gate pass; Chromium Local Support UI/runtime coverage passes 15/15.
+- Native clippy gates, the production Next build, and the focused web test gate pass; Chromium Local Support UI/runtime coverage passes 16/16 against a freshly started, workspace-owned server.
 - Preview enforcement is loopback-only across native IPC, the Rust gateway, cloud port persistence, relay control, and transparency projections. Agent reads, interaction, response bodies, screenshots, console data, state-changing methods, and persistent approvals remain disabled.
 - Local sent-history projections now carry the recorded relay byte count and redaction count instead of placeholder zeroes.
 - The Windows NSIS installer was built and passed install, loopback health/protected-status, and uninstall smoke checks locally.
@@ -19,6 +19,7 @@ Still unverified or blocked:
 - The local release build cannot produce a signed updater artifact without `TAURI_SIGNING_PRIVATE_KEY`; the generated installer was `NotSigned`.
 - Production certificate signing, updater tamper/downgrade/revocation verification, and release-branch controls require their configured CI secrets/infrastructure.
 - Full repository tests are not a Local Support release proof; unrelated existing failures remain outside this feature’s focused gates.
+- The local npm production-dependency audit passes its configured high-severity threshold but reports moderate/low advisories in the broader Monaco/Next/Auth dependency tree; `cargo audit` was unavailable on the local validation host and remains a CI-only check until the tool is installed locally.
 
 ## MVP Blockers
 
