@@ -2556,6 +2556,8 @@ Before beta:
 - update signing keys stored in hardened environment;
 - emergency signing key rotation playbook.
 
+Operational procedures are maintained in [`docs/VECTANT_LOCAL_SUPPORT_APP_INCIDENT_RESPONSE.md`](VECTANT_LOCAL_SUPPORT_APP_INCIDENT_RESPONSE.md). Documentation is not evidence that the tabletop or clean-runner release exercises have passed.
+
 ---
 
 ## 20. Desktop App Hardening

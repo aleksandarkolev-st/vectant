@@ -179,11 +179,13 @@ Still unverified or blocked:
 - Required red-team scenarios pass: malicious website localhost call, compromised session, symlink farm, malicious dev server, SSRF, secret-heavy logs, downgrade attempt, endpoint fuzzing, WebSocket abuse, confused-deputy approval flow.
 - Release evidence is based on live implementation and CI/E2E proof, not acceptance tables or static UI mappings.
 
-**Key files/areas:** `.github/workflows/local-support-security.yml`, release/signing workflows, updater module, incident response docs, red-team test harness.
+**Key files/areas:** `.github/workflows/local-support-security.yml`, release/signing workflows, updater module, [incident response runbook](VECTANT_LOCAL_SUPPORT_APP_INCIDENT_RESPONSE.md), red-team test harness.
 
 **Tests required:** Signed update integration; downgrade/revocation tests; CI supply-chain gates; red-team suite; incident tabletop checklist; protected-branch/signing-change review verification.
 
 **Blockers/dependencies:** Signing certificate/key management, release infrastructure, security owner sign-off, red-team capacity.
+
+The incident-response and signing-key rotation procedures are documented in `docs/VECTANT_LOCAL_SUPPORT_APP_INCIDENT_RESPONSE.md`; the tabletop checklist remains unexercised until the protected production controls and clean release runner are available.
 
 ## Post-MVP / Future Work
 
