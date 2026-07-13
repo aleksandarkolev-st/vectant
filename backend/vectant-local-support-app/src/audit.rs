@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
@@ -268,13 +269,23 @@ impl LocalAuditStore {
         let tmp = self.path.with_extension("json.tmp");
         ensure_audit_path_safe(&self.path)?;
         ensure_audit_path_safe(&tmp)?;
-        fs::write(&tmp, bytes).map_err(AuditStoreError::Io)?;
-        match fs::remove_file(&self.path) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp)
+            .map_err(AuditStoreError::Io)?;
+        file.write_all(&bytes).map_err(AuditStoreError::Io)?;
+        file.sync_all().map_err(AuditStoreError::Io)?;
+        drop(file);
+        match fs::rename(&tmp, &self.path) {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs::remove_file(&self.path).map_err(AuditStoreError::Io)?;
+                fs::rename(&tmp, &self.path).map_err(AuditStoreError::Io)?;
+            }
             Err(error) => return Err(AuditStoreError::Io(error)),
         }
-        fs::rename(&tmp, &self.path).map_err(AuditStoreError::Io)?;
         Ok(())
     }
 

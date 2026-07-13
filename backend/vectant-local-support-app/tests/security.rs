@@ -740,7 +740,7 @@ async fn history_delete_persists_scrubbed_deletion_marker_and_removes_prior_even
         std::time::Duration::from_secs(300),
     );
     let token = session.token_for_pairing_response().to_string();
-    let mut state = AppState::new_with_audit_store(session, policy, audit_store.clone());
+    let mut state = AppState::new_with_audit_store(session, policy, audit_store.clone()).unwrap();
     state.set_local_control_secret_for_test("desktop_control_secret_123456789012345");
     let shared_state = state.clone();
     let addr = bind_loopback(state).await.unwrap();
@@ -778,6 +778,26 @@ async fn history_delete_persists_scrubbed_deletion_marker_and_removes_prior_even
     );
     assert!(export.consent_receipts.is_empty());
     assert_eq!(shared_state.audit.lock().await.events().len(), 1);
+}
+
+#[test]
+fn corrupt_audit_storage_fails_closed_instead_of_resetting_history() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("audit.json"), b"not-json").unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    assert!(matches!(store.load(), Err(AuditStoreError::Json(_))));
+
+    let policy =
+        WorkspacePolicy::new(dir.path(), "wk_corrupt_audit", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_corrupt_audit",
+        "org_corrupt_audit",
+        "wk_corrupt_audit",
+        "sha256:1111111111111111",
+        std::time::Duration::from_secs(300),
+    );
+    let result = AppState::new_with_audit_store(session, policy, store);
+    assert!(matches!(result, Err(AuditStoreError::Json(_))));
 }
 
 #[tokio::test]
@@ -885,7 +905,7 @@ async fn desktop_status_exposes_only_a_safe_selected_workspace_summary() {
         30,
         SecretScanner::default(),
     );
-    let state = AppState::new_with_audit_store(session, policy, audit_store);
+    let state = AppState::new_with_audit_store(session, policy, audit_store).unwrap();
 
     let desktop_state = build_desktop_status_state(&state).await;
     let serialized = serde_json::to_string(&desktop_state).unwrap();

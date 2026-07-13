@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
-use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
+use crate::audit::{AuditClass, AuditExport, AuditLog, AuditStoreError, LocalAuditStore};
 use crate::port_adapter::native_listener_identity_matches;
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
@@ -146,11 +146,9 @@ impl AppState {
         session: SessionGuard,
         workspace: WorkspacePolicy,
         audit_store: LocalAuditStore,
-    ) -> Self {
-        let audit = audit_store
-            .load()
-            .unwrap_or_else(|_| AuditLog::new(SecretScanner::default()));
-        Self {
+    ) -> Result<Self, AuditStoreError> {
+        let audit = audit_store.load()?;
+        Ok(Self {
             session: Arc::new(Mutex::new(session)),
             workspace: Arc::new(workspace),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
@@ -165,7 +163,7 @@ impl AppState {
             local_control_secret_hash: Arc::new(hash_local_control_secret(
                 &generate_local_control_secret(),
             )),
-        }
+        })
     }
 
     pub fn local_control_secret_matches(&self, secret: &str) -> bool {

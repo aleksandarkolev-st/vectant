@@ -1152,7 +1152,7 @@ fn disconnected_state_for_workspace(
     );
     session.disconnect();
     let audit_store = LocalAuditStore::new(audit_path()?, 30, SecretScanner::default());
-    Ok(AppState::new_with_audit_store(session, policy, audit_store))
+    Ok(AppState::new_with_audit_store(session, policy, audit_store)?)
 }
 
 fn audit_path() -> anyhow::Result<PathBuf> {

@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         session,
         policy,
         LocalAuditStore::new(audit_path, 1, SecretScanner::default()),
-    );
+    )?;
     state.set_local_control_secret_for_test(TEST_CONTROL_SECRET);
     let (session_token, preview_token, preview_host) = if let Some(port) = upstream_port {
         let session_id = state.session.lock().await.session_id().to_string();
