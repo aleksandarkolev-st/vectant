@@ -136,6 +136,34 @@ test.describe("local support transparency page", () => {
     expect(stateReads).toBeGreaterThan(1);
   });
 
+  test("renders cloud-shaped inventory rows without crashing", async ({ page }) => {
+    await page.route("**/api/local-support/policy", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true, policy_version: "2026.07.05" }),
+      });
+    });
+    await page.route("**/api/local-support/transparency-state", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          decision: "transparency_state_ready",
+          session: { connected: false, session_id: "not_paired" },
+          workspace: { workspace_id: "not_selected", display: "No workspace selected" },
+          inventory: [{ target: "workspace/src/app.jsx", state: "approval_required", classification: "source_code" }],
+          sent_payloads: [], blocked_items: [], activity: [], ports: [],
+        }),
+      });
+    });
+
+    await page.goto(`${baseURL}/local-support`);
+    await page.getByRole("tab", { name: "Inventory" }).click();
+    await expect(page.getByText("workspace/src/app.jsx")).toBeVisible();
+    await expect(page.getByText("Review required")).toBeVisible();
+  });
+
   test("enables and downgrades bounded Fast Support for a connected workspace", async ({ page }) => {
     await page.route("**/api/local-support/policy", async (route) => {
       await route.fulfill({

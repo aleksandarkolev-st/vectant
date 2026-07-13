@@ -93,6 +93,27 @@ const permissionModes = [
 
 const DEFAULT_PORTS = [];
 
+function normalizeInventoryRows(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => item && typeof item === "object").map((item, index) => {
+    const state = String(item.status || item.state || "").toLowerCase();
+    const sent = item.sent === true || item.bytes_sent > 0 || state === "sent_to_vectant" || state === "delivered";
+    const status = item.status || (
+      state === "blocked_locally" || state === "denied" ? "Blocked locally" :
+        sent ? "Sent to Vectant" :
+          state === "approval_required" || state === "review_pending" ? "Review required" : "Available locally"
+    );
+    return {
+      ...item,
+      path: item.path || item.target || item.target_display || `item-${index + 1}`,
+      type: item.type || item.classification || "Context",
+      status,
+      className: item.className || item.classification || "Unclassified",
+      sent,
+    };
+  });
+}
+
 function Pill({ tone = "neutral", children }) {
   return (
     <span
@@ -276,7 +297,7 @@ export default function LocalSupportTransparency() {
   const paused = Boolean(liveSession.paused || localPaused);
   const liveFastSupport = liveSession.permission_mode === "Fast Support"
     && Number(liveSession.fast_support_remaining_seconds || 0) > 0;
-  const inventory = liveState?.inventory || DEFAULT_INVENTORY;
+  const inventory = normalizeInventoryRows(liveState?.inventory || DEFAULT_INVENTORY);
   const sentPayloads = liveState?.sent_payloads || DEFAULT_SENT_PAYLOADS;
   const blockedItems = liveState?.blocked_items || DEFAULT_BLOCKED_ITEMS;
   const activity = liveState?.activity || DEFAULT_ACTIVITY;
@@ -748,7 +769,7 @@ export default function LocalSupportTransparency() {
                     <td className="px-4 py-3 font-mono text-xs">{item.path}</td>
                     <td className="px-4 py-3">{item.type}</td>
                     <td className="px-4 py-3">
-                      <Pill tone={item.status.includes("Blocked") ? "bad" : item.sent ? "good" : "warn"}>{item.status}</Pill>
+                      <Pill tone={String(item.status || "").includes("Blocked") ? "bad" : item.sent ? "good" : "warn"}>{item.status || "Unknown"}</Pill>
                     </td>
                     <td className="px-4 py-3">{item.className}</td>
                     <td className="px-4 py-3">{item.sent ? "Yes" : "No"}</td>
