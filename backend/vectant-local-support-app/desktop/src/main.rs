@@ -513,6 +513,20 @@ async fn local_support_ipc(
                 .check()
                 .await
                 .map_err(|_| "Signed update check failed safely.".to_string())?;
+            let policy = runtime
+                .pairing_client
+                .policy()
+                .await
+                .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+            *runtime
+                .cloud_policy
+                .write()
+                .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
+            if let Some(candidate) = update.as_ref() {
+                if policy.available && !policy.update_version_allowed(&candidate.version) {
+                    return Err("The signed update is blocked by current cloud policy.".to_string());
+                }
+            }
             *runtime
                 .available_update_version
                 .write()
@@ -548,6 +562,18 @@ async fn local_support_ipc(
                 return Err(
                     "The available update changed. Check again before installing.".to_string(),
                 );
+            }
+            let policy = runtime
+                .pairing_client
+                .policy()
+                .await
+                .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+            *runtime
+                .cloud_policy
+                .write()
+                .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
+            if policy.available && !policy.update_version_allowed(&update.version) {
+                return Err("The signed update is blocked by current cloud policy.".to_string());
             }
             update
                 .download_and_install(|_, _| {}, || {})
@@ -1152,7 +1178,11 @@ fn disconnected_state_for_workspace(
     );
     session.disconnect();
     let audit_store = LocalAuditStore::new(audit_path()?, 30, SecretScanner::default());
-    Ok(AppState::new_with_audit_store(session, policy, audit_store)?)
+    Ok(AppState::new_with_audit_store(
+        session,
+        policy,
+        audit_store,
+    )?)
 }
 
 fn audit_path() -> anyhow::Result<PathBuf> {

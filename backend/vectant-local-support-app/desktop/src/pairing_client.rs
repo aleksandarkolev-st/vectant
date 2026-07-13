@@ -41,6 +41,7 @@ pub struct DesktopPolicyStatus {
     pub update_required: bool,
     pub current_version: String,
     pub minimum_version: String,
+    pub vulnerable_versions: Vec<String>,
     pub reason: String,
     pub user_visible_message: String,
 }
@@ -56,6 +57,7 @@ impl DesktopPolicyStatus {
             update_required: false,
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             minimum_version: "unknown".to_string(),
+            vulnerable_versions: Vec::new(),
             reason: "policy_unavailable".to_string(),
             user_visible_message:
                 "Cloud policy is unavailable. New pairing is disabled until it can be checked."
@@ -69,6 +71,16 @@ impl DesktopPolicyStatus {
 
     pub fn preview_allowed(&self) -> bool {
         self.available && self.enabled && !self.preview_disabled
+    }
+
+    pub fn update_version_allowed(&self, version: &str) -> bool {
+        self.available
+            && valid_numeric_version(version)
+            && compare_numeric_versions(version, &self.current_version) >= std::cmp::Ordering::Equal
+            && !self
+                .vulnerable_versions
+                .iter()
+                .any(|blocked| blocked == version)
     }
 }
 
@@ -251,9 +263,13 @@ pub fn parse_policy_status(
         .pointer("/emergency_controls/agent_access_disabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let vulnerable = vulnerable_versions
+    let vulnerable_versions = vulnerable_versions
         .iter()
         .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let vulnerable = vulnerable_versions
+        .iter()
         .any(|version| version == current_version);
     let too_old = compare_numeric_versions(current_version, minimum_version).is_lt();
     let update_required = vulnerable || too_old;
@@ -295,6 +311,7 @@ pub fn parse_policy_status(
         update_required,
         current_version: current_version.to_string(),
         minimum_version: minimum_version.to_string(),
+        vulnerable_versions,
         reason: reason.to_string(),
         user_visible_message: message.to_string(),
     })
@@ -563,6 +580,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(vulnerable.reason, "version_vulnerable");
+        assert!(!vulnerable.update_version_allowed("0.1.1"));
+        assert!(vulnerable.update_version_allowed("0.2.0"));
 
         let disabled = parse_policy_status(
             serde_json::json!({
