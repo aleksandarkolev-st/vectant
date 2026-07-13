@@ -1,6 +1,6 @@
 # Vectant Local Support Implementation Evidence
 
-Last local verification: 2026-07-12 on Windows.
+Last local verification: 2026-07-13 on Windows.
 
 This file indexes executable evidence. It does not make static acceptance mappings count as completion, and it does not authorize public beta. Re-run every command from the reviewed commit and attach immutable CI/deployment evidence before release.
 
@@ -27,6 +27,8 @@ npx playwright test tests/local-support-desktop-shell.spec.ts --project=chromium
 
 Verified locally: 77 parent/unit/security tests, 9 desktop tests including real loopback pairing/policy/relay sockets, and 6 desktop Chromium flows.
 
+The production Cargo package no longer contains the former standalone CLI daemon. A feature-gated `local-support-test-daemon` exists only for live integration checks. `tests/local-support-live-daemon.spec.ts` starts that real process and uses Playwright request traffic against its real loopback socket to verify health and the protected status boundary. This is local daemon evidence, not cloud deployment evidence.
+
 ### Pairing, sessions, relay, and cloud controls
 
 - Pairing challenges, attempts, sessions, device nonces, relay leases, encrypted one-time payloads, revocations, security events, and enterprise policy are durable Prisma models with migrations.
@@ -44,6 +46,8 @@ npm run test --workspace synthi -- src/lib/local-support src/app/api/local-suppo
 ```
 
 The focused CI command in `.github/workflows/local-support-security.yml` is authoritative for the selected cloud suite. Verified locally: 122 tests across 21 focused files. A live migration/deployment test still requires a running PostgreSQL environment.
+
+CI now includes a PostgreSQL service job that runs `prisma validate` and `prisma migrate deploy` against a clean database. It proves migration application in CI; it does not substitute for the intended staging deployment or browser-to-cloud-to-desktop proof.
 
 ### Review-before-send, scanner, audit, and preview
 
@@ -76,6 +80,7 @@ Verified locally against a real production Next server: 5 web Chromium flows. De
 - `tauri-plugin-updater` is registered in Rust. Check/install are narrow native IPC commands; install requires native confirmation, rechecks the candidate, relies on Tauri signature verification and downgrade protection, installs, then restarts.
 - The independent package verifier binds Ed25519-signed metadata to channel, version policy, emergency revocation, and exact artifact SHA-256 bytes.
 - `.github/workflows/local-support-release.yml` requires the protected signing environment, builds updater artifacts, Authenticode-signs installers, verifies them, generates checksums/SBOM, removes the ephemeral certificate, smoke-tests signed install/uninstall, and re-verifies on a clean runner.
+- The checked-in Tauri configuration keeps updater artifacts and the signed updater plugin active. The checked-in public-key value is a non-production sentinel and the protected release job must replace it with the real public key; no release is considered signed without the protected key, certificate, HTTPS endpoint, and clean-runner checks.
 
 Hands-on unsigned packaging smoke command:
 

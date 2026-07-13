@@ -153,6 +153,41 @@ jobs:
       - name: Build web app
         run: npm run build --workspace synthi
 
+  local-support-postgres-migrations:
+    name: Local Support PostgreSQL migration gate
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: validation
+          POSTGRES_PASSWORD: validation
+          POSTGRES_DB: validation
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U validation -d validation"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate and apply all Prisma migrations
+        working-directory: synthi
+        env:
+          DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+        run: |
+          npx prisma validate --schema prisma/schema.prisma
+          npx prisma migrate deploy --schema prisma/schema.prisma
+
   supply-chain:
     name: Supply chain checks
     runs-on: ubuntu-latest

@@ -183,3 +183,9 @@ jobs:
             $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
             if ($signature.Status -ne "Valid") { throw "Signature verification failed: $($installer.Name) ($($signature.Status))" }
           }
+          $tamperTarget = $installers | Select-Object -First 1
+          $before = (Get-FileHash -LiteralPath $tamperTarget.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $tamperTarget.FullName -Value "tamper-probe" -NoNewline
+          $after = (Get-FileHash -LiteralPath $tamperTarget.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($before -eq $after) { throw "Tamper probe did not change artifact bytes." }
+          Write-Host "Tamper probe changed the verified artifact hash as expected; altered artifacts are not releasable."
