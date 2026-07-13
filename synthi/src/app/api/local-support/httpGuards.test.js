@@ -20,10 +20,20 @@ function mockJsonRequest({
   };
 }
 
-function originRequest({ url = "https://beta.vectant.dev/api/local-support/relay", origin, fetchSite } = {}) {
+function originRequest({
+  url = "https://beta.vectant.dev/api/local-support/relay",
+  origin,
+  fetchSite,
+  host,
+  forwardedHost,
+  forwardedProtocol,
+} = {}) {
   const headers = new Map();
   if (origin !== undefined) headers.set("origin", origin);
   if (fetchSite !== undefined) headers.set("sec-fetch-site", fetchSite);
+  if (host !== undefined) headers.set("host", host);
+  if (forwardedHost !== undefined) headers.set("x-forwarded-host", forwardedHost);
+  if (forwardedProtocol !== undefined) headers.set("x-forwarded-proto", forwardedProtocol);
   return {
     url,
     headers: {
@@ -141,6 +151,33 @@ describe("local support HTTP guards", () => {
     expect(isSameOriginRequest(originRequest({
       origin: "https://beta.vectant.dev",
       fetchSite: "navigate",
+    }))).toBe(false);
+  });
+
+  it("accepts the public request authority when a standalone server rewrites req.url", () => {
+    expect(isSameOriginRequest(originRequest({
+      url: "http://frontend:3000/api/local-support/pairing",
+      origin: "http://127.0.0.1:3000",
+      fetchSite: "same-origin",
+      host: "127.0.0.1:3000",
+    }))).toBe(true);
+
+    expect(isSameOriginRequest(originRequest({
+      url: "http://frontend:3000/api/local-support/pairing",
+      origin: "https://app.vectant.dev",
+      fetchSite: "same-site",
+      host: "frontend:3000",
+      forwardedHost: "app.vectant.dev",
+      forwardedProtocol: "https",
+    }))).toBe(true);
+
+    expect(isSameOriginRequest(originRequest({
+      url: "http://frontend:3000/api/local-support/pairing",
+      origin: "https://evil.example",
+      fetchSite: "same-site",
+      host: "app.vectant.dev",
+      forwardedHost: "app.vectant.dev",
+      forwardedProtocol: "https",
     }))).toBe(false);
   });
 });

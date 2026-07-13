@@ -44,10 +44,57 @@ export function isSameOriginRequest(req) {
   if (!fetchSite || fetchSite === "cross-site" || fetchSite === "none") return false;
   if (!["same-origin", "same-site"].includes(fetchSite)) return false;
 
-  const origin = req.headers.get("origin");
+  const origin = normalizedHttpOrigin(req.headers.get("origin"));
   if (!origin) return false;
-  const url = new URL(req.url);
-  return origin === `${url.protocol}//${url.host}`;
+
+  let requestUrl;
+  try {
+    requestUrl = new URL(req.url);
+  } catch {
+    return false;
+  }
+
+  const forwardedProtocol = firstForwardedValue(req.headers.get("x-forwarded-proto"));
+  const protocol = forwardedProtocol === "http" || forwardedProtocol === "https"
+    ? `${forwardedProtocol}:`
+    : requestUrl.protocol;
+  const acceptedOrigins = new Set([requestUrl.origin]);
+
+  for (const authorityHeader of ["host", "x-forwarded-host"]) {
+    const authority = firstForwardedValue(req.headers.get(authorityHeader));
+    const authorityOrigin = originFromAuthority(protocol, authority);
+    if (authorityOrigin) acceptedOrigins.add(authorityOrigin);
+  }
+
+  return acceptedOrigins.has(origin);
+}
+
+function normalizedHttpOrigin(value) {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function firstForwardedValue(value) {
+  if (!value) return null;
+  const first = value.split(",", 1)[0].trim();
+  return first || null;
+}
+
+function originFromAuthority(protocol, authority) {
+  if (!authority || !["http:", "https:"].includes(protocol)) return null;
+  if (/[\\/@\s]/.test(authority)) return null;
+  try {
+    return new URL(`${protocol}//${authority}`).origin;
+  } catch {
+    return null;
+  }
 }
 
 export function deniedJson(reason, userVisibleMessage, status = 403) {
