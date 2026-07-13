@@ -710,7 +710,7 @@ export default function LocalSupportTransparency() {
 
             <Panel
               title="Organization restrictions"
-              description="Browser, AI, and support-agent page access is available only through an explicit session-scoped port capability grant."
+              description="Browser preview is available only through an explicit session-scoped loopback grant. AI and support-agent page reads remain blocked in the MVP."
             >
               <div className="space-y-3">
                 {orgRestrictions.map(([label, value, tone, detail]) => (

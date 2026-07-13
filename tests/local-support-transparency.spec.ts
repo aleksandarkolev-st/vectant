@@ -8,16 +8,18 @@ test.describe("local support transparency page", () => {
 
     await expect(page.getByRole("heading", { name: "Vectant Local Support" })).toBeVisible();
     await expect(page.getByText("Available locally is not the same as sent.")).toBeVisible();
-    await expect(page.getByText("AI and support page access requires a port capability grant")).toBeVisible();
-    await expect(page.getByText("Update required below 0.1.0")).toBeVisible();
-    await expect(page.getByText("Browser, AI, and support-agent page access is available only through an explicit session-scoped port capability grant.")).toBeVisible();
+    await expect(page.getByText("AI and support page access", { exact: true })).toBeVisible();
+    await expect(page.getByText("Blocked in MVP").first()).toBeVisible();
+    await expect(page.getByText(/Update required below 0\.1\.0|Not reported/).first()).toBeVisible();
+    await expect(page.getByText("Browser preview is available only through an explicit session-scoped loopback grant. AI and support-agent page reads remain blocked in the MVP.")).toBeVisible();
     await expect(page.getByText("Vectant AI page reading")).toBeVisible();
-    await expect(page.getByText("Available by port grant")).toHaveCount(3);
+    await expect(page.getByText("Blocked in MVP")).toHaveCount(3);
     await expect(page.getByText("Activity retention")).toBeVisible();
-    await expect(page.getByText("30 days, raw bodies never stored")).toBeVisible();
+    await expect(page.getByText(/30 days|Not reported/).first()).toBeVisible();
+    await expect(page.getByText("Raw bodies are never stored in cloud audit")).toBeVisible();
     await expect(page.getByText("Workspace selection")).toBeVisible();
     await expect(page.getByText("Installation is not consent.")).toBeVisible();
-    await expect(page.getByText("Workspace: No workspace selected. Account: not_paired. Session: not_paired.")).toBeVisible();
+    await expect(page.getByText("Workspace: No workspace selected. Account: Not paired. Session: Not paired.")).toBeVisible();
     await expect(page.getByText("Disconnected")).toBeVisible();
     await expect(page.getByText("No live approval request")).toBeVisible();
 
@@ -33,7 +35,7 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("cell", { name: "Balanced mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Manual mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Fast Support" })).toBeVisible();
-    await expect(page.getByText("Secrets, workspace writes, commands, persistent approvals")).toBeVisible();
+    await expect(page.getByText(/Secrets, workspace writes, commands, .*persistent approvals/).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
     await expect(page.getByText("This page will not fake a revoke.")).toBeVisible();
 
@@ -128,7 +130,7 @@ test.describe("local support transparency page", () => {
     });
 
     await page.goto(`${baseURL}/local-support`);
-    await expect(page.getByText("Workspace: No workspace selected. Account: not_paired. Session: not_paired.")).toBeVisible();
+    await expect(page.getByText("Workspace: No workspace selected. Account: Not paired. Session: Not paired.")).toBeVisible();
 
     await expect(page.getByText("Workspace: Live relay workspace. Account: acct_live. Session: sess_live_12345678."))
       .toBeVisible({ timeout: 6_000 });
