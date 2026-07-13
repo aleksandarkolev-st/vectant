@@ -148,10 +148,11 @@ describe("local support preview-gateway route", () => {
       request_id: "req_preview_metadata_route",
       target_host: "169.254.169.254",
     })));
-    expect(metadata.status).toBe(200);
+    expect(metadata.status).toBe(403);
     await expect(metadata.json()).resolves.toMatchObject({
-      decision: "preview_gateway_ready",
-      preview_forward: true,
+      decision: "denied",
+      reason: "preview_target_not_allowed",
+      preview_forward: false,
       bytes_sent: 0,
     });
   });

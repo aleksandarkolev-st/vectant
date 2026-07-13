@@ -341,7 +341,10 @@ async fn local_support_ipc(
                 .to_string();
             validate_private_target(&target_host)?;
             let process_identity = detect_loopback_listener(port)
-                .map_err(|_| "No loopback-only listening process owns that port. Nothing was exposed.".to_string())?
+                .map_err(|_| {
+                    "No loopback-only listening process owns that port. Nothing was exposed."
+                        .to_string()
+                })?
                 .process_identity;
             let session = app_state.session.lock().await;
             if !session.is_active() || session.state().paused {
@@ -349,17 +352,13 @@ async fn local_support_ipc(
             }
             let session_id = session.session_id().to_string();
             drop(session);
-            let grant = app_state
-                .port_approvals
-                .lock()
-                .await
-                .approve_port_grant(
-                    &session_id,
-                    port,
-                    &process_identity,
-                    &target_host,
-                    Default::default(),
-                );
+            let grant = app_state.port_approvals.lock().await.approve_port_grant(
+                &session_id,
+                port,
+                &process_identity,
+                &target_host,
+                Default::default(),
+            );
             runtime
                 .preview_contexts
                 .write()

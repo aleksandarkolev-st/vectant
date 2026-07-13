@@ -159,7 +159,6 @@ jobs:
       - name: Run real loopback daemon Playwright gate
         shell: pwsh
         run: npx playwright test tests/local-support-live-daemon.spec.ts --project=chromium --reporter=line
-          }
 
       - name: Audit production web dependencies
         run: npm audit --workspace synthi --omit=dev --audit-level=high
