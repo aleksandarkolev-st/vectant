@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   buildRelayForwardDecision,
+  clearRequestEnvelopeReplay,
   enforceRequestEnvelopeReplayProtection,
   verifyRequestEnvelopeSignature,
 } from "@/lib/local-support/controlPlane";
@@ -70,6 +71,15 @@ export async function POST(req) {
     }, 503);
   }
 
+  let replayReserved = false;
+  if (policy.enabled) {
+    const replayDecision = enforceRequestEnvelopeReplayProtection(body);
+    if (replayDecision.decision === "denied") {
+      return jsonNoStore({ ...replayDecision, relay_forward: false }, 409);
+    }
+    replayReserved = true;
+  }
+
   try {
     await enqueueRelayRequest(body, decision);
   } catch (error) {
@@ -82,6 +92,7 @@ export async function POST(req) {
         bytes_sent: 0,
       }, 409);
     }
+    if (replayReserved) clearRequestEnvelopeReplay(body);
     return jsonNoStore({
       decision: "denied",
       reason: "relay_unavailable",
@@ -90,13 +101,6 @@ export async function POST(req) {
       bytes_sent: 0,
       user_visible_message: "Local Support relay is temporarily unavailable.",
     }, 503);
-  }
-
-  if (policy.enabled) {
-    const replayDecision = enforceRequestEnvelopeReplayProtection(body);
-    if (replayDecision.decision === "denied") {
-      return jsonNoStore({ ...replayDecision, relay_forward: false }, 409);
-    }
   }
 
   return jsonNoStore({ ...decision, decision: "relay_queued", relay_forward: true }, 202);

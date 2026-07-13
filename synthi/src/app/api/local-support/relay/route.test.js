@@ -17,6 +17,7 @@ vi.mock("@/lib/local-support/policyStore", async () => {
 import {
   clearAdminRevocationStore,
   clearRequestEnvelopeReplayCache,
+  enforceRequestEnvelopeReplayProtection,
   signDeviceProof,
   signRequestEnvelope,
 } from "@/lib/local-support/controlPlane";
@@ -317,6 +318,23 @@ describe("local support relay route", () => {
       relay_forward: false,
       bytes_sent: 0,
     });
+  });
+
+  it("rejects a pre-consumed envelope before creating a queued request", async () => {
+    enableLocalSupport();
+    const body = signedEnvelope({ request_id: "req_relay_preconsumed" });
+    expect(enforceRequestEnvelopeReplayProtection(body).decision).toBe("accepted");
+
+    const response = await POST(request(body));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "denied",
+      reason: "request_replay_detected",
+      relay_forward: false,
+      bytes_sent: 0,
+    });
+    expect(relayStore.enqueueRelayRequest).not.toHaveBeenCalled();
   });
 
   it("refuses valid signatures outside the durable pairing consent boundary", async () => {

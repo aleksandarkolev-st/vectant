@@ -276,6 +276,12 @@ export function clearRequestEnvelopeReplayCache() {
   replayCache.clear();
 }
 
+export function clearRequestEnvelopeReplay(envelope) {
+  const requestId = typeof envelope?.request_id === "string" ? envelope.request_id.trim() : "";
+  const sessionId = typeof envelope?.session_id === "string" ? envelope.session_id.trim() : "";
+  if (requestId && sessionId) replayCache.delete(`${sessionId}\0${requestId}`);
+}
+
 export function clearPairingChallengeStore() {
   pairingSessions.clear();
   pairingClaimWindowStartedAt = 0;
