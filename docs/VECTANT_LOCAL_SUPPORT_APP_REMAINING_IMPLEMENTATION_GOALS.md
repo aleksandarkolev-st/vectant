@@ -7,9 +7,11 @@ Status baseline: current implementation is approximately 44% complete. Treat the
 Verified in the current worktree:
 
 - Native backend, desktop, local-support web/API, Chromium desktop, and Chromium live-daemon gates pass for the exercised scenarios.
+- Native clippy gates, the production Next build, and the focused web test gate pass; Chromium Local Support UI/runtime coverage passes 15/15.
 - Preview enforcement is loopback-only across native IPC, the Rust gateway, cloud port persistence, relay control, and transparency projections. Agent reads, interaction, response bodies, screenshots, console data, state-changing methods, and persistent approvals remain disabled.
 - Local sent-history projections now carry the recorded relay byte count and redaction count instead of placeholder zeroes.
 - The Windows NSIS installer was built and passed install, loopback health/protected-status, and uninstall smoke checks locally.
+- Windows installer downgrade rejection is explicit in the Tauri bundle configuration and enforced by the signed-release workflow guard; the release build accepts the configuration.
 - Live Chromium E2E against the host-mapped PostgreSQL container passed cloud policy/admin controls and the Rust relay path: poll, review outcome, encrypted payload upload, denied-secret alert, session revocation, and payload purge.
 
 Still unverified or blocked:
