@@ -23,7 +23,7 @@
       <section class="banner" aria-label="Security boundary">
         <div>
           <h2>You control what Vectant can see.</h2>
-          <p>Choose one workspace. Sensitive files stay blocked locally. Browser preview never grants Vectant AI access to the page.</p>
+          <p>Choose one workspace. Sensitive files stay blocked locally. Port capabilities are granted explicitly for this session.</p>
         </div>
         <div class="banner-actions">
           <button class="primary" type="button" data-action="pick-workspace">Choose workspace</button>
@@ -117,8 +117,8 @@
             <li data-workflow-step="ports">
               <span class="step-status">Locked</span>
               <div>
-                <strong>Approve browser-only localhost preview</strong>
-                <p data-workflow-copy="ports">No local ports are exposed. Preview does not grant AI or support page-reading access.</p>
+                <strong>Approve a local port and its capabilities</strong>
+                <p data-workflow-copy="ports">Choose the target host and capabilities for browser, AI, support, interaction, response bodies, and state-changing methods.</p>
               </div>
             </li>
             <li data-workflow-step="history">
@@ -199,12 +199,12 @@
               <p class="label">Localhost preview</p>
               <h2 data-field="ports-title">No ports approved</h2>
             </div>
-            <span class="tag warn">Browser only</span>
+            <span class="tag warn">Explicit capabilities</span>
           </div>
-          <p class="copy" data-field="ports-copy">Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.</p>
+          <p class="copy" data-field="ports-copy">Approved preview hosts are session scoped, target-bound, token bound, process identity bound, and revoked on disconnect or app quit.</p>
         </article>
         <article class="panel">
-          <p class="label">Never included in MVP</p>
+          <p class="label">Available capabilities</p>
           <ul class="tight-list">
             <li>AI page body reading</li>
             <li>Support agent clicking</li>
@@ -212,15 +212,17 @@
             <li>Private network proxying</li>
           </ul>
           <div class="pairing-form port-form">
-            <label for="preview-port">Loopback port</label>
+            <label for="preview-target-host">Target host</label>
+            <input id="preview-target-host" data-preview-target-host type="text" value="127.0.0.1" autocomplete="off">
+            <label for="preview-port">Target port</label>
             <input id="preview-port" data-preview-port type="number" min="1" max="65535" inputmode="numeric" value="3000" autocomplete="off">
           </div>
           <div class="control-stack">
-            <button type="button" data-action="review-port-approval" disabled>Approve browser-only preview</button>
+            <button type="button" data-action="review-port-approval" disabled>Approve port capabilities</button>
             <button type="button" data-action="open-port-preview" disabled>Open in system browser</button>
             <button type="button" data-action="revoke-port-approval" disabled>Revoke port approval</button>
           </div>
-          <p class="hint">Port review stays local and browser-only. The renderer never receives preview tokens.</p>
+          <p class="hint">Port review stays local. Preview tokens remain hidden from the renderer.</p>
         </article>
       </section>
 

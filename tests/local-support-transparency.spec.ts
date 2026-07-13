@@ -8,11 +8,11 @@ test.describe("local support transparency page", () => {
 
     await expect(page.getByRole("heading", { name: "Vectant Local Support" })).toBeVisible();
     await expect(page.getByText("Available locally is not the same as sent.")).toBeVisible();
-    await expect(page.getByText("AI page reading remains off")).toBeVisible();
+    await expect(page.getByText("AI and support page access requires a port capability grant")).toBeVisible();
     await expect(page.getByText("Update required below 0.1.0")).toBeVisible();
-    await expect(page.getByText("Your organization allows browser preview")).toBeVisible();
+    await expect(page.getByText("Browser, AI, and support-agent page access is available only through an explicit session-scoped port capability grant.")).toBeVisible();
     await expect(page.getByText("Vectant AI page reading")).toBeVisible();
-    await expect(page.getByText("Blocked by organization").first()).toBeVisible();
+    await expect(page.getByText("Available by port grant")).toHaveCount(3);
     await expect(page.getByText("Activity retention")).toBeVisible();
     await expect(page.getByText("30 days, raw bodies never stored")).toBeVisible();
     await expect(page.getByText("Workspace selection")).toBeVisible();
@@ -33,7 +33,7 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("cell", { name: "Balanced mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Manual mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Fast Support" })).toBeVisible();
-    await expect(page.getByText("Secrets, writes, commands, repo upload, persistent approvals")).toBeVisible();
+    await expect(page.getByText("Secrets, workspace writes, commands, persistent approvals")).toBeVisible();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
     await expect(page.getByText("This page will not fake a revoke.")).toBeVisible();
 

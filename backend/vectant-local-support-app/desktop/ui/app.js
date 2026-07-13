@@ -31,11 +31,12 @@ const updateStatus = document.querySelector("[data-update-status]");
 const approvalPreview = document.querySelector(".approval-preview");
 const approvalReviewDetail = document.querySelector("[data-approval-review-detail]");
 const previewPortInput = document.querySelector("[data-preview-port]");
+const previewTargetHostInput = document.querySelector("[data-preview-target-host]");
 let renderedState = null;
 let lastDesktopError = "";
 
 const defaultApprovalCopy = "When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.";
-const defaultPortsCopy = "Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.";
+const defaultPortsCopy = "Approved preview hosts are session scoped, target-bound, token bound, process identity bound, and revoked on disconnect or app quit.";
 const defaultActivityCopy = "Allowed, denied, redacted, approved, revoked, paused, disconnected, exported, and deleted events are written to local product storage with scrubbed summaries.";
 
 const fallbackState = {
@@ -242,8 +243,8 @@ function renderWorkflow(state) {
     "ports",
     hasPorts ? "Approved" : "Locked",
     hasPorts
-      ? `${state.ports.length} preview port${state.ports.length === 1 ? "" : "s"} approved for browser-only loopback access.`
-      : "No local ports are exposed. Preview does not grant AI or support page-reading access.",
+      ? `${state.ports.length} preview port${state.ports.length === 1 ? "" : "s"} approved with explicit session capabilities.`
+      : "No local ports are exposed. Approve a target and capabilities to begin preview.",
     hasPorts,
   );
   updateWorkflowStep(
@@ -467,8 +468,8 @@ document.querySelectorAll("[data-action]").forEach((button) => {
       const port = Number(previewPortInput?.value);
       await invokeStateAction(
         "approval.port.review",
-        "Enter a loopback port owned by a live local process. No preview was exposed.",
-        { port },
+        "Approve the selected target host and port capabilities for this session.",
+        { port, target_host: previewTargetHostInput?.value?.trim() || "127.0.0.1" },
       );
     }
     if (button.dataset.action === "open-port-preview") {

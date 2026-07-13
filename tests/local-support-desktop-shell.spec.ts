@@ -45,9 +45,9 @@ test.describe("local support desktop shell", () => {
 
     await page.getByRole("tab", { name: "Ports", exact: true }).click();
     await expect(page.getByText("No ports approved")).toBeVisible();
-    await expect(page.getByText("Browser only")).toBeVisible();
+    await expect(page.getByText("Explicit capabilities")).toBeVisible();
     await expect(page.getByText("AI page body reading")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve browser-only preview" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Approve port capabilities" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Open in system browser" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeDisabled();
 
@@ -182,7 +182,7 @@ test.describe("local support desktop shell", () => {
                 },
                 approvals: [{ request_id: "req_file_review" }],
                 ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
-                activity: [{ summary: "Opened browser-only port approval review. Preview token stayed hidden." }],
+                activity: [{ summary: "Approved port capabilities for this session. Preview token stayed hidden." }],
               };
             }
             if (args.command === "session.pause") {
@@ -280,7 +280,7 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Live sanitized state")).toBeVisible();
     await expect(page.getByText("Workspace wk_selected is selected for this support session only.")).toBeVisible();
     await expect(page.getByText("Sanitized IPC reports account acct_demo and device sha256:1111111111111111.")).toBeVisible();
-    await expect(page.getByText("1 preview port approved for browser-only loopback access.")).toBeVisible();
+    await expect(page.getByText("1 preview port approved with explicit session capabilities.")).toBeVisible();
     await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Approvals", exact: true }).click();
@@ -292,23 +292,22 @@ test.describe("local support desktop shell", () => {
     await expect(page.getByText("Opened local file approval review. Content stayed local.")).toBeVisible();
 
     await page.getByRole("tab", { name: "Ports", exact: true }).click();
-    await expect(page.getByText("1 browser preview port approved")).toBeVisible();
     await expect(page.getByText("127.0.0.1:5173 via br-local-p5173.vectant-preview.dev")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve browser-only preview" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Approve port capabilities" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Open in system browser" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeEnabled();
-    await page.getByRole("button", { name: "Approve browser-only preview" }).click();
+    await page.getByRole("button", { name: "Approve port capabilities" }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__ipcCalls.at(-1))).toMatchObject({
       command: "approval.port.review",
       payload: { port: 3000 },
     });
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
-    await expect(page.getByText("Opened browser-only port approval review. Preview token stayed hidden.")).toBeVisible();
+    await expect(page.getByText("Approved port capabilities for this session. Preview token stayed hidden.")).toBeVisible();
     await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Activity", exact: true }).click();
     await expect(page.getByText("1 local event recorded")).toBeVisible();
-    await expect(page.getByText("Opened browser-only port approval review. Preview token stayed hidden.")).toBeVisible();
+    await expect(page.getByText("Approved port capabilities for this session. Preview token stayed hidden.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Delete local history" })).toBeEnabled();
     await page.getByRole("button", { name: "Export scrubbed history" }).click();

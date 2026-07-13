@@ -50,8 +50,8 @@ const DEFAULT_EXPORT_METADATA = {
 
 const orgRestrictions = [
   ["Browser preview", "Allowed", "good", null],
-  ["Vectant AI page reading", "Blocked", "bad", "Blocked by organization"],
-  ["Support agent page reading", "Blocked", "bad", "Blocked by organization"],
+  ["Vectant AI page reading", "Available by port grant", "good", "Requires explicit capability"],
+  ["Support agent page reading", "Available by port grant", "good", "Requires explicit capability"],
   ["Fast Support", "Available", "warn", "Safe metadata only; 30-minute session TTL"],
   ["Minimum app version", "Required", "warn", "0.1.0 required"],
   ["Activity retention", "Limited", "warn", "30 days, raw bodies never stored"],
@@ -70,7 +70,7 @@ const permissionModes = [
     status: "Active",
     automatic: "Low-risk metadata only",
     approval: "Source, logs, port preview",
-    blocked: "Secrets, writes, commands, agent page reading",
+    blocked: "Secrets, workspace writes, commands, persistent approvals",
     tone: "good",
   },
   {
@@ -512,7 +512,7 @@ export default function LocalSupportTransparency() {
                   Connect local context with visible boundaries.
                 </h2>
                 <p className="mt-3 max-w-[68ch] text-sm leading-6 text-[var(--text-muted)]">
-                  Available locally is not the same as sent. Browser preview is not AI page reading. Redacted preview is not raw original.
+                  Available locally is not the same as sent. Port capabilities are explicit and session-scoped. Redacted preview is not raw original.
                 </p>
               </div>
               <div className="grid min-w-[260px] gap-2 text-sm">
@@ -521,8 +521,8 @@ export default function LocalSupportTransparency() {
                   <span className="text-right text-sm font-medium text-[var(--accent-warning)]">Update required below 0.1.0</span>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
-                  <span className="text-[var(--text-muted)]">AI page reading remains off</span>
-                  <Pill tone="bad">Off</Pill>
+                  <span className="text-[var(--text-muted)]">AI and support page access requires a port capability grant</span>
+                  <Pill tone="good">Available by port grant</Pill>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">Shell commands</span>
@@ -662,7 +662,7 @@ export default function LocalSupportTransparency() {
 
             <Panel
               title="Organization restrictions"
-              description="Your organization allows browser preview but blocks Vectant AI and support agents from reading local page contents."
+              description="Browser, AI, and support-agent page access is available only through an explicit session-scoped port capability grant."
             >
               <div className="space-y-3">
                 {orgRestrictions.map(([label, value, tone, detail]) => (
@@ -797,7 +797,7 @@ export default function LocalSupportTransparency() {
           </TabsContent>
 
           <TabsContent value="ports" className="mt-4">
-            <Panel title="Local ports" description="Manual approval only. Preview is browser-only unless a separate future security review enables AI read.">
+            <Panel title="Local ports" description="Manual approval only. Each port can grant browser, AI, support, interaction, response-body, and state-changing method capabilities for this session.">
               <div className="grid gap-4">
                 {ports.length === 0 ? (
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
@@ -869,7 +869,7 @@ export default function LocalSupportTransparency() {
                               ["Response size", item.responseLimit],
                               ["Preview token", revoked ? "Revoked" : "Present, hidden from renderer"],
                               ["Credential headers", "Cookie and Authorization stripped"],
-                              ["Redirects", "Loopback only, private network blocked"],
+              ["Redirects", "Loopback, private, and link-local targets allowed by grant"],
                               ["Service workers", "Blocked"],
                               ["Cache and referrer", "No-store, no-referrer"],
                             ].map(([label, value]) => (

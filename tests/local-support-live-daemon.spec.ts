@@ -172,9 +172,12 @@ test('real preview gateway forwards only approved browser traffic and revokes it
     ['patch', 'preview_patch_blocked'],
     ['delete', 'preview_delete_blocked'],
   ] as const) {
-    const response = await request[method](`${baseUrl}/v1/preview/${previewPort}/hello?${query(requestId)}`, { headers });
-    expect(response.status(), `${method.toUpperCase()} must stay blocked`).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ reason: 'state_changing_method_blocked' });
+    const response = await request[method](`${baseUrl}/v1/preview/${previewPort}/hello?${query(requestId)}`, {
+      headers,
+      data: method === 'get' || method === 'delete' ? undefined : 'mutation=allowed',
+    });
+    expect(response.ok(), `${method.toUpperCase()} must be forwarded`).toBeTruthy();
+    await expect(response.text()).resolves.toBe('preview-live-ok');
   }
 
   const revoked = await request.post(`${baseUrl}/v1/port/revoke/${previewPort}/preview_revoke`, {
