@@ -104,11 +104,11 @@ function Pill({ tone = "neutral", children }) {
     <span
       className={cn(
         "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-xs font-medium",
-        tone === "good" && "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
-        tone === "warn" && "border-amber-400/25 bg-amber-400/10 text-amber-200",
-        tone === "bad" && "border-red-400/25 bg-red-400/10 text-red-200",
-        tone === "info" && "border-sky-400/25 bg-sky-400/10 text-sky-200",
-        tone === "neutral" && "border-white/10 bg-white/[0.04] text-zinc-300",
+        tone === "good" && "border-[color-mix(in_srgb,var(--accent-success)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-success)_10%,transparent)] text-[var(--accent-success)]",
+        tone === "warn" && "border-[color-mix(in_srgb,var(--accent-warning)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-warning)_10%,transparent)] text-[var(--accent-warning)]",
+        tone === "bad" && "border-[color-mix(in_srgb,var(--accent-danger)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-danger)_10%,transparent)] text-[var(--accent-danger)]",
+        tone === "info" && "border-[color-mix(in_srgb,var(--attention-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--attention-purple)_10%,transparent)] text-[color-mix(in_srgb,var(--attention-purple)_78%,white)]",
+        tone === "neutral" && "border-[var(--border-medium)] bg-[var(--bg-surface)] text-[var(--text-secondary)]",
       )}
     >
       {children}
@@ -118,11 +118,11 @@ function Pill({ tone = "neutral", children }) {
 
 function Panel({ title, description, action, children, className }) {
   return (
-    <section className={cn("rounded-lg border border-white/10 bg-zinc-950/62", className)}>
-      <div className="flex flex-col gap-3 border-b border-white/10 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+    <section className={cn("rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] shadow-[var(--depth-shadow-1)]", className)}>
+      <div className="flex flex-col gap-3 border-b border-[var(--border-subtle)] px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
-          {description ? <p className="mt-1 max-w-[72ch] text-sm leading-6 text-zinc-400">{description}</p> : null}
+          <h2 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h2>
+          {description ? <p className="mt-1 max-w-[72ch] text-sm leading-6 text-[var(--text-muted)]">{description}</p> : null}
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </div>
@@ -133,21 +133,21 @@ function Panel({ title, description, action, children, className }) {
 
 function Stat({ icon: Icon, label, value, tone }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-zinc-900/55 p-4">
+    <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4 shadow-[var(--depth-shadow-1)]">
       <div className="flex items-center justify-between gap-3">
         <Icon className={cn("size-4", tone || "text-zinc-300")} aria-hidden="true" />
-        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-zinc-500">{label}</span>
+        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</span>
       </div>
-      <div className="mt-3 text-2xl font-semibold text-zinc-50">{value}</div>
+      <div className="mt-3 text-2xl font-semibold tabular-nums text-[var(--text-primary)]">{value}</div>
     </div>
   );
 }
 
 function DataTable({ columns, rows, renderRow }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-white/10">
+    <div className="overflow-x-auto rounded-md border border-[var(--border-subtle)]">
       <table className="min-w-full text-left text-sm">
-        <thead className="bg-white/[0.04] text-xs uppercase tracking-[0.08em] text-zinc-500">
+        <thead className="bg-[var(--bg-surface)] text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
           <tr>
             {columns.map((column) => (
               <th key={column} className="px-4 py-3 font-medium">
@@ -156,12 +156,12 @@ function DataTable({ columns, rows, renderRow }) {
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-white/10">
+        <tbody className="divide-y divide-[var(--border-subtle)]">
           {rows.length > 0 ? (
             rows.map(renderRow)
           ) : (
             <tr>
-              <td className="px-4 py-6 text-sm text-zinc-500" colSpan={columns.length}>
+              <td className="px-4 py-6 text-sm text-[var(--text-muted)]" colSpan={columns.length}>
                 No live local support records yet.
               </td>
             </tr>
@@ -174,8 +174,8 @@ function DataTable({ columns, rows, renderRow }) {
 
 function CapabilityFlag({ label, enabled }) {
   return (
-    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
-      <span className="text-zinc-300">{label}</span>
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm">
+      <span className="text-[var(--text-secondary)]">{label}</span>
       <Pill tone={enabled ? "good" : "bad"}>{enabled ? "Allowed" : "Off"}</Pill>
     </div>
   );
@@ -424,16 +424,16 @@ export default function LocalSupportTransparency() {
   }
 
   return (
-    <main className="min-h-[100dvh] bg-[oklch(0.12_0.01_270)] text-zinc-100">
-      <div className="sticky top-0 z-30 border-b border-white/10 bg-zinc-950/95 backdrop-blur">
+    <main className="min-h-[100dvh] bg-[var(--bg-app)] [font-family:var(--font-ui)] text-[var(--text-primary)]" data-testid="local-support-surface">
+      <div className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_96%,transparent)] shadow-[var(--depth-shadow-1)] backdrop-blur">
         <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-400/10">
-              <ShieldCheck className="size-5 text-emerald-200" aria-hidden="true" />
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-[color-mix(in_srgb,var(--attention-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--attention-purple)_10%,transparent)] shadow-[var(--attention-rim)]">
+              <ShieldCheck className="size-5 text-[color-mix(in_srgb,var(--attention-purple)_78%,white)]" aria-hidden="true" />
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-base font-semibold text-zinc-50">Vectant Local Support</h1>
+                <h1 className="text-base font-semibold text-[var(--text-primary)]">Vectant Local Support</h1>
                 <Pill tone={sessionState.tone}>
                   <SessionIcon className="size-3" aria-hidden="true" />
                   {sessionState.label}
@@ -441,7 +441,7 @@ export default function LocalSupportTransparency() {
                 <Pill tone="neutral">Balanced mode</Pill>
                 <Pill tone={policyStatus.tone}>{policyStatus.label}</Pill>
               </div>
-              <p className="mt-1 text-sm text-zinc-400">
+              <p className="mt-1 text-sm text-[var(--text-muted)]">
                 Workspace: {workspaceDisplay}. Account: {accountDisplay}. Session: {sessionDisplay}.
               </p>
             </div>
@@ -451,7 +451,7 @@ export default function LocalSupportTransparency() {
               type="button"
               variant="outline"
               size="sm"
-              className="border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
+              className="border-[var(--border-medium)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-elevated)]"
               onClick={togglePause}
               disabled={!connected}
             >
@@ -462,7 +462,7 @@ export default function LocalSupportTransparency() {
               type="button"
               variant="destructive"
               size="sm"
-              className="bg-red-500/90 text-zinc-950 hover:bg-red-400"
+              className="bg-[var(--accent-danger)] text-[var(--bg-app)] hover:brightness-110"
               disabled={!connected}
               onClick={disconnectLocalSupport}
             >
@@ -475,32 +475,32 @@ export default function LocalSupportTransparency() {
 
       <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.75fr)]">
-          <section className="rounded-lg border border-white/10 bg-zinc-950/70 p-5">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <section className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-5 shadow-[var(--depth-shadow-1)]">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <p className="font-mono text-xs uppercase tracking-[0.12em] text-emerald-300">Local enforcement first</p>
-                <h2 className="mt-3 max-w-[18ch] text-4xl font-semibold leading-[1.02] text-zinc-50 md:text-5xl">
-                  You control what Vectant can see.
+                <p className="font-mono text-xs uppercase tracking-[0.12em] text-[color-mix(in_srgb,var(--attention-purple)_72%,white)]">Local enforcement first</p>
+                <h2 className="mt-2 max-w-[24ch] text-2xl font-semibold leading-tight tracking-[-0.02em] text-[var(--text-primary)] md:text-3xl">
+                  Connect local context with visible boundaries.
                 </h2>
-                <p className="mt-4 max-w-[68ch] text-sm leading-6 text-zinc-400">
+                <p className="mt-3 max-w-[68ch] text-sm leading-6 text-[var(--text-muted)]">
                   Available locally is not the same as sent. Browser preview is not AI page reading. Redacted preview is not raw original.
                 </p>
               </div>
               <div className="grid min-w-[260px] gap-2 text-sm">
-                <div className="flex items-center justify-between rounded-md bg-white/[0.04] px-3 py-2">
-                  <span className="text-zinc-400">App version gate</span>
-                  <span className="text-right text-sm font-medium text-amber-200">Update required below 0.1.0</span>
+                <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
+                  <span className="text-[var(--text-muted)]">App version gate</span>
+                  <span className="text-right text-sm font-medium text-[var(--accent-warning)]">Update required below 0.1.0</span>
                 </div>
-                <div className="flex items-center justify-between rounded-md bg-white/[0.04] px-3 py-2">
-                  <span className="text-zinc-400">AI page reading remains off</span>
+                <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
+                  <span className="text-[var(--text-muted)]">AI page reading remains off</span>
                   <Pill tone="bad">Off</Pill>
                 </div>
-                <div className="flex items-center justify-between rounded-md bg-white/[0.04] px-3 py-2">
-                  <span className="text-zinc-400">Shell commands</span>
+                <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
+                  <span className="text-[var(--text-muted)]">Shell commands</span>
                   <Pill tone="bad">Blocked</Pill>
                 </div>
-                <div className="flex items-center justify-between rounded-md bg-white/[0.04] px-3 py-2">
-                  <span className="text-zinc-400">File writes</span>
+                <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
+                  <span className="text-[var(--text-muted)]">File writes</span>
                   <Pill tone="bad">Blocked</Pill>
                 </div>
               </div>
@@ -508,15 +508,15 @@ export default function LocalSupportTransparency() {
           </section>
 
           <section className="grid grid-cols-2 gap-3">
-            <Stat icon={FileCheck2} label="Sent" value={String(sentPayloads.length)} tone="text-emerald-200" />
-            <Stat icon={Ban} label="Blocked" value={String(blockedItems.length)} tone="text-red-200" />
-            <Stat icon={Eye} label="Ports" value={String(ports.length)} tone="text-sky-200" />
-            <Stat icon={KeyRound} label="Redactions" value={String(redactionCount)} tone="text-amber-200" />
+            <Stat icon={FileCheck2} label="Sent" value={String(sentPayloads.length)} tone="text-[var(--accent-success)]" />
+            <Stat icon={Ban} label="Blocked" value={String(blockedItems.length)} tone="text-[var(--accent-danger)]" />
+            <Stat icon={Eye} label="Ports" value={String(ports.length)} tone="text-[color-mix(in_srgb,var(--attention-purple)_72%,white)]" />
+            <Stat icon={KeyRound} label="Redactions" value={String(redactionCount)} tone="text-[var(--accent-warning)]" />
           </section>
         </div>
 
         <Tabs defaultValue="overview" className="mt-5">
-          <TabsList className="h-auto flex-wrap justify-start rounded-lg border border-white/10 bg-zinc-950 p-1">
+          <TabsList className="h-auto flex-wrap justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-1 shadow-[var(--depth-shadow-1)]">
             {[
               ["overview", ShieldCheck, "Overview"],
               ["inventory", FolderLock, "Inventory"],
@@ -527,7 +527,7 @@ export default function LocalSupportTransparency() {
               ["activity", ClipboardCheck, "Activity"],
               ["release", ShieldCheck, "Release gate"],
             ].map(([value, Icon, label]) => (
-              <TabsTrigger key={value} value={value} className="rounded-md px-3 text-zinc-300 data-[state=active]:bg-white/[0.08]">
+              <TabsTrigger key={value} value={value} className="rounded-sm px-3 text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)]">
                 <Icon className="size-4" aria-hidden="true" />
                 {label}
               </TabsTrigger>
