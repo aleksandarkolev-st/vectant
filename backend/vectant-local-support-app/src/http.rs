@@ -46,19 +46,19 @@ pub struct PortApprovalRequest {
     pub service: Option<String>,
     #[serde(default = "default_target_host")]
     pub target_host: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub agent_read_allowed: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub support_agent_read_allowed: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub agent_interact_allowed: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub send_response_body_allowed: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub send_screenshot_allowed: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub send_console_errors_allowed: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub state_changing_methods_allowed: bool,
 }
 
@@ -537,13 +537,10 @@ async fn approve_port(
             &request.process_identity,
             &request.target_host,
             PortApprovalOptions {
-                agent_read_allowed: request.agent_read_allowed,
-                support_agent_read_allowed: request.support_agent_read_allowed,
-                agent_interact_allowed: request.agent_interact_allowed,
-                send_response_body_allowed: request.send_response_body_allowed,
-                send_screenshot_allowed: request.send_screenshot_allowed,
-                send_console_errors_allowed: request.send_console_errors_allowed,
-                state_changing_methods_allowed: request.state_changing_methods_allowed,
+                // The shipped gateway is browser-preview-only. Keep these
+                // fields in the wire schema for forward compatibility, but do
+                // not let a caller turn on agent reads, body export, or writes.
+                ..PortApprovalOptions::default()
             },
         )
     };
@@ -1267,10 +1264,6 @@ fn validate_port_approval_request(
 
 fn default_target_host() -> String {
     "127.0.0.1".to_string()
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn validate_safe_request_id(request_id: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {

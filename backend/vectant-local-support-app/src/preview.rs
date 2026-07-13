@@ -52,13 +52,13 @@ pub struct PortApprovalOptions {
 impl Default for PortApprovalOptions {
     fn default() -> Self {
         Self {
-            agent_read_allowed: true,
-            support_agent_read_allowed: true,
-            agent_interact_allowed: true,
-            send_response_body_allowed: true,
-            send_screenshot_allowed: true,
-            send_console_errors_allowed: true,
-            state_changing_methods_allowed: true,
+            agent_read_allowed: false,
+            support_agent_read_allowed: false,
+            agent_interact_allowed: false,
+            send_response_body_allowed: false,
+            send_screenshot_allowed: false,
+            send_console_errors_allowed: false,
+            state_changing_methods_allowed: false,
         }
     }
 }

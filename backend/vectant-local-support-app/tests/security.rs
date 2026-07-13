@@ -391,10 +391,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert_eq!(port_body["decision"], "port_approved");
     assert_eq!(port_body["port"], 5173);
     assert_eq!(port_body["browser_preview_allowed"], true);
-    assert_eq!(port_body["agent_read_allowed"], true);
-    assert_eq!(port_body["support_agent_read_allowed"], true);
-    assert_eq!(port_body["send_response_body_allowed"], true);
-    assert_eq!(port_body["state_changing_methods_allowed"], true);
+    assert_eq!(port_body["agent_read_allowed"], false);
+    assert_eq!(port_body["support_agent_read_allowed"], false);
+    assert_eq!(port_body["send_response_body_allowed"], false);
+    assert_eq!(port_body["state_changing_methods_allowed"], false);
     assert_eq!(port_body["preview_token_included"], false);
     assert!(!serde_json::to_string(&port_body)
         .unwrap()
@@ -2528,7 +2528,7 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
             &headers,
             &token,
         ),
-        PreviewDecision::Allow
+        PreviewDecision::Deny("state_changing_method_blocked".to_string())
     );
     assert_eq!(
         decide_preview_request_with_token(
@@ -2810,12 +2810,12 @@ fn port_approvals_are_session_scoped_revocable_and_process_bound() {
     assert_eq!(approval.expires_at, "session_end");
     assert!(approval.invalidate_on_port_close);
     assert!(approval.invalidate_on_process_change);
-    assert!(approval.agent_read_allowed);
-    assert!(approval.support_agent_read_allowed);
-    assert!(approval.agent_interact_allowed);
-    assert!(approval.send_response_body_allowed);
-    assert!(approval.send_screenshot_allowed);
-    assert!(approval.send_console_errors_allowed);
+    assert!(!approval.agent_read_allowed);
+    assert!(!approval.support_agent_read_allowed);
+    assert!(!approval.agent_interact_allowed);
+    assert!(!approval.send_response_body_allowed);
+    assert!(!approval.send_screenshot_allowed);
+    assert!(!approval.send_console_errors_allowed);
 
     assert!(registry
         .approval_for("sess_123", 5173, "vite:1234")
