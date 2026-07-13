@@ -178,7 +178,8 @@ async fn local_support_ipc(
             *runtime
                 .cloud_policy
                 .write()
-                .map_err(|_| "Policy state lock failed closed.".to_string())? = policy;
+                .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
+            apply_policy_to_local_state(&app_state, &policy).await?;
             if !pairing_allowed {
                 return Err(policy_message);
             }
@@ -522,6 +523,7 @@ async fn local_support_ipc(
                 .cloud_policy
                 .write()
                 .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
+            apply_policy_to_local_state(&app_state, &policy).await?;
             if let Some(candidate) = update.as_ref() {
                 if policy.available && !policy.update_version_allowed(&candidate.version) {
                     *runtime
@@ -576,6 +578,7 @@ async fn local_support_ipc(
                 .cloud_policy
                 .write()
                 .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
+            apply_policy_to_local_state(&app_state, &policy).await?;
             if policy.available && !policy.update_version_allowed(&update.version) {
                 *runtime
                     .available_update_version
@@ -674,6 +677,31 @@ async fn require_live_preview_policy(runtime: &DesktopRuntime) -> Result<(), Str
     Ok(())
 }
 
+async fn apply_policy_to_local_state(
+    state: &AppState,
+    policy: &DesktopPolicyStatus,
+) -> Result<(), String> {
+    let Some(store) = &state.audit_store else {
+        return Ok(());
+    };
+    let previous_retention = store.retention_days();
+    if previous_retention == policy.retention_days {
+        return Ok(());
+    }
+    let mut audit = state.audit.lock().await;
+    let previous_audit = audit.clone();
+    store.set_retention_days(policy.retention_days);
+    audit.apply_retention(policy.retention_days);
+    if let Err(error) = store.persist(&audit) {
+        *audit = previous_audit;
+        store.set_retention_days(previous_retention);
+        return Err(format!(
+            "Local retention policy could not be persisted: {error}"
+        ));
+    }
+    Ok(())
+}
+
 async fn append_control_event(
     state: &AppState,
     request_id: &str,
@@ -760,10 +788,11 @@ async fn policy_poll_loop(app_handle: tauri::AppHandle) {
             .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
         let preview_disabled = !policy.preview_allowed();
         if let Ok(mut current) = runtime.cloud_policy.write() {
-            *current = policy;
+            *current = policy.clone();
         }
-        if preview_disabled {
-            if let Ok(state) = current_app_state(&runtime) {
+        if let Ok(state) = current_app_state(&runtime) {
+            let _ = apply_policy_to_local_state(&state, &policy).await;
+            if preview_disabled {
                 let session_id = state.session.lock().await.session_id().to_string();
                 state
                     .port_approvals

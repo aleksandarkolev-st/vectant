@@ -42,6 +42,7 @@ pub struct DesktopPolicyStatus {
     pub current_version: String,
     pub minimum_version: String,
     pub vulnerable_versions: Vec<String>,
+    pub retention_days: u16,
     pub reason: String,
     pub user_visible_message: String,
 }
@@ -58,6 +59,7 @@ impl DesktopPolicyStatus {
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             minimum_version: "unknown".to_string(),
             vulnerable_versions: Vec::new(),
+            retention_days: 30,
             reason: "policy_unavailable".to_string(),
             user_visible_message:
                 "Cloud policy is unavailable. New pairing is disabled until it can be checked."
@@ -271,6 +273,14 @@ pub fn parse_policy_status(
     let vulnerable = vulnerable_versions
         .iter()
         .any(|version| version == current_version);
+    let retention_days = match value.pointer("/retention/cloud_security_event_days") {
+        None => 30,
+        Some(value) => value
+            .as_u64()
+            .filter(|days| *days <= 90)
+            .and_then(|days| u16::try_from(days).ok())
+            .ok_or_else(|| "Local Support policy contained invalid retention days.".to_string())?,
+    };
     let too_old = compare_numeric_versions(current_version, minimum_version).is_lt();
     let update_required = vulnerable || too_old;
     let reason = if vulnerable {
@@ -312,6 +322,7 @@ pub fn parse_policy_status(
         current_version: current_version.to_string(),
         minimum_version: minimum_version.to_string(),
         vulnerable_versions,
+        retention_days,
         reason: reason.to_string(),
         user_visible_message: message.to_string(),
     })
@@ -574,12 +585,14 @@ mod tests {
                 "enabled": true,
                 "min_app_version": "0.1.0",
                 "vulnerable_versions": ["0.1.1"],
+                "retention": { "cloud_security_event_days": 7 },
                 "emergency_controls": { "pairing_disabled": false },
             }),
             "0.1.1",
         )
         .unwrap();
         assert_eq!(vulnerable.reason, "version_vulnerable");
+        assert_eq!(vulnerable.retention_days, 7);
         assert!(!vulnerable.update_version_allowed("0.1.1"));
         assert!(vulnerable.update_version_allowed("0.2.0"));
 
@@ -601,6 +614,16 @@ mod tests {
                 "enabled": true,
                 "min_app_version": "latest",
                 "vulnerable_versions": [],
+            }),
+            "0.1.0"
+        )
+        .is_err());
+        assert!(parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "0.1.0",
+                "vulnerable_versions": [],
+                "retention": { "cloud_security_event_days": 91 },
             }),
             "0.1.0"
         )

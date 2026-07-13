@@ -3157,6 +3157,38 @@ fn local_audit_store_persists_scrubbed_hash_chained_history() {
 }
 
 #[test]
+fn local_audit_store_applies_a_live_retention_change_before_persisting() {
+    let dir = tempdir().unwrap();
+    let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());
+    let mut log = AuditLog::new(SecretScanner::default());
+    let old = chrono::Utc::now() - chrono::Duration::days(2);
+    log.append_at(
+        AuditClass::Denied,
+        Some("req_old_retention".to_string()),
+        "Old denied event.",
+        true,
+        old,
+    );
+    log.append(
+        AuditClass::Control,
+        Some("req_recent_retention".to_string()),
+        "Recent control event.",
+        true,
+    );
+
+    store.set_retention_days(1);
+    log.apply_retention(store.retention_days());
+    store.persist(&log).unwrap();
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.events().len(), 1);
+    assert_eq!(
+        loaded.events()[0].request_id.as_deref(),
+        Some("req_recent_retention")
+    );
+}
+
+#[test]
 fn local_audit_store_rejects_tampered_history_and_delete_removes_file() {
     let dir = tempdir().unwrap();
     let store = LocalAuditStore::new(dir.path().join("audit.json"), 30, SecretScanner::default());

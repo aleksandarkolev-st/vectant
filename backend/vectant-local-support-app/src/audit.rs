@@ -1,6 +1,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -163,6 +165,14 @@ impl AuditLog {
         self.consent_receipts.clear();
     }
 
+    pub fn apply_retention(&mut self, retention_days: u16) {
+        let now = Utc::now();
+        let (events, _) = retained_event_chain(&self.events, retention_days, now);
+        self.events = events;
+        self.consent_receipts =
+            retained_consent_receipts(&self.consent_receipts, retention_days, now);
+    }
+
     pub fn export_incident_bundle(&self, retention_days: u16) -> AuditExport {
         let now = Utc::now();
         let (events, root_hash) = retained_event_chain(&self.events, retention_days, now);
@@ -221,7 +231,7 @@ impl AuditExport {
 #[derive(Debug, Clone)]
 pub struct LocalAuditStore {
     path: PathBuf,
-    retention_days: u16,
+    retention_days: Arc<AtomicU16>,
     scanner: SecretScanner,
 }
 
@@ -229,7 +239,7 @@ impl LocalAuditStore {
     pub fn new(path: impl Into<PathBuf>, retention_days: u16, scanner: SecretScanner) -> Self {
         Self {
             path: path.into(),
-            retention_days,
+            retention_days: Arc::new(AtomicU16::new(retention_days)),
             scanner,
         }
     }
@@ -239,7 +249,11 @@ impl LocalAuditStore {
     }
 
     pub fn retention_days(&self) -> u16 {
-        self.retention_days
+        self.retention_days.load(Ordering::Acquire)
+    }
+
+    pub fn set_retention_days(&self, retention_days: u16) {
+        self.retention_days.store(retention_days, Ordering::Release);
     }
 
     pub fn load(&self) -> Result<AuditLog, AuditStoreError> {
@@ -261,7 +275,7 @@ impl LocalAuditStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(AuditStoreError::Io)?;
         }
-        let export = log.export_incident_bundle(self.retention_days);
+        let export = log.export_incident_bundle(self.retention_days());
         let bytes = serde_json::to_vec_pretty(&export).map_err(AuditStoreError::Json)?;
         if bytes.len() as u64 > MAX_AUDIT_STORE_BYTES {
             return Err(AuditStoreError::TooLarge);
