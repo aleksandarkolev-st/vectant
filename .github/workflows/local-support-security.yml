@@ -134,6 +134,7 @@ jobs:
         shell: pwsh
         env:
           VECTANT_TEST_BASE_URL: http://127.0.0.1:3000
+          VECTANT_LOCAL_SUPPORT_ENABLED: "true"
         run: |
           $out = Join-Path $env:RUNNER_TEMP "local-support-next.out.log"
           $err = Join-Path $env:RUNNER_TEMP "local-support-next.err.log"
@@ -253,6 +254,7 @@ jobs:
       - name: Start real Next server
         env:
           DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+          VECTANT_LOCAL_SUPPORT_ENABLED: "true"
           VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN: live-ci-admin-token-0123456789
           VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET: live-ci-envelope-secret-0123456789
           VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET: live-ci-device-proof-secret-0123456789
@@ -265,6 +267,7 @@ jobs:
       - name: Run browser-to-cloud policy gate
         env:
           DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+          VECTANT_LOCAL_SUPPORT_ENABLED: "true"
           VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN: live-ci-admin-token-0123456789
           LOCAL_SUPPORT_LIVE_CLOUD_E2E: "1"
           VECTANT_TEST_BASE_URL: http://localhost:3100
