@@ -14,7 +14,7 @@ pub enum RelayPoll {
     Revoked,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayDelivery {
     pub request_id: String,
     pub session_id: String,
@@ -241,18 +241,29 @@ impl RelayClient {
             .send()
             .await
             .map_err(|_| "Relay service could not be reached.".to_string())?;
-        if matches!(response.status().as_u16(), 401 | 403) {
-            return Err("relay_session_denied".to_string());
-        }
-        if !response.status().is_success() {
-            return Err("Relay request was denied.".to_string());
-        }
+        let status = response.status();
         let bytes = response
             .bytes()
             .await
             .map_err(|_| "Relay response could not be read.".to_string())?;
         if bytes.len() > MAX_RELAY_RESPONSE_BYTES {
             return Err("Relay response was too large.".to_string());
+        }
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err("relay_session_denied".to_string());
+        }
+        if !status.is_success() {
+            let reason = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+            return Err(reason
+                .map(|value| format!("relay_http_denied:{value}"))
+                .unwrap_or_else(|| "Relay request was denied.".to_string()));
         }
         serde_json::from_slice(&bytes).map_err(|_| "Relay response was invalid.".to_string())
     }
