@@ -187,6 +187,13 @@ jobs:
         run: |
           npx prisma validate --schema prisma/schema.prisma
           npx prisma migrate deploy --schema prisma/schema.prisma
+          npx prisma generate --schema prisma/schema.prisma
+      - name: Exercise durable emergency controls against PostgreSQL
+        working-directory: synthi
+        env:
+          DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+          LOCAL_SUPPORT_POSTGRES_E2E: "1"
+        run: npm run test -- src/lib/local-support/postgres.integration.test.js
 
   supply-chain:
     name: Supply chain checks
