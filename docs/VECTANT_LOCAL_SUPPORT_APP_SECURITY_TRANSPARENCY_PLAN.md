@@ -3346,3 +3346,9 @@ The remaining shippable implementation goals are tracked in:
 - `docs/VECTANT_LOCAL_SUPPORT_APP_REMAINING_IMPLEMENTATION_GOALS.md`
 
 Do not treat release-checklist mappings, static UI evidence, helper functions, or unit-only coverage as completion. A blocker is complete only when the feature works end-to-end through the production desktop app, local daemon, cloud control plane, browser UI, audit storage, and security tests.
+
+## 33. Implementation evidence update — 2026-07-13
+
+The current implementation has verified loopback-only preview enforcement and browser-only capability projections across the desktop IPC path, Rust local gateway, cloud session persistence, relay control, and transparency UI. Native and Chromium local-support gates pass for the exercised workflows, including protected daemon status, preview rejection of state-changing methods and private-network targets, session/port revocation, and scrubbed transparency state.
+
+This evidence does not constitute release readiness. The Windows installer smoke path passes locally, but the artifact is unsigned because the updater private signing key and production certificate are not available in the workspace. Live PostgreSQL/cloud relay E2E, signed updater tamper/downgrade/revocation tests, and production release controls remain required before beta or public release.

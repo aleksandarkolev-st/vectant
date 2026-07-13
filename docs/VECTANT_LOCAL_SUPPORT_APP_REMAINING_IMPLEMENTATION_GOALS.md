@@ -2,6 +2,21 @@
 
 Status baseline: current implementation is approximately 44% complete. Treat the existing Rust helpers, static transparency UI, acceptance tables, and CI mapping as partial evidence only. A goal is complete only when the feature works end-to-end through the desktop app, local daemon, cloud control plane, browser UI, audit storage, and tests that exercise the real path.
 
+## Evidence update — 2026-07-13
+
+Verified in the current worktree:
+
+- Native backend, desktop, local-support web/API, Chromium desktop, and Chromium live-daemon gates pass for the exercised scenarios.
+- Preview enforcement is loopback-only across native IPC, the Rust gateway, cloud port persistence, relay control, and transparency projections. Agent reads, interaction, response bodies, screenshots, console data, state-changing methods, and persistent approvals remain disabled.
+- Local sent-history projections now carry the recorded relay byte count and redaction count instead of placeholder zeroes.
+- The Windows NSIS installer was built and passed install, loopback health/protected-status, and uninstall smoke checks locally.
+
+Still unverified or blocked:
+
+- The local release build cannot produce a signed updater artifact without `TAURI_SIGNING_PRIVATE_KEY`; the generated installer was `NotSigned`.
+- Live PostgreSQL/cloud/relay E2E, production certificate signing, updater tamper/downgrade/revocation verification, and release-branch controls require their configured CI secrets/infrastructure.
+- Full repository tests are not a Local Support release proof; unrelated existing failures remain outside this feature’s focused gates.
+
 ## MVP Blockers
 
 ### Goal 1: Ship the Real Desktop/Tray App Shell
