@@ -339,14 +339,10 @@ async fn local_support_ipc(
                 .unwrap_or("127.0.0.1")
                 .trim()
                 .to_string();
-            let process_identity = if target_host == "127.0.0.1" {
-                detect_loopback_listener(port)
-                    .map_err(|_| "No loopback-only listening process owns that port. Nothing was exposed.".to_string())?
-                    .process_identity
-            } else {
-                validate_private_target(&target_host)?;
-                format!("target:{target_host}:{port}")
-            };
+            validate_private_target(&target_host)?;
+            let process_identity = detect_loopback_listener(port)
+                .map_err(|_| "No loopback-only listening process owns that port. Nothing was exposed.".to_string())?
+                .process_identity;
             let session = app_state.session.lock().await;
             if !session.is_active() || session.state().paused {
                 return Err("Connect and resume Local Support before approving a port.".to_string());
@@ -380,7 +376,7 @@ async fn local_support_ipc(
                 &app_state,
                 &request_id,
                 &format!(
-                    "Preview approved for {target_host}:{port} with AI, support, interaction, body, and state-changing capabilities.",
+                    "Browser preview approved for loopback {target_host}:{port}. AI/support page reads, interaction, response bodies, screenshots, console data, and state-changing methods remain disabled.",
                 ),
             )
             .await?;
@@ -763,12 +759,30 @@ fn required_port(payload: &serde_json::Value) -> Result<u16, String> {
 fn validate_private_target(target_host: &str) -> Result<(), String> {
     let ip = target_host
         .parse::<std::net::IpAddr>()
-        .map_err(|_| "Target host must be a private-network IP address.".to_string())?;
+        .map_err(|_| "Target host must be a loopback IP address.".to_string())?;
     let allowed = match ip {
-        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
-        std::net::IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+        std::net::IpAddr::V4(ip) => ip.is_loopback(),
+        std::net::IpAddr::V6(ip) => ip.is_loopback(),
     };
-    if allowed { Ok(()) } else { Err("Target host must be loopback, private, or link-local.".to_string()) }
+    if allowed {
+        Ok(())
+    } else {
+        Err("Target host must be loopback-only; private-network and link-local targets are blocked.".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_private_target;
+
+    #[test]
+    fn preview_target_validation_accepts_only_loopback() {
+        assert!(validate_private_target("127.0.0.1").is_ok());
+        assert!(validate_private_target("::1").is_ok());
+        assert!(validate_private_target("10.0.0.5").is_err());
+        assert!(validate_private_target("192.168.1.10").is_err());
+        assert!(validate_private_target("169.254.169.254").is_err());
+    }
 }
 
 async fn relay_poll_loop(app_handle: tauri::AppHandle) {
