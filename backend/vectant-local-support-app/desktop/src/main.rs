@@ -525,7 +525,7 @@ async fn local_support_ipc(
                 .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
             apply_policy_to_local_state(&app_state, &policy).await?;
             if let Some(candidate) = update.as_ref() {
-                if policy.available && !policy.update_version_allowed(&candidate.version) {
+                if !policy.update_version_allowed(&candidate.version) {
                     *runtime
                         .available_update_version
                         .write()
@@ -579,7 +579,7 @@ async fn local_support_ipc(
                 .write()
                 .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
             apply_policy_to_local_state(&app_state, &policy).await?;
-            if policy.available && !policy.update_version_allowed(&update.version) {
+            if !policy.update_version_allowed(&update.version) {
                 *runtime
                     .available_update_version
                     .write()

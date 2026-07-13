@@ -79,6 +79,7 @@ impl DesktopPolicyStatus {
         self.available
             && valid_numeric_version(version)
             && compare_numeric_versions(version, &self.current_version) >= std::cmp::Ordering::Equal
+            && compare_numeric_versions(version, &self.minimum_version) >= std::cmp::Ordering::Equal
             && !self
                 .vulnerable_versions
                 .iter()
@@ -578,6 +579,8 @@ mod tests {
         .unwrap();
         assert!(old.update_required);
         assert!(!old.pairing_allowed());
+        assert!(!old.update_version_allowed("0.1.5"));
+        assert!(old.update_version_allowed("0.2.0"));
         assert_eq!(old.reason, "version_too_old");
 
         let vulnerable = parse_policy_status(
@@ -608,6 +611,9 @@ mod tests {
         .unwrap();
         assert!(!disabled.pairing_allowed());
         assert_eq!(disabled.reason, "feature_disabled");
+
+        let unavailable = DesktopPolicyStatus::unavailable();
+        assert!(!unavailable.update_version_allowed("99.0.0"));
 
         assert!(parse_policy_status(
             serde_json::json!({
