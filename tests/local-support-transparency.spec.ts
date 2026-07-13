@@ -91,8 +91,8 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Paired browser session with fingerprint")).toHaveCount(0);
   });
 
-  test("creates and displays a live one-time pairing challenge", async ({ page }) => {
-    let pairingRequest;
+  test("does not create a pairing challenge without a selected workspace", async ({ page }) => {
+    let pairingRequest = null;
     await page.route("**/api/local-support/policy", async (route) => {
       await route.fulfill({
         status: 200,
@@ -117,13 +117,10 @@ test.describe("local support transparency page", () => {
     });
     await page.goto(`${baseURL}/local-support`);
 
-    await page.getByRole("button", { name: "Start pairing" }).click();
-
-    expect(pairingRequest.workspace_id).toBe("wk_pending_local_selection");
-    await expect(page.getByText("ABCD2345WXYZ", { exact: true })).toBeVisible();
-    await expect(page.getByText("Expires in 2 minutes", { exact: true })).toBeVisible();
-    await expect(page.getByText("1a2b-3c4d-5e6f", { exact: true })).toBeVisible();
-    await expect(page.getByText("Confirm only if this fingerprint appears in the desktop app.")).toBeVisible();
+    const pairingButton = page.getByRole("button", { name: "Start pairing" });
+    await expect(pairingButton).toBeDisabled();
+    expect(pairingRequest).toBeNull();
+    await expect(page.getByText("No pairing challenge is active. Starting one does not grant file, log, or localhost access.")).toBeVisible();
   });
 
   test("refreshes durable transparency state without reloading the page", async ({ page }) => {
@@ -166,8 +163,6 @@ test.describe("local support transparency page", () => {
     });
 
     await page.goto(`${baseURL}/local-support`);
-    await expect(page.getByText("Workspace: No workspace selected. Account: Not paired. Session: Not paired.")).toBeVisible();
-
     await expect(page.getByText("Workspace: Live relay workspace. Account: acct_live. Session: sess_live_12345678."))
       .toBeVisible({ timeout: 6_000 });
     await expect(page.getByText("Connected").first()).toBeVisible();

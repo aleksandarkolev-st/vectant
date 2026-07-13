@@ -347,6 +347,8 @@ export default function LocalSupportTransparency() {
     scanner_version: liveState?.scanner_version || DEFAULT_EXPORT_METADATA.scanner_version,
   };
   const workspaceDisplay = liveWorkspace.display || "No workspace selected";
+  const workspaceSelected = typeof liveWorkspace.workspace_id === "string"
+    && liveWorkspace.workspace_id !== "not_selected";
   const accountDisplay = liveSession.account_id || "Not paired";
   const sessionDisplay = liveSession.session_id || "Not paired";
   const orgRestrictions = buildOrgRestrictions(livePolicy);
@@ -406,13 +408,17 @@ export default function LocalSupportTransparency() {
   }
 
   async function startPairing() {
+    if (!workspaceSelected) {
+      setPairingState({
+        status: "error",
+        challenge: null,
+        error: "Choose a workspace in the desktop app before starting pairing.",
+      });
+      return;
+    }
     setPairingState({ status: "loading", challenge: null, error: null });
     try {
       const browserSessionId = `browser_${crypto.randomUUID().replaceAll("-", "")}`;
-      const selectedWorkspaceId = typeof liveWorkspace.workspace_id === "string"
-        && liveWorkspace.workspace_id !== "not_selected"
-        ? liveWorkspace.workspace_id
-        : "wk_pending_local_selection";
       const response = await fetch("/api/local-support/pairing", {
         method: "POST",
         cache: "no-store",
@@ -421,7 +427,7 @@ export default function LocalSupportTransparency() {
           action: "create",
           account_id: "server_authenticated",
           org_id: livePolicy?.org_id || "org_personal",
-          workspace_id: selectedWorkspaceId,
+          workspace_id: liveWorkspace.workspace_id,
           browser_session_id: browserSessionId,
           requested_user_id: "server_authenticated",
         }),
@@ -636,7 +642,8 @@ export default function LocalSupportTransparency() {
                   type="button"
                   size="sm"
                   onClick={startPairing}
-                  disabled={pairingState.status === "loading" || connected || livePolicy?.enabled === false}
+                  disabled={pairingState.status === "loading" || connected || livePolicy?.enabled === false || !workspaceSelected}
+                  title={!workspaceSelected ? "Choose a workspace in the desktop app first." : undefined}
                 >
                   <KeyRound className="size-4" aria-hidden="true" />
                   {pairingState.status === "loading" ? "Starting pairing" : "Start pairing"}
