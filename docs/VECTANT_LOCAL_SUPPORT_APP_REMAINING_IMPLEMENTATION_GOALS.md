@@ -10,11 +10,12 @@ Verified in the current worktree:
 - Preview enforcement is loopback-only across native IPC, the Rust gateway, cloud port persistence, relay control, and transparency projections. Agent reads, interaction, response bodies, screenshots, console data, state-changing methods, and persistent approvals remain disabled.
 - Local sent-history projections now carry the recorded relay byte count and redaction count instead of placeholder zeroes.
 - The Windows NSIS installer was built and passed install, loopback health/protected-status, and uninstall smoke checks locally.
+- Live Chromium E2E against the host-mapped PostgreSQL container passed cloud policy/admin controls and the Rust relay path: poll, review outcome, encrypted payload upload, denied-secret alert, session revocation, and payload purge.
 
 Still unverified or blocked:
 
 - The local release build cannot produce a signed updater artifact without `TAURI_SIGNING_PRIVATE_KEY`; the generated installer was `NotSigned`.
-- Live PostgreSQL/cloud/relay E2E, production certificate signing, updater tamper/downgrade/revocation verification, and release-branch controls require their configured CI secrets/infrastructure.
+- Production certificate signing, updater tamper/downgrade/revocation verification, and release-branch controls require their configured CI secrets/infrastructure.
 - Full repository tests are not a Local Support release proof; unrelated existing failures remain outside this feature’s focused gates.
 
 ## MVP Blockers
