@@ -168,6 +168,8 @@ async function forwardLocalDaemonAction(body, decision, localStatus, env = proce
 }
 
 function localDaemonActionPath(action, body, requestId) {
+  if (action === "enable_fast_support") return { method: "POST", path: `/v1/session/fast-support/${requestId}`, body: { enabled: true } };
+  if (action === "disable_fast_support") return { method: "POST", path: `/v1/session/fast-support/${requestId}`, body: { enabled: false } };
   if (action === "pause_session") return { method: "POST", path: `/v1/session/pause/${requestId}` };
   if (action === "resume_session") return { method: "POST", path: `/v1/session/resume/${requestId}` };
   if (action === "disconnect_session") return { method: "POST", path: `/v1/session/disconnect/${requestId}` };

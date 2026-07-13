@@ -363,11 +363,11 @@ export const RELEASE_BLOCKERS = [
     evidence: ["synthi:permissionModes Manual mode"],
   },
   {
-    id: "fast_support_disabled",
+    id: "fast_support_bounded",
     category: "product",
-    label: "Fast Support disabled or strictly controlled",
+    label: "Fast Support strictly controlled",
     status: "partial",
-    evidence: ["synthi:Fast Support Disabled", "synthi:readLocalSupportPolicy fast_support_enabled default false"],
+    evidence: ["synthi:Fast Support bounded mode", "synthi:readLocalSupportPolicy fast_support_enabled with org kill switch"],
   },
   {
     id: "agent_read_disabled",
@@ -435,7 +435,7 @@ export const UX_ACCEPTANCE_PROMPTS = [
   ["pause_control", "How do you pause?", "Sticky header exposes Pause and changes session state to Paused."],
   ["disconnect_control", "How do you disconnect?", "Sticky header exposes Disconnect and the permission tab includes Disconnect and revoke."],
   ["redactions", "What was redacted?", "Review-before-send and activity log show authorization_header and database_url redactions."],
-  ["fast_support_auto", "What will happen automatically?", "Permission mode shows Balanced sends low-risk metadata only and Fast Support is disabled."],
+  ["fast_support_auto", "What will happen automatically?", "Fast Support sends safe metadata only for one workspace for up to 30 minutes; source, logs, ports, response bodies, and secrets remain protected."],
   ["revoke_port", "How do you revoke a port?", "Local ports tab exposes Revoke port approval and invalidates the token."],
   ["delete_history", "How do you delete local activity history?", "Activity tab exposes Delete local history and scrubbed export."],
 ].map(([id, question, answerEvidence]) => ({

@@ -208,6 +208,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
         .route(
+            "/v1/session/fast-support/:request_id",
+            post(fast_support_session),
+        )
+        .route(
             "/v1/session/disconnect/:request_id",
             post(disconnect_session),
         )
@@ -953,6 +957,45 @@ async fn disconnect_session(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     control_session(state, request_id, headers, SessionAction::Disconnect).await
+}
+
+#[derive(Debug, Deserialize)]
+struct FastSupportRequest {
+    enabled: bool,
+}
+
+async fn fast_support_session(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<FastSupportRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
+    let token = bearer(&headers)?;
+    let mut session = state.session.lock().await;
+    session
+        .validate_control(token, &request_id)
+        .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+    session.set_fast_support(request.enabled);
+    let session_state = session.state();
+    drop(session);
+    let summary = if request.enabled {
+        "Fast Support enabled for this session. Safe metadata only may be automatic; source files and logs remain approval-gated."
+    } else {
+        "Fast Support disabled. The session returned to Balanced mode."
+    };
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Control, Some(request_id), summary, true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(serde_json::json!({
+        "decision": "fast_support_updated",
+        "user_visible_message": summary,
+        "session": session_state,
+        "bytes_sent": 0,
+        "raw_body_included": false
+    })))
 }
 
 #[derive(Clone, Copy)]

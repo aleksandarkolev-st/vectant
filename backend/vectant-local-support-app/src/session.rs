@@ -15,6 +15,8 @@ pub struct SessionState {
     pub device_fingerprint: String,
     pub paused: bool,
     pub protocol_version: String,
+    pub permission_mode: String,
+    pub fast_support_remaining_seconds: u64,
 }
 
 pub struct DeviceProofContext<'a> {
@@ -39,6 +41,7 @@ pub struct SessionGuard {
     token: String,
     expires_at: Instant,
     paused: bool,
+    fast_support_until: Option<Instant>,
     seen_request_ids: HashSet<String>,
 }
 
@@ -156,6 +159,7 @@ impl SessionGuard {
             token,
             expires_at: Instant::now() + ttl,
             paused: false,
+            fast_support_until: None,
             seen_request_ids: HashSet::new(),
         }
     }
@@ -229,6 +233,10 @@ impl SessionGuard {
     }
 
     pub fn state(&self) -> SessionState {
+        let fast_support_remaining_seconds = self
+            .fast_support_until
+            .map(|until| until.saturating_duration_since(Instant::now()).as_secs())
+            .unwrap_or(0);
         SessionState {
             session_id: self.session_id.clone(),
             account_id: self.account_id.clone(),
@@ -237,6 +245,12 @@ impl SessionGuard {
             device_fingerprint: self.device_fingerprint.clone(),
             paused: self.paused,
             protocol_version: crate::APP_PROTOCOL_VERSION.to_string(),
+            permission_mode: if fast_support_remaining_seconds > 0 {
+                "Fast Support".to_string()
+            } else {
+                "Balanced mode".to_string()
+            },
+            fast_support_remaining_seconds,
         }
     }
 
@@ -287,7 +301,15 @@ impl SessionGuard {
     pub fn disconnect(&mut self) {
         self.expires_at = Instant::now();
         self.paused = true;
+        self.fast_support_until = None;
         self.seen_request_ids.clear();
+    }
+
+    pub fn set_fast_support(&mut self, enabled: bool) {
+        self.fast_support_until = enabled.then(|| {
+            let requested_until = Instant::now() + Duration::from_secs(30 * 60);
+            requested_until.min(self.expires_at)
+        });
     }
 }
 

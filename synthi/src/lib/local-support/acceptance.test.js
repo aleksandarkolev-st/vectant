@@ -69,7 +69,7 @@ const PLAN_PRODUCT_BLOCKERS = [
   "workspace_picker_complete",
   "balanced_default",
   "manual_mode_available",
-  "fast_support_disabled",
+  "fast_support_bounded",
   "agent_read_disabled",
   "agent_interaction_disabled",
   "error_states_understandable",
@@ -150,7 +150,7 @@ describe("local support release acceptance evidence", () => {
     expect(policy.mvp).toMatchObject({
       balanced_mode_default: true,
       manual_mode_available: true,
-      fast_support_enabled: false,
+      fast_support_enabled: true,
       agent_read_enabled: false,
       agent_interaction_enabled: false,
       persistent_port_approvals: false,

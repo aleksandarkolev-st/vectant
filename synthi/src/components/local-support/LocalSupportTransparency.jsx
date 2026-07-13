@@ -58,7 +58,7 @@ const orgRestrictions = [
   ["Browser preview", "Allowed", "good", null],
   ["Vectant AI page reading", "Blocked", "bad", "Blocked by organization"],
   ["Support agent page reading", "Blocked", "bad", "Blocked by organization"],
-  ["Fast Support", "Disabled", "bad", "Disabled for MVP"],
+  ["Fast Support", "Available", "warn", "Safe metadata only; 30-minute session TTL"],
   ["Minimum app version", "Required", "warn", "0.1.0 required"],
   ["Activity retention", "Limited", "warn", "30 days, raw bodies never stored"],
 ];
@@ -89,11 +89,11 @@ const permissionModes = [
   },
   {
     mode: "Fast Support",
-    status: "Disabled",
-    automatic: "Not available in MVP",
-    approval: "Requires separate security review",
-    blocked: "Auto-send, broad repo upload, persistent approvals",
-    tone: "bad",
+    status: "Available",
+    automatic: "Safe metadata/config only, one workspace, max 30 minutes",
+    approval: "Source, logs, ports, response bodies",
+    blocked: "Secrets, writes, commands, repo upload, persistent approvals",
+    tone: "warn",
   },
 ];
 
@@ -195,6 +195,7 @@ export default function LocalSupportTransparency() {
   const [historyDeleted, setHistoryDeleted] = useState(false);
   const [lastExport, setLastExport] = useState(null);
   const [approvalsRevoked, setApprovalsRevoked] = useState(false);
+  const [fastSupportActive, setFastSupportActive] = useState(false);
   const [revokedPorts, setRevokedPorts] = useState([]);
   const [controlActionStatus, setControlActionStatus] = useState(null);
   const [pairingState, setPairingState] = useState({
@@ -285,6 +286,8 @@ export default function LocalSupportTransparency() {
   const liveWorkspace = liveState?.workspace || {};
   const connected = Boolean(liveSession.connected) && !localDisconnected;
   const paused = Boolean(liveSession.paused || localPaused);
+  const liveFastSupport = liveSession.permission_mode === "Fast Support"
+    && Number(liveSession.fast_support_remaining_seconds || 0) > 0;
   const inventory = liveState?.inventory || DEFAULT_INVENTORY;
   const sentPayloads = liveState?.sent_payloads || DEFAULT_SENT_PAYLOADS;
   const blockedItems = liveState?.blocked_items || DEFAULT_BLOCKED_ITEMS;
@@ -303,6 +306,7 @@ export default function LocalSupportTransparency() {
   const releaseReadiness = summarizeLocalSupportReleaseReadiness();
   const ciRequiredBlockers = RELEASE_BLOCKERS.filter((item) => item.status === "ci_required");
   const livePolicy = policyState.policy;
+  const fastSupportEnabled = Boolean(livePolicy?.mvp?.fast_support_enabled ?? true);
   const liveExportMetadata = {
     ...DEFAULT_EXPORT_METADATA,
     ...(liveState?.export_metadata || {}),
@@ -405,6 +409,12 @@ export default function LocalSupportTransparency() {
     if (result) setApprovalsRevoked(true);
   }
 
+  async function toggleFastSupport() {
+    const enabling = !(fastSupportActive || liveFastSupport);
+    const result = await requestLocalControlAction(enabling ? "enable_fast_support" : "disable_fast_support");
+    if (result) setFastSupportActive(enabling);
+  }
+
   async function revokePortApproval(port) {
     const result = await requestLocalControlAction("revoke_port", { port });
     if (result) setRevokedPorts((values) => Array.from(new Set([...values, port])));
@@ -438,7 +448,9 @@ export default function LocalSupportTransparency() {
                   <SessionIcon className="size-3" aria-hidden="true" />
                   {sessionState.label}
                 </Pill>
-                <Pill tone="neutral">Balanced mode</Pill>
+                <Pill tone={fastSupportActive || liveFastSupport ? "warn" : "neutral"}>
+                  {fastSupportActive || liveFastSupport ? "Fast Support" : "Balanced mode"}
+                </Pill>
                 <Pill tone={policyStatus.tone}>{policyStatus.label}</Pill>
               </div>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
@@ -472,6 +484,15 @@ export default function LocalSupportTransparency() {
           </div>
         </div>
       </div>
+
+      {(fastSupportActive || liveFastSupport) ? (
+        <div className="border-b border-amber-400/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100" role="status">
+          <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 lg:px-2">
+            <span><strong>Fast Support is active for this session.</strong> Safe metadata may be automatic; secrets stay blocked and source files, logs, ports, and response bodies still require approval.</span>
+            <span className="font-mono text-xs">Expires in {Math.max(1, Math.ceil(Number(liveSession.fast_support_remaining_seconds || 30 * 60) / 60))} min</span>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.75fr)]">
@@ -853,7 +874,7 @@ export default function LocalSupportTransparency() {
           </TabsContent>
 
           <TabsContent value="mode" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <Panel title="Permission mode" description="Balanced is the default for MVP. Manual mode is stricter. Fast Support is disabled until a separate security review approves it.">
+            <Panel title="Permission mode" description="Fast Support is a bounded convenience mode: one workspace, safe metadata only, and a maximum 30-minute TTL. Source files, logs, ports, and response bodies remain review-gated.">
               <DataTable
                 columns={["Mode", "Status", "Automatic", "Requires approval", "Blocked"]}
                 rows={permissionModes}
@@ -867,6 +888,15 @@ export default function LocalSupportTransparency() {
                   </tr>
                 )}
               />
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-400/20 bg-amber-400/10 p-4">
+                <div>
+                  <div className="font-medium text-amber-100">{fastSupportActive || liveFastSupport ? "Fast Support is active" : "Enable Fast Support for this session"}</div>
+                  <p className="mt-1 max-w-[70ch] text-sm leading-6 text-amber-100/80">Automatically shares safe project metadata for the selected workspace. Secrets, source, logs, writes, commands, repo uploads, and persistent approvals remain blocked or approval-gated.</p>
+                </div>
+                <Button type="button" variant={fastSupportActive || liveFastSupport ? "outline" : "default"} disabled={!connected || !fastSupportEnabled || paused} onClick={toggleFastSupport}>
+                  {fastSupportActive || liveFastSupport ? "Switch to Balanced" : "Enable Fast Support"}
+                </Button>
+              </div>
             </Panel>
 
             <Panel title="Approval controls" description="Revoking approvals forces every future send or preview request back through local review.">

@@ -40,6 +40,8 @@ const SECURITY_EVENT_TYPES = new Set([
 ]);
 
 const TRANSPARENCY_ACTIONS = new Set([
+  "enable_fast_support",
+  "disable_fast_support",
   "pause_session",
   "resume_session",
   "disconnect_session",
@@ -84,7 +86,8 @@ export function readLocalSupportPolicy(env = process.env) {
   const allowedDeviceFingerprint = env.VECTANT_LOCAL_SUPPORT_DEVICE_FINGERPRINT || null;
   const deviceProofSecret = env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET || null;
   const disabledReason = env.VECTANT_LOCAL_SUPPORT_DISABLED_REASON || null;
-  const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED === "true";
+  const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED !== "false";
+  const fastSupportTtlMinutes = clampNumber(env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_TTL_MINUTES, 1, 30, 30);
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
   const vulnerableVersions = parseCsv(env.VECTANT_LOCAL_SUPPORT_VULNERABLE_VERSIONS);
   const revokedSessionIds = parseCsv(env.VECTANT_LOCAL_SUPPORT_REVOKED_SESSIONS);
@@ -132,6 +135,12 @@ export function readLocalSupportPolicy(env = process.env) {
       balanced_mode_default: true,
       manual_mode_available: true,
       fast_support_enabled: allowFastSupport,
+      fast_support_ttl_minutes: fastSupportTtlMinutes,
+      fast_support_scope: "safe_metadata_one_workspace",
+      fast_support_source_review_required: true,
+      fast_support_logs_review_required: true,
+      fast_support_ports_manual: true,
+      fast_support_response_bodies_review_required: true,
       agent_read_enabled: false,
       agent_interaction_enabled: false,
       agent_preview_read_enabled: agentPreviewReadEnabled,
@@ -966,6 +975,22 @@ export function buildTransparencyActionDecision(input, currentState, policy = re
   }
   if (!policy.enabled) {
     return deny("feature_disabled", "Local Support is disabled by policy.");
+  }
+
+  if (["enable_fast_support", "disable_fast_support"].includes(action)) {
+    if (action === "enable_fast_support" && !policy.mvp.fast_support_enabled) {
+      return deny("fast_support_disabled_by_policy", "Fast Support is disabled by organization policy.");
+    }
+    const workspaceId = state.workspace.workspace_id;
+    if (action === "enable_fast_support" && (!workspaceId || workspaceId === "not_selected")) {
+      return deny("fast_support_workspace_required", "Select one workspace before enabling Fast Support.");
+    }
+    return transparencyActionAllowed(action, state, {
+      expires_in_minutes: action === "enable_fast_support" ? policy.mvp.fast_support_ttl_minutes : 0,
+      user_visible_message: action === "enable_fast_support"
+        ? `Fast Support enabled for this workspace for up to ${policy.mvp.fast_support_ttl_minutes} minutes. Safe metadata may be sent automatically; source files and logs still require approval.`
+        : "Fast Support disabled. Future automatic context is stopped and the session returns to Balanced mode.",
+    });
   }
 
   if (action === "revoke_port") {

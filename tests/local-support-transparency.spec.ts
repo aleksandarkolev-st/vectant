@@ -33,7 +33,7 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("cell", { name: "Balanced mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Manual mode" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Fast Support" })).toBeVisible();
-    await expect(page.getByText("Auto-send, broad repo upload, persistent approvals")).toBeVisible();
+    await expect(page.getByText("Secrets, writes, commands, repo upload, persistent approvals")).toBeVisible();
     await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
     await expect(page.getByText("This page will not fake a revoke.")).toBeVisible();
 
@@ -142,5 +142,59 @@ test.describe("local support transparency page", () => {
       .toBeVisible({ timeout: 6_000 });
     await expect(page.getByText("Connected").first()).toBeVisible();
     expect(stateReads).toBeGreaterThan(1);
+  });
+
+  test("enables and downgrades bounded Fast Support for a connected workspace", async ({ page }) => {
+    await page.route("**/api/local-support/policy", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          policy_version: "2026.07.05",
+          mvp: { fast_support_enabled: true, fast_support_ttl_minutes: 30 },
+        }),
+      });
+    });
+    await page.route("**/api/local-support/transparency-state", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          decision: "transparency_state_ready",
+          session: {
+            connected: true,
+            paused: false,
+            account_id: "acct_live",
+            session_id: "sess_live_12345678",
+            permission_mode: "Balanced mode",
+          },
+          workspace: { workspace_id: "wk_live_12345678", display: "vectant-app" },
+          inventory: [], sent_payloads: [], blocked_items: [], activity: [], ports: [],
+        }),
+      });
+    });
+    await page.route("**/api/local-support/transparency-action", async (route) => {
+      const body = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          decision: "local_control_action_applied",
+          action: body.action,
+          user_visible_message: body.action === "enable_fast_support"
+            ? "Fast Support enabled for this workspace for up to 30 minutes."
+            : "Fast Support disabled.",
+        }),
+      });
+    });
+
+    await page.goto(`${baseURL}/local-support`);
+    await page.getByRole("tab", { name: "Permission mode" }).click();
+    await page.getByRole("button", { name: "Enable Fast Support" }).click();
+    await expect(page.getByRole("status")).toContainText("Fast Support is active for this session");
+    await expect(page.getByRole("button", { name: "Switch to Balanced" })).toBeVisible();
+    await page.getByRole("button", { name: "Switch to Balanced" }).click();
+    await expect(page.getByRole("button", { name: "Enable Fast Support" })).toBeVisible();
   });
 });
