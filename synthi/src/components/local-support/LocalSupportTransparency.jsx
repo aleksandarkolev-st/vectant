@@ -26,12 +26,6 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  RED_TEAM_SCENARIOS,
-  RELEASE_BLOCKERS,
-  UX_ACCEPTANCE_PROMPTS,
-  summarizeLocalSupportReleaseReadiness,
-} from "@/lib/local-support/acceptance";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_INVENTORY = [];
@@ -181,13 +175,6 @@ function CapabilityFlag({ label, enabled }) {
   );
 }
 
-function blockerStatusView(status) {
-  if (status === "ci_required") {
-    return { tone: "warn", label: "CI required" };
-  }
-  return { tone: "warn", label: "Partial" };
-}
-
 export default function LocalSupportTransparency() {
   const [localPaused, setLocalPaused] = useState(false);
   const [localDisconnected, setLocalDisconnected] = useState(false);
@@ -198,6 +185,7 @@ export default function LocalSupportTransparency() {
   const [fastSupportActive, setFastSupportActive] = useState(false);
   const [revokedPorts, setRevokedPorts] = useState([]);
   const [controlActionStatus, setControlActionStatus] = useState(null);
+  const [testRequestStatus, setTestRequestStatus] = useState(null);
   const [pairingState, setPairingState] = useState({
     status: "idle",
     challenge: null,
@@ -303,8 +291,6 @@ export default function LocalSupportTransparency() {
 
   const SessionIcon = sessionState.Icon;
   const visibleActivity = historyDeleted ? [] : activity;
-  const releaseReadiness = summarizeLocalSupportReleaseReadiness();
-  const ciRequiredBlockers = RELEASE_BLOCKERS.filter((item) => item.status === "ci_required");
   const livePolicy = policyState.policy;
   const fastSupportEnabled = Boolean(livePolicy?.mvp?.fast_support_enabled ?? true);
   const liveExportMetadata = {
@@ -361,6 +347,10 @@ export default function LocalSupportTransparency() {
     setPairingState({ status: "loading", challenge: null, error: null });
     try {
       const browserSessionId = `browser_${crypto.randomUUID().replaceAll("-", "")}`;
+      const selectedWorkspaceId = typeof liveWorkspace.workspace_id === "string"
+        && liveWorkspace.workspace_id !== "not_selected"
+        ? liveWorkspace.workspace_id
+        : "wk_pending_local_selection";
       const response = await fetch("/api/local-support/pairing", {
         method: "POST",
         cache: "no-store",
@@ -369,7 +359,7 @@ export default function LocalSupportTransparency() {
           action: "create",
           account_id: "server_authenticated",
           org_id: livePolicy?.org_id || "org_personal",
-          workspace_id: liveWorkspace.workspace_id || "wk_pending_local_selection",
+          workspace_id: selectedWorkspaceId,
           browser_session_id: browserSessionId,
           requested_user_id: "server_authenticated",
         }),
@@ -385,6 +375,24 @@ export default function LocalSupportTransparency() {
         challenge: null,
         error: error instanceof Error ? error.message : "Pairing could not start.",
       });
+    }
+  }
+
+  async function createTestRequest() {
+    setTestRequestStatus({ tone: "neutral", text: "Queueing a test file request..." });
+    try {
+      const response = await fetch("/api/local-support/test-request", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await response.json();
+      if (!response.ok || result.decision !== "test_request_queued") {
+        throw new Error(result.user_visible_message || result.reason || "Test request could not be queued.");
+      }
+      setTestRequestStatus({ tone: "good", text: `${result.user_visible_message} Request: ${result.request_id}` });
+    } catch (error) {
+      setTestRequestStatus({ tone: "bad", text: error instanceof Error ? error.message : "Test request could not be queued." });
     }
   }
 
@@ -546,7 +554,6 @@ export default function LocalSupportTransparency() {
               ["ports", PlugZap, "Ports"],
               ["mode", Settings2, "Permission mode"],
               ["activity", ClipboardCheck, "Activity"],
-              ["release", ShieldCheck, "Release gate"],
             ].map(([value, Icon, label]) => (
               <TabsTrigger key={value} value={value} className="rounded-sm px-3 text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)]">
                 <Icon className="size-4" aria-hidden="true" />
@@ -688,7 +695,14 @@ export default function LocalSupportTransparency() {
             <Panel
               title="Review before send"
               description="Approvals appear here only after the local app classifies a real request."
-              action={<Pill tone="neutral">No queued approvals</Pill>}
+              action={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <Pill tone="neutral">No queued approvals</Pill>
+                  <Button type="button" size="sm" variant="outline" onClick={createTestRequest} disabled={!connected}>
+                    Create test request
+                  </Button>
+                </div>
+              )}
             >
               {reviewOpen ? (
                 <div className="space-y-4">
@@ -713,6 +727,7 @@ export default function LocalSupportTransparency() {
                       Deny
                     </Button>
                   </div>
+                  {testRequestStatus ? <p className={`text-sm ${testRequestStatus.tone === "bad" ? "text-red-300" : testRequestStatus.tone === "good" ? "text-emerald-300" : "text-zinc-400"}`} role="status">{testRequestStatus.text}</p> : null}
                 </div>
               ) : (
                 <div className="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-300">
@@ -1028,104 +1043,6 @@ export default function LocalSupportTransparency() {
             </Panel>
           </TabsContent>
 
-          <TabsContent value="release" className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-            <Panel
-              title="Release blocker evidence"
-              description="This table maps evidence, but mapped evidence is not completion. Current implementation is about 44%; live end-to-end proof is required before any blocker can be treated as shipped."
-            >
-              <div className="grid gap-3 sm:grid-cols-5">
-                <Stat icon={ClipboardCheck} label="Mapped" value={`${releaseReadiness.mapped}/${releaseReadiness.total}`} tone="text-emerald-200" />
-                <Stat icon={AlertTriangle} label="MVP reality" value="44%" tone="text-amber-200" />
-                <Stat icon={ShieldCheck} label="Security" value={releaseReadiness.byCategory.security} tone="text-sky-200" />
-                <Stat icon={Eye} label="Transparency" value={releaseReadiness.byCategory.frontend_transparency} tone="text-amber-200" />
-                <Stat icon={Settings2} label="Product" value={releaseReadiness.byCategory.product} tone="text-zinc-200" />
-              </div>
-
-              <div className="mt-4 overflow-x-auto rounded-lg border border-white/10">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="bg-white/[0.04] text-xs uppercase tracking-[0.08em] text-zinc-500">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Blocker</th>
-                      <th className="px-4 py-3 font-medium">Status</th>
-                      <th className="px-4 py-3 font-medium">Evidence</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/10">
-                    {RELEASE_BLOCKERS.map((item) => {
-                      const statusView = blockerStatusView(item.status);
-                      return (
-                        <tr key={item.id} className="text-zinc-300">
-                          <td className="px-4 py-3">
-                            <div className="font-medium text-zinc-100">{item.label}</div>
-                            <div className="mt-1 font-mono text-xs text-zinc-500">{item.category}</div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <Pill tone={statusView.tone}>{statusView.label}</Pill>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex flex-wrap gap-1">
-                              {item.evidence.map((evidence) => (
-                                <span key={evidence} className="rounded border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] text-zinc-400">
-                                  {evidence}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-
-            <div className="grid gap-4">
-              <Panel title="CI and release packaging" description="These items are intentionally gated outside the browser UI and must stay green before beta.">
-                <div className="space-y-3">
-                  {ciRequiredBlockers.map((item) => (
-                    <div key={item.id} className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-sm font-medium text-amber-100">{item.label}</span>
-                        <Pill tone="warn">CI required</Pill>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {item.evidence.map((evidence) => (
-                          <span key={evidence} className="rounded border border-amber-200/20 bg-zinc-950/40 px-2 py-1 font-mono text-[11px] text-amber-100/80">
-                            {evidence}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
-
-              <Panel title="Red-team scenarios" description="Public beta stays blocked until these attack paths have passing evidence and no open critical or high findings.">
-                <div className="space-y-2">
-                  {RED_TEAM_SCENARIOS.map((scenario) => (
-                    <div key={scenario.id} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-sm text-zinc-200">{scenario.label}</span>
-                        <Pill tone="warn">Needs E2E proof</Pill>
-                      </div>
-                      <div className="mt-1 font-mono text-[11px] text-zinc-500">{scenario.evidence}</div>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
-
-              <Panel title="UX acceptance prompts" description="Test users must answer these after onboarding. More than 10 percent failure blocks public beta.">
-                <div className="space-y-2">
-                  {UX_ACCEPTANCE_PROMPTS.map((prompt) => (
-                    <div key={prompt.id} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                      <div className="text-sm font-medium text-zinc-200">{prompt.question}</div>
-                      <div className="mt-1 text-xs leading-5 text-zinc-500">{prompt.answerEvidence}</div>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
-            </div>
-          </TabsContent>
         </Tabs>
       </div>
     </main>
