@@ -29,3 +29,24 @@ jobs:
           VECTANT_TEST_BASE_URL: ${{ secrets.LOCAL_SUPPORT_STAGING_BASE_URL }}
           VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN: ${{ secrets.LOCAL_SUPPORT_STAGING_ADMIN_TOKEN }}
         run: npx playwright test tests/local-support-staging-smoke.spec.ts --project=chromium --reporter=line
+
+  installed-desktop:
+    name: Installed desktop and daemon boundary gate
+    runs-on: windows-latest
+    environment: local-support-staging
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+      - name: Build unsigned staging installer
+        working-directory: backend/vectant-local-support-app/desktop
+        run: cargo tauri build --ci --no-sign --bundles nsis
+      - name: Exercise installed app and daemon boundary
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "backend/vectant-local-support-app/desktop/target/release/bundle/nsis" -File -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Staging installer was not produced." }
+          & "backend/vectant-local-support-app/scripts/windows-installer-smoke.ps1" -InstallerPath $installer.FullName
