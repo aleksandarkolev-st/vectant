@@ -43,7 +43,7 @@ describe("local support transparency action route", () => {
     });
   });
 
-  it("returns zero-byte local control decisions for connected actions", async () => {
+  it("does not treat a static environment snapshot as a connected local app", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_TRANSPARENCY_STATE_JSON = JSON.stringify({
       session: {
@@ -63,28 +63,14 @@ describe("local support transparency action route", () => {
       ],
     });
 
-    const pause = await POST(request({ action: "pause_session" }));
-    expect(pause.status).toBe(200);
-    await expect(pause.json()).resolves.toMatchObject({
-      decision: "local_control_action_required",
-      action: "pause_session",
-      session_id: "sess_live",
-      workspace_id: "wk_live",
-      bytes_sent: 0,
-      raw_body_included: false,
-      local_enforcement_required: true,
-    });
-
-    const revokePort = await POST(request({ action: "revoke_port", port: 5173 }));
-    expect(revokePort.status).toBe(200);
-    const json = await revokePort.json();
+    const response = await POST(request({ action: "pause_session" }));
+    expect(response.status).toBe(403);
+    const json = await response.json();
     expect(json).toMatchObject({
-      decision: "local_control_action_required",
-      action: "revoke_port",
-      port: 5173,
+      decision: "denied",
+      reason: "local_app_not_connected",
       bytes_sent: 0,
     });
-    expect(JSON.stringify(json)).not.toContain("hidden-token");
   });
 
   it("rejects cross-site action attempts", async () => {
@@ -164,6 +150,29 @@ describe("local support transparency action route", () => {
         }),
       }),
     );
+  });
+
+  it("denies connected actions when the daemon control credentials are missing", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    delete process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      session: { session_id: "sess_live" },
+      workspace: { workspace_id: "wk_live" },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ action: "pause_session" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json).toMatchObject({
+      decision: "denied",
+      reason: "local_daemon_control_unavailable",
+      bytes_sent: 0,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("forwards session approval revocation to the local daemon", async () => {
@@ -257,10 +266,6 @@ describe("local support transparency action route", () => {
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://169.254.169.254/latest/meta-data";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
-    process.env.VECTANT_LOCAL_SUPPORT_TRANSPARENCY_STATE_JSON = JSON.stringify({
-      session: { connected: true, session_id: "sess_live" },
-      workspace: { workspace_id: "wk_live" },
-    });
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 

@@ -36,8 +36,16 @@ export async function POST(req) {
     }, 503);
   }
 
+  if (process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL
+    && !buildLocalDaemonUrl(process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL, "/v1/status")) {
+    return jsonNoStore(
+      deniedBody("local_daemon_url_not_loopback", "Local daemon URL was rejected because it was not loopback HTTP."),
+      403,
+    );
+  }
+
   const localStatus = await readLocalDaemonStatus();
-  const currentState = localStatus?.state || parseTransparencyStateEnv();
+  const currentState = localStatus?.state || {};
   const decision = buildTransparencyActionDecision(
     bodyResult.value,
     currentState,
@@ -62,15 +70,6 @@ function jsonNoStore(body, status = 200) {
       "Cache-Control": "no-store",
     },
   });
-}
-
-function parseTransparencyStateEnv() {
-  try {
-    const parsed = JSON.parse(process.env.VECTANT_LOCAL_SUPPORT_TRANSPARENCY_STATE_JSON || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 async function readLocalDaemonStatus(env = process.env) {
@@ -115,16 +114,22 @@ async function readLocalDaemonStatus(env = process.env) {
 }
 
 async function forwardLocalDaemonAction(body, decision, localStatus, env = process.env) {
-  if (!env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL && !localStatus) {
-    return null;
-  }
+  if (!localStatus) return null;
   if (!env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER || !env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET) {
-    return null;
+    return {
+      status: 503,
+      body: deniedBody("local_daemon_control_unavailable", "Local daemon control credentials are unavailable."),
+    };
   }
   const action = decision.action;
   const requestId = `web_${action}_${Date.now().toString(36)}`;
   const endpoint = localDaemonActionPath(action, body, requestId);
-  if (!endpoint) return null;
+  if (!endpoint) {
+    return {
+      status: 400,
+      body: deniedBody("invalid_local_daemon_action", "The requested local action was not recognized."),
+    };
+  }
   const url = buildLocalDaemonUrl(env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL, endpoint.path);
   if (!url) {
     return {
