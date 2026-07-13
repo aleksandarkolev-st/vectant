@@ -59,6 +59,37 @@ describe("durable local support policy", () => {
     }));
   });
 
+  it("keeps explicit environment emergency controls stricter than durable state", async () => {
+    const policy = await readDurableLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_ENABLED: "false",
+      VECTANT_LOCAL_SUPPORT_ORG_DISABLED: "true",
+      VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION: "0.4.0",
+      VECTANT_LOCAL_SUPPORT_VULNERABLE_VERSIONS: "0.3.0",
+      VECTANT_LOCAL_SUPPORT_NO_RETENTION: "true",
+    }, {
+      localSupportPolicyState: { findUnique: vi.fn(async () => ({
+        globalEnabled: true,
+        orgDisabled: false,
+        pairingDisabled: false,
+        previewDisabled: false,
+        agentAccessDisabled: false,
+        minAppVersion: "0.2.0",
+        vulnerableVersionsJson: "[\"0.1.0\"]",
+        retentionDays: 14,
+        updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+      })) },
+    });
+
+    expect(policy).toMatchObject({
+      enabled: false,
+      global_enabled: false,
+      org_kill_switch: true,
+      min_app_version: "0.4.0",
+      vulnerable_versions: ["0.3.0", "0.1.0"],
+      retention: { local_activity_days: 0, cloud_security_event_days: 0 },
+    });
+  });
+
   it("preserves an explicit no-retention policy", async () => {
     const upsert = vi.fn(async ({ create }) => ({ ...create, updatedAt: new Date() }));
     const result = await updateDurableLocalSupportPolicy({

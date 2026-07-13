@@ -1,5 +1,5 @@
 import prisma from "@/lib/prisma";
-import { readLocalSupportPolicy } from "@/lib/local-support/controlPlane";
+import { compareSemverLike, readLocalSupportPolicy } from "@/lib/local-support/controlPlane";
 
 const POLICY_ID = "global";
 const UPDATE_FIELDS = new Set([
@@ -11,30 +11,46 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
   const base = readLocalSupportPolicy(env);
   const stored = await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } });
   if (!stored) return base;
-  const vulnerableVersions = parseVersions(stored.vulnerableVersionsJson);
-  const enabled = stored.globalEnabled && !stored.orgDisabled && !stored.pairingDisabled;
+  const storedVulnerableVersions = parseVersions(stored.vulnerableVersionsJson);
+  const vulnerableVersions = uniqueStrings([
+    ...base.vulnerable_versions,
+    ...storedVulnerableVersions,
+  ]);
+  const globalEnabled = stored.globalEnabled && env.VECTANT_LOCAL_SUPPORT_ENABLED !== "false";
+  const orgDisabled = stored.orgDisabled || env.VECTANT_LOCAL_SUPPORT_ORG_DISABLED === "true";
+  const pairingDisabled = stored.pairingDisabled || env.VECTANT_LOCAL_SUPPORT_PAIRING_DISABLED === "true";
+  const previewDisabled = stored.previewDisabled
+    || env.VECTANT_LOCAL_SUPPORT_PREVIEW_GATEWAY_DISABLED === "true";
+  const agentAccessDisabled = stored.agentAccessDisabled || base.emergency_controls.agent_access_disabled;
+  const minAppVersion = stricterMinimumVersion(
+    stored.minAppVersion,
+    env.VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION,
+  );
+  const retentionDays = stricterRetentionDays(stored.retentionDays, env);
+  const enabled = globalEnabled && !orgDisabled && !pairingDisabled;
   return {
     ...base,
     enabled,
-    global_enabled: stored.globalEnabled,
-    org_kill_switch: stored.orgDisabled,
-    pairing_disabled: stored.pairingDisabled,
-    min_app_version: stored.minAppVersion,
+    global_enabled: globalEnabled,
+    org_kill_switch: orgDisabled,
+    pairing_disabled: pairingDisabled,
+    min_app_version: minAppVersion,
     vulnerable_versions: vulnerableVersions,
     retention: {
       ...base.retention,
-      local_activity_days: stored.retentionDays,
-      cloud_security_event_days: stored.retentionDays,
+      local_activity_days: retentionDays,
+      cloud_security_event_days: retentionDays,
     },
     emergency_controls: {
       ...base.emergency_controls,
-      pairing_disabled: stored.pairingDisabled,
-      preview_gateway_disabled: stored.previewDisabled,
-      agent_access_disabled: stored.agentAccessDisabled,
+      pairing_disabled: pairingDisabled,
+      preview_gateway_disabled: previewDisabled,
+      agent_access_disabled: agentAccessDisabled,
+      vulnerable_version_blocklist: vulnerableVersions,
     },
     mvp: {
       ...base.mvp,
-      browser_preview_enabled: base.mvp.browser_preview_enabled && !stored.previewDisabled,
+      browser_preview_enabled: base.mvp.browser_preview_enabled && !previewDisabled,
       agent_preview_read_enabled: false,
       fast_support_enabled: base.mvp.fast_support_enabled,
       fast_support_ttl_minutes: base.mvp.fast_support_ttl_minutes,
@@ -42,6 +58,26 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
     persistent_policy: true,
     policy_updated_at: stored.updatedAt.toISOString(),
   };
+}
+
+function stricterMinimumVersion(storedVersion, environmentVersion) {
+  if (typeof environmentVersion !== "string" || !environmentVersion) return storedVersion;
+  return compareSemverLike(environmentVersion, storedVersion) > 0
+    ? environmentVersion
+    : storedVersion;
+}
+
+function stricterRetentionDays(storedDays, env) {
+  if (env.VECTANT_LOCAL_SUPPORT_NO_RETENTION === "true") return 0;
+  const configured = Number(env.VECTANT_LOCAL_SUPPORT_RETENTION_DAYS);
+  if (Number.isSafeInteger(configured) && configured >= 0 && configured <= 90) {
+    return Math.min(storedDays, configured);
+  }
+  return storedDays;
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string"))].slice(0, 100);
 }
 
 export async function updateDurableLocalSupportPolicy(input, updatedBy, client = prisma) {
