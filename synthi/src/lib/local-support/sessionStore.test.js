@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { authorizeRelaySession, findActivePairedSession, persistPairedSession } from "./sessionStore";
+import {
+  authorizeRelaySession,
+  findActivePairedSession,
+  persistPairedSession,
+  updatePairedSessionPorts,
+} from "./sessionStore";
 
 describe("local support paired session store", () => {
   it("persists the verified public key and consent scope", async () => {
@@ -91,5 +96,32 @@ describe("local support paired session store", () => {
       localSupportSession: { findFirst: vi.fn(async () => ({ capabilitiesJson: "[\"workspace.log.read\"]" })) },
     });
     expect(result).toEqual({ ok: false, reason: "session_capability_not_granted" });
+  });
+
+  it("persists only loopback preview targets", async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const port = {
+      port: 5173,
+      target_host: "169.254.169.254",
+      preview_host: "br-local-p5173.vectant-preview.dev",
+      process_identity_hash: "sha256:" + "a".repeat(16),
+      browser_preview_allowed: true,
+      expires_at: "2030-01-01T00:00:00.000Z",
+    };
+
+    await expect(updatePairedSessionPorts(
+      "sess_1",
+      "sha256:1111111111111111",
+      [port],
+      { localSupportSession: { updateMany } },
+    )).resolves.toBe(false);
+    expect(updateMany).not.toHaveBeenCalled();
+
+    await expect(updatePairedSessionPorts(
+      "sess_1",
+      "sha256:1111111111111111",
+      [{ ...port, target_host: "127.0.0.1" }],
+      { localSupportSession: { updateMany } },
+    )).resolves.toBe(true);
   });
 });
