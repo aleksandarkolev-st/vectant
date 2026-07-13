@@ -195,6 +195,59 @@ jobs:
           LOCAL_SUPPORT_POSTGRES_E2E: "1"
         run: npm run test -- src/lib/local-support/postgres.integration.test.js
 
+  local-support-live-cloud:
+    name: Live local-support web and PostgreSQL gate
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: validation
+          POSTGRES_PASSWORD: validation
+          POSTGRES_DB: validation
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U validation -d validation"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply migrations and generate Prisma Client
+        working-directory: synthi
+        env:
+          DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+        run: |
+          npx prisma migrate deploy --schema prisma/schema.prisma
+          npx prisma generate --schema prisma/schema.prisma
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Start real Next server
+        env:
+          DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+          VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN: live-ci-admin-token-0123456789
+        run: |
+          nohup npm run dev --workspace synthi -- --hostname 127.0.0.1 --port 3100 > "$RUNNER_TEMP/local-support-next.log" 2>&1 &
+          for i in {1..60}; do curl --fail --silent http://127.0.0.1:3100/local-support >/dev/null && exit 0; sleep 2; done
+          cat "$RUNNER_TEMP/local-support-next.log"
+          exit 1
+      - name: Run browser-to-cloud policy gate
+        env:
+          DATABASE_URL: postgresql://validation:validation@127.0.0.1:5432/validation
+          VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN: live-ci-admin-token-0123456789
+          LOCAL_SUPPORT_LIVE_CLOUD_E2E: "1"
+          VECTANT_TEST_BASE_URL: http://localhost:3100
+        run: npx playwright test tests/local-support-live-cloud.spec.ts --project=chromium --reporter=line
+
   supply-chain:
     name: Supply chain checks
     runs-on: ubuntu-latest

@@ -49,6 +49,8 @@ The focused CI command in `.github/workflows/local-support-security.yml` is auth
 
 CI now includes a PostgreSQL service job that runs `prisma validate` and `prisma migrate deploy` against a clean database. It proves migration application in CI; it does not substitute for the intended staging deployment or browser-to-cloud-to-desktop proof.
 
+The live-cloud gate now starts a real Next server against that PostgreSQL service, loads `/local-support` in Chromium, updates emergency policy through the admin HTTP route, and reads it back through the public policy route. The same flow passed locally on 2026-07-13 with one Chromium flow. It proves browser-to-cloud-to-PostgreSQL policy behavior; it does not yet prove browser-to-cloud-to-installed-desktop pairing or relay delivery.
+
 ### Review-before-send, scanner, audit, and preview
 
 - Source/log bodies remain in the native approval queue until local approval and request-bound release. Denial/revocation clears queued content; release rechecks expiry, identity, file hash, and file metadata.
