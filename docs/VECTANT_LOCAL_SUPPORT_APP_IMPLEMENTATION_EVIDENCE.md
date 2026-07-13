@@ -59,7 +59,7 @@ The live-cloud gate now starts a real Next server against that PostgreSQL servic
 - Local audit storage is hash chained, size bounded, symlink safe, retained, scrubbed, exportable, deletable, and contains consent receipts without raw bodies.
 - Preview is loopback-only, host/token/session/process bound, GET/HEAD-only, rate/stream/size limited, and strips credentials/cookies/hop-by-hop headers. It blocks service workers, WebSockets, smuggling, private/metadata redirects, unsafe schemes/userinfo, and process changes. Browser preview never grants AI/support page reads.
 
-The parent Rust security suite is the executable evidence for these invariants. Preview tests include a real upstream server and Windows native listener ownership.
+The parent Rust security suite is the executable evidence for these invariants. `tests/local-support-live-daemon.spec.ts` now adds a real Playwright boundary test against a live upstream server: credential headers are rejected before forwarding, upstream response cookies/CSP are scrubbed, bad origins and service-worker paths are denied (including percent-encoded paths), approved relative redirects are rewritten, external HTTPS navigation is left unproxied, private redirects are blocked, and revoke invalidates subsequent traffic. Preview tests also include Windows native listener ownership.
 
 ### Transparency and operations UI
 
