@@ -109,4 +109,6 @@ These are not complete merely because workflow/runbook code exists:
 5. Exercise `VECTANT_LOCAL_SUPPORT_INCIDENT_RESPONSE.md` as a dated tabletop, including emergency disable and signing-key rotation; close all findings.
 6. Complete independent red-team scenarios from the remaining-goals plan and close every critical/high finding before public beta.
 
+External host check performed with Playwright on 2026-07-13: `https://beta.vectant.dev/local-support` reached Google IAP and could not be exercised without an authorized staging account; `https://app.vectant.dev` and `https://updates.vectant.dev` failed TLS negotiation from the validation host. No authenticated staging desktop/cloud run was claimed from that check.
+
 Until all six have immutable evidence and security-owner sign-off, the signed public-beta acceptance criteria remain unproven and release must stay blocked.
