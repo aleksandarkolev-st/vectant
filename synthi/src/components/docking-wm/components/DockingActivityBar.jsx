@@ -23,6 +23,7 @@ import {
   Box,
   Radar,
   Network,
+  Cable,
   ChevronRight,
   ShieldCheck,
 } from 'lucide-react';
@@ -73,6 +74,7 @@ const TOP_ITEMS = [
   { id: 'codesite',   panelType: IDE_PANEL.CODESITE,   label: 'CodeSite',        Icon: Radar },
   { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: ShieldCheck },
   { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
+  { id: 'local-support', panelType: null, label: 'Local Support', Icon: Cable, externalPath: '/local-support' },
   { id: 'ports',        panelType: IDE_PANEL.PORTS,        label: 'Ports',           Icon: Network },
   { id: 'pullrequests', panelType: IDE_PANEL.PULL_REQUESTS, label: 'Pull Requests', Icon: GitPullRequest },
 ];
@@ -164,9 +166,11 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
     }
   }, [dispatch, nodes, tabs]);
 
-  const renderButton = ({ id, panelType, label, Icon, extensionIcon, onClick }) => {
-    const isActive = activePanelType === panelType;
-    const handler = onClick || handlers[id];
+  const renderButton = ({ id, panelType, label, Icon, extensionIcon, onClick, externalPath }) => {
+    const isActive = Boolean(panelType) && activePanelType === panelType;
+    const handler = onClick || (externalPath
+      ? () => window.open(externalPath, '_blank', 'noopener,noreferrer')
+      : handlers[id]);
     const hasImageIcon = extensionIcon && typeof extensionIcon === 'string' &&
       (extensionIcon.startsWith('http') || extensionIcon.startsWith('data:'));
 
@@ -175,6 +179,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         key={id}
         type="button"
         aria-label={label}
+        data-testid={id === 'local-support' ? 'workspace-local-support-button' : undefined}
         onClick={handler}
         className={`group relative w-full h-11 flex items-center justify-center transition-all duration-150 ${
           isActive
