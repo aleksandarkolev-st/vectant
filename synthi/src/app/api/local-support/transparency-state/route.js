@@ -24,7 +24,10 @@ export async function GET() {
   const session = await getServerSession(authOptions);
   const accountId = session?.user?.id || session?.user?.email || null;
   const cloudState = await readCloudTransparencyState(accountId);
-  return jsonNoStore(summarizeTransparencyState(localState || cloudState, policy));
+  return jsonNoStore({
+    ...summarizeTransparencyState(localState || cloudState, policy),
+    local_control_available: Boolean(localState?.session),
+  });
 }
 
 function jsonNoStore(body, status = 200) {

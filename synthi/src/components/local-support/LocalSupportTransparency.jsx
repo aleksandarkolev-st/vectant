@@ -319,6 +319,8 @@ export default function LocalSupportTransparency() {
   const liveSession = liveState?.session || {};
   const liveWorkspace = liveState?.workspace || {};
   const connected = Boolean(liveSession.connected) && !localDisconnected;
+  const localControlAvailable = liveState?.local_control_available === true;
+  const controlsAvailable = connected && localControlAvailable;
   const paused = Boolean(liveSession.paused || localPaused);
   const liveFastSupport = liveSession.permission_mode === "Fast Support"
     && Number(liveSession.fast_support_remaining_seconds || 0) > 0;
@@ -379,6 +381,13 @@ export default function LocalSupportTransparency() {
       : "Loading cloud policy state without using cached data.");
 
   async function requestLocalControlAction(action, body = {}) {
+    if (!controlsAvailable) {
+      setControlActionStatus({
+        tone: "bad",
+        text: "Local controls require a live installed desktop app connection.",
+      });
+      return null;
+    }
     setControlActionStatus({ tone: "neutral", text: "Sending local control request..." });
     try {
       const response = await fetch("/api/local-support/transparency-action", {
@@ -541,7 +550,7 @@ export default function LocalSupportTransparency() {
               size="sm"
               className="border-[var(--border-medium)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-elevated)]"
               onClick={togglePause}
-              disabled={!connected}
+              disabled={!controlsAvailable}
             >
               {paused ? <Play className="size-4" aria-hidden="true" /> : <Pause className="size-4" aria-hidden="true" />}
               {paused ? "Resume" : "Pause"}
@@ -551,7 +560,7 @@ export default function LocalSupportTransparency() {
               variant="destructive"
               size="sm"
               className="bg-[var(--accent-danger)] text-[var(--bg-app)] hover:brightness-110"
-              disabled={!connected}
+              disabled={!controlsAvailable}
               onClick={disconnectLocalSupport}
             >
               <Unplug className="size-4" aria-hidden="true" />
@@ -905,7 +914,7 @@ export default function LocalSupportTransparency() {
                             variant="destructive"
                             className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
                             onClick={() => revokePortApproval(item.port)}
-                            disabled={revoked}
+                            disabled={revoked || !controlsAvailable}
                           >
                             <Unplug className="size-4" aria-hidden="true" />
                             Revoke port approval
@@ -979,7 +988,7 @@ export default function LocalSupportTransparency() {
                   <div className="font-medium text-amber-100">{fastSupportActive || liveFastSupport ? "Fast Support is active" : "Enable Fast Support for this session"}</div>
                   <p className="mt-1 max-w-[70ch] text-sm leading-6 text-amber-100/80">Automatically shares safe project metadata for the selected workspace. Secrets, source, logs, writes, commands, repo uploads, and persistent approvals remain blocked or approval-gated.</p>
                 </div>
-                <Button type="button" variant={fastSupportActive || liveFastSupport ? "outline" : "default"} disabled={!connected || !fastSupportEnabled || paused} onClick={toggleFastSupport}>
+                <Button type="button" variant={fastSupportActive || liveFastSupport ? "outline" : "default"} disabled={!controlsAvailable || !fastSupportEnabled || paused} onClick={toggleFastSupport}>
                   {fastSupportActive || liveFastSupport ? "Switch to Balanced" : "Enable Fast Support"}
                 </Button>
               </div>
@@ -992,7 +1001,7 @@ export default function LocalSupportTransparency() {
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
                   onClick={revokeSessionApprovals}
-                  disabled={!connected}
+                  disabled={!controlsAvailable}
                 >
                   <RotateCcw className="size-4" aria-hidden="true" />
                   Revoke session approvals
@@ -1002,7 +1011,7 @@ export default function LocalSupportTransparency() {
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
                   onClick={disconnectLocalSupport}
-                  disabled={!connected}
+                  disabled={!controlsAvailable}
                 >
                   <Unplug className="size-4" aria-hidden="true" />
                   Disconnect and revoke
@@ -1015,9 +1024,11 @@ export default function LocalSupportTransparency() {
                 )}>
                   {approvalsRevoked
                     ? "Session approvals revoked. Future sends require review."
-                    : connected
-                      ? "No live approvals are active."
-                      : "Connect the desktop app before revoking approvals. This page will not fake a revoke."}
+                    : !connected
+                      ? "Connect the desktop app before revoking approvals. This page will not fake a revoke."
+                      : localControlAvailable
+                        ? "No live approvals are active."
+                        : "The browser sees cloud state, but local controls require the installed desktop app."}
                 </div>
                 {controlActionStatus ? (
                   <div className={cn(
@@ -1062,7 +1073,7 @@ export default function LocalSupportTransparency() {
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
                   onClick={exportScrubbedHistory}
-                  disabled={!connected}
+                  disabled={!controlsAvailable}
                 >
                   <Download className="size-4" aria-hidden="true" />
                   Export current scrubbed view
@@ -1084,7 +1095,7 @@ export default function LocalSupportTransparency() {
                   type="button"
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
-                  disabled={!connected}
+                  disabled={!controlsAvailable}
                   onClick={deleteLocalHistory}
                 >
                   <Trash2 className="size-4" aria-hidden="true" />
@@ -1095,9 +1106,11 @@ export default function LocalSupportTransparency() {
                     {lastExport}
                   </div>
                 ) : null}
-                {!connected ? (
+                {!controlsAvailable ? (
                   <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
-                    Connect the desktop app before exporting or deleting local activity. This page will not fake local storage actions.
+                    {!connected
+                      ? "Connect the desktop app before exporting or deleting local activity. This page will not fake local storage actions."
+                      : "The browser sees cloud state, but local history actions require the installed desktop app."}
                   </div>
                 ) : null}
                 {controlActionStatus ? (

@@ -48,6 +48,7 @@ describe("local support transparency state route", () => {
       workspace: {
         workspace_id: "not_selected",
       },
+      local_control_available: false,
       inventory: [],
       sent_payloads: [],
       blocked_items: [],
@@ -245,6 +246,7 @@ describe("local support transparency state route", () => {
     );
     expect(response.status).toBe(200);
     expect(json).toMatchObject({
+      local_control_available: true,
       session: {
         connected: true,
         paused: true,

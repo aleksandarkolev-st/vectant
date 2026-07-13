@@ -157,6 +157,7 @@ test.describe("local support transparency page", () => {
           blocked_items: [],
           activity: [],
           ports: [],
+          local_control_available: false,
           export_metadata: { raw_bodies_included: false, audit_chain_verified: false },
         }),
       });
@@ -166,6 +167,9 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Workspace: Live relay workspace. Account: acct_live. Session: sess_live_12345678."))
       .toBeVisible({ timeout: 6_000 });
     await expect(page.getByText("Connected").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeDisabled();
+    await page.getByRole("tab", { name: "Permission mode" }).click();
+    await expect(page.getByText("The browser sees cloud state, but local controls require the installed desktop app.")).toBeVisible();
     expect(stateReads).toBeGreaterThan(1);
   });
 
@@ -224,6 +228,7 @@ test.describe("local support transparency page", () => {
           },
           workspace: { workspace_id: "wk_live_12345678", display: "vectant-app" },
           inventory: [], sent_payloads: [], blocked_items: [], activity: [], ports: [],
+          local_control_available: true,
         }),
       });
     });
