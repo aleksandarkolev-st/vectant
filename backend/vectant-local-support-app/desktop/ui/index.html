@@ -11,7 +11,7 @@
     <main class="shell" data-paused="false" data-connected="false">
       <header class="topbar" aria-label="Local support status">
         <div>
-          <p class="eyebrow">Local support desktop</p>
+          <p class="eyebrow">Desktop control</p>
           <h1>Vectant Local Support</h1>
         </div>
         <div class="status-block">
@@ -22,8 +22,8 @@
 
       <section class="banner" aria-label="Security boundary">
         <div>
-          <h2>You control what Vectant can see.</h2>
-          <p>Choose one workspace. Sensitive files stay blocked locally. Port capabilities are granted explicitly for this session.</p>
+          <h2>Local enforcement state</h2>
+          <p>Workspace scope, pairing state, approvals, and port grants are controlled here.</p>
         </div>
         <div class="banner-actions">
           <button class="primary" type="button" data-action="pick-workspace">Choose workspace</button>
@@ -32,8 +32,8 @@
       </section>
 
       <nav class="tabs" aria-label="Desktop sections" role="tablist">
-        <button class="tab active" type="button" role="tab" tabindex="0" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Overview</button>
-        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-workflow" data-tab="workflow">First run</button>
+        <button class="tab active" type="button" role="tab" tabindex="0" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Control plane</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-workflow" data-tab="workflow">Bootstrap</button>
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-approvals" data-tab="approvals">Approvals</button>
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-ports" data-tab="ports">Ports</button>
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-activity" data-tab="activity">Activity</button>
@@ -58,7 +58,7 @@
 
         <div class="side-stack">
           <article class="panel compact-panel">
-            <p class="label">Release safety</p>
+            <p class="label">Updates</p>
             <div class="panel-head release-policy-head">
               <h2 data-update-title>Checking signed update policy</h2>
               <span class="tag warn" data-update-tag>Fail closed</span>
@@ -72,7 +72,7 @@
           </article>
 
           <article class="panel compact-panel">
-            <p class="label">Session controls</p>
+            <p class="label">Controls</p>
             <div class="control-row">
               <button type="button" data-action="pause">Pause</button>
               <button type="button" data-action="disconnect" disabled>Disconnect</button>
@@ -87,7 +87,7 @@
         <article class="panel span-2">
           <div class="panel-head">
             <div>
-              <p class="label">Secure first run</p>
+              <p class="label">Bootstrap sequence</p>
               <h2>Set up Local Support</h2>
             </div>
             <span class="tag warn" data-workflow-summary>Safe disconnected state</span>
@@ -131,7 +131,7 @@
           </ol>
         </article>
         <article class="panel">
-          <p class="label">Secure pairing</p>
+          <p class="label">Browser trust</p>
           <h2 data-pairing-title>Enter the browser code</h2>
           <p class="copy" data-pairing-copy>Start pairing in Vectant, then enter the 12-character one-time code here.</p>
           <form class="pairing-form" data-pairing-form>

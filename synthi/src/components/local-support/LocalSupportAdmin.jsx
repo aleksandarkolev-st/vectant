@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AlertTriangle, KeyRound, RefreshCw, ShieldCheck, ShieldOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import "./local-support.css";
 
 const EMPTY_POLICY = {
   global_enabled: false,
@@ -81,7 +82,7 @@ export default function LocalSupportAdmin() {
   }
 
   return (
-    <main className="min-h-screen bg-[#090b0f] px-5 py-8 text-zinc-100 sm:px-8 lg:px-12">
+    <main className="local-support-admin min-h-screen bg-[#090b0f] px-5 py-8 text-zinc-100 sm:px-8 lg:px-12">
       <div className="mx-auto max-w-7xl">
         <header className="mb-10 flex flex-col gap-6 border-b border-white/10 pb-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">

@@ -97,14 +97,15 @@ button:disabled {
 .shell {
   margin: 0 auto;
   max-width: 1120px;
-  padding: 20px;
+  padding: 16px 20px 28px;
+  font-variant-numeric: tabular-nums;
 }
 
 .topbar,
 .banner,
 .panel {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 4px;
   background: var(--surface);
   box-shadow: var(--depth-shadow);
 }
@@ -113,7 +114,8 @@ button:disabled {
   align-items: center;
   display: flex;
   justify-content: space-between;
-  padding: 18px 20px;
+  padding: 13px 16px;
+  border-radius: 3px;
 }
 
 .eyebrow,
@@ -121,7 +123,7 @@ button:disabled {
   color: var(--muted);
   font-size: 0.76rem;
   font-weight: 750;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   margin: 0 0 6px;
   text-transform: uppercase;
 }
@@ -197,8 +199,9 @@ h2 {
   display: flex;
   gap: 24px;
   justify-content: space-between;
-  margin-top: 14px;
-  padding: 18px 20px;
+  margin-top: 10px;
+  padding: 13px 16px;
+  border-radius: 3px;
 }
 
 .banner p,
@@ -217,7 +220,7 @@ h2 {
 .tabs {
   display: flex;
   gap: 6px;
-  margin: 18px 0 12px;
+  margin: 12px 0 10px;
   overflow-x: auto;
   padding-bottom: 2px;
 }
@@ -255,8 +258,9 @@ h2 {
 }
 
 .panel {
-  min-height: 190px;
-  padding: 18px;
+  min-height: 0;
+  padding: 15px;
+  border-radius: 3px;
 }
 
 .compact-panel {
@@ -264,7 +268,7 @@ h2 {
 }
 
 .session-panel {
-  min-height: 318px;
+  min-height: 270px;
 }
 
 .span-2 {
@@ -302,8 +306,8 @@ h2 {
 .facts div {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 12px;
+  border-radius: 3px;
+  padding: 10px;
 }
 
 dt {
@@ -451,12 +455,12 @@ dd {
   align-items: flex-start;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 3px;
   counter-increment: workflow;
   display: grid;
   gap: 12px;
   grid-template-columns: 88px minmax(0, 1fr);
-  padding: 12px;
+  padding: 10px;
 }
 
 .workflow-list strong {
@@ -533,4 +537,169 @@ dd {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Local Support control-plane treatment. Keep the existing palette, but make
+   the hierarchy read like an operator console instead of a marketing shell. */
+body::before {
+  display: none;
+}
+
+body {
+  background: var(--bg);
+  font-family: "SFMono-Regular", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+.shell {
+  max-width: 1240px;
+  padding: 24px 28px 40px;
+}
+
+.topbar,
+.banner,
+.panel {
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.topbar {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  padding: 16px 18px;
+}
+
+.topbar h1,
+.banner h2,
+.panel h2 {
+  letter-spacing: -0.045em;
+}
+
+.topbar h1 {
+  font-family: "SF Pro Display", "SF Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 1.15rem;
+}
+
+.eyebrow,
+.label {
+  font-family: "SFMono-Regular", "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.11em;
+}
+
+.status-pill,
+.tag,
+.step-status {
+  border-radius: 3px;
+  font-family: "SFMono-Regular", "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.01em;
+  min-height: 24px;
+}
+
+.banner {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--line-strong));
+  background: var(--surface);
+  margin-top: 12px;
+  padding: 16px 18px;
+}
+
+.banner h2 {
+  font-size: 0.98rem;
+}
+
+.banner p,
+.copy,
+.hint,
+.approval-preview p {
+  font-family: "SF Pro Text", "SF Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.tabs {
+  border-bottom: 1px solid var(--line-strong);
+  gap: 2px;
+  margin: 20px 0 12px;
+  padding-bottom: 0;
+}
+
+.tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  min-height: 36px;
+  padding: 0 13px;
+}
+
+.tab:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.tab.active {
+  border-bottom-color: var(--accent);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.panel {
+  background: var(--surface);
+  padding: 18px;
+}
+
+.session-panel {
+  min-height: 286px;
+}
+
+.facts div,
+.approval-facts div,
+.workflow-list li,
+.approval-preview,
+.pairing-confirm,
+.approval-content {
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.facts dd,
+.approval-facts dd,
+.pairing-fingerprint,
+.approval-content {
+  font-family: "SFMono-Regular", "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.facts dd,
+.approval-facts dd {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+button {
+  border-radius: 3px;
+  font-family: "SF Pro Text", "SF Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.82rem;
+}
+
+button.primary {
+  box-shadow: none;
+}
+
+button:focus-visible,
+.pairing-form input:focus-visible {
+  outline-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.workflow-list li {
+  grid-template-columns: 84px minmax(0, 1fr);
+}
+
+.workflow-list strong {
+  font-family: "SF Pro Text", "SF Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.hint {
+  font-size: 0.78rem;
 }

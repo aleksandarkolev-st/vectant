@@ -27,6 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import "./local-support.css";
 
 const DEFAULT_INVENTORY = [];
 
@@ -39,59 +40,69 @@ const DEFAULT_ACTIVITY = [];
 const DEFAULT_EXPORT_METADATA = {
   exported_by: "local_support_app",
   export_type: "scrubbed_activity_history",
-  session_id: "not_paired",
+  session_id: null,
   workspace_display: "No workspace selected",
-  policy_version: "2026.07.05",
-  scanner_version: "scanner-2026.07.05",
+  policy_version: null,
+  scanner_version: null,
   raw_bodies_included: false,
-  audit_chain_verified: true,
+  audit_chain_verified: null,
   audit_chain_head: null,
 };
 
-const orgRestrictions = [
-  ["Browser preview", "Allowed", "good", null],
-  ["Vectant AI page reading", "Available by port grant", "good", "Requires explicit capability"],
-  ["Support agent page reading", "Available by port grant", "good", "Requires explicit capability"],
-  ["Fast Support", "Available", "warn", "Safe metadata only; 30-minute session TTL"],
-  ["Minimum app version", "Required", "warn", "0.1.0 required"],
-  ["Activity retention", "Limited", "warn", "30 days, raw bodies never stored"],
-];
-
-const setupChecklist = [
-  ["Workspace chosen", "No live local app connected"],
-  ["Secret denylist active", ".env, SSH, cloud, kube, keychain patterns"],
-  ["Local policy mode", "Balanced, with source and logs review-gated"],
-  ["Pairing consent", "Waiting for local app pairing"],
-];
-
-const permissionModes = [
-  {
-    mode: "Balanced mode",
-    status: "Active",
-    automatic: "Low-risk metadata only",
-    approval: "Source, logs, port preview",
-    blocked: "Secrets, workspace writes, commands, persistent approvals",
-    tone: "good",
-  },
-  {
-    mode: "Manual mode",
-    status: "Available",
-    automatic: "Nothing",
-    approval: "Every file, log, and port",
-    blocked: "Same security denylist",
-    tone: "info",
-  },
-  {
-    mode: "Fast Support",
-    status: "Available",
-    automatic: "Safe metadata/config only, one workspace, max 30 minutes",
-    approval: "Source, logs, ports, response bodies",
-    blocked: "Secrets, writes, commands, repo upload, persistent approvals",
-    tone: "warn",
-  },
-];
-
 const DEFAULT_PORTS = [];
+
+function buildOrgRestrictions(policy) {
+  const previewDisabled = policy?.emergency_controls?.preview_gateway_disabled === true;
+  const fastSupportEnabled = policy?.mvp?.fast_support_enabled === true;
+  return [
+    ["Browser preview", policy ? (previewDisabled ? "Blocked by policy" : "Allowed by policy") : "Not reported", previewDisabled ? "bad" : policy ? "good" : "neutral", "Local app still requires a loopback approval"],
+    ["Vectant AI page reading", "Blocked in MVP", "bad", "Browser preview never grants AI page access"],
+    ["Support agent page reading", "Blocked in MVP", "bad", "Browser preview never grants support page access"],
+    ["Fast Support", policy ? (fastSupportEnabled ? "Enabled by policy" : "Disabled by policy") : "Not reported", policy && fastSupportEnabled ? "warn" : "neutral", "Safe metadata only, with a 30-minute session TTL"],
+    ["Minimum app version", policy?.min_app_version || "Not reported", policy ? "warn" : "neutral", policy ? "Older versions are denied" : "Cloud policy has not loaded"],
+    ["Activity retention", policy?.retention?.local_activity_days ? `${policy.retention.local_activity_days} days` : "Not reported", policy ? "warn" : "neutral", "Raw bodies are never stored in cloud audit"],
+  ];
+}
+
+function buildSetupChecklist({ liveSession, liveWorkspace, livePolicy, liveState, pairingState, connected }) {
+  const workspaceSelected = liveWorkspace.workspace_id && liveWorkspace.workspace_id !== "not_selected";
+  const scanner = liveState?.scanner_version;
+  return [
+    ["Workspace chosen", workspaceSelected ? (liveWorkspace.display || "Selected workspace") : "No live local workspace selected"],
+    ["Secret denylist active", scanner ? `Active, ${scanner}` : "Not reported by the local app"],
+    ["Local policy mode", livePolicy ? (livePolicy.enabled ? "Enabled, fail closed" : "Disabled by cloud policy") : "Waiting for cloud policy"],
+    ["Pairing consent", connected ? `Connected, ${liveSession.session_id || "session ID unavailable"}` : pairingState.status === "ready" ? "Fingerprint confirmation pending" : "Waiting for local app pairing"],
+  ];
+}
+
+function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport }) {
+  return [
+    {
+      mode: "Balanced mode",
+      status: connected ? "Active" : "Available after pairing",
+      automatic: "Low-risk metadata only",
+      approval: "Source, logs, and loopback preview",
+      blocked: "Secrets, workspace writes, commands, AI/support page reads, persistent approvals",
+      tone: connected ? "good" : "neutral",
+    },
+    {
+      mode: "Manual mode",
+      status: "Available after pairing",
+      automatic: "Nothing",
+      approval: "Every file, log, and port request",
+      blocked: "Same local security denylist, writes, commands, and page reads",
+      tone: "info",
+    },
+    {
+      mode: "Fast Support",
+      status: !fastSupportEnabled ? "Disabled by policy" : liveFastSupport ? "Active" : "Available after pairing",
+      automatic: "Safe metadata only, one workspace, max 30 minutes",
+      approval: "Source, logs, and loopback preview",
+      blocked: "Secrets, writes, commands, response bodies, AI/support page reads, persistent approvals",
+      tone: !fastSupportEnabled ? "bad" : liveFastSupport ? "warn" : "neutral",
+    },
+  ];
+}
 
 function normalizeInventoryRows(value) {
   if (!Array.isArray(value)) return [];
@@ -133,7 +144,7 @@ function Pill({ tone = "neutral", children }) {
 
 function Panel({ title, description, action, children, className }) {
   return (
-    <section className={cn("rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] shadow-[var(--depth-shadow-1)]", className)}>
+    <section className={cn("local-support-panel rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] shadow-[var(--depth-shadow-1)]", className)}>
       <div className="flex flex-col gap-3 border-b border-[var(--border-subtle)] px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h2>
@@ -148,7 +159,7 @@ function Panel({ title, description, action, children, className }) {
 
 function Stat({ icon: Icon, label, value, tone }) {
   return (
-    <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4 shadow-[var(--depth-shadow-1)]">
+    <div className="local-support-stat rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4 shadow-[var(--depth-shadow-1)]">
       <div className="flex items-center justify-between gap-3">
         <Icon className={cn("size-4", tone || "text-zinc-300")} aria-hidden="true" />
         <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</span>
@@ -160,7 +171,7 @@ function Stat({ icon: Icon, label, value, tone }) {
 
 function DataTable({ columns, rows, renderRow }) {
   return (
-    <div className="overflow-x-auto rounded-md border border-[var(--border-subtle)]">
+    <div className="local-support-table overflow-x-auto rounded-md border border-[var(--border-subtle)]">
       <table className="min-w-full text-left text-sm">
         <thead className="bg-[var(--bg-surface)] text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
           <tr>
@@ -313,7 +324,7 @@ export default function LocalSupportTransparency() {
   const SessionIcon = sessionState.Icon;
   const visibleActivity = historyDeleted ? [] : activity;
   const livePolicy = policyState.policy;
-  const fastSupportEnabled = Boolean(livePolicy?.mvp?.fast_support_enabled ?? true);
+  const fastSupportEnabled = livePolicy?.mvp?.fast_support_enabled === true;
   const liveExportMetadata = {
     ...DEFAULT_EXPORT_METADATA,
     ...(liveState?.export_metadata || {}),
@@ -321,8 +332,22 @@ export default function LocalSupportTransparency() {
     scanner_version: liveState?.scanner_version || DEFAULT_EXPORT_METADATA.scanner_version,
   };
   const workspaceDisplay = liveWorkspace.display || "No workspace selected";
-  const accountDisplay = liveSession.account_id || "not_paired";
-  const sessionDisplay = liveSession.session_id || "not_paired";
+  const accountDisplay = liveSession.account_id || "Not paired";
+  const sessionDisplay = liveSession.session_id || "Not paired";
+  const orgRestrictions = buildOrgRestrictions(livePolicy);
+  const setupChecklist = buildSetupChecklist({
+    liveSession,
+    liveWorkspace,
+    livePolicy,
+    liveState,
+    pairingState,
+    connected,
+  });
+  const permissionModes = buildPermissionModes({
+    fastSupportEnabled,
+    connected,
+    liveFastSupport,
+  });
   const policyStatus = policyState.status === "loaded"
     ? livePolicy?.enabled
       ? { label: "Cloud policy enabled", tone: "good" }
@@ -463,8 +488,8 @@ export default function LocalSupportTransparency() {
   }
 
   return (
-    <main className="min-h-[100dvh] bg-[var(--bg-app)] [font-family:var(--font-ui)] text-[var(--text-primary)]" data-testid="local-support-surface">
-      <div className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_96%,transparent)] shadow-[var(--depth-shadow-1)] backdrop-blur">
+    <main className="local-support-surface min-h-[100dvh] bg-[var(--bg-app)] [font-family:var(--font-ui)] text-[var(--text-primary)]" data-testid="local-support-surface">
+      <div className="local-support-header sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_96%,transparent)] shadow-[var(--depth-shadow-1)] backdrop-blur">
         <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-[color-mix(in_srgb,var(--attention-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--attention-purple)_10%,transparent)] shadow-[var(--attention-rim)]">
@@ -525,12 +550,12 @@ export default function LocalSupportTransparency() {
 
       <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.75fr)]">
-          <section className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-5 shadow-[var(--depth-shadow-1)]">
+          <section className="local-support-hero rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-5 shadow-[var(--depth-shadow-1)]">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <p className="font-mono text-xs uppercase tracking-[0.12em] text-[color-mix(in_srgb,var(--attention-purple)_72%,white)]">Local enforcement first</p>
+                <p className="font-mono text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">Control plane</p>
                 <h2 className="mt-2 max-w-[24ch] text-2xl font-semibold leading-tight tracking-[-0.02em] text-[var(--text-primary)] md:text-3xl">
-                  Connect local context with visible boundaries.
+                  Local enforcement state.
                 </h2>
                 <p className="mt-3 max-w-[68ch] text-sm leading-6 text-[var(--text-muted)]">
                   Available locally is not the same as sent. Port capabilities are explicit and session-scoped. Redacted preview is not raw original.
@@ -539,11 +564,13 @@ export default function LocalSupportTransparency() {
               <div className="grid min-w-[260px] gap-2 text-sm">
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">App version gate</span>
-                  <span className="text-right text-sm font-medium text-[var(--accent-warning)]">Update required below 0.1.0</span>
+                  <span className="text-right text-sm font-medium text-[var(--accent-warning)]">
+                    {livePolicy?.min_app_version ? `Update required below ${livePolicy.min_app_version}` : "Not reported"}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
-                  <span className="text-[var(--text-muted)]">AI and support page access requires a port capability grant</span>
-                  <Pill tone="good">Available by port grant</Pill>
+                  <span className="text-[var(--text-muted)]">AI and support page access</span>
+                  <Pill tone="bad">Blocked in MVP</Pill>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">Shell commands</span>
@@ -633,10 +660,10 @@ export default function LocalSupportTransparency() {
             <Panel title="Session boundary" description="One support session, one selected workspace, short lived approvals, and immediate revoke controls.">
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
-                  ["Device", liveSession.device_fingerprint || "not_paired", "No renderer access to device keys or preview tokens"],
+                  ["Device", liveSession.device_fingerprint || "Not paired", "No renderer access to device keys or preview tokens"],
                   ["Workspace", workspaceDisplay, "Pick one workspace in the desktop app before requests can proceed"],
-                  ["Policy", liveExportMetadata.policy_version, "Deny on uncertainty"],
-                  ["Scanner", liveExportMetadata.scanner_version, "Secrets blocked or redacted locally"],
+                  ["Policy", liveExportMetadata.policy_version || "Not reported", "Deny on uncertainty"],
+                  ["Scanner", liveExportMetadata.scanner_version || "Not reported", "Secrets blocked or redacted locally"],
                 ].map(([label, value, detail]) => (
                   <div key={label} className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
                     <div className="text-xs uppercase tracking-[0.08em] text-zinc-500">{label}</div>
@@ -664,16 +691,16 @@ export default function LocalSupportTransparency() {
                   <dl className="mt-3 grid gap-2 text-sm">
                     <div className="flex items-center justify-between gap-3">
                       <dt className="text-zinc-400">Minimum app version</dt>
-                      <dd className="font-mono text-xs text-zinc-200">{livePolicy?.min_app_version || "0.1.0"}</dd>
+                      <dd className="font-mono text-xs text-zinc-200">{livePolicy?.min_app_version || "Not reported"}</dd>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <dt className="text-zinc-400">Policy version</dt>
-                      <dd className="font-mono text-xs text-zinc-200">{liveExportMetadata.policy_version}</dd>
+                      <dd className="font-mono text-xs text-zinc-200">{liveExportMetadata.policy_version || "Not reported"}</dd>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <dt className="text-zinc-400">Retention</dt>
                       <dd className="font-mono text-xs text-zinc-200">
-                        {livePolicy?.retention?.local_activity_days ?? 30} days
+                        {livePolicy?.retention?.local_activity_days ? `${livePolicy.retention.local_activity_days} days` : "Not reported"}
                       </dd>
                     </div>
                   </dl>
@@ -890,7 +917,7 @@ export default function LocalSupportTransparency() {
                               ["Response size", item.responseLimit],
                               ["Preview token", revoked ? "Revoked" : "Present, hidden from renderer"],
                               ["Credential headers", "Cookie and Authorization stripped"],
-              ["Redirects", "Loopback, private, and link-local targets allowed by grant"],
+                              ["Redirects", "Approved loopback targets only; private, LAN, and link-local targets blocked"],
                               ["Service workers", "Blocked"],
                               ["Cache and referrer", "No-store, no-referrer"],
                             ].map(([label, value]) => (
