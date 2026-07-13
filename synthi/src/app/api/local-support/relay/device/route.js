@@ -76,6 +76,8 @@ export async function POST(req) {
       outcome = await recordRelayOutcome({
         requestId: body.request_id,
         leaseId: body.lease_id,
+        sessionId: authentication.session.sessionId,
+        deviceFingerprint: authentication.session.deviceFingerprint,
         decision: body.decision,
         bytesSent: body.bytes_sent,
         redactionCount: body.redaction_count,

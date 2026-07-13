@@ -80,7 +80,17 @@ export async function leaseRelayRequest(
 }
 
 export async function recordRelayOutcome(
-  { requestId, leaseId, decision, bytesSent = 0, redactionCount, scannerVersion, reason },
+  {
+    requestId,
+    leaseId,
+    sessionId,
+    deviceFingerprint,
+    decision,
+    bytesSent = 0,
+    redactionCount,
+    scannerVersion,
+    reason,
+  },
   client = prisma,
   now = new Date(),
 ) {
@@ -92,6 +102,8 @@ export async function recordRelayOutcome(
       where: {
         requestId,
         leaseId,
+        sessionId,
+        deviceFingerprint,
         status: "leased",
         leaseExpiresAt: { gt: now },
         expiresAt: { gt: now },
@@ -100,7 +112,7 @@ export async function recordRelayOutcome(
     if (!request) return null;
 
     const updated = await tx.localSupportRelayRequest.updateMany({
-      where: { requestId, leaseId, status: "leased" },
+      where: { requestId, leaseId, sessionId, deviceFingerprint, status: "leased" },
       data: {
         status: safeDecision,
         completedAt: now,

@@ -83,7 +83,12 @@ describe("device-authenticated relay endpoint", () => {
     const response = await POST(request(body));
 
     expect(response.status).toBe(200);
-    expect(mocks.outcome).toHaveBeenCalledWith(expect.objectContaining({ requestId: body.request_id, bytesSent: 42 }));
+    expect(mocks.outcome).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: body.request_id,
+      sessionId: "sess_12345678",
+      deviceFingerprint: "sha256:1111111111111111",
+      bytesSent: 42,
+    }));
 
     const forbidden = await POST(request({ ...body, response_body: "local secret" }));
     expect(forbidden.status).toBe(400);

@@ -92,6 +92,8 @@ describe("durable local support relay store", () => {
     const result = await recordRelayOutcome({
       requestId: "req_123",
       leaseId: "lease-1",
+      sessionId: "sess_123",
+      deviceFingerprint: "sha256:3333333333333333",
       decision: "denied",
       bytesSent: 9000,
       redactionCount: 4,
@@ -102,6 +104,14 @@ describe("durable local support relay store", () => {
 
     const audit = tx.localSupportCloudAudit.create.mock.calls[0][0].data;
     expect(result).toMatchObject({ decision: "denied", bytes_sent: 0 });
+    expect(tx.localSupportRelayRequest.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        requestId: "req_123",
+        leaseId: "lease-1",
+        sessionId: "sess_123",
+        deviceFingerprint: "sha256:3333333333333333",
+      }),
+    });
     expect(audit).toMatchObject({ decision: "denied", bytesSent: 0, logClass: "local_support.data" });
     expect(JSON.stringify(audit)).not.toContain("must never persist");
     expect(tx.localSupportSecurityEvent.create).toHaveBeenCalledWith({
@@ -132,6 +142,8 @@ describe("durable local support relay store", () => {
     await recordRelayOutcome({
       requestId: "req_123",
       leaseId: "lease-1",
+      sessionId: "sess_123",
+      deviceFingerprint: "sha256:3333333333333333",
       decision: "denied",
       bytesSent: 0,
       redactionCount: 0,
@@ -156,6 +168,8 @@ describe("durable local support relay store", () => {
     const result = await recordRelayOutcome({
       requestId: "req_123",
       leaseId: "lease-1",
+      sessionId: "sess_123",
+      deviceFingerprint: "sha256:3333333333333333",
       decision: "review_pending",
       bytesSent: 500,
       redactionCount: 3,

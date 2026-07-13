@@ -33,7 +33,7 @@ The production Cargo package no longer contains the former standalone CLI daemon
 
 - Pairing challenges, attempts, sessions, device nonces, relay leases, encrypted one-time payloads, revocations, security events, and enterprise policy are durable Prisma models with migrations.
 - Pairing binds browser session, account, organization, workspace, device fingerprint/public key, capabilities, policy/protocol/app versions, expiry, and confirmation receipt.
-- Every relay request uses body-bound Ed25519 proof, nonce/replay protection, exact session scope, expiry/version/policy checks, and a minimized signed envelope. The desktop is outbound-only and recovers after transient relay failure; cloud 401/403 is terminal local revocation.
+- Every relay request uses body-bound Ed25519 proof, nonce/replay protection, exact session/device scope (including lease outcome completion), expiry/version/policy checks, and a minimized signed envelope. The desktop is outbound-only and recovers after transient relay failure; cloud 401/403 is terminal local revocation.
 - Global/org/pairing/preview/agent disables, minimum version, vulnerable-version blocklist, and retention are durable. Desktop pairing and preview recheck live policy; preview disable/unavailable revokes local ports, tokens, and streams.
 - Denied relay outcomes atomically create scrubbed routed security alerts without raw local bodies.
 
