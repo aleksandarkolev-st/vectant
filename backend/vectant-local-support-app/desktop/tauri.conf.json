@@ -35,6 +35,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "allowDowngrades": false
+    },
     "publisher": "Vectant",
     "copyright": "Copyright Vectant",
     "createUpdaterArtifacts": true
