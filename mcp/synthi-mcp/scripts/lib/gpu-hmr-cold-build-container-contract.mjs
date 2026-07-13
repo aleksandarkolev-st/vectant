@@ -47,6 +47,7 @@ export const COLD_BUILD_CONTAINER_EXTRACTION_TIMEOUT_MS = 60_000;
 export const COLD_BUILD_CONTAINER_RELEASE_TIMEOUT_MS = 60_000;
 export const COLD_BUILD_CONTAINER_PROCESS_TERM_GRACE_MS = 500;
 export const COLD_BUILD_CONTAINER_PROCESS_KILL_GRACE_MS = 2_000;
+export const COLD_BUILD_HOST_PROCESS_KILL_CONFIRMATION_MS = 5_000;
 export const COLD_BUILD_CONTAINER_CAPABILITIES = [
   'DAC_READ_SEARCH',
   'KILL',
@@ -101,7 +102,13 @@ function normalizeArchitecture(value) {
   return architecture;
 }
 
-function runProcess(executable, args, { timeoutMs = 120_000, maxOutputBytes = 1024 * 1024 } = {}) {
+export function runColdBuildHostProcess(executable, args, {
+  timeoutMs = 120_000,
+  maxStdoutBytes = 1024 * 1024,
+  maxStderrBytes = 1024 * 1024,
+  encoding = 'utf8',
+  onStdoutChunk = null,
+} = {}) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let child;
@@ -118,9 +125,10 @@ function runProcess(executable, args, { timeoutMs = 120_000, maxOutputBytes = 10
         signal: null,
         timedOut: false,
         error: error?.message || String(error),
-        stdout: '',
-        stderr: '',
+        stdout: encoding ? '' : Buffer.alloc(0),
+        stderr: encoding ? '' : Buffer.alloc(0),
         elapsedMs: Date.now() - startedAt,
+        directProcessTermination: null,
       });
       return;
     }
@@ -129,49 +137,153 @@ function runProcess(executable, args, { timeoutMs = 120_000, maxOutputBytes = 10
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let outputExceeded = false;
-    const append = (chunks, chunk, currentBytes) => {
-      const remaining = Math.max(0, maxOutputBytes - currentBytes);
+    let timedOut = false;
+    let settled = false;
+    let terminationReason = null;
+    let directProcessTermination = null;
+    let timeoutTimer = null;
+    let killConfirmationTimer = null;
+    const finish = ({ exitCode, signal, error }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      clearTimeout(killConfirmationTimer);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      const stdoutBuffer = Buffer.concat(stdout);
+      const stderrBuffer = Buffer.concat(stderr);
+      resolve({
+        exitCode,
+        signal,
+        timedOut,
+        error,
+        stdout: encoding ? stdoutBuffer.toString(encoding) : stdoutBuffer,
+        stderr: encoding ? stderrBuffer.toString(encoding) : stderrBuffer,
+        elapsedMs: Date.now() - startedAt,
+        directProcessTermination,
+      });
+    };
+    const requestTermination = (reason) => {
+      if (terminationReason !== null || settled) return;
+      terminationReason = reason;
+      clearTimeout(timeoutTimer);
+      if (child.exitCode !== null || child.signalCode !== null) {
+        directProcessTermination = {
+          attempted: false,
+          processId: Number.isSafeInteger(child.pid) ? child.pid : null,
+          signal: null,
+          killRequestAccepted: null,
+          killRequestError: null,
+          alreadyExited: true,
+          exitObserved: true,
+          confirmedExited: true,
+          exitCode: child.exitCode,
+          exitSignal: child.signalCode,
+        };
+        finish({
+          exitCode: child.exitCode,
+          signal: child.signalCode,
+          error: reason,
+        });
+        return;
+      }
+      let killRequestAccepted = false;
+      let killRequestError = null;
+      try {
+        killRequestAccepted = child.kill('SIGKILL');
+      } catch (error) {
+        killRequestError = error?.message || String(error);
+      }
+      directProcessTermination = {
+        attempted: true,
+        processId: Number.isSafeInteger(child.pid) ? child.pid : null,
+        signal: 'SIGKILL',
+        killRequestAccepted,
+        killRequestError,
+        alreadyExited: false,
+        exitObserved: false,
+        confirmedExited: false,
+        exitCode: null,
+        exitSignal: null,
+      };
+      killConfirmationTimer = setTimeout(() => {
+        finish({
+          exitCode: null,
+          signal: null,
+          error: `${reason}:direct_process_termination_unconfirmed`,
+        });
+      }, COLD_BUILD_HOST_PROCESS_KILL_CONFIRMATION_MS);
+    };
+    const append = (chunks, chunk, currentBytes, maximumBytes) => {
+      const remaining = Math.max(0, maximumBytes - currentBytes);
       if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
       if (chunk.byteLength > remaining) outputExceeded = true;
       return currentBytes + chunk.byteLength;
     };
     child.stdout.on('data', (chunk) => {
-      stdoutBytes = append(stdout, Buffer.from(chunk), stdoutBytes);
-      if (outputExceeded) child.kill('SIGKILL');
+      const bytes = Buffer.from(chunk);
+      try {
+        onStdoutChunk?.(bytes);
+      } catch {
+        requestTermination('process_stdout_consumer_failed');
+      }
+      stdoutBytes = append(stdout, bytes, stdoutBytes, maxStdoutBytes);
+      if (outputExceeded) requestTermination('process_output_limit_exceeded');
     });
     child.stderr.on('data', (chunk) => {
-      stderrBytes = append(stderr, Buffer.from(chunk), stderrBytes);
-      if (outputExceeded) child.kill('SIGKILL');
+      stderrBytes = append(
+        stderr,
+        Buffer.from(chunk),
+        stderrBytes,
+        maxStderrBytes,
+      );
+      if (outputExceeded) requestTermination('process_output_limit_exceeded');
     });
-    let timedOut = false;
-    const timer = setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      requestTermination('process_timeout');
     }, timeoutMs);
     child.once('error', (error) => {
-      clearTimeout(timer);
-      resolve({
+      if (terminationReason !== null) return;
+      finish({
         exitCode: null,
         signal: null,
-        timedOut,
         error: error?.message || String(error),
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-        elapsedMs: Date.now() - startedAt,
+      });
+    });
+    child.once('exit', (exitCode, signal) => {
+      if (terminationReason === null || settled) return;
+      directProcessTermination = {
+        ...directProcessTermination,
+        exitObserved: true,
+        confirmedExited: true,
+        exitCode,
+        exitSignal: signal,
+      };
+      finish({
+        exitCode,
+        signal,
+        error: terminationReason,
       });
     });
     child.once('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      resolve({
+      if (terminationReason !== null) return;
+      finish({
         exitCode,
         signal,
-        timedOut,
-        error: outputExceeded ? 'process_output_limit_exceeded' : null,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-        elapsedMs: Date.now() - startedAt,
+        error: terminationReason ?? (outputExceeded ? 'process_output_limit_exceeded' : null),
       });
     });
+  });
+}
+
+function runProcess(executable, args, { timeoutMs = 120_000, maxOutputBytes = 1024 * 1024 } = {}) {
+  return runColdBuildHostProcess(executable, args, {
+    timeoutMs,
+    maxStdoutBytes: maxOutputBytes,
+    maxStderrBytes: maxOutputBytes,
+    encoding: 'utf8',
   });
 }
 

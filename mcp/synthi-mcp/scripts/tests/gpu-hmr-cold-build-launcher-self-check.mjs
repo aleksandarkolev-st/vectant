@@ -17,6 +17,7 @@ import path from 'node:path';
 
 import {
   COLD_BUILD_CONTAINER_CAPABILITIES,
+  COLD_BUILD_HOST_PROCESS_KILL_CONFIRMATION_MS,
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_BUILDER_LABEL,
   COLD_BUILD_LAUNCHER_CONTAINER_PATH,
@@ -43,6 +44,7 @@ import {
   parseColdBuildCollectorFrame,
   parseColdBuildControlFrame,
   parseColdBuildFinalReceipt,
+  runColdBuildHostProcess,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
 
 const dockerExecutable = process.env.SYNTHI_GPU_HMR_DOCKER_EXECUTABLE || 'docker';
@@ -93,62 +95,12 @@ function spawnCaptured(executable, args, {
   encoding = null,
   onStdoutChunk = null,
 } = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(executable, args, {
-      windowsHide: true,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const stdout = [];
-    const stderr = [];
-    let stdoutLength = 0;
-    let stderrLength = 0;
-    let outputExceeded = false;
-    const append = (chunks, chunk, currentLength, maximum) => {
-      const bytes = Buffer.from(chunk);
-      const remaining = Math.max(0, maximum - currentLength);
-      if (remaining > 0) chunks.push(bytes.subarray(0, remaining));
-      if (bytes.byteLength > remaining) outputExceeded = true;
-      return currentLength + bytes.byteLength;
-    };
-    child.stdout.on('data', (chunk) => {
-      onStdoutChunk?.(Buffer.from(chunk));
-      stdoutLength = append(stdout, chunk, stdoutLength, maxStdoutBytes);
-      if (outputExceeded) child.kill('SIGKILL');
-    });
-    child.stderr.on('data', (chunk) => {
-      stderrLength = append(stderr, chunk, stderrLength, maxStderrBytes);
-      if (outputExceeded) child.kill('SIGKILL');
-    });
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-    child.once('error', (error) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: null,
-        signal: null,
-        timedOut,
-        error: error?.message || String(error),
-        stdout: Buffer.concat(stdout),
-        stderr: Buffer.concat(stderr),
-      });
-    });
-    child.once('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      const stdoutBuffer = Buffer.concat(stdout);
-      const stderrBuffer = Buffer.concat(stderr);
-      resolve({
-        exitCode,
-        signal,
-        timedOut,
-        error: outputExceeded ? 'process_output_limit_exceeded' : null,
-        stdout: encoding ? stdoutBuffer.toString(encoding) : stdoutBuffer,
-        stderr: encoding ? stderrBuffer.toString(encoding) : stderrBuffer,
-      });
-    });
+  return runColdBuildHostProcess(executable, args, {
+    timeoutMs,
+    maxStdoutBytes,
+    maxStderrBytes,
+    encoding,
+    onStdoutChunk,
   });
 }
 
@@ -168,6 +120,97 @@ async function writeAtomicHostFile(directory, name, value) {
   }
   await chmod(temporaryPath, 0o444);
   await rename(temporaryPath, destinationPath);
+}
+
+function processIdentityAlive(processId) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
+  }
+}
+
+async function killAndProveProcessAbsent(processId) {
+  let killError = null;
+  try {
+    process.kill(processId, 'SIGKILL');
+  } catch (error) {
+    if (error?.code !== 'ESRCH') killError = error;
+  }
+  const deadline = Date.now() + 2_000;
+  while (Date.now() <= deadline) {
+    if (!processIdentityAlive(processId)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (killError) throw killError;
+  assert.fail(`process ${processId} survived explicit test cleanup`);
+}
+
+function escapedDescriptorHolderProgram({ outputBytes = 0, parentStaysAlive = false } = {}) {
+  const descendantProgram = 'setInterval(() => {}, 1000);';
+  return [
+    "const { spawn } = require('node:child_process');",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantProgram)}], {`,
+    "  detached: true, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'],",
+    '});',
+    "process.stdout.write(String(child.pid) + '\\n');",
+    outputBytes > 0 ? `process.stdout.write('x'.repeat(${outputBytes}));` : '',
+    'child.unref();',
+    parentStaysAlive ? 'setInterval(() => {}, 1000);' : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function assertCapturedTimeoutIsBounded() {
+  const parentProgram = escapedDescriptorHolderProgram();
+  const timeoutMs = 750;
+  const startedAt = Date.now();
+  const result = await spawnCaptured(process.execPath, ['-e', parentProgram], {
+    timeoutMs,
+    maxStdoutBytes: 1024,
+    maxStderrBytes: 1024,
+    encoding: 'utf8',
+  });
+  const elapsedMs = Date.now() - startedAt;
+  const descendantProcessId = Number(String(result.stdout).trim().split(/\s+/)[0]);
+  assert.ok(Number.isSafeInteger(descendantProcessId) && descendantProcessId > 0);
+  assert.equal(processIdentityAlive(descendantProcessId), true);
+  await killAndProveProcessAbsent(descendantProcessId);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.error, 'process_timeout');
+  assert.equal(result.directProcessTermination?.attempted, false);
+  assert.equal(result.directProcessTermination?.alreadyExited, true);
+  assert.equal(result.directProcessTermination?.confirmedExited, true);
+  assert.ok(
+    elapsedMs <= timeoutMs + COLD_BUILD_HOST_PROCESS_KILL_CONFIRMATION_MS + 2_000,
+    `captured process exceeded bounded termination window: ${elapsedMs}ms`,
+  );
+
+  const outputLimited = await spawnCaptured(
+    process.execPath,
+    ['-e', escapedDescriptorHolderProgram({ outputBytes: 65_536, parentStaysAlive: true })],
+    {
+      timeoutMs: 10_000,
+      maxStdoutBytes: 32,
+      maxStderrBytes: 32,
+      encoding: 'utf8',
+    },
+  );
+  const outputLimitDescendantProcessId = Number(
+    String(outputLimited.stdout).trim().split(/\s+/)[0],
+  );
+  assert.ok(
+    Number.isSafeInteger(outputLimitDescendantProcessId)
+      && outputLimitDescendantProcessId > 0,
+  );
+  assert.equal(processIdentityAlive(outputLimitDescendantProcessId), true);
+  await killAndProveProcessAbsent(outputLimitDescendantProcessId);
+  assert.equal(outputLimited.timedOut, false);
+  assert.equal(outputLimited.error, 'process_output_limit_exceeded');
+  assert.equal(outputLimited.stdout.length, 32);
+  assert.equal(outputLimited.directProcessTermination?.attempted, true);
+  assert.equal(outputLimited.directProcessTermination?.killRequestAccepted, true);
+  assert.equal(outputLimited.directProcessTermination?.confirmedExited, true);
 }
 
 function launcherContainerCreateArgs({
@@ -451,7 +494,7 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
         assert.equal(ready.childIdentityAccepted, false);
         assert.ok(ready.blockingGaps.includes('child_identity_unproven'));
       } else {
-        assert.equal(ready.childIdentityAccepted, true);
+        assert.equal(ready.childIdentityAccepted, true, `${mode}: ${JSON.stringify(ready)}`);
       }
       if (mode === 'direct-argv-no-manifest') {
         assert.equal(ready.childExitCode, 0);
@@ -617,6 +660,11 @@ async function pollControl(containerId, name, timeoutMs = 20_000) {
 }
 
 async function main() {
+  await assertCapturedTimeoutIsBounded();
+  if (process.argv.includes('--host-process-only')) {
+    process.stdout.write('gpu-hmr cold-build host process self-check passed\n');
+    return;
+  }
   await assert.rejects(
     materializeColdBuildLauncher({ dockerExecutable }),
     /target_architecture_required/,
