@@ -65,6 +65,7 @@ test.describe("local support transparency page", () => {
   });
 
   test("creates and displays a live one-time pairing challenge", async ({ page }) => {
+    let pairingRequest;
     await page.route("**/api/local-support/policy", async (route) => {
       await route.fulfill({
         status: 200,
@@ -73,6 +74,7 @@ test.describe("local support transparency page", () => {
       });
     });
     await page.route("**/api/local-support/pairing", async (route) => {
+      pairingRequest = JSON.parse(route.request().postData() || "{}");
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -90,6 +92,7 @@ test.describe("local support transparency page", () => {
 
     await page.getByRole("button", { name: "Start pairing" }).click();
 
+    expect(pairingRequest.workspace_id).toBe("wk_pending_local_selection");
     await expect(page.getByText("ABCD2345WXYZ", { exact: true })).toBeVisible();
     await expect(page.getByText("Expires in 2 minutes", { exact: true })).toBeVisible();
     await expect(page.getByText("1a2b-3c4d-5e6f", { exact: true })).toBeVisible();

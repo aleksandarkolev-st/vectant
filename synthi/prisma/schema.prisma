@@ -838,6 +838,7 @@ model LocalSupportSession {
   deviceFingerprint  String
   devicePublicKey    String
   capabilitiesJson   String
+  approvedPortsJson   String   @default("[]")
   policyVersion      String
   protocolVersion    String
   appVersion         String   @default("unknown")

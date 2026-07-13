@@ -161,6 +161,29 @@ impl RelayClient {
         Ok(())
     }
 
+    pub async fn report_port_status(
+        &self,
+        identity: &DeviceIdentity,
+        session_id: &str,
+        ports: &[Value],
+    ) -> Result<(), String> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "action": "status",
+            "ports": ports,
+        }))
+        .map_err(|_| "Port status could not be serialized.".to_string())?;
+        if body.len() > 12 * 1024 {
+            return Err("Port status exceeded the relay limit.".to_string());
+        }
+        let response = self
+            .post_signed(identity, session_id, DEVICE_RELAY_PATH, body)
+            .await?;
+        if response.get("decision").and_then(Value::as_str) != Some("status_recorded") {
+            return Err("Port status was not accepted.".to_string());
+        }
+        Ok(())
+    }
+
     pub async fn upload_approved_payload(
         &self,
         identity: &DeviceIdentity,

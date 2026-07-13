@@ -4,12 +4,14 @@ import { NextResponse } from "next/server";
 
 import { authenticateLocalSupportDevice } from "@/lib/local-support/deviceAuth";
 import { leaseRelayRequest, recordRelayOutcome } from "@/lib/local-support/relayStore";
+import { updatePairedSessionPorts } from "@/lib/local-support/sessionStore";
 
 export const runtime = "nodejs";
 
 const PATH = "/api/local-support/relay/device";
-const MAX_BODY_BYTES = 4 * 1024;
+const MAX_BODY_BYTES = 16 * 1024;
 const POLL_FIELDS = new Set(["action"]);
+const STATUS_FIELDS = new Set(["action", "ports"]);
 const OUTCOME_FIELDS = new Set([
   "action", "request_id", "lease_id", "decision", "bytes_sent",
   "redaction_count", "scanner_version", "reason",
@@ -50,6 +52,22 @@ export async function POST(req) {
     return jsonNoStore(delivery
       ? { decision: "relay_delivery", delivery, raw_body_included: false, bytes_sent: 0 }
       : { decision: "relay_idle", raw_body_included: false, bytes_sent: 0 });
+  }
+
+  if (body.action === "status" && hasOnlyFields(body, STATUS_FIELDS) && Array.isArray(body.ports)) {
+    let updated;
+    try {
+      updated = await updatePairedSessionPorts(
+        authentication.session.sessionId,
+        authentication.session.deviceFingerprint,
+        body.ports,
+      );
+    } catch {
+      return jsonNoStore(denied("relay_unavailable"), 503);
+    }
+    return jsonNoStore(updated
+      ? { decision: "status_recorded", raw_body_included: false, bytes_sent: 0 }
+      : denied("invalid_port_status"), updated ? 200 : 400);
   }
 
   if (body.action === "outcome" && validOutcome(body) && hasOnlyFields(body, OUTCOME_FIELDS)) {

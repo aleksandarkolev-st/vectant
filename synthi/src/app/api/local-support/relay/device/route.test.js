@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   authenticate: vi.fn(),
   lease: vi.fn(),
   outcome: vi.fn(),
+  updatePorts: vi.fn(),
 }));
 
 vi.mock("@/lib/local-support/deviceAuth", () => ({
@@ -12,6 +13,9 @@ vi.mock("@/lib/local-support/deviceAuth", () => ({
 vi.mock("@/lib/local-support/relayStore", () => ({
   leaseRelayRequest: mocks.lease,
   recordRelayOutcome: mocks.outcome,
+}));
+vi.mock("@/lib/local-support/sessionStore", () => ({
+  updatePairedSessionPorts: mocks.updatePorts,
 }));
 
 import { POST } from "./route";
@@ -84,6 +88,36 @@ describe("device-authenticated relay endpoint", () => {
     const forbidden = await POST(request({ ...body, response_body: "local secret" }));
     expect(forbidden.status).toBe(400);
     expect(mocks.outcome).toHaveBeenCalledTimes(1);
+  });
+
+  it("records only sanitized, session-bound port status", async () => {
+    authenticate();
+    mocks.updatePorts.mockResolvedValue(true);
+    const ports = [{
+      port: 3000,
+      target_host: "127.0.0.1",
+      preview_host: "br-local-p3000.vectant-preview.dev",
+      process_identity_hash: "sha256:2222222222222222",
+      browser_preview_allowed: true,
+      expires_at: "session_end",
+    }];
+
+    const response = await POST(request({ action: "status", ports }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.updatePorts).toHaveBeenCalledWith(
+      "sess_12345678",
+      "sha256:1111111111111111",
+      ports,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "status_recorded",
+      raw_body_included: false,
+    });
+
+    const invalid = await POST(request({ action: "status", ports, preview_token: "must-not-be-accepted" }));
+    expect(invalid.status).toBe(400);
+    expect(mocks.updatePorts).toHaveBeenCalledTimes(1);
   });
 
   it("accepts a body-free local review pending outcome", async () => {

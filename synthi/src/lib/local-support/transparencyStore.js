@@ -72,7 +72,7 @@ export async function readCloudTransparencyState(accountId, client = prisma, now
       class: item.logClass === "local_support.control" ? "Control" : activityClass(item.decision),
       summary: `${item.decision}: ${item.capability} for ${item.targetDisplay}; ${item.bytesSent} bytes sent.`,
     })),
-    ports: [],
+    ports: parseApprovedPorts(session?.approvedPortsJson),
     export_metadata: {
       raw_bodies_included: false,
       audit_chain_verified: false,
@@ -80,6 +80,28 @@ export async function readCloudTransparencyState(accountId, client = prisma, now
       workspace_display: session?.workspaceId,
     },
   };
+}
+
+function parseApprovedPorts(value) {
+  try {
+    const ports = JSON.parse(value || "[]");
+    return Array.isArray(ports) ? ports.map((port) => ({
+      port: port.port,
+      target_host: port.target_host,
+      preview_host: port.preview_host,
+      process_hash: port.process_identity_hash,
+      ttl: port.expires_at,
+      browser: port.browser_preview_allowed === true,
+      aiRead: false,
+      supportRead: false,
+      aiInteract: false,
+      responseBodies: false,
+      persistent: false,
+      methods: "GET, HEAD only",
+    })) : [];
+  } catch {
+    return [];
+  }
 }
 
 function latestAuditByRequest(audits) {

@@ -32,6 +32,7 @@ const approvalPreview = document.querySelector(".approval-preview");
 const approvalReviewDetail = document.querySelector("[data-approval-review-detail]");
 const previewPortInput = document.querySelector("[data-preview-port]");
 let renderedState = null;
+let lastDesktopError = "";
 
 const defaultApprovalCopy = "When Vectant requests a source file or log, this desktop screen must show classification, redactions, target path, actor, reason, expiry, and approval scope before content leaves the machine.";
 const defaultPortsCopy = "Approved preview hosts are session scoped, loopback only, token bound, process identity bound, and revoked on disconnect or app quit.";
@@ -188,6 +189,7 @@ function renderUpdatePolicy(policy) {
 }
 
 async function invokeStateAction(command, unavailableMessage, payload = {}) {
+  lastDesktopError = "";
   try {
     const result = await invokeDesktop(command, payload);
     if (result) {
@@ -195,8 +197,11 @@ async function invokeStateAction(command, unavailableMessage, payload = {}) {
       renderState(result);
       return result;
     }
-  } catch {
-    bridgeStatus.textContent = "Desktop IPC denied this action. No local data was sent.";
+  } catch (error) {
+    lastDesktopError = typeof error === "string"
+      ? error
+      : error?.message || "Desktop IPC denied this action.";
+    bridgeStatus.textContent = `${lastDesktopError} No local data was sent.`;
     return null;
   }
   bridgeStatus.textContent = unavailableMessage;
@@ -403,12 +408,13 @@ async function refreshDesktopState() {
     if (state) {
       bridgeStatus.textContent = "Desktop IPC connected. Renderer received sanitized state only.";
       renderState(state);
-      return;
+      return state;
     }
   } catch {
     bridgeStatus.textContent = "Desktop IPC denied or unavailable, showing safe disconnected state.";
   }
   renderState(fallbackState);
+  return fallbackState;
 }
 
 tabs.forEach((tab) => {
@@ -516,6 +522,11 @@ document.querySelectorAll("[data-action]").forEach((button) => {
 
 pairingForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const tauriInvoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
+  if (!tauriInvoke) {
+    pairingStatus.textContent = "Open the native Vectant Local Support window to pair. This browser preview has no desktop IPC.";
+    return;
+  }
   const code = pairingCode.value.trim().toUpperCase();
   pairingStatus.textContent = "Checking one-time code...";
   const result = await invokeStateAction(
@@ -527,8 +538,18 @@ pairingForm?.addEventListener("submit", async (event) => {
     pairingCode.value = "";
     pairingStatus.textContent = "Code accepted. Compare the fingerprint before confirming.";
   } else {
-    pairingStatus.textContent = "Code was not accepted. Nothing was paired.";
+    pairingStatus.textContent = lastDesktopError || "Code was not accepted. Nothing was paired.";
   }
 });
 
-refreshDesktopState();
+// The native runtime refreshes cloud policy in the background. Poll only until
+// the first usable policy arrives, then stop so later user actions are not
+// overwritten by stale status snapshots.
+refreshDesktopState().then((state) => {
+  if (state?.update_policy?.available) return;
+  const policyTimer = window.setInterval(async () => {
+    if (document.visibilityState === "hidden") return;
+    const nextState = await refreshDesktopState();
+    if (nextState?.update_policy?.available) window.clearInterval(policyTimer);
+  }, 2000);
+});

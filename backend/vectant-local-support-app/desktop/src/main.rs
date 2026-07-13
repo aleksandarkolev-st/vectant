@@ -39,6 +39,7 @@ struct DesktopRuntime {
     pending_relay_approvals: RwLock<HashMap<String, PendingRelayApproval>>,
     preview_contexts: RwLock<HashMap<u16, PreviewContext>>,
     local_api_address: RwLock<Option<SocketAddr>>,
+    last_synced_port_status: RwLock<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -667,6 +668,7 @@ fn main() -> anyhow::Result<()> {
         pending_relay_approvals: RwLock::new(HashMap::new()),
         preview_contexts: RwLock::new(HashMap::new()),
         local_api_address: RwLock::new(None),
+        last_synced_port_status: RwLock::new(None),
     };
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -759,6 +761,7 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
             if let Some(session) =
                 session_state.filter(|state| !state.paused && state.session_id.starts_with("sess_"))
             {
+                let _ = sync_cloud_port_status(&runtime, &app_state, &session).await;
                 match runtime
                     .relay_client
                     .poll(&runtime.device_identity, &session.session_id)
@@ -783,6 +786,50 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn sync_cloud_port_status(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    session: &vectant_local_support_app::session::SessionState,
+) -> Result<(), String> {
+    let ports = state
+        .port_approvals
+        .lock()
+        .await
+        .approvals()
+        .into_iter()
+        .map(|port| {
+            serde_json::json!({
+                "port": port.port,
+                "target_host": port.target_host,
+                "preview_host": port.preview_host,
+                "process_identity_hash": port.process_identity_hash,
+                "browser_preview_allowed": port.browser_preview_allowed,
+                "expires_at": port.expires_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let serialized = serde_json::to_string(&ports)
+        .map_err(|_| "Port status could not be serialized.".to_string())?;
+    {
+        let last = runtime
+            .last_synced_port_status
+            .read()
+            .map_err(|_| "Port status lock failed closed.".to_string())?;
+        if last.as_deref() == Some(serialized.as_str()) {
+            return Ok(());
+        }
+    }
+    runtime
+        .relay_client
+        .report_port_status(&runtime.device_identity, &session.session_id, &ports)
+        .await?;
+    *runtime
+        .last_synced_port_status
+        .write()
+        .map_err(|_| "Port status lock failed closed.".to_string())? = Some(serialized);
+    Ok(())
 }
 
 async fn revoke_stale_preview_contexts(
