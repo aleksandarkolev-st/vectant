@@ -24,6 +24,18 @@ const DISALLOWED_ACTOR_CAPABILITIES = new Set([
   "workspace.file.write",
   "workspace.command.execute",
   "workspace.repo.upload",
+  // Browser preview is intentionally separate from agent/support access. These
+  // capabilities must never reach the approval queue in the MVP: approving a
+  // request cannot elevate the session into page reading, interaction, or a
+  // state-changing localhost proxy.
+  "localhost.preview.agent_read",
+  "localhost.preview.support_agent_read",
+  "localhost.preview.agent_interact",
+  "localhost.preview.support_agent_interact",
+  "localhost.preview.response_body",
+  "localhost.preview.screenshot",
+  "localhost.preview.console",
+  "localhost.preview.state_change",
 ]);
 
 const SECURITY_EVENT_TYPES = new Set([
@@ -1154,14 +1166,7 @@ function isLoopbackTargetHost(host) {
 }
 
 function isAllowedPrivateTargetHost(host) {
-  if (isLoopbackTargetHost(host)) return true;
-  const parts = host.split(".").map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  const [first, second] = parts;
-  return first === 10
-    || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 168)
-    || (first === 169 && second === 254);
+  return isLoopbackTargetHost(host);
 }
 
 function isSafePreviewPath(path) {

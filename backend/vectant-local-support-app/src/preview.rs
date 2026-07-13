@@ -426,8 +426,12 @@ pub fn validate_preview_request_headers(headers: &[(&str, &str)]) -> Option<Stri
 
 pub fn target_ip_allowed(target_ip: IpAddr) -> bool {
     match target_ip {
-        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
-        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+        // Preview is a manually approved loopback capability, not a general
+        // private-network proxy. Private, LAN, link-local, and metadata
+        // addresses are deliberately excluded even when a caller supplies an
+        // approval for the port.
+        IpAddr::V4(ip) => ip.is_loopback(),
+        IpAddr::V6(ip) => ip.is_loopback(),
     }
 }
 

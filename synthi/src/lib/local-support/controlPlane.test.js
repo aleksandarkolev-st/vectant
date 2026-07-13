@@ -234,7 +234,7 @@ describe("local support control plane policy", () => {
     });
   });
 
-  it("keeps workspace mutation blocked while allowing explicit preview capabilities", () => {
+  it("keeps workspace mutation and agent preview capabilities blocked", () => {
     const policy = enabledPolicy();
     for (const capability of [
       "workspace.file.write",
@@ -250,7 +250,11 @@ describe("local support control plane policy", () => {
 
     expect(validateRequestEnvelope(
       envelope({ capability: "localhost.preview.agent_read", actor: "vectant_ai" }), policy,
-    )).toMatchObject({ decision: "approval_required" });
+    )).toMatchObject({
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      bytes_sent: 0,
+    });
   });
 
   it("allows only approval-gated MVP read capabilities", () => {
@@ -577,8 +581,9 @@ describe("local support control plane policy", () => {
       actor: "support_agent",
       capability: "localhost.preview.support_agent_read",
     }), policy)).toMatchObject({
-      decision: "preview_gateway_ready",
-      preview_forward: true,
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      preview_forward: false,
       bytes_sent: 0,
     });
 
@@ -587,8 +592,9 @@ describe("local support control plane policy", () => {
       request_id: "req_preview_metadata",
       target_host: "169.254.169.254",
     }), policy)).toMatchObject({
-      decision: "preview_gateway_ready",
-      preview_forward: true,
+      decision: "denied",
+      reason: "preview_target_not_allowed",
+      preview_forward: false,
       bytes_sent: 0,
     });
 
@@ -620,8 +626,9 @@ describe("local support control plane policy", () => {
       actor: "vectant_ai",
       capability: "localhost.preview.agent_read",
     }), policy)).toMatchObject({
-      decision: "preview_gateway_ready",
-      preview_forward: true,
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      preview_forward: false,
       bytes_sent: 0,
     });
 
@@ -631,8 +638,9 @@ describe("local support control plane policy", () => {
       capability: "localhost.preview.agent_interact",
       actor: "vectant_ai",
     }), policy)).toMatchObject({
-      decision: "preview_gateway_ready",
-      preview_forward: true,
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      preview_forward: false,
       bytes_sent: 0,
     });
 

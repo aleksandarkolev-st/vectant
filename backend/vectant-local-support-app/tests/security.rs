@@ -2553,8 +2553,8 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
         PreviewDecision::Deny("invalid_method_blocked".to_string())
     );
 
-    assert!(redirect_allowed("http://169.254.169.254/latest/meta-data/"));
-    assert!(redirect_allowed("http://192.168.1.1/admin"));
+    assert!(!redirect_allowed("http://169.254.169.254/latest/meta-data/"));
+    assert!(!redirect_allowed("http://192.168.1.1/admin"));
     assert!(!redirect_allowed("http://2130706433/admin"));
     assert!(!redirect_allowed("http://0x7f.0.0.1/admin"));
     assert!(!redirect_allowed("http://0177.0.0.1/admin"));
