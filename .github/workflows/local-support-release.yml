@@ -74,6 +74,14 @@ jobs:
           cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml
           cargo test --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml
 
+      - name: Confirm live test binaries are excluded
+        shell: pwsh
+        run: |
+          cargo build --manifest-path backend/vectant-local-support-app/Cargo.toml --release
+          if (Test-Path "backend/vectant-local-support-app/target/release/local-support-test-daemon.exe") {
+            throw "Feature-gated live daemon leaked into the release target."
+          }
+
       - name: Install release tooling
         run: |
           cargo install tauri-cli --version "^2.0" --locked
@@ -120,6 +128,12 @@ jobs:
       - name: Verify and inventory signed output
         shell: pwsh
         run: |
+          if (Test-Path "backend/vectant-local-support-app/target/release/local-support-test-daemon.exe") {
+            throw "Feature-gated live daemon leaked into the signed release build."
+          }
+          if (Test-Path "backend/vectant-local-support-app/desktop/target/release/local-support-live-relay.exe") {
+            throw "Feature-gated live relay probe leaked into the signed release build."
+          }
           $bundle = Resolve-Path "backend/vectant-local-support-app/desktop/target/release/bundle"
           $installers = Get-ChildItem -LiteralPath $bundle -Recurse -File | Where-Object { $_.Extension -in ".exe", ".msi" }
           if ($installers.Count -eq 0) { throw "No Windows installers were produced." }
