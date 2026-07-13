@@ -37,6 +37,11 @@ pub const DEFAULT_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub const DEFAULT_RATE_LIMIT_REQUESTS: usize = 120;
 pub const MIN_APP_VERSION: &str = "0.1.0";
 pub const VULNERABLE_APP_VERSIONS: &[&str] = &["0.0.0", "0.0.1", "0.1.1"];
+const ALLOWED_LOCAL_APP_ORIGINS: &[&str] = &[
+    "https://beta.vectant.dev",
+    "https://app.vectant.dev",
+    "https://app.vectant.com",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PortApprovalRequest {
@@ -1179,7 +1184,7 @@ fn validate_headers(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_j
         .get("origin")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if origin != "https://beta.vectant.dev" && origin != "https://app.vectant.dev" {
+    if !ALLOWED_LOCAL_APP_ORIGINS.contains(&origin) {
         return Err(denied(StatusCode::FORBIDDEN, "bad_origin"));
     }
     let fetch_site = headers
@@ -1567,4 +1572,28 @@ fn denied(status: StatusCode, reason: impl ToString) -> (StatusCode, Json<serde_
             "bytes_sent": 0
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_headers;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn accepts_the_production_app_origin_without_broadening_cross_site_access() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://app.vectant.com"),
+        );
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-site"));
+        headers.insert(
+            "x-vectant-csrf",
+            HeaderValue::from_static("csrf_token_12345678901234567890"),
+        );
+        assert!(validate_headers(&headers).is_ok());
+
+        headers.insert("origin", HeaderValue::from_static("https://evil.example"));
+        assert!(validate_headers(&headers).is_err());
+    }
 }
