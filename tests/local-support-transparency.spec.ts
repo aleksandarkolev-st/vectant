@@ -40,18 +40,7 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeDisabled();
     await expect(page.getByText("Disconnected")).toBeVisible();
 
-    await page.getByRole("tab", { name: "Release gate" }).click();
-    await expect(page.getByText("Release blocker evidence")).toBeVisible();
-    await expect(page.getByText("Mapped", { exact: true })).toBeVisible();
-    await expect(page.getByRole("table").getByText("Signed installer/update")).toBeVisible();
-    await expect(page.getByText("CI required").first()).toBeVisible();
-    await expect(page.getByText("Red-team scenarios")).toBeVisible();
-    await expect(page.getByText("Malicious website localhost attack")).toBeVisible();
-    await expect(page.getByText("Confused-deputy approval flow")).toBeVisible();
-    await expect(page.getByText("Needs E2E proof").first()).toBeVisible();
-    await expect(page.getByText("UX acceptance prompts")).toBeVisible();
-    await expect(page.getByText("What workspace is connected?")).toBeVisible();
-    await expect(page.getByText("How do you delete local activity history?")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Release gate" })).toHaveCount(0);
   });
 
   test("does not fake history export or delete without a connected local app", async ({ page }) => {

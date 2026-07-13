@@ -625,6 +625,28 @@ describe("local support control plane policy", () => {
       bytes_sent: 0,
     });
 
+    expect(buildPreviewGatewayDecision(proofBound({
+      ...previewEnvelope,
+      request_id: "req_preview_ai",
+      actor: "vectant_ai",
+    }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "agent_preview_read_separate_permission_required",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
+    expect(buildPreviewGatewayDecision(proofBound({
+      ...previewEnvelope,
+      request_id: "req_preview_interaction",
+      capability: "localhost.preview.agent_interact",
+    }), policy)).toMatchObject({
+      decision: "denied",
+      reason: "capability_blocked_in_mvp",
+      preview_forward: false,
+      bytes_sent: 0,
+    });
+
     for (const [request_headers, reason] of [
       [[["content-length", "0"], ["content-length", "0"]], "preview_duplicate_content_length_blocked"],
       [{ "content-length": "0", "transfer-encoding": "chunked" }, "preview_ambiguous_body_length_blocked"],

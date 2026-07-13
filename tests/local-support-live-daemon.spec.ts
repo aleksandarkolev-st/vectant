@@ -166,8 +166,16 @@ test('real preview gateway forwards only approved browser traffic and revokes it
   expect(badToken.status()).toBe(403);
   await expect(badToken.json()).resolves.toMatchObject({ reason: 'preview_token_invalid' });
 
-  const post = await request.post(`${baseUrl}/v1/preview/${previewPort}/hello?${query('preview_post_blocked')}`, { headers });
-  expect(post.status()).toBe(403);
+  for (const [method, requestId] of [
+    ['post', 'preview_post_blocked'],
+    ['put', 'preview_put_blocked'],
+    ['patch', 'preview_patch_blocked'],
+    ['delete', 'preview_delete_blocked'],
+  ] as const) {
+    const response = await request[method](`${baseUrl}/v1/preview/${previewPort}/hello?${query(requestId)}`, { headers });
+    expect(response.status(), `${method.toUpperCase()} must stay blocked`).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ reason: 'state_changing_method_blocked' });
+  }
 
   const revoked = await request.post(`${baseUrl}/v1/port/revoke/${previewPort}/preview_revoke`, {
     headers: { ...headers, 'x-vectant-local-control-secret': credentials.control },
