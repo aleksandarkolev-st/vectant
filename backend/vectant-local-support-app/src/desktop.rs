@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 
 use crate::http::AppState;
@@ -288,7 +289,27 @@ fn csp_blocks_loopback_fetch(csp: &str) -> bool {
 }
 
 fn is_ed25519_public_key_hex(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+    if value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return true;
+    }
+    let Ok(decoded) = STANDARD.decode(value) else {
+        return false;
+    };
+    let Ok(public_key) = std::str::from_utf8(&decoded) else {
+        return false;
+    };
+    let mut lines = public_key.lines();
+    let Some(comment) = lines.next() else {
+        return false;
+    };
+    let Some(key_line) = lines.next() else {
+        return false;
+    };
+    comment.starts_with("untrusted comment: minisign public key: ")
+        && key_line.len() == 56
+        && key_line
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
 }
 
 fn renderer_token_access_blocked(value: &Value) -> bool {

@@ -58,6 +58,9 @@ jobs:
           if ($env:UPDATER_PUBLIC_KEY -match '^0+$' -or $env:UPDATER_PUBLIC_KEY.Length -lt 32) {
             throw "Protected updater public key is missing or is the non-production sentinel."
           }
+          if ($env:UPDATER_PUBLIC_KEY -eq $config.plugins.updater.pubkey) {
+            throw "Protected updater public key must replace the checked-in non-production fixture key."
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

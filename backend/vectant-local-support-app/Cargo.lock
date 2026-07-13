@@ -1666,6 +1666,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "ed25519-dalek",
  "futures-util",

@@ -82,7 +82,7 @@ Verified locally against a real production Next server: 5 web Chromium flows. De
 - `tauri-plugin-updater` is registered in Rust. Check/install are narrow native IPC commands; install requires native confirmation, rechecks the candidate, relies on Tauri signature verification and downgrade protection, installs, then restarts.
 - The independent package verifier binds Ed25519-signed metadata to channel, version policy, emergency revocation, and exact artifact SHA-256 bytes.
 - `.github/workflows/local-support-release.yml` requires the protected signing environment, builds updater artifacts, Authenticode-signs installers, verifies them, generates checksums/SBOM, removes the ephemeral certificate, smoke-tests signed install/uninstall, and re-verifies on a clean runner.
-- The checked-in Tauri configuration keeps updater artifacts and the signed updater plugin active. The checked-in public-key value is a non-production sentinel and the protected release job must replace it with the real public key; no release is considered signed without the protected key, certificate, HTTPS endpoint, and clean-runner checks.
+- The checked-in Tauri configuration keeps updater artifacts and the signed updater plugin active with a valid non-production fixture public key. A local Tauri build using a matching ephemeral key produced one `.sig` updater artifact and one NSIS installer on 2026-07-13. The protected release job rejects both the old zero sentinel and reuse of the fixture key; it must replace the fixture with the real public key. No release is considered signed without the protected key, certificate, HTTPS endpoint, and clean-runner checks.
 
 Hands-on unsigned packaging smoke command:
 
