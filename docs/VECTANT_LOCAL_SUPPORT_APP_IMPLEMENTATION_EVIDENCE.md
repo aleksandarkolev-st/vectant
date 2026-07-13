@@ -45,7 +45,7 @@ npx prisma validate --schema synthi/prisma/schema.prisma
 npm run test --workspace synthi -- src/lib/local-support src/app/api/local-support
 ```
 
-The focused CI command in `.github/workflows/local-support-security.yml` is authoritative for the selected cloud suite. Verified locally: 122 tests across 21 focused files. A live migration/deployment test still requires a running PostgreSQL environment.
+The focused CI command in `.github/workflows/local-support-security.yml` is authoritative for the selected cloud suite. Verified locally: 122 tests across 21 focused files. On 2026-07-13, the full Prisma schema was validated and all 25 migrations were applied successfully to a clean local PostgreSQL 16 container, then the container was removed. This proves migration compatibility, not staging deployment identity or production data safety.
 
 CI now includes a PostgreSQL service job that runs `prisma validate` and `prisma migrate deploy` against a clean database. It proves migration application in CI; it does not substitute for the intended staging deployment or browser-to-cloud-to-desktop proof.
 
@@ -93,6 +93,8 @@ cd ../../..
 ```
 
 Verified locally: MSI and NSIS were produced; NSIS installed into a unique temporary directory; the installed executable opened only a random `127.0.0.1` listener; silent uninstall removed the executable and left no Local Support process.
+
+Re-verified on 2026-07-13 after the updater/package changes with `cargo tauri build --no-sign --bundles nsis` followed by `scripts/windows-installer-smoke.ps1`: the unsigned NSIS installer launched, exposed only a random loopback listener, and uninstalled cleanly. This is packaging evidence only; it is not Authenticode, updater-signature, or production installer evidence.
 
 ## Public-beta gates requiring external evidence
 
