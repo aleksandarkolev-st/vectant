@@ -2998,6 +2998,8 @@ fn audit_export_contains_consent_receipts_and_detects_tampering() {
         expires_at: "session_end".to_string(),
         policy_version: "2026.07.05".to_string(),
         scanner_version: "scanner-2026.07.05".to_string(),
+        bytes_sent: 42,
+        redaction_count: 1,
     });
     log.append(
         AuditClass::Denied,
@@ -3089,6 +3091,8 @@ fn audit_export_applies_retention_and_rechains_retained_events() {
         expires_at: "session_end".to_string(),
         policy_version: "2026.07.05".to_string(),
         scanner_version: "scanner-2026.07.05".to_string(),
+        bytes_sent: 0,
+        redaction_count: 0,
     });
 
     let export = log.export_incident_bundle(30);
