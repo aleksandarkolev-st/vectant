@@ -208,4 +208,11 @@ jobs:
           Add-Content -LiteralPath $tamperTarget.FullName -Value "tamper-probe" -NoNewline
           $after = (Get-FileHash -LiteralPath $tamperTarget.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($before -eq $after) { throw "Tamper probe did not change artifact bytes." }
-          Write-Host "Tamper probe changed the verified artifact hash as expected; altered artifacts are not releasable."
+          $tamperRelative = $tamperTarget.FullName.Substring($root.Path.Length + 1).Replace('\','/')
+          $recorded = ($lines | Where-Object { $_ -match [regex]::Escape("  $tamperRelative") } | Select-Object -First 1)
+          $recordedHash = if ($recorded) { ($recorded -split '\s+', 2)[0] } else { '' }
+          if ($recordedHash -notmatch '^[0-9a-f]{64}$') { throw "Tampered artifact was missing from the recorded checksum set." }
+          if ($after -eq $recordedHash) { throw "Tampered artifact still matched its recorded checksum." }
+          $tamperedSignature = Get-AuthenticodeSignature -LiteralPath $tamperTarget.FullName
+          if ($tamperedSignature.Status -eq "Valid") { throw "Tampered installer still reported a valid Authenticode signature." }
+          Write-Host "Tamper probe was rejected by checksum and Authenticode verification as expected."
