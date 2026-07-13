@@ -76,7 +76,7 @@ npx playwright test tests/local-support-transparency.spec.ts tests/local-support
 
 Verified locally during the current audit: 16/16 Chromium tests passed across transparency, admin, desktop-shell, and live-daemon specs against a freshly started server whose listener was verified to belong to this workspace; the server log contained no `EADDRINUSE`. The production Next build also completed successfully. This is local runtime evidence, not authenticated staging deployment evidence.
 
-Supply-chain evidence: `npm audit --workspace synthi --omit=dev --audit-level=high` completed successfully, while reporting 53 moderate/low advisories in the broader dependency tree. `cargo audit --manifest-path backend/vectant-local-support-app/Cargo.toml --deny warnings` could not run because `cargo-audit` is not installed on the local validation host; the CI workflow still declares that gate.
+Supply-chain evidence: `npm audit --workspace synthi --omit=dev --audit-level=high` completed successfully, while reporting 53 moderate/low advisories in the broader dependency tree. `cargo audit --deny warnings` passes for the native package, and `cargo audit` completes for the desktop lockfile after removing unused `rfd` portal/Wayland defaults; it reports 17 unmaintained/unsound GTK-related warnings without vulnerability findings. The CI workflow runs the native gate from its lockfile directory and the desktop audit separately.
 
 ### Packaging and updater
 

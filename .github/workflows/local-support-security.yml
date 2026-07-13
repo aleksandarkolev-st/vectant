@@ -303,7 +303,12 @@ jobs:
           tool: cargo-audit
 
       - name: Audit Rust dependencies
-        run: cargo audit --manifest-path backend/vectant-local-support-app/Cargo.toml --deny warnings
+        working-directory: backend/vectant-local-support-app
+        run: cargo audit --deny warnings
+
+      - name: Audit desktop Rust dependencies
+        working-directory: backend/vectant-local-support-app/desktop
+        run: cargo audit
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0

@@ -16,7 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
-rfd = "0.16"
+rfd = { version = "0.16", default-features = false }
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }

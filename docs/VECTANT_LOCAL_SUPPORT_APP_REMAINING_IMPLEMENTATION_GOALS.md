@@ -19,7 +19,7 @@ Still unverified or blocked:
 - The local release build cannot produce a signed updater artifact without `TAURI_SIGNING_PRIVATE_KEY`; the generated installer was `NotSigned`.
 - Production certificate signing, updater tamper/downgrade/revocation verification, and release-branch controls require their configured CI secrets/infrastructure.
 - Full repository tests are not a Local Support release proof; unrelated existing failures remain outside this feature’s focused gates.
-- The local npm production-dependency audit passes its configured high-severity threshold but reports moderate/low advisories in the broader Monaco/Next/Auth dependency tree; `cargo audit` was unavailable on the local validation host and remains a CI-only check until the tool is installed locally.
+- The local npm production-dependency audit passes its configured high-severity threshold but reports moderate/low advisories in the broader Monaco/Next/Auth dependency tree. Native `cargo audit --deny warnings` passes; the desktop lockfile now has no vulnerability findings but still reports 17 unmaintained/unsound GTK-related warnings that are emitted without failing the desktop audit.
 
 ## MVP Blockers
 
