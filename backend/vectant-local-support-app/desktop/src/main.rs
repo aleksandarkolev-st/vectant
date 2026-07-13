@@ -524,6 +524,10 @@ async fn local_support_ipc(
                 .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
             if let Some(candidate) = update.as_ref() {
                 if policy.available && !policy.update_version_allowed(&candidate.version) {
+                    *runtime
+                        .available_update_version
+                        .write()
+                        .map_err(|_| "Update state lock failed closed.".to_string())? = None;
                     return Err("The signed update is blocked by current cloud policy.".to_string());
                 }
             }
@@ -573,6 +577,10 @@ async fn local_support_ipc(
                 .write()
                 .map_err(|_| "Policy state lock failed closed.".to_string())? = policy.clone();
             if policy.available && !policy.update_version_allowed(&update.version) {
+                *runtime
+                    .available_update_version
+                    .write()
+                    .map_err(|_| "Update state lock failed closed.".to_string())? = None;
                 return Err("The signed update is blocked by current cloud policy.".to_string());
             }
             update
