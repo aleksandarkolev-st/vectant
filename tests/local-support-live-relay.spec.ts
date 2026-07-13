@@ -14,6 +14,7 @@ import {
 
 const enabled = process.env.LOCAL_SUPPORT_LIVE_RELAY_E2E === '1';
 const baseUrl = process.env.VECTANT_TEST_BASE_URL || 'http://localhost:3100';
+const adminToken = process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN || '';
 const envelopeSecret = process.env.VECTANT_LOCAL_SUPPORT_ENVELOPE_SECRET || '';
 const deviceProofSecret = process.env.VECTANT_LOCAL_SUPPORT_DEVICE_PROOF_SECRET || '';
 const relayPayloadKey = process.env.VECTANT_LOCAL_SUPPORT_RELAY_PAYLOAD_KEY
@@ -29,6 +30,7 @@ test.skip(!enabled, 'Set LOCAL_SUPPORT_LIVE_RELAY_E2E=1 to run the live Rust rel
 
 test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud state', async ({ page }) => {
   expect(Buffer.from(relayPayloadKey, 'base64')).toHaveLength(32);
+  expect(adminToken).toBeTruthy();
   const identityPath = join(mkdtempSync(join(tmpdir(), 'vectant-live-relay-')), 'device-identity.json');
   const relayBinary = join(
     process.cwd(),
@@ -131,6 +133,32 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     expect(stored?.payload?.ciphertext).not.toContain('redacted-live-payload');
     expect(stored?.auditEntries.map((entry) => entry.decision)).toEqual(['queued', 'review_pending', 'sent']);
     expect(stored?.auditEntries.every((entry) => entry.bytesSent >= 0)).toBe(true);
+
+    const revoke = await page.context().request.post(`${baseUrl}/api/local-support/admin/state`, {
+      headers: {
+        origin: baseUrl,
+        'sec-fetch-site': 'same-origin',
+        'x-vectant-admin-token': adminToken,
+        'content-type': 'application/json',
+      },
+      data: { target_type: 'session', target_id: sessionId },
+    });
+    expect(revoke.status()).toBe(200);
+    await expect(revoke.json()).resolves.toMatchObject({
+      decision: 'revocation_required',
+      revocation_recorded: true,
+    });
+
+    const revokedPoll = execFileSync(relayBinary, [endpoint, identityPath, sessionId, 'poll'], { encoding: 'utf8' });
+    expect(JSON.parse(revokedPoll.trim())).toEqual({ decision: 'relay_revoked' });
+
+    const revoked = await prisma.localSupportSession.findUnique({ where: { sessionId } });
+    const purged = await prisma.localSupportRelayRequest.findUnique({
+      where: { requestId },
+      include: { payload: true },
+    });
+    expect(revoked?.status).toBe('revoked');
+    expect(purged?.payload).toBeNull();
   } finally {
     await prisma.localSupportRelayRequest.deleteMany({ where: { requestId } });
     await prisma.localSupportSession.deleteMany({ where: { sessionId } });
