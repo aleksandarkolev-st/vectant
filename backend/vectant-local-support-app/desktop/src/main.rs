@@ -1095,7 +1095,7 @@ async fn release_relay_approval(
         .ok_or_else(|| {
             "Approved file changed or expired before release. Nothing was sent.".to_string()
         })?;
-    let (response, receipt) = released;
+    let (response, mut receipt) = released;
     let content = response
         .content
         .as_deref()
@@ -1124,6 +1124,8 @@ async fn release_relay_approval(
                 .to_string(),
         );
     }
+    receipt.bytes_sent = bytes_sent;
+    receipt.redaction_count = response.redactions.len();
 
     runtime
         .pending_relay_approvals

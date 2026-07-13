@@ -219,6 +219,8 @@ describe("local support transparency state route", () => {
             content_sha256: "sha256:content",
             capability: "workspace.log.read",
             granted_at: "2026-07-09T08:01:00Z",
+            bytes_sent: 42,
+            redaction_count: 2,
           },
         ],
       },
@@ -258,6 +260,8 @@ describe("local support transparency state route", () => {
           id: "req_sent",
           actor: "support_agent",
           target: "server.log",
+          bytes: 42,
+          redactions: 2,
         }),
       ],
       blocked_items: [

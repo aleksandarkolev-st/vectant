@@ -52,6 +52,10 @@ pub struct ConsentReceipt {
     pub expires_at: String,
     pub policy_version: String,
     pub scanner_version: String,
+    #[serde(default)]
+    pub bytes_sent: usize,
+    #[serde(default)]
+    pub redaction_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

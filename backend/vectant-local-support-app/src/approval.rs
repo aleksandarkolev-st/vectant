@@ -205,6 +205,8 @@ impl ApprovalQueue {
             expires_at: queued.request.expires_at.clone(),
             policy_version: review.policy_version.clone(),
             scanner_version: review.scanner_version.clone(),
+            bytes_sent: 0,
+            redaction_count: review.redactions.len(),
         };
         Some((review, receipt))
     }
