@@ -10,16 +10,17 @@ const MVP_ALLOWED_CAPABILITIES = new Set([
   "workspace.metadata.read",
   "workspace.git.status.read",
   "localhost.preview.browser",
-]);
-
-const DISALLOWED_ACTOR_CAPABILITIES = new Set([
   "localhost.preview.agent_read",
   "localhost.preview.support_agent_read",
   "localhost.preview.agent_interact",
+  "localhost.preview.support_agent_interact",
   "localhost.preview.response_body",
   "localhost.preview.screenshot",
-  "browser.console.read",
-  "browser.network_summary.read",
+  "localhost.preview.console",
+  "localhost.preview.state_change",
+]);
+
+const DISALLOWED_ACTOR_CAPABILITIES = new Set([
   "workspace.file.write",
   "workspace.command.execute",
   "workspace.repo.upload",
@@ -373,11 +374,8 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   if (!MVP_ALLOWED_CAPABILITIES.has(request.capability)) {
     return deny("capability_not_allowed", "The requested capability is not allowed.");
   }
-  if (request.capability === "localhost.preview.browser" && !policy.mvp.browser_preview_enabled) {
+  if (request.capability.startsWith("localhost.preview") && !policy.mvp.browser_preview_enabled) {
     return deny("preview_disabled", "Browser preview is disabled by policy.");
-  }
-  if (request.actor === "vectant_ai" && request.capability === "localhost.preview.browser") {
-    return deny("agent_preview_read_separate_permission_required", "Browser preview does not allow AI page reading.");
   }
   if (!["vectant_ai", "support_agent", "user_browser"].includes(request.actor)) {
     return deny("actor_not_allowed", "The actor is not allowed for this session.");
@@ -683,18 +681,21 @@ export function buildPreviewGatewayDecision(input, policy = readLocalSupportPoli
     };
   }
 
-  if (input.capability !== "localhost.preview.browser") {
+  if (!input.capability.startsWith("localhost.preview")) {
     return previewDeny("preview_capability_required", "Preview gateway only accepts browser preview envelopes.", policy);
   }
-  if (input.actor !== "user_browser") {
-    return previewDeny("browser_only_preview_required", "Preview gateway responses may stream only to the user's browser.", policy);
+  const actorCapabilityAllowed = (input.actor === "user_browser" && input.capability === "localhost.preview.browser")
+    || (input.actor === "vectant_ai" && ["localhost.preview.agent_read", "localhost.preview.agent_interact", "localhost.preview.response_body", "localhost.preview.screenshot", "localhost.preview.console", "localhost.preview.state_change"].includes(input.capability))
+    || (input.actor === "support_agent" && ["localhost.preview.support_agent_read", "localhost.preview.support_agent_interact", "localhost.preview.response_body", "localhost.preview.screenshot", "localhost.preview.console", "localhost.preview.state_change"].includes(input.capability));
+  if (!actorCapabilityAllowed) {
+    return previewDeny("preview_capability_actor_mismatch", "This preview capability is not granted to the requested actor.", policy);
   }
 
   const method = normalizePreviewMethod(input.preview_method || input.method || "");
   if (!method) {
     return previewDeny("preview_method_invalid", "Preview request method was not accepted.", policy);
   }
-  if (!["GET", "HEAD"].includes(method)) {
+  if (!["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     return previewDeny("preview_method_not_allowed", "Preview gateway allows only GET and HEAD requests.", policy);
   }
 
@@ -713,8 +714,8 @@ export function buildPreviewGatewayDecision(input, policy = readLocalSupportPoli
   }
 
   const targetHost = String(input.target_host || input.target_ip || "").trim().toLowerCase();
-  if (!isLoopbackTargetHost(targetHost)) {
-    return previewDeny("preview_target_not_loopback", "Preview target must be a loopback service.", policy);
+  if (!isAllowedPrivateTargetHost(targetHost)) {
+    return previewDeny("preview_target_not_allowed", "Preview target must be a private or loopback service.", policy);
   }
 
   const path = String(input.preview_path || input.path || "/");
@@ -775,7 +776,7 @@ export function buildPreviewGatewayDecision(input, policy = readLocalSupportPoli
     org_id: scrubTelemetryValue(input.org_id),
     device_fingerprint: scrubTelemetryValue(input.device_fingerprint),
     capability: "localhost.preview.browser",
-    actor: "user_browser",
+    actor: input.actor,
     preview_host: scrubTelemetryValue(previewHost),
     target_host: scrubTelemetryValue(targetHost),
     approved_port: port,
@@ -785,7 +786,7 @@ export function buildPreviewGatewayDecision(input, policy = readLocalSupportPoli
     protocol_version: policy.protocol_version,
     control_plane_log_class: "local_support.control",
     data_plane_log_class: "local_support.preview",
-    user_visible_message: "Preview may stream to the user's browser only. Vectant AI and support receive no page body.",
+    user_visible_message: "Preview access is enabled for the approved actor and capability.",
   };
 }
 
@@ -935,14 +936,14 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
       processHash: scrubTelemetryValue(item.processHash || item.process_hash || ""),
       ttl: scrubTelemetryValue(item.ttl || item.expires_at || "session_end"),
       browser: item.browser !== false,
-      aiRead: false,
-      supportRead: false,
-      aiInteract: false,
-      responseBodies: false,
-      screenshots: false,
-      consoleNetwork: false,
-      persistent: false,
-      methods: scrubTelemetryValue(item.methods || "GET, HEAD only"),
+      aiRead: item.aiRead === true,
+      supportRead: item.supportRead === true,
+      aiInteract: item.aiInteract === true,
+      responseBodies: item.responseBodies === true,
+      screenshots: item.screenshots === true,
+      consoleNetwork: item.consoleNetwork === true,
+      persistent: item.persistent === true,
+      methods: scrubTelemetryValue(item.methods || "GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE"),
       requestRate: scrubTelemetryValue(item.requestRate || item.request_rate || "60/min"),
       responseLimit: scrubTelemetryValue(item.responseLimit || item.response_limit || "stream capped"),
       token_state: item.revoked === true ? "revoked" : "present_hidden_from_renderer",
@@ -1152,6 +1153,17 @@ function isLoopbackTargetHost(host) {
   return false;
 }
 
+function isAllowedPrivateTargetHost(host) {
+  if (isLoopbackTargetHost(host)) return true;
+  const parts = host.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [first, second] = parts;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 169 && second === 254);
+}
+
 function isSafePreviewPath(path) {
   return typeof path === "string"
     && path.startsWith("/")
@@ -1191,9 +1203,6 @@ function validatePreviewRequestHeaderSummary(headers) {
     }
     if (lower === "content-length") {
       contentLengthCount += 1;
-      if (Number(stringValue) > 0) {
-        return "preview_request_body_blocked";
-      }
     }
     if (lower === "transfer-encoding") {
       hasTransferEncoding = true;

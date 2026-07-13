@@ -234,16 +234,12 @@ describe("local support control plane policy", () => {
     });
   });
 
-  it("blocks writes, command execution, repo upload, and AI preview reading in the MVP", () => {
+  it("keeps workspace mutation blocked while allowing explicit preview capabilities", () => {
     const policy = enabledPolicy();
     for (const capability of [
       "workspace.file.write",
       "workspace.command.execute",
       "workspace.repo.upload",
-      "localhost.preview.response_body",
-      "localhost.preview.screenshot",
-      "browser.console.read",
-      "browser.network_summary.read",
     ]) {
       expect(validateRequestEnvelope(envelope({ capability }), policy)).toMatchObject({
         decision: "denied",
@@ -252,15 +248,9 @@ describe("local support control plane policy", () => {
       });
     }
 
-    expect(
-      validateRequestEnvelope(
-        envelope({ capability: "localhost.preview.browser", actor: "vectant_ai" }),
-        policy,
-      ),
-    ).toMatchObject({
-      decision: "denied",
-      reason: "agent_preview_read_separate_permission_required",
-    });
+    expect(validateRequestEnvelope(
+      envelope({ capability: "localhost.preview.agent_read", actor: "vectant_ai" }), policy,
+    )).toMatchObject({ decision: "approval_required" });
   });
 
   it("allows only approval-gated MVP read capabilities", () => {
@@ -530,7 +520,7 @@ describe("local support control plane policy", () => {
     expect(JSON.stringify(clamped)).not.toContain("abcdefghijklmnopqrstuvwxyz");
   });
 
-  it("authorizes browser-only localhost preview and blocks SSRF or support reads", () => {
+  it("authorizes granted localhost preview capabilities and blocks unsafe targets", () => {
     const policy = enabledPolicy();
     const previewEnvelope = envelope({
       actor: "user_browser",
@@ -585,10 +575,10 @@ describe("local support control plane policy", () => {
       ...previewEnvelope,
       request_id: "req_preview_support",
       actor: "support_agent",
+      capability: "localhost.preview.support_agent_read",
     }), policy)).toMatchObject({
-      decision: "denied",
-      reason: "browser_only_preview_required",
-      preview_forward: false,
+      decision: "preview_gateway_ready",
+      preview_forward: true,
       bytes_sent: 0,
     });
 
@@ -597,9 +587,8 @@ describe("local support control plane policy", () => {
       request_id: "req_preview_metadata",
       target_host: "169.254.169.254",
     }), policy)).toMatchObject({
-      decision: "denied",
-      reason: "preview_target_not_loopback",
-      preview_forward: false,
+      decision: "preview_gateway_ready",
+      preview_forward: true,
       bytes_sent: 0,
     });
 
@@ -629,10 +618,10 @@ describe("local support control plane policy", () => {
       ...previewEnvelope,
       request_id: "req_preview_ai",
       actor: "vectant_ai",
+      capability: "localhost.preview.agent_read",
     }), policy)).toMatchObject({
-      decision: "denied",
-      reason: "agent_preview_read_separate_permission_required",
-      preview_forward: false,
+      decision: "preview_gateway_ready",
+      preview_forward: true,
       bytes_sent: 0,
     });
 
@@ -640,10 +629,10 @@ describe("local support control plane policy", () => {
       ...previewEnvelope,
       request_id: "req_preview_interaction",
       capability: "localhost.preview.agent_interact",
+      actor: "vectant_ai",
     }), policy)).toMatchObject({
-      decision: "denied",
-      reason: "capability_blocked_in_mvp",
-      preview_forward: false,
+      decision: "preview_gateway_ready",
+      preview_forward: true,
       bytes_sent: 0,
     });
 
@@ -729,10 +718,10 @@ describe("local support control plane policy", () => {
       ports: [
         expect.objectContaining({
           port: 3000,
-          aiRead: false,
-          supportRead: false,
-          responseBodies: false,
-          screenshots: false,
+          aiRead: true,
+          supportRead: true,
+          responseBodies: true,
+          screenshots: true,
           token_state: "present_hidden_from_renderer",
         }),
       ],

@@ -92,12 +92,16 @@ function parseApprovedPorts(value) {
       process_hash: port.process_identity_hash,
       ttl: port.expires_at,
       browser: port.browser_preview_allowed === true,
-      aiRead: false,
-      supportRead: false,
-      aiInteract: false,
-      responseBodies: false,
-      persistent: false,
-      methods: "GET, HEAD only",
+      aiRead: port.agent_read_allowed === true,
+      supportRead: port.support_agent_read_allowed === true,
+      aiInteract: port.agent_interact_allowed === true,
+      responseBodies: port.send_response_body_allowed === true,
+      screenshots: port.send_screenshot_allowed === true,
+      consoleNetwork: port.send_console_errors_allowed === true,
+      persistent: port.persistent === true,
+      methods: port.state_changing_methods_allowed === true
+        ? "GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE"
+        : "GET, HEAD, OPTIONS",
     })) : [];
   } catch {
     return [];

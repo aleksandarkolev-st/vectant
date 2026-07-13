@@ -24,9 +24,9 @@ use crate::audit::{AuditClass, AuditExport, AuditLog, LocalAuditStore};
 use crate::port_adapter::native_listener_identity_matches;
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
-    preview_path_allowed, sanitize_response_headers, validate_preview_response_size, PortApproval,
-    PortApprovalRegistry, PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard,
-    MAX_PREVIEW_RESPONSE_BYTES,
+    preview_path_allowed, sanitize_response_headers, target_ip_allowed,
+    validate_preview_response_size, PortApproval, PortApprovalOptions, PortApprovalRegistry,
+    PreviewDecision, PreviewRedirectDecision, PreviewTrafficGuard, MAX_PREVIEW_RESPONSE_BYTES,
 };
 use crate::scanner::SecretScanner;
 use crate::session::SessionGuard;
@@ -44,6 +44,22 @@ pub struct PortApprovalRequest {
     pub port: u16,
     pub process_identity: String,
     pub service: Option<String>,
+    #[serde(default = "default_target_host")]
+    pub target_host: String,
+    #[serde(default = "default_true")]
+    pub agent_read_allowed: bool,
+    #[serde(default = "default_true")]
+    pub support_agent_read_allowed: bool,
+    #[serde(default = "default_true")]
+    pub agent_interact_allowed: bool,
+    #[serde(default = "default_true")]
+    pub send_response_body_allowed: bool,
+    #[serde(default = "default_true")]
+    pub send_screenshot_allowed: bool,
+    #[serde(default = "default_true")]
+    pub send_console_errors_allowed: bool,
+    #[serde(default = "default_true")]
+    pub state_changing_methods_allowed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -515,24 +531,38 @@ async fn approve_port(
     };
     let approval = {
         let mut registry = state.port_approvals.lock().await;
-        registry.approve_browser_port(&session_id, request.port, &request.process_identity)
+        registry.approve_port_grant(
+            &session_id,
+            request.port,
+            &request.process_identity,
+            &request.target_host,
+            PortApprovalOptions {
+                agent_read_allowed: request.agent_read_allowed,
+                support_agent_read_allowed: request.support_agent_read_allowed,
+                agent_interact_allowed: request.agent_interact_allowed,
+                send_response_body_allowed: request.send_response_body_allowed,
+                send_screenshot_allowed: request.send_screenshot_allowed,
+                send_console_errors_allowed: request.send_console_errors_allowed,
+                state_changing_methods_allowed: request.state_changing_methods_allowed,
+            },
+        )
     };
     let response = PortApprovalResponse {
         decision: "port_approved".to_string(),
         request_id: request.request_id.clone(),
         session_id,
-        port: approval.port,
-        target_host: approval.target_host,
-        preview_host: approval.preview_host,
-        browser_preview_allowed: approval.browser_preview_allowed,
-        agent_read_allowed: approval.agent_read_allowed,
-        support_agent_read_allowed: approval.support_agent_read_allowed,
-        agent_interact_allowed: approval.agent_interact_allowed,
-        send_response_body_allowed: approval.send_response_body_allowed,
-        state_changing_methods_allowed: approval.state_changing_methods_allowed,
-        expires_at: approval.expires_at,
-        persistent: approval.persistent,
-        process_identity_hash: approval.process_identity_hash,
+        port: approval.approval.port,
+        target_host: approval.approval.target_host,
+        preview_host: approval.approval.preview_host,
+        browser_preview_allowed: approval.approval.browser_preview_allowed,
+        agent_read_allowed: approval.approval.agent_read_allowed,
+        support_agent_read_allowed: approval.approval.support_agent_read_allowed,
+        agent_interact_allowed: approval.approval.agent_interact_allowed,
+        send_response_body_allowed: approval.approval.send_response_body_allowed,
+        state_changing_methods_allowed: approval.approval.state_changing_methods_allowed,
+        expires_at: approval.approval.expires_at,
+        persistent: approval.approval.persistent,
+        process_identity_hash: approval.approval.process_identity_hash,
         preview_token_included: false,
         service: request.service.as_deref().map(scrub_for_audit),
         bytes_sent: 0,
@@ -542,8 +572,8 @@ async fn approve_port(
         AuditClass::Preview,
         Some(request.request_id),
         format!(
-            "Browser-only preview approved for 127.0.0.1:{} as {}. AI/support page read remains blocked.",
-            response.port, response.preview_host
+            "Preview port {} approved for {} as {} with explicit AI/support, interaction, response-body, and state-changing capabilities.",
+            response.port, response.target_host, response.preview_host
         ),
         true,
     );
@@ -602,9 +632,6 @@ async fn preview_gateway(
     validate_headers(&headers)?;
     enforce_rate_limit(&state).await?;
     validate_preview_query(&query)?;
-    if !body.is_empty() {
-        return Err(denied(StatusCode::FORBIDDEN, "preview_body_blocked"));
-    }
     let preview_path = format!("/{}", path.trim_start_matches('/'));
     if !preview_path_allowed(&preview_path) {
         return Err(denied(StatusCode::FORBIDDEN, "service_worker_path_blocked"));
@@ -639,7 +666,12 @@ async fn preview_gateway(
         approval.as_ref(),
         method.as_str(),
         &preview_host,
-        Ipv4Addr::LOCALHOST.into(),
+        approval
+            .as_ref()
+            .ok_or_else(|| denied(StatusCode::FORBIDDEN, "port_not_approved"))?
+            .target_host
+            .parse()
+            .map_err(|_| denied(StatusCode::FORBIDDEN, "target_host_invalid"))?,
         &filtered_headers,
         &query.preview_token,
     ) {
@@ -665,10 +697,23 @@ async fn preview_gateway(
             ));
         }
     }
-    let target_url = preview_target_url(port, &preview_path, query.target_query.as_deref())?;
+    let target_url = preview_target_url(
+        &approval.target_host,
+        port,
+        &preview_path,
+        query.target_query.as_deref(),
+    )?;
     let stream_lease =
         PreviewStreamLease::new(state.preview_traffic.clone(), approval.preview_host.clone());
-    fetch_preview_response(&method, &target_url, &approval, &preview_path, stream_lease).await
+    fetch_preview_response(
+        &method,
+        &target_url,
+        &approval,
+        &preview_path,
+        body,
+        stream_lease,
+    )
+    .await
 }
 
 async fn fetch_preview_response(
@@ -676,6 +721,7 @@ async fn fetch_preview_response(
     target_url: &str,
     approval: &PortApproval,
     preview_path: &str,
+    request_body: Bytes,
     stream_lease: PreviewStreamLease,
 ) -> Result<Response<Body>, (StatusCode, Json<serde_json::Value>)> {
     let client = reqwest::Client::builder()
@@ -686,7 +732,8 @@ async fn fetch_preview_response(
         .map_err(|_| denied(StatusCode::FORBIDDEN, "invalid_method_blocked"))?;
     let response = client
         .request(reqwest_method, target_url)
-        .header(reqwest::header::HOST, "127.0.0.1")
+        .header(reqwest::header::HOST, &approval.target_host)
+        .body(request_body)
         .send()
         .await
         .map_err(|_| denied(StatusCode::BAD_GATEWAY, "preview_target_unreachable"))?;
@@ -904,11 +951,12 @@ fn preview_validation_headers(headers: &HeaderMap) -> Vec<(&str, &str)> {
 }
 
 fn preview_target_url(
+    target_host: &str,
     port: u16,
     preview_path: &str,
     target_query: Option<&str>,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
-    let mut url = format!("http://127.0.0.1:{port}{preview_path}");
+    let mut url = format!("http://{target_host}:{port}{preview_path}");
     if let Some(target_query) = target_query.filter(|value| !value.is_empty()) {
         url.push('?');
         url.push_str(target_query.trim_start_matches('?'));
@@ -1196,6 +1244,16 @@ fn validate_port_approval_request(
     if request.port == 0 {
         return Err(denied(StatusCode::BAD_REQUEST, "invalid_port"));
     }
+    let target_ip = request
+        .target_host
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| denied(StatusCode::BAD_REQUEST, "invalid_target_host"))?;
+    if !target_ip_allowed(target_ip) {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "target_host_not_private_or_loopback",
+        ));
+    }
     if !is_safe_process_identity(&request.process_identity) {
         return Err(denied(StatusCode::BAD_REQUEST, "invalid_process_identity"));
     }
@@ -1205,6 +1263,14 @@ fn validate_port_approval_request(
         }
     }
     Ok(())
+}
+
+fn default_target_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn validate_safe_request_id(request_id: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {

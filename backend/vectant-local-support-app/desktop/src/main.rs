@@ -333,10 +333,20 @@ async fn local_support_ipc(
         "approval.port.review" => {
             require_live_preview_policy(&runtime).await?;
             let port = required_port(&payload)?;
-            let detected = detect_loopback_listener(port).map_err(|_| {
-                "No loopback-only listening process owns that port. Nothing was exposed."
-                    .to_string()
-            })?;
+            let target_host = payload
+                .get("target_host")
+                .and_then(|value| value.as_str())
+                .unwrap_or("127.0.0.1")
+                .trim()
+                .to_string();
+            let process_identity = if target_host == "127.0.0.1" {
+                detect_loopback_listener(port)
+                    .map_err(|_| "No loopback-only listening process owns that port. Nothing was exposed.".to_string())?
+                    .process_identity
+            } else {
+                validate_private_target(&target_host)?;
+                format!("target:{target_host}:{port}")
+            };
             let session = app_state.session.lock().await;
             if !session.is_active() || session.state().paused {
                 return Err("Connect and resume Local Support before approving a port.".to_string());
@@ -347,7 +357,13 @@ async fn local_support_ipc(
                 .port_approvals
                 .lock()
                 .await
-                .approve_browser_port_grant(&session_id, port, &detected.process_identity);
+                .approve_port_grant(
+                    &session_id,
+                    port,
+                    &process_identity,
+                    &target_host,
+                    Default::default(),
+                );
             runtime
                 .preview_contexts
                 .write()
@@ -357,15 +373,14 @@ async fn local_support_ipc(
                     PreviewContext {
                         preview_host: grant.approval.preview_host.clone(),
                         preview_token: grant.preview_token,
-                        process_identity: detected.process_identity,
+                        process_identity,
                     },
                 );
             append_control_event(
                 &app_state,
                 &request_id,
                 &format!(
-                    "Browser-only preview approved for 127.0.0.1:{port} owned by {}. AI and support page reading remain off.",
-                    detected.service
+                    "Preview approved for {target_host}:{port} with AI, support, interaction, body, and state-changing capabilities.",
                 ),
             )
             .await?;
@@ -410,7 +425,7 @@ async fn local_support_ipc(
             append_control_event(
                 &app_state,
                 &request_id,
-                &format!("Browser-only preview approval for 127.0.0.1:{port} was revoked."),
+                &format!("Preview port capability approval for port {port} was revoked."),
             )
             .await?;
         }
@@ -745,6 +760,17 @@ fn required_port(payload: &serde_json::Value) -> Result<u16, String> {
         .ok_or_else(|| "Port identifier was invalid.".to_string())
 }
 
+fn validate_private_target(target_host: &str) -> Result<(), String> {
+    let ip = target_host
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| "Target host must be a private-network IP address.".to_string())?;
+    let allowed = match ip {
+        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        std::net::IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+    };
+    if allowed { Ok(()) } else { Err("Target host must be loopback, private, or link-local.".to_string()) }
+}
+
 async fn relay_poll_loop(app_handle: tauri::AppHandle) {
     loop {
         let runtime = app_handle.state::<DesktopRuntime>();
@@ -806,6 +832,13 @@ async fn sync_cloud_port_status(
                 "preview_host": port.preview_host,
                 "process_identity_hash": port.process_identity_hash,
                 "browser_preview_allowed": port.browser_preview_allowed,
+                "agent_read_allowed": port.agent_read_allowed,
+                "support_agent_read_allowed": port.support_agent_read_allowed,
+                "agent_interact_allowed": port.agent_interact_allowed,
+                "send_response_body_allowed": port.send_response_body_allowed,
+                "send_screenshot_allowed": port.send_screenshot_allowed,
+                "send_console_errors_allowed": port.send_console_errors_allowed,
+                "state_changing_methods_allowed": port.state_changing_methods_allowed,
                 "expires_at": port.expires_at,
             })
         })

@@ -38,28 +38,69 @@ pub struct PortApproval {
     pub process_identity_hash: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PortApprovalOptions {
+    pub agent_read_allowed: bool,
+    pub support_agent_read_allowed: bool,
+    pub agent_interact_allowed: bool,
+    pub send_response_body_allowed: bool,
+    pub send_screenshot_allowed: bool,
+    pub send_console_errors_allowed: bool,
+    pub state_changing_methods_allowed: bool,
+}
+
+impl Default for PortApprovalOptions {
+    fn default() -> Self {
+        Self {
+            agent_read_allowed: true,
+            support_agent_read_allowed: true,
+            agent_interact_allowed: true,
+            send_response_body_allowed: true,
+            send_screenshot_allowed: true,
+            send_console_errors_allowed: true,
+            state_changing_methods_allowed: true,
+        }
+    }
+}
+
 impl PortApproval {
     pub fn browser_only(port: u16, process_identity: &str) -> Self {
         Self::browser_only_with_token(port, process_identity, &generate_preview_token())
     }
 
     pub fn browser_only_with_token(port: u16, process_identity: &str, preview_token: &str) -> Self {
+        Self::with_options(
+            port,
+            process_identity,
+            preview_token,
+            "127.0.0.1",
+            PortApprovalOptions::default(),
+        )
+    }
+
+    pub fn with_options(
+        port: u16,
+        process_identity: &str,
+        preview_token: &str,
+        target_host: &str,
+        options: PortApprovalOptions,
+    ) -> Self {
         let process_identity_hash = hash_process_identity(process_identity);
         let preview_token_hash = hash_preview_token(preview_token);
         Self {
             session_id: "local-session".to_string(),
             port,
-            target_host: "127.0.0.1".to_string(),
+            target_host: target_host.to_string(),
             preview_host: format!("br-local-p{port}.vectant-preview.dev"),
             preview_token_hash,
             browser_preview_allowed: true,
-            agent_read_allowed: false,
-            support_agent_read_allowed: false,
-            agent_interact_allowed: false,
-            send_response_body_allowed: false,
-            send_screenshot_allowed: false,
-            send_console_errors_allowed: false,
-            state_changing_methods_allowed: false,
+            agent_read_allowed: options.agent_read_allowed,
+            support_agent_read_allowed: options.support_agent_read_allowed,
+            agent_interact_allowed: options.agent_interact_allowed,
+            send_response_body_allowed: options.send_response_body_allowed,
+            send_screenshot_allowed: options.send_screenshot_allowed,
+            send_console_errors_allowed: options.send_console_errors_allowed,
+            state_changing_methods_allowed: options.state_changing_methods_allowed,
             expires_at: "session_end".to_string(),
             persistent: false,
             invalidate_on_port_close: true,
@@ -101,9 +142,31 @@ impl PortApprovalRegistry {
         port: u16,
         process_identity: &str,
     ) -> PortApprovalGrant {
+        self.approve_port_grant(
+            session_id,
+            port,
+            process_identity,
+            "127.0.0.1",
+            PortApprovalOptions::default(),
+        )
+    }
+
+    pub fn approve_port_grant(
+        &mut self,
+        session_id: impl Into<String>,
+        port: u16,
+        process_identity: &str,
+        target_host: &str,
+        options: PortApprovalOptions,
+    ) -> PortApprovalGrant {
         let preview_token = generate_preview_token();
-        let mut approval =
-            PortApproval::browser_only_with_token(port, process_identity, &preview_token);
+        let mut approval = PortApproval::with_options(
+            port,
+            process_identity,
+            &preview_token,
+            target_host,
+            options,
+        );
         approval.session_id = session_id.into();
         self.approvals.insert(port, approval.clone());
         PortApprovalGrant {
@@ -226,8 +289,8 @@ pub fn decide_preview_request_with_token(
     if host != approval.preview_host {
         return PreviewDecision::Deny("preview_host_mismatch".to_string());
     }
-    if !target_ip.is_loopback() {
-        return PreviewDecision::Deny("target_not_loopback".to_string());
+    if !target_ip_allowed(target_ip) {
+        return PreviewDecision::Deny("target_not_allowed".to_string());
     }
     let Some(method) = normalize_preview_method(method) else {
         return PreviewDecision::Deny("invalid_method_blocked".to_string());
@@ -279,8 +342,8 @@ pub fn decide_preview_request_from_header_list_with_token(
     if host != approval.preview_host {
         return PreviewDecision::Deny("preview_host_mismatch".to_string());
     }
-    if !target_ip.is_loopback() {
-        return PreviewDecision::Deny("target_not_loopback".to_string());
+    if !target_ip_allowed(target_ip) {
+        return PreviewDecision::Deny("target_not_allowed".to_string());
     }
     let Some(method) = normalize_preview_method(method) else {
         return PreviewDecision::Deny("invalid_method_blocked".to_string());
@@ -359,6 +422,13 @@ pub fn validate_preview_request_headers(headers: &[(&str, &str)]) -> Option<Stri
         return Some("connection_named_header_blocked".to_string());
     }
     None
+}
+
+pub fn target_ip_allowed(target_ip: IpAddr) -> bool {
+    match target_ip {
+        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
 }
 
 pub fn sanitize_response_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
@@ -502,7 +572,7 @@ pub fn redirect_allowed(location: &str) -> bool {
         return false;
     }
     match url.host_ip {
-        Some(ip) => ip.is_loopback(),
+        Some(ip) => target_ip_allowed(ip),
         None => false,
     }
 }
@@ -539,7 +609,7 @@ pub fn classify_preview_redirect(
         return PreviewRedirectDecision::Block("custom_scheme_blocked".to_string());
     }
     if let Some(ip) = url.host_ip {
-        if ip.is_loopback() && url.port == Some(approval.port) {
+        if target_ip_allowed(ip) && url.port == Some(approval.port) {
             return PreviewRedirectDecision::RewriteToPreview(url.path_and_query);
         }
         return PreviewRedirectDecision::Block("redirect_target_not_approved".to_string());
@@ -547,7 +617,7 @@ pub fn classify_preview_redirect(
     if url.scheme == "https" {
         return PreviewRedirectDecision::ExternalNavigation(location.to_string());
     }
-    PreviewRedirectDecision::Block("redirect_target_not_loopback".to_string())
+    PreviewRedirectDecision::Block("redirect_target_not_allowed".to_string())
 }
 
 struct ParsedUrl {

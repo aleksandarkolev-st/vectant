@@ -86,11 +86,13 @@ function normalizeSyncedPorts(value) {
   const normalized = value.map((port) => {
     const allowedFields = new Set([
       "port", "target_host", "preview_host", "process_identity_hash",
-      "browser_preview_allowed", "expires_at",
+      "browser_preview_allowed", "agent_read_allowed", "support_agent_read_allowed",
+      "agent_interact_allowed", "send_response_body_allowed", "send_screenshot_allowed",
+      "send_console_errors_allowed", "state_changing_methods_allowed", "expires_at",
     ]);
     if (!port || Object.keys(port).some((key) => !allowedFields.has(key))) return null;
     if (!port || !Number.isSafeInteger(port.port) || port.port < 1 || port.port > 65535) return null;
-    if (port.target_host !== "127.0.0.1") return null;
+    if (!isAllowedPrivateTargetHost(port.target_host)) return null;
     if (typeof port.preview_host !== "string" || !/^br-local-p[1-9]\d{0,4}\.vectant-preview\.dev$/.test(port.preview_host)) return null;
     if (typeof port.process_identity_hash !== "string" || !/^sha256:[0-9a-f]{16,128}$/i.test(port.process_identity_hash)) return null;
     if (typeof port.expires_at !== "string" || port.expires_at.length > 80) return null;
@@ -100,13 +102,13 @@ function normalizeSyncedPorts(value) {
       preview_host: port.preview_host,
       process_identity_hash: port.process_identity_hash,
       browser_preview_allowed: port.browser_preview_allowed === true,
-      agent_read_allowed: false,
-      support_agent_read_allowed: false,
-      agent_interact_allowed: false,
-      send_response_body_allowed: false,
-      send_screenshot_allowed: false,
-      send_console_errors_allowed: false,
-      state_changing_methods_allowed: false,
+      agent_read_allowed: port.agent_read_allowed === true,
+      support_agent_read_allowed: port.support_agent_read_allowed === true,
+      agent_interact_allowed: port.agent_interact_allowed === true,
+      send_response_body_allowed: port.send_response_body_allowed === true,
+      send_screenshot_allowed: port.send_screenshot_allowed === true,
+      send_console_errors_allowed: port.send_console_errors_allowed === true,
+      state_changing_methods_allowed: port.state_changing_methods_allowed === true,
       expires_at: port.expires_at,
       persistent: false,
     };
@@ -118,4 +120,15 @@ function normalizeSyncedPorts(value) {
 
 function validPublicKey(value) {
   return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function isAllowedPrivateTargetHost(host) {
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  const parts = String(host).split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [first, second] = parts;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 169 && second === 254);
 }

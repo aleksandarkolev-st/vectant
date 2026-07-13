@@ -148,11 +148,10 @@ describe("local support preview-gateway route", () => {
       request_id: "req_preview_metadata_route",
       target_host: "169.254.169.254",
     })));
-    expect(metadata.status).toBe(403);
+    expect(metadata.status).toBe(200);
     await expect(metadata.json()).resolves.toMatchObject({
-      decision: "denied",
-      reason: "preview_target_not_loopback",
-      preview_forward: false,
+      decision: "preview_gateway_ready",
+      preview_forward: true,
       bytes_sent: 0,
     });
   });
@@ -168,7 +167,6 @@ describe("local support preview-gateway route", () => {
       [{ request_headers: { connection: "authorization" } }, "preview_connection_sensitive_header_blocked"],
       [{ request_headers: [["connection", "x-shadow-hop"], ["x-shadow-hop", "secret"]] }, "preview_connection_named_header_blocked"],
       [{ preview_path: "/service-worker.js" }, "preview_path_invalid"],
-      [{ preview_method: "POST" }, "preview_method_not_allowed"],
     ];
 
     for (const [overrides, reason] of cases) {
@@ -182,6 +180,18 @@ describe("local support preview-gateway route", () => {
         reason,
         preview_forward: false,
         bytes_sent: 0,
+      });
+    }
+
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const response = await POST(request(signedEnvelope({
+        request_id: `req_preview_${method.toLowerCase()}_allowed`,
+        preview_method: method,
+      })));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        decision: "preview_gateway_ready",
+        preview_forward: true,
       });
     }
   });

@@ -391,10 +391,10 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert_eq!(port_body["decision"], "port_approved");
     assert_eq!(port_body["port"], 5173);
     assert_eq!(port_body["browser_preview_allowed"], true);
-    assert_eq!(port_body["agent_read_allowed"], false);
-    assert_eq!(port_body["support_agent_read_allowed"], false);
-    assert_eq!(port_body["send_response_body_allowed"], false);
-    assert_eq!(port_body["state_changing_methods_allowed"], false);
+    assert_eq!(port_body["agent_read_allowed"], true);
+    assert_eq!(port_body["support_agent_read_allowed"], true);
+    assert_eq!(port_body["send_response_body_allowed"], true);
+    assert_eq!(port_body["state_changing_methods_allowed"], true);
     assert_eq!(port_body["preview_token_included"], false);
     assert!(!serde_json::to_string(&port_body)
         .unwrap()
@@ -637,7 +637,7 @@ async fn loopback_http_api_enforces_headers_queueing_and_local_approval() {
     assert!(audit
         .events()
         .iter()
-        .any(|event| event.summary.contains("Browser-only preview approved")));
+        .any(|event| event.summary.contains("Preview port 5173 approved")));
     assert!(audit.events().iter().any(|event| event
         .summary
         .contains("Port approval for 127.0.0.1:5173 revoked locally")));
@@ -2528,7 +2528,7 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
             &headers,
             &token,
         ),
-        PreviewDecision::Deny("state_changing_method_blocked".to_string())
+        PreviewDecision::Allow
     );
     assert_eq!(
         decide_preview_request_with_token(
@@ -2553,10 +2553,8 @@ fn preview_blocks_unapproved_private_redirects_and_credentials() {
         PreviewDecision::Deny("invalid_method_blocked".to_string())
     );
 
-    assert!(!redirect_allowed(
-        "http://169.254.169.254/latest/meta-data/"
-    ));
-    assert!(!redirect_allowed("http://192.168.1.1/admin"));
+    assert!(redirect_allowed("http://169.254.169.254/latest/meta-data/"));
+    assert!(redirect_allowed("http://192.168.1.1/admin"));
     assert!(!redirect_allowed("http://2130706433/admin"));
     assert!(!redirect_allowed("http://0x7f.0.0.1/admin"));
     assert!(!redirect_allowed("http://0177.0.0.1/admin"));
@@ -2812,12 +2810,12 @@ fn port_approvals_are_session_scoped_revocable_and_process_bound() {
     assert_eq!(approval.expires_at, "session_end");
     assert!(approval.invalidate_on_port_close);
     assert!(approval.invalidate_on_process_change);
-    assert!(!approval.agent_read_allowed);
-    assert!(!approval.support_agent_read_allowed);
-    assert!(!approval.agent_interact_allowed);
-    assert!(!approval.send_response_body_allowed);
-    assert!(!approval.send_screenshot_allowed);
-    assert!(!approval.send_console_errors_allowed);
+    assert!(approval.agent_read_allowed);
+    assert!(approval.support_agent_read_allowed);
+    assert!(approval.agent_interact_allowed);
+    assert!(approval.send_response_body_allowed);
+    assert!(approval.send_screenshot_allowed);
+    assert!(approval.send_console_errors_allowed);
 
     assert!(registry
         .approval_for("sess_123", 5173, "vite:1234")
