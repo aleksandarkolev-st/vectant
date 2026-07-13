@@ -10,6 +10,9 @@ on:
       - "synthi/prisma/**"
       - "tests/local-support-admin.spec.ts"
       - "tests/local-support-desktop-shell.spec.ts"
+      - "tests/local-support-live-cloud.spec.ts"
+      - "tests/local-support-live-daemon.spec.ts"
+      - "tests/local-support-live-relay.spec.ts"
       - "tests/local-support-transparency.spec.ts"
       - ".github/workflows/local-support-security.yml"
       - ".github/workflows/local-support-release.yml"
@@ -26,6 +29,9 @@ on:
       - "synthi/prisma/**"
       - "tests/local-support-admin.spec.ts"
       - "tests/local-support-desktop-shell.spec.ts"
+      - "tests/local-support-live-cloud.spec.ts"
+      - "tests/local-support-live-daemon.spec.ts"
+      - "tests/local-support-live-relay.spec.ts"
       - "tests/local-support-transparency.spec.ts"
       - ".github/workflows/local-support-security.yml"
       - ".github/workflows/local-support-release.yml"
@@ -71,6 +77,14 @@ jobs:
 
       - name: Run desktop integration tests
         run: cargo test --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml
+
+      - name: Confirm production desktop package excludes live relay probe
+        shell: pwsh
+        run: |
+          cargo build --manifest-path backend/vectant-local-support-app/desktop/Cargo.toml --release
+          if (Test-Path backend/vectant-local-support-app/desktop/target/release/local-support-live-relay.exe) {
+            throw "Feature-gated live relay probe leaked into the production desktop package."
+          }
 
   web-local-support:
     name: Web local support gates
