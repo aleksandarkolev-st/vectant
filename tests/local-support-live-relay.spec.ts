@@ -22,6 +22,7 @@ const relayPayloadKey = process.env.VECTANT_LOCAL_SUPPORT_RELAY_PAYLOAD_KEY
 const runId = Date.now().toString(36);
 const sessionId = `sess_live_relay_${runId}`;
 const requestId = `req_live_relay_${runId}`;
+const alertRequestId = `req_live_alert_${runId}`;
 const accountId = `acct_live_relay_${runId}`;
 const orgId = `org_live_relay_${runId}`;
 const workspaceId = `wk_live_relay_${runId}`;
@@ -134,6 +135,34 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     expect(stored?.auditEntries.map((entry) => entry.decision)).toEqual(['queued', 'review_pending', 'sent']);
     expect(stored?.auditEntries.every((entry) => entry.bytesSent >= 0)).toBe(true);
 
+    const alertEnvelope = {
+      ...envelope,
+      request_id: alertRequestId,
+      target_display: 'secret.log',
+      target_classification: 'L4',
+      device_proof: '',
+    };
+    alertEnvelope.device_proof = signDeviceProof(alertEnvelope, deviceProofSecret);
+    alertEnvelope.signature = signRequestEnvelope(alertEnvelope, envelopeSecret);
+    const alertQueued = await page.context().request.post(`${baseUrl}/api/local-support/relay`, {
+      headers: { origin: baseUrl, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+      data: alertEnvelope,
+    });
+    expect(alertQueued.status()).toBe(202);
+    const alertDelivery = JSON.parse(execFileSync(relayBinary, [endpoint, identityPath, sessionId, 'poll'], { encoding: 'utf8' }));
+    expect(alertDelivery.request_id).toBe(alertRequestId);
+    const deniedOutcome = execFileSync(relayBinary, [
+      endpoint, identityPath, sessionId, 'outcome', alertRequestId, alertDelivery.lease_id, 'denied',
+    ], { encoding: 'utf8' });
+    expect(JSON.parse(deniedOutcome)).toMatchObject({ decision: 'denied', bytes_sent: 0 });
+    const alert = await prisma.localSupportSecurityEvent.findFirst({ where: { requestId: alertRequestId } });
+    expect(alert).toMatchObject({
+      eventType: 'denied_secret',
+      alert: true,
+      alertRoute: 'security_ops_immediate',
+      targetDisplay: 'secret.log',
+    });
+
     const revoke = await page.context().request.post(`${baseUrl}/api/local-support/admin/state`, {
       headers: {
         origin: baseUrl,
@@ -160,7 +189,7 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     expect(revoked?.status).toBe('revoked');
     expect(purged?.payload).toBeNull();
   } finally {
-    await prisma.localSupportRelayRequest.deleteMany({ where: { requestId } });
+    await prisma.localSupportRelayRequest.deleteMany({ where: { requestId: { in: [requestId, alertRequestId] } } });
     await prisma.localSupportSession.deleteMany({ where: { sessionId } });
     await prisma.localSupportPolicyState.deleteMany({ where: { id: 'global' } });
     await prisma.$disconnect();

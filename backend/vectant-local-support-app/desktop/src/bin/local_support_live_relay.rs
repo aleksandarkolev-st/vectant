@@ -75,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await
                 .map_err(anyhow::Error::msg)?;
-            println!(r#"{{"decision":"review_pending","bytes_sent":0}}"#);
+            println!(
+                "{}",
+                serde_json::json!({ "decision": decision, "bytes_sent": 0 })
+            );
         }
         "upload" => {
             let request_id = args
