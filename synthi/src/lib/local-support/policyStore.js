@@ -61,7 +61,7 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     return denied("invalid_vulnerable_versions");
   }
   if (body.retention_days !== undefined
-    && (!Number.isSafeInteger(body.retention_days) || body.retention_days < 1 || body.retention_days > 90)) {
+    && (!Number.isSafeInteger(body.retention_days) || body.retention_days < 0 || body.retention_days > 90)) {
     return denied("invalid_retention_days");
   }
   for (const field of [

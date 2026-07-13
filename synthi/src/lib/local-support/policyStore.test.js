@@ -58,4 +58,22 @@ describe("durable local support policy", () => {
       create: expect.objectContaining({ updatedBy: "admin_1", vulnerableVersionsJson: "[\"0.1.0\"]" }),
     }));
   });
+
+  it("preserves an explicit no-retention policy", async () => {
+    const upsert = vi.fn(async ({ create }) => ({ ...create, updatedAt: new Date() }));
+    const result = await updateDurableLocalSupportPolicy({
+      action: "update_policy",
+      retention_days: 0,
+    }, "admin_1", {
+      localSupportPolicyState: {
+        findUnique: vi.fn(async () => null),
+        upsert,
+      },
+    });
+
+    expect(result).toMatchObject({ decision: "policy_updated", retention_days: 0 });
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ retentionDays: 0 }),
+    }));
+  });
 });

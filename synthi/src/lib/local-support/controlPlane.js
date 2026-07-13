@@ -832,7 +832,7 @@ export function summarizeAdminState(input, policy = readLocalSupportPolicy()) {
       agent_access_disabled: policy.emergency_controls?.agent_access_disabled !== false,
       min_app_version: scrubTelemetryValue(policy.min_app_version || ""),
       vulnerable_versions: uniqueStrings(policy.vulnerable_versions || []).slice(0, 100),
-      retention_days: clampNumber(policy.retention?.cloud_security_event_days, 1, 90, 30),
+      retention_days: clampNumber(policy.retention?.cloud_security_event_days, 0, 90, 30),
       persistent: policy.persistent_policy === true,
       updated_at: scrubTelemetryValue(policy.policy_updated_at || ""),
     },

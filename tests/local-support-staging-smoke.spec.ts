@@ -44,7 +44,7 @@ test('protected staging exposes live policy controls without an auth redirect', 
     agent_access_disabled: before.emergency_controls?.agent_access_disabled !== false,
     min_app_version: before.min_app_version || '0.1.0',
     vulnerable_versions: Array.isArray(before.vulnerable_versions) ? before.vulnerable_versions : [],
-    retention_days: before.retention?.local_activity_days || 30,
+    retention_days: before.retention?.local_activity_days ?? 30,
   };
 
   try {

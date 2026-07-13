@@ -127,7 +127,7 @@ export default function LocalSupportAdmin() {
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
               <Field label="Minimum app version" value={policy.min_app_version} onChange={(value) => setPolicy((item) => ({ ...item, min_app_version: value }))} />
               <Field label="Vulnerable versions" value={policy.vulnerable_versions.join(", ")} onChange={(value) => setPolicy((item) => ({ ...item, vulnerable_versions: value.split(",").map((entry) => entry.trim()).filter(Boolean) }))} />
-              <Field label="Retention days" type="number" value={policy.retention_days} onChange={(value) => setPolicy((item) => ({ ...item, retention_days: Number(value) }))} />
+              <Field label="Retention days (0 = none)" type="number" min={0} value={policy.retention_days} onChange={(value) => setPolicy((item) => ({ ...item, retention_days: Number(value) }))} />
             </div>
             <Button onClick={savePolicy} disabled={busy || !state} className="mt-5 bg-zinc-100 text-zinc-950 hover:bg-white">Apply policy</Button>
           </div>
@@ -156,8 +156,8 @@ export default function LocalSupportAdmin() {
   );
 }
 
-function Field({ label, value, onChange, type = "text" }) {
-  return <label className="text-xs font-medium text-zinc-400">{label}<input type={type} value={value} min={type === "number" ? 1 : undefined} max={type === "number" ? 90 : undefined} onChange={(event) => onChange(event.target.value)} className="mt-2 h-10 w-full rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-zinc-100 outline-none focus:border-emerald-400/50" /></label>;
+function Field({ label, value, onChange, type = "text", min }) {
+  return <label className="text-xs font-medium text-zinc-400">{label}<input type={type} value={value} min={type === "number" ? min ?? 1 : undefined} max={type === "number" ? 90 : undefined} onChange={(event) => onChange(event.target.value)} className="mt-2 h-10 w-full rounded-md border border-white/10 bg-white/[0.03] px-3 text-sm text-zinc-100 outline-none focus:border-emerald-400/50" /></label>;
 }
 
 function ResourceList({ title, empty, items = [], idKey, onRevoke }) {
