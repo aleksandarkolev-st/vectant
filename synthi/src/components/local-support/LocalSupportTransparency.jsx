@@ -54,14 +54,28 @@ const DEFAULT_PORTS = [];
 function buildOrgRestrictions(policy) {
   const previewDisabled = policy?.emergency_controls?.preview_gateway_disabled === true;
   const fastSupportEnabled = policy?.mvp?.fast_support_enabled === true;
+  const fastSupportTtl = formatMinutes(policy?.mvp?.fast_support_ttl_minutes);
   return [
     ["Browser preview", policy ? (previewDisabled ? "Blocked by policy" : "Allowed by policy") : "Not reported", previewDisabled ? "bad" : policy ? "good" : "neutral", "Local app still requires a loopback approval"],
     ["Vectant AI page reading", "Blocked in MVP", "bad", "Browser preview never grants AI page access"],
     ["Support agent page reading", "Blocked in MVP", "bad", "Browser preview never grants support page access"],
-    ["Fast Support", policy ? (fastSupportEnabled ? "Enabled by policy" : "Disabled by policy") : "Not reported", policy && fastSupportEnabled ? "warn" : "neutral", "Safe metadata only, with a 30-minute session TTL"],
+    ["Fast Support", policy ? (fastSupportEnabled ? "Enabled by policy" : "Disabled by policy") : "Not reported", policy && fastSupportEnabled ? "warn" : "neutral", `Safe metadata only, with a ${fastSupportTtl === "Not reported" ? "policy-controlled" : fastSupportTtl} session TTL`],
     ["Minimum app version", policy?.min_app_version || "Not reported", policy ? "warn" : "neutral", policy ? "Older versions are denied" : "Cloud policy has not loaded"],
-    ["Activity retention", policy?.retention?.local_activity_days ? `${policy.retention.local_activity_days} days` : "Not reported", policy ? "warn" : "neutral", "Raw bodies are never stored in cloud audit"],
+    ["Activity retention", formatRetention(policy), policy ? "warn" : "neutral", "Raw bodies are never stored in cloud audit"],
   ];
+}
+
+function formatMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isInteger(minutes) || minutes <= 0) return "Not reported";
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function formatRetention(policy) {
+  const days = policy?.retention?.local_activity_days;
+  if (days === 0) return "No retention";
+  if (!Number.isInteger(days) || days < 1) return "Not reported";
+  return `${days} days`;
 }
 
 function buildSetupChecklist({ liveSession, liveWorkspace, livePolicy, liveState, pairingState, connected }) {
@@ -75,7 +89,7 @@ function buildSetupChecklist({ liveSession, liveWorkspace, livePolicy, liveState
   ];
 }
 
-function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport }) {
+function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, fastSupportTtl }) {
   return [
     {
       mode: "Balanced mode",
@@ -96,7 +110,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport }
     {
       mode: "Fast Support",
       status: !fastSupportEnabled ? "Disabled by policy" : liveFastSupport ? "Active" : "Available after pairing",
-      automatic: "Safe metadata only, one workspace, max 30 minutes",
+      automatic: `Safe metadata only, one workspace, ${fastSupportTtl === "Not reported" ? "policy-controlled TTL" : `max ${fastSupportTtl}`}`,
       approval: "Source, logs, and loopback preview",
       blocked: "Secrets, writes, commands, response bodies, AI/support page reads, persistent approvals",
       tone: !fastSupportEnabled ? "bad" : liveFastSupport ? "warn" : "neutral",
@@ -325,6 +339,7 @@ export default function LocalSupportTransparency() {
   const visibleActivity = historyDeleted ? [] : activity;
   const livePolicy = policyState.policy;
   const fastSupportEnabled = livePolicy?.mvp?.fast_support_enabled === true;
+  const fastSupportTtl = formatMinutes(livePolicy?.mvp?.fast_support_ttl_minutes);
   const liveExportMetadata = {
     ...DEFAULT_EXPORT_METADATA,
     ...(liveState?.export_metadata || {}),
@@ -347,6 +362,7 @@ export default function LocalSupportTransparency() {
     fastSupportEnabled,
     connected,
     liveFastSupport,
+    fastSupportTtl,
   });
   const policyStatus = policyState.status === "loaded"
     ? livePolicy?.enabled
@@ -700,7 +716,7 @@ export default function LocalSupportTransparency() {
                     <div className="flex items-center justify-between gap-3">
                       <dt className="text-zinc-400">Retention</dt>
                       <dd className="font-mono text-xs text-zinc-200">
-                        {livePolicy?.retention?.local_activity_days ? `${livePolicy.retention.local_activity_days} days` : "Not reported"}
+                        {formatRetention(livePolicy)}
                       </dd>
                     </div>
                   </dl>
@@ -937,7 +953,7 @@ export default function LocalSupportTransparency() {
           </TabsContent>
 
           <TabsContent value="mode" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <Panel title="Permission mode" description="Fast Support is a bounded convenience mode: one workspace, safe metadata only, and a maximum 30-minute TTL. Source files, logs, ports, and response bodies remain review-gated.">
+            <Panel title="Permission mode" description={`Fast Support is a bounded convenience mode: one workspace, safe metadata only, and ${fastSupportTtl === "Not reported" ? "a policy-controlled TTL" : `up to ${fastSupportTtl}`}. Source files, logs, ports, and response bodies remain review-gated.`}>
               <DataTable
                 columns={["Mode", "Status", "Automatic", "Requires approval", "Blocked"]}
                 rows={permissionModes}

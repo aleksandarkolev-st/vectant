@@ -46,6 +46,41 @@ test.describe("local support transparency page", () => {
     await expect(page.getByRole("tab", { name: "Release gate" })).toHaveCount(0);
   });
 
+  test("renders live retention and Fast Support limits without fixed defaults", async ({ page }) => {
+    await page.route("**/api/local-support/policy", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          policy_version: "2026.07.05",
+          mvp: { fast_support_enabled: true, fast_support_ttl_minutes: 7 },
+          retention: { local_activity_days: 0, cloud_security_event_days: 0 },
+          emergency_controls: { preview_gateway_disabled: false },
+        }),
+      });
+    });
+    await page.route("**/api/local-support/transparency-state", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          session: { connected: false },
+          workspace: { workspace_id: "not_selected", display: "No workspace selected" },
+          inventory: [],
+          sent_payloads: [],
+          blocked_items: [],
+          activity: [],
+          ports: [],
+        }),
+      });
+    });
+
+    await page.goto(`${baseURL}/local-support`);
+    await expect(page.getByText("No retention").first()).toBeVisible();
+    await expect(page.getByText("7 minutes").first()).toBeVisible();
+  });
+
   test("does not fake history export or delete without a connected local app", async ({ page }) => {
     await page.goto(`${baseURL}/local-support`);
     await page.getByRole("tab", { name: "Activity" }).click();
