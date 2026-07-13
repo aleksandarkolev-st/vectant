@@ -1588,7 +1588,12 @@ fn scanner_failure_denies_file_reads() {
 
 #[test]
 fn session_rejects_bad_token_replay_and_pause() {
-    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let token = session.token_for_pairing_response().to_string();
 
     assert_eq!(
@@ -1603,7 +1608,12 @@ fn session_rejects_bad_token_replay_and_pause() {
 
 #[test]
 fn session_rejects_unsafe_request_ids_before_replay_tracking() {
-    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let token = session.token_for_pairing_response().to_string();
 
     assert_eq!(
@@ -1623,7 +1633,12 @@ fn session_rejects_unsafe_request_ids_before_replay_tracking() {
 
 #[test]
 fn session_state_omits_token_material() {
-    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let serialized = serde_json::to_string(&session.state()).unwrap();
 
     assert!(!serialized.contains("token"));
@@ -1634,7 +1649,12 @@ fn session_state_omits_token_material() {
 
 #[test]
 fn session_control_can_resume_from_paused_state() {
-    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let token = session.token_for_pairing_response().to_string();
 
     session.pause();
@@ -1656,7 +1676,12 @@ fn session_control_can_resume_from_paused_state() {
 
 #[test]
 fn disconnect_cleanup_revokes_tokens_streams_and_pending_approvals() {
-    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let token = session.token_for_pairing_response().to_string();
     let session_id = session.session_id().to_string();
     let mut registry = PortApprovalRegistry::new();
@@ -1694,7 +1719,12 @@ fn disconnect_cleanup_revokes_tokens_streams_and_pending_approvals() {
 
 #[test]
 fn uninstall_cleanup_leaves_no_hidden_daemon_state() {
-    let mut session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let mut session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let session_id = session.session_id().to_string();
     let mut registry = PortApprovalRegistry::new();
     let approval = registry.approve_browser_port(&session_id, 3000, "next:3000");
@@ -2010,7 +2040,12 @@ fn local_control_secret_is_required_for_desktop_side_effects() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
-    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let mut state = AppState::new(session, policy);
 
     assert!(!state.local_control_secret_matches(""));
@@ -2045,9 +2080,16 @@ fn local_file_requests_bind_to_session_workspace_expiry_versions_and_device_proo
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
-    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let mut req = request("app.rs");
     req.session_id = session.session_id().to_string();
+    req.account_id = "acct_test".to_string();
+    req.org_id = "org_test".to_string();
     let auth = local_auth(&session, &req);
     req.device_fingerprint = auth.device_fingerprint.clone();
     let now = chrono::DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
@@ -2181,7 +2223,12 @@ fn local_file_request_authorization_rejects_malformed_body_identity_before_proof
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("app.rs"), "fn main() {}\n").unwrap();
     let policy = WorkspacePolicy::new(dir.path(), "wk_123", SecretScanner::default()).unwrap();
-    let session = SessionGuard::new("wk_123", std::time::Duration::from_secs(60));
+    let session = SessionGuard::new_bound(
+        "acct_test",
+        "org_test",
+        "wk_123",
+        std::time::Duration::from_secs(60),
+    );
     let mut req = request("app.rs");
     req.session_id = session.session_id().to_string();
     let auth = local_auth(&session, &req);

@@ -27,7 +27,7 @@ npx playwright test tests/local-support-desktop-shell.spec.ts --project=chromium
 
 Verified locally: 77 parent/unit/security tests, 9 desktop tests including real loopback pairing/policy/relay sockets, and 6 desktop Chromium flows.
 
-The production Cargo package no longer contains the former standalone CLI daemon. A feature-gated `local-support-test-daemon` exists only for live integration checks. `tests/local-support-live-daemon.spec.ts` starts that real process and uses Playwright request traffic against its real loopback socket to verify health and the protected status boundary. This is local daemon evidence, not cloud deployment evidence.
+The production Cargo package no longer contains the former standalone CLI daemon, and the session API no longer provides an implicit `acct_local`/`org_local` identity fallback. A feature-gated `local-support-test-daemon` exists only for live integration checks. `tests/local-support-live-daemon.spec.ts` starts that real process and uses Playwright request traffic against its real loopback socket to verify health and the protected status boundary. This is local daemon evidence, not cloud deployment evidence.
 
 ### Pairing, sessions, relay, and cloud controls
 

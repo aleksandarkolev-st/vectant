@@ -46,10 +46,6 @@ pub struct SessionGuard {
 }
 
 impl SessionGuard {
-    pub fn new(workspace_id: impl Into<String>, ttl: Duration) -> Self {
-        Self::new_bound("acct_local", "org_local", workspace_id, ttl)
-    }
-
     pub fn new_bound(
         account_id: impl Into<String>,
         org_id: impl Into<String>,
