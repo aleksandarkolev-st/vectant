@@ -42,6 +42,7 @@ export const COLD_BUILD_LAUNCHER_CONTAINER_PATH =
   '/synthi-tools/cold-build-launcher';
 export const COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH = '/synthi-spec/spec.json';
 export const COLD_BUILD_LAUNCHER_SOURCE_ROOT = '/workspace/source';
+export const COLD_BUILD_LAUNCHER_INPUT_ROOT = '/workspace/inputs';
 export const COLD_BUILD_LAUNCHER_OUTPUT_ROOT = '/workspace/build';
 export const COLD_BUILD_LAUNCHER_CONTROL_ROOT = '/synthi-control';
 export const COLD_BUILD_LAUNCHER_RELEASE_ROOT = '/synthi-release';

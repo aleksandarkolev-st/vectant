@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_CONTAINER_PATH,
+  COLD_BUILD_LAUNCHER_INPUT_ROOT,
   COLD_BUILD_LAUNCHER_RELEASE_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
@@ -123,7 +124,9 @@ function syntheticInspect(plan) {
         [COLD_BUILD_LAUNCHER_RELEASE_ROOT]: plan.releaseHostPath,
         [COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH]: plan.specHostPath,
         [COLD_BUILD_LAUNCHER_CONTAINER_PATH]: plan.launcherHostPath,
-      }[mount.destination],
+      }[mount.destination] ?? plan.readOnlyInputTrees.find(
+        (input) => input.containerPath === mount.destination,
+      )?.hostPath,
       Destination: mount.destination,
       RW: mount.readWrite,
       Propagation: mount.propagation,
@@ -158,15 +161,19 @@ async function main() {
     const sourceHostPath = path.join(root, 'arbitrary source, with spaces \u03a9');
     const releaseHostPath = path.join(root, 'release, channel');
     const specHostDirectory = path.join(root, 'specs');
+    const readOnlyInputHostPath = path.join(root, 'dependency tree, with spaces');
+    const readOnlyInputFilePath = path.join(readOnlyInputHostPath, 'include', 'opaque.hpp');
     const nestedSourceDirectory = path.join(sourceHostPath, 'module tree');
     const nestedSourcePath = path.join(nestedSourceDirectory, 'source unit.ext');
     await Promise.all([
       mkdir(nestedSourceDirectory, { recursive: true }),
       mkdir(releaseHostPath, { recursive: true }),
       mkdir(specHostDirectory, { recursive: true }),
+      mkdir(path.dirname(readOnlyInputFilePath), { recursive: true }),
     ]);
     await chmod(specHostDirectory, 0o700);
     await writeFile(nestedSourcePath, 'initial source bytes\n', 'utf8');
+    await writeFile(readOnlyInputFilePath, 'initial dependency bytes\n', 'utf8');
     const sourceTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
       sourceHostPath,
       {
@@ -181,11 +188,23 @@ async function main() {
         maxByteLength: 1024 * 1024,
       },
     );
+    const readOnlyInputTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
+      readOnlyInputHostPath,
+      {
+        maxEntryCount: 4096,
+        maxByteLength: 64 * 1024 * 1024,
+      },
+    );
     const common = {
       launcherIdentity,
       executionNonce: randomBytes(16).toString('hex'),
       commandSpecHash: `sha256:${'1'.repeat(64)}`,
       sourceTreeBindingEvidence,
+      readOnlyInputTrees: [{
+        hostPath: readOnlyInputHostPath,
+        mountPath: 'dependency tree/headers',
+        sourceTreeBindingEvidence: readOnlyInputTreeBindingEvidence,
+      }],
       releaseTreeBindingEvidence,
       command: '/toolchain/driver',
       args: ['--input', 'module tree/source unit.ext', '--emit', '/workspace/build'],
@@ -276,6 +295,15 @@ async function main() {
     assert.equal(plan.canAuthorizeLauncherExecution, false);
     assert.equal(plan.launcherExecutableHash, launcherIdentity.binaryHash);
     assert.equal(plan.releaseBindingHash, releaseTreeBindingEvidence.sourceBindingHash);
+    assert.equal(plan.readOnlyInputTrees.length, 1);
+    assert.equal(
+      plan.readOnlyInputTrees[0].containerPath,
+      `${COLD_BUILD_LAUNCHER_INPUT_ROOT}/dependency tree/headers`,
+    );
+    assert.equal(
+      plan.readOnlyInputTrees[0].sourceBindingHash,
+      readOnlyInputTreeBindingEvidence.sourceBindingHash,
+    );
     assert.equal(plan.spec.expectedLauncherExecutableHash, launcherIdentity.binaryHash);
     assert.equal(plan.spec.command[0], common.command);
     assert.equal(
@@ -424,6 +452,11 @@ async function main() {
     }, 'cold_build_container_labels_mismatch');
     assertRefused(plan, syntheticInputsBefore, syntheticInputsAfter, (inspect) => {
       inspect.Mounts.find((mount) => mount.Destination === '/workspace/source').RW = true;
+    }, 'cold_build_container_mounts_mismatch');
+    assertRefused(plan, syntheticInputsBefore, syntheticInputsAfter, (inspect) => {
+      inspect.Mounts.find(
+        (mount) => mount.Destination === plan.readOnlyInputTrees[0].containerPath,
+      ).RW = true;
     }, 'cold_build_container_mounts_mismatch');
     assertRefused(plan, syntheticInputsBefore, syntheticInputsAfter, (inspect) => {
       inspect.Mounts.find(
@@ -629,6 +662,37 @@ async function main() {
     assert.throws(
       () => createColdBuildLauncherExecutionPlan({
         ...common,
+        readOnlyInputTrees: [{
+          ...common.readOnlyInputTrees[0],
+          hostPath: sourceHostPath,
+          sourceTreeBindingEvidence,
+        }],
+      }),
+      /input_path_overlap/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
+        readOnlyInputTrees: [
+          common.readOnlyInputTrees[0],
+          { ...common.readOnlyInputTrees[0], mountPath: 'dependency tree' },
+        ],
+      }),
+      /read_only_input_mount_overlap/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
+        readOnlyInputTrees: [{
+          ...common.readOnlyInputTrees[0],
+          mountPath: '../escape',
+        }],
+      }),
+      /read_only_input_mount_path_invalid/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
         sourceTreeBindingEvidence: {
           ...sourceTreeBindingEvidence,
           acceptedForGpuHmr: true,
@@ -657,6 +721,17 @@ async function main() {
     const restoredInputs = await verifyColdBuildLauncherExecutionInputs(plan, {
       phase: 'before_create',
     });
+    await writeFile(readOnlyInputFilePath, 'changed dependency bytes\n', 'utf8');
+    const changedReadOnlyInputs = await verifyColdBuildLauncherExecutionInputs(plan, {
+      phase: 'after_create',
+      expectedContainerId: SYNTHETIC_CONTAINER_ID,
+    });
+    assert.equal(changedReadOnlyInputs.acceptedAsExecutionInputEvidence, false);
+    assert.ok(changedReadOnlyInputs.blockingGaps.includes(
+      'cold_build_execution_input_read_only_0_binding_mismatch',
+    ));
+    assert.notEqual(changedReadOnlyInputs.inputsHash, restoredInputs.inputsHash);
+    await writeFile(readOnlyInputFilePath, 'initial dependency bytes\n', 'utf8');
     const unexpectedReleasePath = path.join(releaseHostPath, 'nested', 'unexpected.json');
     await mkdir(path.dirname(unexpectedReleasePath), { recursive: true });
     await writeFile(unexpectedReleasePath, '{"unexpected":true}\n', 'utf8');

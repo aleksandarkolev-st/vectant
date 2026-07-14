@@ -18,6 +18,7 @@ import {
   COLD_BUILD_CONTAINER_COMMAND_UID,
   COLD_BUILD_LAUNCHER_CONTAINER_PATH,
   COLD_BUILD_LAUNCHER_CONTROL_ROOT,
+  COLD_BUILD_LAUNCHER_INPUT_ROOT,
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
   COLD_BUILD_LAUNCHER_RELEASE_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
@@ -167,6 +168,41 @@ function pathIdentityHash(value) {
   return contentHash(normalizedHostPathIdentity(value));
 }
 
+function normalizeReadOnlyInputMountPath(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 1024 || /[\\\0\r\n]/.test(value)) {
+    throw new Error('cold_build_execution_plan_read_only_input_mount_path_invalid');
+  }
+  const normalized = path.posix.normalize(value);
+  if (
+    normalized !== value
+    || normalized === '.'
+    || normalized.startsWith('../')
+    || path.posix.isAbsolute(normalized)
+    || path.win32.isAbsolute(normalized)
+  ) {
+    throw new Error('cold_build_execution_plan_read_only_input_mount_path_invalid');
+  }
+  return normalized;
+}
+
+function readOnlyInputTreeProjection(input) {
+  return {
+    mountPath: input.mountPath,
+    containerPath: input.containerPath,
+    sourceBindingHash: input.sourceBindingHash,
+    sourceTreeBindingEvidenceHash: input.sourceTreeBindingEvidenceHash,
+    hostPathIdentityHash: input.hostPathIdentityHash,
+  };
+}
+
+function readOnlyInputTreeMaterialAccepted(input) {
+  return pathIdentityHash(input.hostPath) === input.hostPathIdentityHash
+    && recomputeEvidenceHash(input.sourceTreeBindingEvidence)
+      === input.sourceTreeBindingEvidenceHash
+    && input.sourceTreeBindingEvidence?.sourceBindingHash === input.sourceBindingHash
+    && input.containerPath === path.posix.join(COLD_BUILD_LAUNCHER_INPUT_ROOT, input.mountPath);
+}
+
 function normalizeStringArray(value) {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === 'string' && value.length > 0) return [value];
@@ -227,6 +263,7 @@ function executionPlanProjection(plan) {
     commandSpecHash: plan.commandSpecHash,
     sourceBindingHash: plan.sourceBindingHash,
     sourceTreeBindingEvidenceHash: plan.sourceTreeBindingEvidenceHash,
+    readOnlyInputTreesHash: plan.readOnlyInputTreesHash,
     releaseBindingHash: plan.releaseBindingHash,
     releaseTreeBindingEvidenceHash: plan.releaseTreeBindingEvidenceHash,
     specHash: plan.specHash,
@@ -280,6 +317,9 @@ function executionPlanMaterialAccepted(plan) {
     && recomputeEvidenceHash(plan.sourceTreeBindingEvidence)
       === plan.sourceTreeBindingEvidenceHash
     && plan.sourceTreeBindingEvidence?.sourceBindingHash === plan.sourceBindingHash
+    && contentHash(stableJson(plan.readOnlyInputTrees.map(readOnlyInputTreeProjection)))
+      === plan.readOnlyInputTreesHash
+    && plan.readOnlyInputTrees.every(readOnlyInputTreeMaterialAccepted)
     && recomputeEvidenceHash(plan.releaseTreeBindingEvidence)
       === plan.releaseTreeBindingEvidenceHash
     && plan.releaseTreeBindingEvidence?.sourceBindingHash === plan.releaseBindingHash
@@ -424,11 +464,17 @@ function isPathWithin(candidate, parent) {
   );
 }
 
+function isPosixPathWithin(candidate, parent) {
+  const relative = path.posix.relative(parent, candidate);
+  return relative === '' || (relative !== '..' && !relative.startsWith('../'));
+}
+
 export function createColdBuildLauncherExecutionPlan({
   launcherIdentity,
   executionNonce,
   commandSpecHash,
   sourceTreeBindingEvidence,
+  readOnlyInputTrees = [],
   releaseTreeBindingEvidence,
   command,
   args = [],
@@ -490,6 +536,43 @@ export function createColdBuildLauncherExecutionPlan({
     sourcePath,
   );
   const sourceBindingHash = verifiedSourceTreeBinding.sourceBindingHash;
+  if (!Array.isArray(readOnlyInputTrees) || readOnlyInputTrees.length > 128) {
+    throw new Error('cold_build_execution_plan_read_only_inputs_invalid');
+  }
+  const normalizedReadOnlyInputTrees = readOnlyInputTrees.map((entry) => {
+    if (
+      !entry
+      || typeof entry !== 'object'
+      || Array.isArray(entry)
+      || stableJson(Object.keys(entry).sort())
+        !== stableJson(['hostPath', 'mountPath', 'sourceTreeBindingEvidence'].sort())
+    ) {
+      throw new Error('cold_build_execution_plan_read_only_input_shape_invalid');
+    }
+    const hostPath = requireHostPath(entry.hostPath, 'read_only_input_host_path');
+    const mountPath = normalizeReadOnlyInputMountPath(entry.mountPath);
+    const sourceTreeBindingEvidence = verifyColdBuildSourceTreeBindingEvidence(
+      entry.sourceTreeBindingEvidence,
+      hostPath,
+    );
+    return {
+      hostPath,
+      mountPath,
+      containerPath: path.posix.join(COLD_BUILD_LAUNCHER_INPUT_ROOT, mountPath),
+      sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
+      sourceTreeBindingEvidence,
+      sourceTreeBindingEvidenceHash: sourceTreeBindingEvidence.evidenceHash,
+      hostPathIdentityHash: pathIdentityHash(hostPath),
+    };
+  }).sort((left, right) => left.mountPath.localeCompare(right.mountPath));
+  if (normalizedReadOnlyInputTrees.some((entry, index) => (
+    normalizedReadOnlyInputTrees.slice(index + 1).some((candidate) => (
+      isPosixPathWithin(entry.mountPath, candidate.mountPath)
+      || isPosixPathWithin(candidate.mountPath, entry.mountPath)
+    ))
+  ))) {
+    throw new Error('cold_build_execution_plan_read_only_input_mount_overlap');
+  }
   const releasePath = requireHostPath(releaseHostPath, 'release_path');
   const verifiedReleaseTreeBinding = verifyColdBuildSourceTreeBindingEvidence(
     releaseTreeBindingEvidence,
@@ -501,15 +584,19 @@ export function createColdBuildLauncherExecutionPlan({
     launcherIdentity?.executablePath,
     'launcher_path',
   );
-  const directoryPairs = [
-    [sourcePath, releasePath],
-    [sourcePath, specDirectory],
-    [releasePath, specDirectory],
+  const protectedDirectories = [
+    sourcePath,
+    releasePath,
+    specDirectory,
+    ...normalizedReadOnlyInputTrees.map((entry) => entry.hostPath),
   ];
+  const directoryPairs = protectedDirectories.flatMap((left, index) => (
+    protectedDirectories.slice(index + 1).map((right) => [left, right])
+  ));
   const directoryOverlap = directoryPairs.some(([left, right]) => (
     isPathWithin(left, right) || isPathWithin(right, left)
   ));
-  const launcherOverlap = [sourcePath, releasePath, specDirectory]
+  const launcherOverlap = protectedDirectories
     .some((directoryPath) => isPathWithin(launcherPath, directoryPath));
   if (directoryOverlap || launcherOverlap) {
     throw new Error('cold_build_execution_plan_input_path_overlap');
@@ -607,6 +694,10 @@ export function createColdBuildLauncherExecutionPlan({
     ).join(',')}`,
     '--tmpfs', `${COLD_BUILD_LAUNCHER_CONTROL_ROOT}:${coldBuildControlTmpfsOptions().join(',')}`,
     '--mount', dockerBindMount(sourcePath, COLD_BUILD_LAUNCHER_SOURCE_ROOT),
+    ...normalizedReadOnlyInputTrees.flatMap((input) => [
+      '--mount',
+      dockerBindMount(input.hostPath, input.containerPath),
+    ]),
     '--mount', dockerBindMount(releasePath, COLD_BUILD_LAUNCHER_RELEASE_ROOT),
     '--mount', dockerBindMount(specPath, COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH),
     '--mount', dockerBindMount(launcherPath, COLD_BUILD_LAUNCHER_CONTAINER_PATH),
@@ -674,6 +765,7 @@ export function createColdBuildLauncherExecutionPlan({
     },
     mounts: [
       [sourcePath, COLD_BUILD_LAUNCHER_SOURCE_ROOT],
+      ...normalizedReadOnlyInputTrees.map((input) => [input.hostPath, input.containerPath]),
       [releasePath, COLD_BUILD_LAUNCHER_RELEASE_ROOT],
       [specPath, COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH],
       [launcherPath, COLD_BUILD_LAUNCHER_CONTAINER_PATH],
@@ -700,6 +792,10 @@ export function createColdBuildLauncherExecutionPlan({
     sourceBindingHash,
     sourceTreeBindingEvidence: verifiedSourceTreeBinding,
     sourceTreeBindingEvidenceHash: verifiedSourceTreeBinding.evidenceHash,
+    readOnlyInputTrees: normalizedReadOnlyInputTrees,
+    readOnlyInputTreesHash: contentHash(stableJson(
+      normalizedReadOnlyInputTrees.map(readOnlyInputTreeProjection),
+    )),
     releaseBindingHash,
     releaseTreeBindingEvidence: verifiedReleaseTreeBinding,
     releaseTreeBindingEvidenceHash: verifiedReleaseTreeBinding.evidenceHash,
@@ -897,6 +993,22 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
       maxByteLength: plan.releaseTreeBindingEvidence.maxByteLength,
     }),
   ]);
+  const readOnlyInputs = await Promise.all(plan.readOnlyInputTrees.map(async (input) => {
+    const [pathObservation, sourceTreeBinding] = await Promise.all([
+      inspectExecutionInput(input.hostPath, 'directory'),
+      computeColdBuildSourceTreeBinding(input.hostPath, {
+        maxEntryCount: input.sourceTreeBindingEvidence.maxEntryCount,
+        maxByteLength: input.sourceTreeBindingEvidence.maxByteLength,
+      }),
+    ]);
+    return {
+      mountPath: input.mountPath,
+      containerPath: input.containerPath,
+      sourceBindingHash: input.sourceBindingHash,
+      path: pathObservation,
+      sourceTreeBinding,
+    };
+  }));
   const specParentPrivate = process.platform === 'win32'
     ? null
     : (specParent.metadata.mode & 0o077) === 0;
@@ -920,6 +1032,15 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
   })) {
     if (!observation.accepted) {
       blockingGaps.push(`cold_build_execution_input_${name}_invalid`);
+    }
+  }
+  for (let index = 0; index < readOnlyInputs.length; index += 1) {
+    const input = readOnlyInputs[index];
+    if (!input.path.accepted) {
+      blockingGaps.push(`cold_build_execution_input_read_only_${index}_invalid`);
+    }
+    if (input.sourceTreeBinding.sourceBindingHash !== input.sourceBindingHash) {
+      blockingGaps.push(`cold_build_execution_input_read_only_${index}_binding_mismatch`);
     }
   }
   if (specParentPrivate === false) {
@@ -950,6 +1071,7 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
     launcher,
     specParent,
     sourceTreeBinding,
+    readOnlyInputs,
     releaseTreeBinding,
   };
   const observationSequence = (INPUT_OBSERVATION_SEQUENCE.get(plan) ?? 0) + 1;
@@ -962,6 +1084,7 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
     specHash: plan.specHash,
     launcherExecutableHash: plan.launcherExecutableHash,
     sourceBindingHash: plan.sourceBindingHash,
+    readOnlyInputTreesHash: plan.readOnlyInputTreesHash,
     releaseBindingHash: plan.releaseBindingHash,
     phase,
     expectedContainerId: boundContainerId,
