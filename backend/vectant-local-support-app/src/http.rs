@@ -569,6 +569,7 @@ async fn enroll_full_access(
             ));
         }
     }
+    let recorded_receipt = request.receipt.clone();
     full_access.policy = request.policy;
     full_access.receipt = Some(request.receipt);
     full_access.graph = graph;
@@ -576,6 +577,7 @@ async fn enroll_full_access(
     full_access.process_visibility_paused = false;
     drop(full_access);
     let mut audit = state.audit.lock().await;
+    audit.record_full_access_consent(recorded_receipt);
     audit.append(AuditClass::Control, Some(request.request_id.clone()), "Full Access Support enrolled after local desktop confirmation. Workspace graph is scrubbed and contains no raw bodies.", true);
     persist_audit(&state, &audit)?;
     Ok(Json(
