@@ -94,7 +94,7 @@ pub async fn execute_command_cancellable(
         .kill_on_drop(true);
     apply_sanitized_environment(&mut command);
     #[cfg(unix)]
-    configure_unix_process_group(&mut command);
+    configure_unix_process_group(&mut command, timeout);
     #[cfg(windows)]
     {
         command.creation_flags(0x0800_0000);
@@ -172,10 +172,31 @@ pub async fn execute_command_cancellable(
 }
 
 #[cfg(unix)]
-fn configure_unix_process_group(command: &mut Command) {
+fn configure_unix_process_group(command: &mut Command, timeout: Duration) {
+    // These limits are deliberately independent of the daemon's asynchronous
+    // watchdog. A blocked runtime must still be constrained by the kernel.
+    const MAX_OPEN_FILES: libc::rlim_t = 64;
+    const MAX_FILE_BYTES: libc::rlim_t = 64 * 1024 * 1024;
+    const MAX_ADDRESS_SPACE_BYTES: libc::rlim_t = 1024 * 1024 * 1024;
+    let cpu_seconds = timeout.as_secs().max(1).saturating_add(1) as libc::rlim_t;
     unsafe {
-        command.as_std_mut().pre_exec(|| {
+        command.as_std_mut().pre_exec(move || {
             if libc::setpgid(0, 0) == 0 {
+                for (resource, limit) in [
+                    (libc::RLIMIT_CPU, cpu_seconds),
+                    (libc::RLIMIT_NOFILE, MAX_OPEN_FILES),
+                    (libc::RLIMIT_FSIZE, MAX_FILE_BYTES),
+                    (libc::RLIMIT_AS, MAX_ADDRESS_SPACE_BYTES),
+                    (libc::RLIMIT_CORE, 0),
+                ] {
+                    let limits = libc::rlimit {
+                        rlim_cur: limit,
+                        rlim_max: limit,
+                    };
+                    if libc::setrlimit(resource, &limits) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 Ok(())
             } else {
                 Err(std::io::Error::last_os_error())
@@ -672,7 +693,7 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        super::configure_unix_process_group(&mut command);
+        super::configure_unix_process_group(&mut command, std::time::Duration::from_secs(5));
         let mut parent = command.spawn().unwrap();
         let job = super::CommandJob::assign(parent.id().unwrap()).unwrap();
         let child_pid = loop {
@@ -698,5 +719,16 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("contained descendant process {child_pid} survived termination");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unix_children_have_kernel_resource_limits() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg("ulimit -n; ulimit -c");
+        super::configure_unix_process_group(&mut command, std::time::Duration::from_secs(5));
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "64\n0\n");
     }
 }
