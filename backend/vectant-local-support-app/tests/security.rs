@@ -41,6 +41,9 @@ use vectant_local_support_app::preview::{
     PreviewTrafficGuard, MAX_ACTIVE_PREVIEW_STREAMS_PER_HOST,
     MAX_PREVIEW_REQUESTS_PER_MINUTE_PER_HOST, MAX_PREVIEW_RESPONSE_BYTES,
 };
+use vectant_local_support_app::process_adapter::{
+    ProcessInspectionAdapter, ProcessInspectionError,
+};
 use vectant_local_support_app::scanner::SecretScanner;
 use vectant_local_support_app::session::{DeviceProofContext, SessionError, SessionGuard};
 use vectant_local_support_app::update::{
@@ -67,6 +70,19 @@ fn capability_graph_has_no_raw_secret_paths_or_bodies() {
     assert!(graph
         .values()
         .all(|node| !node.content_hash.contains("must-not-leak")));
+}
+
+#[test]
+fn process_adapter_exposes_only_narrow_validated_operations() {
+    let root = tempdir().unwrap();
+    assert!(matches!(
+        ProcessInspectionAdapter::list_workspace_processes(root.path(), 0),
+        Err(ProcessInspectionError::InvalidScope)
+    ));
+    assert_eq!(
+        ProcessInspectionAdapter::inspect_listener_identity(0, "sha256:bad"),
+        Err(ProcessInspectionError::InvalidScope)
+    );
 }
 
 fn request(path: &str) -> FileReadRequest {

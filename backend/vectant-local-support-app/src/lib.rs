@@ -9,6 +9,7 @@ pub mod pair;
 pub mod policy;
 pub mod port_adapter;
 pub mod preview;
+pub mod process_adapter;
 pub mod scanner;
 pub mod session;
 pub mod update;
