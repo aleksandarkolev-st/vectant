@@ -9,9 +9,14 @@ import { readCloudTransparencyState } from "@/lib/local-support/transparencyStor
 export const runtime = "nodejs";
 
 export async function GET() {
+  const localState = await readLocalDaemonTransparencyState();
+  const session = await getServerSession(authOptions);
+  const accountId = session?.user?.id || session?.user?.email || null;
+  const cloudState = await readCloudTransparencyState(accountId);
   let policy;
   try {
-    policy = await readDurableLocalSupportPolicy();
+    const orgId = localState?.session?.org_id || cloudState?.session?.org_id || null;
+    policy = await readDurableLocalSupportPolicy(process.env, undefined, orgId);
   } catch {
     return jsonNoStore({
       decision: "denied",
@@ -20,10 +25,6 @@ export async function GET() {
       bytes_sent: 0,
     }, 503);
   }
-  const localState = await readLocalDaemonTransparencyState();
-  const session = await getServerSession(authOptions);
-  const accountId = session?.user?.id || session?.user?.email || null;
-  const cloudState = await readCloudTransparencyState(accountId);
   return jsonNoStore({
     ...summarizeTransparencyState(localState || cloudState, policy),
     local_control_available: Boolean(localState?.session),

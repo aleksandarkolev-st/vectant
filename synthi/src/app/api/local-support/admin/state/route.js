@@ -24,7 +24,7 @@ export async function GET(req) {
   try {
     const [state, policy] = await Promise.all([
       readDurableAdminState(),
-      readDurableLocalSupportPolicy(),
+      readDurableLocalSupportPolicy(process.env, undefined, new URL(req.url).searchParams.get("org_id")),
     ]);
     return jsonNoStore(summarizeAdminState(state, policy));
   } catch {

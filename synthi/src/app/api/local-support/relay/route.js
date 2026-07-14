@@ -28,7 +28,7 @@ export async function POST(req) {
   const body = bodyResult.value;
   let policy;
   try {
-    policy = await readDurableLocalSupportPolicy();
+    policy = await readDurableLocalSupportPolicy(process.env, undefined, body.org_id);
   } catch {
     return jsonNoStore({
       decision: "denied", reason: "policy_store_unavailable", relay_forward: false,

@@ -107,4 +107,58 @@ describe("durable local support policy", () => {
       create: expect.objectContaining({ retentionDays: 0 }),
     }));
   });
+
+  it("stores and resolves an organization policy without changing global policy", async () => {
+    const global = {
+      id: "global",
+      orgId: null,
+      globalEnabled: true,
+      orgDisabled: false,
+      pairingDisabled: false,
+      previewDisabled: false,
+      agentAccessDisabled: true,
+      minAppVersion: "0.1.0",
+      vulnerableVersionsJson: "[]",
+      retentionDays: 30,
+      updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    const scoped = {
+      ...global,
+      id: "org_org_acme",
+      orgId: "org_acme",
+      orgDisabled: true,
+      updatedAt: new Date("2030-01-02T00:00:00.000Z"),
+    };
+    const findUnique = vi.fn(async ({ where }) => {
+      if (where.id === "global") return global;
+      if (where.id === "org_org_acme") return null;
+      if (where.orgId === "org_acme") return scoped;
+      return null;
+    });
+    const upsert = vi.fn(async ({ create }) => ({ ...create, ...scoped }));
+    const client = { localSupportPolicyState: { findUnique, upsert } };
+
+    const updated = await updateDurableLocalSupportPolicy({
+      action: "update_policy",
+      org_id: "org_acme",
+      org_disabled: true,
+    }, "admin_1", client);
+    expect(updated).toMatchObject({ policy_id: "org_org_acme", org_id: "org_acme", org_disabled: true });
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "org_org_acme" },
+      create: expect.objectContaining({ id: "org_org_acme", orgId: "org_acme" }),
+    }));
+
+    const policy = await readDurableLocalSupportPolicy({}, client, "org_acme");
+    expect(policy).toMatchObject({ org_id: "org_acme", enabled: false, org_kill_switch: true });
+  });
+
+  it("rejects malformed organization policy scopes", async () => {
+    const result = await updateDurableLocalSupportPolicy({
+      action: "update_policy",
+      org_id: "org/acme",
+      org_disabled: true,
+    }, "admin_1", { localSupportPolicyState: { findUnique: vi.fn() } });
+    expect(result).toMatchObject({ decision: "denied", reason: "invalid_org_id" });
+  });
 });

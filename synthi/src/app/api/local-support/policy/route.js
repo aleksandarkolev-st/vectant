@@ -4,10 +4,11 @@ import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req) {
   let policy;
   try {
-    policy = await readDurableLocalSupportPolicy();
+    const orgId = req?.url ? new URL(req.url).searchParams.get("org_id") : null;
+    policy = await readDurableLocalSupportPolicy(process.env, undefined, orgId);
   } catch {
     return NextResponse.json({
       enabled: false,

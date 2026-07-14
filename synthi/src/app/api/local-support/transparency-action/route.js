@@ -67,6 +67,14 @@ export async function POST(req) {
     }
   }
   const currentState = localStatus?.state || cloudState || {};
+  const orgId = currentState?.session?.org_id || bodyResult.value?.org_id || null;
+  if (orgId) {
+    try {
+      policy = await readDurableLocalSupportPolicy(process.env, undefined, orgId);
+    } catch {
+      return jsonNoStore(deniedBody("policy_store_unavailable", "Local Support policy is unavailable."), 503);
+    }
+  }
   const decision = buildTransparencyActionDecision(
     bodyResult.value,
     currentState,

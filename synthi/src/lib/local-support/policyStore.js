@@ -3,13 +3,18 @@ import { compareSemverLike, readLocalSupportPolicy } from "@/lib/local-support/c
 
 const POLICY_ID = "global";
 const UPDATE_FIELDS = new Set([
-  "global_enabled", "org_disabled", "pairing_disabled", "preview_disabled",
+  "global_enabled", "org_id", "org_disabled", "pairing_disabled", "preview_disabled",
   "agent_access_disabled", "min_app_version", "vulnerable_versions", "retention_days",
 ]);
 
-export async function readDurableLocalSupportPolicy(env = process.env, client = prisma) {
+export async function readDurableLocalSupportPolicy(env = process.env, client = prisma, orgId = null) {
   const base = readLocalSupportPolicy(env);
-  const stored = await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } });
+  const globalStored = await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } });
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const scopedStored = normalizedOrgId
+    ? await client.localSupportPolicyState.findUnique({ where: { orgId: normalizedOrgId } })
+    : null;
+  const stored = scopedStored || globalStored;
   if (!stored) return base;
   const storedVulnerableVersions = parseVersions(stored.vulnerableVersionsJson);
   const vulnerableVersions = uniqueStrings([
@@ -32,6 +37,7 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
     ...base,
     enabled,
     global_enabled: globalEnabled,
+    org_id: stored.orgId || normalizedOrgId || base.org_id || null,
     org_kill_switch: orgDisabled,
     pairing_disabled: pairingDisabled,
     min_app_version: minAppVersion,
@@ -85,6 +91,8 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
   if (!updatedBy || Object.keys(body).some((key) => key !== "action" && !UPDATE_FIELDS.has(key))) {
     return denied("invalid_policy_update");
   }
+  const orgId = body.org_id === undefined ? null : normalizeOrgId(body.org_id);
+  if (body.org_id !== undefined && !orgId) return denied("invalid_org_id");
   if (body.action !== "update_policy") return denied("invalid_policy_update");
   if (body.min_app_version !== undefined
     && !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(body.min_app_version)) {
@@ -106,26 +114,33 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     if (body[field] !== undefined && typeof body[field] !== "boolean") return denied("invalid_policy_update");
   }
 
-  const existing = await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } });
+  const policyId = orgId ? `org_${orgId}` : POLICY_ID;
+  const existing = await client.localSupportPolicyState.findUnique({ where: { id: policyId } });
+  const fallback = orgId && !existing
+    ? await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } })
+    : null;
+  const defaults = existing || fallback;
   const data = {
-    globalEnabled: body.global_enabled ?? existing?.globalEnabled ?? false,
-    orgDisabled: body.org_disabled ?? existing?.orgDisabled ?? false,
-    pairingDisabled: body.pairing_disabled ?? existing?.pairingDisabled ?? false,
-    previewDisabled: body.preview_disabled ?? existing?.previewDisabled ?? false,
-    agentAccessDisabled: body.agent_access_disabled ?? existing?.agentAccessDisabled ?? true,
-    minAppVersion: body.min_app_version ?? existing?.minAppVersion ?? "0.1.0",
-    vulnerableVersionsJson: JSON.stringify(body.vulnerable_versions ?? parseVersions(existing?.vulnerableVersionsJson)),
-    retentionDays: body.retention_days ?? existing?.retentionDays ?? 30,
+    orgId,
+    globalEnabled: body.global_enabled ?? defaults?.globalEnabled ?? false,
+    orgDisabled: body.org_disabled ?? defaults?.orgDisabled ?? false,
+    pairingDisabled: body.pairing_disabled ?? defaults?.pairingDisabled ?? false,
+    previewDisabled: body.preview_disabled ?? defaults?.previewDisabled ?? false,
+    agentAccessDisabled: body.agent_access_disabled ?? defaults?.agentAccessDisabled ?? true,
+    minAppVersion: body.min_app_version ?? defaults?.minAppVersion ?? "0.1.0",
+    vulnerableVersionsJson: JSON.stringify(body.vulnerable_versions ?? parseVersions(defaults?.vulnerableVersionsJson)),
+    retentionDays: body.retention_days ?? defaults?.retentionDays ?? 30,
     updatedBy: String(updatedBy).slice(0, 256),
   };
   const stored = await client.localSupportPolicyState.upsert({
-    where: { id: POLICY_ID },
-    create: { id: POLICY_ID, ...data },
+    where: { id: policyId },
+    create: { id: policyId, ...data },
     update: data,
   });
   return {
     decision: "policy_updated",
     policy_id: stored.id,
+    org_id: stored.orgId || null,
     global_enabled: stored.globalEnabled,
     org_disabled: stored.orgDisabled,
     pairing_disabled: stored.pairingDisabled,
@@ -137,6 +152,12 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     raw_body_included: false,
     bytes_sent: 0,
   };
+}
+
+function normalizeOrgId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)
+    ? value
+    : null;
 }
 
 function parseVersions(value) {

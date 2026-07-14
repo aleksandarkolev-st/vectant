@@ -871,6 +871,7 @@ model LocalSupportSecurityEvent {
 
 model LocalSupportPolicyState {
   id                     String   @id
+  orgId                  String?  @unique
   globalEnabled          Boolean  @default(false)
   orgDisabled            Boolean  @default(false)
   pairingDisabled        Boolean  @default(false)
