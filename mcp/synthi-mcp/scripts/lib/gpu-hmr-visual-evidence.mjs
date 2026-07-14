@@ -22,6 +22,9 @@ const MIN_VISIBLE_PIXELS = 500;
 const FLAT_LUMA_STDDEV = 4;
 const FLAT_RGB_SPAN_MEAN = 12;
 const FLAT_UNIQUE_COLOR_SAMPLE_COUNT = 16;
+const MCP_CAPTURE_MANIFEST_SCHEMA_VERSION = 'synthi.mcp.capture_manifest.v1';
+const TARGET_PROCESS_CAMERA_STATE_AUTHORITY =
+  'target_process_runtime_camera_state_attestation';
 const CONVERGENCE_METRICS = new Set([
   'per_frame_delta',
   'window_mean_delta',
@@ -339,13 +342,16 @@ function screenshotFrameSeq(shot) {
   const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
     ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
     : {};
+  const manifest = screenshotCaptureManifest(shot) ?? {};
   return finiteNumberOrNull(
     shot?.seq
     ?? shot?.frame_seq
     ?? shot?.frameSeq
     ?? meta.seq
     ?? meta.frame_seq
-    ?? meta.frameSeq,
+    ?? meta.frameSeq
+    ?? manifest.frame_seq
+    ?? manifest.frameSeq,
   );
 }
 
@@ -353,19 +359,22 @@ function screenshotTimestampMs(shot) {
   const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
     ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
     : {};
+  const manifest = screenshotCaptureManifest(shot) ?? {};
   return finiteNumberOrNull(
     shot?.ts
     ?? shot?.timestamp_ms
     ?? shot?.timestampMs
     ?? meta.ts
     ?? meta.timestamp_ms
-    ?? meta.timestampMs,
+    ?? meta.timestampMs
+    ?? manifest.frame_ts_ms
+    ?? manifest.frameTsMs,
   );
 }
 
 function screenshotCaptureManifest(shot) {
-  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
-    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata ?? shot?.meta)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata ?? shot.meta)
     : {};
   return isObject(shot?.capture_manifest ?? shot?.captureManifest)
     ? (shot.capture_manifest ?? shot.captureManifest)
@@ -375,8 +384,8 @@ function screenshotCaptureManifest(shot) {
 }
 
 function screenshotImageHash(shot) {
-  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata)
-    ? (shot.screenshot_metadata ?? shot.screenshotMetadata)
+  const meta = isObject(shot?.screenshot_metadata ?? shot?.screenshotMetadata ?? shot?.meta)
+    ? (shot.screenshot_metadata ?? shot.screenshotMetadata ?? shot.meta)
     : {};
   return textOrNull(
     shot?.image_sha256
@@ -406,15 +415,44 @@ function captureManifestFrameHash(manifest) {
   );
 }
 
+function captureManifestSessionId(manifest) {
+  return textOrNull(manifest?.session_id ?? manifest?.sessionId);
+}
+
+function captureManifestCameraStateHash(manifest) {
+  const value = textOrNull(manifest?.camera_state_hash ?? manifest?.cameraStateHash);
+  const verified = manifest?.camera_state_hash_verified === true
+    || manifest?.cameraStateHashVerified === true;
+  const authority = textOrNull(
+    manifest?.camera_state_evidence_authority ?? manifest?.cameraStateEvidenceAuthority,
+  );
+  const evidenceRef = textOrNull(
+    manifest?.camera_state_evidence_ref ?? manifest?.cameraStateEvidenceRef,
+  );
+  return verified
+    && authority === TARGET_PROCESS_CAMERA_STATE_AUTHORITY
+    && evidenceRef
+    && /^sha256:[a-f0-9]{64}$/i.test(value ?? '')
+    ? value.toLowerCase()
+    : null;
+}
+
 function captureManifestVerified(shot, gate = null) {
   const manifest = screenshotCaptureManifest(shot);
   if (!manifest) return false;
+  if (
+    textOrNull(manifest.schema_version ?? manifest.schemaVersion)
+    !== MCP_CAPTURE_MANIFEST_SCHEMA_VERSION
+  ) {
+    return false;
+  }
   const imageHash = screenshotImageHash(shot);
   const manifestImageHash = captureManifestImageHash(manifest);
-  if (!manifestImageHash) return false;
+  if (!/^sha256:[a-f0-9]{64}$/i.test(manifestImageHash ?? '')) return false;
   if (imageHash && imageHash !== manifestImageHash) return false;
-  if (!captureManifestFrameHash(manifest)) return false;
-  if (!textOrNull(manifest.session_id ?? manifest.sessionId)) return false;
+  if (!/^sha256:[a-f0-9]{64}$/i.test(captureManifestFrameHash(manifest) ?? '')) return false;
+  if (finiteNumberOrNull(manifest.image_byte_length ?? manifest.imageByteLength) <= 0) return false;
+  if (!captureManifestSessionId(manifest)) return false;
   if (!textOrNull(manifest.capture_event_id ?? manifest.captureEventId)) return false;
   if (finiteNumberOrNull(manifest.frame_event_id ?? manifest.frameEventId) === null) return false;
   if (gate) {
@@ -527,18 +565,46 @@ export function mcpFrameGateSatisfiedByScreenshot(waitOrGate, afterScreenshot) {
   return mcpFrameAtOrAfterFrameGate(waitOrGate, afterScreenshot);
 }
 
+export function mcpFrameGateSatisfiedByCaptureChain(
+  waitOrGate,
+  gateScreenshot,
+  selectedScreenshot,
+) {
+  if (!mcpFrameGateSatisfiedByScreenshot(waitOrGate, gateScreenshot)) return false;
+  if (!captureManifestVerified(selectedScreenshot)) return false;
+  const gateManifest = screenshotCaptureManifest(gateScreenshot);
+  const selectedManifest = screenshotCaptureManifest(selectedScreenshot);
+  if (
+    !gateManifest
+    || !selectedManifest
+    || captureManifestSessionId(gateManifest) !== captureManifestSessionId(selectedManifest)
+  ) {
+    return false;
+  }
+  const gateSeq = screenshotFrameSeq(gateScreenshot);
+  const selectedSeq = screenshotFrameSeq(selectedScreenshot);
+  const gateTs = screenshotTimestampMs(gateScreenshot);
+  const selectedTs = screenshotTimestampMs(selectedScreenshot);
+  if (gateSeq === null && gateTs === null) return false;
+  if (gateSeq !== null && (selectedSeq === null || selectedSeq < gateSeq)) return false;
+  if (gateTs !== null && (selectedTs === null || selectedTs < gateTs)) return false;
+  return mcpFrameAtOrAfterFrameGate(waitOrGate, selectedScreenshot);
+}
+
 export function deterministicVisualModeFromMcpEvidence(input = {}) {
   const evidence = isObject(input) ? input : {};
-  const base = isObject(evidence.base ?? evidence.deterministicMode)
-    ? (evidence.base ?? evidence.deterministicMode)
-    : {};
   const before = evidence.before ?? evidence.beforeScreenshot ?? null;
   const after = evidence.after ?? evidence.afterScreenshot ?? null;
+  const gateCapture = evidence.gate_capture ?? evidence.gateCapture ?? after;
   const beforeWidth = screenshotDimension(before, 'width');
   const beforeHeight = screenshotDimension(before, 'height');
   const afterWidth = screenshotDimension(after, 'width');
   const afterHeight = screenshotDimension(after, 'height');
-  const sameResolution = beforeWidth !== null
+  const beforeManifestVerified = captureManifestVerified(before);
+  const afterManifestVerified = captureManifestVerified(after);
+  const sameResolution = beforeManifestVerified
+    && afterManifestVerified
+    && beforeWidth !== null
     && beforeHeight !== null
     && afterWidth !== null
     && afterHeight !== null
@@ -546,103 +612,32 @@ export function deterministicVisualModeFromMcpEvidence(input = {}) {
     && beforeHeight > 0
     && beforeWidth === afterWidth
     && beforeHeight === afterHeight;
-  const frameBoundary = mcpFrameGateSatisfiedByScreenshot(evidence.wait ?? evidence, after);
-  return normalizeGpuHmrDeterministicVisualMode({
-    ...base,
-    fixed_seed: firstBool(evidence.fixed_seed, evidence.fixedSeed, base.fixed_seed, base.fixedSeed),
-    seed_policy_fixed: firstBool(
-      evidence.seed_policy_fixed,
-      evidence.seedPolicyFixed,
-      base.seed_policy_fixed,
-      base.seedPolicyFixed,
-    ),
-    seed_policy_hash: textOrNull(
-      evidence.seed_policy_hash
-      ?? evidence.seedPolicyHash
-      ?? base.seed_policy_hash
-      ?? base.seedPolicyHash,
-    ),
-    frozen_camera: firstBool(
-      evidence.frozen_camera,
-      evidence.frozenCamera,
-      base.frozen_camera,
-      base.frozenCamera,
-    ),
-    temporal_accumulation_disabled: firstBool(
-      evidence.temporal_accumulation_disabled,
-      evidence.temporalAccumulationDisabled,
-      base.temporal_accumulation_disabled,
-      base.temporalAccumulationDisabled,
-    ),
-    temporal_accumulation_present: firstBool(
-      evidence.temporal_accumulation_present,
-      evidence.temporalAccumulationPresent,
-      base.temporal_accumulation_present,
-      base.temporalAccumulationPresent,
-    ),
-    temporal_accumulation_not_applicable: firstBool(
-      evidence.temporal_accumulation_not_applicable,
-      evidence.temporalAccumulationNotApplicable,
-      base.temporal_accumulation_not_applicable,
-      base.temporalAccumulationNotApplicable,
-    ),
-    taa_disabled: firstBool(evidence.taa_disabled, evidence.taaDisabled, base.taa_disabled, base.taaDisabled),
-    taa_present: firstBool(evidence.taa_present, evidence.taaPresent, base.taa_present, base.taaPresent),
-    taa_not_applicable: firstBool(
-      evidence.taa_not_applicable,
-      evidence.taaNotApplicable,
-      base.taa_not_applicable,
-      base.taaNotApplicable,
-    ),
-    denoiser_disabled: firstBool(
-      evidence.denoiser_disabled,
-      evidence.denoiserDisabled,
-      base.denoiser_disabled,
-      base.denoiserDisabled,
-    ),
-    denoiser_present: firstBool(
-      evidence.denoiser_present,
-      evidence.denoiserPresent,
-      base.denoiser_present,
-      base.denoiserPresent,
-    ),
-    denoiser_not_applicable: firstBool(
-      evidence.denoiser_not_applicable,
-      evidence.denoiserNotApplicable,
-      base.denoiser_not_applicable,
-      base.denoiserNotApplicable,
-    ),
-    fixed_resolution: sameResolution === true
-      ? true
-      : firstBool(evidence.fixed_resolution, evidence.fixedResolution, base.fixed_resolution, base.fixedResolution),
-    fixed_swapchain_image_count: firstBool(
-      evidence.fixed_swapchain_image_count,
-      evidence.fixedSwapchainImageCount,
-      base.fixed_swapchain_image_count,
-      base.fixedSwapchainImageCount,
-    ),
-    frame_capture_after_epoch_dispatch: frameBoundary === true
-      ? true
-      : firstBool(
-          evidence.frame_capture_after_epoch_dispatch,
-          evidence.frameCaptureAfterEpochDispatch,
-          base.frame_capture_after_epoch_dispatch,
-          base.frameCaptureAfterEpochDispatch,
-        ),
-    presentation_fence_or_frame_boundary: frameBoundary === true
-      ? true
-      : firstBool(
-          evidence.presentation_fence_or_frame_boundary,
-          evidence.presentationFenceOrFrameBoundary,
-          base.presentation_fence_or_frame_boundary,
-          base.presentationFenceOrFrameBoundary,
-        ),
-    warmup_frames:
-      finiteNumberOrNull(evidence.warmup_frames ?? evidence.warmupFrames)
-      ?? finiteNumberOrNull(base.warmup_frames ?? base.warmupFrames),
-    convergence_window: evidence.convergence_window ?? evidence.convergenceWindow
-      ?? base.convergence_window ?? base.convergenceWindow,
-  });
+  const frameBoundary = mcpFrameGateSatisfiedByScreenshot(evidence.wait ?? evidence, after)
+    || mcpFrameGateSatisfiedByCaptureChain(evidence.wait ?? evidence, gateCapture, after);
+  const beforeManifest = screenshotCaptureManifest(before);
+  const afterManifest = screenshotCaptureManifest(after);
+  const sameSession = beforeManifestVerified
+    && afterManifestVerified
+    && captureManifestSessionId(beforeManifest) === captureManifestSessionId(afterManifest);
+  const beforeCameraStateHash = captureManifestCameraStateHash(beforeManifest);
+  const afterCameraStateHash = captureManifestCameraStateHash(afterManifest);
+  const cameraStateHash = sameSession
+    && beforeCameraStateHash
+    && beforeCameraStateHash === afterCameraStateHash
+    ? beforeCameraStateHash
+    : null;
+  return {
+    ...normalizeGpuHmrDeterministicVisualMode({
+      camera_state_hash: cameraStateHash,
+      frozen_camera: cameraStateHash ? true : null,
+      fixed_resolution: sameResolution === true ? true : null,
+      frame_capture_after_epoch_dispatch: frameBoundary === true ? true : null,
+      presentation_fence_or_frame_boundary: frameBoundary === true ? true : null,
+    }),
+    evidence_authority: 'verified_mcp_capture_observations_only',
+    capture_chain_verified: frameBoundary === true,
+    camera_state_observed: Boolean(cameraStateHash),
+  };
 }
 
 export function normalizeGpuHmrDeterministicVisualMode(input = {}) {

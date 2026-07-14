@@ -18,6 +18,7 @@ import {
   DEFAULT_MCP_FRAME_GATE_TIMEOUT_MS,
   mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfied,
+  mcpFrameGateSatisfiedByCaptureChain,
   mcpFrameGateSatisfiedByScreenshot,
   mcpFrameGateForScreenshot,
   mcpScreenshotArgsForFrameGate,
@@ -296,14 +297,92 @@ const mcpAfterScreenshot = {
     source_frame_hash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     image_sha256: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     image_byte_length: 1024,
+    camera_state_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    camera_state_hash_verified: true,
+    camera_state_evidence_authority: 'target_process_runtime_camera_state_attestation',
+    camera_state_evidence_ref: 'runtime-camera-state:visual-smoke',
     gate_token: 'frame-gate:visual-smoke',
     gate_token_verified: true,
+  },
+};
+const mcpBeforeScreenshot = {
+  seq: 10,
+  ts: 1000,
+  width: 640,
+  height: 480,
+  image_sha256: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+  capture_manifest: {
+    schema_version: 'synthi.mcp.capture_manifest.v1',
+    session_id: 'runtime-session:visual-smoke',
+    capture_backend: 'mcp_screenshot',
+    capture_event_id: 'screenshot:visual-smoke:10',
+    frame_event_id: 5,
+    frame_seq: 10,
+    frame_ts_ms: 1000,
+    source_frame_hash: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    image_sha256: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    image_byte_length: 1024,
+    camera_state_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    camera_state_hash_verified: true,
+    camera_state_evidence_authority: 'target_process_runtime_camera_state_attestation',
+    camera_state_evidence_ref: 'runtime-camera-state:visual-smoke',
+  },
+};
+const mcpSelectedScreenshot = {
+  seq: 13,
+  ts: 1300,
+  width: 640,
+  height: 480,
+  image_sha256: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  capture_manifest: {
+    schema_version: 'synthi.mcp.capture_manifest.v1',
+    session_id: 'runtime-session:visual-smoke',
+    capture_backend: 'mcp_screenshot',
+    capture_event_id: 'screenshot:visual-smoke:13',
+    frame_event_id: 8,
+    frame_seq: 13,
+    frame_ts_ms: 1300,
+    source_frame_hash: 'sha256:9999999999999999999999999999999999999999999999999999999999999999',
+    image_sha256: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    image_byte_length: 1024,
+    camera_state_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    camera_state_hash_verified: true,
+    camera_state_evidence_authority: 'target_process_runtime_camera_state_attestation',
+    camera_state_evidence_ref: 'runtime-camera-state:visual-smoke',
+    gate_token_verified: false,
   },
 };
 assert.equal(mcpFrameGateSatisfiedByScreenshot({
   frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },
 }, mcpAfterScreenshot), true);
+assert.equal(mcpFrameGateSatisfiedByCaptureChain({
+  frame_gate: mcpGate,
+  gpu_proof_validation: { satisfied: true },
+}, mcpAfterScreenshot, mcpSelectedScreenshot), true);
+assert.equal(mcpFrameGateSatisfiedByCaptureChain({
+  frame_gate: mcpGate,
+  gpu_proof_validation: { satisfied: true },
+}, mcpAfterScreenshot, {
+  ...mcpSelectedScreenshot,
+  capture_manifest: {
+    ...mcpSelectedScreenshot.capture_manifest,
+    session_id: 'runtime-session:replayed',
+  },
+}), false);
+assert.equal(mcpFrameGateSatisfiedByCaptureChain({
+  frame_gate: mcpGate,
+  gpu_proof_validation: { satisfied: true },
+}, mcpAfterScreenshot, {
+  ...mcpSelectedScreenshot,
+  seq: 11,
+  ts: 1100,
+  capture_manifest: {
+    ...mcpSelectedScreenshot.capture_manifest,
+    frame_seq: 11,
+    frame_ts_ms: 1100,
+  },
+}), false);
 assert.equal(mcpFrameAtOrAfterFrameGate({
   frame_gate: mcpGate,
   gpu_proof_validation: { satisfied: true },
@@ -376,19 +455,36 @@ const mcpDerived = deterministicVisualModeFromMcpEvidence({
     denoiser_not_applicable: true,
     fixed_swapchain_image_count: true,
     warmup_frames: 1,
+    profile_only_marker: 'must-not-enter-authoritative-mode',
   },
-  before: { width: 640, height: 480, seq: 10, ts: 1000 },
-  after: mcpAfterScreenshot,
+  before: mcpBeforeScreenshot,
+  gateCapture: mcpAfterScreenshot,
+  after: mcpSelectedScreenshot,
   wait: {
     frame_gate: mcpGate,
     gpu_proof_validation: { satisfied: true },
   },
 });
 const mcpDerivedEvaluation = evaluateGpuHmrDeterministicVisualMode(mcpDerived);
-assert.equal(mcpDerivedEvaluation.accepted, true);
+assert.equal(mcpDerivedEvaluation.accepted, false);
 assert.equal(mcpDerived.fixed_resolution, true);
 assert.equal(mcpDerived.frame_capture_after_epoch_dispatch, true);
 assert.equal(mcpDerived.presentation_fence_or_frame_boundary, true);
+assert.equal(mcpDerived.frozen_camera, true);
+assert.equal(
+  mcpDerived.camera_state_hash,
+  'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+);
+assert.equal(mcpDerived.seed_policy_fixed, null);
+assert.equal(mcpDerived.temporal_accumulation_not_applicable, null);
+assert.equal(mcpDerived.taa_not_applicable, null);
+assert.equal(mcpDerived.denoiser_not_applicable, null);
+assert.equal(mcpDerived.fixed_swapchain_image_count, null);
+assert.equal(mcpDerived.profile_only_marker, undefined);
+assert.ok(
+  mcpDerivedEvaluation.failedGates.some((gate) => gate.code === 'seed_policy_unproven'),
+  `expected seed_policy_unproven, got ${mcpDerivedEvaluation.failedGates.map((g) => g.code).join(',')}`,
+);
 
 const mcpMissingGate = evaluateGpuHmrDeterministicVisualMode(
   deterministicVisualModeFromMcpEvidence({
@@ -400,7 +496,7 @@ const mcpMissingGate = evaluateGpuHmrDeterministicVisualMode(
       denoiser_not_applicable: true,
       fixed_swapchain_image_count: true,
     },
-    before: { width: 640, height: 480, seq: 10, ts: 1000 },
+    before: mcpBeforeScreenshot,
     after: { width: 640, height: 480, seq: 11, ts: 1100 },
     wait: { frame_gate: { status: 'timeout' } },
   }),
@@ -421,7 +517,7 @@ const mcpStaleScreenshot = evaluateGpuHmrDeterministicVisualMode(
       denoiser_not_applicable: true,
       fixed_swapchain_image_count: true,
     },
-    before: { width: 640, height: 480, seq: 10, ts: 1000 },
+    before: mcpBeforeScreenshot,
     after: { ...mcpAfterScreenshot, seq: 11, ts: 1199 },
     wait: {
       frame_gate: mcpGate,
@@ -447,7 +543,7 @@ const mcpFailedGpuProofValidation = evaluateGpuHmrDeterministicVisualMode(
       denoiser_not_applicable: true,
       fixed_swapchain_image_count: true,
     },
-    before: { width: 640, height: 480, seq: 10, ts: 1000 },
+    before: mcpBeforeScreenshot,
     after: mcpAfterScreenshot,
     wait: {
       frame_gate: mcpGate,

@@ -6877,7 +6877,7 @@ function selfCheckRunModeVisualLedgerClockDomain() {
   };
   const visualDelta = {
     baselineSeq: 1,
-    selectedSeq: 2,
+    selectedSeq: 3,
     selectedTs: selectedFrameTimestampMs,
     changedRatio: 0.25,
     meanAbs: 12.5,
@@ -6908,21 +6908,68 @@ function selfCheckRunModeVisualLedgerClockDomain() {
       width: 2,
       height: 2,
       visiblePixels: 4,
+      meta: {
+        image_sha256: `sha256:${'4'.repeat(64)}`,
+        capture_manifest: {
+          schema_version: 'synthi.mcp.capture_manifest.v1',
+          session_id: 'runtime-session:self-check-clock',
+          capture_event_id: 'screenshot:self-check-clock:1',
+          frame_event_id: 1,
+          frame_seq: 1,
+          frame_ts_ms: selectedFrameTimestampMs - 10_000,
+          source_frame_hash: `sha256:${'5'.repeat(64)}`,
+          image_sha256: `sha256:${'4'.repeat(64)}`,
+          image_byte_length: 128,
+        },
+      },
     },
   };
   const afterShot = {
     first: {
       seq: 2,
+      ts: selectedFrameTimestampMs - 100,
+      width: 2,
+      height: 2,
+      visiblePixels: 4,
+      meta: {
+        image_sha256: `sha256:${'6'.repeat(64)}`,
+        capture_manifest: {
+          schema_version: 'synthi.mcp.capture_manifest.v1',
+          session_id: 'runtime-session:self-check-clock',
+          capture_event_id: 'screenshot:self-check-clock:2',
+          frame_event_id: 2,
+          frame_seq: 2,
+          frame_ts_ms: selectedFrameTimestampMs - 100,
+          source_frame_hash: `sha256:${'7'.repeat(64)}`,
+          image_sha256: `sha256:${'6'.repeat(64)}`,
+          image_byte_length: 128,
+          gate_token: 'frame-gate:self-check-clock',
+          gate_token_verified: true,
+          frame_gate: {
+            required_ts_ms: selectedFrameTimestampMs - 3_926,
+          },
+        },
+      },
+    },
+    second: {
+      seq: 3,
       ts: selectedFrameTimestampMs,
       width: 2,
       height: 2,
       visiblePixels: 4,
       meta: {
+        image_sha256: `sha256:${'8'.repeat(64)}`,
         capture_manifest: {
+          schema_version: 'synthi.mcp.capture_manifest.v1',
+          session_id: 'runtime-session:self-check-clock',
+          capture_event_id: 'screenshot:self-check-clock:3',
+          frame_event_id: 3,
+          frame_seq: 3,
           frame_ts_ms: selectedFrameTimestampMs,
-          frame_gate: {
-            required_ts_ms: selectedFrameTimestampMs - 3_926,
-          },
+          source_frame_hash: `sha256:${'9'.repeat(64)}`,
+          image_sha256: `sha256:${'8'.repeat(64)}`,
+          image_byte_length: 128,
+          gate_token_verified: false,
         },
       },
     },
@@ -6932,9 +6979,15 @@ function selfCheckRunModeVisualLedgerClockDomain() {
   try {
     ACTIVE_AGENT_PROFILE = {
       deterministicVisualMode: {
-        frame_capture_after_epoch_dispatch: false,
-        presentation_fence_or_frame_boundary: false,
-        profile_only_marker: 'self-check-profile-default-preserved',
+        fixed_seed: true,
+        frozen_camera: true,
+        temporal_accumulation_not_applicable: true,
+        taa_not_applicable: true,
+        denoiser_not_applicable: true,
+        fixed_swapchain_image_count: true,
+        frame_capture_after_epoch_dispatch: true,
+        presentation_fence_or_frame_boundary: true,
+        profile_only_marker: 'self-check-profile-declaration-retained-only',
       },
     };
     proof = withRunModeVisualLedgerProof({
@@ -6960,8 +7013,12 @@ function selfCheckRunModeVisualLedgerClockDomain() {
       wait: {
         frame_gate: {
           status: 'satisfied',
+          frame_seq: 2,
           ts_ms: selectedFrameTimestampMs - 3_926,
+          session_id: 'runtime-session:self-check-clock',
+          gate_token: 'frame-gate:self-check-clock',
         },
+        gpu_proof_validation: { satisfied: true },
       },
     });
   } finally {
@@ -6974,16 +7031,43 @@ function selfCheckRunModeVisualLedgerClockDomain() {
     ?? record?.output_event?.visual_oracle_artifacts
     ?? null;
   const deterministicMode = record?.deterministicVisualMode ?? record?.deterministic_visual_mode ?? null;
+  const declaredModeFacet =
+    record?.declaredDeterministicVisualMode
+    ?? record?.declared_deterministic_visual_mode
+    ?? null;
+  const failedInvariantCodes = recomputed.failedInvariants?.map((failure) => failure?.code ?? failure) ?? [];
+  let acceptedFirewallRejected = false;
+  try {
+    ledgerFirewallFieldsFromProof(proof);
+  } catch {
+    acceptedFirewallRejected = true;
+  }
   if (
-    recomputed.gpuHmrSuccess !== true
+    recomputed.gpuHmrSuccess !== false
     || !Array.isArray(recomputed.failedInvariants)
-    || recomputed.failedInvariants.length !== 0
+    || !failedInvariantCodes.includes('visual_camera_state_hash_invalid')
+    || !failedInvariantCodes.includes('frozen_camera_unproven')
+    || !failedInvariantCodes.includes('seed_policy_unproven')
     || artifacts?.timestamp_after_dispatch !== outputTimestampNs
     || artifacts?.timestamp_after_dispatch_clock !== 'ledger_output_event_monotonic_ns'
     || artifacts?.selected_frame_timestamp_ms !== selectedFrameTimestampMs
+    || artifacts?.camera_state_hash !== null
+    || deterministicMode?.fixed_resolution !== true
     || deterministicMode?.frame_capture_after_epoch_dispatch !== true
     || deterministicMode?.presentation_fence_or_frame_boundary !== true
-    || deterministicMode?.profile_only_marker !== 'self-check-profile-default-preserved'
+    || deterministicMode?.frozen_camera !== null
+    || deterministicMode?.seed_policy_fixed !== null
+    || deterministicMode?.temporal_accumulation_not_applicable !== null
+    || deterministicMode?.taa_not_applicable !== null
+    || deterministicMode?.denoiser_not_applicable !== null
+    || deterministicMode?.fixed_swapchain_image_count !== null
+    || deterministicMode?.profile_only_marker !== undefined
+    || declaredModeFacet?.proofAuthority !== 'profile_declaration_only_not_runtime_visual_proof'
+    || declaredModeFacet?.acceptedForGpuHmr !== false
+    || declaredModeFacet?.gpuHmrSuccess !== false
+    || declaredModeFacet?.declaredMode?.profile_only_marker
+      !== 'self-check-profile-declaration-retained-only'
+    || acceptedFirewallRejected !== true
   ) {
     throw new Error(`run-mode visual ledger clock-domain self-check failed: ${JSON.stringify({
       gpuHmrSuccess: recomputed.gpuHmrSuccess,
@@ -6991,10 +7075,12 @@ function selfCheckRunModeVisualLedgerClockDomain() {
       timestampAfterDispatch: artifacts?.timestamp_after_dispatch,
       timestampAfterDispatchClock: artifacts?.timestamp_after_dispatch_clock,
       selectedFrameTimestampMs: artifacts?.selected_frame_timestamp_ms,
+      cameraStateHash: artifacts?.camera_state_hash,
       deterministicMode,
+      declaredModeFacet,
+      acceptedFirewallRejected,
     })}`);
   }
-  ledgerFirewallFieldsFromProof(proof);
   console.log('run-mode visual ledger clock-domain self-check passed');
 }
 
@@ -7767,6 +7853,7 @@ function visualLedgerArtifactsFromDelta({
   beforeShot,
   afterShot,
   ledgerRecord,
+  cameraStateHash = null,
 }) {
   const selected = selectedVisualShot(afterShot, visualDelta?.selectedSeq);
   const baseline = selectedVisualShot(beforeShot, visualDelta?.baselineSeq);
@@ -7826,12 +7913,6 @@ function visualLedgerArtifactsFromDelta({
     outputEvent.outputTimestamp,
   );
   const captureBackend = 'mcp_decoded_frame';
-  const cameraStateHash = `sha256:${sha256Hex(stableJson({
-    captureBackend,
-    validationRunnerCameraMutation: false,
-    width,
-    height,
-  }))}`;
   return {
     before_image: visualDelta.visual_artifacts.before_image,
     beforeImage: visualDelta.visualArtifacts.beforeImage,
@@ -8369,6 +8450,46 @@ function runtimeTraceFromLedgerRecord(record) {
   };
 }
 
+function declaredDeterministicVisualModeEvidence(profile = ACTIVE_AGENT_PROFILE) {
+  const mode = profile?.deterministicVisualMode ?? profile?.deterministic_visual_mode;
+  if (!isRecord(mode) || Object.keys(mode).length === 0) return null;
+  const declaredMode = cloneJson(mode);
+  const declaredModeHash = `sha256:${sha256Hex(stableJson(declaredMode))}`;
+  const evidenceRefs = [...new Set([
+    profile?.profileId ?? profile?.profile_id,
+    profile?.profileHash ?? profile?.profile_hash,
+    profile?.deterministicVisualModeHash ?? profile?.deterministic_visual_mode_hash,
+  ].map((value) => String(value ?? '').trim()).filter(Boolean))];
+  const facetCore = {
+    schemaVersion: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    schema_version: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    proofAuthority: 'profile_declaration_only_not_runtime_visual_proof',
+    proof_authority: 'profile_declaration_only_not_runtime_visual_proof',
+    profileId: profile?.profileId ?? profile?.profile_id ?? null,
+    profile_id: profile?.profile_id ?? profile?.profileId ?? null,
+    declaredMode,
+    declared_mode: declaredMode,
+    declaredModeHash,
+    declared_mode_hash: declaredModeHash,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyVisualProof: false,
+    can_satisfy_visual_proof: false,
+  };
+  const facetHash = `sha256:${sha256Hex(stableJson(facetCore))}`;
+  return {
+    ...facetCore,
+    facetHash,
+    facet_hash: facetHash,
+  };
+}
+
 function withRunModeVisualLedgerProof({
   proof,
   visualDelta,
@@ -8402,6 +8523,7 @@ function withRunModeVisualLedgerProof({
     ACTIVE_AGENT_PROFILE?.visualSceneManifest
     ?? ACTIVE_AGENT_PROFILE?.visual_scene_manifest
     ?? null;
+  const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence();
   const enrichedRecords = records.map((record) => {
     if (!isRecord(record)) return record;
     const outputEvent = isRecord(record.output_event)
@@ -8409,43 +8531,34 @@ function withRunModeVisualLedgerProof({
       : isRecord(record.outputEvent)
         ? record.outputEvent
         : {};
+    const baselineShot = baselineVisualShotForMode(beforeShot, visualDelta);
+    const selectedShot = selectedVisualShot(afterShot, visualDelta.selectedSeq);
+    const deterministicVisualMode = deterministicVisualModeFromMcpEvidence({
+      before: baselineShot,
+      gateCapture: afterShot?.first ?? selectedShot,
+      after: selectedShot,
+      wait,
+    });
+    const authoritativeDeterministicVisualMode = {
+      ...deterministicVisualMode,
+      source: 'verified_mcp_capture_observations_only',
+    };
     const visualArtifacts = visualLedgerArtifactsFromDelta({
       visualDelta,
       beforeShot,
       afterShot,
       ledgerRecord: record,
+      cameraStateHash: authoritativeDeterministicVisualMode.camera_state_hash,
     });
-    const deterministicVisualMode = deterministicVisualModeFromMcpEvidence({
-      before: baselineVisualShotForMode(beforeShot, visualDelta),
-      after: selectedVisualShot(afterShot, visualDelta.selectedSeq),
-      wait,
-      seed_policy_fixed: true,
-      frozen_camera: true,
-      temporal_accumulation_not_applicable: true,
-      taa_not_applicable: true,
-      denoiser_not_applicable: true,
-      frame_capture_after_epoch_dispatch:
-        visualDelta.selected_frame_capture_after_epoch_dispatch === true,
-      presentation_fence_or_frame_boundary:
-        visualDelta.selected_frame_capture_after_epoch_dispatch === true,
-      fixed_swapchain_image_count: true,
-    });
-    const profileDeterministicVisualMode =
-      ACTIVE_AGENT_PROFILE?.deterministicVisualMode
-      ?? ACTIVE_AGENT_PROFILE?.deterministic_visual_mode
-      ?? {};
-    const mergedDeterministicVisualMode = {
-      ...(isRecord(profileDeterministicVisualMode) ? profileDeterministicVisualMode : {}),
-      ...deterministicVisualMode,
-      source: ACTIVE_AGENT_PROFILE
-        ? 'agent_visual_profile_plus_mcp_frame_evidence'
-        : 'mcp_frame_evidence',
-    };
+    const declaredFacetEvidenceRefs = declaredDeterministicVisualMode?.evidenceRefs ?? [];
+    const declaredFacetHash = declaredDeterministicVisualMode?.facetHash ?? null;
     const mergedEvidenceRefs = [...new Set([
       ...(Array.isArray(record.evidence_refs) ? record.evidence_refs : []),
       ...(Array.isArray(record.evidenceRefs) ? record.evidenceRefs : []),
       visualSceneManifestHash,
       visualSceneManifestEvidenceRef,
+      declaredFacetHash,
+      ...declaredFacetEvidenceRefs,
     ].map((value) => String(value ?? '').trim()).filter(Boolean))];
     return withoutSuppliedLedgerIdentity({
       ...record,
@@ -8457,6 +8570,8 @@ function withRunModeVisualLedgerProof({
       visualSceneManifestHash: visualSceneManifestHash,
       visual_scene_manifest_evidence_ref: visualSceneManifestEvidenceRef,
       visualSceneManifestEvidenceRef: visualSceneManifestEvidenceRef,
+      declared_deterministic_visual_mode: declaredDeterministicVisualMode,
+      declaredDeterministicVisualMode,
       oracle_artifacts: {
         ...(isRecord(record.oracle_artifacts) ? record.oracle_artifacts : {}),
         visual_oracle_artifacts: visualArtifacts,
@@ -8479,8 +8594,8 @@ function withRunModeVisualLedgerProof({
         visual_oracle_artifacts: visualArtifacts,
         visualOracleArtifacts: visualArtifacts,
       },
-      deterministic_visual_mode: mergedDeterministicVisualMode,
-      deterministicVisualMode: mergedDeterministicVisualMode,
+      deterministic_visual_mode: authoritativeDeterministicVisualMode,
+      deterministicVisualMode: authoritativeDeterministicVisualMode,
     });
   });
   const queryableLedger = {
@@ -8548,6 +8663,8 @@ function withRunModeVisualLedgerProof({
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     runtimeTrace,
     runtime_trace: runtimeTrace,
     visualOracleArtifacts,
@@ -8583,6 +8700,8 @@ function withRunModeVisualLedgerProof({
     visual_oracle_artifacts: visualOracleArtifacts,
     visualEvidenceArtifacts,
     visual_evidence_artifacts: visualEvidenceArtifacts,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
   };
 }
 
