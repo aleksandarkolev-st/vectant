@@ -125,6 +125,9 @@ pub struct FullAccessConsentReceipt {
     pub scanner_version: String,
     pub app_version: String,
     pub policy_major: u16,
+    // Legacy receipts deserialize for audit/export continuity, but version 0
+    // cannot satisfy the current policy's mandatory re-consent version.
+    #[serde(default)]
     pub reconsent_version: u32,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -508,6 +511,19 @@ mod tests {
         reconsent_changed.reconsent_version = 2;
         assert_eq!(
             authorize(&policy, &receipt, &reconsent_changed, now),
+            Err(FullAccessDenied::ReceiptBindingMismatch)
+        );
+    }
+
+    #[test]
+    fn legacy_receipts_deserialize_for_audit_but_fail_current_reconsent_binding() {
+        let now = Utc::now();
+        let mut value = serde_json::to_value(receipt(now)).unwrap();
+        value.as_object_mut().unwrap().remove("reconsent_version");
+        let legacy: FullAccessConsentReceipt = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.reconsent_version, 0);
+        assert_eq!(
+            authorize(&policy(), &legacy, &binding(), now),
             Err(FullAccessDenied::ReceiptBindingMismatch)
         );
     }
