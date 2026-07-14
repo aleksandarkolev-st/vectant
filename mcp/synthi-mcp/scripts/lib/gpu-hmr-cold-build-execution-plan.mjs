@@ -42,6 +42,10 @@ export const COLD_BUILD_EXECUTION_PLAN_SCHEMA =
   'synthi.gpu_hmr.cold_build_execution_plan.v1';
 export const COLD_BUILD_EXECUTION_PLAN_AUTHORITY =
   'cold_build_execution_plan_only_not_gpu_hmr_success';
+export const COLD_BUILD_EXECUTION_PLAN_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_execution_plan_receipt.v1';
+export const COLD_BUILD_EXECUTION_PLAN_RECEIPT_AUTHORITY =
+  'serialized_execution_plan_projection_only_not_gpu_hmr_success';
 export const COLD_BUILD_CONTAINER_INSPECTION_SCHEMA =
   'synthi.gpu_hmr.cold_build_container_inspection.v1';
 export const COLD_BUILD_CONTAINER_INSPECTION_AUTHORITY =
@@ -63,6 +67,44 @@ const PINNED_EXECUTION_PLANS = new WeakMap();
 const PINNED_INPUT_EVIDENCE = new WeakMap();
 const PINNED_SPEC_PUBLICATIONS = new WeakMap();
 const INPUT_OBSERVATION_SEQUENCE = new WeakMap();
+const EXECUTION_PLAN_PROJECTION_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'executionNonce',
+  'commandSpecHash',
+  'sourceBindingHash',
+  'sourceTreeBindingEvidenceHash',
+  'inputSetBindings',
+  'inputSetHash',
+  'readOnlyInputTreesHash',
+  'releaseBindingHash',
+  'releaseTreeBindingEvidenceHash',
+  'specHash',
+  'specByteLength',
+  'launcherExecutableHash',
+  'launcherBuildEvidenceHash',
+  'workerImageId',
+  'workerImageOperatingSystem',
+  'workerImageArchitecture',
+  'containerNameHash',
+  'sourcePathIdentityHash',
+  'releasePathIdentityHash',
+  'specPathIdentityHash',
+  'launcherPathIdentityHash',
+  'commandHash',
+  'environmentHash',
+  'resourcePolicy',
+  'expectedContainerConfiguration',
+  'containerCreateArgsHash',
+  'collectorCommandHash',
+  'readyReceiptRequired',
+  'canAuthorizeLauncherExecution',
+  'planValid',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+];
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -82,6 +124,13 @@ function recomputeEvidenceHash(evidence) {
   const projection = { ...evidence };
   delete projection.evidenceHash;
   return contentHash(stableJson(projection));
+}
+
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
 }
 
 function requireSafeInteger(value, name, minimum = 1) {
@@ -315,6 +364,106 @@ function executionPlanProjection(plan) {
     canSatisfyRuntimeProof: plan.canSatisfyRuntimeProof,
     canSatisfyDispatchProof: plan.canSatisfyDispatchProof,
   };
+}
+
+export function createColdBuildExecutionPlanReceipt(plan) {
+  const pinned = PINNED_EXECUTION_PLANS.get(plan);
+  const planProjection = executionPlanProjection(plan);
+  const planHash = contentHash(stableJson(planProjection));
+  if (
+    !pinned
+    || pinned.launcherIdentity !== plan?.launcherIdentity
+    || pinned.projectionHash !== planHash
+    || plan?.planHash !== planHash
+    || !executionPlanMaterialAccepted(plan)
+  ) {
+    throw new Error('cold_build_execution_plan_receipt_source_invalid');
+  }
+  const receipt = {
+    schemaVersion: COLD_BUILD_EXECUTION_PLAN_RECEIPT_SCHEMA,
+    proofAuthority: COLD_BUILD_EXECUTION_PLAN_RECEIPT_AUTHORITY,
+    planProjection: structuredClone(planProjection),
+    planHash,
+    acceptedAsColdBuildExecutionPlanReceipt: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  return receipt;
+}
+
+export function verifyColdBuildExecutionPlanReceipt(receipt) {
+  const projection = receipt?.planProjection;
+  const hashFields = [
+    'commandSpecHash',
+    'sourceBindingHash',
+    'sourceTreeBindingEvidenceHash',
+    'inputSetHash',
+    'readOnlyInputTreesHash',
+    'releaseBindingHash',
+    'releaseTreeBindingEvidenceHash',
+    'specHash',
+    'launcherExecutableHash',
+    'workerImageId',
+    'containerNameHash',
+    'sourcePathIdentityHash',
+    'releasePathIdentityHash',
+    'specPathIdentityHash',
+    'launcherPathIdentityHash',
+    'commandHash',
+    'environmentHash',
+    'containerCreateArgsHash',
+    'collectorCommandHash',
+  ];
+  if (
+    !exactKeys(receipt, [
+      'schemaVersion',
+      'proofAuthority',
+      'planProjection',
+      'planHash',
+      'acceptedAsColdBuildExecutionPlanReceipt',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || receipt.schemaVersion !== COLD_BUILD_EXECUTION_PLAN_RECEIPT_SCHEMA
+    || receipt.proofAuthority !== COLD_BUILD_EXECUTION_PLAN_RECEIPT_AUTHORITY
+    || !exactKeys(projection, EXECUTION_PLAN_PROJECTION_KEYS)
+    || projection.schemaVersion !== COLD_BUILD_EXECUTION_PLAN_SCHEMA
+    || projection.proofAuthority !== COLD_BUILD_EXECUTION_PLAN_AUTHORITY
+    || !EXECUTION_NONCE_PATTERN.test(projection.executionNonce ?? '')
+    || hashFields.some((name) => !SHA256_PATTERN.test(projection[name] ?? ''))
+    || (projection.launcherBuildEvidenceHash !== null
+      && !SHA256_PATTERN.test(projection.launcherBuildEvidenceHash ?? ''))
+    || !Array.isArray(projection.inputSetBindings)
+    || projection.inputSetHash !== contentHash(stableJson(projection.inputSetBindings))
+    || !Number.isSafeInteger(projection.specByteLength)
+    || projection.specByteLength < 2
+    || projection.workerImageOperatingSystem !== 'linux'
+    || !['amd64', 'arm64'].includes(projection.workerImageArchitecture)
+    || projection.expectedContainerConfiguration?.imageId !== projection.workerImageId
+    || projection.readyReceiptRequired !== true
+    || projection.canAuthorizeLauncherExecution !== false
+    || projection.planValid !== true
+    || projection.acceptedForGpuHmr !== false
+    || projection.gpuHmrSuccess !== false
+    || projection.canSatisfyRuntimeProof !== false
+    || projection.canSatisfyDispatchProof !== false
+    || receipt.planHash !== contentHash(stableJson(projection))
+    || receipt.acceptedAsColdBuildExecutionPlanReceipt !== true
+    || receipt.acceptedForGpuHmr !== false
+    || receipt.gpuHmrSuccess !== false
+    || receipt.canSatisfyRuntimeProof !== false
+    || receipt.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(receipt) !== receipt.evidenceHash
+  ) {
+    throw new Error('cold_build_execution_plan_receipt_invalid');
+  }
+  return receipt;
 }
 
 function executionPlanMaterialAccepted(plan) {

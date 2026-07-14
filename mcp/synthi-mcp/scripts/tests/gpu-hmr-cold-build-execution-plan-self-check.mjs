@@ -20,10 +20,14 @@ import {
   COLD_BUILD_CONTAINER_INSPECTION_AUTHORITY,
   COLD_BUILD_CONTAINER_INSPECTION_SCHEMA,
   COLD_BUILD_EXECUTION_PLAN_AUTHORITY,
+  COLD_BUILD_EXECUTION_PLAN_RECEIPT_AUTHORITY,
+  COLD_BUILD_EXECUTION_PLAN_RECEIPT_SCHEMA,
   COLD_BUILD_EXECUTION_PLAN_SCHEMA,
   coldBuildLauncherCollectorExecArgs,
+  createColdBuildExecutionPlanReceipt,
   createColdBuildLauncherExecutionPlan,
   publishColdBuildLauncherSpec,
+  verifyColdBuildExecutionPlanReceipt,
   verifyColdBuildLauncherContainerInspection,
   verifyColdBuildLauncherExecutionInputs,
 } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
@@ -335,6 +339,37 @@ async function main() {
       plan.expectedContainerConfiguration.tmpfs['/synthi-control'].includes('noexec'),
     );
     assert.ok(!JSON.stringify(plan).match(/hiprt|rocm|flow|miopen|blas|neural|diamond/i));
+
+    const planReceipt = createColdBuildExecutionPlanReceipt(plan);
+    const retainedPlanReceipt = JSON.parse(JSON.stringify(planReceipt));
+    assert.equal(planReceipt.schemaVersion, COLD_BUILD_EXECUTION_PLAN_RECEIPT_SCHEMA);
+    assert.equal(planReceipt.proofAuthority, COLD_BUILD_EXECUTION_PLAN_RECEIPT_AUTHORITY);
+    assert.equal(planReceipt.planHash, plan.planHash);
+    assert.equal(planReceipt.planProjection.inputSetHash, plan.inputSetHash);
+    assert.equal(planReceipt.acceptedAsColdBuildExecutionPlanReceipt, true);
+    assert.equal(planReceipt.acceptedForGpuHmr, false);
+    assert.equal(planReceipt.gpuHmrSuccess, false);
+    assert.equal(planReceipt.canSatisfyRuntimeProof, false);
+    assert.equal(planReceipt.canSatisfyDispatchProof, false);
+    assert.equal(
+      verifyColdBuildExecutionPlanReceipt(retainedPlanReceipt),
+      retainedPlanReceipt,
+    );
+    const forgedPlanReceipt = structuredClone(retainedPlanReceipt);
+    forgedPlanReceipt.planProjection.inputSetHash = `sha256:${'0'.repeat(64)}`;
+    assert.throws(
+      () => verifyColdBuildExecutionPlanReceipt(forgedPlanReceipt),
+      /execution_plan_receipt_invalid/,
+    );
+    const authorityClaimingPlanReceipt = structuredClone(retainedPlanReceipt);
+    authorityClaimingPlanReceipt.planProjection.gpuHmrSuccess = true;
+    assert.throws(
+      () => verifyColdBuildExecutionPlanReceipt(authorityClaimingPlanReceipt),
+      /execution_plan_receipt_invalid/,
+    );
+    assert.ok(!JSON.stringify(planReceipt).match(
+      /hiprt|rocm|flow|miopen|blas|neural|diamond|project_name|fixture_name/i,
+    ));
 
     const deterministicPlan = createColdBuildLauncherExecutionPlan(common);
     assert.equal(deterministicPlan.planHash, plan.planHash);
