@@ -56,7 +56,11 @@ export async function POST(req) {
     if (bodyResult.value.action === "update_policy") {
       decision = await updateDurableLocalSupportPolicy(bodyResult.value, "admin_api");
     } else {
-      const policy = await readDurableLocalSupportPolicy();
+      const policy = await readDurableLocalSupportPolicy(
+        process.env,
+        undefined,
+        typeof bodyResult.value.org_id === "string" ? bodyResult.value.org_id : null,
+      );
       decision = await recordDurableAdminRevocation(bodyResult.value, policy);
     }
   } catch {

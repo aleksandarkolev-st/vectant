@@ -308,6 +308,21 @@ describe("local support admin state route", () => {
     });
   });
 
+  it("uses the requested organization policy for revocation decisions", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
+
+    const response = await POST(
+      adminPost(
+        { target_type: "session", target_id: "sess_123", org_id: "org_123" },
+        { "x-vectant-admin-token": "admin-secret" },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(adminStore.readPolicy).toHaveBeenCalledWith(expect.anything(), undefined, "org_123");
+  });
+
   it("applies validated persistent kill switches through the admin API", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ADMIN_TOKEN = "admin-secret";
     adminStore.updatePolicy.mockResolvedValueOnce({
