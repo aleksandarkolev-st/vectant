@@ -5,6 +5,7 @@ import {
   gpuHmrProofStateRank,
   validateGpuHmrProofState,
 } from "../../src/gpu_proof.js";
+import { buildGpuHmrFrameGateEvidenceBinding } from "../../src/gpu_frame_gate_binding.js";
 import { queryGpuHmrLedgerInvariants } from "../../src/gpu_proof_ledger.js";
 
 const HASH_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -370,6 +371,99 @@ function outputOracleRuntimeProofArtifact(
     }],
     ...overrides,
   });
+}
+
+interface FrameGateLedgerOptions {
+  projectId?: string;
+  editId?: string;
+  runtimeSessionId?: string;
+  loaderEvent?: Record<string, unknown>;
+  epochPublishEvent?: Record<string, unknown>;
+  dispatchEvent?: Record<string, unknown>;
+  outputEvent?: Record<string, unknown>;
+  processIdentity?: Record<string, unknown>;
+  deviceIdentity?: Record<string, unknown>;
+  outputOracleTarget?: unknown;
+}
+
+function frameGateProofLedger(options: FrameGateLedgerOptions = {}) {
+  const runtimeSessionId = options.runtimeSessionId ?? "runtime-session-1";
+  return proofLedger({
+    project_id: options.projectId ?? "project-from-runtime-evidence",
+    edit_id: options.editId ?? "edit-from-runtime-evidence",
+    runtime_session_id: runtimeSessionId,
+    loader_event: {
+      id: "load-1",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: runtimeSessionId,
+      timestamp_monotonic_ns: 100,
+      ...options.loaderEvent,
+    },
+    epoch_publish_event: {
+      id: "publish-1",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: runtimeSessionId,
+      timestamp_monotonic_ns: 200,
+      ...options.epochPublishEvent,
+    },
+    dispatch_event: {
+      id: "dispatch-1",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: runtimeSessionId,
+      timestamp_monotonic_ns: 300,
+      ...options.dispatchEvent,
+    },
+    output_event: {
+      id: "output-1",
+      kind: "buffer_checksum",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: runtimeSessionId,
+      after_dispatch_id: "dispatch-1",
+      passed: true,
+      timestamp_monotonic_ns: 400,
+      ...options.outputEvent,
+    },
+    process_identity: {
+      process_id: "pid-1",
+      runtime_session_id: runtimeSessionId,
+      ...options.processIdentity,
+    },
+    device_identity: {
+      device_uuid: "device-1",
+      ...options.deviceIdentity,
+    },
+    output_oracle_target: options.outputOracleTarget === undefined
+      ? {
+          id: "output-target-1",
+          kind: "compute",
+          compute_only_target_verified: true,
+          evidence_refs: ["runtime:output-target"],
+        }
+      : options.outputOracleTarget,
+  });
+}
+
+function frameGateProof(
+  ledger = frameGateProofLedger(),
+  observedAt = 1_000,
+  runtimeArtifactOverrides: Record<string, unknown> = {}
+) {
+  const proof = classifyGpuHmrProofMessage({
+    status: "gpu-proof-state",
+    resultState: "gpu-hmr-full-runtime-proven",
+    proofId: "gpu-runtime-proof:fixture",
+    proofLedger: ledger,
+    runtimeProofArtifact: runtimeProofArtifact(ledger, runtimeArtifactOverrides),
+  }, observedAt);
+  if (proof === null) throw new Error("frame_gate_test_proof_missing");
+  return proof;
 }
 
 describe("GPU HMR proof-state validation", () => {
@@ -1705,5 +1799,224 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.proofLedgerValidation?.failedInvariants.map((failure) => failure.code)).toContain(
       "telemetry_proof_id_ledger_mismatch"
     );
+  });
+});
+
+describe("GPU HMR frame-gate runtime evidence binding", () => {
+  it("derives an immutable project-neutral binding from recomputed full-runtime proof", () => {
+    const proof = frameGateProof(frameGateProofLedger({
+      projectId: "arbitrary-project-4f62",
+      editId: "arbitrary-edit-91ab",
+    }));
+
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof,
+      hmrObservedAtMs: 900,
+      proofMatchScope: {
+        module: "user-selected-module",
+        preview_id: "preview-session",
+        proof_since_ts_ms: 850,
+      },
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.failures).toEqual([]);
+    expect(result.binding).toMatchObject({
+      schema_version: "synthi.gpu_hmr.frame_gate_runtime_binding.v1",
+      proof_authority: "validated_runtime_tuple_for_visual_capture_gate_only_not_gpu_hmr_success",
+      runtime_proof_id: "gpu-runtime-proof:fixture",
+      runtime_proof_state: "gpu-hmr-full-runtime-proven",
+      runtime_proof_accepted: true,
+      artifact_after_hash: HASH_B,
+      published_epoch: "epoch-2",
+      dispatch_id: "dispatch-1",
+      output_after_dispatch_id: "dispatch-1",
+      output_target_id: "output-target-1",
+      process_id: "pid-1",
+      runtime_session_id: "runtime-session-1",
+      device_id: "device-1",
+      metric_clock: "monotonic_ns",
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+      can_satisfy_runtime_proof: false,
+      can_satisfy_dispatch_proof: false,
+    });
+    expect(result.binding).not.toHaveProperty("project_id");
+    expect(result.binding).not.toHaveProperty("backend");
+    expect(result.binding).not.toHaveProperty("kernel_name");
+    expect(result.binding).not.toHaveProperty("fixture");
+    expect(Object.isFrozen(result.binding)).toBe(true);
+    expect(Object.isFrozen(result.binding?.["dispatch_timestamp"])).toBe(true);
+    expect(Object.isFrozen(result.binding?.["proof_match_scope"])).toBe(true);
+  });
+
+  it("does not branch on arbitrary project or edit identities", () => {
+    const identities = [
+      ["source-tree-5c20", "delta-f1"],
+      ["workspace-d8a7", "delta-b9"],
+    ] as const;
+
+    for (const [projectId, editId] of identities) {
+      const result = buildGpuHmrFrameGateEvidenceBinding({
+        proof: frameGateProof(frameGateProofLedger({ projectId, editId })),
+        hmrObservedAtMs: 900,
+      });
+      expect(result.accepted, `${projectId}:${editId}`).toBe(true);
+    }
+  });
+
+  it.each([
+    {
+      name: "conflicting runtime session",
+      ledger: () => frameGateProofLedger({
+        dispatchEvent: { runtime_session_id: "runtime-session-other" },
+      }),
+      code: "runtime_session_identity_not_unique",
+    },
+    {
+      name: "missing boundary runtime session",
+      ledger: () => frameGateProofLedger({
+        outputEvent: { runtime_session_id: null },
+      }),
+      code: "runtime_session_identity_material_incomplete",
+    },
+    {
+      name: "conflicting observed device",
+      ledger: () => frameGateProofLedger({
+        dispatchEvent: { device_uuid: "device-other" },
+      }),
+      code: "runtime_device_identity_not_unique",
+    },
+    {
+      name: "missing output target",
+      ledger: () => frameGateProofLedger({ outputOracleTarget: null }),
+      code: "runtime_binding_material_incomplete",
+    },
+    {
+      name: "mixed runtime clock domain",
+      ledger: () => frameGateProofLedger({
+        dispatchEvent: { timestamp_monotonic_ns: null, timestamp_ms: 300 },
+      }),
+      code: "runtime_binding_clock_domain_invalid",
+    },
+  ])("refuses $name even when the base strict proof remains accepted", ({ ledger, code }) => {
+    const proof = frameGateProof(ledger());
+    expect(validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven").satisfied).toBe(true);
+
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof,
+      hmrObservedAtMs: 900,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
+    expect(result.failures.map((failure) => failure.code)).toContain(code);
+  });
+
+  it("refuses proof telemetry observed before the matching HMR event", () => {
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof: frameGateProof(frameGateProofLedger(), 1_000),
+      hmrObservedAtMs: 1_001,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
+    expect(result.failures.map((failure) => failure.code)).toContain(
+      "runtime_binding_proof_observation_order_invalid"
+    );
+  });
+
+  it("recomputes proof acceptance instead of trusting caller-injected validation", () => {
+    const proof = frameGateProof(frameGateProofLedger(), 1_000, {
+      gpuHmrSuccess: false,
+    });
+    const inputWithForgedValidation = {
+      proof,
+      hmrObservedAtMs: 900,
+      validation: {
+        requiredState: "gpu-hmr-full-runtime-proven",
+        satisfied: true,
+        proofLedgerValidation: { gpuHmrSuccess: true },
+        runtimeProofArtifactValidation: { accepted: true },
+      },
+    } as Parameters<typeof buildGpuHmrFrameGateEvidenceBinding>[0] & {
+      validation: Record<string, unknown>;
+    };
+
+    const result = buildGpuHmrFrameGateEvidenceBinding(inputWithForgedValidation);
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
+    expect(result.failures.map((failure) => failure.code)).toContain(
+      "runtime_proof_artifact_not_accepted"
+    );
+  });
+
+  it("binds the telemetry ledger to the runtime artifact ledger by recomputed proof id", () => {
+    const telemetryLedger = structuredClone(frameGateProofLedger());
+    const replayedArtifactLedger = structuredClone(frameGateProofLedger({
+      runtimeSessionId: "runtime-session-replayed",
+    }));
+    delete telemetryLedger.proofId;
+    delete replayedArtifactLedger.proofId;
+    const replayedArtifact = runtimeProofArtifact(telemetryLedger, {
+      proofLedger: replayedArtifactLedger,
+      proofLedgerQuery: replayedArtifactLedger.query,
+      derivedProofLedgerRecord: replayedArtifactLedger.records[0],
+    });
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      proofId: "gpu-runtime-proof:fixture",
+      proofLedger: telemetryLedger,
+      runtimeProofArtifact: replayedArtifact,
+    }, 1_000);
+    if (proof === null) throw new Error("frame_gate_replay_test_proof_missing");
+    expect(validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven").satisfied).toBe(true);
+
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof,
+      hmrObservedAtMs: 900,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
+    expect(result.failures.map((failure) => failure.code)).toContain(
+      "runtime_artifact_proof_ledger_binding_mismatch"
+    );
+  });
+
+  it("rejects negative wall-clock observations", () => {
+    const result = buildGpuHmrFrameGateEvidenceBinding({
+      proof: frameGateProof(),
+      hmrObservedAtMs: -1,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.binding).toBeNull();
+    expect(result.failures.map((failure) => failure.code)).toContain(
+      "runtime_binding_proof_observation_order_invalid"
+    );
+  });
+
+  it("refuses mismatched process, artifact, epoch, and dispatch-output chains", () => {
+    const cases = [
+      frameGateProofLedger({ dispatchEvent: { process_id: "pid-other" } }),
+      frameGateProofLedger({ dispatchEvent: { artifact_hash: HASH_C } }),
+      frameGateProofLedger({ outputEvent: { epoch: "epoch-other" } }),
+      frameGateProofLedger({ outputEvent: { after_dispatch_id: "dispatch-other" } }),
+    ];
+
+    for (const ledger of cases) {
+      const result = buildGpuHmrFrameGateEvidenceBinding({
+        proof: frameGateProof(ledger),
+        hmrObservedAtMs: 900,
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.binding).toBeNull();
+      expect(result.failures.map((failure) => failure.code)).toContain(
+        "full_runtime_proof_not_accepted"
+      );
+    }
   });
 });
