@@ -70,6 +70,13 @@ pub fn verify_update_manifest(
     {
         return Err(UpdateError::VersionRevoked);
     }
+    if manifest
+        .emergency_revoked_versions
+        .iter()
+        .any(|version| version == &manifest.app_version)
+    {
+        return Err(UpdateError::VersionRevoked);
+    }
     if compare_versions(current_version, &manifest.minimum_supported_version) < 0 {
         return Err(UpdateError::UnsupportedCurrentVersion);
     }
