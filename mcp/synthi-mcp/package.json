@@ -129,6 +129,7 @@
     "proof:arbitrary-project:cold:self-check": "node scripts/tests/gpu-hmr-arbitrary-cold-project-runner-self-check.mjs",
     "proof:arbitrary-project:cold:batch": "node scripts/gpu-hmr-arbitrary-cold-project-batch.mjs",
     "proof:arbitrary-project:cold:batch:self-check": "node scripts/tests/gpu-hmr-arbitrary-cold-project-batch-self-check.mjs",
+    "proof:cold-path:capability-evidence:self-check": "node scripts/tests/gpu-hmr-cold-path-capability-evidence-self-check.mjs",
     "proof:arbitrary-project:cold:image:self-check": "node scripts/tests/gpu-hmr-cold-build-worker-image-self-check.mjs",
     "proof:runtime-profile": "node scripts/gpu-hmr-runtime-profile-proof.mjs",
     "proof:runtime-profile:self-check": "node scripts/gpu-hmr-runtime-profile-proof.mjs --self-check",
