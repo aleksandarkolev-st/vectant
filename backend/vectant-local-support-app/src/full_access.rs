@@ -180,6 +180,7 @@ pub struct FullAccessBudget {
     pub bytes_sent: u64,
     pub requests_this_minute: u32,
     pub active_reads: u16,
+    pub active_commands: u16,
     pub paused: bool,
 }
 
@@ -219,6 +220,7 @@ impl Default for FullAccessBudget {
             bytes_sent: 0,
             requests_this_minute: 0,
             active_reads: 0,
+            active_commands: 0,
             paused: false,
         }
     }
@@ -233,18 +235,28 @@ impl FullAccessBudget {
             || bytes > policy.max_bytes_per_request
             || self.bytes_sent.saturating_add(bytes) > policy.max_bytes_per_session
             || self.requests_this_minute >= policy.max_requests_per_minute
-            || self.active_reads >= policy.max_concurrent_reads
         {
             self.paused = true;
             return Err(FullAccessDenied::BudgetExhausted);
         }
         self.bytes_sent += bytes;
         self.requests_this_minute += 1;
-        self.active_reads += 1;
         Ok(())
     }
     pub fn finish_read(&mut self) {
         self.active_reads = self.active_reads.saturating_sub(1);
+    }
+
+    pub fn reserve_command(&mut self, policy: &FullAccessPolicy) -> Result<(), FullAccessDenied> {
+        if self.paused || self.active_commands >= policy.max_command_concurrency {
+            return Err(FullAccessDenied::BudgetExhausted);
+        }
+        self.active_commands += 1;
+        Ok(())
+    }
+
+    pub fn finish_command(&mut self) {
+        self.active_commands = self.active_commands.saturating_sub(1);
     }
 }
 
@@ -546,6 +558,15 @@ mod tests {
             Err(FullAccessDenied::BudgetExhausted)
         );
         assert!(budget.paused);
+        let mut command_budget = FullAccessBudget::default();
+        p.max_command_concurrency = 1;
+        assert!(command_budget.reserve_command(&p).is_ok());
+        assert_eq!(
+            command_budget.reserve_command(&p),
+            Err(FullAccessDenied::BudgetExhausted)
+        );
+        command_budget.finish_command();
+        assert!(command_budget.reserve_command(&p).is_ok());
         assert!(sanitized_process_record(
             "pid:10:start:1",
             "server.exe",

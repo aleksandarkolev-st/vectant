@@ -1045,15 +1045,20 @@ async fn full_access_command(
         .budget
         .reserve(&policy, request.max_output_bytes as u64)
         .map_err(full_access_denied)?;
+    full_access
+        .budget
+        .reserve_command(&policy)
+        .map_err(full_access_denied)?;
     drop(full_access);
-    let context = execute_command_cancellable(
+    let context_result = execute_command_cancellable(
         state.workspace.root(),
         &policy,
         request.clone(),
         command_cancel,
     )
-    .await
-    .map_err(|error| {
+    .await;
+    state.full_access.lock().await.budget.finish_command();
+    let context = context_result.map_err(|error| {
         denied(
             StatusCode::FORBIDDEN,
             format!("full_access_command_{error:?}").to_ascii_lowercase(),
