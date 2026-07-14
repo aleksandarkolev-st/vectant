@@ -318,6 +318,7 @@ pub async fn shutdown_cleanup(state: &AppState, request_id: &str) -> anyhow::Res
         .await
         .disconnect_session(&session_id);
     state.preview_traffic.lock().await.clear_all();
+    state.full_access.lock().await.revoke();
     let mut audit = state.audit.lock().await;
     audit.append(
         AuditClass::Control,
@@ -1266,6 +1267,7 @@ async fn pause_session(
     session.pause();
     let session_state = session.state();
     drop(session);
+    state.full_access.lock().await.pause();
     let mut audit = state.audit.lock().await;
     audit.append(
         AuditClass::Control,
@@ -1364,6 +1366,7 @@ async fn control_session(
                 .await
                 .disconnect_session(&session_id);
             state.preview_traffic.lock().await.clear_all();
+            state.full_access.lock().await.revoke();
         }
     }
     let session_state = session.state();
@@ -1425,6 +1428,7 @@ async fn delete_history(
     state.approvals.lock().await.revoke_all();
     state.port_approvals.lock().await.revoke_all();
     state.preview_traffic.lock().await.clear_all();
+    state.full_access.lock().await.revoke();
     audit.clear();
     audit.append(
         AuditClass::Control,
