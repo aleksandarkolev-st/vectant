@@ -111,9 +111,28 @@ describe("durable local support relay store", () => {
       data: expect.objectContaining({
         commandId: "cmd_12345678",
         decision: "queued",
+        actor: "browser_user",
         capability: "local_support.revoke_port",
         bytesSent: 0,
       }),
+    });
+  });
+
+  it("records the authenticated cloud actor on browser control audits", async () => {
+    const { client } = fakeClient();
+    await enqueueLocalControlCommand({
+      commandId: "cmd_actor_12345678",
+      sessionId: "sess_12345678",
+      accountId: "acct_123",
+      orgId: "org_123",
+      workspaceId: "wk_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      action: "pause_session",
+      expiresAt: "2030-01-01T00:01:00.000Z",
+      actor: "user_987",
+    }, client);
+    expect(client.localSupportControlAudit.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ commandId: "cmd_actor_12345678", actor: "user_987" }),
     });
   });
 

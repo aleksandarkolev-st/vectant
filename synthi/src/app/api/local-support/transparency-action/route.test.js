@@ -181,6 +181,7 @@ describe("local support transparency action route", () => {
       workspaceId: "wk_live_12345678",
       action: "pause_session",
       port: null,
+      actor: "acct_live",
     }));
   });
 

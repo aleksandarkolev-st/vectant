@@ -96,6 +96,7 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
       policyVersion: POLICY_VERSION,
       scannerVersion: 'not_applicable',
+      actor: accountId,
     });
     const control = JSON.parse(execFileSync(relayBinary, [endpoint, identityPath, sessionId, 'poll'], { encoding: 'utf8' }));
     expect(control).toMatchObject({

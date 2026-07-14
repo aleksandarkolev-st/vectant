@@ -18,7 +18,7 @@ export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
 export async function enqueueLocalControlCommand(
   {
     commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action, port,
-    expiresAt, policyVersion = "unknown", scannerVersion = "not_applicable",
+    expiresAt, policyVersion = "unknown", scannerVersion = "not_applicable", actor = "browser_user",
   },
   client = prisma,
 ) {
@@ -44,7 +44,7 @@ export async function enqueueLocalControlCommand(
     await tx.localSupportControlAudit.create({
       data: controlAuditData({
         commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action,
-        decision: "queued", policyVersion, scannerVersion,
+        decision: "queued", policyVersion, scannerVersion, actor,
       }),
     });
     return command;
@@ -169,7 +169,7 @@ function controlCommandEnvelope(command) {
 
 function controlAuditData({
   commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action,
-  decision, policyVersion, scannerVersion, reason = null,
+  decision, policyVersion, scannerVersion, actor = "browser_user", reason = null,
 }) {
   return {
     commandId,
@@ -178,7 +178,7 @@ function controlAuditData({
     orgId,
     workspaceId,
     deviceFingerprint,
-    actor: "browser_user",
+    actor: String(actor || "browser_user").slice(0, 256),
     capability: `local_support.${action}`,
     targetDisplay: `workspace:${workspaceId}`,
     targetHash: `sha256:${createHash("sha256").update(workspaceId).digest("hex")}`,
