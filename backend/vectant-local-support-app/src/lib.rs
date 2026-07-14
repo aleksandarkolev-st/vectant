@@ -1,6 +1,7 @@
 pub mod approval;
 pub mod audit;
 pub mod desktop;
+pub mod full_access;
 pub mod http;
 pub mod ipc;
 pub mod lifecycle;
