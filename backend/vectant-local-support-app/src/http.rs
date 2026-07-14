@@ -21,6 +21,10 @@ use tokio::sync::Mutex;
 
 use crate::approval::{denied_approval_response, is_safe_approval_id, ApprovalQueue};
 use crate::audit::{AuditClass, AuditExport, AuditLog, AuditStoreError, LocalAuditStore};
+use crate::full_access::{
+    authorize as authorize_full_access, validate_graph_request, FullAccessConsentReceipt,
+    FullAccessDenied, FullAccessPolicy, FullAccessState, GraphRequest, ReceiptBinding,
+};
 use crate::port_adapter::native_listener_identity_matches;
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
@@ -114,6 +118,34 @@ pub struct PortApprovalSummary {
     pub preview_token_included: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FullAccessEnrollmentRequest {
+    pub request_id: String,
+    pub policy: FullAccessPolicy,
+    pub receipt: FullAccessConsentReceipt,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FullAccessGraphResponse {
+    pub request_id: String,
+    pub decision: String,
+    pub graph_nodes: Vec<crate::full_access::GraphNode>,
+    pub raw_bodies_included: bool,
+    pub bytes_sent: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FullAccessNodeResponse {
+    pub request_id: String,
+    pub decision: String,
+    pub node_id: String,
+    pub content_sha256: Option<String>,
+    pub content: Option<String>,
+    pub bytes_sent: usize,
+    pub redaction_count: usize,
+    pub raw_bodies_included: bool,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub session: Arc<Mutex<SessionGuard>>,
@@ -124,6 +156,7 @@ pub struct AppState {
     pub approvals: Arc<Mutex<ApprovalQueue>>,
     pub port_approvals: Arc<Mutex<PortApprovalRegistry>>,
     pub preview_traffic: Arc<Mutex<PreviewTrafficGuard>>,
+    pub full_access: Arc<Mutex<FullAccessState>>,
     local_control_secret_hash: Arc<String>,
 }
 
@@ -141,6 +174,7 @@ impl AppState {
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
+            full_access: Arc::new(Mutex::new(FullAccessState::default())),
             local_control_secret_hash: Arc::new(hash_local_control_secret(
                 &generate_local_control_secret(),
             )),
@@ -165,6 +199,7 @@ impl AppState {
             approvals: Arc::new(Mutex::new(ApprovalQueue::new())),
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
+            full_access: Arc::new(Mutex::new(FullAccessState::default())),
             local_control_secret_hash: Arc::new(hash_local_control_secret(
                 &generate_local_control_secret(),
             )),
@@ -224,6 +259,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/status/:request_id", get(status))
         .route("/v1/file/review", post(review_file))
+        .route("/v1/full-access/enroll", post(enroll_full_access))
+        .route("/v1/full-access/graph/:request_id", get(full_access_graph))
+        .route("/v1/full-access/graph/node", post(full_access_graph_node))
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
         .route(
@@ -401,6 +439,254 @@ async fn review_file(
     );
     persist_audit(&state, &audit)?;
     Ok(Json(response))
+}
+
+async fn enroll_full_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<FullAccessEnrollmentRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    require_local_control_secret(&state, &headers)?;
+    validate_safe_request_id(&request.request_id)?;
+    if request.receipt.local_confirmation != "native_button"
+        || !request
+            .receipt
+            .capabilities
+            .contains(&crate::full_access::FullAccessCapability::Enroll)
+    {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "full_access_requires_local_enrollment_confirmation",
+        ));
+    }
+    let token = bearer(&headers)?;
+    let auth = LocalRequestAuthorization::from_headers(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate_control(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    if request.receipt.session_id != session_id
+        || request.receipt.account_id != account_id
+        || request.receipt.organization_id != org_id
+        || request.receipt.device_fingerprint != device_fingerprint
+        || request.receipt.workspace_hash != workspace_hash
+        || request.receipt.app_version != auth.app_version
+        || request.receipt.policy_version != crate::POLICY_VERSION
+        || request.receipt.scanner_version != crate::SCANNER_VERSION
+        || request.receipt.policy_major != request.policy.policy_major
+        || !request.policy.organization_enabled
+        || request.policy.emergency_paused
+    {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "full_access_receipt_or_policy_mismatch",
+        ));
+    }
+    if !request
+        .policy
+        .allowed_actors
+        .contains(&request.receipt.support_actor)
+        || !request
+            .policy
+            .allowed_capabilities
+            .is_superset(&request.receipt.capabilities)
+    {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "full_access_scope_not_allowed_by_policy",
+        ));
+    }
+    let graph = state
+        .workspace
+        .build_capability_graph()
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "full_access_graph_build_failed"))?;
+    let mut full_access = state.full_access.lock().await;
+    if let Some(existing) = &full_access.receipt {
+        if existing.revoked_at.is_none()
+            && existing.expires_at > Utc::now()
+            && (existing.capabilities != request.receipt.capabilities
+                || existing.support_actor != request.receipt.support_actor
+                || existing.workspace_hash != request.receipt.workspace_hash
+                || existing.policy_major != request.receipt.policy_major)
+        {
+            return Err(denied(
+                StatusCode::CONFLICT,
+                "full_access_reconsent_required",
+            ));
+        }
+    }
+    full_access.policy = request.policy;
+    full_access.receipt = Some(request.receipt);
+    full_access.graph = graph;
+    full_access.budget = Default::default();
+    full_access.process_visibility_paused = false;
+    drop(full_access);
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Control, Some(request.request_id.clone()), "Full Access Support enrolled after local desktop confirmation. Workspace graph is scrubbed and contains no raw bodies.", true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(
+        serde_json::json!({"decision":"full_access_enrolled","request_id":request.request_id,"raw_bodies_included":false,"bytes_sent":0}),
+    ))
+}
+
+async fn full_access_graph(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<FullAccessGraphResponse>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    validate_safe_request_id(&request_id)?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::GraphRead,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    let mut nodes = full_access.graph.values().cloned().collect::<Vec<_>>();
+    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    Ok(Json(FullAccessGraphResponse {
+        request_id,
+        decision: "allowed".into(),
+        graph_nodes: nodes,
+        raw_bodies_included: false,
+        bytes_sent: 0,
+    }))
+}
+
+async fn full_access_graph_node(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<GraphRequest>,
+) -> Result<Json<FullAccessNodeResponse>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let current_graph = state
+        .workspace
+        .build_capability_graph()
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "full_access_graph_refresh_failed"))?;
+    let mut full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::GraphNodeRequest,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    if !receipt.auto_approval_enabled {
+        return Err(denied(StatusCode::FORBIDDEN, "auto_approval_not_enabled"));
+    }
+    validate_graph_request(&current_graph, &request, &full_access.policy)
+        .map_err(full_access_denied)?;
+    let node = current_graph
+        .get(&request.node_id)
+        .cloned()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "unknown_graph_node"))?;
+    let policy = full_access.policy.clone();
+    full_access
+        .budget
+        .reserve(&policy, request.max_bytes)
+        .map_err(full_access_denied)?;
+    full_access.graph = current_graph;
+    drop(full_access);
+    let result = state.workspace.read_graph_node(&node, request.max_bytes);
+    let (content, hash) =
+        result.map_err(|_| denied(StatusCode::FORBIDDEN, "graph_node_changed_or_unreadable"))?;
+    let scan = SecretScanner::default()
+        .try_scan(&content)
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "scanner_failure"))?;
+    if !scan.findings.is_empty() {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "scanner_redaction_required_for_auto_delivery",
+        ));
+    }
+    let bytes_sent = content.len();
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Data, Some(request.request_id.clone()), format!("Automatically sent graph node {} under Full Access policy. {} bytes sent; 0 redactions.", node.node_id, bytes_sent), true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(FullAccessNodeResponse {
+        request_id: request.request_id,
+        decision: "auto_accepted".into(),
+        node_id: node.node_id,
+        content_sha256: Some(hash),
+        content: Some(content),
+        bytes_sent,
+        redaction_count: 0,
+        raw_bodies_included: true,
+    }))
+}
+
+fn full_access_denied(error: FullAccessDenied) -> (StatusCode, Json<serde_json::Value>) {
+    denied(
+        StatusCode::FORBIDDEN,
+        format!("full_access_{error:?}").to_ascii_lowercase(),
+    )
 }
 
 async fn approve_request(

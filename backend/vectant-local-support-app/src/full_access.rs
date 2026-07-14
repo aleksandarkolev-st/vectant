@@ -168,6 +168,34 @@ pub struct FullAccessBudget {
     pub active_reads: u16,
     pub paused: bool,
 }
+
+#[derive(Debug, Clone, Default)]
+pub struct FullAccessState {
+    pub policy: FullAccessPolicy,
+    pub receipt: Option<FullAccessConsentReceipt>,
+    pub graph: HashMap<String, GraphNode>,
+    pub budget: FullAccessBudget,
+    pub process_visibility_paused: bool,
+}
+
+impl FullAccessState {
+    pub fn revoke(&mut self) {
+        if let Some(receipt) = &mut self.receipt {
+            receipt.revoked_at = Some(Utc::now());
+        }
+        self.graph.clear();
+        self.budget.paused = true;
+        self.process_visibility_paused = true;
+    }
+
+    pub fn pause(&mut self) {
+        if let Some(receipt) = &mut self.receipt {
+            receipt.paused_at = Some(Utc::now());
+        }
+        self.budget.paused = true;
+        self.process_visibility_paused = true;
+    }
+}
 impl Default for FullAccessBudget {
     fn default() -> Self {
         Self {

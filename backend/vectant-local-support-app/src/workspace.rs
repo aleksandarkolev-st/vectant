@@ -7,7 +7,9 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::full_access::{GraphNode, GraphNodeState, RiskClass, MAX_GRAPH_NODES};
+use crate::full_access::{
+    safe_workspace_relative_path, GraphNode, GraphNodeState, RiskClass, MAX_GRAPH_NODES,
+};
 use crate::policy::{Classification, DecisionKind, PolicyDecision};
 use crate::scanner::{ScanReport, SecretScanner};
 
@@ -201,6 +203,20 @@ impl WorkspacePolicy {
             );
         }
         Ok(())
+    }
+
+    /// Reads a graph-addressed node only after the caller has compared it with
+    /// a freshly rebuilt graph. The path is never accepted from the caller.
+    pub fn read_graph_node(&self, node: &GraphNode, max_bytes: u64) -> Result<(String, String)> {
+        if !matches!(
+            node.state,
+            GraphNodeState::Available | GraphNodeState::AutoRequestable
+        ) || node.classification == RiskClass::E
+            || !safe_workspace_relative_path(&node.relative_path)
+        {
+            return Err(anyhow!("graph node is not readable"));
+        }
+        self.safe_read_text(&node.relative_path, max_bytes)
     }
 
     pub fn decide_file(&self, request: &FileReadRequest) -> PolicyDecision {
