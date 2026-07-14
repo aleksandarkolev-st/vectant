@@ -34,6 +34,12 @@ const CONVERGENCE_METRICS = new Set([
 
 export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
+export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_visual_control_observation.v1';
+export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY =
+  'target_process_runtime_visual_control_observation';
+export const GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_visual_control_pair.v1';
 export const GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_artifact_transport_evidence.v1';
 export const GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION =
@@ -637,6 +643,405 @@ export function deterministicVisualModeFromMcpEvidence(input = {}) {
     evidence_authority: 'verified_mcp_capture_observations_only',
     capture_chain_verified: frameBoundary === true,
     camera_state_observed: Boolean(cameraStateHash),
+  };
+}
+
+function sha256ContentAddress(value) {
+  const text = textOrNull(value);
+  return text && /^sha256:[a-f0-9]{64}$/i.test(text) ? text.toLowerCase() : null;
+}
+
+function nonNegativeIntegerOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function positiveIntegerOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function monotonicNsOrNull(value) {
+  const text = typeof value === 'bigint'
+    ? String(value)
+    : typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+      ? String(value)
+      : textOrNull(value);
+  if (!text || !/^\d+$/.test(text)) return null;
+  try {
+    return BigInt(text) >= 0n ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedRuntimeVisualControlObservation(input = {}) {
+  const observation = isObject(input) ? input : {};
+  return {
+    schema_version: textOrNull(observation.schema_version ?? observation.schemaVersion),
+    proof_authority: textOrNull(observation.proof_authority ?? observation.proofAuthority),
+    phase: textOrNull(observation.phase),
+    runtime_session: textOrNull(observation.runtime_session ?? observation.runtimeSession),
+    process_id: textOrNull(observation.process_id ?? observation.processId),
+    device_identity: textOrNull(observation.device_identity ?? observation.deviceIdentity),
+    capture_event_id: textOrNull(observation.capture_event_id ?? observation.captureEventId),
+    frame_hash: sha256ContentAddress(observation.frame_hash ?? observation.frameHash),
+    width: positiveIntegerOrNull(observation.width),
+    height: positiveIntegerOrNull(observation.height),
+    frame_timestamp_monotonic_ns: monotonicNsOrNull(
+      observation.frame_timestamp_monotonic_ns ?? observation.frameTimestampMonotonicNs,
+    ),
+    source_line_hash: sha256ContentAddress(
+      observation.source_line_hash ?? observation.sourceLineHash,
+    ),
+    source_line: textOrNull(observation.source_line ?? observation.sourceLine),
+    source_line_index: nonNegativeIntegerOrNull(
+      observation.source_line_index ?? observation.sourceLineIndex,
+    ),
+    dispatch_id: textOrNull(observation.dispatch_id ?? observation.dispatchId),
+    after_epoch_dispatch: boolOrNull(
+      observation.after_epoch_dispatch ?? observation.afterEpochDispatch,
+    ),
+    capture_synchronized: boolOrNull(
+      observation.capture_synchronized ?? observation.captureSynchronized,
+    ),
+    presentation_boundary_observed: boolOrNull(
+      observation.presentation_boundary_observed ?? observation.presentationBoundaryObserved,
+    ),
+    fixed_seed: boolOrNull(observation.fixed_seed ?? observation.fixedSeed),
+    seed_policy_hash: sha256ContentAddress(
+      observation.seed_policy_hash ?? observation.seedPolicyHash,
+    ),
+    camera_state_hash: sha256ContentAddress(
+      observation.camera_state_hash ?? observation.cameraStateHash,
+    ),
+    temporal_accumulation_present: boolOrNull(
+      observation.temporal_accumulation_present ?? observation.temporalAccumulationPresent,
+    ),
+    temporal_accumulation_disabled: boolOrNull(
+      observation.temporal_accumulation_disabled ?? observation.temporalAccumulationDisabled,
+    ),
+    temporal_accumulation_not_applicable: boolOrNull(
+      observation.temporal_accumulation_not_applicable
+      ?? observation.temporalAccumulationNotApplicable,
+    ),
+    taa_present: boolOrNull(observation.taa_present ?? observation.taaPresent),
+    taa_disabled: boolOrNull(observation.taa_disabled ?? observation.taaDisabled),
+    taa_not_applicable: boolOrNull(
+      observation.taa_not_applicable ?? observation.taaNotApplicable,
+    ),
+    denoiser_present: boolOrNull(observation.denoiser_present ?? observation.denoiserPresent),
+    denoiser_disabled: boolOrNull(
+      observation.denoiser_disabled ?? observation.denoiserDisabled,
+    ),
+    denoiser_not_applicable: boolOrNull(
+      observation.denoiser_not_applicable ?? observation.denoiserNotApplicable,
+    ),
+    presentation_image_count: positiveIntegerOrNull(
+      observation.presentation_image_count ?? observation.presentationImageCount,
+    ),
+    warmup_frames: nonNegativeIntegerOrNull(
+      observation.warmup_frames ?? observation.warmupFrames,
+    ),
+    accepted_for_gpu_hmr: boolOrNull(
+      observation.accepted_for_gpu_hmr ?? observation.acceptedForGpuHmr,
+    ),
+    gpu_hmr_success: boolOrNull(observation.gpu_hmr_success ?? observation.gpuHmrSuccess),
+    can_satisfy_runtime_proof: boolOrNull(
+      observation.can_satisfy_runtime_proof ?? observation.canSatisfyRuntimeProof,
+    ),
+  };
+}
+
+export function runtimeVisualControlObservationHash(input = {}) {
+  return sha256Text(stableJson(normalizedRuntimeVisualControlObservation(input)));
+}
+
+function runtimeVisualControlObservation(input = {}) {
+  const normalized = normalizedRuntimeVisualControlObservation(input);
+  return {
+    ...normalized,
+    observation_hash: sha256ContentAddress(input.observation_hash ?? input.observationHash),
+  };
+}
+
+function visualControlStateMatches(before, after, prefix) {
+  const presentField = `${prefix}_present`;
+  const disabledField = `${prefix}_disabled`;
+  const notApplicableField = `${prefix}_not_applicable`;
+  const fieldsMatch =
+    before[presentField] === after[presentField]
+    && before[disabledField] === after[disabledField]
+    && before[notApplicableField] === after[notApplicableField];
+  const controlled =
+    before[disabledField] === true
+    || (before[presentField] === false && before[notApplicableField] === true);
+  return fieldsMatch && controlled;
+}
+
+function runtimeVisualControlModeFromAcceptedPair(before, after, evidenceRefs) {
+  return {
+    ...normalizeGpuHmrDeterministicVisualMode({
+      fixed_seed: true,
+      seed_policy_fixed: true,
+      seed_policy_hash: after.seed_policy_hash,
+      camera_state_hash: after.camera_state_hash,
+      frozen_camera: true,
+      temporal_accumulation_present: after.temporal_accumulation_present,
+      temporal_accumulation_disabled: after.temporal_accumulation_disabled,
+      temporal_accumulation_not_applicable: after.temporal_accumulation_not_applicable,
+      taa_present: after.taa_present,
+      taa_disabled: after.taa_disabled,
+      taa_not_applicable: after.taa_not_applicable,
+      denoiser_present: after.denoiser_present,
+      denoiser_disabled: after.denoiser_disabled,
+      denoiser_not_applicable: after.denoiser_not_applicable,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      warmup_frames: after.warmup_frames,
+    }),
+    evidence_refs: evidenceRefs,
+  };
+}
+
+export function evaluateRuntimeVisualControlObservationPair(input = {}) {
+  const pair = isObject(input) ? input : {};
+  const before = runtimeVisualControlObservation(pair.before);
+  const after = runtimeVisualControlObservation(pair.after);
+  const expected = isObject(pair.expected) ? pair.expected : {};
+  const expectedBeforeFrameHash = sha256ContentAddress(
+    expected.before_frame_hash ?? expected.beforeFrameHash,
+  );
+  const expectedAfterFrameHash = sha256ContentAddress(
+    expected.after_frame_hash ?? expected.afterFrameHash,
+  );
+  const expectedWidth = positiveIntegerOrNull(expected.width);
+  const expectedHeight = positiveIntegerOrNull(expected.height);
+  const expectedProcessId = textOrNull(expected.process_id ?? expected.processId);
+  const expectedDeviceIdentity = textOrNull(
+    expected.device_identity ?? expected.deviceIdentity,
+  );
+  const expectedRuntimeSession = textOrNull(
+    expected.runtime_session ?? expected.runtimeSession,
+  );
+  const expectedDispatchId = textOrNull(expected.dispatch_id ?? expected.dispatchId);
+  const expectedDispatchLineIndex = nonNegativeIntegerOrNull(
+    expected.dispatch_line_index ?? expected.dispatchLineIndex,
+  );
+  const expectedDispatchTimestampNs = monotonicNsOrNull(
+    expected.dispatch_timestamp_monotonic_ns ?? expected.dispatchTimestampMonotonicNs,
+  );
+  const failedGates = [];
+  const fail = (code) => failedGates.push(code);
+
+  for (const [phase, observation] of [['before', before], ['after', after]]) {
+    if (observation.schema_version !== GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION) {
+      fail(`runtime_visual_control_${phase}_schema_invalid`);
+    }
+    if (observation.proof_authority !== GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY) {
+      fail(`runtime_visual_control_${phase}_authority_invalid`);
+    }
+    if (observation.phase !== phase) fail(`runtime_visual_control_${phase}_phase_invalid`);
+    if (!observation.runtime_session) fail(`runtime_visual_control_${phase}_session_missing`);
+    if (!observation.process_id) fail(`runtime_visual_control_${phase}_process_missing`);
+    if (!observation.device_identity) fail(`runtime_visual_control_${phase}_device_missing`);
+    if (!observation.capture_event_id) fail(`runtime_visual_control_${phase}_capture_event_missing`);
+    if (!observation.frame_hash) fail(`runtime_visual_control_${phase}_frame_hash_missing`);
+    if (!observation.width || !observation.height) {
+      fail(`runtime_visual_control_${phase}_resolution_missing`);
+    }
+    if (!observation.frame_timestamp_monotonic_ns) {
+      fail(`runtime_visual_control_${phase}_timestamp_missing`);
+    }
+    if (
+      !observation.source_line
+      || !observation.source_line_hash
+      || observation.source_line_index === null
+    ) {
+      fail(`runtime_visual_control_${phase}_source_provenance_missing`);
+    } else if (sha256Text(observation.source_line) !== observation.source_line_hash) {
+      fail(`runtime_visual_control_${phase}_source_line_hash_mismatch`);
+    }
+    if (!observation.seed_policy_hash || observation.fixed_seed !== true) {
+      fail(`runtime_visual_control_${phase}_seed_policy_unproven`);
+    }
+    if (!observation.camera_state_hash) {
+      fail(`runtime_visual_control_${phase}_camera_state_missing`);
+    }
+    if (observation.capture_synchronized !== true) {
+      fail(`runtime_visual_control_${phase}_capture_unsynchronized`);
+    }
+    if (observation.presentation_boundary_observed !== true) {
+      fail(`runtime_visual_control_${phase}_presentation_boundary_missing`);
+    }
+    if (!observation.presentation_image_count) {
+      fail(`runtime_visual_control_${phase}_presentation_image_count_missing`);
+    }
+    if (
+      observation.accepted_for_gpu_hmr !== false
+      || observation.gpu_hmr_success !== false
+      || observation.can_satisfy_runtime_proof !== false
+    ) {
+      fail(`runtime_visual_control_${phase}_authority_claim_invalid`);
+    }
+    const suppliedHash = observation.observation_hash;
+    const recomputedHash = runtimeVisualControlObservationHash(observation);
+    if (!suppliedHash || suppliedHash !== recomputedHash) {
+      fail(`runtime_visual_control_${phase}_observation_hash_mismatch`);
+    }
+  }
+
+  if (!expectedBeforeFrameHash || before.frame_hash !== expectedBeforeFrameHash) {
+    fail('runtime_visual_control_before_frame_hash_mismatch');
+  }
+  if (!expectedAfterFrameHash || after.frame_hash !== expectedAfterFrameHash) {
+    fail('runtime_visual_control_after_frame_hash_mismatch');
+  }
+  if (
+    !expectedWidth
+    || !expectedHeight
+    || before.width !== expectedWidth
+    || before.height !== expectedHeight
+    || after.width !== expectedWidth
+    || after.height !== expectedHeight
+  ) {
+    fail('runtime_visual_control_decoded_resolution_mismatch');
+  }
+  if (!expectedProcessId || before.process_id !== expectedProcessId || after.process_id !== expectedProcessId) {
+    fail('runtime_visual_control_process_identity_mismatch');
+  }
+  if (
+    !expectedDeviceIdentity
+    || before.device_identity !== expectedDeviceIdentity
+    || after.device_identity !== expectedDeviceIdentity
+  ) {
+    fail('runtime_visual_control_device_identity_mismatch');
+  }
+  if (
+    !expectedRuntimeSession
+    || before.runtime_session !== expectedRuntimeSession
+    || after.runtime_session !== expectedRuntimeSession
+  ) {
+    fail('runtime_visual_control_session_identity_mismatch');
+  }
+  if (before.runtime_session !== after.runtime_session || before.process_id !== after.process_id) {
+    fail('runtime_visual_control_pair_identity_mismatch');
+  }
+  if (before.capture_event_id === after.capture_event_id) {
+    fail('runtime_visual_control_capture_event_reused');
+  }
+  if (!expectedDispatchId || after.dispatch_id !== expectedDispatchId) {
+    fail('runtime_visual_control_dispatch_id_mismatch');
+  }
+  if (before.after_epoch_dispatch !== false || after.after_epoch_dispatch !== true) {
+    fail('runtime_visual_control_epoch_order_unproven');
+  }
+  if (
+    expectedDispatchLineIndex === null
+    || after.source_line_index === null
+    || after.source_line_index <= expectedDispatchLineIndex
+  ) {
+    fail('runtime_visual_control_dispatch_line_order_unproven');
+  }
+  if (
+    expectedDispatchTimestampNs
+    && (!after.frame_timestamp_monotonic_ns
+      || BigInt(after.frame_timestamp_monotonic_ns) <= BigInt(expectedDispatchTimestampNs))
+  ) {
+    fail('runtime_visual_control_dispatch_timestamp_order_unproven');
+  }
+  if (
+    !before.frame_timestamp_monotonic_ns
+    || !after.frame_timestamp_monotonic_ns
+    || BigInt(after.frame_timestamp_monotonic_ns)
+      <= BigInt(before.frame_timestamp_monotonic_ns ?? '0')
+  ) {
+    fail('runtime_visual_control_capture_timestamp_order_unproven');
+  }
+  if (before.source_line_index === null || after.source_line_index === null
+      || after.source_line_index <= before.source_line_index) {
+    fail('runtime_visual_control_source_line_order_unproven');
+  }
+  if (before.width !== after.width || before.height !== after.height) {
+    fail('runtime_visual_control_resolution_changed');
+  }
+  if (before.presentation_image_count !== after.presentation_image_count) {
+    fail('runtime_visual_control_presentation_image_count_changed');
+  }
+  if (before.seed_policy_hash !== after.seed_policy_hash) {
+    fail('runtime_visual_control_seed_policy_changed');
+  }
+  if (before.camera_state_hash !== after.camera_state_hash) {
+    fail('runtime_visual_control_camera_state_changed');
+  }
+  for (const control of ['temporal_accumulation', 'taa', 'denoiser']) {
+    if (!visualControlStateMatches(before, after, control)) {
+      fail(`runtime_visual_control_${control}_uncontrolled`);
+    }
+  }
+
+  const uniqueFailedGates = compactStringList(failedGates);
+  const evidenceRefs = compactStringList([
+    before.observation_hash,
+    after.observation_hash,
+    before.source_line_hash,
+    after.source_line_hash,
+  ]);
+  const accepted = uniqueFailedGates.length === 0;
+  const deterministicVisualMode = accepted
+    ? runtimeVisualControlModeFromAcceptedPair(before, after, evidenceRefs)
+    : normalizeGpuHmrDeterministicVisualMode({});
+  const deterministicVisualModeEvaluation = evaluateGpuHmrDeterministicVisualMode(
+    deterministicVisualMode,
+  );
+  const pairCore = {
+    schemaVersion: GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION,
+    proofAuthority: 'recomputed_target_process_runtime_visual_control_pair',
+    accepted,
+    beforeObservationHash: before.observation_hash,
+    afterObservationHash: after.observation_hash,
+    expectedBeforeFrameHash,
+    expectedAfterFrameHash,
+    expectedWidth,
+    expectedHeight,
+    expectedProcessId,
+    expectedDeviceIdentity,
+    expectedRuntimeSession,
+    expectedDispatchId,
+    expectedDispatchLineIndex,
+    expectedDispatchTimestampNs,
+    evidenceRefs,
+    failedGates: uniqueFailedGates,
+  };
+  const pairHash = sha256Text(stableJson(pairCore));
+  return {
+    ...pairCore,
+    schema_version: GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION,
+    proof_authority: pairCore.proofAuthority,
+    acceptedAsRuntimeVisualControlEvidence: accepted,
+    accepted_as_runtime_visual_control_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyVisualControlProof: accepted,
+    can_satisfy_visual_control_proof: accepted,
+    before,
+    after,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    evidence_refs: evidenceRefs,
+    failed_gates: uniqueFailedGates,
+    pairHash,
+    pair_hash: pairHash,
   };
 }
 
