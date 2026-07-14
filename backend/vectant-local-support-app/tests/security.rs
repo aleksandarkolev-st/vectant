@@ -66,6 +66,11 @@ fn capability_graph_has_no_raw_secret_paths_or_bodies() {
     fs::create_dir_all(root.path().join("src")).unwrap();
     fs::write(root.path().join("src/lib.rs"), "pub fn safe() {}\n").unwrap();
     fs::write(root.path().join(".env"), "API_TOKEN=must-not-leak\n").unwrap();
+    fs::write(
+        root.path().join("secrets.json"),
+        r#"{"api_key":"must-not-leak"}"#,
+    )
+    .unwrap();
     let workspace =
         WorkspacePolicy::new(root.path(), "wk_graph", SecretScanner::default()).unwrap();
 
@@ -74,6 +79,7 @@ fn capability_graph_has_no_raw_secret_paths_or_bodies() {
     assert!(serialized.contains("src/lib.rs"));
     assert!(serialized.contains("blocked_sensitive_category"));
     assert!(!serialized.contains(".env"));
+    assert!(!serialized.contains("secrets.json"));
     assert!(!serialized.contains("must-not-leak"));
     assert!(graph
         .values()

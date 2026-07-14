@@ -526,6 +526,12 @@ fn is_sensitive_path(path: &str) -> bool {
         || name == ".pypirc"
         || name == ".netrc"
         || name == ".git-credentials"
+        || name.contains("secret")
+        || name.contains("credential")
+        || name.contains("password")
+        || name.contains("passwd")
+        || name.contains("api_key")
+        || name.contains("apikey")
         || name == ".ds_store"
         || name == "thumbs.db"
         || name == "package-lock.json"
