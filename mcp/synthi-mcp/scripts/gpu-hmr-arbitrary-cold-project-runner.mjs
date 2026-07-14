@@ -304,7 +304,7 @@ function diagnosticsShapeAccepted(value) {
   );
 }
 
-function createArbitraryColdProjectRunFailure(error) {
+export function createArbitraryColdProjectRunFailure(error) {
   const failureCodeCandidate = String(error?.message ?? '');
   const failureCode = /^[a-z0-9][a-z0-9_.:-]{0,255}$/.test(failureCodeCandidate)
     ? failureCodeCandidate
