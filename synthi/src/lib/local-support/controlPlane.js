@@ -958,6 +958,7 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
   const blockedItems = Array.isArray(state.blocked_items) ? state.blocked_items : [];
   const activity = Array.isArray(state.activity) ? state.activity : [];
   const ports = Array.isArray(state.ports) ? state.ports : [];
+  const fullAccess = state.full_access && typeof state.full_access === "object" ? state.full_access : {};
   const activityChain = buildScrubbedAuditActivityChain(activity);
   const activityChainHead = activityChain.at(-1)?.event_hash || null;
 
@@ -1027,6 +1028,20 @@ export function summarizeTransparencyState(input, policy = readLocalSupportPolic
       token_state: item.revoked === true ? "revoked" : "present_hidden_from_renderer",
       revoked: item.revoked === true,
     })).filter((item) => item.port > 0),
+    full_access: {
+      enrolled: fullAccess.enrolled === true,
+      auto_approval_enabled: fullAccess.auto_approval_enabled === true,
+      automatic_delivery_paused: fullAccess.automatic_delivery_paused === true,
+      process_visibility_paused: fullAccess.process_visibility_paused === true,
+      capabilities: (Array.isArray(fullAccess.capabilities) ? fullAccess.capabilities : [])
+        .filter((capability) => typeof capability === "string"
+          && capability.startsWith("support.full_access.")
+          && capability.length <= 128)
+        .slice(0, 16),
+      graph_node_count: clampNumber(fullAccess.graph_node_count, 0, 1_000_000, 0),
+      bytes_sent_this_session: clampNumber(fullAccess.bytes_sent_this_session, 0, 1_000_000_000, 0),
+      raw_process_fields_included: false,
+    },
     export_metadata: {
       exported_by: "local_support_app",
       export_type: "scrubbed_activity_history",

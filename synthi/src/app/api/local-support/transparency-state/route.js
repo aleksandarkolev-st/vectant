@@ -116,6 +116,7 @@ function mapLocalDaemonStatus(status) {
   const events = Array.isArray(history.events) ? history.events : [];
   const receipts = Array.isArray(history.consent_receipts) ? history.consent_receipts : [];
   const ports = Array.isArray(status?.ports) ? status.ports : [];
+  const fullAccess = status?.full_access && typeof status.full_access === "object" ? status.full_access : {};
 
   return {
     scanner_version: workspace.scanner_version,
@@ -173,6 +174,22 @@ function mapLocalDaemonStatus(status) {
       methods: "GET, HEAD only",
       preview_token: port.preview_token,
     })),
+    full_access: {
+      enrolled: fullAccess.enrolled === true,
+      auto_approval_enabled: fullAccess.auto_approval_enabled === true,
+      automatic_delivery_paused: fullAccess.automatic_delivery_paused === true,
+      process_visibility_paused: fullAccess.process_visibility_paused === true,
+      capabilities: Array.isArray(fullAccess.capabilities)
+        ? fullAccess.capabilities.filter((capability) => typeof capability === "string" && capability.length <= 128)
+        : [],
+      graph_node_count: Number.isInteger(fullAccess.graph_node_count) && fullAccess.graph_node_count >= 0
+        ? fullAccess.graph_node_count
+        : 0,
+      bytes_sent_this_session: Number.isFinite(Number(fullAccess.bytes_sent_this_session))
+        ? Math.max(0, Number(fullAccess.bytes_sent_this_session))
+        : 0,
+      raw_process_fields_included: false,
+    },
     export_metadata: {
       raw_bodies_included: false,
       audit_chain_verified: events.every((event) => event.event_hash && event.previous_hash),

@@ -230,6 +230,12 @@ async function readLocalDaemonStatus(env = process.env) {
 
 async function forwardLocalDaemonAction(body, decision, localStatus, env = process.env) {
   if (!localStatus) return null;
+  // Full Access controls are executed by the signed desktop runtime after it
+  // validates a relay envelope. They intentionally have no browser-to-daemon
+  // HTTP route, so a web process cannot forge a local pause or revoke.
+  if (["full_access_pause", "full_access_revoke", "process_visibility_pause"].includes(decision.action)) {
+    return null;
+  }
   if (!env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER || !env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET) {
     return {
       status: 503,

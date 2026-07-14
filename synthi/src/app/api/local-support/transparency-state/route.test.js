@@ -202,6 +202,14 @@ describe("local support transparency state route", () => {
           preview_token: "raw-preview-token",
         },
       ],
+      full_access: {
+        enrolled: true,
+        auto_approval_enabled: true,
+        graph_node_count: 17,
+        bytes_sent_this_session: 321,
+        capabilities: ["support.full_access.process.inventory"],
+        raw_process_fields_included: true,
+      },
       history: {
         events: [
           {
@@ -287,6 +295,14 @@ describe("local support transparency state route", () => {
           token_state: "present_hidden_from_renderer",
         }),
       ],
+      full_access: {
+        enrolled: true,
+        auto_approval_enabled: true,
+        graph_node_count: 17,
+        bytes_sent_this_session: 321,
+        capabilities: ["support.full_access.process.inventory"],
+        raw_process_fields_included: false,
+      },
     });
     expect(serialized).not.toContain("raw-preview-token");
     expect(serialized).not.toContain("abcdefghijklmnopqrstuvwxyz");

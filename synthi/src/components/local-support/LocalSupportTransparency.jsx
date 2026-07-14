@@ -89,7 +89,7 @@ function buildSetupChecklist({ liveSession, liveWorkspace, livePolicy, liveState
   ];
 }
 
-function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, fastSupportTtl }) {
+function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, fastSupportTtl, fullAccess }) {
   return [
     {
       mode: "Balanced mode",
@@ -114,6 +114,14 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       approval: "Source, logs, and loopback preview",
       blocked: "Secrets, writes, commands, response bodies, AI/support page reads, persistent approvals",
       tone: !fastSupportEnabled ? "bad" : liveFastSupport ? "warn" : "neutral",
+    },
+    {
+      mode: "Full Access Support",
+      status: !fullAccess.enrolled ? "Not enrolled" : fullAccess.automatic_delivery_paused ? "Paused locally" : "Active",
+      automatic: fullAccess.enrolled && fullAccess.auto_approval_enabled ? "Only receipt-scoped diagnostic capabilities" : "Nothing until Auto Approval is separately enabled",
+      approval: "Enrollment, scope changes, denied classes, and every request outside the active receipt",
+      blocked: "Secrets, credentials, arbitrary shells, LAN/public hosts, process command lines, environments, memory, and persistence",
+      tone: !fullAccess.enrolled ? "neutral" : fullAccess.automatic_delivery_paused ? "warn" : "good",
     },
   ];
 }
@@ -331,6 +339,8 @@ export default function LocalSupportTransparency() {
   const paused = Boolean(liveSession.paused || localPaused);
   const liveFastSupport = liveSession.permission_mode === "Fast Support"
     && Number(liveSession.fast_support_remaining_seconds || 0) > 0;
+  const liveFullAccess = liveState?.full_access || {};
+  const fullAccessActive = liveFullAccess.enrolled === true && liveFullAccess.automatic_delivery_paused !== true;
   const inventory = normalizeInventoryRows(liveState?.inventory || DEFAULT_INVENTORY);
   const sentPayloads = liveState?.sent_payloads || DEFAULT_SENT_PAYLOADS;
   const blockedItems = liveState?.blocked_items || DEFAULT_BLOCKED_ITEMS;
@@ -374,6 +384,7 @@ export default function LocalSupportTransparency() {
     connected,
     liveFastSupport,
     fastSupportTtl,
+    fullAccess: liveFullAccess,
   });
   const policyStatus = policyState.status === "loaded"
     ? livePolicy?.enabled
@@ -548,7 +559,7 @@ export default function LocalSupportTransparency() {
                   {sessionState.label}
                 </Pill>
                 <Pill tone={fastSupportActive || liveFastSupport ? "warn" : "neutral"}>
-                  {fastSupportActive || liveFastSupport ? "Fast Support" : "Balanced mode"}
+                  {fullAccessActive ? "Full Access Support" : fastSupportActive || liveFastSupport ? "Fast Support" : "Balanced mode"}
                 </Pill>
                 <Pill tone={policyStatus.tone}>{policyStatus.label}</Pill>
               </div>
@@ -593,6 +604,18 @@ export default function LocalSupportTransparency() {
         </div>
       ) : null}
 
+      {liveFullAccess.enrolled === true ? (
+        <div className={cn(
+          "border-b px-4 py-3 text-sm",
+          fullAccessActive ? "border-amber-400/25 bg-amber-400/10 text-amber-100" : "border-red-400/25 bg-red-400/10 text-red-100",
+        )} role="status">
+          <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 lg:px-2">
+            <span><strong>{fullAccessActive ? "Full Access Support is active for this session." : "Full Access Support is paused locally."}</strong> Only the capabilities shown below can be automatically delivered. Secrets, credentials, command lines, environment values, and process contents remain blocked.</span>
+            <span className="font-mono text-xs">{liveFullAccess.capabilities?.length || 0} receipt-scoped capabilities</span>
+          </div>
+        </div>
+      ) : null}
+
       <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-6">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.75fr)]">
           <section className="local-support-hero rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-5 shadow-[var(--depth-shadow-1)]">
@@ -619,11 +642,11 @@ export default function LocalSupportTransparency() {
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">Shell commands</span>
-                  <Pill tone="bad">Blocked</Pill>
+                  <Pill tone={liveFullAccess.capabilities?.includes("support.full_access.command.execute") ? "warn" : "bad"}>{liveFullAccess.capabilities?.includes("support.full_access.command.execute") ? "Receipt-scoped" : "Blocked"}</Pill>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">File writes</span>
-                  <Pill tone="bad">Blocked</Pill>
+                  <Pill tone={liveFullAccess.capabilities?.includes("support.full_access.workspace.file.mutate") ? "warn" : "bad"}>{liveFullAccess.capabilities?.includes("support.full_access.workspace.file.mutate") ? "Receipt-scoped" : "Blocked"}</Pill>
                 </div>
               </div>
             </div>
@@ -645,6 +668,7 @@ export default function LocalSupportTransparency() {
               ["history", History, "Sent history"],
               ["blocked", FileWarning, "Blocked"],
               ["ports", PlugZap, "Ports"],
+              ["full-access", ShieldCheck, "Full Access"],
               ["mode", Settings2, "Permission mode"],
               ["activity", ClipboardCheck, "Activity"],
             ].map(([value, Icon, label]) => (
@@ -978,6 +1002,59 @@ export default function LocalSupportTransparency() {
                     </div>
                   );
                 })}
+              </div>
+            </Panel>
+          </TabsContent>
+
+          <TabsContent value="full-access" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <Panel
+              title="Full Access scope"
+              description="This is a local enforcement record, not a remote-administration grant. Every automatic action still requires a current receipt, policy, budget, scanner result, and durable audit event."
+            >
+              {liveFullAccess.enrolled ? (
+                <div className="space-y-4">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <CapabilityFlag label="Auto Approval" enabled={liveFullAccess.auto_approval_enabled === true} />
+                    <CapabilityFlag label="Automatic delivery" enabled={fullAccessActive} />
+                    <CapabilityFlag label="Process visibility" enabled={liveFullAccess.process_visibility_paused !== true && liveFullAccess.capabilities?.includes("support.full_access.process.inventory")} />
+                    <CapabilityFlag label="Raw process fields" enabled={false} />
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
+                      <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Capability graph</div>
+                      <div className="mt-1 text-sm text-[var(--text-primary)]">{liveFullAccess.graph_node_count || 0} current nodes</div>
+                    </div>
+                    <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
+                      <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Automatic bytes this session</div>
+                      <div className="mt-1 text-sm text-[var(--text-primary)]">{Number(liveFullAccess.bytes_sent_this_session || 0).toLocaleString()}</div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-2 text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Receipt-scoped capabilities</div>
+                    <div className="flex flex-wrap gap-2">
+                      {liveFullAccess.capabilities.map((capability) => <Pill key={capability} tone="neutral">{capability}</Pill>)}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 text-sm text-[var(--text-muted)]">
+                  Full Access is not enrolled for this session. Pairing or installation never enables it. Enrollment requires local desktop confirmation and a scoped receipt.
+                </div>
+              )}
+            </Panel>
+
+            <Panel title="Immediate local controls" description="Pause stops automatic delivery. Revoke invalidates the Full Access receipt and process visibility. Both are sent as signed desktop control requests, not browser-to-daemon commands.">
+              <div className="grid gap-3">
+                <Button type="button" variant="outline" className="justify-start" disabled={!relayControlsAvailable || !liveFullAccess.enrolled || !fullAccessActive} onClick={() => requestLocalControlAction("full_access_pause")}>
+                  <Pause className="size-4" aria-hidden="true" /> Pause Full Access
+                </Button>
+                <Button type="button" variant="outline" className="justify-start" disabled={!relayControlsAvailable || !liveFullAccess.enrolled || liveFullAccess.process_visibility_paused === true} onClick={() => requestLocalControlAction("process_visibility_pause")}>
+                  <Eye className="size-4" aria-hidden="true" /> Pause process visibility
+                </Button>
+                <Button type="button" variant="destructive" className="justify-start" disabled={!relayControlsAvailable || !liveFullAccess.enrolled} onClick={() => requestLocalControlAction("full_access_revoke")}>
+                  <Unplug className="size-4" aria-hidden="true" /> Revoke Full Access
+                </Button>
+                {controlActionStatus ? <p className="text-sm text-[var(--text-muted)]" role="status">{controlActionStatus.text}</p> : null}
               </div>
             </Panel>
           </TabsContent>

@@ -265,6 +265,47 @@ describe("local support transparency action route", () => {
     );
   });
 
+  it("queues Full Access controls for the signed desktop relay instead of exposing a browser-to-daemon route", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_BEARER = "local_status_bearer_12345678901234567890";
+    process.env.VECTANT_LOCAL_SUPPORT_LOCAL_CONTROL_SECRET = "desktop_control_secret_123456789012345";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
+    cloudMocks.findSession.mockResolvedValue({
+      sessionId: "sess_live_12345678",
+      accountId: "acct_live",
+      orgId: "org_live",
+      workspaceId: "wk_live_12345678",
+      deviceFingerprint: "sha256:1111111111111111",
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      session: { session_id: "sess_live_12345678", account_id: "acct_live", org_id: "org_live" },
+      workspace: { workspace_id: "wk_live_12345678" },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({
+      action: "full_access_revoke",
+      session_id: "sess_live_12345678",
+      workspace_id: "wk_live_12345678",
+    }));
+    const json = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(json).toMatchObject({
+      decision: "local_control_command_queued",
+      action: "full_access_revoke",
+      local_daemon_forwarded: false,
+      bytes_sent: 0,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cloudMocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      action: "full_access_revoke",
+      sessionId: "sess_live_12345678",
+      workspaceId: "wk_live_12345678",
+    }));
+  });
+
   it("rejects a daemon paired to a different authenticated account", async () => {
     process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
     process.env.VECTANT_LOCAL_SUPPORT_LOCAL_API_URL = "http://127.0.0.1:49152";
