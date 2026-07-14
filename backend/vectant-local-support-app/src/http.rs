@@ -27,7 +27,7 @@ use crate::full_access::{
     FullAccessDenied, FullAccessPolicy, FullAccessState, GraphRequest, ReceiptBinding,
 };
 use crate::mutation::{MutationRequest, WorkspaceMutationBroker};
-use crate::port_adapter::native_listener_identity_matches;
+use crate::port_adapter::{detect_loopback_listener, native_listener_identity_matches};
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
     preview_path_allowed, sanitize_response_headers, target_ip_allowed,
@@ -285,6 +285,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/full-access/graph/node", post(full_access_graph_node))
         .route("/v1/full-access/mutation", post(full_access_mutation))
         .route("/v1/full-access/command", post(full_access_command))
+        .route("/v1/full-access/port/discover/:port/:request_id", get(full_access_port_discover))
         .route("/v1/full-access/mutation/revert", post(full_access_revert))
         .route(
             "/v1/full-access/processes/:request_id",
@@ -875,6 +876,65 @@ async fn full_access_revert(
         "raw_bodies_included": false,
         "bytes_sent": 0
     })))
+}
+
+async fn full_access_port_discover(
+    State(state): State<AppState>,
+    Path((port, request_id)): Path<(u16, String)>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    validate_safe_request_id(&request_id)?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::LocalPortDiscover,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    if !full_access.policy.allowed_loopback_ports.contains(&port) {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "loopback_port_not_in_policy_scope",
+        ));
+    }
+    drop(full_access);
+    let listener = detect_loopback_listener(port)
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "loopback_listener_unavailable"))?;
+    let mut audit = state.audit.lock().await;
+    audit.append(AuditClass::Data, Some(request_id.clone()), format!("Discovered policy-scoped loopback listener on port {port}; process identity is bound locally and raw process fields were excluded."), true);
+    persist_audit(&state, &audit)?;
+    Ok(Json(
+        serde_json::json!({"decision":"auto_accepted","request_id":request_id,"port":port,"process_identity_hash":listener.process_identity_hash,"service":listener.service,"loopback_only":true,"raw_process_fields_included":false,"bytes_sent":0}),
+    ))
 }
 
 async fn full_access_command(

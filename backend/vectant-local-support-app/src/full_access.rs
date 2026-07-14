@@ -80,6 +80,7 @@ pub struct FullAccessPolicy {
     pub max_command_timeout_seconds: u64,
     pub max_command_output_bytes: usize,
     pub max_command_concurrency: u16,
+    pub allowed_loopback_ports: BTreeSet<u16>,
 }
 
 impl Default for FullAccessPolicy {
@@ -100,6 +101,7 @@ impl Default for FullAccessPolicy {
             max_command_timeout_seconds: 60,
             max_command_output_bytes: 65_536,
             max_command_concurrency: 1,
+            allowed_loopback_ports: BTreeSet::new(),
         }
     }
 }
