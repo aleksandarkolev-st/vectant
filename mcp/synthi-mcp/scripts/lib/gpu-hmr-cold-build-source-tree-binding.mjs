@@ -17,6 +17,73 @@ export const COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA =
   'synthi.gpu_hmr.cold_build_source_tree_snapshot.v1';
 export const COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY =
   'private_content_bound_snapshot_only_not_gpu_hmr_success';
+export const COLD_BUILD_SOURCE_TREE_SNAPSHOT_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_source_tree_snapshot_receipt.v1';
+export const COLD_BUILD_SOURCE_TREE_SNAPSHOT_RECEIPT_AUTHORITY =
+  'serialized_source_tree_snapshot_evidence_only_not_gpu_hmr_success';
+
+const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const PINNED_SOURCE_TREE_SNAPSHOTS = new WeakMap();
+const SOURCE_TREE_BINDING_EVIDENCE_KEYS = [
+  'schemaVersion',
+  'entries',
+  'entryCount',
+  'fileCount',
+  'directoryCount',
+  'symbolicLinkCount',
+  'totalByteLength',
+  'proofAuthority',
+  'sourceBindingHash',
+  'sourcePathIdentityHash',
+  'maxEntryCount',
+  'maxByteLength',
+  'acceptedAsSourceTreeBindingEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
+const SOURCE_TREE_SNAPSHOT_EVIDENCE_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'sourceBindingHash',
+  'sourceTreeBindingEvidenceHash',
+  'sourceTreePostBindingEvidenceHash',
+  'snapshotTreeBindingEvidenceHash',
+  'sourcePathIdentityHash',
+  'snapshotPathIdentityHash',
+  'entryCount',
+  'totalByteLength',
+  'snapshotMaterialized',
+  'acceptedAsSourceTreeSnapshotEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
+const SOURCE_TREE_SNAPSHOT_KEYS = [
+  'evidence',
+  'sourceTreeBindingEvidence',
+  'sourceTreePostBindingEvidence',
+  'snapshotTreeBindingEvidence',
+  'snapshotHostPath',
+];
+const SOURCE_TREE_SNAPSHOT_RECEIPT_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'sourceTreeBindingEvidence',
+  'sourceTreePostBindingEvidence',
+  'snapshotTreeBindingEvidence',
+  'snapshotEvidence',
+  'acceptedAsSourceTreeSnapshotReceipt',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -36,6 +103,13 @@ function recomputeEvidenceHash(evidence) {
   const projection = { ...evidence };
   delete projection.evidenceHash;
   return contentHash(stableJson(projection));
+}
+
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
 }
 
 function requireSafeInteger(value, name) {
@@ -149,6 +223,204 @@ function manifestProjection(evidence) {
     directoryCount: evidence?.directoryCount,
     symbolicLinkCount: evidence?.symbolicLinkCount,
     totalByteLength: evidence?.totalByteLength,
+  };
+}
+
+function sourceTreeRelativePathAccepted(value) {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || Buffer.byteLength(value, 'utf8') > 32 * 1024
+    || /[\0\r\n]/.test(value)
+    || path.posix.isAbsolute(value)
+    || path.win32.isAbsolute(value)
+  ) {
+    return false;
+  }
+  return value.split('/').every((part) => part && part !== '.' && part !== '..');
+}
+
+function sourceTreeEntryAccepted(entry) {
+  if (!sourceTreeRelativePathAccepted(entry?.path)) return false;
+  if (entry.kind === 'file') {
+    return exactKeys(entry, ['path', 'kind', 'mode', 'byteLength', 'contentHash'])
+      && Number.isSafeInteger(entry.mode)
+      && entry.mode >= 0
+      && entry.mode <= 0o777
+      && Number.isSafeInteger(entry.byteLength)
+      && entry.byteLength >= 0
+      && SHA256_PATTERN.test(entry.contentHash ?? '');
+  }
+  if (entry.kind === 'directory') {
+    return exactKeys(entry, ['path', 'kind', 'mode'])
+      && Number.isSafeInteger(entry.mode)
+      && entry.mode >= 0
+      && entry.mode <= 0o777;
+  }
+  if (entry.kind === 'symbolic_link') {
+    if (
+      !exactKeys(entry, ['path', 'kind', 'target'])
+      || typeof entry.target !== 'string'
+      || entry.target.length === 0
+      || Buffer.byteLength(entry.target, 'utf8') > 32 * 1024
+      || /[\0\r\n]/.test(entry.target)
+      || path.posix.isAbsolute(entry.target)
+      || path.win32.isAbsolute(entry.target)
+    ) {
+      return false;
+    }
+    const targetFromRoot = path.posix.normalize(path.posix.join(
+      path.posix.dirname(entry.path),
+      entry.target,
+    ));
+    return targetFromRoot === '.' || sourceTreeRelativePathAccepted(targetFromRoot);
+  }
+  return false;
+}
+
+function sourceTreeBindingEvidenceAccepted(evidence) {
+  if (
+    !exactKeys(evidence, SOURCE_TREE_BINDING_EVIDENCE_KEYS)
+    || evidence.schemaVersion !== COLD_BUILD_SOURCE_TREE_BINDING_SCHEMA
+    || evidence.proofAuthority !== COLD_BUILD_SOURCE_TREE_BINDING_AUTHORITY
+    || !Array.isArray(evidence.entries)
+    || !Number.isSafeInteger(evidence.entryCount)
+    || evidence.entryCount < 0
+    || evidence.entryCount !== evidence.entries.length
+    || !Number.isSafeInteger(evidence.fileCount)
+    || evidence.fileCount < 0
+    || !Number.isSafeInteger(evidence.directoryCount)
+    || evidence.directoryCount < 0
+    || !Number.isSafeInteger(evidence.symbolicLinkCount)
+    || evidence.symbolicLinkCount < 0
+    || !Number.isSafeInteger(evidence.totalByteLength)
+    || evidence.totalByteLength < 0
+    || !Number.isSafeInteger(evidence.maxEntryCount)
+    || evidence.maxEntryCount < 1
+    || evidence.entryCount > evidence.maxEntryCount
+    || !Number.isSafeInteger(evidence.maxByteLength)
+    || evidence.maxByteLength < 1
+    || evidence.totalByteLength > evidence.maxByteLength
+    || !SHA256_PATTERN.test(evidence.sourceBindingHash ?? '')
+    || !SHA256_PATTERN.test(evidence.sourcePathIdentityHash ?? '')
+    || !SHA256_PATTERN.test(evidence.evidenceHash ?? '')
+    || evidence.acceptedAsSourceTreeBindingEvidence !== true
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+  ) {
+    return false;
+  }
+
+  const entryKinds = new Map();
+  let fileCount = 0;
+  let directoryCount = 0;
+  let symbolicLinkCount = 0;
+  let totalByteLength = 0;
+  for (const entry of evidence.entries) {
+    if (!sourceTreeEntryAccepted(entry) || entryKinds.has(entry.path)) return false;
+    entryKinds.set(entry.path, entry.kind);
+    if (entry.kind === 'file') {
+      fileCount += 1;
+      totalByteLength += entry.byteLength;
+      if (!Number.isSafeInteger(totalByteLength)) return false;
+    } else if (entry.kind === 'directory') {
+      directoryCount += 1;
+    } else {
+      symbolicLinkCount += 1;
+    }
+  }
+  for (const entryPath of entryKinds.keys()) {
+    const parts = entryPath.split('/');
+    for (let index = 1; index < parts.length; index += 1) {
+      if (entryKinds.get(parts.slice(0, index).join('/')) !== 'directory') return false;
+    }
+  }
+
+  return evidence.fileCount === fileCount
+    && evidence.directoryCount === directoryCount
+    && evidence.symbolicLinkCount === symbolicLinkCount
+    && fileCount + directoryCount + symbolicLinkCount === evidence.entryCount
+    && evidence.totalByteLength === totalByteLength
+    && evidence.sourceBindingHash === contentHash(stableJson(manifestProjection(evidence)))
+    && evidence.evidenceHash === recomputeEvidenceHash(evidence);
+}
+
+function sourceTreeSnapshotEvidenceAccepted(evidence) {
+  const hashFields = [
+    'sourceBindingHash',
+    'sourceTreeBindingEvidenceHash',
+    'sourceTreePostBindingEvidenceHash',
+    'snapshotTreeBindingEvidenceHash',
+    'sourcePathIdentityHash',
+    'snapshotPathIdentityHash',
+    'evidenceHash',
+  ];
+  return exactKeys(evidence, SOURCE_TREE_SNAPSHOT_EVIDENCE_KEYS)
+    && evidence.schemaVersion === COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA
+    && evidence.proofAuthority === COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY
+    && hashFields.every((name) => SHA256_PATTERN.test(evidence[name] ?? ''))
+    && Number.isSafeInteger(evidence.entryCount)
+    && evidence.entryCount >= 0
+    && Number.isSafeInteger(evidence.totalByteLength)
+    && evidence.totalByteLength >= 0
+    && evidence.snapshotMaterialized === true
+    && evidence.acceptedAsSourceTreeSnapshotEvidence === true
+    && evidence.acceptedForGpuHmr === false
+    && evidence.gpuHmrSuccess === false
+    && evidence.canSatisfyRuntimeProof === false
+    && evidence.canSatisfyDispatchProof === false
+    && evidence.evidenceHash === recomputeEvidenceHash(evidence);
+}
+
+function sourceTreeSnapshotMaterialAccepted({
+  sourceTreeBindingEvidence,
+  sourceTreePostBindingEvidence,
+  snapshotTreeBindingEvidence,
+  snapshotEvidence,
+} = {}) {
+  const bindings = [
+    sourceTreeBindingEvidence,
+    sourceTreePostBindingEvidence,
+    snapshotTreeBindingEvidence,
+  ];
+  if (
+    bindings.some((binding) => !sourceTreeBindingEvidenceAccepted(binding))
+    || !sourceTreeSnapshotEvidenceAccepted(snapshotEvidence)
+  ) {
+    return false;
+  }
+  const sourceManifest = stableJson(manifestProjection(sourceTreeBindingEvidence));
+  return bindings.every((binding) => binding.sourceBindingHash === snapshotEvidence.sourceBindingHash)
+    && bindings.every((binding) => stableJson(manifestProjection(binding)) === sourceManifest)
+    && sourceTreeBindingEvidence.evidenceHash
+      === snapshotEvidence.sourceTreeBindingEvidenceHash
+    && sourceTreePostBindingEvidence.evidenceHash
+      === snapshotEvidence.sourceTreePostBindingEvidenceHash
+    && snapshotTreeBindingEvidence.evidenceHash
+      === snapshotEvidence.snapshotTreeBindingEvidenceHash
+    && sourceTreeBindingEvidence.sourcePathIdentityHash
+      === sourceTreePostBindingEvidence.sourcePathIdentityHash
+    && sourceTreeBindingEvidence.sourcePathIdentityHash
+      === snapshotEvidence.sourcePathIdentityHash
+    && snapshotTreeBindingEvidence.sourcePathIdentityHash
+      === snapshotEvidence.snapshotPathIdentityHash
+    && snapshotEvidence.sourcePathIdentityHash !== snapshotEvidence.snapshotPathIdentityHash
+    && sourceTreeBindingEvidence.maxEntryCount === sourceTreePostBindingEvidence.maxEntryCount
+    && sourceTreeBindingEvidence.maxEntryCount === snapshotTreeBindingEvidence.maxEntryCount
+    && sourceTreeBindingEvidence.maxByteLength === sourceTreePostBindingEvidence.maxByteLength
+    && sourceTreeBindingEvidence.maxByteLength === snapshotTreeBindingEvidence.maxByteLength
+    && bindings.every((binding) => binding.entryCount === snapshotEvidence.entryCount)
+    && bindings.every((binding) => binding.totalByteLength === snapshotEvidence.totalByteLength);
+}
+
+function sourceTreeSnapshotReceiptMaterial(snapshot) {
+  return {
+    sourceTreeBindingEvidence: snapshot?.sourceTreeBindingEvidence,
+    sourceTreePostBindingEvidence: snapshot?.sourceTreePostBindingEvidence,
+    snapshotTreeBindingEvidence: snapshot?.snapshotTreeBindingEvidence,
+    snapshotEvidence: snapshot?.evidence,
   };
 }
 
@@ -275,31 +547,9 @@ export async function computeColdBuildSourceTreeBinding(sourceHostPath, {
 
 export function verifyColdBuildSourceTreeBindingEvidence(evidence, sourceHostPath) {
   const sourcePath = requireHostPath(sourceHostPath);
-  const recomputedBindingHash = contentHash(stableJson(manifestProjection(evidence)));
   if (
-    evidence?.schemaVersion !== COLD_BUILD_SOURCE_TREE_BINDING_SCHEMA
-    || evidence?.proofAuthority !== COLD_BUILD_SOURCE_TREE_BINDING_AUTHORITY
-    || !Array.isArray(evidence?.entries)
-    || !Number.isSafeInteger(evidence?.entryCount)
-    || evidence.entryCount !== evidence.entries.length
-    || !Number.isSafeInteger(evidence?.fileCount)
-    || !Number.isSafeInteger(evidence?.directoryCount)
-    || !Number.isSafeInteger(evidence?.symbolicLinkCount)
-    || evidence.fileCount + evidence.directoryCount + evidence.symbolicLinkCount
-      !== evidence.entryCount
-    || !Number.isSafeInteger(evidence?.totalByteLength)
-    || !Number.isSafeInteger(evidence?.maxEntryCount)
-    || evidence.entryCount > evidence.maxEntryCount
-    || !Number.isSafeInteger(evidence?.maxByteLength)
-    || evidence.totalByteLength > evidence.maxByteLength
-    || evidence?.sourceBindingHash !== recomputedBindingHash
-    || evidence?.sourcePathIdentityHash !== pathIdentityHash(sourcePath)
-    || evidence?.acceptedAsSourceTreeBindingEvidence !== true
-    || evidence?.acceptedForGpuHmr !== false
-    || evidence?.gpuHmrSuccess !== false
-    || evidence?.canSatisfyRuntimeProof !== false
-    || evidence?.canSatisfyDispatchProof !== false
-    || recomputeEvidenceHash(evidence) !== evidence?.evidenceHash
+    !sourceTreeBindingEvidenceAccepted(evidence)
+    || evidence.sourcePathIdentityHash !== pathIdentityHash(sourcePath)
   ) {
     throw new Error('cold_build_source_tree_binding_evidence_invalid');
   }
@@ -382,13 +632,23 @@ export async function materializeColdBuildSourceTreeSnapshot(
     canSatisfyDispatchProof: false,
   };
   evidence.evidenceHash = recomputeEvidenceHash(evidence);
-  return Object.freeze({
+  const snapshot = Object.freeze({
     evidence: Object.freeze(evidence),
     sourceTreeBindingEvidence,
     sourceTreePostBindingEvidence,
     snapshotTreeBindingEvidence,
     snapshotHostPath: canonicalSnapshot,
   });
+  PINNED_SOURCE_TREE_SNAPSHOTS.set(snapshot, Object.freeze({
+    sourceHostPath: canonicalSource,
+    snapshotHostPath: canonicalSnapshot,
+    evidence: snapshot.evidence,
+    sourceTreeBindingEvidence,
+    sourceTreePostBindingEvidence,
+    snapshotTreeBindingEvidence,
+    materialHash: contentHash(stableJson(sourceTreeSnapshotReceiptMaterial(snapshot))),
+  }));
+  return snapshot;
 }
 
 export function verifyColdBuildSourceTreeSnapshot(
@@ -410,29 +670,78 @@ export function verifyColdBuildSourceTreeSnapshot(
   );
   const evidence = snapshot?.evidence;
   if (
-    snapshot?.snapshotHostPath !== path.resolve(snapshotHostPath)
-    || evidence?.schemaVersion !== COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA
-    || evidence?.proofAuthority !== COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY
-    || evidence?.sourceBindingHash !== sourceTreeBindingEvidence.sourceBindingHash
-    || evidence?.sourceBindingHash !== sourceTreePostBindingEvidence.sourceBindingHash
-    || evidence?.sourceBindingHash !== snapshotTreeBindingEvidence.sourceBindingHash
-    || evidence?.sourceTreeBindingEvidenceHash !== sourceTreeBindingEvidence.evidenceHash
-    || evidence?.sourceTreePostBindingEvidenceHash
-      !== sourceTreePostBindingEvidence.evidenceHash
-    || evidence?.snapshotTreeBindingEvidenceHash !== snapshotTreeBindingEvidence.evidenceHash
-    || evidence?.sourcePathIdentityHash !== sourceTreeBindingEvidence.sourcePathIdentityHash
-    || evidence?.snapshotPathIdentityHash !== snapshotTreeBindingEvidence.sourcePathIdentityHash
-    || evidence?.entryCount !== snapshotTreeBindingEvidence.entryCount
-    || evidence?.totalByteLength !== snapshotTreeBindingEvidence.totalByteLength
-    || evidence?.snapshotMaterialized !== true
-    || evidence?.acceptedAsSourceTreeSnapshotEvidence !== true
-    || evidence?.acceptedForGpuHmr !== false
-    || evidence?.gpuHmrSuccess !== false
-    || evidence?.canSatisfyRuntimeProof !== false
-    || evidence?.canSatisfyDispatchProof !== false
-    || recomputeEvidenceHash(evidence) !== evidence?.evidenceHash
+    !exactKeys(snapshot, SOURCE_TREE_SNAPSHOT_KEYS)
+    || snapshot.snapshotHostPath !== path.resolve(snapshotHostPath)
+    || !sourceTreeSnapshotMaterialAccepted({
+      sourceTreeBindingEvidence,
+      sourceTreePostBindingEvidence,
+      snapshotTreeBindingEvidence,
+      snapshotEvidence: evidence,
+    })
   ) {
     throw new Error('cold_build_source_tree_snapshot_evidence_invalid');
   }
   return snapshot;
+}
+
+export function createColdBuildSourceTreeSnapshotReceipt(snapshot) {
+  const pinned = PINNED_SOURCE_TREE_SNAPSHOTS.get(snapshot);
+  const material = sourceTreeSnapshotReceiptMaterial(snapshot);
+  const materialHash = contentHash(stableJson(material));
+  let snapshotValid = false;
+  if (pinned) {
+    try {
+      snapshotValid = verifyColdBuildSourceTreeSnapshot(
+        snapshot,
+        pinned.sourceHostPath,
+        pinned.snapshotHostPath,
+      ) === snapshot;
+    } catch {
+      snapshotValid = false;
+    }
+  }
+  if (
+    !pinned
+    || !snapshotValid
+    || pinned.snapshotHostPath !== snapshot?.snapshotHostPath
+    || pinned.evidence !== snapshot?.evidence
+    || pinned.sourceTreeBindingEvidence !== snapshot?.sourceTreeBindingEvidence
+    || pinned.sourceTreePostBindingEvidence !== snapshot?.sourceTreePostBindingEvidence
+    || pinned.snapshotTreeBindingEvidence !== snapshot?.snapshotTreeBindingEvidence
+    || pinned.materialHash !== materialHash
+  ) {
+    throw new Error('cold_build_source_tree_snapshot_receipt_source_invalid');
+  }
+
+  const receipt = {
+    schemaVersion: COLD_BUILD_SOURCE_TREE_SNAPSHOT_RECEIPT_SCHEMA,
+    proofAuthority: COLD_BUILD_SOURCE_TREE_SNAPSHOT_RECEIPT_AUTHORITY,
+    ...structuredClone(material),
+    acceptedAsSourceTreeSnapshotReceipt: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  return receipt;
+}
+
+export function verifyColdBuildSourceTreeSnapshotReceipt(receipt) {
+  if (
+    !exactKeys(receipt, SOURCE_TREE_SNAPSHOT_RECEIPT_KEYS)
+    || receipt.schemaVersion !== COLD_BUILD_SOURCE_TREE_SNAPSHOT_RECEIPT_SCHEMA
+    || receipt.proofAuthority !== COLD_BUILD_SOURCE_TREE_SNAPSHOT_RECEIPT_AUTHORITY
+    || !sourceTreeSnapshotMaterialAccepted(receipt)
+    || receipt.acceptedAsSourceTreeSnapshotReceipt !== true
+    || receipt.acceptedForGpuHmr !== false
+    || receipt.gpuHmrSuccess !== false
+    || receipt.canSatisfyRuntimeProof !== false
+    || receipt.canSatisfyDispatchProof !== false
+    || !SHA256_PATTERN.test(receipt.evidenceHash ?? '')
+    || receipt.evidenceHash !== recomputeEvidenceHash(receipt)
+  ) {
+    throw new Error('cold_build_source_tree_snapshot_receipt_invalid');
+  }
+  return receipt;
 }
