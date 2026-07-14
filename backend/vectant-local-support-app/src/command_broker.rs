@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use std::time::Duration;
@@ -112,8 +112,12 @@ pub async fn execute_command_cancellable(
     };
     let stdout = child.stdout.take().ok_or(CommandError::Io)?;
     let stderr = child.stderr.take().ok_or(CommandError::Io)?;
-    let stdout_task = tokio::spawn(read_capped(stdout, output_cap));
-    let stderr_task = tokio::spawn(read_capped(stderr, output_cap));
+    // stdout and stderr share one per-command budget. Independent caps would
+    // let a command retain twice the policy limit by splitting output across
+    // both streams.
+    let output_budget = Arc::new(OutputCaptureBudget::new(output_cap));
+    let stdout_task = tokio::spawn(read_capped(stdout, output_budget.clone()));
+    let stderr_task = tokio::spawn(read_capped(stderr, output_budget));
     let deadline = tokio::time::Instant::now() + timeout;
     let status = loop {
         if cancelled.load(Ordering::Acquire) {
@@ -211,9 +215,39 @@ pub fn validate_request(
     Ok(())
 }
 
+struct OutputCaptureBudget {
+    remaining: AtomicUsize,
+}
+
+impl OutputCaptureBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            remaining: AtomicUsize::new(limit),
+        }
+    }
+
+    fn reserve(&self, bytes: usize) -> bool {
+        let mut remaining = self.remaining.load(Ordering::Acquire);
+        loop {
+            if bytes > remaining {
+                return false;
+            }
+            match self.remaining.compare_exchange_weak(
+                remaining,
+                remaining - bytes,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(observed) => remaining = observed,
+            }
+        }
+    }
+}
+
 async fn read_capped(
     mut reader: impl tokio::io::AsyncRead + Unpin,
-    cap: usize,
+    budget: Arc<OutputCaptureBudget>,
 ) -> Result<(String, bool), CommandError> {
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 4096];
@@ -225,7 +259,7 @@ async fn read_capped(
         if count == 0 {
             break;
         }
-        if bytes.len().saturating_add(count) > cap {
+        if !budget.reserve(count) {
             // Keep draining the pipe so a noisy child cannot deadlock while its
             // output is rejected. Retain nothing after the configured cap.
             while reader
@@ -511,12 +545,13 @@ impl CommandJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_sanitized_environment, execute_command_cancellable, strip_terminal_controls,
-        CommandError, CommandRequest,
+        apply_sanitized_environment, execute_command_cancellable, read_capped,
+        strip_terminal_controls, CommandError, CommandRequest, OutputCaptureBudget,
     };
     use crate::full_access::FullAccessPolicy;
     use std::collections::BTreeSet;
     use std::sync::{atomic::AtomicBool, Arc};
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn terminal_controls_do_not_reach_command_context() {
@@ -549,6 +584,23 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(CommandError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn stdout_and_stderr_share_one_capture_budget() {
+        let (mut stdout_writer, stdout_reader) = tokio::io::duplex(2048);
+        let (mut stderr_writer, stderr_reader) = tokio::io::duplex(2048);
+        stdout_writer.write_all(&vec![b'a'; 600]).await.unwrap();
+        stderr_writer.write_all(&vec![b'b'; 600]).await.unwrap();
+        drop(stdout_writer);
+        drop(stderr_writer);
+
+        let budget = Arc::new(OutputCaptureBudget::new(1024));
+        let (stdout, stderr) = tokio::join!(
+            read_capped(stdout_reader, budget.clone()),
+            read_capped(stderr_reader, budget),
+        );
+        assert!(stdout.unwrap().1 || stderr.unwrap().1);
     }
 
     #[test]
