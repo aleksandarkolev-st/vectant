@@ -877,6 +877,20 @@ async fn enforce_cloud_policy(
             *last_status = None;
         }
     }
+
+    if !policy.full_access_allowed() {
+        let mut full_access = state.full_access.lock().await;
+        if full_access.receipt.is_some() {
+            full_access.revoke();
+            drop(full_access);
+            state.audit.lock().await.append(
+                vectant_local_support_app::audit::AuditClass::Security,
+                None,
+                "Cloud policy revoked Full Access locally; the local user must enroll again after an explicit new grant.",
+                true,
+            );
+        }
+    }
 }
 
 fn policy_requires_session_disconnect(policy: &DesktopPolicyStatus) -> bool {
@@ -1594,6 +1608,13 @@ mod tests {
             minimum_version: env!("CARGO_PKG_VERSION").to_string(),
             vulnerable_versions: Vec::new(),
             retention_days: 30,
+            full_access_enabled: false,
+            full_access_auto_approval_enabled: false,
+            full_access_process_visibility_enabled: false,
+            full_access_workspace_mutation_enabled: false,
+            full_access_command_execution_enabled: false,
+            full_access_local_port_discovery_enabled: false,
+            full_access_local_port_use_enabled: false,
             reason: "policy_current".to_string(),
             user_visible_message: "ok".to_string(),
         }

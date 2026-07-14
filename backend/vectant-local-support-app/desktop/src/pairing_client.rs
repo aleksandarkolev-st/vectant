@@ -43,6 +43,13 @@ pub struct DesktopPolicyStatus {
     pub minimum_version: String,
     pub vulnerable_versions: Vec<String>,
     pub retention_days: u16,
+    pub full_access_enabled: bool,
+    pub full_access_auto_approval_enabled: bool,
+    pub full_access_process_visibility_enabled: bool,
+    pub full_access_workspace_mutation_enabled: bool,
+    pub full_access_command_execution_enabled: bool,
+    pub full_access_local_port_discovery_enabled: bool,
+    pub full_access_local_port_use_enabled: bool,
     pub reason: String,
     pub user_visible_message: String,
 }
@@ -60,6 +67,13 @@ impl DesktopPolicyStatus {
             minimum_version: "unknown".to_string(),
             vulnerable_versions: Vec::new(),
             retention_days: 30,
+            full_access_enabled: false,
+            full_access_auto_approval_enabled: false,
+            full_access_process_visibility_enabled: false,
+            full_access_workspace_mutation_enabled: false,
+            full_access_command_execution_enabled: false,
+            full_access_local_port_discovery_enabled: false,
+            full_access_local_port_use_enabled: false,
             reason: "policy_unavailable".to_string(),
             user_visible_message:
                 "Cloud policy is unavailable. New pairing is disabled until it can be checked."
@@ -73,6 +87,10 @@ impl DesktopPolicyStatus {
 
     pub fn preview_allowed(&self) -> bool {
         self.available && self.enabled && !self.preview_disabled
+    }
+
+    pub fn full_access_allowed(&self) -> bool {
+        self.available && self.enabled && !self.update_required && self.full_access_enabled
     }
 
     pub fn update_version_allowed(&self, version: &str) -> bool {
@@ -282,6 +300,7 @@ pub fn parse_policy_status(
             .and_then(|days| u16::try_from(days).ok())
             .ok_or_else(|| "Local Support policy contained invalid retention days.".to_string())?,
     };
+    let full_access = parse_full_access_policy(&value)?;
     let too_old = compare_numeric_versions(current_version, minimum_version).is_lt();
     let update_required = vulnerable || too_old;
     let reason = if vulnerable {
@@ -324,9 +343,48 @@ pub fn parse_policy_status(
         minimum_version: minimum_version.to_string(),
         vulnerable_versions,
         retention_days,
+        full_access_enabled: full_access.0,
+        full_access_auto_approval_enabled: full_access.1,
+        full_access_process_visibility_enabled: full_access.2,
+        full_access_workspace_mutation_enabled: full_access.3,
+        full_access_command_execution_enabled: full_access.4,
+        full_access_local_port_discovery_enabled: full_access.5,
+        full_access_local_port_use_enabled: full_access.6,
         reason: reason.to_string(),
         user_visible_message: message.to_string(),
     })
+}
+
+fn parse_full_access_policy(
+    value: &Value,
+) -> Result<(bool, bool, bool, bool, bool, bool, bool), String> {
+    let Some(full_access) = value.get("full_access") else {
+        return Ok((false, false, false, false, false, false, false));
+    };
+    let object = full_access.as_object().ok_or_else(|| {
+        "Local Support policy contained invalid Full Access controls.".to_string()
+    })?;
+    let flag = |field: &str| {
+        object.get(field).and_then(Value::as_bool).ok_or_else(|| {
+            "Local Support policy contained invalid Full Access controls.".to_string()
+        })
+    };
+    let enabled = flag("enabled")?;
+    let auto = flag("auto_approval_enabled")?;
+    let processes = flag("process_visibility_enabled")?;
+    let mutation = flag("workspace_mutation_enabled")?;
+    let command = flag("command_execution_enabled")?;
+    let discovery = flag("local_port_discovery_enabled")?;
+    let port_use = flag("local_port_use_enabled")?;
+    Ok((
+        enabled,
+        enabled && auto,
+        enabled && processes,
+        enabled && mutation,
+        enabled && command,
+        enabled && discovery,
+        enabled && port_use,
+    ))
 }
 
 fn valid_numeric_version(value: &str) -> bool {
@@ -570,6 +628,37 @@ mod tests {
         assert!(current.agent_access_disabled);
         assert!(current.preview_allowed());
         assert_eq!(current.reason, "policy_current");
+
+        let full_access = parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "0.1.0",
+                "vulnerable_versions": [],
+                "emergency_controls": { "pairing_disabled": false },
+                "full_access": {
+                    "enabled": true,
+                    "auto_approval_enabled": true,
+                    "process_visibility_enabled": true,
+                    "workspace_mutation_enabled": false,
+                    "command_execution_enabled": true,
+                    "local_port_discovery_enabled": true,
+                    "local_port_use_enabled": false
+                }
+            }),
+            "0.1.0",
+        )
+        .unwrap();
+        assert!(full_access.full_access_allowed());
+        assert!(full_access.full_access_command_execution_enabled);
+        assert!(!full_access.full_access_workspace_mutation_enabled);
+        assert!(parse_policy_status(
+            serde_json::json!({
+                "enabled": true, "min_app_version": "0.1.0", "vulnerable_versions": [],
+                "full_access": { "enabled": true }
+            }),
+            "0.1.0"
+        )
+        .is_err());
 
         let old = parse_policy_status(
             serde_json::json!({
