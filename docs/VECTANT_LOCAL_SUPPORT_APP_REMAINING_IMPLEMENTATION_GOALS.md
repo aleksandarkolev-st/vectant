@@ -8,7 +8,9 @@ Verified in the current worktree after the 2026-07-13 evidence update:
 
 - Durable browser control commands now carry scrubbed audit records with authenticated actors, lease-bound outcomes, zero-byte accounting, and explicit queued/applied/denied decisions. The live relay probe and gated Playwright scenario cover command polling and outcome reporting (`b7667812a`, `7879ea01d`).
 - Local Support policy state now supports organization-scoped rows with global fallback. Relay, request-envelope, preview, transparency, admin-state, policy, and pairing create/claim/complete paths resolve the organization policy before authorization decisions (`58ff26e44`, `59d2abc0c`, `4ddaf6f69`).
+- The operations UI can select global or organization scope and sends that scope through live admin GET/POST requests (`75402ce45`). The public policy and transparency-state responses now use an allowlisted projection that excludes device proof secrets, account identifiers, and private revocation lists; live transparency prefers the org-scoped response (`b08f10f89`).
 - The current focused policy/pairing/control route suite passes 73/73 tests. The production Next build passes, Prisma schema validation passes, and the rebuilt standalone Chromium transparency suite passes 7/7.
+- The rebuilt standalone Chromium admin plus transparency suite passes 8/8 after the organization-scope UI change. The public-policy projection and affected API routes pass 60/60 focused tests.
 
 Still unverified or blocked after this update:
 
