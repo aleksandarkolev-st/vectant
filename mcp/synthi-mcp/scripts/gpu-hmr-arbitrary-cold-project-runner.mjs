@@ -52,6 +52,9 @@ export const ARBITRARY_COLD_PROJECT_RUN_AUTHORITY =
 export const DEFAULT_ARBITRARY_COLD_RUNNER_POLICY = Object.freeze({
   maxSourceEntryCount: 1_000_000,
   maxSourceByteLength: 64 * 1024 * 1024 * 1024,
+  maxReadOnlyInputCount: 128,
+  maxReadOnlyInputTotalEntryCount: 1_000_000,
+  maxReadOnlyInputTotalByteLength: 64 * 1024 * 1024 * 1024,
   maxWorkspaceEntryCount: 1_000_000,
   maxWorkspaceByteLength: 64 * 1024 * 1024 * 1024,
   maxCollectedEntryCount: 100_000,
@@ -69,6 +72,7 @@ const PINNED_RUNS = new WeakMap();
 const DESCRIPTOR_KEYS = [
   'schemaVersion',
   'sourceRoot',
+  'readOnlyInputs',
   'workerImage',
   'containerRuntime',
   'command',
@@ -203,6 +207,49 @@ function normalizeSourceLimits(value, policy) {
   return limits;
 }
 
+function normalizeReadOnlyInputs(value, policy) {
+  if (!Array.isArray(value) || value.length > policy.maxReadOnlyInputCount) {
+    throw new Error('arbitrary_cold_runner_read_only_inputs_invalid');
+  }
+  const inputs = value.map((entry) => {
+    if (!exactKeys(entry, ['sourceRoot', 'mountPath', 'sourceLimits'])) {
+      throw new Error('arbitrary_cold_runner_read_only_input_shape_invalid');
+    }
+    if (
+      typeof entry.mountPath !== 'string'
+      || entry.mountPath.length < 1
+      || entry.mountPath.length > 1024
+      || /[\\\0\r\n]/.test(entry.mountPath)
+    ) {
+      throw new Error('arbitrary_cold_runner_read_only_input_mount_path_invalid');
+    }
+    const mountPath = path.posix.normalize(entry.mountPath);
+    if (
+      mountPath !== entry.mountPath
+      || mountPath === '.'
+      || mountPath.startsWith('../')
+      || path.posix.isAbsolute(mountPath)
+      || path.win32.isAbsolute(mountPath)
+    ) {
+      throw new Error('arbitrary_cold_runner_read_only_input_mount_path_invalid');
+    }
+    return Object.freeze({
+      sourceRoot: requireHostPath(entry.sourceRoot, 'read_only_input_source_root'),
+      mountPath,
+      sourceLimits: Object.freeze(normalizeSourceLimits(entry.sourceLimits, policy)),
+    });
+  }).sort((left, right) => left.mountPath.localeCompare(right.mountPath));
+  if (inputs.some((input, index) => inputs.slice(index + 1).some((candidate) => {
+    const relative = path.posix.relative(input.mountPath, candidate.mountPath);
+    const reverse = path.posix.relative(candidate.mountPath, input.mountPath);
+    const within = (value) => value === '' || (value !== '..' && !value.startsWith('../'));
+    return within(relative) || within(reverse);
+  }))) {
+    throw new Error('arbitrary_cold_runner_read_only_input_mount_overlap');
+  }
+  return Object.freeze(inputs);
+}
+
 function enforceResourcePolicy(resources, policy) {
   const checks = [
     ['commandTimeoutMillis', 'maxCommandTimeoutMillis'],
@@ -239,6 +286,13 @@ export function normalizeArbitraryColdProjectDescriptor(input, { policy = {} } =
     normalizedPolicy,
   ));
   const sourceRoot = requireHostPath(copiedInput.sourceRoot, 'source_root');
+  const readOnlyInputs = normalizeReadOnlyInputs(copiedInput.readOnlyInputs, normalizedPolicy);
+  const allSourceRoots = [sourceRoot, ...readOnlyInputs.map((input) => input.sourceRoot)];
+  if (allSourceRoots.some((root, index) => allSourceRoots.slice(index + 1).some(
+    (candidate) => sameOrInside(root, candidate) || sameOrInside(candidate, root),
+  ))) {
+    throw new Error('arbitrary_cold_runner_read_only_input_source_overlap');
+  }
   if (
     typeof copiedInput.workerImage !== 'string'
     || copiedInput.workerImage.length < 1
@@ -257,6 +311,7 @@ export function normalizeArbitraryColdProjectDescriptor(input, { policy = {} } =
   return Object.freeze({
     schemaVersion: ARBITRARY_COLD_PROJECT_DESCRIPTOR_SCHEMA,
     sourceRoot,
+    readOnlyInputs,
     workerImage: copiedInput.workerImage,
     containerRuntime: copiedInput.containerRuntime,
     command: copiedInput.command,
@@ -295,6 +350,14 @@ function observedOutputContractProjection(outputEvidence) {
     Buffer.from(left.path, 'utf8'),
     Buffer.from(right.path, 'utf8'),
   ));
+}
+
+function readOnlyInputBindingProjection(inputs) {
+  return inputs.map((input) => ({
+    mountPath: input.mountPath,
+    sourceBindingHash: input.sourceTreeBindingEvidence.sourceBindingHash,
+    sourceTreeBindingEvidenceHash: input.sourceTreeBindingEvidence.evidenceHash,
+  })).sort((left, right) => left.mountPath.localeCompare(right.mountPath));
 }
 
 function mapWorkingDirectory(relativePath) {
@@ -366,19 +429,19 @@ async function verifyDirectoryIdentity(identity, errorCode) {
   return observed;
 }
 
-async function inspectArtifactRoot(artifactRoot, sourceRoot) {
+async function inspectArtifactRoot(artifactRoot, sourceRoots) {
   const requested = requireHostPath(artifactRoot, 'artifact_root');
-  const [identity, canonicalSource] = await Promise.all([
+  const [identity, canonicalSources] = await Promise.all([
     observeDirectoryIdentity(requested, 'arbitrary_cold_runner_artifact_root_invalid'),
-    realpath(sourceRoot),
+    Promise.all(sourceRoots.map((sourceRoot) => realpath(sourceRoot))),
   ]);
   if (comparablePath(identity.canonicalPath) !== comparablePath(requested)) {
     throw new Error('arbitrary_cold_runner_artifact_root_invalid');
   }
-  if (
+  if (canonicalSources.some((canonicalSource) => (
     sameOrInside(identity.canonicalPath, canonicalSource)
     || sameOrInside(canonicalSource, identity.canonicalPath)
-  ) {
+  ))) {
     throw new Error('arbitrary_cold_runner_artifact_source_overlap');
   }
   return identity;
@@ -497,7 +560,10 @@ export async function runArbitraryColdProject(descriptorInput, {
   });
   const descriptorHash = contentHash(stableJson(descriptor));
   const artifactRootStarted = process.hrtime.bigint();
-  const artifactRootIdentity = await inspectArtifactRoot(artifactRoot, descriptor.sourceRoot);
+  const artifactRootIdentity = await inspectArtifactRoot(artifactRoot, [
+    descriptor.sourceRoot,
+    ...descriptor.readOnlyInputs.map((input) => input.sourceRoot),
+  ]);
   const artifactRootValidationNanos = Number(
     process.hrtime.bigint() - artifactRootStarted
   );
@@ -517,9 +583,44 @@ export async function runArbitraryColdProject(descriptorInput, {
   verifyColdBuildSourceTreeBindingEvidence(sourceTreeBindingEvidence, descriptor.sourceRoot);
   const sourceBindingNanos = Number(process.hrtime.bigint() - sourceStarted);
 
+  const readOnlyInputStarted = process.hrtime.bigint();
+  const readOnlyInputTrees = [];
+  let readOnlyInputEntryCount = 0;
+  let readOnlyInputByteLength = 0;
+  for (const input of descriptor.readOnlyInputs) {
+    const sourceTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
+      input.sourceRoot,
+      input.sourceLimits,
+    );
+    verifyColdBuildSourceTreeBindingEvidence(sourceTreeBindingEvidence, input.sourceRoot);
+    readOnlyInputEntryCount += sourceTreeBindingEvidence.entryCount;
+    readOnlyInputByteLength += sourceTreeBindingEvidence.totalByteLength;
+    if (
+      !Number.isSafeInteger(readOnlyInputEntryCount)
+      || !Number.isSafeInteger(readOnlyInputByteLength)
+      || readOnlyInputEntryCount > normalizedPolicy.maxReadOnlyInputTotalEntryCount
+      || readOnlyInputByteLength > normalizedPolicy.maxReadOnlyInputTotalByteLength
+    ) {
+      throw new Error('arbitrary_cold_runner_read_only_input_aggregate_limit_exceeded');
+    }
+    readOnlyInputTrees.push(Object.freeze({
+      hostPath: input.sourceRoot,
+      mountPath: input.mountPath,
+      sourceTreeBindingEvidence,
+    }));
+  }
+  const readOnlyInputBindingNanos = Number(
+    process.hrtime.bigint() - readOnlyInputStarted
+  );
+  const readOnlyInputBindingSet = readOnlyInputBindingProjection(readOnlyInputTrees);
+  const readOnlyInputBindingSetHash = contentHash(stableJson(readOnlyInputBindingSet));
+
   const contract = createArbitraryColdProjectContract({
     sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
-    readOnlyInputs: [],
+    readOnlyInputs: readOnlyInputBindingSet.map(({ mountPath, sourceBindingHash }) => ({
+      mountPath,
+      sourceBindingHash,
+    })),
     workerImageId: workerImage.descriptor.imageId,
     workerImageOperatingSystem: workerImage.descriptor.operatingSystem,
     workerImageArchitecture: workerImage.descriptor.architecture,
@@ -551,6 +652,7 @@ export async function runArbitraryColdProject(descriptorInput, {
       executionNonce: randomBytes(16).toString('hex'),
       commandSpecHash: contract.commandSpecHash,
       sourceTreeBindingEvidence,
+      readOnlyInputTrees,
       releaseTreeBindingEvidence,
       command: contract.command,
       args: contract.args,
@@ -609,6 +711,11 @@ export async function runArbitraryColdProject(descriptorInput, {
       sourcePathIdentityHash: pathIdentityHash(descriptor.sourceRoot),
       sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
       sourceTreeBindingEvidenceHash: sourceTreeBindingEvidence.evidenceHash,
+      readOnlyInputBindings: readOnlyInputBindingSet,
+      readOnlyInputBindingSetHash,
+      readOnlyInputCount: readOnlyInputTrees.length,
+      readOnlyInputEntryCount,
+      readOnlyInputByteLength,
       workerImageEvidenceHash: workerImage.evidence.evidenceHash,
       workerImageId: workerImage.descriptor.imageId,
       contractHash: contract.contractHash,
@@ -628,6 +735,7 @@ export async function runArbitraryColdProject(descriptorInput, {
         artifactRootValidationNanos,
         imageInspectionNanos,
         sourceBindingNanos,
+        readOnlyInputBindingNanos,
         launcherMaterializationNanos,
         executionNanos,
         outputEvidenceNanos,
@@ -652,6 +760,8 @@ export async function runArbitraryColdProject(descriptorInput, {
       descriptorHash,
       artifactSession,
       sourceTreeBindingEvidence,
+      readOnlyInputTrees,
+      readOnlyInputBindingSetHash,
       workerImage,
       contract,
       launcherIdentity,
@@ -677,6 +787,20 @@ export async function verifyArbitraryColdProjectRun(result) {
       pinned.sourceTreeBindingEvidence,
       pinned.descriptor.sourceRoot,
     );
+    if (pinned.readOnlyInputTrees.length !== pinned.descriptor.readOnlyInputs.length) {
+      throw new Error('arbitrary_cold_runner_read_only_input_count_invalid');
+    }
+    for (let index = 0; index < pinned.readOnlyInputTrees.length; index += 1) {
+      const input = pinned.readOnlyInputTrees[index];
+      const descriptorInput = pinned.descriptor.readOnlyInputs[index];
+      if (input.mountPath !== descriptorInput.mountPath || input.hostPath !== descriptorInput.sourceRoot) {
+        throw new Error('arbitrary_cold_runner_read_only_input_identity_invalid');
+      }
+      verifyColdBuildSourceTreeBindingEvidence(
+        input.sourceTreeBindingEvidence,
+        descriptorInput.sourceRoot,
+      );
+    }
     verifyImmutableColdBuildWorkerImage(pinned.workerImage, pinned.descriptor.workerImage);
     verifyArbitraryColdProjectContract(pinned.contract);
     verifyColdBuildExecutionDriverResult(pinned.driverResult, pinned.plan);
@@ -720,6 +844,15 @@ export async function verifyArbitraryColdProjectRun(result) {
     }
   }
   const locatorProjection = artifactLocatorProjection(outputs);
+  const readOnlyInputBindingSet = readOnlyInputBindingProjection(pinned.readOnlyInputTrees);
+  const readOnlyInputEntryCount = pinned.readOnlyInputTrees.reduce(
+    (total, input) => total + input.sourceTreeBindingEvidence.entryCount,
+    0,
+  );
+  const readOnlyInputByteLength = pinned.readOnlyInputTrees.reduce(
+    (total, input) => total + input.sourceTreeBindingEvidence.totalByteLength,
+    0,
+  );
   const evidence = result?.evidence;
   if (
     pinned.evidenceHash !== evidence?.evidenceHash
@@ -731,6 +864,12 @@ export async function verifyArbitraryColdProjectRun(result) {
     || evidence?.sourcePathIdentityHash !== pathIdentityHash(pinned.descriptor.sourceRoot)
     || evidence?.sourceBindingHash !== pinned.sourceTreeBindingEvidence.sourceBindingHash
     || evidence?.sourceTreeBindingEvidenceHash !== pinned.sourceTreeBindingEvidence.evidenceHash
+    || stableJson(evidence?.readOnlyInputBindings) !== stableJson(readOnlyInputBindingSet)
+    || pinned.readOnlyInputBindingSetHash !== contentHash(stableJson(readOnlyInputBindingSet))
+    || evidence?.readOnlyInputBindingSetHash !== pinned.readOnlyInputBindingSetHash
+    || evidence?.readOnlyInputCount !== pinned.readOnlyInputTrees.length
+    || evidence?.readOnlyInputEntryCount !== readOnlyInputEntryCount
+    || evidence?.readOnlyInputByteLength !== readOnlyInputByteLength
     || evidence?.workerImageEvidenceHash !== pinned.workerImage.evidence.evidenceHash
     || evidence?.workerImageId !== pinned.workerImage.descriptor.imageId
     || evidence?.contractHash !== pinned.contract.contractHash

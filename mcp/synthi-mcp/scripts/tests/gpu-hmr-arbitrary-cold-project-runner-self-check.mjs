@@ -31,15 +31,18 @@ const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-self-ch
 const execFileAsync = promisify(execFile);
 try {
   const sourceRoot = path.join(root, 'opaque source tree');
+  const readOnlyInputRoot = path.join(root, 'opaque dependency tree');
   const artifactRoot = path.join(root, 'retained artifact cas');
   await Promise.all([
     mkdir(sourceRoot, { recursive: true }),
+    mkdir(readOnlyInputRoot, { recursive: true }),
     mkdir(artifactRoot, { recursive: true }),
   ]);
   const script = [
     '#!/bin/sh',
     'set -eu',
     `printf 'arbitrary cold project output\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/result.bin'`,
+    `cat '/workspace/inputs/opaque dependency/input.txt' >> '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/result.bin'`,
     `printf '{"count":3,"status":"built"}\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/result.json'`,
     '',
   ].join('\n');
@@ -48,10 +51,19 @@ try {
   await writeFile(scriptPath, script, { encoding: 'utf8', mode: 0o755 });
   await chmod(scriptPath, 0o755);
   await writeFile(path.join(sourceRoot, 'ordinary-input.txt'), 'ordinary source bytes\n');
+  await writeFile(path.join(readOnlyInputRoot, 'input.txt'), 'bound dependency bytes\n');
 
   const descriptor = {
     schemaVersion: ARBITRARY_COLD_PROJECT_DESCRIPTOR_SCHEMA,
     sourceRoot,
+    readOnlyInputs: [{
+      sourceRoot: readOnlyInputRoot,
+      mountPath: 'opaque dependency',
+      sourceLimits: {
+        maxEntryCount: 4096,
+        maxByteLength: 64 * 1024 * 1024,
+      },
+    }],
     workerImage: COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
     containerRuntime: 'runc',
     command: '/bin/sh',
@@ -96,6 +108,8 @@ try {
   };
   const normalized = normalizeArbitraryColdProjectDescriptor(descriptor);
   assert.equal(normalized.sourceRoot, path.resolve(sourceRoot));
+  assert.equal(normalized.readOnlyInputs[0].sourceRoot, path.resolve(readOnlyInputRoot));
+  assert.equal(normalized.readOnlyInputs[0].mountPath, 'opaque dependency');
   assert.throws(
     () => normalizeArbitraryColdProjectDescriptor({ ...descriptor, projectName: 'shortcut' }),
     /descriptor_shape_invalid/,
@@ -106,6 +120,20 @@ try {
       sourceLimits: { ...descriptor.sourceLimits, maxEntryCount: 1_000_001 },
     }),
     /source_limits_exceed_policy/,
+  );
+  assert.throws(
+    () => normalizeArbitraryColdProjectDescriptor({
+      ...descriptor,
+      readOnlyInputs: [{ ...descriptor.readOnlyInputs[0], mountPath: '../escape' }],
+    }),
+    /read_only_input_mount_path_invalid/,
+  );
+  assert.throws(
+    () => normalizeArbitraryColdProjectDescriptor({
+      ...descriptor,
+      readOnlyInputs: [{ ...descriptor.readOnlyInputs[0], sourceRoot }],
+    }),
+    /read_only_input_source_overlap/,
   );
   assert.throws(
     () => normalizeArbitraryColdProjectDescriptor({
@@ -133,11 +161,23 @@ try {
     () => runArbitraryColdProject(descriptor, { artifactRoot: sourceRoot }),
     /artifact_source_overlap/,
   );
+  await assert.rejects(
+    () => runArbitraryColdProject(descriptor, { artifactRoot: readOnlyInputRoot }),
+    /artifact_source_overlap/,
+  );
+  await assert.rejects(
+    () => runArbitraryColdProject(descriptor, {
+      artifactRoot,
+      policy: { maxReadOnlyInputTotalByteLength: 1 },
+    }),
+    /read_only_input_aggregate_limit_exceeded/,
+  );
 
   const runDescriptor = structuredClone(descriptor);
   const pendingRun = runArbitraryColdProject(runDescriptor, { artifactRoot });
   runDescriptor.outputs[0].role = 'mutated_after_run_started';
   runDescriptor.resources.memoryBytes *= 2;
+  runDescriptor.readOnlyInputs[0].mountPath = 'mutated after run started';
   const result = await pendingRun;
   assert.equal(await verifyArbitraryColdProjectRun(result), result);
   assert.equal(result.evidence.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_SCHEMA);
@@ -148,11 +188,26 @@ try {
   assert.equal(result.evidence.gpuHmrSuccess, false);
   assert.equal(result.evidence.canSatisfyRuntimeProof, false);
   assert.equal(result.evidence.canSatisfyDispatchProof, false);
+  assert.equal(result.evidence.readOnlyInputBindings.length, 1);
+  assert.deepEqual(
+    Object.keys(result.evidence.readOnlyInputBindings[0]).sort(),
+    ['mountPath', 'sourceBindingHash', 'sourceTreeBindingEvidenceHash'].sort(),
+  );
+  assert.equal(result.evidence.readOnlyInputBindings[0].mountPath, 'opaque dependency');
+  assert.match(result.evidence.readOnlyInputBindings[0].sourceBindingHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal('hostPath' in result.evidence.readOnlyInputBindings[0], false);
+  assert.equal('sourceRoot' in result.evidence.readOnlyInputBindings[0], false);
+  assert.equal(result.evidence.readOnlyInputCount, 1);
+  assert.equal(result.evidence.readOnlyInputEntryCount, 1);
+  assert.ok(result.evidence.readOnlyInputByteLength > 0);
   assert.equal(result.outputs.length, 2);
   const binary = result.outputs.find((output) => output.metadata.path === 'result.bin');
   const structured = result.outputs.find((output) => output.metadata.path === 'result.json');
   assert.equal(structured.metadata.declaredRole, 'structured_result');
-  assert.equal(binary.bytes.toString('utf8'), 'arbitrary cold project output\n');
+  assert.equal(
+    binary.bytes.toString('utf8'),
+    'arbitrary cold project output\nbound dependency bytes\n',
+  );
   assert.deepEqual(JSON.parse(structured.bytes.toString('utf8')), {
     count: 3,
     status: 'built',
