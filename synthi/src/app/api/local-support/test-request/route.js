@@ -22,14 +22,24 @@ export async function POST(req) {
   const accountId = session?.user?.id || session?.user?.email || "";
   if (!accountId) return json({ decision: "denied", reason: "authentication_required", bytes_sent: 0 }, 401);
 
-  const policy = await readDurableLocalSupportPolicy();
-  if (!policy.enabled) return json({ decision: "denied", reason: "feature_disabled", bytes_sent: 0 }, 403);
-
-  const paired = await prisma.localSupportSession.findFirst({
-    where: { accountId, status: "active", revokedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: "desc" },
-  });
+  let paired;
+  try {
+    paired = await prisma.localSupportSession.findFirst({
+      where: { accountId, status: "active", revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: "desc" },
+    });
+  } catch {
+    return json({ decision: "denied", reason: "local_app_state_unavailable", bytes_sent: 0 }, 503);
+  }
   if (!paired) return json({ decision: "denied", reason: "local_app_not_connected", bytes_sent: 0 }, 403);
+
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy(process.env, undefined, paired.orgId);
+  } catch {
+    return json({ decision: "denied", reason: "policy_store_unavailable", bytes_sent: 0 }, 503);
+  }
+  if (!policy.enabled) return json({ decision: "denied", reason: "feature_disabled", bytes_sent: 0 }, 403);
 
   const requestId = `test_${randomUUID().replaceAll("-", "")}`;
   const targetDisplay = "package.json";

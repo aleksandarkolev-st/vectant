@@ -31,9 +31,10 @@ export async function POST(req) {
     return jsonNoStore(denied.body, denied.status);
   }
 
+  const body = bodyResult.value;
   let policy;
   try {
-    policy = await readDurableLocalSupportPolicy();
+    policy = await readDurableLocalSupportPolicy(process.env, undefined, body?.org_id);
   } catch {
     return jsonNoStore({
       decision: "denied",
@@ -43,7 +44,6 @@ export async function POST(req) {
     }, 503);
   }
 
-  const body = bodyResult.value;
   const result = summarizeSecurityEvent(body, policy);
   if (result.decision !== "denied") {
     try {

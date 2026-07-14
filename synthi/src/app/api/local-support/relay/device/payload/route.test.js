@@ -1,10 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), store: vi.fn(), deny: vi.fn() }));
+const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), store: vi.fn(), deny: vi.fn(), policy: vi.fn() }));
 vi.mock("@/lib/local-support/deviceAuth", () => ({ authenticateLocalSupportDevice: mocks.authenticate }));
 vi.mock("@/lib/local-support/relayPayloadStore", () => ({
   storeApprovedRelayPayload: mocks.store,
   denyReviewedRelayRequest: mocks.deny,
+}));
+vi.mock("@/lib/local-support/policyStore", () => ({
+  readDurableLocalSupportPolicy: mocks.policy,
 }));
 
 import { POST } from "./route";
@@ -29,6 +32,24 @@ function validBody(overrides = {}) {
 }
 
 describe("device approved payload upload", () => {
+  beforeEach(() => {
+    mocks.policy.mockResolvedValue({ enabled: true });
+  });
+
+  it("blocks payload delivery when the effective organization policy is disabled", async () => {
+    mocks.authenticate.mockResolvedValue({
+      ok: true,
+      session: { sessionId: "sess_12345678", deviceFingerprint: "sha256:1111111111111111", orgId: "org_12345678" },
+    });
+    mocks.policy.mockResolvedValue({ enabled: false });
+
+    const response = await POST(request(validBody()));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ decision: "denied", reason: "feature_disabled" });
+    expect(mocks.store).not.toHaveBeenCalled();
+  });
+
   it("authenticates the exact body and stores through the encrypted payload store", async () => {
     mocks.authenticate.mockResolvedValue({
       ok: true,

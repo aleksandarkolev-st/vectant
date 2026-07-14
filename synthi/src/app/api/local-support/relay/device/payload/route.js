@@ -7,6 +7,7 @@ import {
   denyReviewedRelayRequest,
   storeApprovedRelayPayload,
 } from "@/lib/local-support/relayPayloadStore";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,17 @@ export async function POST(req) {
       authentication.reason === "device_auth_unavailable" ? 503 : 403,
     );
   }
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy(
+      process.env,
+      undefined,
+      authentication.session.orgId,
+    );
+  } catch {
+    return jsonNoStore(denied("policy_store_unavailable"), 503);
+  }
+  if (!policy.enabled) return jsonNoStore(denied("feature_disabled"), 403);
 
   let body;
   try {

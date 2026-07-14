@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   controlOutcome: vi.fn(),
   outcome: vi.fn(),
   updatePorts: vi.fn(),
+  policy: vi.fn(),
 }));
 
 vi.mock("@/lib/local-support/deviceAuth", () => ({
@@ -20,6 +21,9 @@ vi.mock("@/lib/local-support/relayStore", () => ({
 }));
 vi.mock("@/lib/local-support/sessionStore", () => ({
   updatePairedSessionPorts: mocks.updatePorts,
+}));
+vi.mock("@/lib/local-support/policyStore", () => ({
+  readDurableLocalSupportPolicy: mocks.policy,
 }));
 
 import { POST } from "./route";
@@ -41,6 +45,7 @@ function authenticate() {
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.authenticate.mockResolvedValue({ ok: false, reason: "device_signature_invalid" });
+  mocks.policy.mockResolvedValue({ enabled: true });
 });
 
 describe("device-authenticated relay endpoint", () => {
@@ -63,6 +68,18 @@ describe("device-authenticated relay endpoint", () => {
       raw_body_included: false,
       bytes_sent: 0,
     });
+    expect(mocks.lease).not.toHaveBeenCalled();
+  });
+
+  it("stops device relay activity when the effective organization policy is disabled", async () => {
+    authenticate();
+    mocks.policy.mockResolvedValue({ enabled: false });
+
+    const response = await POST(request({ action: "poll" }));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ decision: "denied", reason: "feature_disabled" });
+    expect(mocks.controlLease).not.toHaveBeenCalled();
     expect(mocks.lease).not.toHaveBeenCalled();
   });
 

@@ -10,6 +10,7 @@ import {
   recordRelayOutcome,
 } from "@/lib/local-support/relayStore";
 import { updatePairedSessionPorts } from "@/lib/local-support/sessionStore";
+import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -36,6 +37,17 @@ export async function POST(req) {
     const status = authentication.reason === "device_auth_unavailable" ? 503 : 403;
     return jsonNoStore(denied(authentication.reason), status);
   }
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy(
+      process.env,
+      undefined,
+      authentication.session.orgId,
+    );
+  } catch {
+    return jsonNoStore(denied("policy_store_unavailable"), 503);
+  }
+  if (!policy.enabled) return jsonNoStore(denied("feature_disabled"), 403);
 
   let body;
   try {
