@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
 import { waitHmrTool } from "../../src/tools/wait_hmr.js";
@@ -60,27 +60,55 @@ function passingProofLedger() {
   const record = {
     project_id: "wait-generic-gpu-project",
     edit_id: "gpu-edit",
+    runtime_session_id: "runtime-session-1",
     backend: "hip",
     classification: { project_kind: "gpu_project", edit_kind: "gpu_artifact_edit", route: "gpu_hmr" },
     contract_hash: HASH_C,
     artifact_before_hash: HASH_A,
     artifact_after_hash: HASH_B,
-    loader_event: { id: "load-1", artifact_hash: HASH_B, process_id: "pid-1", timestamp_monotonic_ns: 100 },
-    epoch_publish_event: { id: "publish-1", epoch: "epoch-2", artifact_hash: HASH_B, process_id: "pid-1", timestamp_monotonic_ns: 200 },
-    dispatch_event: { id: "dispatch-1", epoch: "epoch-2", artifact_hash: HASH_B, process_id: "pid-1", timestamp_monotonic_ns: 300 },
+    loader_event: {
+      id: "load-1",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: "runtime-session-1",
+      timestamp_monotonic_ns: 100,
+    },
+    epoch_publish_event: {
+      id: "publish-1",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: "runtime-session-1",
+      timestamp_monotonic_ns: 200,
+    },
+    dispatch_event: {
+      id: "dispatch-1",
+      epoch: "epoch-2",
+      artifact_hash: HASH_B,
+      process_id: "pid-1",
+      runtime_session_id: "runtime-session-1",
+      timestamp_monotonic_ns: 300,
+    },
     output_event: {
       id: "output-1",
       kind: "buffer_checksum",
       epoch: "epoch-2",
       artifact_hash: HASH_B,
       process_id: "pid-1",
+      runtime_session_id: "runtime-session-1",
       after_dispatch_id: "dispatch-1",
       passed: true,
       timestamp_monotonic_ns: 400,
     },
     retirement_event: { id: "retire-1", epoch: "epoch-1", proof: "stream_event_proven", timestamp_monotonic_ns: 500 },
-    process_identity: { process_id: "pid-1" },
+    process_identity: { process_id: "pid-1", runtime_session_id: "runtime-session-1" },
     device_identity: { device_uuid: "device-1" },
+    output_oracle_target: {
+      id: "allocation-output",
+      kind: "compute",
+      compute_only_target_verified: true,
+      evidence_refs: ["runtime:readback-oracle"],
+    },
     cpu_hmr_used: false,
     full_rebuild_used: false,
     process_restarted: false,
@@ -425,6 +453,7 @@ function installFakeAttached(
 
 describe("synthi_wait_hmr", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     session._resetForTests();
     eventLog._resetForTests();
     delete process.env["SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS"];
@@ -684,7 +713,18 @@ describe("synthi_wait_hmr", () => {
 
   it("waits for requested full runtime proof after applied terminal", async () => {
     const ledger = passingProofLedger();
+    const budget = resolvePipelineBudgetMs();
+    const issueInputs: Array<Parameters<typeof session.issueFrameGateToken>[0]> = [];
+    const issueTimes: number[] = [];
+    const issueFrameGateToken = session.issueFrameGateToken.bind(session);
+    vi.spyOn(session, "issueFrameGateToken").mockImplementation((input) => {
+      issueInputs.push(input);
+      issueTimes.push(Date.now());
+      return issueFrameGateToken(input);
+    });
+    session.setFrameAdvance(1, Date.now());
     const fake = installFakeAttached(async () => {
+      setTimeout(() => session.setFrameAdvance(2, Date.now() + budget + 100), 5);
       setTimeout(
         () =>
           fake.feedHmr({
@@ -711,9 +751,154 @@ describe("synthi_wait_hmr", () => {
         satisfied?: boolean;
         runtimeProofArtifactValidation?: { accepted?: boolean };
       };
+      gpu_proof_telemetry?: { observedAt?: number };
+      frame_gate: {
+        status: string;
+        frame_seq: number;
+        ts_ms: number;
+        gate_token?: string;
+        gate_token_issued_at_ms?: number;
+        runtime_binding_status?: string;
+        capture_binding_ready?: boolean;
+        evidence_binding_hash?: string;
+        evidence_binding_schema_version?: string;
+      };
     };
     expect(body.gpu_proof_validation?.satisfied).toBe(true);
     expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+    expect(issueInputs).toHaveLength(1);
+    expect(issueInputs[0]?.evidence_binding).toMatchObject({
+      schema_version: "synthi.gpu_hmr.frame_gate_runtime_binding.v1",
+      runtime_proof_state: "gpu-hmr-full-runtime-proven",
+      artifact_after_hash: HASH_B,
+      dispatch_id: "dispatch-1",
+      output_after_dispatch_id: "dispatch-1",
+      process_id: "pid-1",
+      runtime_session_id: "runtime-session-1",
+      device_id: "device-1",
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+    });
+    expect(issueTimes[0]).toBeGreaterThanOrEqual(body.gpu_proof_telemetry?.observedAt ?? Infinity);
+    expect(body.frame_gate.status).toBe("satisfied");
+    expect(body.frame_gate.runtime_binding_status).toBe("bound");
+    expect(body.frame_gate.capture_binding_ready).toBe(true);
+    expect(body.frame_gate.evidence_binding_schema_version).toBe(
+      "synthi.gpu_hmr.frame_gate_runtime_binding.v1"
+    );
+    expect(body.frame_gate.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(body.frame_gate.gate_token).toMatch(/^frame-gate:/);
+    const consumed = session.consumeFrameGateToken({
+      token: body.frame_gate.gate_token!,
+      session_id: "fixture",
+      frame_seq: body.frame_gate.frame_seq,
+      ts_ms: body.frame_gate.ts_ms,
+    });
+    expect(consumed.accepted).toBe(true);
+    expect(consumed.evidence_binding).toEqual(issueInputs[0]?.evidence_binding);
+    expect(consumed.evidence_binding_hash).toBe(body.frame_gate.evidence_binding_hash);
+  });
+
+  it("does not mint a legacy token when accepted strict proof lacks runtime binding material", async () => {
+    const ledger = passingProofLedger();
+    delete ledger.records[0]!.output_event.runtime_session_id;
+    refreshLedgerIdentity(ledger);
+    const issueSpy = vi.spyOn(session, "issueFrameGateToken");
+    const budget = resolvePipelineBudgetMs();
+    session.setFrameAdvance(1, Date.now());
+    const fake = installFakeAttached(async () => {
+      setTimeout(() => session.setFrameAdvance(2, Date.now() + budget + 100), 5);
+      setTimeout(
+        () => fake.feedHmr({
+          status: "gpu-proof-state",
+          resultState: "gpu-hmr-full-runtime-proven",
+          proofLedger: ledger,
+          runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+        }),
+        15
+      );
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 500,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      gpu_proof_validation?: { satisfied?: boolean };
+      frame_gate: {
+        gate_token?: string;
+        runtime_binding_status?: string;
+        capture_binding_ready?: boolean;
+        runtime_binding_failure_codes?: string[];
+      };
+    };
+    expect(body.gpu_proof_validation?.satisfied).toBe(true);
+    expect(issueSpy).not.toHaveBeenCalled();
+    expect(body.frame_gate.gate_token).toBeUndefined();
+    expect(body.frame_gate.runtime_binding_status).toBe("unavailable");
+    expect(body.frame_gate.capture_binding_ready).toBe(false);
+    expect(body.frame_gate.runtime_binding_failure_codes).toContain(
+      "runtime_session_identity_material_incomplete"
+    );
+  });
+
+  it("rejects strict proof observed before the applied boundary without minting a token", async () => {
+    const ledger = passingProofLedger();
+    const issueSpy = vi.spyOn(session, "issueFrameGateToken");
+    const budget = resolvePipelineBudgetMs();
+    const terminalObservedAt = Date.now() + 1_000;
+    session.setFrameAdvance(1, Date.now());
+    const fake = installFakeAttached(async () => {
+      setTimeout(
+        () => session.setFrameAdvance(2, terminalObservedAt + budget + 1),
+        5
+      );
+      setTimeout(
+        () => fake.feedHmr({
+          status: "gpu-proof-state",
+          resultState: "gpu-hmr-full-runtime-proven",
+          proofLedger: ledger,
+          runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+        }),
+        10
+      );
+      return {
+        status: "applied",
+        source: "hmr_status",
+        elapsedMs: 10,
+        observedAt: terminalObservedAt,
+      };
+    });
+
+    const res = await waitHmrTool({
+      timeoutMs: 100,
+      requireGpuFullRuntimeProof: true,
+    });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as {
+      error?: string;
+      gpu_proof_validation?: { satisfied?: boolean; reason?: string };
+      frame_gate: {
+        gate_token?: string;
+        runtime_binding_status?: string;
+        runtime_binding_failure_codes?: string[];
+      };
+    };
+    expect(body.error).toBe("gpu_hmr_proof_insufficient");
+    expect(body.gpu_proof_validation?.satisfied).toBe(false);
+    expect(body.gpu_proof_validation?.reason).toBe(
+      "proof_observed_before_required_boundary"
+    );
+    expect(issueSpy).not.toHaveBeenCalled();
+    expect(body.frame_gate.gate_token).toBeUndefined();
+    expect(body.frame_gate.runtime_binding_status).toBe("unavailable");
+    expect(body.frame_gate.runtime_binding_failure_codes).toContain(
+      "runtime_binding_proof_observation_order_invalid"
+    );
   });
 
   it("does not fail fast for a partial proof when a later full runtime proof arrives", async () => {
@@ -984,12 +1169,15 @@ describe("synthi_wait_hmr", () => {
   it("accepts full runtime proof only with recomputed ledger and runtime artifact success", async () => {
     const ledger = passingProofLedger();
     const fake = installFakeAttached(async () => {
-      fake.feedHmr({
-        status: "gpu-proof-state",
-        resultState: "gpu-hmr-full-runtime-proven",
-        proofLedger: ledger,
-        runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
-      });
+      setTimeout(
+        () => fake.feedHmr({
+          status: "gpu-proof-state",
+          resultState: "gpu-hmr-full-runtime-proven",
+          proofLedger: ledger,
+          runtimeProofArtifact: passingRuntimeProofArtifact(ledger),
+        }),
+        10
+      );
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
     });
 

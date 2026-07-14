@@ -22,6 +22,7 @@ import {
   validateGpuHmrProofState,
   type GpuHmrProofTelemetry,
 } from "../gpu_proof.js";
+import { buildGpuHmrFrameGateEvidenceBinding } from "../gpu_frame_gate_binding.js";
 
 interface WaitHmrArgs {
   timeoutMs?: unknown;
@@ -238,10 +239,96 @@ async function waitForDecodedFrameAtOrAfter(
   }
 }
 
+interface FrameGateObservation {
+  frame_seq: number;
+  ts_ms: number;
+}
+
+function issueFrameGateCaptureToken(input: {
+  attached: ReturnType<typeof session.require>;
+  frameGate: Record<string, unknown>;
+  observation: FrameGateObservation;
+  proof: GpuHmrProofTelemetry | null;
+  requiredProofState: string | null;
+  hmrObservedAtMs: number;
+  proofMatchOpts: GpuHmrProofMatchOpts;
+}): void {
+  const requiresFullRuntimeBinding = input.requiredProofState !== null
+    && gpuHmrProofStateRank(input.requiredProofState)
+      >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven");
+  let evidenceBinding: Readonly<Record<string, unknown>> | undefined;
+
+  if (requiresFullRuntimeBinding) {
+    const bindingResult = buildGpuHmrFrameGateEvidenceBinding({
+      proof: input.proof,
+      hmrObservedAtMs: input.hmrObservedAtMs,
+      proofMatchScope: {
+        module: input.proofMatchOpts.module ?? null,
+        preview_id: input.proofMatchOpts.previewId ?? null,
+        proof_since_ts_ms: input.proofMatchOpts.sinceTs ?? null,
+      },
+    });
+    if (!bindingResult.accepted || bindingResult.binding === null) {
+      input.frameGate["runtime_binding_status"] = "unavailable";
+      input.frameGate["capture_binding_ready"] = false;
+      input.frameGate["runtime_binding_failure_codes"] = bindingResult.failures
+        .map((failure) => failure.code);
+      input.frameGate["capture_binding_authority"] =
+        "frame_observation_without_runtime_binding_not_gpu_hmr_visual_proof";
+      return;
+    }
+    evidenceBinding = bindingResult.binding;
+  }
+
+  const gateToken = session.issueFrameGateToken({
+    session_id: input.attached.sessionId,
+    frame_seq: input.observation.frame_seq,
+    ts_ms: input.observation.ts_ms,
+    ...(evidenceBinding !== undefined ? { evidence_binding: evidenceBinding } : {}),
+  });
+  input.frameGate["gate_token"] = gateToken.token;
+  input.frameGate["gate_token_issued_at_ms"] = gateToken.issued_at_ms;
+  input.frameGate["gate_token_expires_at_ms"] = gateToken.expires_at_ms;
+  input.frameGate["capture_binding_ready"] = true;
+  if (evidenceBinding !== undefined) {
+    input.frameGate["runtime_binding_status"] = "bound";
+    input.frameGate["evidence_binding_hash"] = gateToken.evidence_binding_hash;
+    input.frameGate["evidence_binding_schema_version"] = evidenceBinding["schema_version"];
+    input.frameGate["runtime_proof_id"] = evidenceBinding["runtime_proof_id"];
+    input.frameGate["capture_binding_authority"] =
+      "runtime_bound_frame_gate_token_only_not_gpu_hmr_success";
+  } else {
+    input.frameGate["runtime_binding_status"] = "not_requested";
+    input.frameGate["capture_binding_authority"] =
+      "legacy_frame_gate_token_only_not_gpu_hmr_visual_proof";
+  }
+}
+
+function validateGpuHmrProofAtOrAfter(
+  proof: GpuHmrProofTelemetry | null,
+  requiredState: string,
+  minProofObservedAt?: number,
+): GpuHmrProofValidation {
+  const validation = validateGpuHmrProofState(proof, requiredState);
+  if (
+    validation.satisfied
+    && minProofObservedAt !== undefined
+    && (proof === null || proof.observedAt < minProofObservedAt)
+  ) {
+    return {
+      ...validation,
+      satisfied: false,
+      reason: "proof_observed_before_required_boundary",
+    };
+  }
+  return validation;
+}
+
 function responseWithGpuProofValidation(
   payload: Record<string, unknown>,
   proof: GpuHmrProofTelemetry | null,
-  requiredState: string | null
+  requiredState: string | null,
+  minProofObservedAt?: number,
 ): ToolResponse {
   attachDevLoopProofPendingStatus(payload, proof, requiredState);
   if (proof !== null) {
@@ -264,7 +351,11 @@ function responseWithGpuProofValidation(
     });
   }
 
-  const validation = validateGpuHmrProofState(proof, requiredState);
+  const validation = validateGpuHmrProofAtOrAfter(
+    proof,
+    requiredState,
+    minProofObservedAt,
+  );
   payload.gpu_proof_validation = validation;
   if (validation.proofLedgerValidation !== undefined) {
     payload.gpu_proof_ledger_validation = validation.proofLedgerValidation;
@@ -342,9 +433,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     let postApplyTerminal: HmrClassification | null = null;
     let notifyPostApplyTerminal: (() => void) | null = null;
     let notifyRequiredProof: (() => void) | null = null;
-    const requiredProofSatisfied = (): boolean => {
+    const requiredProofSatisfied = (minObservedAt?: number): boolean => {
       return requiredProofState !== null
-        && validateGpuHmrProofState(latestGpuProof, requiredProofState).satisfied;
+        && validateGpuHmrProofAtOrAfter(
+          latestGpuProof,
+          requiredProofState,
+          minObservedAt,
+        ).satisfied;
     };
     const requiredProofStructuralGap = (minObservedAt?: number): string | null => {
       if (requiredProofState === null) return null;
@@ -411,7 +506,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     ): { promise: Promise<"satisfied" | "terminal" | "structural_gap" | "timeout">; cancel: () => void } => {
       const settleOnTerminal = opts.settleOnTerminal !== false;
       const allowStructuralGap = opts.allowStructuralGap === true;
-      if (requiredProofState === null || requiredProofSatisfied()) {
+      if (requiredProofState === null || requiredProofSatisfied(opts.minProofObservedAt)) {
         return { promise: Promise.resolve("satisfied"), cancel: () => {} };
       }
       if (allowStructuralGap && requiredProofStructuralGap(opts.minProofObservedAt) !== null) {
@@ -434,7 +529,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           resolve(value);
         };
         const onProofOrTerminal = (): void => {
-          if (requiredProofSatisfied()) {
+          if (requiredProofSatisfied(opts.minProofObservedAt)) {
             settle("satisfied");
           } else if (allowStructuralGap && requiredProofStructuralGap(opts.minProofObservedAt) !== null) {
             settle("structural_gap");
@@ -485,7 +580,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           gpu_hmr_success: false,
         },
         proof_wait_timeout_intelligence: decision,
-      }, latestGpuProof, requiredProofState);
+      }, latestGpuProof, requiredProofState, hmrObservedAt ?? undefined);
     };
 
     const terminalWait = attached.channels.hmr.waitForTerminal({
@@ -522,9 +617,12 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       result = await terminalWait;
     }
     let frameGate: Record<string, unknown> | undefined;
+    let frameGateObservation: FrameGateObservation | null = null;
+    let hmrObservedAtForFrameGate: number | null = null;
 
     if (result.status === "applied") {
       const tHmr = result.observedAt ?? Date.now();
+      hmrObservedAtForFrameGate = tHmr;
       const budget = session.pipelineBudgetMs();
       const remaining = Math.max(0, timeoutMs - (Date.now() - start));
       if (session.frameSeqGateEnabled()) {
@@ -560,22 +658,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         }
         if (outcome.kind === "frame") {
           const satisfiedBy = outcome.satisfiedBy;
-          const gateToken = satisfiedBy
-            ? session.issueFrameGateToken({
-                session_id: attached.sessionId,
-                frame_seq: satisfiedBy.frame_seq,
-                ts_ms: satisfiedBy.ts_ms,
-              })
-            : null;
+          frameGateObservation = satisfiedBy;
           frameGate = satisfiedBy
             ? {
                 status: "satisfied",
                 frame_seq: satisfiedBy.frame_seq,
                 ts_ms: satisfiedBy.ts_ms,
                 session_id: attached.sessionId,
-                gate_token: gateToken?.token,
-                gate_token_issued_at_ms: gateToken?.issued_at_ms,
-                gate_token_expires_at_ms: gateToken?.expires_at_ms,
                 capture_binding_required: true,
                 pipeline_budget_ms: budget,
               }
@@ -627,22 +716,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
           }, latestGpuProof, requiredProofState);
         }
         const satisfiedBy = outcome.kind === "decoded_frame" ? outcome.satisfiedBy : null;
-        const gateToken = satisfiedBy
-          ? session.issueFrameGateToken({
-              session_id: attached.sessionId,
-              frame_seq: satisfiedBy.frame_seq,
-              ts_ms: satisfiedBy.ts_ms,
-            })
-          : null;
+        frameGateObservation = satisfiedBy;
         frameGate = satisfiedBy
           ? {
               status: "satisfied",
               frame_seq: satisfiedBy.frame_seq,
               ts_ms: satisfiedBy.ts_ms,
               session_id: attached.sessionId,
-              gate_token: gateToken?.token,
-              gate_token_issued_at_ms: gateToken?.issued_at_ms,
-              gate_token_expires_at_ms: gateToken?.expires_at_ms,
               capture_binding_required: true,
               capture_binding_source: "decoded_frame",
               pipeline_budget_ms: budget,
@@ -659,9 +739,13 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       }
     }
 
-    if (result.status === "applied" && requiredProofState !== null && !requiredProofSatisfied()) {
+    if (
+      result.status === "applied"
+      && requiredProofState !== null
+      && !requiredProofSatisfied(hmrObservedAtForFrameGate ?? undefined)
+    ) {
       const remaining = Math.max(0, timeoutMs - (Date.now() - start));
-      const hmrObservedAtForProofWait = result.observedAt ?? start;
+      const hmrObservedAtForProofWait = hmrObservedAtForFrameGate ?? result.observedAt ?? start;
       const proofWait = waitForRequiredGpuProof(remaining, {
         allowStructuralGap: true,
         minProofObservedAt: hmrObservedAtForProofWait,
@@ -687,6 +771,24 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       }
     }
 
+    if (
+      result.status === "applied"
+      && frameGate !== undefined
+      && frameGateObservation !== null
+      && hmrObservedAtForFrameGate !== null
+      && (requiredProofState === null || isKnownGpuHmrProofState(requiredProofState))
+    ) {
+      issueFrameGateCaptureToken({
+        attached,
+        frameGate,
+        observation: frameGateObservation,
+        proof: latestGpuProof,
+        requiredProofState,
+        hmrObservedAtMs: hmrObservedAtForFrameGate,
+        proofMatchOpts,
+      });
+    }
+
     return responseWithGpuProofValidation({
       status: result.status,
       elapsedMs: Date.now() - start,
@@ -700,7 +802,9 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         terminal_sequence: result.sequence ?? null,
       } : {}),
       ...(frameGate !== undefined ? { frame_gate: frameGate } : {}),
-    }, latestGpuProof, requiredProofState);
+    }, latestGpuProof, requiredProofState, result.status === "applied"
+      ? hmrObservedAtForFrameGate ?? undefined
+      : undefined);
   } catch (err) {
     return errorFromException("wait_hmr_failed", err);
   } finally {
