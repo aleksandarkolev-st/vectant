@@ -4,6 +4,8 @@ import prisma from "@/lib/prisma";
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 60_000;
 const CONTROL_COMMAND_LEASE_MS = 15_000;
+const REVOCABLE_RELAY_STATUSES = ["queued", "leased", "review_pending"];
+const REVOCABLE_CONTROL_STATUSES = ["queued", "leased"];
 
 export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
   "enable_fast_support",
@@ -114,6 +116,9 @@ export async function recordLocalControlOutcome(
   const safeDecision = decision === "applied" ? "applied" : "denied";
   const safeReason = scrubControlReason(reason);
   return client.$transaction(async (tx) => {
+    const command = await tx.localSupportControlCommand.findUnique({
+      where: { commandId },
+    });
     const updated = await tx.localSupportControlCommand.updateMany({
       where: {
         commandId,
@@ -133,11 +138,59 @@ export async function recordLocalControlOutcome(
       },
     });
     if (updated.count !== 1) return null;
+    const sessionRevoked = safeDecision === "applied" && command?.action === "disconnect_session";
+    if (sessionRevoked) {
+      await tx.localSupportSession.updateMany({
+        where: {
+          sessionId,
+          deviceFingerprint,
+          status: "active",
+        },
+        data: {
+          status: "revoked",
+          revokedAt: now,
+        },
+      });
+      await tx.localSupportRelayPayload.deleteMany({
+        where: { request: { sessionId } },
+      });
+      await tx.localSupportRelayRequest.updateMany({
+        where: {
+          sessionId,
+          status: { in: REVOCABLE_RELAY_STATUSES },
+        },
+        data: {
+          status: "revoked",
+          completedAt: now,
+          leaseId: null,
+          leaseExpiresAt: null,
+        },
+      });
+      await tx.localSupportControlCommand.updateMany({
+        where: {
+          sessionId,
+          commandId: { not: commandId },
+          status: { in: REVOCABLE_CONTROL_STATUSES },
+        },
+        data: {
+          status: "revoked",
+          completedAt: now,
+          leaseId: null,
+          leaseExpiresAt: null,
+          resultReason: "local_session_disconnected",
+        },
+      });
+    }
     await tx.localSupportControlAudit.update({
       where: { commandId },
       data: { decision: safeDecision, reason: safeReason },
     });
-    return { decision: safeDecision, reason: safeReason, command_id: commandId };
+    return {
+      decision: safeDecision,
+      reason: safeReason,
+      command_id: commandId,
+      session_revoked: sessionRevoked,
+    };
   });
 }
 

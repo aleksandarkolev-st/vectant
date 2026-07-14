@@ -46,6 +46,12 @@ function fakeClient(overrides = {}) {
       findFirst: vi.fn(async () => controlRecord()),
       findUnique: vi.fn(async () => controlRecord()),
     },
+    localSupportSession: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    },
+    localSupportRelayPayload: {
+      deleteMany: vi.fn(async () => ({ count: 1 })),
+    },
     localSupportControlAudit: {
       create: vi.fn(async ({ data }) => ({ id: "control-audit-1", ...data })),
       update: vi.fn(async ({ data }) => ({ id: "control-audit-1", ...data })),
@@ -162,7 +168,11 @@ describe("durable local support relay store", () => {
       decision: "applied",
       reason: "pause_applied Authorization: Bearer should-not-persist",
     }, client, new Date("2030-01-01T00:00:01.000Z"));
-    expect(result).toMatchObject({ decision: "applied", command_id: "cmd_12345678" });
+    expect(result).toMatchObject({
+      decision: "applied",
+      command_id: "cmd_12345678",
+      session_revoked: false,
+    });
     expect(JSON.stringify(result)).not.toContain("should-not-persist");
     expect(client.localSupportControlCommand.updateMany).toHaveBeenCalledWith({
       where: expect.objectContaining({ commandId: "cmd_12345678", leaseId: "lease-control-1" }),
@@ -172,6 +182,39 @@ describe("durable local support relay store", () => {
       where: { commandId: "cmd_12345678" },
       data: expect.objectContaining({ decision: "applied" }),
     });
+  });
+
+  it("revokes a cloud session and purges queued relay work after local disconnect", async () => {
+    const { tx, client } = fakeClient();
+    tx.localSupportControlCommand.findUnique.mockResolvedValueOnce(controlRecord({
+      action: "disconnect_session",
+    }));
+
+    const result = await recordLocalControlOutcome({
+      commandId: "cmd_12345678",
+      leaseId: "lease-control-1",
+      sessionId: "sess_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      decision: "applied",
+      reason: "session_disconnected",
+    }, client, new Date("2030-01-01T00:00:01.000Z"));
+
+    expect(result).toMatchObject({ session_revoked: true });
+    expect(tx.localSupportSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        sessionId: "sess_12345678",
+        deviceFingerprint: "sha256:3333333333333333",
+        status: "active",
+      },
+      data: { status: "revoked", revokedAt: new Date("2030-01-01T00:00:01.000Z") },
+    });
+    expect(tx.localSupportRelayPayload.deleteMany).toHaveBeenCalledWith({
+      where: { request: { sessionId: "sess_12345678" } },
+    });
+    expect(tx.localSupportRelayRequest.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ sessionId: "sess_12345678" }),
+      data: expect.objectContaining({ status: "revoked" }),
+    }));
   });
 
   it("queues only the signed envelope and a scrubbed control audit", async () => {
