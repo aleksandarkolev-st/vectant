@@ -81,7 +81,7 @@ use crate::hmr::gpu_proof::{
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
-use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
+use crate::hmr::gpu_stream_drain::{drain_context, drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation,
     install_launch_dispatcher_with_metadata_timed, launch_records_snapshot,
@@ -2536,17 +2536,20 @@ impl StreamOrderingDrain {
     }
 
     fn retirement_strategy_for_log(&self) -> &'static str {
+        if matches!(
+            self.outcome,
+            DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                ..
+            }
+        ) {
+            return "conservative_drain_fallback";
+        }
         if self.stream_tokens.is_empty() {
             return "no_retirement_required";
         }
 
-        match self.outcome {
-            DrainOutcome::Synced {
-                scope: DrainScope::Context,
-                ..
-            } => "conservative_drain_fallback",
-            _ => "epoch_fence",
-        }
+        "epoch_fence"
     }
 }
 
@@ -2581,7 +2584,11 @@ fn drain_affected_streams(
 
     let stream_tokens = affected_stream_tokens_for_symbols(expected_symbols);
     if stream_tokens.is_empty() {
-        return StreamOrderingDrain::no_old_generation(budget_ms);
+        return StreamOrderingDrain {
+            outcome: drain_context(symbols, budget_ms),
+            scope_label: "context",
+            stream_tokens,
+        };
     }
 
     let started = Instant::now();
@@ -4833,6 +4840,31 @@ mod tests {
     }
 
     #[test]
+    fn hot_reload_without_observed_streams_uses_context_drain() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        CTX_SYNC_CALLS.store(0, Ordering::SeqCst);
+
+        let drain = drain_affected_streams(
+            &stub_symbols(),
+            &["unobserved_kernel".to_string()],
+            false,
+            25,
+        );
+
+        assert!(drain.is_synced());
+        assert_eq!(drain.scope_label, "context");
+        assert!(drain.stream_tokens.is_empty());
+        assert_eq!(drain.outcome.short_label(), "synced");
+        assert_eq!(
+            drain.retirement_strategy_for_log(),
+            "conservative_drain_fallback"
+        );
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 1);
+        reset_for_test();
+    }
+
+    #[test]
     fn full_runtime_proof_refuses_unattested_device_identity() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
@@ -5083,7 +5115,7 @@ mod tests {
                 && publish.contains("dispatch_table_hash_after=0x")
                 && publish.contains("retired_modules=1")
                 && publish.contains("stream_ordering_proven=true")
-                && publish.contains("retirement_strategy=no_retirement_required")
+                && publish.contains("retirement_strategy=conservative_drain_fallback")
                 && publish.contains("delayed_unload_result=pending")
         );
         assert!(publish.contains(&format!("old_artifact_id=artifact:sha256:{first_hash}")));
@@ -5094,7 +5126,7 @@ mod tests {
         assert!(a.last_reload_log().iter().any(|line| line
             .contains("dispatcher_epoch event=retired")
             && line.contains("old_generation_retired=true")
-            && line.contains("retirement_strategy=no_retirement_required")
+            && line.contains("retirement_strategy=conservative_drain_fallback")
             && line.contains("delayed_unload_result=unloaded")));
         let final_graph_line = a
             .last_reload_log()
