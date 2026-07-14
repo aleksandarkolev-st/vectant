@@ -2,12 +2,20 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH } from './gpu-hmr-cold-build-container-contract.mjs';
-import { verifyColdBuildExecutionDriverResult } from './gpu-hmr-cold-build-execution-driver.mjs';
+import {
+  createColdBuildExecutionDriverReceipt,
+  verifyColdBuildExecutionDriverReceipt,
+  verifyColdBuildExecutionDriverResult,
+} from './gpu-hmr-cold-build-execution-driver.mjs';
 
 export const COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA =
   'synthi.gpu_hmr.cold_build_output_evidence.v2';
 export const COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY =
   'recomputed_collector_output_bytes_only_not_gpu_hmr_success';
+export const COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_output_evidence_receipt.v1';
+export const COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_AUTHORITY =
+  'serialized_recomputed_collector_output_only_not_gpu_hmr_success';
 
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const OUTPUT_MANIFEST_SCHEMA = 'synthi.gpu_hmr.cold_build_output_manifest.v1';
@@ -285,4 +293,145 @@ export function verifyColdBuildOutputEvidence(result, driverResult, plan) {
     throw new Error('cold_build_output_evidence_result_invalid');
   }
   return result;
+}
+
+export function createColdBuildOutputEvidenceReceipt(result, driverResult, plan) {
+  verifyColdBuildOutputEvidence(result, driverResult, plan);
+  const receipt = {
+    schemaVersion: COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_SCHEMA,
+    proofAuthority: COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_AUTHORITY,
+    executionDriverReceipt: createColdBuildExecutionDriverReceipt(driverResult, plan),
+    outputEvidence: structuredClone(result.evidence),
+    acceptedAsColdBuildOutputEvidenceReceipt: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  return receipt;
+}
+
+export function verifyColdBuildOutputEvidenceReceipt(receipt) {
+  const driverReceipt = receipt?.executionDriverReceipt;
+  const driverEvidence = driverReceipt?.driverEvidence;
+  const plan = driverReceipt?.executionPlanReceipt?.planProjection;
+  const evidence = receipt?.outputEvidence;
+  try {
+    verifyColdBuildExecutionDriverReceipt(driverReceipt);
+  } catch {
+    throw new Error('cold_build_output_evidence_receipt_invalid');
+  }
+  const driverPayloadsByPath = new Map(
+    (driverEvidence?.payloadManifest ?? []).map((entry) => [entry.path, entry]),
+  );
+  const outputManifestPayload = driverPayloadsByPath.get(
+    COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH,
+  );
+  if (
+    !exactKeys(receipt, [
+      'schemaVersion',
+      'proofAuthority',
+      'executionDriverReceipt',
+      'outputEvidence',
+      'acceptedAsColdBuildOutputEvidenceReceipt',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || receipt.schemaVersion !== COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_SCHEMA
+    || receipt.proofAuthority !== COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_AUTHORITY
+    || !exactKeys(evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'driverExecutionEvidenceHash',
+      'planHash',
+      'executionNonce',
+      'commandSpecHash',
+      'sourceBindingHash',
+      'outputManifestSchemaVersion',
+      'outputManifestContentHash',
+      'outputManifestByteLength',
+      'outputs',
+      'outputCount',
+      'outputSetHash',
+      'declarationMetadataAuthority',
+      'acceptedAsColdBuildOutputEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || evidence.schemaVersion !== COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA
+    || evidence.proofAuthority !== COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY
+    || evidence.driverExecutionEvidenceHash !== driverEvidence?.evidenceHash
+    || evidence.planHash !== driverReceipt?.executionPlanReceipt?.planHash
+    || evidence.executionNonce !== plan?.executionNonce
+    || evidence.commandSpecHash !== plan?.commandSpecHash
+    || evidence.sourceBindingHash !== plan?.sourceBindingHash
+    || evidence.outputManifestSchemaVersion !== OUTPUT_MANIFEST_SCHEMA
+    || !HASH_PATTERN.test(evidence.outputManifestContentHash ?? '')
+    || !Number.isSafeInteger(evidence.outputManifestByteLength)
+    || evidence.outputManifestByteLength < 2
+    || outputManifestPayload?.contentHash !== evidence.outputManifestContentHash
+    || outputManifestPayload?.byteLength !== evidence.outputManifestByteLength
+    || !Array.isArray(evidence.outputs)
+    || evidence.outputs.length < 1
+    || driverPayloadsByPath.size !== evidence.outputs.length + 1
+    || evidence.outputs.some((output) => {
+      const payload = driverPayloadsByPath.get(output?.path);
+      return !exactKeys(output, [
+        'path',
+        'declaredRole',
+        'declaredArtifactKind',
+        'declaredMediaType',
+        'declaredContentHash',
+        'declaredByteLength',
+        'observedContentHash',
+        'observedByteLength',
+        'mode',
+        'metadataAuthority',
+      ])
+        || normalizeRelativeOutputPath(output.path) !== output.path
+        || typeof output.declaredRole !== 'string'
+        || output.declaredRole.length < 1
+        || typeof output.declaredArtifactKind !== 'string'
+        || output.declaredArtifactKind.length < 1
+        || typeof output.declaredMediaType !== 'string'
+        || output.declaredMediaType.length < 1
+        || !HASH_PATTERN.test(output.declaredContentHash ?? '')
+        || output.declaredContentHash !== output.observedContentHash
+        || !Number.isSafeInteger(output.declaredByteLength)
+        || output.declaredByteLength < 0
+        || output.declaredByteLength !== output.observedByteLength
+        || !Number.isSafeInteger(output.mode)
+        || output.mode < 0
+        || output.mode > 0o7777
+        || output.metadataAuthority !== 'advisory_only_not_output_acceptance'
+        || payload?.contentHash !== output.observedContentHash
+        || payload?.byteLength !== output.observedByteLength
+        || payload?.mode !== output.mode;
+    })
+    || evidence.outputCount !== evidence.outputs.length
+    || evidence.outputSetHash !== contentHash(stableJson(evidence.outputs))
+    || evidence.declarationMetadataAuthority !== 'advisory_only_not_output_acceptance'
+    || evidence.acceptedAsColdBuildOutputEvidence !== true
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+    || receipt.acceptedAsColdBuildOutputEvidenceReceipt !== true
+    || receipt.acceptedForGpuHmr !== false
+    || receipt.gpuHmrSuccess !== false
+    || receipt.canSatisfyRuntimeProof !== false
+    || receipt.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(receipt) !== receipt.evidenceHash
+  ) {
+    throw new Error('cold_build_output_evidence_receipt_invalid');
+  }
+  return receipt;
 }

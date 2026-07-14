@@ -41,9 +41,13 @@ import {
 import { createColdBuildLauncherExecutionPlan } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
 import {
   COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY,
+  COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_AUTHORITY,
+  COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_SCHEMA,
   COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA,
+  createColdBuildOutputEvidenceReceipt,
   deriveColdBuildOutputEvidence,
   verifyColdBuildOutputEvidence,
+  verifyColdBuildOutputEvidenceReceipt,
 } from '../lib/gpu-hmr-cold-build-output-evidence.mjs';
 import { computeColdBuildSourceTreeBinding } from '../lib/gpu-hmr-cold-build-source-tree-binding.mjs';
 
@@ -269,6 +273,43 @@ async function main() {
       verifyColdBuildOutputEvidence(outputEvidence, accepted, acceptedFixture.plan),
       outputEvidence,
     );
+    const outputReceipt = createColdBuildOutputEvidenceReceipt(
+      outputEvidence,
+      accepted,
+      acceptedFixture.plan,
+    );
+    const retainedOutputReceipt = JSON.parse(JSON.stringify(outputReceipt));
+    assert.equal(outputReceipt.schemaVersion, COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_SCHEMA);
+    assert.equal(outputReceipt.proofAuthority, COLD_BUILD_OUTPUT_EVIDENCE_RECEIPT_AUTHORITY);
+    assert.equal(outputReceipt.outputEvidence.evidenceHash, outputEvidence.evidence.evidenceHash);
+    assert.equal(
+      outputReceipt.executionDriverReceipt.driverEvidence.evidenceHash,
+      accepted.evidence.evidenceHash,
+    );
+    assert.equal(outputReceipt.acceptedAsColdBuildOutputEvidenceReceipt, true);
+    assert.equal(outputReceipt.acceptedForGpuHmr, false);
+    assert.equal(outputReceipt.gpuHmrSuccess, false);
+    assert.equal(outputReceipt.canSatisfyRuntimeProof, false);
+    assert.equal(outputReceipt.canSatisfyDispatchProof, false);
+    assert.equal(
+      verifyColdBuildOutputEvidenceReceipt(retainedOutputReceipt),
+      retainedOutputReceipt,
+    );
+    const forgedOutputReceipt = structuredClone(retainedOutputReceipt);
+    forgedOutputReceipt.outputEvidence.outputSetHash = `sha256:${'0'.repeat(64)}`;
+    assert.throws(
+      () => verifyColdBuildOutputEvidenceReceipt(forgedOutputReceipt),
+      /output_evidence_receipt_invalid/,
+    );
+    const authorityClaimingOutputReceipt = structuredClone(retainedOutputReceipt);
+    authorityClaimingOutputReceipt.outputEvidence.gpuHmrSuccess = true;
+    assert.throws(
+      () => verifyColdBuildOutputEvidenceReceipt(authorityClaimingOutputReceipt),
+      /output_evidence_receipt_invalid/,
+    );
+    assert.ok(!JSON.stringify(outputReceipt).match(
+      /miopen|hiprt|flow|diamond|neural|blas|fixture_name|project_name/i,
+    ));
     assert.equal(outputEvidence.evidence.schemaVersion, COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA);
     assert.equal(outputEvidence.evidence.proofAuthority, COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY);
     assert.equal(outputEvidence.evidence.acceptedAsColdBuildOutputEvidence, true);
