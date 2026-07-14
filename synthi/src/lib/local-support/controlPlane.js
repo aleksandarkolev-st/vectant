@@ -20,6 +20,22 @@ const MVP_ALLOWED_CAPABILITIES = new Set([
   "localhost.preview.state_change",
 ]);
 
+// Full Access is intentionally a distinct namespace. These envelopes authorize
+// only a locally reviewed operation; they never carry file bodies, raw process
+// data, shell strings, or loopback response bodies through the cloud relay.
+const FULL_ACCESS_CAPABILITIES = new Map([
+  ["full.workspace.graph.read", "enabled"],
+  ["full.workspace.graph.node.read", "enabled"],
+  ["full.workspace.file.mutate", "workspace_mutation_enabled"],
+  ["full.workspace.file.revert", "workspace_mutation_enabled"],
+  ["full.workspace.command.execute", "command_execution_enabled"],
+  ["full.workspace.command.context.read", "command_execution_enabled"],
+  ["full.process.inventory.read", "process_visibility_enabled"],
+  ["full.process.listener.metadata.read", "process_visibility_enabled"],
+  ["full.localhost.port.discover", "local_port_discovery_enabled"],
+  ["full.localhost.port.use", "local_port_use_enabled"],
+]);
+
 const DISALLOWED_ACTOR_CAPABILITIES = new Set([
   "workspace.file.write",
   "workspace.command.execute",
@@ -177,7 +193,15 @@ export function readLocalSupportPolicy(env = process.env) {
       raw_process_fields_allowed: false,
       raw_bodies_in_graph: false,
     },
-    allowed_capabilities: [...MVP_ALLOWED_CAPABILITIES],
+    allowed_capabilities: allowedCapabilitiesForPolicy({ full_access: {
+      enabled: fullAccessEnabled,
+      auto_approval_enabled: fullAccessAutoApproval,
+      process_visibility_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_PROCESS_VISIBILITY === "true",
+      workspace_mutation_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_WORKSPACE_MUTATION === "true",
+      command_execution_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_COMMAND_EXECUTION === "true",
+      local_port_discovery_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_LOCAL_PORT_DISCOVERY === "true",
+      local_port_use_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_LOCAL_PORT_USE === "true",
+    } }),
   };
 }
 
@@ -400,11 +424,20 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
     return deny("expired_request", "The request envelope expired.");
   }
-  if (DISALLOWED_ACTOR_CAPABILITIES.has(request.capability)) {
+  if (DISALLOWED_ACTOR_CAPABILITIES.has(request.capability) && !FULL_ACCESS_CAPABILITIES.has(request.capability)) {
     return deny("capability_blocked_in_mvp", "This capability is outside the Local Support MVP.");
   }
-  if (!MVP_ALLOWED_CAPABILITIES.has(request.capability)) {
+  const fullAccessField = FULL_ACCESS_CAPABILITIES.get(request.capability);
+  if (!MVP_ALLOWED_CAPABILITIES.has(request.capability) && !fullAccessField) {
     return deny("capability_not_allowed", "The requested capability is not allowed.");
+  }
+  if (fullAccessField) {
+    if (!policy.full_access?.enabled || policy.full_access[fullAccessField] !== true) {
+      return deny("full_access_capability_disabled", "This Full Access capability is disabled by policy.");
+    }
+    if (!['vectant_ai', 'support_agent'].includes(request.actor)) {
+      return deny("full_access_actor_not_allowed", "Only a support service may request Full Access.");
+    }
   }
   if (request.capability.startsWith("localhost.preview") && !policy.mvp.browser_preview_enabled) {
     return deny("preview_disabled", "Browser preview is disabled by policy.");
@@ -421,6 +454,16 @@ export function validateRequestEnvelope(input, policy = readLocalSupportPolicy()
     local_enforcement_required: true,
     user_visible_message: "The local app must re-check policy and show review before any data is sent.",
   };
+}
+
+function allowedCapabilitiesForPolicy(policy) {
+  const fullAccess = policy?.full_access || {};
+  return [
+    ...MVP_ALLOWED_CAPABILITIES,
+    ...[...FULL_ACCESS_CAPABILITIES.entries()]
+      .filter(([, policyField]) => fullAccess.enabled === true && fullAccess[policyField] === true)
+      .map(([capability]) => capability),
+  ];
 }
 
 export function createPairingChallenge(input, policy = readLocalSupportPolicy(), nowMs = Date.now()) {
