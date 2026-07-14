@@ -150,12 +150,172 @@ pub struct GpuLaunchRequest {
     pub arg_count: usize,
 }
 
+pub const GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA: &str =
+    "synthi.gpu_hmr.dispatch_device_attestation.v1";
+pub const GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY: &str =
+    "runtime_driver_native_launch_device_observation";
+pub const GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY: &str =
+    "dispatch_device_attestation_unavailable";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceObservation {
+    device_ordinal: i32,
+    device_uuid: [u8; 16],
+    stream_device_ordinal: i32,
+}
+
+impl GpuDispatchDeviceObservation {
+    pub fn new(
+        device_ordinal: i32,
+        device_uuid: [u8; 16],
+        stream_device_ordinal: i32,
+    ) -> Result<Self, String> {
+        if device_ordinal < 0 {
+            return Err("dispatch_device_ordinal_invalid".to_string());
+        }
+        if device_uuid.iter().all(|byte| *byte == 0) {
+            return Err("dispatch_device_uuid_all_zero".to_string());
+        }
+        if stream_device_ordinal < 0 {
+            return Err("dispatch_stream_device_ordinal_invalid".to_string());
+        }
+        if stream_device_ordinal != device_ordinal {
+            return Err("dispatch_stream_device_mismatch".to_string());
+        }
+        Ok(Self {
+            device_ordinal,
+            device_uuid,
+            stream_device_ordinal,
+        })
+    }
+
+    pub fn identity_key(&self) -> String {
+        format!("gpu-hardware-uuid:{}", hex::encode(self.device_uuid))
+    }
+
+    pub fn device_ordinal(&self) -> i32 {
+        self.device_ordinal
+    }
+
+    pub fn device_uuid(&self) -> [u8; 16] {
+        self.device_uuid
+    }
+
+    pub fn stream_device_ordinal(&self) -> i32 {
+        self.stream_device_ordinal
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceAttestation {
+    schema_version: String,
+    authority: String,
+    stream_token: usize,
+    host_thread_id: String,
+    before: Option<GpuDispatchDeviceObservation>,
+    after: Option<GpuDispatchDeviceObservation>,
+    blocking_gap: Option<String>,
+}
+
+impl GpuDispatchDeviceAttestation {
+    pub fn unavailable(stream_token: usize, blocking_gap: impl Into<String>) -> Self {
+        Self {
+            schema_version: GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA.to_string(),
+            authority: GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY.to_string(),
+            stream_token,
+            host_thread_id: current_host_thread_id(),
+            before: None,
+            after: None,
+            blocking_gap: Some(blocking_gap.into()),
+        }
+    }
+
+    pub fn runtime_driver_observed(
+        stream_token: usize,
+        before: GpuDispatchDeviceObservation,
+        after: GpuDispatchDeviceObservation,
+    ) -> Result<Self, String> {
+        if before.device_ordinal != after.device_ordinal {
+            return Err("dispatch_active_device_changed".to_string());
+        }
+        if before.device_uuid != after.device_uuid {
+            return Err("dispatch_device_uuid_changed".to_string());
+        }
+        if before.stream_device_ordinal != after.stream_device_ordinal {
+            return Err("dispatch_stream_device_changed".to_string());
+        }
+        Ok(Self {
+            schema_version: GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA.to_string(),
+            authority: GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY.to_string(),
+            stream_token,
+            host_thread_id: current_host_thread_id(),
+            before: Some(before),
+            after: Some(after),
+            blocking_gap: None,
+        })
+    }
+
+    pub fn verified_observation(&self) -> Option<&GpuDispatchDeviceObservation> {
+        if self.schema_version != GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA
+            || self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY
+            || self.host_thread_id.is_empty()
+            || self.blocking_gap.is_some()
+        {
+            return None;
+        }
+        let before = self.before.as_ref()?;
+        let after = self.after.as_ref()?;
+        let validated = GpuDispatchDeviceObservation::new(
+            after.device_ordinal,
+            after.device_uuid,
+            after.stream_device_ordinal,
+        )
+        .ok()?;
+        if before != after || validated != *after {
+            return None;
+        }
+        Some(after)
+    }
+
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
+    pub fn stream_token(&self) -> usize {
+        self.stream_token
+    }
+
+    pub fn host_thread_id(&self) -> &str {
+        &self.host_thread_id
+    }
+
+    pub fn blocking_gap(&self) -> Option<&str> {
+        self.blocking_gap.as_deref()
+    }
+}
+
+fn current_host_thread_id() -> String {
+    format!("thread:{:?}", std::thread::current().id())
+}
+
 pub trait GpuLaunchDispatcher: Send + Sync {
     fn dispatch(
         &self,
         request: &GpuLaunchRequest,
         args: *const *const c_void,
     ) -> Result<(), String>;
+
+    fn dispatch_with_device_attestation(
+        &self,
+        request: &GpuLaunchRequest,
+        args: *const *const c_void,
+    ) -> Result<GpuDispatchDeviceAttestation, String> {
+        self.dispatch(request, args)?;
+        Ok(GpuDispatchDeviceAttestation::unavailable(
+            request.stream_token,
+            "native_dispatch_device_observation_unavailable",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -182,6 +342,7 @@ struct BoundaryState {
     ptr_by_name: HashMap<String, usize>,
     next_allocation_sequence: u64,
     launches: Vec<LaunchRecord>,
+    dispatch_device_attestations: Vec<GpuDispatchDeviceAttestationRecord>,
     host_identities: Vec<HostIdentityRecord>,
     output_oracles: Vec<OutputOracleRecord>,
     original_host_paths: Vec<OriginalHostPathRecord>,
@@ -1788,6 +1949,16 @@ pub struct GpuLaunchReceipt {
     pub runtime_session_id: String,
     pub stream_token: usize,
     pub dispatch_timestamp_monotonic_ns: u128,
+    pub dispatch_device_attestation: Option<GpuDispatchDeviceAttestation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceAttestationRecord {
+    pub runtime_session_id: String,
+    pub active_generation: u64,
+    pub dispatch_id: String,
+    pub dispatch_timestamp_monotonic_ns: u128,
+    pub attestation: GpuDispatchDeviceAttestation,
 }
 
 /// Rust-only launch entry point that returns the identity of this exact
@@ -1962,7 +2133,7 @@ fn synthi_gpu_launch_raw_impl(
     } else {
         dispatcher
             .as_ref()
-            .map(|d| d.dispatch(&request, dispatch_args))
+            .map(|d| d.dispatch_with_device_attestation(&request, dispatch_args))
     };
 
     let dispatch_timestamp_ms = epoch_millis_now();
@@ -1974,14 +2145,21 @@ fn synthi_gpu_launch_raw_impl(
         &kernel_name,
         dispatch_timestamp_ms,
     );
+    let mut returned_dispatch_device_attestation = None;
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     if let Some(record) = guard.launches.get_mut(launch_index) {
         record.dispatch_id = Some(dispatch_id.clone());
         record.dispatch_timestamp_ms = Some(dispatch_timestamp_ms);
         record.dispatch_timestamp_monotonic_ns = Some(dispatch_timestamp_monotonic_ns);
         match dispatch_result {
-            Some(Ok(())) => {
-                record.dispatched = true;
+            Some(Ok(attestation)) => {
+                if attestation.stream_token != record.stream_token {
+                    record.dispatch_error =
+                        Some("dispatch_device_attestation_stream_token_mismatch".to_string());
+                } else {
+                    record.dispatched = true;
+                    returned_dispatch_device_attestation = Some(attestation);
+                }
             }
             Some(Err(e)) => {
                 record.dispatch_error = Some(e);
@@ -2003,6 +2181,20 @@ fn synthi_gpu_launch_raw_impl(
             None => (false, Some("launch record disappeared".to_string())),
         }
     };
+    let dispatch_device_attestation = returned_dispatch_device_attestation;
+    if let Some(attestation) = dispatch_device_attestation.as_ref() {
+        state()
+            .lock()
+            .expect("gpu runtime boundary mutex poisoned")
+            .dispatch_device_attestations
+            .push(GpuDispatchDeviceAttestationRecord {
+                runtime_session_id: runtime_session_id.clone(),
+                active_generation,
+                dispatch_id: dispatch_id.clone(),
+                dispatch_timestamp_monotonic_ns,
+                attestation: attestation.clone(),
+            });
+    }
     let dispatch_label = if stale_generation {
         "stale-pointer"
     } else if dispatcher.is_some() {
@@ -2073,6 +2265,52 @@ fn synthi_gpu_launch_raw_impl(
             log_token(&dispatch_id)
         );
     }
+    let verified_dispatch_device = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::verified_observation);
+    let attestation_event = if verified_dispatch_device.is_some() {
+        "verified"
+    } else {
+        "refused"
+    };
+    let attestation_authority = dispatch_device_attestation
+        .as_ref()
+        .map(|attestation| attestation.authority.as_str())
+        .unwrap_or(GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY);
+    let attestation_thread = dispatch_device_attestation
+        .as_ref()
+        .map(|attestation| attestation.host_thread_id.as_str())
+        .unwrap_or("none");
+    let attestation_gap = dispatch_device_attestation
+        .as_ref()
+        .and_then(|attestation| attestation.blocking_gap.as_deref())
+        .or_else(|| dispatch_error.as_deref())
+        .unwrap_or("none");
+    let attested_device_ordinal = verified_dispatch_device
+        .map(|observation| observation.device_ordinal.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attested_stream_device_ordinal = verified_dispatch_device
+        .map(|observation| observation.stream_device_ordinal.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attested_device_identity = verified_dispatch_device
+        .map(GpuDispatchDeviceObservation::identity_key)
+        .unwrap_or_else(|| "none".to_string());
+    eprintln!(
+        "[gpu-runtime-boundary] dispatch_device_attestation schema={} event={} runtime_session={} process_id=pid:{} generation={} dispatch_id={} stream_token={} host_thread_id={} authority={} device_ordinal={} stream_device_ordinal={} device_identity_key={} blocking_gap={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA,
+        attestation_event,
+        runtime_session_id,
+        std::process::id(),
+        active_generation,
+        log_token(&dispatch_id),
+        stream_token,
+        log_token(attestation_thread),
+        log_token(attestation_authority),
+        attested_device_ordinal,
+        attested_stream_device_ordinal,
+        log_token(&attested_device_identity),
+        log_safe(attestation_gap),
+    );
     let known_arg_count = arg_provenance
         .iter()
         .filter(|arg| arg_provenance_is_runtime_proven(arg))
@@ -2105,6 +2343,7 @@ fn synthi_gpu_launch_raw_impl(
         runtime_session_id,
         stream_token,
         dispatch_timestamp_monotonic_ns,
+        dispatch_device_attestation,
     }
 }
 
@@ -2167,6 +2406,11 @@ pub fn managed_buffers_snapshot() -> Vec<ManagedBufferRecord> {
 pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.clone()
+}
+
+pub fn dispatch_device_attestation_records_snapshot() -> Vec<GpuDispatchDeviceAttestationRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.dispatch_device_attestations.clone()
 }
 
 pub fn host_identity_records_snapshot() -> Vec<HostIdentityRecord> {
@@ -3601,6 +3845,109 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    struct AttestingTestDispatcher {
+        calls: std::sync::Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        device_uuid: [u8; 16],
+    }
+
+    impl GpuLaunchDispatcher for AttestingTestDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, String> {
+            self.dispatch(request, args)?;
+            let before = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)?;
+            let after = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)?;
+            GpuDispatchDeviceAttestation::runtime_driver_observed(
+                request.stream_token,
+                before,
+                after,
+            )
+        }
+    }
+
+    #[test]
+    fn dispatch_device_attestation_rejects_invalid_or_changed_identity() {
+        let uuid = [0xabu8; 16];
+        assert_eq!(
+            GpuDispatchDeviceObservation::new(-1, uuid, 0),
+            Err("dispatch_device_ordinal_invalid".to_string())
+        );
+        assert_eq!(
+            GpuDispatchDeviceObservation::new(0, [0u8; 16], 0),
+            Err("dispatch_device_uuid_all_zero".to_string())
+        );
+        assert_eq!(
+            GpuDispatchDeviceObservation::new(0, uuid, 1),
+            Err("dispatch_stream_device_mismatch".to_string())
+        );
+
+        let before = GpuDispatchDeviceObservation::new(0, uuid, 0).unwrap();
+        let after = GpuDispatchDeviceObservation::new(0, [0xcdu8; 16], 0).unwrap();
+        assert_eq!(
+            GpuDispatchDeviceAttestation::runtime_driver_observed(0, before, after),
+            Err("dispatch_device_uuid_changed".to_string())
+        );
+    }
+
+    #[test]
+    fn exact_dispatch_receipt_retains_runtime_owned_device_attestation() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let device_uuid = [0x42u8; 16];
+        install_launch_dispatcher(Arc::new(AttestingTestDispatcher {
+            calls: calls.clone(),
+            device_uuid,
+        }));
+
+        let kernel = CString::new("attested_dispatch").unwrap();
+        let dim = 1_u32;
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0xfeed,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(receipt.dispatched);
+        let receipt_attestation = receipt
+            .dispatch_device_attestation
+            .as_ref()
+            .expect("exact dispatch device attestation");
+        let observation = receipt_attestation
+            .verified_observation()
+            .expect("verified dispatch observation");
+        assert_eq!(receipt_attestation.stream_token, 0xfeed);
+        assert_eq!(observation.device_ordinal, 2);
+        assert_eq!(observation.stream_device_ordinal, 2);
+        assert_eq!(observation.device_uuid, device_uuid);
+
+        let records = dispatch_device_attestation_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].dispatch_id, receipt.dispatch_id);
+        assert_eq!(records[0].active_generation, receipt.active_generation);
+        assert_eq!(records[0].runtime_session_id, receipt.runtime_session_id);
+        assert_eq!(records[0].attestation, *receipt_attestation);
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     #[test]
