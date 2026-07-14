@@ -433,6 +433,8 @@ describe("local support control plane policy", () => {
     expect(validateRequestEnvelope(envelope({ capability: "support.full_access.command.execute", actor: "user_browser" }), full)).toMatchObject({
       decision: "denied", reason: "full_access_actor_not_allowed",
     });
+    expect(full.allowed_capabilities).toContain("support.full_access.command.execute");
+    expect(full.allowed_capabilities).not.toContain("support.full_access.workspace.file.mutate");
   });
 
   it("records scrubbed security events without raw local content", () => {

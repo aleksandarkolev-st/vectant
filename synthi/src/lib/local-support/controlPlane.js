@@ -645,7 +645,7 @@ export function completePairingChallenge(input, policy = readLocalSupportPolicy(
     requested_user_id: pairing.requested_user_id,
     device_fingerprint: proof.device_fingerprint,
     device_public_key_hash: `sha256:${createHash("sha256").update(proof.device_public_key).digest("hex")}`,
-    capabilities: [...MVP_ALLOWED_CAPABILITIES],
+    capabilities: allowedCapabilitiesForPolicy(policy),
     expires_at: new Date(pairing.expires_at_ms).toISOString(),
     consent_receipt: {
       session_id: `sess_${createHash("sha256").update(pairing.pairing_id).digest("hex").slice(0, 24)}`,
@@ -653,7 +653,7 @@ export function completePairingChallenge(input, policy = readLocalSupportPolicy(
       org_id: pairing.org_id,
       workspace_id: pairing.workspace_id,
       device_fingerprint: proof.device_fingerprint,
-      capabilities: [...MVP_ALLOWED_CAPABILITIES],
+      capabilities: allowedCapabilitiesForPolicy(policy),
       policy_version: policy.policy_version,
       expires_at: new Date(pairing.expires_at_ms).toISOString(),
       user_confirmation_required: true,
