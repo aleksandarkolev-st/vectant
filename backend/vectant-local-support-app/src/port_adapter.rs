@@ -1,5 +1,5 @@
 use serde::Serialize;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,17 +131,103 @@ pub fn detect_loopback_listener(port: u16) -> Result<DetectedLoopbackPort, PortD
     detected
 }
 
-#[cfg(not(windows))]
-pub fn detect_loopback_listener(_port: u16) -> Result<DetectedLoopbackPort, PortDetectionError> {
-    Err(PortDetectionError::Unsupported)
+#[cfg(target_os = "linux")]
+pub fn detect_loopback_listener(port: u16) -> Result<DetectedLoopbackPort, PortDetectionError> {
+    if port == 0 {
+        return Err(PortDetectionError::InvalidPort);
+    }
+    let inode =
+        linux_loopback_listener_inode(port).ok_or(PortDetectionError::NotLoopbackListener)?;
+    let (pid, start_ticks) =
+        linux_socket_owner(&inode).ok_or(PortDetectionError::ProcessUnavailable)?;
+    // The PID and start time are deliberately retained only for a same-host identity comparison.
+    // They never cross the adapter boundary other than as a one-way hash.
+    let process_identity = format!("pid={pid};start={start_ticks}");
+    Ok(DetectedLoopbackPort {
+        port,
+        service: "local-service".to_string(),
+        process_identity_hash: hash_process_identity(&process_identity),
+        process_identity,
+    })
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn hash_process_identity(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"vectant-local-support-process:");
     hasher.update(value.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_loopback_listener_inode(port: u16) -> Option<String> {
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let is_v6 = table.ends_with("tcp6");
+        let contents = std::fs::read_to_string(table).ok()?;
+        for line in contents.lines().skip(1) {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() < 10 || fields[3] != "0A" {
+                continue;
+            }
+            let Some((address, port_hex)) = fields[1].split_once(':') else {
+                continue;
+            };
+            let Ok(parsed_port) = u16::from_str_radix(port_hex, 16) else {
+                continue;
+            };
+            if parsed_port == port && linux_address_is_loopback(address, is_v6) {
+                return Some(fields[9].to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_address_is_loopback(address: &str, is_v6: bool) -> bool {
+    if is_v6 {
+        // `/proc/net/tcp6` represents the canonical IPv6 loopback address this way.
+        return address == "00000000000000000000000000000001";
+    }
+    let Ok(value) = u32::from_str_radix(address, 16) else {
+        return false;
+    };
+    value.to_le_bytes()[0] == 127
+}
+
+#[cfg(target_os = "linux")]
+fn linux_socket_owner(inode: &str) -> Option<(u32, u64)> {
+    let needle = format!("socket:[{inode}]");
+    for process in std::fs::read_dir("/proc").ok()?.flatten() {
+        let pid = match process.file_name().to_string_lossy().parse::<u32>() {
+            Ok(pid) if pid != 0 => pid,
+            _ => continue,
+        };
+        let fd_dir = match std::fs::read_dir(process.path().join("fd")) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if fd_dir
+            .flatten()
+            .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|target| target == needle))
+        {
+            if let Some(start_ticks) = linux_process_start_ticks(&process.path()) {
+                return Some((pid, start_ticks));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_start_ticks(proc_path: &std::path::Path) -> Option<u64> {
+    let stat = std::fs::read_to_string(proc_path.join("stat")).ok()?;
+    let closing = stat.rfind(')')?;
+    stat.get(closing + 2..)?
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
 }
 
 pub fn native_listener_identity_matches(port: u16, expected_identity: &str) -> bool {
@@ -151,8 +237,8 @@ pub fn native_listener_identity_matches(port: u16, expected_identity: &str) -> b
             .is_ok_and(|detected| detected.process_identity == expected_identity)
 }
 
-#[cfg(all(test, windows))]
-mod windows_tests {
+#[cfg(all(test, any(windows, target_os = "linux")))]
+mod platform_tests {
     use super::*;
 
     #[test]
@@ -176,4 +262,20 @@ mod windows_tests {
             "pid=1;created=0;path=fake"
         ));
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_wildcard_listeners() {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(matches!(
+            detect_loopback_listener(port),
+            Err(PortDetectionError::NotLoopbackListener)
+        ));
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn detect_loopback_listener(_port: u16) -> Result<DetectedLoopbackPort, PortDetectionError> {
+    Err(PortDetectionError::Unsupported)
 }
