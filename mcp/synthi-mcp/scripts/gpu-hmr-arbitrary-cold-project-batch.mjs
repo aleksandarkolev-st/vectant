@@ -16,6 +16,12 @@ import {
   selectArbitraryColdProjectDescriptors,
   verifyArbitraryColdBatchSelection,
 } from './lib/gpu-hmr-arbitrary-cold-project-batch.mjs';
+import {
+  createArbitraryColdCliResultEnvelope,
+} from './lib/gpu-hmr-arbitrary-cold-cli-envelope.mjs';
+import {
+  verifyArbitraryColdRetainedExecutionChain,
+} from './lib/gpu-hmr-arbitrary-cold-retained-chain.mjs';
 
 const CLI_KEYS = new Set([
   '--artifact-root',
@@ -26,7 +32,7 @@ const CLI_KEYS = new Set([
 ]);
 
 export const ARBITRARY_COLD_BATCH_REPORT_SCHEMA =
-  'synthi.gpu_hmr.arbitrary_cold_project_batch_report.v1';
+  'synthi.gpu_hmr.arbitrary_cold_project_batch_report.v2';
 export const ARBITRARY_COLD_BATCH_REPORT_AUTHORITY =
   'batch_report_transport_only_not_cold_build_or_gpu_hmr_success';
 
@@ -43,6 +49,38 @@ function stableJson(value) {
 function contentHash(value) {
   return `sha256:${createHash('sha256').update(String(value)).digest('hex')}`;
 }
+
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const REPORT_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'selection',
+  'summary',
+  'reports',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
+const REPORT_ENTRY_KEYS = Object.freeze([
+  'descriptorHash',
+  'descriptorBytesHash',
+  'outcome',
+  'runEvidence',
+  'retainedExecutionChain',
+  'artifactSessionRoot',
+  'outputs',
+  'failureEvidence',
+]);
 
 function parseCliArguments(argv) {
   if (argv.length % 2 !== 0) {
@@ -124,6 +162,7 @@ export async function runArbitraryColdProjectBatch({
         descriptorBytesHash: record.descriptorBytesHash,
         outcome: 'cold_run_completed',
         runEvidence: result.evidence,
+        retainedExecutionChain: result.retainedExecutionChain,
         artifactSessionRoot: result.artifactSessionRoot,
         outputs: serializedOutputs(result),
         failureEvidence: null,
@@ -142,6 +181,7 @@ export async function runArbitraryColdProjectBatch({
         descriptorBytesHash: record.descriptorBytesHash,
         outcome: 'cold_run_refused',
         runEvidence: null,
+        retainedExecutionChain: null,
         artifactSessionRoot: null,
         outputs: [],
         failureEvidence: failure,
@@ -170,34 +210,67 @@ export function verifyArbitraryColdProjectBatchReport(report) {
   const projection = { ...report };
   delete projection.evidenceHash;
   const attempts = report?.summary?.attempts;
+  try {
+    for (const entry of report?.reports ?? []) {
+      if (entry?.outcome === 'cold_run_completed') {
+        verifyArbitraryColdRetainedExecutionChain(entry.retainedExecutionChain);
+        createArbitraryColdCliResultEnvelope({
+          descriptorBytesHash: entry.descriptorBytesHash,
+          result: {
+            evidence: entry.runEvidence,
+            retainedExecutionChain: entry.retainedExecutionChain,
+            outputs: entry.outputs,
+          },
+        });
+      }
+    }
+  } catch {
+    throw new Error('arbitrary_cold_batch_report_invalid');
+  }
   if (
-    report?.schemaVersion !== ARBITRARY_COLD_BATCH_REPORT_SCHEMA
+    !exactKeys(report, REPORT_KEYS)
+    || report?.schemaVersion !== ARBITRARY_COLD_BATCH_REPORT_SCHEMA
     || report?.proofAuthority !== ARBITRARY_COLD_BATCH_REPORT_AUTHORITY
     || !Array.isArray(report?.reports)
     || !Array.isArray(attempts)
     || report.reports.length !== attempts.length
     || report.reports.some((entry, index) => (
-      entry?.descriptorHash !== attempts[index]?.descriptorHash
+      !exactKeys(entry, REPORT_ENTRY_KEYS)
+      || !HASH_PATTERN.test(entry?.descriptorHash ?? '')
+      || !HASH_PATTERN.test(entry?.descriptorBytesHash ?? '')
+      || entry?.descriptorHash !== attempts[index]?.descriptorHash
+      || !['cold_run_completed', 'cold_run_refused'].includes(entry?.outcome)
       || entry?.outcome !== attempts[index]?.outcome
       || (entry.outcome === 'cold_run_completed' && (
         entry?.runEvidence?.evidenceHash !== attempts[index].runEvidenceHash
+        || entry?.runEvidence?.descriptorHash !== entry.descriptorHash
+        || entry?.retainedExecutionChain?.descriptorHash !== entry.descriptorHash
+        || entry?.retainedExecutionChain?.evidenceHash
+          !== attempts[index].retainedExecutionChainHash
+        || !HASH_PATTERN.test(attempts[index].retainedExecutionChainHash ?? '')
+        || stableJson(entry?.retainedExecutionChain?.runEvidence)
+          !== stableJson(entry?.runEvidence)
         || entry?.runEvidence?.acceptedAsColdBuildEvidence !== true
         || entry?.runEvidence?.acceptedForGpuHmr !== false
         || entry?.runEvidence?.gpuHmrSuccess !== false
         || entry?.runEvidence?.canSatisfyRuntimeProof !== false
         || entry?.runEvidence?.canSatisfyDispatchProof !== false
         || entry?.failureEvidence !== null
+        || typeof entry?.artifactSessionRoot !== 'string'
+        || entry.artifactSessionRoot.length < 1
         || !Array.isArray(entry?.outputs)
         || entry.outputs.length !== attempts[index].artifactCount
       ))
       || (entry.outcome === 'cold_run_refused' && (
         entry?.failureEvidence?.evidenceHash !== attempts[index].failureEvidenceHash
+        || attempts[index].retainedExecutionChainHash !== null
         || entry?.failureEvidence?.acceptedAsColdBuildEvidence !== false
         || entry?.failureEvidence?.acceptedForGpuHmr !== false
         || entry?.failureEvidence?.gpuHmrSuccess !== false
         || entry?.failureEvidence?.canSatisfyRuntimeProof !== false
         || entry?.failureEvidence?.canSatisfyDispatchProof !== false
         || entry?.runEvidence !== null
+        || entry?.retainedExecutionChain !== null
         || entry?.artifactSessionRoot !== null
         || !Array.isArray(entry?.outputs)
         || entry.outputs.length !== 0

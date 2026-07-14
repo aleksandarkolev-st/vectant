@@ -40,6 +40,9 @@ import {
   verifyArbitraryColdRetainedEvidence,
 } from '../lib/gpu-hmr-arbitrary-cold-retained-evidence.mjs';
 import {
+  verifyArbitraryColdRetainedExecutionChain,
+} from '../lib/gpu-hmr-arbitrary-cold-retained-chain.mjs';
+import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
@@ -222,6 +225,7 @@ try {
     descriptorHash: refusalSelection.selected[0].descriptorHash,
     failure,
   });
+  assert.equal(refusedAttempt.retainedExecutionChainHash, null);
   const refusalSummary = createArbitraryColdBatchSummary(
     refusalSelection,
     recordsAfterRename,
@@ -273,8 +277,39 @@ try {
   assert.equal(batch.reports[0].runEvidence.acceptedAsColdBuildEvidence, true);
   assert.equal(batch.reports[0].runEvidence.acceptedForGpuHmr, false);
   assert.equal(batch.reports[0].runEvidence.gpuHmrSuccess, false);
+  assert.equal(
+    verifyArbitraryColdRetainedExecutionChain(batch.reports[0].retainedExecutionChain),
+    batch.reports[0].retainedExecutionChain,
+  );
+  assert.equal(
+    batch.summary.attempts[0].retainedExecutionChainHash,
+    batch.reports[0].retainedExecutionChain.evidenceHash,
+  );
   assert.equal(batch.reports[0].outputs.length, 1);
   assert.equal(JSON.stringify(batch).includes('renamed-'), false);
+  assert.equal(JSON.stringify(batch).includes('arbitrary cold batch'), false);
+
+  const forgedRetainedChain = structuredClone(batch);
+  forgedRetainedChain.reports[0].retainedExecutionChain
+    .contractReceipt.commandInvocationHash = `sha256:${'0'.repeat(64)}`;
+  forgedRetainedChain.reports[0].retainedExecutionChain
+    .contractReceipt.evidenceHash = rehashEvidence(
+      forgedRetainedChain.reports[0].retainedExecutionChain.contractReceipt,
+    );
+  forgedRetainedChain.reports[0].retainedExecutionChain.evidenceHash = rehashEvidence(
+    forgedRetainedChain.reports[0].retainedExecutionChain,
+  );
+  forgedRetainedChain.summary.attempts[0].retainedExecutionChainHash =
+    forgedRetainedChain.reports[0].retainedExecutionChain.evidenceHash;
+  forgedRetainedChain.summary.attempts[0].evidenceHash = rehashEvidence(
+    forgedRetainedChain.summary.attempts[0],
+  );
+  forgedRetainedChain.summary.evidenceHash = rehashEvidence(forgedRetainedChain.summary);
+  forgedRetainedChain.evidenceHash = rehashEvidence(forgedRetainedChain);
+  assert.throws(
+    () => verifyArbitraryColdProjectBatchReport(forgedRetainedChain),
+    /batch_report_invalid/,
+  );
 
   const retainedEvidence = await recomputeArbitraryColdRetainedEvidence(
     batch,
@@ -296,6 +331,16 @@ try {
   assert.equal(retainedEvidence.canSatisfyDispatchProof, false);
   assert.equal(retainedEvidence.samplingSeedPreimageVerified, true);
   assert.equal(retainedEvidence.externalReportHashMatched, true);
+  assert.equal(retainedEvidence.sourceBindingManifestsRetained, true);
+  assert.equal(retainedEvidence.executionChainRecordsRetained, true);
+  assert.equal(
+    retainedEvidence.limitations.includes('source_binding_manifest_not_retained'),
+    false,
+  );
+  assert.equal(
+    retainedEvidence.limitations.includes('execution_chain_records_not_retained'),
+    false,
+  );
   assert.equal(retainedEvidence.verifiedArtifactCount, 1);
   assert.equal(verifyArbitraryColdRetainedEvidence(retainedEvidence), retainedEvidence);
   const unanchoredRetainedEvidence = await recomputeArbitraryColdRetainedEvidence(

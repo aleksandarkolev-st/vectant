@@ -18,7 +18,7 @@ export const ARBITRARY_COLD_BATCH_SELECTION_SCHEMA =
 export const ARBITRARY_COLD_BATCH_SELECTION_AUTHORITY =
   'descriptor_hash_sampling_only_not_cold_build_or_gpu_hmr_success';
 export const ARBITRARY_COLD_BATCH_SUMMARY_SCHEMA =
-  'synthi.gpu_hmr.arbitrary_cold_project_batch_summary.v1';
+  'synthi.gpu_hmr.arbitrary_cold_project_batch_summary.v2';
 export const ARBITRARY_COLD_BATCH_SUMMARY_AUTHORITY =
   'batch_orchestration_summary_only_not_cold_build_or_gpu_hmr_success';
 
@@ -422,6 +422,7 @@ export async function createCompletedArbitraryColdBatchAttempt({
     descriptorSetHash: selection.descriptorSetHash,
     outcome: 'cold_run_completed',
     runEvidenceHash: result.evidence.evidenceHash,
+    retainedExecutionChainHash: result.retainedExecutionChain.evidenceHash,
     failureEvidenceHash: null,
     artifactCount: locators.length,
     artifactLocatorSetHash: contentHash(stableJson(locators)),
@@ -447,6 +448,7 @@ export function createRefusedArbitraryColdBatchAttempt({
     descriptorSetHash: selection.descriptorSetHash,
     outcome: 'cold_run_refused',
     runEvidenceHash: null,
+    retainedExecutionChainHash: null,
     failureEvidenceHash: failure.evidenceHash,
     artifactCount: 0,
     artifactLocatorSetHash: null,

@@ -19,6 +19,9 @@ import {
   ARBITRARY_COLD_BATCH_SUMMARY_SCHEMA,
 } from './gpu-hmr-arbitrary-cold-project-batch.mjs';
 import {
+  verifyArbitraryColdRetainedExecutionChain,
+} from './gpu-hmr-arbitrary-cold-retained-chain.mjs';
+import {
   CAS_ARTIFACT_LOCATOR_SCHEMA_VERSION,
   GPU_HMR_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION,
   validateArtifactCasManifest,
@@ -26,7 +29,7 @@ import {
 import { createColdBuildInputSet } from './gpu-hmr-cold-build-input-set.mjs';
 
 export const ARBITRARY_COLD_RETAINED_EVIDENCE_SCHEMA =
-  'synthi.gpu_hmr.arbitrary_cold_retained_evidence.v1';
+  'synthi.gpu_hmr.arbitrary_cold_retained_evidence.v2';
 export const ARBITRARY_COLD_RETAINED_EVIDENCE_AUTHORITY =
   'recomputed_descriptor_commitments_and_cas_bytes_only_not_authenticity_or_gpu_hmr_success';
 
@@ -336,6 +339,7 @@ function verifyAttempt(attempt, selected, selection) {
       'descriptorSetHash',
       'outcome',
       'runEvidenceHash',
+      'retainedExecutionChainHash',
       'failureEvidenceHash',
       'artifactCount',
       'artifactLocatorSetHash',
@@ -520,6 +524,11 @@ async function canonicalArtifactSessionRoot(reportedRoot, allowedArtifactRoots) 
 }
 
 async function verifyCompletedReport(entry, attempt, record, allowedArtifactRoots) {
+  try {
+    verifyArbitraryColdRetainedExecutionChain(entry.retainedExecutionChain);
+  } catch {
+    throw new Error('arbitrary_cold_retained_completed_report_invalid');
+  }
   const artifactSessionRoot = await canonicalArtifactSessionRoot(
     entry.artifactSessionRoot,
     allowedArtifactRoots,
@@ -611,8 +620,14 @@ async function verifyCompletedReport(entry, attempt, record, allowedArtifactRoot
     artifactSessionRoot,
   );
   const attemptLocators = attemptArtifactLocatorProjection(outputs);
+  const chain = entry.retainedExecutionChain;
   if (
     attempt.runEvidenceHash !== entry.runEvidence.evidenceHash
+    || attempt.retainedExecutionChainHash !== chain.evidenceHash
+    || chain.descriptorHash !== record.descriptorHash
+    || stableJson(chain.runEvidence) !== stableJson(entry.runEvidence)
+    || stableJson(chain.artifactLocatorBindings)
+      !== stableJson(runArtifactLocatorProjection(outputs))
     || attempt.failureEvidenceHash !== null
     || attempt.artifactCount !== outputs.length
     || attempt.artifactLocatorSetHash !== contentHash(stableJson(attemptLocators))
@@ -626,10 +641,12 @@ function verifyRefusedReport(entry, attempt) {
   verifyArbitraryColdProjectRunFailure(entry.failureEvidence);
   if (
     entry.runEvidence !== null
+    || entry.retainedExecutionChain !== null
     || entry.artifactSessionRoot !== null
     || !Array.isArray(entry.outputs)
     || entry.outputs.length !== 0
     || attempt.runEvidenceHash !== null
+    || attempt.retainedExecutionChainHash !== null
     || attempt.failureEvidenceHash !== entry.failureEvidence.evidenceHash
     || attempt.artifactCount !== 0
     || attempt.artifactLocatorSetHash !== null
@@ -693,6 +710,7 @@ export async function recomputeArbitraryColdRetainedEvidence(report, descriptorR
         'descriptorBytesHash',
         'outcome',
         'runEvidence',
+        'retainedExecutionChain',
         'artifactSessionRoot',
         'outputs',
         'failureEvidence',
@@ -730,8 +748,6 @@ export async function recomputeArbitraryColdRetainedEvidence(report, descriptorR
   const samplingSeedPreimageVerified = samplingSeed !== null;
   const externalReportHashMatched = expectedBatchReportEvidenceHash !== null;
   const limitations = [
-    'source_binding_manifest_not_retained',
-    'execution_chain_records_not_retained',
     ...(!samplingSeedPreimageVerified ? ['sampling_seed_preimage_not_supplied'] : []),
     ...(!externalReportHashMatched ? ['external_authenticity_anchor_not_supplied'] : []),
     'retained_cold_evidence_not_runtime_or_gpu_hmr_proof',
@@ -751,8 +767,8 @@ export async function recomputeArbitraryColdRetainedEvidence(report, descriptorR
     verifiedArtifactLocatorSetHash: contentHash(stableJson(locatorFacts)),
     samplingSeedPreimageVerified,
     externalReportHashMatched,
-    sourceBindingManifestsRetained: false,
-    executionChainRecordsRetained: false,
+    sourceBindingManifestsRetained: true,
+    executionChainRecordsRetained: true,
     limitations,
     acceptedAsRetainedBatchEvidence: true,
     acceptedAsRetainedColdOutputEvidence: report.summary.completedColdRunCount > 0,
@@ -789,11 +805,9 @@ export function verifyArbitraryColdRetainedEvidence(facet) {
     || facet.verifiedDescriptorCount < 1
     || typeof facet.samplingSeedPreimageVerified !== 'boolean'
     || typeof facet.externalReportHashMatched !== 'boolean'
-    || facet.sourceBindingManifestsRetained !== false
-    || facet.executionChainRecordsRetained !== false
+    || facet.sourceBindingManifestsRetained !== true
+    || facet.executionChainRecordsRetained !== true
     || stableJson(facet.limitations) !== stableJson([
-      'source_binding_manifest_not_retained',
-      'execution_chain_records_not_retained',
       ...(!facet.samplingSeedPreimageVerified ? ['sampling_seed_preimage_not_supplied'] : []),
       ...(!facet.externalReportHashMatched ? ['external_authenticity_anchor_not_supplied'] : []),
       'retained_cold_evidence_not_runtime_or_gpu_hmr_proof',
