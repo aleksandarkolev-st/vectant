@@ -22,7 +22,6 @@ import {
   buildGpuHmrProofLedger,
   queryGpuHmrLedgerInvariants,
 } from './lib/gpu-hmr-proof-ledger.mjs';
-import { collectGpuHmrValidationMatrixLedger } from './lib/gpu-hmr-validation-matrix-ledger.mjs';
 import {
   GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
   deriveGpuHmrAcceptanceContractFromVerifiedProofs,
@@ -4608,6 +4607,9 @@ async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
 }
 
 async function hiprtRuntimeBoundaryAppHookSelfCheck() {
+  const { collectGpuHmrValidationMatrixLedger } = await import(
+    './lib/gpu-hmr-validation-matrix-ledger.mjs'
+  );
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-hiprt-boundary-self-check-'));
   try {
     const acceptedProof = await buildHiprtBoundarySelfCheckProof(tmpDir);
