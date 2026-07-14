@@ -429,6 +429,7 @@ async fn local_support_ipc(
         }
         "approval.revoke_session" => {
             app_state.approvals.lock().await.revoke_all();
+            app_state.full_access.lock().await.revoke();
             let session_id = app_state.session.lock().await.session_id().to_string();
             app_state
                 .port_approvals
@@ -444,6 +445,35 @@ async fn local_support_ipc(
                 &app_state,
                 &request_id,
                 "Session approvals and approved ports were revoked locally.",
+            )
+            .await?;
+        }
+        "full_access.pause" => {
+            app_state.full_access.lock().await.pause();
+            append_control_event(
+                &app_state,
+                &request_id,
+                "Full Access automatic delivery was paused locally. No future automatic sends are allowed until re-enrollment.",
+            )
+            .await?;
+        }
+        "full_access.revoke" => {
+            app_state.full_access.lock().await.revoke();
+            append_control_event(
+                &app_state,
+                &request_id,
+                "Full Access grants and process visibility were revoked locally.",
+            )
+            .await?;
+        }
+        "process.visibility.pause" => {
+            let mut full_access = app_state.full_access.lock().await;
+            full_access.process_visibility_paused = true;
+            drop(full_access);
+            append_control_event(
+                &app_state,
+                &request_id,
+                "Process visibility was paused locally. No process inventory will be released.",
             )
             .await?;
         }

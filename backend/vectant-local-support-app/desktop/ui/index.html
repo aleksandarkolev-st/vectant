@@ -36,6 +36,7 @@
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-workflow" data-tab="workflow">Bootstrap</button>
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-approvals" data-tab="approvals">Approvals</button>
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-ports" data-tab="ports">Ports</button>
+        <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-full-access" data-tab="full-access">Full Access</button>
         <button class="tab" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="panel-activity" data-tab="activity">Activity</button>
       </nav>
 
@@ -81,6 +82,33 @@
             <p class="hint" data-bridge-status>Desktop IPC unavailable, showing safe disconnected state.</p>
           </article>
         </div>
+      </section>
+
+      <section class="grid" id="panel-full-access" role="tabpanel" hidden data-panel="full-access">
+        <article class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="label">Privileged diagnostic mode</p>
+              <h2 data-field="full-access-title">Full Access is not enrolled</h2>
+            </div>
+            <span class="tag warn" data-field="full-access-tag">Review-first mode</span>
+          </div>
+          <p class="copy" data-field="full-access-copy">Full Access can only be enabled after a local confirmation. Sensitive files, credentials, command lines, environment variables, and process contents remain blocked.</p>
+          <dl class="facts">
+            <div><dt>Workspace graph</dt><dd data-field="full-access-graph">Not available</dd></div>
+            <div><dt>Automatic delivery</dt><dd data-field="full-access-delivery">Disabled</dd></div>
+            <div><dt>Process visibility</dt><dd data-field="full-access-processes">Not available</dd></div>
+          </dl>
+        </article>
+        <article class="panel">
+          <p class="label">Local stop controls</p>
+          <div class="control-stack">
+            <button type="button" data-action="pause-full-access">Pause Full Access</button>
+            <button type="button" data-action="pause-process-visibility">Pause process visibility</button>
+            <button type="button" data-action="revoke-full-access">Revoke Full Access grants</button>
+          </div>
+          <p class="hint">Visible locally does not mean sent. These controls stop future automatic releases immediately.</p>
+        </article>
       </section>
 
       <section class="grid" id="panel-workflow" role="tabpanel" hidden data-panel="workflow">

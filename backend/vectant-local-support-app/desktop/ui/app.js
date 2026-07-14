@@ -18,6 +18,9 @@ const actionButtons = {
   deleteHistory: document.querySelector('[data-action="delete-history"]'),
   checkUpdate: document.querySelector('[data-action="check-update"]'),
   installUpdate: document.querySelector('[data-action="install-update"]'),
+  pauseFullAccess: document.querySelector('[data-action="pause-full-access"]'),
+  pauseProcessVisibility: document.querySelector('[data-action="pause-process-visibility"]'),
+  revokeFullAccess: document.querySelector('[data-action="revoke-full-access"]'),
 };
 const workflowSummary = document.querySelector("[data-workflow-summary]");
 const pairingForm = document.querySelector("[data-pairing-form]");
@@ -51,6 +54,7 @@ const fallbackState = {
   approvals: [],
   ports: [],
   activity: [],
+  fullAccess: { enrolled: false, autoApproval: false, processVisibilityPaused: false, graphNodeCount: 0, automaticDeliveryPaused: false },
   updatePolicy: {
     available: false,
     enabled: false,
@@ -109,6 +113,7 @@ function renderState(rawState) {
   setText('[data-field="device"]', state.session.device);
   setText('[data-field="mode"]', state.session.mode);
   renderUpdatePolicy(state.updatePolicy);
+  renderFullAccess(state.fullAccess);
 
   setText(
     '[data-field="approval-title"]',
@@ -167,6 +172,21 @@ function renderState(rawState) {
   actionButtons.installUpdate.textContent = state.availableUpdateVersion
     ? `Install ${state.availableUpdateVersion}`
     : "Install update";
+}
+
+function renderFullAccess(fullAccess) {
+  const enrolled = fullAccess.enrolled;
+  setText('[data-field="full-access-title"]', enrolled ? "Full Access is enabled for this session" : "Full Access is not enrolled");
+  setText('[data-field="full-access-tag"]', enrolled ? (fullAccess.automaticDeliveryPaused ? "Automatic delivery paused" : "Locally enforced") : "Review-first mode");
+  setText('[data-field="full-access-copy"]', enrolled
+    ? "Approved diagnostic information can be sent automatically only within the visible scope. Sensitive files, credentials, command lines, environment variables, and process contents remain blocked."
+    : "Full Access requires a separate local confirmation. Pairing or installation alone never enrolls this mode.");
+  setText('[data-field="full-access-graph"]', enrolled ? `${fullAccess.graphNodeCount} scrubbed nodes, no raw bodies` : "Not available");
+  setText('[data-field="full-access-delivery"]', enrolled && fullAccess.autoApproval && !fullAccess.automaticDeliveryPaused ? "Enabled within policy and budget" : "Disabled or paused");
+  setText('[data-field="full-access-processes"]', enrolled ? (fullAccess.processVisibilityPaused ? "Paused locally" : "Sanitized diagnostic records only") : "Not available");
+  actionButtons.pauseFullAccess.disabled = !enrolled || fullAccess.automaticDeliveryPaused;
+  actionButtons.pauseProcessVisibility.disabled = !enrolled || fullAccess.processVisibilityPaused;
+  actionButtons.revokeFullAccess.disabled = !enrolled;
 }
 
 function renderUpdatePolicy(policy) {
@@ -338,6 +358,7 @@ function normalizeState(rawState) {
           summary: sanitizeText(event.summary, "Local event recorded."),
         }))
       : [],
+    fullAccess: normalizeFullAccess(raw.full_access),
     historyControlsAvailable: raw.history_controls_available === true || raw.connected === true,
     availableUpdateVersion: sanitizeText(raw.available_update_version, ""),
     updatePolicy,
@@ -349,6 +370,17 @@ function normalizeState(rawState) {
           org: sanitizeText(raw.pairing.org_id, "unknown organization"),
         }
       : null,
+  };
+}
+
+function normalizeFullAccess(rawAccess) {
+  const raw = rawAccess && typeof rawAccess === "object" ? rawAccess : {};
+  return {
+    enrolled: raw.enrolled === true,
+    autoApproval: raw.auto_approval_enabled === true,
+    processVisibilityPaused: raw.process_visibility_paused === true,
+    graphNodeCount: Math.min(Math.max(Number(raw.graph_node_count) || 0, 0), 20000),
+    automaticDeliveryPaused: raw.automatic_delivery_paused === true,
   };
 }
 
@@ -496,6 +528,15 @@ document.querySelectorAll("[data-action]").forEach((button) => {
     if (button.dataset.action === "revoke") {
       const result = await invokeDesktop("approval.revoke_session");
       if (result) renderState(result);
+    }
+    if (button.dataset.action === "pause-full-access") {
+      await invokeStateAction("full_access.pause", "Full Access pause needs the native desktop app.");
+    }
+    if (button.dataset.action === "pause-process-visibility") {
+      await invokeStateAction("process.visibility.pause", "Process visibility pause needs the native desktop app.");
+    }
+    if (button.dataset.action === "revoke-full-access") {
+      await invokeStateAction("full_access.revoke", "Full Access revocation needs the native desktop app.");
     }
     if (button.dataset.action === "export-history") {
       const result = await invokeDesktop("history.export");
