@@ -25540,7 +25540,7 @@ function externalVisualProofArtifactCandidatePaths(json = {}) {
   ]);
 }
 
-function externalVisualStateBindingFacet({
+export function externalVisualStateBindingFacet({
   visualArtifacts = {},
   deterministicVisualMode = {},
   requiredContentHashes = [],
@@ -25565,6 +25565,7 @@ function externalVisualStateBindingFacet({
     && deterministicCameraHashAccepted
     && cameraStateHash === deterministicCameraStateHash;
   const failedGates = compactStringList([
+    'external_visual_state_binding_deprecated_without_target_process_attestation',
     visualCameraHashAccepted ? null : 'external_visual_state_camera_hash_missing',
     deterministicCameraHashAccepted
       ? null
@@ -25591,9 +25592,9 @@ function externalVisualStateBindingFacet({
     ...material,
     schemaVersion: 'synthi.gpu_hmr.external_visual_state_binding.v1',
     schema_version: 'synthi.gpu_hmr.external_visual_state_binding.v1',
-    proofAuthority: 'matrix_recomputed_external_visual_state_binding_not_gpu_hmr_success',
-    proof_authority: 'matrix_recomputed_external_visual_state_binding_not_gpu_hmr_success',
-    accepted: failedGates.length === 0,
+    proofAuthority: 'deprecated_report_derived_visual_state_binding_not_runtime_proof',
+    proof_authority: 'deprecated_report_derived_visual_state_binding_not_runtime_proof',
+    accepted: false,
     acceptedForGpuHmr: false,
     accepted_for_gpu_hmr: false,
     gpuHmrSuccess: false,

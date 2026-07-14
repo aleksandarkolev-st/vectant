@@ -152,6 +152,7 @@
     "proof:rocm:source-first:realistic-visual": "node scripts/gpu-hmr-source-first-visual-proof.mjs --profile scripts/profiles/agent-realistic-raytrace-scene.json",
     "proof:external-project": "node scripts/gpu-hmr-external-project-profile.mjs",
     "proof:external-project:self-check": "node scripts/gpu-hmr-external-project-profile.mjs --self-check",
+    "proof:external-visual-state-binding:self-check": "node scripts/tests/gpu-hmr-external-visual-state-binding-self-check.mjs",
     "proof:external-project:dry-run": "node scripts/gpu-hmr-external-project-profile.mjs --dry-run --profile mcp/synthi-mcp/scripts/profiles/threejs-webgl-shader-lava.json",
     "proof:timing-metrics": "node scripts/gpu-hmr-timing-metrics-summary.mjs",
     "proof:validation-matrix": "node scripts/gpu-hmr-validation-matrix-ledger.mjs",

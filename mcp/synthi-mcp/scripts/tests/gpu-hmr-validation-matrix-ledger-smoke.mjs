@@ -22058,7 +22058,7 @@ assert.equal(
 );
 
 const externalVisual = ledger.rows.find((row) => row.targetId === 'explicit-external-engine-visual');
-assert.equal(externalVisual?.matrixOutcome, 'visual_profile_accepted');
+assert.equal(externalVisual?.matrixOutcome, 'unproven');
 assert.equal(externalVisual.backend, 'webgl');
 assert.equal(externalVisual.visual.accepted, true);
 assert.equal(externalVisual.externalProjectContract.accepted, true);
@@ -22066,12 +22066,16 @@ assert.equal(externalVisual.externalProjectContract.profileClass, 'external_engi
 assert.equal(externalVisual.externalProfileSelection.accepted, true);
 assert.equal(externalVisual.externalSourceDelta.accepted, true);
 assert.equal(externalVisual.externalSourceDelta.matchCount, 1);
-assert.equal(externalVisual.externalVisualProofArtifact.accepted, true);
-assert.equal(externalVisual.externalVisualProofArtifact.externalVisualStateBinding.accepted, true);
+assert.equal(externalVisual.externalVisualProofArtifact.accepted, false);
+assert.equal(externalVisual.externalVisualProofArtifact.externalVisualStateBinding.accepted, false);
 assert.equal(externalVisual.externalVisualProofArtifact.externalVisualStateBinding.acceptedForGpuHmr, false);
 assert.equal(externalVisual.externalVisualProofArtifact.requiredContentHashes.length, 3);
 assert.equal(externalVisual.externalVisualProofArtifact.visualDiff.accepted, true);
 assert.equal(externalVisual.deterministicVisualModeEvaluation.accepted, true);
+assert.ok(externalVisual.externalVisualProofArtifact.failedGates.includes(
+  'external_visual_state_binding_deprecated_without_target_process_attestation',
+));
+assert.ok(externalVisual.openGaps.includes('external_visual_state_binding_not_accepted'));
 
 const seedlessExternalVisual = ledger.rows.find(
   (row) => row.targetId === 'forged-external-engine-seedless-visual',
