@@ -1595,6 +1595,7 @@ pub extern "C" fn synthi_gpu_launch_raw_checked(
         expected_generation,
         None,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1626,6 +1627,7 @@ pub extern "C" fn synthi_gpu_launch_raw_arg_info_checked(
         expected_generation,
         None,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1670,6 +1672,7 @@ pub extern "C" fn synthi_gpu_launch_original_host_path_raw_arg_info_checked(
         expected_generation,
         original_host_path,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1712,6 +1715,7 @@ pub extern "C" fn synthi_gpu_launch_source_location_raw_arg_info_checked(
         expected_generation,
         original_host_path,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1742,6 +1746,7 @@ pub extern "C" fn synthi_gpu_launch_raw(
         current_launch_generation(),
         None,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1763,6 +1768,50 @@ pub extern "C" fn synthi_gpu_launch_raw_arg_info(
         _grid,
         grid_size,
         _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        std::ptr::null(),
+        args,
+        arg_count,
+        current_launch_generation(),
+        None,
+    )
+    .dispatched
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuLaunchReceipt {
+    pub dispatched: bool,
+    pub dispatch_id: String,
+    pub active_generation: u64,
+    pub runtime_session_id: String,
+    pub stream_token: usize,
+    pub dispatch_timestamp_monotonic_ns: u128,
+}
+
+/// Rust-only launch entry point that returns the identity of this exact
+/// dispatch. Callers that bind output evidence must use this receipt instead
+/// of querying whichever launch happened to be recorded most recently.
+#[allow(clippy::too_many_arguments)]
+pub fn synthi_gpu_launch_raw_arg_info_with_receipt(
+    gpu: *mut c_void,
+    kernel_name: *const c_char,
+    grid: *const c_void,
+    grid_size: usize,
+    block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+) -> GpuLaunchReceipt {
+    synthi_gpu_launch_raw_impl(
+        gpu,
+        kernel_name,
+        grid,
+        grid_size,
+        block,
         block_size,
         shared_bytes,
         stream_token,
@@ -1794,7 +1843,7 @@ fn synthi_gpu_launch_raw_impl(
     arg_count: usize,
     expected_generation: u64,
     original_host_path: Option<OriginalHostPathLaunchAttachment>,
-) -> bool {
+) -> GpuLaunchReceipt {
     let kernel_name_ptr = kernel_name.cast::<c_void>();
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
     let grid_decoded = decode_launch_dims("grid", _grid, grid_size);
@@ -2049,7 +2098,14 @@ fn synthi_gpu_launch_raw_impl(
         degraded_state,
         log_safe(&arg_provenance_details(&arg_provenance))
     );
-    ok
+    GpuLaunchReceipt {
+        dispatched: ok,
+        dispatch_id,
+        active_generation,
+        runtime_session_id,
+        stream_token,
+        dispatch_timestamp_monotonic_ns,
+    }
 }
 
 #[no_mangle]
@@ -3594,6 +3650,66 @@ mod tests {
         );
 
         assert!(original_host_path_records_snapshot().is_empty());
+    }
+
+    #[test]
+    fn launch_receipt_identifies_its_exact_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls,
+        }));
+
+        let first_kernel = CString::new("receipt_first").unwrap();
+        let second_kernel = CString::new("receipt_second").unwrap();
+        let dim = 1_u32;
+        let first = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            first_kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            1,
+            (&dim as *const u32).cast(),
+            1,
+            0,
+            0x11,
+            std::ptr::null(),
+            0,
+        );
+        let second = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            second_kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            1,
+            (&dim as *const u32).cast(),
+            1,
+            0,
+            0x22,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(first.dispatched);
+        assert!(second.dispatched);
+        assert_ne!(first.dispatch_id, second.dispatch_id);
+        assert_eq!(first.active_generation, second.active_generation);
+        assert_eq!(first.runtime_session_id, second.runtime_session_id);
+        assert_eq!(first.stream_token, 0x11);
+        assert_eq!(second.stream_token, 0x22);
+        let launches = launch_records_snapshot();
+        let first_record = launches
+            .iter()
+            .find(|record| record.dispatch_id.as_deref() == Some(first.dispatch_id.as_str()))
+            .expect("first receipt launch record");
+        let second_record = launches
+            .iter()
+            .find(|record| record.dispatch_id.as_deref() == Some(second.dispatch_id.as_str()))
+            .expect("second receipt launch record");
+        assert_eq!(first_record.kernel_name, "receipt_first");
+        assert_eq!(first_record.stream_token, first.stream_token);
+        assert_eq!(second_record.kernel_name, "receipt_second");
+        assert_eq!(second_record.stream_token, second.stream_token);
     }
 
     #[test]
