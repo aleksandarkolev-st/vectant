@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::runtime::capability::HmrStatus;
 use sha2::{Digest, Sha256};
@@ -88,6 +88,7 @@ pub struct LaunchRecord {
     pub dispatched: bool,
     pub dispatch_id: Option<String>,
     pub dispatch_timestamp_ms: Option<u128>,
+    pub dispatch_timestamp_monotonic_ns: Option<u128>,
     pub dispatch_error: Option<String>,
 }
 
@@ -111,6 +112,7 @@ pub struct OutputOracleRecord {
     pub producer: Option<String>,
     pub output_target_id: Option<String>,
     pub readback_timestamp_ms: Option<u128>,
+    pub readback_timestamp_monotonic_ns: u128,
     pub artifact_id: Option<String>,
     pub after_dispatch_id: Option<String>,
     pub visual_evidence_ref: Option<String>,
@@ -191,6 +193,7 @@ static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceL
 static DISPATCHER_METADATA: OnceLock<Mutex<Option<ActiveDispatcherMetadata>>> = OnceLock::new();
 static LAUNCH_GENERATION: AtomicU64 = AtomicU64::new(1);
 static RUNTIME_SESSION_ID: OnceLock<String> = OnceLock::new();
+static MONOTONIC_ORIGIN: OnceLock<Instant> = OnceLock::new();
 #[cfg(test)]
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -216,6 +219,15 @@ pub fn install_launch_dispatcher_with_metadata(
     dispatcher: Arc<dyn GpuLaunchDispatcher>,
     metadata: GpuLaunchDispatcherMetadata,
 ) -> (Option<Arc<dyn GpuLaunchDispatcher>>, u64) {
+    let (previous, generation, _) =
+        install_launch_dispatcher_with_metadata_timed(dispatcher, metadata);
+    (previous, generation)
+}
+
+pub fn install_launch_dispatcher_with_metadata_timed(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: GpuLaunchDispatcherMetadata,
+) -> (Option<Arc<dyn GpuLaunchDispatcher>>, u64, u128) {
     let mut guard = dispatcher_slot()
         .lock()
         .expect("gpu runtime dispatcher mutex poisoned");
@@ -225,7 +237,8 @@ pub fn install_launch_dispatcher_with_metadata(
     *dispatcher_metadata_slot()
         .lock()
         .expect("gpu runtime dispatcher metadata mutex poisoned") = Some(active);
-    (previous, generation)
+    let publication_timestamp_monotonic_ns = monotonic_timestamp_ns();
+    (previous, generation, publication_timestamp_monotonic_ns)
 }
 
 pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
@@ -932,7 +945,10 @@ pub fn latest_dispatch_id_for_generation(
         .iter()
         .rev()
         .find(|record| {
-            record.active_generation == generation && record.runtime_session_id == runtime_session
+            record.active_generation == generation
+                && record.runtime_session_id == runtime_session
+                && record.dispatched
+                && record.dispatch_error.is_none()
         })
         .and_then(|record| record.dispatch_id.clone())
         .filter(|dispatch_id| !dispatch_id.trim().is_empty())
@@ -980,6 +996,14 @@ fn epoch_millis_now() -> u128 {
         .unwrap_or(0)
 }
 
+pub fn monotonic_timestamp_ns() -> u128 {
+    MONOTONIC_ORIGIN
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_nanos()
+        .saturating_add(1)
+}
+
 fn append_log_token(line: &mut String, key: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
         line.push(' ');
@@ -1017,6 +1041,7 @@ fn record_output_oracle_event_with_metadata(
 ) {
     let generation = current_launch_generation();
     let runtime_session = runtime_session_id().to_string();
+    let readback_timestamp_monotonic_ns = monotonic_timestamp_ns();
     let after_dispatch_id = metadata
         .after_dispatch_id
         .clone()
@@ -1033,6 +1058,7 @@ fn record_output_oracle_event_with_metadata(
             producer: metadata.producer.clone(),
             output_target_id: metadata.output_target_id.clone(),
             readback_timestamp_ms: metadata.readback_timestamp_ms,
+            readback_timestamp_monotonic_ns,
             artifact_id: metadata.artifact_id.clone(),
             after_dispatch_id: after_dispatch_id.clone(),
             visual_evidence_ref: metadata.visual_evidence_ref.clone(),
@@ -1070,6 +1096,8 @@ fn record_output_oracle_event_with_metadata(
         line.push_str(" readback_timestamp=");
         line.push_str(&readback_timestamp_ms.to_string());
     }
+    line.push_str(" readback_timestamp_monotonic_ns=");
+    line.push_str(&readback_timestamp_monotonic_ns.to_string());
     append_log_token(&mut line, "artifact_id", metadata.artifact_id.as_deref());
     append_log_token(
         &mut line,
@@ -1854,6 +1882,7 @@ fn synthi_gpu_launch_raw_impl(
             dispatched: false,
             dispatch_id: None,
             dispatch_timestamp_ms: None,
+            dispatch_timestamp_monotonic_ns: None,
             dispatch_error: None,
         });
         let dispatcher = if stale_generation {
@@ -1888,6 +1917,7 @@ fn synthi_gpu_launch_raw_impl(
     };
 
     let dispatch_timestamp_ms = epoch_millis_now();
+    let dispatch_timestamp_monotonic_ns = monotonic_timestamp_ns();
     let dispatch_id = dispatch_id_for_launch(
         &runtime_session_id,
         active_generation,
@@ -1899,6 +1929,7 @@ fn synthi_gpu_launch_raw_impl(
     if let Some(record) = guard.launches.get_mut(launch_index) {
         record.dispatch_id = Some(dispatch_id.clone());
         record.dispatch_timestamp_ms = Some(dispatch_timestamp_ms);
+        record.dispatch_timestamp_monotonic_ns = Some(dispatch_timestamp_monotonic_ns);
         match dispatch_result {
             Some(Ok(())) => {
                 record.dispatched = true;
@@ -1952,7 +1983,7 @@ fn synthi_gpu_launch_raw_impl(
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_timestamp_monotonic_ns={} dispatch_id={} error={}",
             kernel_name,
             grid,
             block,
@@ -1967,13 +1998,14 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
             dispatch_timestamp_ms,
+            dispatch_timestamp_monotonic_ns,
             log_token(&dispatch_id),
             log_safe(error)
         );
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_timestamp_monotonic_ns={} dispatch_id={}",
             kernel_name,
             grid,
             block,
@@ -1988,6 +2020,7 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
             dispatch_timestamp_ms,
+            dispatch_timestamp_monotonic_ns,
             log_token(&dispatch_id)
         );
     }
@@ -2002,12 +2035,13 @@ fn synthi_gpu_launch_raw_impl(
         "gpu-hmr-unknown-arg-provenance"
     };
     eprintln!(
-        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} complete={} known_args={} unknown_args={} degradedState={} details={}",
+        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_timestamp_monotonic_ns={} dispatch_id={} complete={} known_args={} unknown_args={} degradedState={} details={}",
         kernel_name,
         active_generation,
         runtime_session_id,
         log_token(&dispatch_table_entry_id),
         dispatch_timestamp_ms,
+        dispatch_timestamp_monotonic_ns,
         log_token(&dispatch_id),
         arg_provenance_complete,
         known_arg_count,
@@ -2698,6 +2732,10 @@ mod tests {
             records[0].after_dispatch_id.as_deref(),
             Some(dispatch_id.as_str())
         );
+        let dispatch_timestamp = launch_records_snapshot()[0]
+            .dispatch_timestamp_monotonic_ns
+            .expect("dispatch monotonic timestamp");
+        assert!(records[0].readback_timestamp_monotonic_ns >= dispatch_timestamp);
     }
 
     #[test]
@@ -3549,6 +3587,7 @@ mod tests {
         assert!(launches[0].dispatched);
         assert!(launches[0].dispatch_error.is_none());
         assert!(launches[0].dispatch_timestamp_ms.is_some());
+        assert!(launches[0].dispatch_timestamp_monotonic_ns.is_some());
         assert_eq!(
             launches[0].expected_generation,
             launches[0].active_generation
@@ -3562,18 +3601,20 @@ mod tests {
         let _guard = test_guard_for_test();
         reset_for_test();
         let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let (_previous, generation) = install_launch_dispatcher_with_metadata(
-            Arc::new(TestDispatcher {
-                should_fail: false,
-                calls: calls.clone(),
-            }),
-            GpuLaunchDispatcherMetadata {
-                artifact_id: Some("artifact:sha256:test".to_string()),
-                dispatch_table_hash: Some("0xabc".to_string()),
-                changed_symbols: vec!["bound_kernel".to_string()],
-                function_handle_ids: vec!["bound_kernel:0x10".to_string()],
-            },
-        );
+        let (_previous, generation, publication_timestamp_monotonic_ns) =
+            install_launch_dispatcher_with_metadata_timed(
+                Arc::new(TestDispatcher {
+                    should_fail: false,
+                    calls: calls.clone(),
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some("artifact:sha256:test".to_string()),
+                    dispatch_table_hash: Some("0xabc".to_string()),
+                    changed_symbols: vec!["bound_kernel".to_string()],
+                    function_handle_ids: vec!["bound_kernel:0x10".to_string()],
+                },
+            );
+        assert!(publication_timestamp_monotonic_ns > 0);
 
         let kernel = CString::new("bound_kernel").unwrap();
         let dim = 1_u32;
@@ -3721,6 +3762,13 @@ mod tests {
         assert_eq!(
             launches[0].dispatch_error.as_deref(),
             Some("synthetic launch failure")
+        );
+        assert_eq!(
+            latest_dispatch_id_for_generation(
+                launches[0].active_generation,
+                &launches[0].runtime_session_id,
+            ),
+            None
         );
     }
 

@@ -82,8 +82,9 @@ use crate::hmr::gpu_reload_orchestrator::{
 };
 use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
-    clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher_with_metadata,
-    latest_dispatch_id_for_generation, launch_records_snapshot, managed_buffers_snapshot,
+    clear_launch_dispatcher, current_launch_generation,
+    install_launch_dispatcher_with_metadata_timed, latest_dispatch_id_for_generation,
+    launch_records_snapshot, managed_buffers_snapshot, monotonic_timestamp_ns,
     output_oracle_records_snapshot, record_hmr_runtime_identity_snapshot,
     record_output_buffer_checksum_with_probe_bytes_after_dispatch, runtime_session_id,
     synthi_gpu_launch_raw_arg_info, synthi_gpu_register_buffer, GpuLaunchDispatcher,
@@ -1627,6 +1628,45 @@ fn runtime_epoch_retirement_proof_value(retirement_strategy: &str) -> &'static s
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeProofTimestamps {
+    loader_ns: u64,
+    publish_ns: u64,
+    dispatch_ns: u64,
+    output_ns: u64,
+    retirement_ns: u64,
+    dispatch_to_output_ms: u64,
+}
+
+fn validate_runtime_proof_timestamps(
+    loader_timestamp_monotonic_ns: u128,
+    publish_timestamp_monotonic_ns: u128,
+    dispatch_timestamp_monotonic_ns: Option<u128>,
+    output_timestamp_monotonic_ns: u128,
+    retirement_timestamp_monotonic_ns: u128,
+) -> Option<RuntimeProofTimestamps> {
+    let loader_ns = saturating_u128_to_u64(loader_timestamp_monotonic_ns);
+    let publish_ns = saturating_u128_to_u64(publish_timestamp_monotonic_ns);
+    let dispatch_ns = dispatch_timestamp_monotonic_ns.map(saturating_u128_to_u64)?;
+    let output_ns = saturating_u128_to_u64(output_timestamp_monotonic_ns);
+    let retirement_ns = saturating_u128_to_u64(retirement_timestamp_monotonic_ns);
+    if publish_ns < loader_ns
+        || dispatch_ns < publish_ns
+        || output_ns < dispatch_ns
+        || retirement_ns < output_ns
+    {
+        return None;
+    }
+    Some(RuntimeProofTimestamps {
+        loader_ns,
+        publish_ns,
+        dispatch_ns,
+        output_ns,
+        retirement_ns,
+        dispatch_to_output_ms: output_ns.saturating_sub(dispatch_ns) / 1_000_000,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn runtime_full_proof_line(
     req: &AdapterReloadRequest,
@@ -1636,7 +1676,9 @@ fn runtime_full_proof_line(
     artifact_hash: &str,
     active_generation: u64,
     previous_generation: u64,
-    publish_timestamp_ms: u128,
+    loader_timestamp_monotonic_ns: u128,
+    publish_timestamp_monotonic_ns: u128,
+    retirement_timestamp_monotonic_ns: u128,
     expected_symbols: &[String],
     loader_transport: ArtifactLoaderTransport,
     reload_elapsed_ms: u64,
@@ -1698,20 +1740,19 @@ fn runtime_full_proof_line(
                 new_artifact_id
             ))
         });
-    let loader_ts = saturating_u128_to_u64(publish_timestamp_ms);
-    let publish_ts = loader_ts;
-    let dispatch_ts = dispatch_record
-        .dispatch_timestamp_ms
-        .map(saturating_u128_to_u64)
-        .filter(|ts| *ts >= publish_ts)
-        .unwrap_or_else(|| publish_ts.saturating_add(1));
-    let output_ts = output_record
-        .readback_timestamp_ms
-        .map(saturating_u128_to_u64)
-        .filter(|ts| *ts >= dispatch_ts)
-        .unwrap_or_else(|| dispatch_ts.saturating_add(1));
-    let retirement_ts = saturating_u128_to_u64(epoch_millis_now()).max(output_ts.saturating_add(1));
-    let dispatch_to_output_ms = output_ts.saturating_sub(dispatch_ts);
+    let timestamps = validate_runtime_proof_timestamps(
+        loader_timestamp_monotonic_ns,
+        publish_timestamp_monotonic_ns,
+        dispatch_record.dispatch_timestamp_monotonic_ns,
+        output_record.readback_timestamp_monotonic_ns,
+        retirement_timestamp_monotonic_ns,
+    )?;
+    let loader_ts = timestamps.loader_ns;
+    let publish_ts = timestamps.publish_ns;
+    let dispatch_ts = timestamps.dispatch_ns;
+    let output_ts = timestamps.output_ns;
+    let retirement_ts = timestamps.retirement_ns;
+    let dispatch_to_output_ms = timestamps.dispatch_to_output_ms;
     let mut evidence_ref_values = vec![
         format!("runtime-session:{}", runtime_session_id()),
         format!("reload:{}", req.reload_id),
@@ -3308,6 +3349,7 @@ impl Adapter for GpuModuleAdapter {
                     touched_symbols.join(",")
                 ));
             }
+            let loader_timestamp_monotonic_ns = monotonic_timestamp_ns();
             let mut replaced_primary = false;
             let retired = if partial_device_reload {
                 self.module_manager
@@ -3339,23 +3381,23 @@ impl Adapter for GpuModuleAdapter {
             let dispatcher_kernels_for_probe = dispatcher_kernels.clone();
             record_hmr_runtime_identity_snapshot();
             let previous_generation = current_launch_generation();
-            install_launch_dispatcher_with_metadata(
-                Arc::new(DriverLaunchDispatcher {
-                    symbols,
-                    kernels: dispatcher_kernels,
-                }),
-                GpuLaunchDispatcherMetadata {
-                    artifact_id: Some(new_artifact_id.clone()),
-                    dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
-                    changed_symbols: expected_symbols.clone(),
-                    function_handle_ids: function_handle_ids
-                        .split(',')
-                        .filter(|value| !value.trim().is_empty() && *value != "none")
-                        .map(str::to_string)
-                        .collect(),
-                },
-            );
-            let active_generation = current_launch_generation();
+            let (_, active_generation, publish_timestamp_monotonic_ns) =
+                install_launch_dispatcher_with_metadata_timed(
+                    Arc::new(DriverLaunchDispatcher {
+                        symbols,
+                        kernels: dispatcher_kernels,
+                    }),
+                    GpuLaunchDispatcherMetadata {
+                        artifact_id: Some(new_artifact_id.clone()),
+                        dispatch_table_hash: Some(format!("0x{dispatch_table_hash:016x}")),
+                        changed_symbols: expected_symbols.clone(),
+                        function_handle_ids: function_handle_ids
+                            .split(',')
+                            .filter(|value| !value.trim().is_empty() && *value != "none")
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                );
             record_hmr_runtime_identity_snapshot();
             let mut runtime_log_lines = Vec::new();
             let stream_epoch_counters = drain.stream_epoch_counters_for_log(active_generation);
@@ -3405,9 +3447,10 @@ impl Adapter for GpuModuleAdapter {
                 drain.stream_epoch_counters_for_graph(active_generation);
             let publish_timestamp_ms = epoch_millis_now();
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} publish_timestamp_ms={} publish_timestamp_monotonic_ns={} previous_generation={} active_generation={} old_artifact_id={} new_artifact_id={} new_artifact_hash=sha256:{} capsule_id={} fission_island_id={} abi_membrane_hash={} dependency_closure_hash={} proof_hash={} changed_symbols={} function_handle_ids={} stream_epoch_counters={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} retirement_fence_ids={} retirement_strategy={} delayed_unload_result={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session,
                 publish_timestamp_ms,
+                publish_timestamp_monotonic_ns,
                 previous_generation,
                 active_generation,
                 previous_artifact_id,
@@ -3524,10 +3567,12 @@ impl Adapter for GpuModuleAdapter {
                     .unload_retired(&symbols, retired)
                     .map_err(Self::module_manager_error)?;
             }
+            let retirement_timestamp_monotonic_ns = monotonic_timestamp_ns();
             if retired_module_count > 0 {
                 let retired_line = format!(
-                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} retirement_strategy={} delayed_unload_result=unloaded",
+                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} retirement_timestamp_monotonic_ns={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true retirement_fence_ids={} retirement_strategy={} delayed_unload_result=unloaded",
                     runtime_session_id(),
+                    retirement_timestamp_monotonic_ns,
                     previous_generation,
                     active_generation,
                     retired_module_count,
@@ -3616,7 +3661,9 @@ impl Adapter for GpuModuleAdapter {
                         &artifact_hash,
                         active_generation,
                         previous_generation,
-                        publish_timestamp_ms,
+                        loader_timestamp_monotonic_ns,
+                        publish_timestamp_monotonic_ns,
+                        retirement_timestamp_monotonic_ns,
                         &expected_symbols,
                         loader_transport,
                         started.elapsed().as_millis() as u64,
@@ -3788,6 +3835,41 @@ mod tests {
     }
 
     #[test]
+    fn runtime_proof_timestamps_require_observed_monotonic_order() {
+        assert_eq!(
+            validate_runtime_proof_timestamps(50, 100, Some(200), 2_000_200, 2_000_300),
+            Some(RuntimeProofTimestamps {
+                loader_ns: 50,
+                publish_ns: 100,
+                dispatch_ns: 200,
+                output_ns: 2_000_200,
+                retirement_ns: 2_000_300,
+                dispatch_to_output_ms: 2,
+            })
+        );
+        assert_eq!(
+            validate_runtime_proof_timestamps(50, 100, None, 200, 300),
+            None
+        );
+        assert_eq!(
+            validate_runtime_proof_timestamps(200, 100, Some(300), 400, 500),
+            None
+        );
+        assert_eq!(
+            validate_runtime_proof_timestamps(50, 200, Some(100), 300, 400),
+            None
+        );
+        assert_eq!(
+            validate_runtime_proof_timestamps(50, 100, Some(300), 200, 400),
+            None
+        );
+        assert_eq!(
+            validate_runtime_proof_timestamps(50, 100, Some(200), 400, 300),
+            None
+        );
+    }
+
+    #[test]
     fn kernel_resolution_specs_keep_logical_launch_names() {
         let specs = vec![
             "shade=_Z5shadePf".to_string(),
@@ -3855,6 +3937,7 @@ mod tests {
             dispatched: true,
             dispatch_id: Some("dispatch:test".to_string()),
             dispatch_timestamp_ms: Some(1234),
+            dispatch_timestamp_monotonic_ns: Some(1_234_000_000),
             dispatch_error: None,
         };
         let evidence_refs = vec![
@@ -4615,6 +4698,7 @@ mod tests {
             .find(|line| line.contains("dispatcher_epoch event=published"))
             .expect("dispatcher epoch publication report");
         assert!(publish.contains("publish_timestamp_ms="));
+        assert!(publish.contains("publish_timestamp_monotonic_ns="));
         assert!(publish.contains("capsule_id=capsule:sha256:"));
         assert!(publish.contains(
             "fission_island_id=fission-island:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -4764,6 +4848,25 @@ mod tests {
             runtime_trace["outputEvents"][0]["afterDispatchId"],
             ledger_record["output_event"]["after_dispatch_id"]
         );
+        let loader_timestamp = ledger_record["loader_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .expect("loader monotonic timestamp");
+        let publish_timestamp = ledger_record["epoch_publish_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .expect("publish monotonic timestamp");
+        let dispatch_timestamp = ledger_record["dispatch_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .expect("dispatch monotonic timestamp");
+        let output_timestamp = ledger_record["output_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .expect("output monotonic timestamp");
+        let retirement_timestamp = ledger_record["retirement_event"]["timestamp_monotonic_ns"]
+            .as_u64()
+            .expect("retirement monotonic timestamp");
+        assert!(loader_timestamp <= publish_timestamp);
+        assert!(publish_timestamp <= dispatch_timestamp);
+        assert!(dispatch_timestamp <= output_timestamp);
+        assert!(output_timestamp <= retirement_timestamp);
         reset_for_test();
     }
 
