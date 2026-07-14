@@ -19,8 +19,8 @@ use tauri_plugin_updater::UpdaterExt;
 use uuid::Uuid;
 use vectant_local_support_app::audit::{AuditClass, LocalAuditStore};
 use vectant_local_support_app::desktop::{build_desktop_status_state, plan_desktop_ipc_action};
-use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::full_access::FullAccessCapability;
+use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::ipc::IpcRequest;
 use vectant_local_support_app::pair::{DeviceIdentity, DeviceIdentityStore};
 use vectant_local_support_app::port_adapter::{
@@ -1317,6 +1317,19 @@ async fn handle_relay_control_command(
                 .map_err(|_| "Preview state lock failed closed.".to_string())?
                 .clear();
             Ok("session_approvals_revoked")
+        }
+        "full_access_pause" => {
+            state.full_access.lock().await.pause();
+            Ok("full_access_paused")
+        }
+        "full_access_revoke" => {
+            state.full_access.lock().await.revoke();
+            Ok("full_access_revoked")
+        }
+        "process_visibility_pause" => {
+            let mut full_access = state.full_access.lock().await;
+            full_access.process_visibility_paused = true;
+            Ok("process_visibility_paused")
         }
         "revoke_port" => {
             let port = match command.port {

@@ -411,6 +411,9 @@ impl RelayControlCommand {
                     | "disconnect_session"
                     | "revoke_session_approvals"
                     | "revoke_port"
+                    | "full_access_pause"
+                    | "full_access_revoke"
+                    | "process_visibility_pause"
             )
             || (self.action == "revoke_port" && !matches!(self.port, Some(1..=65_535)))
             || !self
@@ -548,6 +551,8 @@ mod tests {
         let mut invalid = command;
         invalid.action = "export_history".to_string();
         assert!(invalid.validate().is_err());
+        invalid.action = "full_access_revoke".to_string();
+        assert!(invalid.validate().is_ok());
     }
 
     #[tokio::test]
