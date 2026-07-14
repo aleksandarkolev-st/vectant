@@ -5,6 +5,7 @@ pub mod full_access;
 pub mod http;
 pub mod ipc;
 pub mod lifecycle;
+pub mod mutation;
 pub mod pair;
 pub mod policy;
 pub mod port_adapter;

@@ -27,6 +27,9 @@ use vectant_local_support_app::ipc::{decide_ipc_request, IpcRequest};
 use vectant_local_support_app::lifecycle::{
     disconnect_cleanup, uninstall_cleanup, PendingApprovalQueue,
 };
+use vectant_local_support_app::mutation::{
+    MutationError, MutationRequest, WorkspaceMutationBroker,
+};
 use vectant_local_support_app::pair::{
     verify_pairing_proof, DeviceIdentity, DeviceIdentityStore, DeviceIdentityStoreError,
     PairingError, PairingSession,
@@ -83,6 +86,63 @@ fn process_adapter_exposes_only_narrow_validated_operations() {
         ProcessInspectionAdapter::inspect_listener_identity(0, "sha256:bad"),
         Err(ProcessInspectionError::InvalidScope)
     );
+}
+
+#[test]
+fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/lib.rs"), "pub fn original() {}\n").unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_mutation", SecretScanner::default()).unwrap();
+    let graph = workspace.build_capability_graph().unwrap();
+    let node = graph
+        .values()
+        .find(|node| node.relative_path == "src/lib.rs")
+        .unwrap()
+        .clone();
+    let mut broker = WorkspaceMutationBroker::new(workspace, chrono::Duration::minutes(10));
+    let transaction = broker
+        .apply(
+            &graph,
+            MutationRequest {
+                request_id: "req_mutation_1".into(),
+                node_id: node.node_id.clone(),
+                expected_content_hash: node.content_hash.clone(),
+                replacement: "pub fn changed() {}\n".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.path().join("src/lib.rs")).unwrap(),
+        "pub fn changed() {}\n"
+    );
+    let fresh_graph = WorkspacePolicy::new(root.path(), "wk_mutation", SecretScanner::default())
+        .unwrap()
+        .build_capability_graph()
+        .unwrap();
+    assert!(!serde_json::to_string(&fresh_graph)
+        .unwrap()
+        .contains(".vectant-local-support"));
+    assert!(broker
+        .revert(&transaction.transaction_id, &transaction.after_hash)
+        .is_ok());
+    assert_eq!(
+        fs::read_to_string(root.path().join("src/lib.rs")).unwrap(),
+        "pub fn original() {}\n"
+    );
+    assert!(matches!(
+        broker.apply(
+            &graph,
+            MutationRequest {
+                request_id: "req_mutation_2".into(),
+                node_id: node.node_id,
+                expected_content_hash: "sha256:stale".into(),
+                replacement: "x".into()
+            }
+        ),
+        Err(MutationError::StaleTarget)
+    ));
 }
 
 fn request(path: &str) -> FileReadRequest {
