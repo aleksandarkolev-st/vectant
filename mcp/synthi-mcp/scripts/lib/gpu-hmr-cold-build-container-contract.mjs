@@ -30,6 +30,10 @@ export const COLD_BUILD_LAUNCHER_BUILD_SCHEMA =
   'synthi.gpu_hmr.cold_build_launcher_build.v2';
 export const COLD_BUILD_LAUNCHER_BUILD_AUTHORITY =
   'content_addressed_launcher_build_only_not_gpu_hmr_success';
+export const COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_launcher_identity_receipt.v1';
+export const COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_AUTHORITY =
+  'retained_launcher_identity_only_not_gpu_hmr_success';
 export const COLD_BUILD_LAUNCHER_SOURCE_MANIFEST_SCHEMA =
   'synthi.gpu_hmr.cold_build_launcher_source_manifest.v1';
 export const COLD_BUILD_LAUNCHER_BUILDER_RECIPE_SCHEMA =
@@ -100,7 +104,157 @@ const EXPECTED_LAUNCHER_HASHES = Object.freeze({
   amd64: 'sha256:21f66dfe730b0e3eda211be5ebd6ea96a671766049eb4f4f23036de92ff89d04',
   arm64: 'sha256:e12732203f920306e5dbbcb6143ab509c63022dbc60f4a46830ede59211654a1',
 });
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const PINNED_LAUNCHER_IDENTITIES = new WeakMap();
+const COLD_BUILD_LAUNCHER_SOURCE_IDENTITY_KEYS = Object.freeze([
+  'schemaVersion',
+  'sourceHash',
+  'byteLength',
+  'repoRelativePath',
+  'manifestHash',
+]);
+const COLD_BUILD_LAUNCHER_BUILD_EVIDENCE_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'sourceHash',
+  'sourceByteLength',
+  'sourceRepoRelativePath',
+  'sourceManifestSchema',
+  'sourceManifestHash',
+  'sourceManifestRevalidated',
+  'builderImage',
+  'builderRecipeSchema',
+  'builderRecipeHash',
+  'architecture',
+  'operatingSystem',
+  'staticExecutable',
+  'elfProgramHeaderTypes',
+  'binaryHash',
+  'expectedBinaryHash',
+  'binaryByteLength',
+  'reproducibleHashMatched',
+  'cacheAccepted',
+  'cacheHit',
+  'immutableContentAddressedPublication',
+  'mutableBuildLockUsed',
+  'publicationKeyHash',
+  'publicationManifestHash',
+  'publicationDirectoryName',
+  'publicationOutcome',
+  'publicationCreated',
+  'publicationRaceObserved',
+  'publicationPreLinkCoordinationUsed',
+  'publicationPrimitive',
+  'publicationSameDevice',
+  'publicationFileSyncStatus',
+  'publicationFileSyncErrorCode',
+  'publicationFileSyncIdentityVerified',
+  'publicationDirectorySyncBeforeLinkStatus',
+  'publicationDirectorySyncBeforeLinkErrorCode',
+  'publicationDirectorySyncAfterLinkStatus',
+  'publicationDirectorySyncAfterLinkErrorCode',
+  'publicationDirectorySyncAfterCleanupStatus',
+  'publicationDirectorySyncAfterCleanupErrorCode',
+  'publicationIntegrityAccepted',
+  'executionTimePathBindingRequired',
+  'canAuthorizeLauncherExecution',
+  'publicationDurabilityProven',
+  'publicationDurabilityStatus',
+  'publicationDirectoryHierarchySyncAttempted',
+  'publicationDirectoryHierarchySyncAccepted',
+  'publicationDirectoryHierarchySyncCount',
+  'publicationDirectoryHierarchySyncSyncedCount',
+  'publicationDirectoryHierarchySyncUnsupportedCount',
+  'publicationDirectoryHierarchySyncEvidenceHash',
+  'finalBinaryVerified',
+  'finalBinaryVerifiedAfterDirectoryRevalidation',
+  'finalBinaryRegularFile',
+  'finalBinarySymbolicLink',
+  'finalBinaryStableIdentity',
+  'finalBinaryStableMetadata',
+  'finalBinarySecondHandleIdentityVerified',
+  'finalBinaryCanonicalPathStable',
+  'finalBinaryImmutableMode',
+  'finalBinaryExecutableModeObserved',
+  'finalBinaryExecutableModeApplicable',
+  'finalBinaryExecutableModeAccepted',
+  'finalBinaryMode',
+  'finalBinaryInodeIdentityHash',
+  'finalBinaryLinkCount',
+  'trustedCacheRootAccepted',
+  'trustedCacheRootRevalidated',
+  'trustedCacheRootPermissionVerification',
+  'trustedCacheRootPermissionOwnershipRecomputed',
+  'trustedCacheRootPermissionLimitation',
+  'trustedCacheRootEvidenceHash',
+  'trustedCacheRootIdentityRevalidated',
+  'trustedCacheRootAncestorCount',
+  'trustedCacheRootAncestorEvidenceHash',
+  'trustedCacheRootAncestorRevalidated',
+  'publicationDirectoryChainAccepted',
+  'publicationDirectoryChainEvidenceHash',
+  'publicationDirectoryRevalidated',
+  'staleCandidateCleanupAccepted',
+  'staleCandidateCleanupScannedCount',
+  'staleCandidateCleanupRemovedCount',
+  'staleCandidateCleanupRecentIgnoredCount',
+  'staleCandidateCleanupFutureTimestampCount',
+  'staleCandidateCleanupLeafRemovalAttemptCount',
+  'staleCandidateCleanupNonEmptyRetainedCount',
+  'staleCandidateCleanupRecursiveTraversalUsed',
+  'staleCandidateCleanupBoundedLimitExceeded',
+  'staleCandidateCleanupEvidenceHash',
+  'staleBuildCleanupAccepted',
+  'staleBuildCleanupScannedCount',
+  'staleBuildCleanupRemovedCount',
+  'staleBuildCleanupRecentIgnoredCount',
+  'staleBuildCleanupFutureTimestampCount',
+  'staleBuildCleanupLeafRemovalAttemptCount',
+  'staleBuildCleanupNonEmptyRetainedCount',
+  'staleBuildCleanupRecursiveTraversalUsed',
+  'staleBuildCleanupBoundedLimitExceeded',
+  'staleBuildCleanupEvidenceHash',
+  'directoryLeaseCount',
+  'directoryLeasesHeldThroughVerification',
+  'directoryLeaseStatBoundCount',
+  'directoryLeaseFallbackCount',
+  'directoryLeaseStatBindingAccepted',
+  'directoryLeaseFallbackLimitation',
+  'coalescedPublicationWait',
+  'buildExecuted',
+  'buildCommandHash',
+  'buildExitCode',
+  'buildStdoutHash',
+  'buildStderrHash',
+  'builderContainerIdentityHash',
+  'builderCleanupAttempted',
+  'builderCleanupAccepted',
+  'builderCleanupRemovalExitCode',
+  'builderCleanupAbsenceObservationExitCode',
+  'builderCleanupEvidenceHash',
+  'accepted',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
+const COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'architecture',
+  'binaryHash',
+  'sourceIdentity',
+  'buildEvidence',
+  'launcherBinaryBytesEmbedded',
+  'executionTimePathBindingRequired',
+  'acceptedAsColdBuildLauncherIdentityReceipt',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
 const DIRECTORY_SYNC_UNSUPPORTED_CODES = new Set([
   'EBADF',
   'EISDIR',
@@ -338,6 +492,12 @@ function exactKeys(value, keys) {
     && typeof value === 'object'
     && !Array.isArray(value)
     && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+function recomputeEvidenceHash(value) {
+  const projection = { ...value };
+  delete projection.evidenceHash;
+  return contentHash(stableJson(projection));
 }
 
 function normalizeDeclaredOutputPath(value) {
@@ -1345,6 +1505,331 @@ function elfIdentity(bytes) {
 
 export function coldBuildLauncherExpectedHash(architecture) {
   return EXPECTED_LAUNCHER_HASHES[normalizeArchitecture(architecture)] ?? null;
+}
+
+function coldBuildLauncherSourceIdentityAccepted(sourceIdentity) {
+  if (
+    !exactKeys(sourceIdentity, COLD_BUILD_LAUNCHER_SOURCE_IDENTITY_KEYS)
+    || sourceIdentity.schemaVersion !== COLD_BUILD_LAUNCHER_SOURCE_MANIFEST_SCHEMA
+    || !SHA256_PATTERN.test(sourceIdentity.sourceHash ?? '')
+    || !Number.isSafeInteger(sourceIdentity.byteLength)
+    || sourceIdentity.byteLength < 1
+    || sourceIdentity.repoRelativePath !== 'scripts/native/cold-build-launcher/main.go'
+  ) {
+    return false;
+  }
+  const projection = {
+    schemaVersion: sourceIdentity.schemaVersion,
+    sourceHash: sourceIdentity.sourceHash,
+    byteLength: sourceIdentity.byteLength,
+    repoRelativePath: sourceIdentity.repoRelativePath,
+  };
+  return sourceIdentity.manifestHash === contentHash(stableJson(projection));
+}
+
+function coldBuildLauncherBuildEvidenceAccepted(
+  buildEvidence,
+  architecture,
+  binaryHash,
+  sourceIdentity,
+) {
+  if (!exactKeys(buildEvidence, COLD_BUILD_LAUNCHER_BUILD_EVIDENCE_KEYS)) {
+    return false;
+  }
+  const expectedBinaryHash = coldBuildLauncherExpectedHash(architecture);
+  const expectedRecipe = launcherBuilderRecipe(architecture);
+  const publicationKeyProjection = {
+    architecture,
+    builderRecipeHash: expectedRecipe.recipeHash,
+    expectedBinaryHash,
+    sourceManifestHash: sourceIdentity.manifestHash,
+  };
+  const expectedPublicationKeyHash = contentHash(stableJson(publicationKeyProjection));
+  const publicationDirectoryName = expectedPublicationKeyHash.slice('sha256:'.length);
+  const publicationProjection = {
+    schemaVersion: COLD_BUILD_LAUNCHER_PUBLICATION_SCHEMA,
+    publicationKeyHash: expectedPublicationKeyHash,
+    relativeBinaryPath: [
+      'cold-build-launcher',
+      'publications',
+      architecture,
+      publicationDirectoryName,
+      'cold-build-launcher',
+    ].join('/'),
+  };
+  const requiredHashFields = [
+    'sourceHash',
+    'sourceManifestHash',
+    'builderRecipeHash',
+    'binaryHash',
+    'expectedBinaryHash',
+    'publicationKeyHash',
+    'publicationManifestHash',
+    'publicationDirectoryHierarchySyncEvidenceHash',
+    'finalBinaryInodeIdentityHash',
+    'trustedCacheRootEvidenceHash',
+    'trustedCacheRootAncestorEvidenceHash',
+    'publicationDirectoryChainEvidenceHash',
+    'staleCandidateCleanupEvidenceHash',
+    'staleBuildCleanupEvidenceHash',
+    'evidenceHash',
+  ];
+  const countFields = [
+    'publicationDirectoryHierarchySyncCount',
+    'publicationDirectoryHierarchySyncSyncedCount',
+    'publicationDirectoryHierarchySyncUnsupportedCount',
+    'finalBinaryMode',
+    'finalBinaryLinkCount',
+    'trustedCacheRootAncestorCount',
+    'staleCandidateCleanupScannedCount',
+    'staleCandidateCleanupRemovedCount',
+    'staleCandidateCleanupRecentIgnoredCount',
+    'staleCandidateCleanupFutureTimestampCount',
+    'staleCandidateCleanupLeafRemovalAttemptCount',
+    'staleCandidateCleanupNonEmptyRetainedCount',
+    'staleBuildCleanupScannedCount',
+    'staleBuildCleanupRemovedCount',
+    'staleBuildCleanupRecentIgnoredCount',
+    'staleBuildCleanupFutureTimestampCount',
+    'staleBuildCleanupLeafRemovalAttemptCount',
+    'staleBuildCleanupNonEmptyRetainedCount',
+    'directoryLeaseCount',
+    'directoryLeaseStatBoundCount',
+    'directoryLeaseFallbackCount',
+  ];
+  const syncStatuses = new Set(['synced', 'unsupported', 'not_required_cache_hit']);
+  const errorCodeFields = [
+    'publicationFileSyncErrorCode',
+    'publicationDirectorySyncBeforeLinkErrorCode',
+    'publicationDirectorySyncAfterLinkErrorCode',
+    'publicationDirectorySyncAfterCleanupErrorCode',
+  ];
+  const optionalBuildHashFields = [
+    'buildCommandHash',
+    'buildStdoutHash',
+    'buildStderrHash',
+    'builderContainerIdentityHash',
+    'builderCleanupEvidenceHash',
+  ];
+  const elfProgramHeaderTypes = buildEvidence.elfProgramHeaderTypes;
+  const cleanupCountsAccepted = [
+    ['staleCandidateCleanupScannedCount', 'staleCandidateCleanupRemovedCount'],
+    ['staleBuildCleanupScannedCount', 'staleBuildCleanupRemovedCount'],
+  ].every(([scanned, removed]) => buildEvidence[removed] <= buildEvidence[scanned]);
+  const publicationOutcomeAccepted = [
+    'publication_created',
+    'verified_existing_after_race',
+    'cache_hit',
+  ].includes(buildEvidence.publicationOutcome)
+    && buildEvidence.publicationCreated
+      === (buildEvidence.publicationOutcome === 'publication_created')
+    && buildEvidence.publicationRaceObserved
+      === (buildEvidence.publicationOutcome === 'verified_existing_after_race')
+    && buildEvidence.cacheHit === (buildEvidence.publicationOutcome === 'cache_hit');
+  const durabilityAccepted = (
+    buildEvidence.publicationDurabilityStatus === 'durable'
+    && buildEvidence.publicationDurabilityProven === true
+    && buildEvidence.publicationDirectoryHierarchySyncAccepted === true
+    && buildEvidence.publicationFileSyncStatus === 'synced'
+  ) || (
+    buildEvidence.publicationDurabilityStatus === 'directory_sync_unsupported'
+    && buildEvidence.cacheHit === false
+    && buildEvidence.publicationDurabilityProven === false
+  ) || (
+    buildEvidence.publicationDurabilityStatus
+      === 'cache_verified_durability_not_reproven'
+    && buildEvidence.cacheHit === true
+    && buildEvidence.publicationDurabilityProven === false
+  );
+  const buildExecutionAccepted = buildEvidence.buildExecuted === true
+    ? optionalBuildHashFields.every((name) => SHA256_PATTERN.test(buildEvidence[name] ?? ''))
+      && buildEvidence.buildExitCode === 0
+      && buildEvidence.builderCleanupAttempted === true
+      && buildEvidence.builderCleanupAccepted === true
+      && Number.isSafeInteger(buildEvidence.builderCleanupRemovalExitCode)
+      && Number.isSafeInteger(buildEvidence.builderCleanupAbsenceObservationExitCode)
+    : optionalBuildHashFields.every((name) => buildEvidence[name] === null)
+      && buildEvidence.buildExitCode === null
+      && buildEvidence.builderCleanupAttempted === false
+      && buildEvidence.builderCleanupAccepted === true
+      && buildEvidence.builderCleanupRemovalExitCode === null
+      && buildEvidence.builderCleanupAbsenceObservationExitCode === null;
+  return (
+    buildEvidence.schemaVersion === COLD_BUILD_LAUNCHER_BUILD_SCHEMA
+    && buildEvidence.proofAuthority === COLD_BUILD_LAUNCHER_BUILD_AUTHORITY
+    && requiredHashFields.every((name) => SHA256_PATTERN.test(buildEvidence[name] ?? ''))
+    && countFields.every((name) => Number.isSafeInteger(buildEvidence[name])
+      && buildEvidence[name] >= 0)
+    && errorCodeFields.every((name) => buildEvidence[name] === null
+      || (typeof buildEvidence[name] === 'string' && buildEvidence[name].length > 0))
+    && buildEvidence.sourceHash === sourceIdentity.sourceHash
+    && buildEvidence.sourceByteLength === sourceIdentity.byteLength
+    && buildEvidence.sourceRepoRelativePath === sourceIdentity.repoRelativePath
+    && buildEvidence.sourceManifestSchema === sourceIdentity.schemaVersion
+    && buildEvidence.sourceManifestHash === sourceIdentity.manifestHash
+    && buildEvidence.sourceManifestRevalidated === true
+    && buildEvidence.builderImage === COLD_BUILD_LAUNCHER_BUILDER_IMAGE
+    && buildEvidence.builderRecipeSchema === COLD_BUILD_LAUNCHER_BUILDER_RECIPE_SCHEMA
+    && buildEvidence.builderRecipeHash === expectedRecipe.recipeHash
+    && buildEvidence.architecture === architecture
+    && buildEvidence.operatingSystem === 'linux'
+    && buildEvidence.staticExecutable === true
+    && Array.isArray(elfProgramHeaderTypes)
+    && elfProgramHeaderTypes.length > 0
+    && elfProgramHeaderTypes.every((value, index) => Number.isSafeInteger(value)
+      && value >= 0
+      && value !== 2
+      && value !== 3
+      && (index === 0 || value > elfProgramHeaderTypes[index - 1]))
+    && binaryHash === expectedBinaryHash
+    && buildEvidence.binaryHash === expectedBinaryHash
+    && buildEvidence.expectedBinaryHash === expectedBinaryHash
+    && Number.isSafeInteger(buildEvidence.binaryByteLength)
+    && buildEvidence.binaryByteLength >= 1024 * 1024
+    && buildEvidence.reproducibleHashMatched === true
+    && buildEvidence.cacheAccepted === true
+    && typeof buildEvidence.cacheHit === 'boolean'
+    && buildEvidence.immutableContentAddressedPublication === true
+    && buildEvidence.mutableBuildLockUsed === false
+    && buildEvidence.publicationKeyHash === expectedPublicationKeyHash
+    && buildEvidence.publicationManifestHash
+      === contentHash(stableJson(publicationProjection))
+    && buildEvidence.publicationDirectoryName === publicationDirectoryName
+    && publicationOutcomeAccepted
+    && typeof buildEvidence.publicationPreLinkCoordinationUsed === 'boolean'
+    && buildEvidence.publicationPrimitive === 'hard_link_no_replace'
+    && buildEvidence.publicationSameDevice === true
+    && syncStatuses.has(buildEvidence.publicationFileSyncStatus)
+    && syncStatuses.has(buildEvidence.publicationDirectorySyncBeforeLinkStatus)
+    && syncStatuses.has(buildEvidence.publicationDirectorySyncAfterLinkStatus)
+    && syncStatuses.has(buildEvidence.publicationDirectorySyncAfterCleanupStatus)
+    && buildEvidence.publicationFileSyncIdentityVerified === true
+    && buildEvidence.publicationIntegrityAccepted === true
+    && buildEvidence.executionTimePathBindingRequired === true
+    && buildEvidence.canAuthorizeLauncherExecution === false
+    && durabilityAccepted
+    && buildEvidence.publicationDirectoryHierarchySyncAttempted === true
+    && typeof buildEvidence.publicationDirectoryHierarchySyncAccepted === 'boolean'
+    && buildEvidence.publicationDirectoryHierarchySyncCount >= 1
+    && buildEvidence.publicationDirectoryHierarchySyncCount
+      === buildEvidence.publicationDirectoryHierarchySyncSyncedCount
+        + buildEvidence.publicationDirectoryHierarchySyncUnsupportedCount
+    && buildEvidence.finalBinaryVerified === true
+    && buildEvidence.finalBinaryVerifiedAfterDirectoryRevalidation === true
+    && buildEvidence.finalBinaryRegularFile === true
+    && buildEvidence.finalBinarySymbolicLink === false
+    && buildEvidence.finalBinaryStableIdentity === true
+    && buildEvidence.finalBinaryStableMetadata === true
+    && buildEvidence.finalBinarySecondHandleIdentityVerified === true
+    && buildEvidence.finalBinaryCanonicalPathStable === true
+    && buildEvidence.finalBinaryImmutableMode === true
+    && typeof buildEvidence.finalBinaryExecutableModeObserved === 'boolean'
+    && typeof buildEvidence.finalBinaryExecutableModeApplicable === 'boolean'
+    && buildEvidence.finalBinaryExecutableModeAccepted === true
+    && buildEvidence.finalBinaryLinkCount >= 1
+    && buildEvidence.trustedCacheRootAccepted === true
+    && buildEvidence.trustedCacheRootRevalidated === true
+    && typeof buildEvidence.trustedCacheRootPermissionVerification === 'string'
+    && buildEvidence.trustedCacheRootPermissionVerification.length > 0
+    && typeof buildEvidence.trustedCacheRootPermissionOwnershipRecomputed === 'boolean'
+    && (buildEvidence.trustedCacheRootPermissionOwnershipRecomputed
+      ? buildEvidence.trustedCacheRootPermissionLimitation === null
+      : buildEvidence.trustedCacheRootPermissionLimitation
+        === 'windows_acl_not_recomputed_execution_time_hash_required')
+    && buildEvidence.trustedCacheRootIdentityRevalidated === true
+    && buildEvidence.trustedCacheRootAncestorRevalidated === true
+    && buildEvidence.publicationDirectoryChainAccepted === true
+    && buildEvidence.publicationDirectoryRevalidated === true
+    && buildEvidence.staleCandidateCleanupAccepted === true
+    && buildEvidence.staleCandidateCleanupRecursiveTraversalUsed === false
+    && buildEvidence.staleCandidateCleanupBoundedLimitExceeded === false
+    && buildEvidence.staleBuildCleanupAccepted === true
+    && buildEvidence.staleBuildCleanupRecursiveTraversalUsed === false
+    && buildEvidence.staleBuildCleanupBoundedLimitExceeded === false
+    && cleanupCountsAccepted
+    && buildEvidence.directoryLeaseCount >= 1
+    && buildEvidence.directoryLeaseCount
+      === buildEvidence.directoryLeaseStatBoundCount
+        + buildEvidence.directoryLeaseFallbackCount
+    && buildEvidence.directoryLeasesHeldThroughVerification === true
+    && buildEvidence.directoryLeaseStatBindingAccepted === true
+    && (buildEvidence.directoryLeaseFallbackCount === 0
+      ? buildEvidence.directoryLeaseFallbackLimitation === null
+      : buildEvidence.directoryLeaseFallbackLimitation
+        === 'windows_directory_handle_stat_binding_unavailable_execution_time_hash_required')
+    && typeof buildEvidence.coalescedPublicationWait === 'boolean'
+    && typeof buildEvidence.buildExecuted === 'boolean'
+    && buildExecutionAccepted
+    && buildEvidence.accepted === true
+    && buildEvidence.acceptedForGpuHmr === false
+    && buildEvidence.gpuHmrSuccess === false
+    && buildEvidence.canSatisfyRuntimeProof === false
+    && buildEvidence.canSatisfyDispatchProof === false
+    && buildEvidence.evidenceHash === recomputeEvidenceHash(buildEvidence)
+  );
+}
+
+export function createColdBuildLauncherIdentityReceipt(launcherIdentity) {
+  requirePinnedLauncherIdentity(launcherIdentity);
+  if (
+    !coldBuildLauncherSourceIdentityAccepted(launcherIdentity.sourceIdentity)
+    || !coldBuildLauncherBuildEvidenceAccepted(
+      launcherIdentity.buildEvidence,
+      launcherIdentity.architecture,
+      launcherIdentity.binaryHash,
+      launcherIdentity.sourceIdentity,
+    )
+  ) {
+    throw new Error('cold_build_launcher_identity_receipt_source_invalid');
+  }
+  const receipt = {
+    schemaVersion: COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_SCHEMA,
+    proofAuthority: COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_AUTHORITY,
+    architecture: launcherIdentity.architecture,
+    binaryHash: launcherIdentity.binaryHash,
+    sourceIdentity: structuredClone(launcherIdentity.sourceIdentity),
+    buildEvidence: structuredClone(launcherIdentity.buildEvidence),
+    launcherBinaryBytesEmbedded: false,
+    executionTimePathBindingRequired: true,
+    acceptedAsColdBuildLauncherIdentityReceipt: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  return receipt;
+}
+
+export function verifyColdBuildLauncherIdentityReceipt(receipt) {
+  const architecture = normalizeArchitecture(receipt?.architecture);
+  if (
+    !exactKeys(receipt, COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_KEYS)
+    || receipt.schemaVersion !== COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_SCHEMA
+    || receipt.proofAuthority !== COLD_BUILD_LAUNCHER_IDENTITY_RECEIPT_AUTHORITY
+    || receipt.architecture !== architecture
+    || !['amd64', 'arm64'].includes(architecture)
+    || receipt.binaryHash !== coldBuildLauncherExpectedHash(architecture)
+    || !coldBuildLauncherSourceIdentityAccepted(receipt.sourceIdentity)
+    || !coldBuildLauncherBuildEvidenceAccepted(
+      receipt.buildEvidence,
+      architecture,
+      receipt.binaryHash,
+      receipt.sourceIdentity,
+    )
+    || receipt.launcherBinaryBytesEmbedded !== false
+    || receipt.executionTimePathBindingRequired !== true
+    || receipt.acceptedAsColdBuildLauncherIdentityReceipt !== true
+    || receipt.acceptedForGpuHmr !== false
+    || receipt.gpuHmrSuccess !== false
+    || receipt.canSatisfyRuntimeProof !== false
+    || receipt.canSatisfyDispatchProof !== false
+    || !SHA256_PATTERN.test(receipt.evidenceHash ?? '')
+    || receipt.evidenceHash !== recomputeEvidenceHash(receipt)
+  ) {
+    throw new Error('cold_build_launcher_identity_receipt_invalid');
+  }
+  return receipt;
 }
 
 function requirePinnedLauncherIdentity(value) {

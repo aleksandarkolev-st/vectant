@@ -44,6 +44,7 @@ import {
   coldBuildLauncherPublicationDescriptor,
   coldBuildLauncherSpec,
   coldBuildLauncherSpecHash,
+  createColdBuildLauncherIdentityReceipt,
   coldBuildOutputTmpfsOptions,
   coldBuildTmpfsOptions,
   encodeColdBuildLauncherSpec,
@@ -53,6 +54,7 @@ import {
   parseColdBuildControlFrame,
   parseColdBuildFinalReceipt,
   runColdBuildHostProcess,
+  verifyColdBuildLauncherIdentityReceipt,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
 
 const dockerExecutable = process.env.SYNTHI_GPU_HMR_DOCKER_EXECUTABLE || 'docker';
@@ -69,6 +71,13 @@ function stableJson(value) {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
     .join(',')}}`;
+}
+
+function resealEvidence(value) {
+  const projection = structuredClone(value);
+  delete projection.evidenceHash;
+  value.evidenceHash = contentHash(stableJson(projection));
+  return value;
 }
 
 async function waitForPaths(paths, timeoutMs = 30_000) {
@@ -986,6 +995,70 @@ async function main() {
       expectedLauncherIdentity: forgedLauncherIdentity,
     }),
     /cold_build_launcher_pinned_identity_invalid/,
+  );
+  const launcherReceipt = createColdBuildLauncherIdentityReceipt(launcher);
+  const replayedLauncherReceipt = JSON.parse(JSON.stringify(launcherReceipt));
+  assert.equal(
+    verifyColdBuildLauncherIdentityReceipt(replayedLauncherReceipt),
+    replayedLauncherReceipt,
+  );
+  assert.equal(replayedLauncherReceipt.launcherBinaryBytesEmbedded, false);
+  assert.equal(replayedLauncherReceipt.executionTimePathBindingRequired, true);
+  assert.equal(replayedLauncherReceipt.acceptedForGpuHmr, false);
+  assert.equal(replayedLauncherReceipt.gpuHmrSuccess, false);
+
+  const forgedReceiptBinary = structuredClone(replayedLauncherReceipt);
+  forgedReceiptBinary.binaryHash = `sha256:${'0'.repeat(64)}`;
+  resealEvidence(forgedReceiptBinary);
+  assert.throws(
+    () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptBinary),
+    /cold_build_launcher_identity_receipt_invalid/,
+  );
+
+  const forgedReceiptBuildAuthority = structuredClone(replayedLauncherReceipt);
+  forgedReceiptBuildAuthority.buildEvidence.gpuHmrSuccess = true;
+  resealEvidence(forgedReceiptBuildAuthority.buildEvidence);
+  resealEvidence(forgedReceiptBuildAuthority);
+  assert.throws(
+    () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptBuildAuthority),
+    /cold_build_launcher_identity_receipt_invalid/,
+  );
+
+  const forgedReceiptUnknownBuildField = structuredClone(replayedLauncherReceipt);
+  forgedReceiptUnknownBuildField.buildEvidence.projectName = 'must-not-be-authority';
+  resealEvidence(forgedReceiptUnknownBuildField.buildEvidence);
+  resealEvidence(forgedReceiptUnknownBuildField);
+  assert.throws(
+    () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptUnknownBuildField),
+    /cold_build_launcher_identity_receipt_invalid/,
+  );
+
+  const forgedReceiptSource = structuredClone(replayedLauncherReceipt);
+  forgedReceiptSource.sourceIdentity.sourceHash = `sha256:${'1'.repeat(64)}`;
+  forgedReceiptSource.sourceIdentity.manifestHash = contentHash(stableJson({
+    schemaVersion: forgedReceiptSource.sourceIdentity.schemaVersion,
+    sourceHash: forgedReceiptSource.sourceIdentity.sourceHash,
+    byteLength: forgedReceiptSource.sourceIdentity.byteLength,
+    repoRelativePath: forgedReceiptSource.sourceIdentity.repoRelativePath,
+  }));
+  forgedReceiptSource.buildEvidence.sourceHash =
+    forgedReceiptSource.sourceIdentity.sourceHash;
+  forgedReceiptSource.buildEvidence.sourceManifestHash =
+    forgedReceiptSource.sourceIdentity.manifestHash;
+  resealEvidence(forgedReceiptSource.buildEvidence);
+  resealEvidence(forgedReceiptSource);
+  assert.throws(
+    () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptSource),
+    /cold_build_launcher_identity_receipt_invalid/,
+  );
+
+  const forgedReceiptAuthority = structuredClone(replayedLauncherReceipt);
+  forgedReceiptAuthority.acceptedForGpuHmr = true;
+  forgedReceiptAuthority.gpuHmrSuccess = true;
+  resealEvidence(forgedReceiptAuthority);
+  assert.throws(
+    () => verifyColdBuildLauncherIdentityReceipt(forgedReceiptAuthority),
+    /cold_build_launcher_identity_receipt_invalid/,
   );
   const alternateArchitecture = launcher.architecture === 'amd64' ? 'arm64' : 'amd64';
   const alternateLauncher = await materializeColdBuildLauncher({
