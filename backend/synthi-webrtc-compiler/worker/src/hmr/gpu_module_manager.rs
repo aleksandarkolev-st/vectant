@@ -796,6 +796,7 @@ mod tests {
             cu_ctx_set_current: stub_ctx_set,
             cu_ctx_get_device: None,
             cu_device_get_uuid: None,
+            cu_stream_get_device: None,
             cu_module_load_data: stub_load_data,
             cu_module_load: stub_load_file,
             cu_module_unload: stub_unload,

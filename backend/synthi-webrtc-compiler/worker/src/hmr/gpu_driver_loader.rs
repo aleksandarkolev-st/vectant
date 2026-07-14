@@ -82,6 +82,7 @@ pub type CuCtxSetCurrentFn = unsafe extern "C" fn(ctx: CuContext) -> CuResult;
 pub type CuCtxGetDeviceFn = unsafe extern "C" fn(device: *mut i32) -> CuResult;
 pub type CuDeviceGetUuidFn =
     unsafe extern "C" fn(uuid: *mut GpuDeviceUuid, device: i32) -> CuResult;
+pub type CuStreamGetDeviceFn = unsafe extern "C" fn(stream: CuStream, device: *mut i32) -> CuResult;
 
 pub type CuModuleLoadDataFn =
     unsafe extern "C" fn(module: *mut CuModule, image: *const c_void) -> CuResult;
@@ -129,6 +130,7 @@ pub struct GpuDriverSymbolTable {
     pub cu_ctx_set_current: CuCtxSetCurrentFn,
     pub cu_ctx_get_device: Option<CuCtxGetDeviceFn>,
     pub cu_device_get_uuid: Option<CuDeviceGetUuidFn>,
+    pub cu_stream_get_device: Option<CuStreamGetDeviceFn>,
     pub cu_module_load_data: CuModuleLoadDataFn,
     pub cu_module_load: CuModuleLoadFn,
     pub cu_module_unload: CuModuleUnloadFn,
@@ -195,6 +197,16 @@ pub fn optional_device_identity_symbol_names(
     match vendor {
         GpuVendor::Cuda => ["cuCtxGetDevice", "cuDeviceGetUuid"],
         GpuVendor::Rocm => ["hipCtxGetDevice", "hipDeviceGetUuid"],
+    }
+}
+
+/// HIP exposes a direct stream-to-device query. CUDA has no ABI-compatible
+/// driver entry point, so its stream binding remains unavailable here and
+/// strict proof must use a separately verified backend adapter.
+pub fn optional_stream_device_symbol_name(vendor: GpuVendor) -> Option<&'static str> {
+    match vendor {
+        GpuVendor::Cuda => None,
+        GpuVendor::Rocm => Some("hipStreamGetDevice"),
     }
 }
 
@@ -338,6 +350,7 @@ pub fn try_load(vendor: GpuVendor) -> Result<GpuDriverHandle, DriverLoadError> {
 
     let names = required_symbol_names(vendor);
     let optional_device_identity_names = optional_device_identity_symbol_names(vendor);
+    let optional_stream_device_name = optional_stream_device_symbol_name(vendor);
     // Resolve each symbol. The block keeps the unsafe surface
     // tight; if any lookup fails we record which symbol it was.
     let symbols = unsafe {
@@ -346,6 +359,7 @@ pub fn try_load(vendor: GpuVendor) -> Result<GpuDriverHandle, DriverLoadError> {
             &library_path,
             &names,
             &optional_device_identity_names,
+            optional_stream_device_name,
         )
     }?;
 
@@ -381,6 +395,7 @@ unsafe fn resolve_symbols(
     library_path: &str,
     names: &[&'static str; REQUIRED_SYMBOL_COUNT],
     optional_device_identity_names: &[&'static str; OPTIONAL_DEVICE_IDENTITY_SYMBOL_COUNT],
+    optional_stream_device_name: Option<&'static str>,
 ) -> Result<GpuDriverSymbolTable, DriverLoadError> {
     macro_rules! fetch {
         ($idx:expr, $ty:ty) => {{
@@ -414,6 +429,12 @@ unsafe fn resolve_symbols(
         cu_ctx_set_current: fetch!(3, CuCtxSetCurrentFn),
         cu_ctx_get_device: fetch_optional!(0, CuCtxGetDeviceFn),
         cu_device_get_uuid: fetch_optional!(1, CuDeviceGetUuidFn),
+        cu_stream_get_device: optional_stream_device_name.and_then(|symbol_name| {
+            library
+                .get::<CuStreamGetDeviceFn>(symbol_name.as_bytes())
+                .ok()
+                .map(|symbol| *symbol)
+        }),
         cu_module_load_data: fetch!(4, CuModuleLoadDataFn),
         cu_module_load: fetch!(5, CuModuleLoadFn),
         cu_module_unload: fetch!(6, CuModuleUnloadFn),
@@ -477,6 +498,16 @@ mod tests {
             }
         }
         assert_eq!(REQUIRED_SYMBOL_COUNT, 16);
+    }
+
+    #[test]
+    fn optional_stream_device_symbol_is_rocm_specific() {
+        assert_eq!(optional_stream_device_symbol_name(GpuVendor::Cuda), None);
+        assert_eq!(
+            optional_stream_device_symbol_name(GpuVendor::Rocm),
+            Some("hipStreamGetDevice")
+        );
+        assert!(!required_symbol_names(GpuVendor::Rocm).contains(&"hipStreamGetDevice"));
     }
 
     #[test]
