@@ -24,16 +24,16 @@ const MVP_ALLOWED_CAPABILITIES = new Set([
 // only a locally reviewed operation; they never carry file bodies, raw process
 // data, shell strings, or loopback response bodies through the cloud relay.
 const FULL_ACCESS_CAPABILITIES = new Map([
-  ["full.workspace.graph.read", "enabled"],
-  ["full.workspace.graph.node.read", "enabled"],
-  ["full.workspace.file.mutate", "workspace_mutation_enabled"],
-  ["full.workspace.file.revert", "workspace_mutation_enabled"],
-  ["full.workspace.command.execute", "command_execution_enabled"],
-  ["full.workspace.command.context.read", "command_execution_enabled"],
-  ["full.process.inventory.read", "process_visibility_enabled"],
-  ["full.process.listener.metadata.read", "process_visibility_enabled"],
-  ["full.localhost.port.discover", "local_port_discovery_enabled"],
-  ["full.localhost.port.use", "local_port_use_enabled"],
+  ["support.full_access.graph.read", "enabled"],
+  ["support.full_access.graph.node.request", "enabled"],
+  ["support.full_access.workspace.file.mutate", "workspace_mutation_enabled"],
+  ["support.full_access.workspace.file.revert", "workspace_mutation_enabled"],
+  ["support.full_access.command.execute", "command_execution_enabled"],
+  ["support.full_access.command.context.read", "command_execution_enabled"],
+  ["support.full_access.process.inventory", "process_visibility_enabled"],
+  ["support.full_access.process.listener_metadata", "process_visibility_enabled"],
+  ["support.full_access.local_port.discover", "local_port_discovery_enabled"],
+  ["support.full_access.local_port.use", "local_port_use_enabled"],
 ]);
 
 const DISALLOWED_ACTOR_CAPABILITIES = new Set([

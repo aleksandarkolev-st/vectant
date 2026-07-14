@@ -93,8 +93,8 @@ pub async fn execute_command(
     let report = scanner.try_scan(&combined).map_err(|_| CommandError::Io)?;
     let stdout_report = scanner.scan(&stdout);
     let stderr_report = scanner.scan(&stderr);
-    let clean_stdout = scanner.redact(&stdout, &stdout_report);
-    let clean_stderr = scanner.redact(&stderr, &stderr_report);
+    let clean_stdout = strip_terminal_controls(&scanner.redact(&stdout, &stdout_report));
+    let clean_stderr = strip_terminal_controls(&scanner.redact(&stderr, &stderr_report));
     Ok(CommandContext {
         request_id: request.request_id,
         executable: request.executable,
@@ -154,6 +154,14 @@ async fn read_capped(
             break;
         }
         if bytes.len().saturating_add(count) > cap {
+            // Keep draining the pipe so a noisy child cannot deadlock while its
+            // output is rejected. Retain nothing after the configured cap.
+            while reader
+                .read(&mut buffer)
+                .await
+                .map_err(|_| CommandError::Io)?
+                != 0
+            {}
             return Ok((String::new(), true));
         }
         bytes.extend_from_slice(&buffer[..count]);
@@ -182,6 +190,46 @@ fn dangerous_argument(value: &str) -> bool {
         || value == "--interactive"
         || value == "-i"
 }
+
+fn strip_terminal_controls(value: &str) -> String {
+    let mut clean = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    // CSI: consume through the final byte (0x40..0x7e).
+                    while let Some(next) = chars.next() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    // OSC terminates with BEL or ST (ESC \\).
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+        } else if !ch.is_control() || matches!(ch, '\n' | '\r' | '\t') {
+            clean.push(ch);
+        }
+    }
+    clean
+}
 fn hash_arguments(arguments: &[String]) -> String {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
@@ -191,4 +239,17 @@ fn hash_arguments(arguments: &[String]) -> String {
         digest.update(b"\0");
     }
     format!("sha256:{}", hex::encode(digest.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_terminal_controls;
+
+    #[test]
+    fn terminal_controls_do_not_reach_command_context() {
+        assert_eq!(
+            strip_terminal_controls("\u{1b}[31mred\u{1b}[0m\n\u{1b}]0;title\u{7}ok"),
+            "red\nok"
+        );
+    }
 }

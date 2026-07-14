@@ -419,7 +419,7 @@ describe("local support control plane policy", () => {
 
   it("gates the separate full access namespace by exact policy grant and actor", () => {
     const disabled = enabledPolicy();
-    expect(validateRequestEnvelope(envelope({ capability: "full.workspace.command.execute" }), disabled)).toMatchObject({
+    expect(validateRequestEnvelope(envelope({ capability: "support.full_access.command.execute" }), disabled)).toMatchObject({
       decision: "denied", reason: "full_access_capability_disabled",
     });
 
@@ -427,10 +427,10 @@ describe("local support control plane policy", () => {
       VECTANT_LOCAL_SUPPORT_FULL_ACCESS_ENABLED: "true",
       VECTANT_LOCAL_SUPPORT_FULL_ACCESS_COMMAND_EXECUTION: "true",
     });
-    expect(validateRequestEnvelope(envelope({ capability: "full.workspace.command.execute" }), full)).toMatchObject({
+    expect(validateRequestEnvelope(envelope({ capability: "support.full_access.command.execute" }), full)).toMatchObject({
       decision: "approval_required", local_enforcement_required: true,
     });
-    expect(validateRequestEnvelope(envelope({ capability: "full.workspace.command.execute", actor: "user_browser" }), full)).toMatchObject({
+    expect(validateRequestEnvelope(envelope({ capability: "support.full_access.command.execute", actor: "user_browser" }), full)).toMatchObject({
       decision: "denied", reason: "full_access_actor_not_allowed",
     });
   });
