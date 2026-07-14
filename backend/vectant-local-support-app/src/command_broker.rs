@@ -86,12 +86,16 @@ pub async fn execute_command_cancellable(
         command.creation_flags(0x0800_0000);
     }
     let mut child = command.spawn().map_err(|_| CommandError::SpawnFailed)?;
-    let _command_job =
-        CommandJob::assign(child.id().ok_or(CommandError::SpawnFailed)?).map_err(|_| {
-            // Do not run a command outside containment when the OS boundary cannot
-            // be established. The child has no opportunity to become authorized.
-            CommandError::ProcessContainment
-        })?;
+    let process_id = child.id().ok_or(CommandError::SpawnFailed)?;
+    let _command_job = match CommandJob::assign(process_id) {
+        Ok(job) => job,
+        Err(()) => {
+            // Do not rely on asynchronous drop cleanup when containment cannot
+            // be established: terminate the direct child before returning.
+            let _ = child.kill().await;
+            return Err(CommandError::ProcessContainment);
+        }
+    };
     let stdout = child.stdout.take().ok_or(CommandError::Io)?;
     let stderr = child.stderr.take().ok_or(CommandError::Io)?;
     let stdout_task = tokio::spawn(read_capped(stdout, output_cap));
