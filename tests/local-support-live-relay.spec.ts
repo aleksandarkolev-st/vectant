@@ -28,6 +28,7 @@ const accountId = `acct_live_relay_${runId}`;
 const orgId = `org_live_relay_${runId}`;
 const workspaceId = `wk_live_relay_${runId}`;
 const controlCommandId = `cmd_live_relay_${runId}`;
+const scopedPolicyId = `org_${orgId}`;
 
 test.skip(!enabled, 'Set LOCAL_SUPPORT_LIVE_RELAY_E2E=1 to run the live Rust relay probe.');
 if (enabled && !baseUrl) throw new Error('VECTANT_TEST_BASE_URL is required for live relay E2E.');
@@ -65,6 +66,15 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
         previewDisabled: false, agentAccessDisabled: true, minAppVersion: '0.1.0',
         vulnerableVersionsJson: '[]', retentionDays: 30, updatedBy: 'live-relay-e2e',
       },
+    });
+    await prisma.localSupportPolicyState.upsert({
+      where: { id: scopedPolicyId },
+      create: {
+        id: scopedPolicyId, orgId, globalEnabled: true, orgDisabled: true, pairingDisabled: false,
+        previewDisabled: false, agentAccessDisabled: true, minAppVersion: '0.1.0',
+        vulnerableVersionsJson: '[]', retentionDays: 30, updatedBy: 'live-relay-e2e',
+      },
+      update: { orgId, globalEnabled: true, orgDisabled: true, updatedBy: 'live-relay-e2e' },
     });
     await prisma.localSupportSession.create({
       data: {
@@ -134,6 +144,20 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     envelope.device_proof = signDeviceProof(envelope, deviceProofSecret);
     envelope.signature = signRequestEnvelope(envelope, envelopeSecret);
     const request = page.context().request;
+    const blockedByOrgPolicy = await request.post(`${baseUrl}/api/local-support/relay`, {
+      headers: { origin: baseUrl, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+      data: envelope,
+    });
+    expect(blockedByOrgPolicy.status()).toBe(403);
+    await expect(blockedByOrgPolicy.json()).resolves.toMatchObject({
+      decision: 'denied',
+      reason: 'feature_disabled',
+      bytes_sent: 0,
+    });
+    await prisma.localSupportPolicyState.update({
+      where: { id: scopedPolicyId },
+      data: { orgDisabled: false },
+    });
     const queued = await request.post(`${baseUrl}/api/local-support/relay`, {
       headers: { origin: baseUrl, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
       data: envelope,
@@ -223,6 +247,7 @@ test('Rust RelayClient polls, reports review, uploads, and leaves scrubbed cloud
     await prisma.localSupportControlAudit.deleteMany({ where: { commandId: controlCommandId } });
     await prisma.localSupportControlCommand.deleteMany({ where: { commandId: controlCommandId } });
     await prisma.localSupportSession.deleteMany({ where: { sessionId } });
+    await prisma.localSupportPolicyState.deleteMany({ where: { id: scopedPolicyId } });
     await prisma.localSupportPolicyState.deleteMany({ where: { id: 'global' } });
     await prisma.$disconnect();
     rmSync(identityPath, { force: true });
