@@ -46,6 +46,7 @@ function observation(phase, overrides = {}) {
     accepted_for_gpu_hmr: false,
     gpu_hmr_success: false,
     can_satisfy_runtime_proof: false,
+    can_satisfy_dispatch_proof: false,
   };
   const sourceLine = `[gpu-runtime-boundary] visual_control_observation ${JSON.stringify(targetState)}`;
   const binding = {
@@ -94,6 +95,7 @@ assert.equal(accepted.acceptedAsRuntimeVisualControlEvidence, true);
 assert.equal(accepted.acceptedForGpuHmr, false);
 assert.equal(accepted.gpuHmrSuccess, false);
 assert.equal(accepted.canSatisfyRuntimeProof, false);
+assert.equal(accepted.canSatisfyDispatchProof, false);
 assert.equal(accepted.canSatisfyVisualControlProof, true);
 assert.equal(accepted.deterministicVisualModeEvaluation.accepted, true);
 assert.equal(accepted.deterministicVisualMode.camera_state_hash, textHash('camera:stable-self-check'));
@@ -133,6 +135,19 @@ const authorityClaim = evaluateRuntimeVisualControlObservationPair({
 });
 assert.equal(authorityClaim.accepted, false);
 assert.ok(authorityClaim.failedGates.includes('runtime_visual_control_after_authority_claim_invalid'));
+
+const dispatchAuthorityClaimAfter = observationWithTargetState('after', {
+  can_satisfy_dispatch_proof: true,
+});
+const dispatchAuthorityClaim = evaluateRuntimeVisualControlObservationPair({
+  before,
+  after: dispatchAuthorityClaimAfter,
+  expected,
+});
+assert.equal(dispatchAuthorityClaim.accepted, false);
+assert.ok(dispatchAuthorityClaim.failedGates.includes(
+  'runtime_visual_control_after_target_state_invalid',
+));
 
 const tamperedSourceAfter = {
   ...observation('after'),
@@ -232,6 +247,7 @@ console.log(JSON.stringify({
     'forged_payload_hash',
     'replayed_session',
     'forged_success_authority',
+    'forged_dispatch_authority',
     'tampered_source_line',
     'changed_device_identity',
     'forged_frame_resolution',

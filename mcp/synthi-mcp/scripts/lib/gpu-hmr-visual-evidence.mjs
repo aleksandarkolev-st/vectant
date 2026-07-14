@@ -35,7 +35,7 @@ const CONVERGENCE_METRICS = new Set([
 export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION =
-  'synthi.gpu_hmr.runtime_visual_control_observation.v1';
+  'synthi.gpu_hmr.runtime_visual_control_observation.v2';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY =
   'verified_target_process_visual_control_state_and_capture_bindings';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_SCHEMA_VERSION =
@@ -51,7 +51,7 @@ export const GPU_HMR_RUNTIME_VISUAL_DEVICE_BINDING_AUTHORITY =
 export const GPU_HMR_RUNTIME_VISUAL_DISPATCH_BINDING_AUTHORITY =
   'independent_runtime_trace_dispatch_identity';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION =
-  'synthi.gpu_hmr.runtime_visual_control_pair.v1';
+  'synthi.gpu_hmr.runtime_visual_control_pair.v2';
 export const GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
   'synthi.gpu_hmr.visual_artifact_transport_evidence.v1';
 export const GPU_HMR_ASYNC_VISUAL_PROOF_JOB_SCHEMA_VERSION =
@@ -751,6 +751,9 @@ function normalizedRuntimeVisualControlState(input = {}) {
     can_satisfy_runtime_proof: boolOrNull(
       state.can_satisfy_runtime_proof ?? state.canSatisfyRuntimeProof,
     ),
+    can_satisfy_dispatch_proof: boolOrNull(
+      state.can_satisfy_dispatch_proof ?? state.canSatisfyDispatchProof,
+    ),
   };
 }
 
@@ -784,6 +787,7 @@ export function parseRuntimeVisualControlStateLine(sourceLine) {
     state.accepted_for_gpu_hmr !== false
     || state.gpu_hmr_success !== false
     || state.can_satisfy_runtime_proof !== false
+    || state.can_satisfy_dispatch_proof !== false
   ) {
     failedGates.push('runtime_visual_control_state_authority_claim_invalid');
   }
@@ -857,6 +861,7 @@ export function materializeRuntimeVisualControlObservation(input = {}) {
     accepted_for_gpu_hmr: false,
     gpu_hmr_success: false,
     can_satisfy_runtime_proof: false,
+    can_satisfy_dispatch_proof: false,
   };
   return {
     ...record,
@@ -974,6 +979,9 @@ function normalizedRuntimeVisualControlObservation(input = {}) {
     gpu_hmr_success: boolOrNull(observation.gpu_hmr_success ?? observation.gpuHmrSuccess),
     can_satisfy_runtime_proof: boolOrNull(
       observation.can_satisfy_runtime_proof ?? observation.canSatisfyRuntimeProof,
+    ),
+    can_satisfy_dispatch_proof: boolOrNull(
+      observation.can_satisfy_dispatch_proof ?? observation.canSatisfyDispatchProof,
     ),
   };
 }
@@ -1150,6 +1158,7 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
       accepted_for_gpu_hmr: observation.accepted_for_gpu_hmr,
       gpu_hmr_success: observation.gpu_hmr_success,
       can_satisfy_runtime_proof: observation.can_satisfy_runtime_proof,
+      can_satisfy_dispatch_proof: observation.can_satisfy_dispatch_proof,
     };
     const expectedTargetProjection = { ...targetState };
     delete expectedTargetProjection.schema_version;
@@ -1186,6 +1195,7 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
       observation.accepted_for_gpu_hmr !== false
       || observation.gpu_hmr_success !== false
       || observation.can_satisfy_runtime_proof !== false
+      || observation.can_satisfy_dispatch_proof !== false
     ) {
       fail(`runtime_visual_control_${phase}_authority_claim_invalid`);
     }
@@ -1339,6 +1349,8 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     gpu_hmr_success: false,
     canSatisfyRuntimeProof: false,
     can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
     canSatisfyVisualControlProof: accepted,
     can_satisfy_visual_control_proof: accepted,
     before,
