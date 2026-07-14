@@ -879,6 +879,7 @@ model LocalSupportPolicyState {
   agentAccessDisabled    Boolean  @default(true)
   minAppVersion          String   @default("0.1.0")
   vulnerableVersionsJson String   @default("[]")
+  fullAccessPolicyJson  String   @default("{\"enabled\":false,\"autoApproval\":false,\"processVisibility\":false,\"workspaceMutation\":false,\"commandExecution\":false,\"localPortDiscovery\":false,\"localPortUse\":false}")
   retentionDays          Int      @default(30)
   updatedBy              String
   createdAt              DateTime @default(now())

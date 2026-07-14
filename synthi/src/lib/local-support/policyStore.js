@@ -5,6 +5,7 @@ const POLICY_ID = "global";
 const UPDATE_FIELDS = new Set([
   "global_enabled", "org_id", "org_disabled", "pairing_disabled", "preview_disabled",
   "agent_access_disabled", "min_app_version", "vulnerable_versions", "retention_days",
+  "full_access",
 ]);
 
 export async function readDurableLocalSupportPolicy(env = process.env, client = prisma, orgId = null) {
@@ -47,6 +48,9 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
   );
   const retentionDays = stricterRetentionDays(storedRetentionDays, env);
   const enabled = globalEnabled && !orgDisabled && !pairingDisabled;
+  // Full Access never inherits an organization row as its global authority.
+  // A missing global opt-in is intentionally a fail-closed condition.
+  const fullAccess = resolveFullAccessPolicy(globalStored, scopedStored, env);
   return {
     ...base,
     enabled,
@@ -75,6 +79,7 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
       fast_support_enabled: base.mvp.fast_support_enabled,
       fast_support_ttl_minutes: base.mvp.fast_support_ttl_minutes,
     },
+    full_access: fullAccess,
     persistent_policy: true,
     policy_updated_at: stored.updatedAt.toISOString(),
   };
@@ -87,6 +92,7 @@ export function publicLocalSupportPolicy(policy) {
     : {};
   const retention = value.retention && typeof value.retention === "object" ? value.retention : {};
   const mvp = value.mvp && typeof value.mvp === "object" ? value.mvp : {};
+  const fullAccess = normalizeFullAccessPolicy(value.full_access);
   return {
     enabled: value.enabled === true,
     global_enabled: value.global_enabled === true,
@@ -125,6 +131,18 @@ export function publicLocalSupportPolicy(policy) {
       shell_commands: false,
       file_writes: false,
       repo_upload: false,
+    },
+    full_access: {
+      enabled: fullAccess.enabled,
+      auto_approval_enabled: fullAccess.auto_approval_enabled,
+      process_visibility_enabled: fullAccess.process_visibility_enabled,
+      workspace_mutation_enabled: fullAccess.workspace_mutation_enabled,
+      command_execution_enabled: fullAccess.command_execution_enabled,
+      local_port_discovery_enabled: fullAccess.local_port_discovery_enabled,
+      local_port_use_enabled: fullAccess.local_port_use_enabled,
+      requires_local_consent: true,
+      raw_process_fields_allowed: false,
+      raw_bodies_in_graph: false,
     },
     emergency_controls: {
       feature_disabled: emergency.feature_disabled === true,
@@ -198,6 +216,9 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     && (!Number.isSafeInteger(body.retention_days) || body.retention_days < 0 || body.retention_days > 90)) {
     return denied("invalid_retention_days");
   }
+  if (body.full_access !== undefined && !isValidFullAccessInput(body.full_access)) {
+    return denied("invalid_full_access_policy");
+  }
   for (const field of [
     "global_enabled", "org_disabled", "pairing_disabled", "preview_disabled", "agent_access_disabled",
   ]) {
@@ -220,6 +241,10 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     agentAccessDisabled: body.agent_access_disabled ?? defaults?.agentAccessDisabled ?? true,
     minAppVersion: body.min_app_version ?? defaults?.minAppVersion ?? "0.1.0",
     vulnerableVersionsJson: JSON.stringify(body.vulnerable_versions ?? parseVersions(defaults?.vulnerableVersionsJson)),
+    fullAccessPolicyJson: JSON.stringify(normalizeStoredFullAccessPolicy({
+      ...publicFullAccessPolicy(parseStoredFullAccessPolicy(defaults?.fullAccessPolicyJson)),
+      ...(body.full_access || {}),
+    })),
     retentionDays: body.retention_days ?? defaults?.retentionDays ?? 30,
     updatedBy: String(updatedBy).slice(0, 256),
   };
@@ -240,10 +265,87 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     min_app_version: stored.minAppVersion,
     vulnerable_versions: parseVersions(stored.vulnerableVersionsJson),
     retention_days: stored.retentionDays,
+    full_access: publicFullAccessPolicy(parseStoredFullAccessPolicy(stored.fullAccessPolicyJson)),
     raw_body_included: false,
     bytes_sent: 0,
   };
 }
+
+const FULL_ACCESS_FIELDS = new Set([
+  "enabled", "auto_approval_enabled", "process_visibility_enabled", "workspace_mutation_enabled",
+  "command_execution_enabled", "local_port_discovery_enabled", "local_port_use_enabled",
+]);
+
+function isValidFullAccessInput(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).every((key) => FULL_ACCESS_FIELDS.has(key))
+    && Object.values(value).every((flag) => typeof flag === "boolean");
+}
+
+function normalizeStoredFullAccessPolicy(value) {
+  const input = isValidFullAccessInput(value) ? value : {};
+  const enabled = input.enabled === true;
+  return {
+    enabled,
+    autoApproval: enabled && input.auto_approval_enabled === true,
+    processVisibility: enabled && input.process_visibility_enabled === true,
+    workspaceMutation: enabled && input.workspace_mutation_enabled === true,
+    commandExecution: enabled && input.command_execution_enabled === true,
+    localPortDiscovery: enabled && input.local_port_discovery_enabled === true,
+    localPortUse: enabled && input.local_port_use_enabled === true,
+  };
+}
+
+function resolveFullAccessPolicy(globalStored, scopedStored, env) {
+  const global = parseStoredFullAccessPolicy(globalStored?.fullAccessPolicyJson);
+  const scoped = scopedStored ? parseStoredFullAccessPolicy(scopedStored.fullAccessPolicyJson) : allFullAccessAllowed();
+  const environmentAllows = env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_DISABLED !== "true";
+  const enabled = environmentAllows && global.enabled && scoped.enabled;
+  return publicFullAccessPolicy({
+    enabled,
+    autoApproval: enabled && global.autoApproval && scoped.autoApproval,
+    processVisibility: enabled && global.processVisibility && scoped.processVisibility,
+    workspaceMutation: enabled && global.workspaceMutation && scoped.workspaceMutation,
+    commandExecution: enabled && global.commandExecution && scoped.commandExecution,
+    localPortDiscovery: enabled && global.localPortDiscovery && scoped.localPortDiscovery,
+    localPortUse: enabled && global.localPortUse && scoped.localPortUse,
+  });
+}
+
+function parseStoredFullAccessPolicy(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return emptyFullAccessPolicy();
+    return {
+      enabled: parsed.enabled === true,
+      autoApproval: parsed.autoApproval === true,
+      processVisibility: parsed.processVisibility === true,
+      workspaceMutation: parsed.workspaceMutation === true,
+      commandExecution: parsed.commandExecution === true,
+      localPortDiscovery: parsed.localPortDiscovery === true,
+      localPortUse: parsed.localPortUse === true,
+    };
+  } catch {
+    return emptyFullAccessPolicy();
+  }
+}
+
+function emptyFullAccessPolicy() { return { enabled: false, autoApproval: false, processVisibility: false, workspaceMutation: false, commandExecution: false, localPortDiscovery: false, localPortUse: false }; }
+function allFullAccessAllowed() { return { enabled: true, autoApproval: true, processVisibility: true, workspaceMutation: true, commandExecution: true, localPortDiscovery: true, localPortUse: true }; }
+function normalizeFullAccessPolicy(value) {
+  const policy = value && typeof value === "object" ? value : {};
+  const enabled = policy.enabled === true;
+  return {
+    enabled,
+    auto_approval_enabled: enabled && (policy.auto_approval_enabled === true || policy.autoApproval === true),
+    process_visibility_enabled: enabled && (policy.process_visibility_enabled === true || policy.processVisibility === true),
+    workspace_mutation_enabled: enabled && (policy.workspace_mutation_enabled === true || policy.workspaceMutation === true),
+    command_execution_enabled: enabled && (policy.command_execution_enabled === true || policy.commandExecution === true),
+    local_port_discovery_enabled: enabled && (policy.local_port_discovery_enabled === true || policy.localPortDiscovery === true),
+    local_port_use_enabled: enabled && (policy.local_port_use_enabled === true || policy.localPortUse === true),
+  };
+}
+function publicFullAccessPolicy(value) { return normalizeFullAccessPolicy(value); }
 
 function normalizeOrgId(value) {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)

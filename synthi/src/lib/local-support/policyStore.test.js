@@ -266,6 +266,54 @@ describe("durable local support policy", () => {
     expect(result).toMatchObject({ decision: "denied", reason: "invalid_org_id" });
   });
 
+  it("persists a fail-closed full access matrix and lets an organization only narrow it", async () => {
+    const global = {
+      id: "global", orgId: null, globalEnabled: true, orgDisabled: false, pairingDisabled: false,
+      previewDisabled: false, agentAccessDisabled: true, minAppVersion: "0.1.0",
+      vulnerableVersionsJson: "[]", retentionDays: 30,
+      fullAccessPolicyJson: JSON.stringify({ enabled: true, autoApproval: true, processVisibility: true, workspaceMutation: true, commandExecution: true, localPortDiscovery: true, localPortUse: true }),
+      updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    const scoped = {
+      ...global, id: "org_org_acme", orgId: "org_acme",
+      fullAccessPolicyJson: JSON.stringify({ enabled: true, autoApproval: false, processVisibility: true, workspaceMutation: false, commandExecution: false, localPortDiscovery: true, localPortUse: false }),
+    };
+    const findUnique = vi.fn(async ({ where }) => where.id === "global" ? global : scoped);
+    const policy = await readDurableLocalSupportPolicy({}, { localSupportPolicyState: { findUnique } }, "org_acme");
+    expect(policy.full_access).toMatchObject({
+      enabled: true, auto_approval_enabled: false, process_visibility_enabled: true,
+      workspace_mutation_enabled: false, command_execution_enabled: false, local_port_use_enabled: false,
+    });
+
+    const upsert = vi.fn(async ({ create }) => ({ ...create, updatedAt: new Date() }));
+    const updated = await updateDurableLocalSupportPolicy({
+      action: "update_policy", full_access: { enabled: true, command_execution_enabled: true },
+    }, "admin_1", { localSupportPolicyState: { findUnique: vi.fn(async () => null), upsert } });
+    expect(updated.full_access).toMatchObject({ enabled: true, command_execution_enabled: true });
+    expect(upsert.mock.calls[0][0].create.fullAccessPolicyJson).toContain('"commandExecution":true');
+  });
+
+  it("does not publish internal full access fields or permit unsafe raw data", () => {
+    const projected = publicLocalSupportPolicy({
+      full_access: { enabled: true, command_execution_enabled: true, raw_process_fields_allowed: true, raw_bodies_in_graph: true },
+    });
+    expect(projected.full_access).toMatchObject({ enabled: true, command_execution_enabled: true, raw_process_fields_allowed: false, raw_bodies_in_graph: false });
+  });
+
+  it("fails closed when an organization has a row but no global full access opt-in", async () => {
+    const orgOnly = {
+      id: "org_org_acme", orgId: "org_acme", globalEnabled: true, orgDisabled: false,
+      pairingDisabled: false, previewDisabled: false, agentAccessDisabled: true,
+      minAppVersion: "0.1.0", vulnerableVersionsJson: "[]", retentionDays: 30,
+      fullAccessPolicyJson: JSON.stringify({ enabled: true, autoApproval: true, processVisibility: true, workspaceMutation: true, commandExecution: true, localPortDiscovery: true, localPortUse: true }),
+      updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    const policy = await readDurableLocalSupportPolicy({}, {
+      localSupportPolicyState: { findUnique: vi.fn(async ({ where }) => where.id === "global" ? null : orgOnly) },
+    }, "org_acme");
+    expect(policy.full_access.enabled).toBe(false);
+  });
+
   it("projects policy for browsers without secrets or private device restrictions", () => {
     const projected = publicLocalSupportPolicy({
       enabled: true,

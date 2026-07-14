@@ -102,6 +102,8 @@ export function readLocalSupportPolicy(env = process.env) {
   const allowFastSupport = env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_ENABLED !== "false";
   const fastSupportTtlMinutes = clampNumber(env.VECTANT_LOCAL_SUPPORT_FAST_SUPPORT_TTL_MINUTES, 1, 30, 30);
   const agentPreviewReadEnabled = env.VECTANT_LOCAL_SUPPORT_AGENT_PREVIEW_READ_ENABLED === "true";
+  const fullAccessEnabled = env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_ENABLED === "true";
+  const fullAccessAutoApproval = fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_AUTO_APPROVAL === "true";
   const vulnerableVersions = parseCsv(env.VECTANT_LOCAL_SUPPORT_VULNERABLE_VERSIONS);
   const revokedSessionIds = parseCsv(env.VECTANT_LOCAL_SUPPORT_REVOKED_SESSIONS);
   const revokedDeviceFingerprints = parseCsv(env.VECTANT_LOCAL_SUPPORT_REVOKED_DEVICES);
@@ -162,6 +164,18 @@ export function readLocalSupportPolicy(env = process.env) {
       shell_commands: false,
       file_writes: false,
       repo_upload: false,
+    },
+    full_access: {
+      enabled: fullAccessEnabled,
+      auto_approval_enabled: fullAccessAutoApproval,
+      process_visibility_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_PROCESS_VISIBILITY === "true",
+      workspace_mutation_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_WORKSPACE_MUTATION === "true",
+      command_execution_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_COMMAND_EXECUTION === "true",
+      local_port_discovery_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_LOCAL_PORT_DISCOVERY === "true",
+      local_port_use_enabled: fullAccessEnabled && env.VECTANT_LOCAL_SUPPORT_FULL_ACCESS_LOCAL_PORT_USE === "true",
+      requires_local_consent: true,
+      raw_process_fields_allowed: false,
+      raw_bodies_in_graph: false,
     },
     allowed_capabilities: [...MVP_ALLOWED_CAPABILITIES],
   };
