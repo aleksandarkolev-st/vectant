@@ -197,12 +197,75 @@ fn configure_unix_process_group(command: &mut Command, timeout: Duration) {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
+                #[cfg(target_os = "linux")]
+                configure_linux_network_isolation()?;
                 Ok(())
             } else {
                 Err(std::io::Error::last_os_error())
             }
         });
     }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_network_isolation() -> std::io::Result<()> {
+    // The broker does not have a network capability. `no_new_privs` prevents
+    // the child from shedding this filter through exec or setuid transitions;
+    // the seccomp program then rejects socket creation and the direct network
+    // syscalls that could use an inherited descriptor (none are inherited by
+    // the broker, but blocking them keeps the boundary explicit).
+    const DENY: u32 = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
+    let denied = [
+        libc::SYS_socket as u32,
+        libc::SYS_socketpair as u32,
+        libc::SYS_connect as u32,
+        libc::SYS_bind as u32,
+        libc::SYS_listen as u32,
+        libc::SYS_accept as u32,
+        libc::SYS_accept4 as u32,
+        libc::SYS_sendto as u32,
+        libc::SYS_sendmsg as u32,
+        libc::SYS_recvfrom as u32,
+        libc::SYS_recvmsg as u32,
+    ];
+    let mut filter = Vec::with_capacity(2 + denied.len() * 2);
+    filter.push(libc::sock_filter {
+        code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+        jt: 0,
+        jf: 0,
+        k: 0,
+    });
+    for syscall in denied {
+        filter.push(libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: syscall,
+        });
+        filter.push(libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: DENY,
+        });
+    }
+    filter.push(libc::sock_filter {
+        code: (libc::BPF_RET | libc::BPF_K) as u16,
+        jt: 0,
+        jf: 0,
+        k: libc::SECCOMP_RET_ALLOW,
+    });
+    let program = libc::sock_fprog {
+        len: u16::try_from(filter.len()).map_err(|_| std::io::Error::other("seccomp too large"))?,
+        filter: filter.as_mut_ptr(),
+    };
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 pub fn validate_request(
@@ -736,7 +799,9 @@ mod tests {
             .stderr(std::process::Stdio::null());
         super::configure_unix_process_group(&mut command, std::time::Duration::from_secs(5));
         let mut parent = command.spawn().unwrap();
-        let job = super::CommandJob::assign(parent.id().unwrap()).unwrap();
+        let job =
+            super::CommandJob::assign(parent.id().unwrap(), std::time::Duration::from_secs(5))
+                .unwrap();
         let child_pid = loop {
             if let Ok(value) = std::fs::read_to_string(&child_pid_path) {
                 break value.trim().parse::<i32>().unwrap();
@@ -771,5 +836,41 @@ mod tests {
         let output = command.output().await.unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "64\n0\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_brokered_commands_cannot_create_sockets() {
+        if super::resolve_executable_outside_workspace(std::path::Path::new("/tmp"), "python3")
+            .is_err()
+        {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("network_probe.py"),
+            "import socket\ntry:\n socket.socket()\nexcept OSError:\n print('network-blocked')\nelse:\n print('network-open')\n",
+        )
+        .unwrap();
+        let mut policy = FullAccessPolicy {
+            organization_enabled: true,
+            ..Default::default()
+        };
+        policy.allowed_command_executables = BTreeSet::from(["python3".to_string()]);
+        let context = execute_command_cancellable(
+            directory.path(),
+            &policy,
+            CommandRequest {
+                request_id: "req_network_123".to_string(),
+                executable: "python3".to_string(),
+                arguments: vec!["network_probe.py".to_string()],
+                timeout_seconds: 5,
+                max_output_bytes: 1024,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(context.stdout.trim(), "network-blocked");
     }
 }
