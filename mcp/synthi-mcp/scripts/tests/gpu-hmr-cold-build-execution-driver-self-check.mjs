@@ -68,6 +68,12 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+function rehashEvidence(value) {
+  const projection = { ...value };
+  delete projection.evidenceHash;
+  return contentHash(stableJson(projection));
+}
+
 async function workerImageDescriptor() {
   const result = await runColdBuildHostProcess(dockerExecutable, [
     'image',
@@ -260,6 +266,21 @@ async function main() {
     authorityClaimingDriverReceipt.driverEvidence.gpuHmrSuccess = true;
     assert.throws(
       () => verifyColdBuildExecutionDriverReceipt(authorityClaimingDriverReceipt),
+      /execution_driver_receipt_invalid/,
+    );
+    const duplicatePayloadDriverReceipt = structuredClone(retainedDriverReceipt);
+    duplicatePayloadDriverReceipt.driverEvidence.payloadManifest.push(structuredClone(
+      duplicatePayloadDriverReceipt.driverEvidence.payloadManifest[0],
+    ));
+    duplicatePayloadDriverReceipt.driverEvidence.payloadManifestHash = contentHash(stableJson(
+      duplicatePayloadDriverReceipt.driverEvidence.payloadManifest,
+    ));
+    duplicatePayloadDriverReceipt.driverEvidence.evidenceHash = rehashEvidence(
+      duplicatePayloadDriverReceipt.driverEvidence,
+    );
+    duplicatePayloadDriverReceipt.evidenceHash = rehashEvidence(duplicatePayloadDriverReceipt);
+    assert.throws(
+      () => verifyColdBuildExecutionDriverReceipt(duplicatePayloadDriverReceipt),
       /execution_driver_receipt_invalid/,
     );
     assert.ok(!JSON.stringify(driverReceipt).match(

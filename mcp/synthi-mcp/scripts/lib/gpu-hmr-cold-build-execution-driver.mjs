@@ -1665,6 +1665,8 @@ export function verifyColdBuildExecutionDriverReceipt(receipt) {
     || evidence.childExitCode !== 0
     || !Array.isArray(evidence.payloadManifest)
     || evidence.payloadManifest.length < 1
+    || new Set(evidence.payloadManifest.map((entry) => entry?.path)).size
+      !== evidence.payloadManifest.length
     || evidence.payloadManifest.some((entry) => (
       !exactKeys(entry, ['path', 'byteLength', 'contentHash', 'mode'])
       || typeof entry.path !== 'string'
