@@ -2932,74 +2932,118 @@ function modelProvenance() {
   };
 }
 
-function deterministicVisualModeForLedger({ proof, dispatchId, epoch }) {
-  const mode = CFG.deterministicVisualMode ?? {};
-  const fixedSeed = mode.fixedSeed ?? mode.fixed_seed ?? true;
+function declaredDeterministicVisualModeEvidence() {
+  const declaredMode = isPlainObject(CFG.deterministicVisualMode)
+    ? JSON.parse(JSON.stringify(CFG.deterministicVisualMode))
+    : {};
+  const facetCore = {
+    schemaVersion: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    schema_version: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    proofAuthority: 'profile_declaration_only_not_runtime_visual_proof',
+    proof_authority: 'profile_declaration_only_not_runtime_visual_proof',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    declaredMode,
+    declared_mode: declaredMode,
+    declaredModeHash: sha256Json(declaredMode),
+    declared_mode_hash: sha256Json(declaredMode),
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyVisualProof: false,
+    can_satisfy_visual_proof: false,
+  };
+  const facetHash = sha256Json(facetCore);
+  return {
+    ...facetCore,
+    facetHash,
+    facet_hash: facetHash,
+  };
+}
+
+function captureObservation(line) {
+  const values = parseKeyValuePairs(line);
+  const width = Number(values.width);
+  const height = Number(values.height);
+  return {
+    accepted:
+      values.wrote === '1'
+      && Number.isInteger(width)
+      && width > 0
+      && Number.isInteger(height)
+      && height > 0,
+    width: Number.isInteger(width) && width > 0 ? width : null,
+    height: Number.isInteger(height) && height > 0 ? height : null,
+  };
+}
+
+function deterministicVisualModeForLedger({ proof, dispatchId }) {
+  const baselineCapture = captureObservation(proof.runtime?.baseline?.captureLine);
+  const changedCapture = captureObservation(proof.runtime?.changed?.captureLine);
+  const postRecompileEvidence = proof.runtime?.changed?.postRecompileEvidence ?? {};
+  const dispatchLineIndex = Number(postRecompileEvidence.dispatch?.lineIndex);
+  const captureLineIndex = Number(postRecompileEvidence.captureLineIndex);
+  const captureAfterDispatch =
+    postRecompileEvidence.accepted === true
+    && Number.isInteger(dispatchLineIndex)
+    && Number.isInteger(captureLineIndex)
+    && captureLineIndex > dispatchLineIndex;
+  const width = Number(proof.dimensions?.width);
+  const height = Number(proof.dimensions?.height);
+  const decodedResolutionStable =
+    Number.isInteger(width)
+    && width > 0
+    && Number.isInteger(height)
+    && height > 0
+    && proof.baseline?.width === width
+    && proof.baseline?.height === height
+    && proof.changed?.width === width
+    && proof.changed?.height === height;
+  const captureResolutionStable =
+    baselineCapture.accepted
+    && changedCapture.accepted
+    && baselineCapture.width === width
+    && baselineCapture.height === height
+    && changedCapture.width === width
+    && changedCapture.height === height;
   return {
     schema_version: 'synthi.gpu_hmr.deterministic_visual_mode.v1',
-    fixed_seed: true,
-    seed_policy_fixed: true,
-    seed_policy_hash: sha256Json({
-      fixedSeed,
-      source: 'same_process_probe_random_number',
-      evidence: 'm_render_data_for_frame.random_number=42',
-    }),
-    frozen_camera: mode.frozenCamera ?? mode.frozen_camera ?? true,
-    temporal_accumulation_disabled:
-      mode.temporalAccumulationDisabled ?? mode.temporal_accumulation_disabled ?? true,
-    taa_disabled: mode.taaDisabled ?? mode.taa_disabled ?? true,
-    denoiser_disabled: mode.denoiserDisabled ?? mode.denoiser_disabled ?? true,
-    fixed_resolution: true,
-    fixed_swapchain_image_count: true,
-    frame_capture_after_epoch_dispatch: true,
-    presentation_fence_or_frame_boundary: true,
-    warmup_frames: Number(mode.warmupFrames ?? mode.warmup_frames ?? 1),
-    convergence_window: {
-      frame_start: 1,
-      frame_end: 1,
-      metric: { value: 'per_frame_delta' },
-      min_frames: 1,
-      sample_count: 2,
-      metric_delta: proof.diff.meanAbsDelta8bit,
-      threshold: CFG.minMeanAbsDelta8bit,
-      convergence_proven: true,
-      evidence_refs: [
-        `runtime:hiprt:same-process-dispatch:${dispatchId}`,
-        `visual:hiprt:diff:${proof.diff.contentHash}`,
-      ],
-      samples: [
-        {
-          frame: 0,
-          epoch: 'baseline',
-          metric_value: 0,
-          frame_hash: proof.baseline.contentHash,
-          after_epoch_dispatch: false,
-        },
-        {
-          frame: 1,
-          epoch,
-          metric_value: proof.diff.meanAbsDelta8bit,
-          frame_hash: proof.changed.contentHash,
-          after_epoch_dispatch: true,
-        },
-      ],
-      frame_hashes: [proof.baseline.contentHash, proof.changed.contentHash],
-      pre_epoch_frame_hashes: [proof.baseline.contentHash],
-      post_epoch_frame_hashes: [proof.changed.contentHash],
-    },
+    proof_authority: 'runtime_observation_only_missing_deterministic_control_attestation',
+    fixed_seed: null,
+    seed_policy_fixed: null,
+    seed_policy_hash: null,
+    camera_state_hash: null,
+    frozen_camera: null,
+    temporal_accumulation_disabled: null,
+    temporal_accumulation_present: null,
+    temporal_accumulation_not_applicable: null,
+    taa_disabled: null,
+    taa_present: null,
+    taa_not_applicable: null,
+    denoiser_disabled: null,
+    denoiser_present: null,
+    denoiser_not_applicable: null,
+    fixed_resolution: decodedResolutionStable && captureResolutionStable,
+    fixed_swapchain_image_count: null,
+    frame_capture_after_epoch_dispatch: captureAfterDispatch,
+    presentation_fence_or_frame_boundary: null,
+    warmup_frames: null,
+    convergence_window: null,
+    evidence_refs: compactStringList([
+      decodedResolutionStable && captureResolutionStable
+        ? `runtime:hiprt:capture-resolution:${width}x${height}`
+        : null,
+      captureAfterDispatch ? `runtime:hiprt:same-process-dispatch:${dispatchId}` : null,
+    ]),
   };
 }
 
 function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, epoch, outputTimestampNs }) {
   const width = Number(proof.dimensions?.width ?? CFG.width);
   const height = Number(proof.dimensions?.height ?? CFG.height);
-  const cameraStateHash = sha256Json({
-    runtimeArgs: CFG.runtimeArgs,
-    width,
-    height,
-    fixedSeed: CFG.deterministicVisualMode?.fixedSeed ?? CFG.deterministicVisualMode?.fixed_seed ?? 42,
-    profileId: CFG.profileId,
-  });
   return {
     before_image: proof.baseline.path,
     beforeImage: proof.baseline.path,
@@ -3021,8 +3065,8 @@ function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, 
       `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
     newEpochWatermarkOrTrace:
       `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
-    camera_state_hash: cameraStateHash,
-    cameraStateHash,
+    camera_state_hash: null,
+    cameraStateHash: null,
     swapchain_size: [width, height],
     swapchainSize: [width, height],
     capture_backend: 'hiprt_same_process_framebuffer_readback',
@@ -3136,6 +3180,14 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
   const deterministicVisualModeEvaluation = deterministicVisualMode
     ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
     : null;
+  const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence();
+  if (deterministicVisualModeEvaluation?.accepted !== true) {
+    limitations.push({
+      code: 'hiprt_deterministic_visual_control_provenance_missing',
+      failedGates: deterministicVisualModeEvaluation?.failedGates ?? [],
+      failed_gates: deterministicVisualModeEvaluation?.failedGates ?? [],
+    });
+  }
   const runtimeBoundaryEvents = Array.isArray(proof.runtimeBoundaryEvents)
     ? proof.runtimeBoundaryEvents
     : (Array.isArray(proof.runtime_boundary_events) ? proof.runtime_boundary_events : []);
@@ -3209,16 +3261,13 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     rocmPrefix: CFG.rocmPrefix,
     rocmPrefixSource: CFG.rocmPrefixSource,
   });
-  const cameraStateHash = visualArtifacts?.camera_state_hash ?? sha256Json({
-    runtimeArgs: CFG.runtimeArgs,
-    width: CFG.width,
-    height: CFG.height,
-    profileId: CFG.profileId,
-  });
+  const cameraStateHash = visualArtifacts?.camera_state_hash ?? null;
   const backendContractProof = {
-    resultState: 'gpu-hmr-backend-contract-proven',
+    resultState: cameraStateHash
+      ? 'gpu-hmr-backend-contract-proven'
+      : 'gpu-hmr-backend-contract-unproven',
     backend: 'hiprt',
-    backendContractProven: true,
+    backendContractProven: Boolean(cameraStateHash),
     evidenceRefs,
     hiprt_contract: {
       kernel_entry: CFG.reloadKernelSymbol,
@@ -3241,7 +3290,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
         scene_or_bvh_handles: CFG.requiredFiles.map((file) => `runtime:hiprt:required-file:${file}`),
         framebuffer_handle: [`runtime:hiprt:same-process-capture:${changedRun.workerCapturePath}`],
         material_or_geometry_buffers: ['runtime:hiprt:native-launch-observer:hiprtBuildGeometry'],
-        camera_state_hash: ['runtime:hiprt:same-process-fixed-camera-and-seed'],
+        camera_state_hash: cameraStateHash
+          ? ['runtime:hiprt:target-process-camera-state-attestation']
+          : [],
         same_process_reload_hook: ['runtime:hiprt:same-process-trigger-observed'],
         visual_oracle: [`visual:hiprt:diff:${proof.diff.contentHash}`],
       },
@@ -3251,7 +3302,9 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       scene_or_bvh_handles: CFG.requiredFiles.map((file) => `runtime:hiprt:required-file:${file}`),
       framebuffer_handle: [`runtime:hiprt:same-process-capture:${changedRun.workerCapturePath}`],
       material_or_geometry_buffers: ['runtime:hiprt:native-launch-observer:hiprtBuildGeometry'],
-      camera_state_hash: ['runtime:hiprt:same-process-fixed-camera-and-seed'],
+      camera_state_hash: cameraStateHash
+        ? ['runtime:hiprt:target-process-camera-state-attestation']
+        : [],
       same_process_reload_hook: ['runtime:hiprt:same-process-trigger-observed'],
       visual_oracle: [`visual:hiprt:diff:${proof.diff.contentHash}`],
     },
@@ -3364,7 +3417,10 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       }],
     },
     outputProof: {
-      resultState: proof.accepted ? 'gpu-hmr-output-oracle-proven' : 'gpu-hmr-output-oracle-unproven',
+      resultState:
+        proof.accepted && deterministicVisualModeEvaluation?.accepted === true
+          ? 'gpu-hmr-output-oracle-proven'
+          : 'gpu-hmr-output-oracle-unproven',
       evidenceRefs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
       visualOracle: {
         kind: 'deterministic_framebuffer_diff',
@@ -3530,6 +3586,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       visual_oracle_artifacts: visualArtifacts,
     },
     deterministic_visual_mode: deterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
+    declaredDeterministicVisualMode,
     output_oracle_target: contractInput.outputProof.outputOracleTarget,
     runtime_probe_instrumentation: runtimeProbeInstrumentation,
     runtimeProbeInstrumentation,
@@ -3674,8 +3732,16 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       },
       {
         stageId: 'hiprt-visual-oracle',
-        status: proof.accepted === true ? 'passed' : 'failed',
+        status:
+          proof.accepted === true && deterministicVisualModeEvaluation?.accepted === true
+            ? 'passed'
+            : 'failed',
         evidenceRefs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+      {
+        stageId: 'hiprt-deterministic-visual-controls',
+        status: deterministicVisualModeEvaluation?.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: deterministicVisualMode?.evidence_refs ?? [],
       },
       {
         stageId: 'hiprt-ledger-invariants',
@@ -3720,6 +3786,8 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     visualEvidenceArtifacts,
     visual_evidence_artifacts: visualEvidenceArtifacts,
     runtimeProbeInstrumentation,
@@ -3759,6 +3827,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     acceptanceContractConsistency,
     deterministicVisualMode,
     deterministicVisualModeEvaluation,
+    declaredDeterministicVisualMode,
     strictGate,
   };
 }
@@ -4540,6 +4609,8 @@ async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
   proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
   proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
   proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.declaredDeterministicVisualMode = strictRuntimeProof.declaredDeterministicVisualMode;
+  proof.declared_deterministic_visual_mode = strictRuntimeProof.declaredDeterministicVisualMode;
   proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
   proof.runtime_boundary_app_hook = proof.runtimeBoundaryAppHook;
   proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
@@ -4576,14 +4647,29 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
       || declaredBoundaryProof.runtimeProofArtifact?.strictGate?.accepted === true
       || declaredBoundaryProof.runtimeBoundaryAppHook?.accepted !== true
       || declaredBoundaryProof.sourceAdaptedProfile !== false
+      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualModeEvaluation?.accepted === true
+      || declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode?.proofAuthority
+        !== 'profile_declaration_only_not_runtime_visual_proof'
+      || declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode?.acceptedForGpuHmr
+        !== false
+      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualMode?.seed_policy_hash !== null
+      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualMode?.camera_state_hash !== null
+      || (declaredBoundaryProof.proofLedger?.records?.[0]?.oracle_artifacts
+        ?.visual_oracle_artifacts?.camera_state_hash ?? null) !== null
       || !declaredBoundaryProof.runtimeProofArtifact?.limitations?.some((entry) =>
         entry?.code === 'hiprt_runtime_boundary_events_support_only_without_target_process_provenance')
+      || !declaredBoundaryProof.runtimeProofArtifact?.limitations?.some((entry) =>
+        entry?.code === 'hiprt_deterministic_visual_control_provenance_missing')
     ) {
       throw new Error(`HIPRT runtime-boundary self-check accepted declared events ${stableJson({
         gpuHmrSuccess: declaredBoundaryProof.gpuHmrSuccess,
         strictGate: declaredBoundaryProof.runtimeProofArtifact?.strictGate,
         runtimeBoundaryAppHook: declaredBoundaryProof.runtimeBoundaryAppHook,
         sourceAdaptedProfile: declaredBoundaryProof.sourceAdaptedProfile,
+        deterministicVisualModeEvaluation:
+          declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualModeEvaluation,
+        declaredDeterministicVisualMode:
+          declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode,
         limitations: declaredBoundaryProof.runtimeProofArtifact?.limitations,
       })}`);
     }
@@ -4665,6 +4751,7 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
       matrixProofId: matrix.proofId,
       rowId: refusedRow.rowId,
       declaredBoundaryEventsRefused: true,
+      unobservedDeterministicVisualControlsRefused: true,
       sourceAdaptedRejected: true,
       missingOutputRejected: true,
     }, null, 2));
@@ -4989,6 +5076,8 @@ async function main() {
   proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
   proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
   proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.declaredDeterministicVisualMode = strictRuntimeProof.declaredDeterministicVisualMode;
+  proof.declared_deterministic_visual_mode = strictRuntimeProof.declaredDeterministicVisualMode;
   proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
   proof.runtime_boundary_app_hook = proof.runtimeBoundaryAppHook;
   proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
