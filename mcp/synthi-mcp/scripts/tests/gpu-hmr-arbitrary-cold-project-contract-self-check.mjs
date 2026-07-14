@@ -79,6 +79,13 @@ assert.throws(
 assert.throws(
   () => createArbitraryColdProjectContract({
     ...structuredClone(base),
+    outputs: [{ ...base.outputs[0], role: 'x'.repeat(161) }],
+  }),
+  /output_label_invalid/,
+);
+assert.throws(
+  () => createArbitraryColdProjectContract({
+    ...structuredClone(base),
     resources: { ...base.resources, collectedEntryLimit: 1 },
   }),
   /resources_invalid/,

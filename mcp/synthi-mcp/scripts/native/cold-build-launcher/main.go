@@ -25,73 +25,87 @@ import (
 )
 
 const (
-	launcherSchema       = "synthi.gpu_hmr.cold_build_static_launcher.v2"
-	specSchema           = "synthi.gpu_hmr.cold_build_launcher_spec.v2"
-	identitySchema       = "synthi.gpu_hmr.cold_build_child_identity.v1"
-	readySchema          = "synthi.gpu_hmr.cold_build_ready_receipt.v2"
-	collectorSchema      = "synthi.gpu_hmr.cold_build_collector_receipt.v1"
-	collectorDoneSchema  = "synthi.gpu_hmr.cold_build_collector_completion.v1"
-	releaseSchema        = "synthi.gpu_hmr.cold_build_release_receipt.v1"
-	finalSchema          = "synthi.gpu_hmr.cold_build_final_receipt.v1"
-	finalAckSchema       = "synthi.gpu_hmr.cold_build_final_ack.v1"
-	frameMagic           = "SYNTHI-COLD-BUILD-COLLECT-V1\n"
-	controlFrameMagic    = "SYNTHI-COLD-BUILD-CONTROL-V1\n"
-	defaultSpecPath      = "/synthi-spec/spec.json"
-	sourceRoot           = "/workspace/source"
-	outputRoot           = "/workspace/build"
-	controlRoot          = "/synthi-control"
-	releaseRoot          = "/synthi-release"
-	outputManifestPath   = "synthi-cold-build-output-manifest.json"
-	readyControlName     = "ready.json"
-	collectorControlName = "collector-complete.json"
-	finalControlName     = "final.json"
-	childUID             = 65532
-	childGID             = 65532
-	maxSpecBytes         = 1024 * 1024
-	maxControlBytes      = 1024 * 1024
-	maxOutputManifest    = 1024 * 1024
-	maxCollectorHeader   = 64 * 1024 * 1024
-	processTermGrace     = 500 * time.Millisecond
-	processKillGrace     = 2 * time.Second
-	processPollInterval  = 10 * time.Millisecond
-	releasePollInterval  = 50 * time.Millisecond
-	protocolFailureExit  = 125
-	commandTimeoutExit   = 124
-	commandNotFoundExit  = 127
-	childReceiptFD       = 3
-	prSetChildSubreaper  = 36
-	prGetDumpable        = 3
-	prSetDumpable        = 4
-	prSetNoNewPrivs      = 38
-	prCapBsetDrop        = 24
-	prCapAmbient         = 47
-	prCapAmbientClearAll = 4
+	launcherSchema        = "synthi.gpu_hmr.cold_build_static_launcher.v3"
+	specSchema            = "synthi.gpu_hmr.cold_build_launcher_spec.v3"
+	identitySchema        = "synthi.gpu_hmr.cold_build_child_identity.v1"
+	readySchema           = "synthi.gpu_hmr.cold_build_ready_receipt.v2"
+	collectorSchema       = "synthi.gpu_hmr.cold_build_collector_receipt.v1"
+	collectorDoneSchema   = "synthi.gpu_hmr.cold_build_collector_completion.v1"
+	releaseSchema         = "synthi.gpu_hmr.cold_build_release_receipt.v1"
+	finalSchema           = "synthi.gpu_hmr.cold_build_final_receipt.v1"
+	finalAckSchema        = "synthi.gpu_hmr.cold_build_final_ack.v1"
+	frameMagic            = "SYNTHI-COLD-BUILD-COLLECT-V1\n"
+	controlFrameMagic     = "SYNTHI-COLD-BUILD-CONTROL-V1\n"
+	defaultSpecPath       = "/synthi-spec/spec.json"
+	sourceRoot            = "/workspace/source"
+	outputRoot            = "/workspace/build"
+	controlRoot           = "/synthi-control"
+	releaseRoot           = "/synthi-release"
+	outputManifestPath    = "synthi-cold-build-output-manifest.json"
+	outputManifestSchema  = "synthi.gpu_hmr.cold_build_output_manifest.v1"
+	commandProvidedMode   = "command_provided"
+	launcherGeneratedMode = "launcher_generated"
+	readyControlName      = "ready.json"
+	collectorControlName  = "collector-complete.json"
+	finalControlName      = "final.json"
+	childUID              = 65532
+	childGID              = 65532
+	maxSpecBytes          = 1024 * 1024
+	maxControlBytes       = 1024 * 1024
+	maxOutputManifest     = 1024 * 1024
+	maxOutputLabelBytes   = 160
+	maxCollectorHeader    = 64 * 1024 * 1024
+	processTermGrace      = 500 * time.Millisecond
+	processKillGrace      = 2 * time.Second
+	processPollInterval   = 10 * time.Millisecond
+	releasePollInterval   = 50 * time.Millisecond
+	protocolFailureExit   = 125
+	commandTimeoutExit    = 124
+	commandNotFoundExit   = 127
+	childReceiptFD        = 3
+	prSetChildSubreaper   = 36
+	prGetDumpable         = 3
+	prSetDumpable         = 4
+	prSetNoNewPrivs       = 38
+	prCapBsetDrop         = 24
+	prCapAmbient          = 47
+	prCapAmbientClearAll  = 4
+	queryFilesystemID     = ^uint32(0)
 )
 
 type launcherSpec struct {
-	SchemaVersion                  string   `json:"schemaVersion"`
-	ExecutionNonce                 string   `json:"executionNonce"`
-	ExpectedLauncherExecutableHash string   `json:"expectedLauncherExecutableHash"`
-	CommandSpecHash                string   `json:"commandSpecHash"`
-	SourceBindingHash              string   `json:"sourceBindingHash"`
-	Command                        []string `json:"command"`
-	Environment                    []string `json:"environment"`
-	WorkingDirectory               string   `json:"workingDirectory"`
-	CommandUID                     int      `json:"commandUid"`
-	CommandGID                     int      `json:"commandGid"`
-	SourceRoot                     string   `json:"sourceRoot"`
-	OutputRoot                     string   `json:"outputRoot"`
-	ControlRoot                    string   `json:"controlRoot"`
-	ReleaseRoot                    string   `json:"releaseRoot"`
-	OutputManifestPath             string   `json:"outputManifestPath"`
-	CommandTimeoutMillis           int64    `json:"commandTimeoutMillis"`
-	ReleaseTimeoutMillis           int64    `json:"releaseTimeoutMillis"`
-	WorkspaceByteLimit             int64    `json:"workspaceByteLimit"`
-	WorkspaceEntryLimit            int      `json:"workspaceEntryLimit"`
-	CollectedByteLimit             int64    `json:"collectedByteLimit"`
-	CollectedEntryLimit            int      `json:"collectedEntryLimit"`
-	ProcessTermGraceMillis         int64    `json:"processTermGraceMillis"`
-	ProcessKillGraceMillis         int64    `json:"processKillGraceMillis"`
+	SchemaVersion                  string           `json:"schemaVersion"`
+	ExecutionNonce                 string           `json:"executionNonce"`
+	ExpectedLauncherExecutableHash string           `json:"expectedLauncherExecutableHash"`
+	CommandSpecHash                string           `json:"commandSpecHash"`
+	SourceBindingHash              string           `json:"sourceBindingHash"`
+	Command                        []string         `json:"command"`
+	Environment                    []string         `json:"environment"`
+	WorkingDirectory               string           `json:"workingDirectory"`
+	CommandUID                     int              `json:"commandUid"`
+	CommandGID                     int              `json:"commandGid"`
+	SourceRoot                     string           `json:"sourceRoot"`
+	OutputRoot                     string           `json:"outputRoot"`
+	ControlRoot                    string           `json:"controlRoot"`
+	ReleaseRoot                    string           `json:"releaseRoot"`
+	OutputManifestPath             string           `json:"outputManifestPath"`
+	OutputManifestMode             string           `json:"outputManifestMode"`
+	DeclaredOutputs                []declaredOutput `json:"declaredOutputs"`
+	CommandTimeoutMillis           int64            `json:"commandTimeoutMillis"`
+	ReleaseTimeoutMillis           int64            `json:"releaseTimeoutMillis"`
+	WorkspaceByteLimit             int64            `json:"workspaceByteLimit"`
+	WorkspaceEntryLimit            int              `json:"workspaceEntryLimit"`
+	CollectedByteLimit             int64            `json:"collectedByteLimit"`
+	CollectedEntryLimit            int              `json:"collectedEntryLimit"`
+	ProcessTermGraceMillis         int64            `json:"processTermGraceMillis"`
+	ProcessKillGraceMillis         int64            `json:"processKillGraceMillis"`
+}
+
+type declaredOutput struct {
+	Path         string `json:"path"`
+	Role         string `json:"role"`
+	ArtifactKind string `json:"artifactKind"`
+	MediaType    string `json:"mediaType"`
 }
 
 type childIdentityReceipt struct {
@@ -240,6 +254,25 @@ type outputManifestProjection struct {
 	} `json:"outputs"`
 }
 
+type outputManifestEntry struct {
+	Path         string `json:"path"`
+	Role         string `json:"role"`
+	ArtifactKind string `json:"artifactKind"`
+	MediaType    string `json:"mediaType"`
+	ContentHash  string `json:"contentHash"`
+	ByteLength   int64  `json:"byteLength"`
+}
+
+type outputManifest struct {
+	SchemaVersion          string                `json:"schemaVersion"`
+	CommandSpecHash        string                `json:"commandSpecHash"`
+	SourceBindingHash      string                `json:"sourceBindingHash"`
+	AcceptedForGPUHMR      bool                  `json:"acceptedForGpuHmr"`
+	GPUHMRSuccess          bool                  `json:"gpuHmrSuccess"`
+	CanSatisfyRuntimeProof bool                  `json:"canSatisfyRuntimeProof"`
+	Outputs                []outputManifestEntry `json:"outputs"`
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fatalf("mode missing")
@@ -375,6 +408,34 @@ func validateSpec(spec launcherSpec) error {
 		spec.CollectedEntryLimit < 2 || spec.CollectedEntryLimit > spec.WorkspaceEntryLimit {
 		return errors.New("output bounds invalid")
 	}
+	switch spec.OutputManifestMode {
+	case commandProvidedMode:
+		if len(spec.DeclaredOutputs) != 0 {
+			return errors.New("command-provided output manifest cannot have declared outputs")
+		}
+	case launcherGeneratedMode:
+		if len(spec.DeclaredOutputs) < 1 || len(spec.DeclaredOutputs) > spec.CollectedEntryLimit-1 {
+			return errors.New("declared output count invalid")
+		}
+		seenPaths := map[string]bool{spec.OutputManifestPath: true}
+		for _, output := range spec.DeclaredOutputs {
+			relativePath, err := validateRelativeOutputPath(output.Path, spec.OutputManifestPath)
+			if err != nil {
+				return fmt.Errorf("declared output path invalid: %w", err)
+			}
+			if seenPaths[relativePath] {
+				return errors.New("declared output path duplicated")
+			}
+			seenPaths[relativePath] = true
+			if !isBoundedOutputLabel(output.Role) ||
+				!isBoundedOutputLabel(output.ArtifactKind) ||
+				!isBoundedOutputLabel(output.MediaType) {
+				return errors.New("declared output metadata invalid")
+			}
+		}
+	default:
+		return errors.New("output manifest mode invalid")
+	}
 	if spec.ProcessTermGraceMillis != processTermGrace.Milliseconds() ||
 		spec.ProcessKillGraceMillis != processKillGrace.Milliseconds() {
 		return errors.New("process cleanup policy invalid")
@@ -499,10 +560,25 @@ func runMain(specPath string) error {
 	var snapshot outputSnapshot
 	var snapshotHash string
 	var snapshotErr error
+	var generatedManifest outputManifest
 	if processTree.Quiescent {
-		snapshot, snapshotHash, snapshotErr = buildOutputSnapshot(spec, specHash)
+		if spec.OutputManifestMode == launcherGeneratedMode {
+			generatedManifest, snapshotErr = publishLauncherGeneratedOutputManifest(spec)
+		}
+		if snapshotErr == nil {
+			snapshot, snapshotHash, snapshotErr = buildOutputSnapshot(spec, specHash)
+		}
+		if snapshotErr == nil && spec.OutputManifestMode == launcherGeneratedMode {
+			if err := validateGeneratedManifestSnapshot(spec, generatedManifest, snapshot); err != nil {
+				snapshotHash = ""
+				snapshotErr = err
+			}
+		}
 	} else {
 		snapshotErr = errors.New("output snapshot requires a quiescent process tree")
+	}
+	if snapshotErr != nil {
+		fmt.Fprintf(os.Stderr, "cold-build output snapshot refused: %q\n", snapshotErr.Error())
 	}
 	blockingGaps := uniqueSorted([]string{
 		gap(!identityAccepted, "child_identity_unproven"),
@@ -925,6 +1001,138 @@ func signalNamespace(signal syscall.Signal) int {
 	return signalPIDSet(pids, signal)
 }
 
+func publishLauncherGeneratedOutputManifest(spec launcherSpec) (outputManifest, error) {
+	var manifest outputManifest
+	manifestAbsolutePath := filepath.Join(spec.OutputRoot, spec.OutputManifestPath)
+	if err := requirePathAbsent(manifestAbsolutePath); err != nil {
+		return manifest, fmt.Errorf("refuse preexisting output manifest: %w", err)
+	}
+
+	entries := make([]outputManifestEntry, 0, len(spec.DeclaredOutputs))
+	var outputByteLength int64
+	for _, declaration := range spec.DeclaredOutputs {
+		remainingBytes := spec.CollectedByteLimit - outputByteLength
+		byteLength, contentHash, err := hashRegularFileBeneath(
+			spec.OutputRoot,
+			declaration.Path,
+			remainingBytes,
+		)
+		if err != nil {
+			return manifest, fmt.Errorf("hash declared output %q: %w", declaration.Path, err)
+		}
+		if outputByteLength > spec.CollectedByteLimit-byteLength {
+			return manifest, errors.New("declared output byte limit exceeded")
+		}
+		outputByteLength += byteLength
+		// Declaration labels are serialized verbatim as advisory metadata only.
+		entries = append(entries, outputManifestEntry{
+			Path:         declaration.Path,
+			Role:         declaration.Role,
+			ArtifactKind: declaration.ArtifactKind,
+			MediaType:    declaration.MediaType,
+			ContentHash:  contentHash,
+			ByteLength:   byteLength,
+		})
+	}
+
+	manifest = outputManifest{
+		SchemaVersion:          outputManifestSchema,
+		CommandSpecHash:        spec.CommandSpecHash,
+		SourceBindingHash:      spec.SourceBindingHash,
+		AcceptedForGPUHMR:      false,
+		GPUHMRSuccess:          false,
+		CanSatisfyRuntimeProof: false,
+		Outputs:                entries,
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		return manifest, fmt.Errorf("encode generated output manifest: %w", err)
+	}
+	manifestByteLength := int64(len(manifestBytes))
+	if manifestByteLength < 1 || manifestByteLength > maxOutputManifest ||
+		outputByteLength > spec.CollectedByteLimit-manifestByteLength {
+		return manifest, errors.New("generated output manifest exceeds collection byte bounds")
+	}
+
+	for _, entry := range entries {
+		observedByteLength, observedContentHash, err := hashRegularFileBeneath(
+			spec.OutputRoot,
+			entry.Path,
+			entry.ByteLength,
+		)
+		if err != nil {
+			return manifest, fmt.Errorf("rehash declared output %q: %w", entry.Path, err)
+		}
+		if observedByteLength != entry.ByteLength || observedContentHash != entry.ContentHash {
+			return manifest, fmt.Errorf("declared output changed before manifest publication: %s", entry.Path)
+		}
+	}
+	if err := requirePathAbsent(manifestAbsolutePath); err != nil {
+		return manifest, fmt.Errorf("refuse preexisting output manifest: %w", err)
+	}
+	if err := writeAtomicExclusiveAsCommandIdentity(
+		manifestAbsolutePath,
+		manifestBytes,
+		0644,
+		spec.CommandUID,
+		spec.CommandGID,
+	); err != nil {
+		return manifest, fmt.Errorf("publish generated output manifest: %w", err)
+	}
+	observedByteLength, observedContentHash, err := hashRegularFileBeneath(
+		spec.OutputRoot,
+		spec.OutputManifestPath,
+		maxOutputManifest,
+	)
+	if err != nil {
+		return manifest, fmt.Errorf("verify generated output manifest: %w", err)
+	}
+	if observedByteLength != manifestByteLength || observedContentHash != hashBytes(manifestBytes) {
+		return manifest, errors.New("generated output manifest changed after publication")
+	}
+	return manifest, nil
+}
+
+func validateGeneratedManifestSnapshot(
+	spec launcherSpec,
+	manifest outputManifest,
+	snapshot outputSnapshot,
+) error {
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("encode generated output manifest snapshot binding: %w", err)
+	}
+	expectedEntries := map[string]streamReceipt{
+		spec.OutputManifestPath: {
+			ByteLength:  int64(len(manifestBytes)),
+			ContentHash: hashBytes(manifestBytes),
+		},
+	}
+	for _, entry := range manifest.Outputs {
+		if _, exists := expectedEntries[entry.Path]; exists {
+			return errors.New("generated output manifest snapshot path duplicated")
+		}
+		expectedEntries[entry.Path] = streamReceipt{
+			ByteLength:  entry.ByteLength,
+			ContentHash: entry.ContentHash,
+		}
+	}
+	if len(snapshot.Entries) != len(expectedEntries) {
+		return errors.New("generated output manifest snapshot entry count changed")
+	}
+	for _, entry := range snapshot.Entries {
+		expected, exists := expectedEntries[entry.Path]
+		if !exists || entry.ByteLength != expected.ByteLength || entry.ContentHash != expected.ContentHash {
+			return fmt.Errorf("generated output changed before snapshot: %s", entry.Path)
+		}
+		delete(expectedEntries, entry.Path)
+	}
+	if len(expectedEntries) != 0 {
+		return errors.New("generated output missing from snapshot")
+	}
+	return nil
+}
+
 func buildOutputSnapshot(spec launcherSpec, specHash string) (outputSnapshot, string, error) {
 	snapshot := outputSnapshot{
 		SchemaVersion:  collectorSchema,
@@ -1223,6 +1431,10 @@ func validateRelativeOutputPath(value, manifestPath string) (string, error) {
 	return clean, nil
 }
 
+func isBoundedOutputLabel(value string) bool {
+	return value != "" && len(value) <= maxOutputLabelBytes && !strings.ContainsAny(value, "\x00\r\n")
+}
+
 func looksLikeWindowsAbsolutePath(value string) bool {
 	if len(value) < 3 || value[1] != ':' || value[2] != '/' {
 		return false
@@ -1247,6 +1459,53 @@ func readBoundedRegularFile(filePath string, limit int64) ([]byte, error) {
 		return nil, errors.New("file changed during bounded read")
 	}
 	return bytes, nil
+}
+
+func requirePathAbsent(filePath string) error {
+	_, err := os.Lstat(filePath)
+	if err == nil {
+		return errors.New("path already exists")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func hashRegularFileBeneath(rootPath, relativePath string, byteLimit int64) (int64, string, error) {
+	if byteLimit < 0 {
+		return 0, "", errors.New("file byte limit invalid")
+	}
+	file, before, err := openRegularBeneath(rootPath, relativePath)
+	if err != nil {
+		return 0, "", err
+	}
+	defer file.Close()
+	if before.Size() < 0 || before.Size() > byteLimit {
+		return 0, "", errors.New("file exceeds byte limit")
+	}
+	hasher := sha256.New()
+	observed, err := io.CopyN(hasher, file, before.Size())
+	if err != nil || observed != before.Size() {
+		return 0, "", errors.New("file changed during hash")
+	}
+	var extra [1]byte
+	extraCount, extraErr := file.Read(extra[:])
+	if extraCount != 0 {
+		return 0, "", errors.New("file grew during hash")
+	}
+	if extraErr != nil && !errors.Is(extraErr, io.EOF) {
+		return 0, "", fmt.Errorf("verify file hash boundary: %w", extraErr)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return 0, "", err
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || before.Mode() != after.Mode() ||
+		!before.ModTime().Equal(after.ModTime()) {
+		return 0, "", errors.New("file metadata changed during hash")
+	}
+	return before.Size(), "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func hashFileBoundedBeneath(rootPath, relativePath string, expectedSize int64) (string, error) {
@@ -1334,7 +1593,7 @@ func openRegularBeneath(rootPath, relativePath string) (*os.File, fs.FileInfo, e
 	}
 	currentFD := rootFD
 	for index, component := range components {
-		flags := syscall.O_RDONLY | syscall.O_CLOEXEC | syscall.O_NOFOLLOW
+		flags := syscall.O_RDONLY | syscall.O_CLOEXEC | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
 		if index < len(components)-1 {
 			flags |= syscall.O_DIRECTORY
 		}
@@ -1425,9 +1684,206 @@ func writeAtomic(filePath string, bytes []byte, mode fs.FileMode) error {
 	return nil
 }
 
+type threadFilesystemIdentity struct {
+	UIDs         []int
+	GIDs         []int
+	Groups       []int
+	CapPermitted string
+	CapEffective string
+	FSUID        int
+	FSGID        int
+}
+
+func writeAtomicExclusiveAsCommandIdentity(
+	filePath string,
+	bytes []byte,
+	mode fs.FileMode,
+	uid, gid int,
+) (resultErr error) {
+	if uid != childUID || gid != childGID {
+		return errors.New("manifest publication filesystem identity invalid")
+	}
+	runtime.LockOSThread()
+	safeToUnlock := true
+	defer func() {
+		if safeToUnlock {
+			runtime.UnlockOSThread()
+		}
+	}()
+
+	originalIdentity, err := readThreadFilesystemIdentity()
+	if err != nil {
+		return fmt.Errorf("read launcher filesystem identity: %w", err)
+	}
+	if !allIntegersEqual(originalIdentity.UIDs, 0, 4) ||
+		!allIntegersEqual(originalIdentity.GIDs, 0, 4) {
+		return errors.New("launcher filesystem identity is not root")
+	}
+
+	safeToUnlock = false
+	defer func() {
+		restoreErr := restoreThreadFilesystemIdentity(originalIdentity)
+		if restoreErr == nil {
+			safeToUnlock = true
+			return
+		}
+		if resultErr == nil {
+			resultErr = fmt.Errorf("restore launcher filesystem identity: %w", restoreErr)
+			return
+		}
+		resultErr = fmt.Errorf("%v; restore launcher filesystem identity: %w", resultErr, restoreErr)
+	}()
+
+	previousFSGID, err := setFilesystemGID(gid)
+	if err != nil {
+		return fmt.Errorf("set manifest publication fsgid: %w", err)
+	}
+	if previousFSGID != originalIdentity.FSGID {
+		return errors.New("manifest publication fsgid transition invalid")
+	}
+	previousFSUID, err := setFilesystemUID(uid)
+	if err != nil {
+		return fmt.Errorf("set manifest publication fsuid: %w", err)
+	}
+	if previousFSUID != originalIdentity.FSUID {
+		return errors.New("manifest publication fsuid transition invalid")
+	}
+	publicationIdentity, err := readThreadFilesystemIdentity()
+	if err != nil {
+		return fmt.Errorf("verify manifest publication filesystem identity: %w", err)
+	}
+	if publicationIdentity.FSUID != uid || publicationIdentity.FSGID != gid ||
+		!sameProcessIdentity(originalIdentity, publicationIdentity) {
+		return errors.New("manifest publication filesystem identity not assumed")
+	}
+	return writeAtomicExclusive(filePath, bytes, mode)
+}
+
+func readThreadFilesystemIdentity() (threadFilesystemIdentity, error) {
+	status, err := parseProcStatus("/proc/thread-self/status")
+	if err != nil {
+		return threadFilesystemIdentity{}, err
+	}
+	identity := threadFilesystemIdentity{
+		UIDs:         parseIntegerFields(status["Uid"]),
+		GIDs:         parseIntegerFields(status["Gid"]),
+		Groups:       parseIntegerFields(status["Groups"]),
+		CapPermitted: status["CapPrm"],
+		CapEffective: status["CapEff"],
+	}
+	if len(identity.UIDs) != 4 || len(identity.GIDs) != 4 ||
+		identity.CapPermitted == "" || identity.CapEffective == "" {
+		return threadFilesystemIdentity{}, errors.New("thread filesystem identity shape invalid")
+	}
+	identity.FSUID, err = queryFilesystemUID()
+	if err != nil {
+		return threadFilesystemIdentity{}, err
+	}
+	identity.FSGID, err = queryFilesystemGID()
+	if err != nil {
+		return threadFilesystemIdentity{}, err
+	}
+	if identity.UIDs[3] != identity.FSUID || identity.GIDs[3] != identity.FSGID {
+		return threadFilesystemIdentity{}, errors.New("thread filesystem identity observation mismatch")
+	}
+	return identity, nil
+}
+
+func restoreThreadFilesystemIdentity(expected threadFilesystemIdentity) error {
+	failures := []string{}
+	if _, err := setFilesystemUID(expected.FSUID); err != nil {
+		failures = append(failures, "restore fsuid: "+err.Error())
+	}
+	if _, err := setFilesystemGID(expected.FSGID); err != nil {
+		failures = append(failures, "restore fsgid: "+err.Error())
+	}
+	observed, err := readThreadFilesystemIdentity()
+	if err != nil {
+		failures = append(failures, "verify restored identity: "+err.Error())
+	} else if !sameThreadFilesystemIdentity(expected, observed) {
+		failures = append(failures, "restored filesystem identity mismatch")
+	}
+	if len(failures) != 0 {
+		return errors.New(strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func sameProcessIdentity(expected, observed threadFilesystemIdentity) bool {
+	return len(expected.UIDs) == 4 && len(observed.UIDs) == 4 &&
+		len(expected.GIDs) == 4 && len(observed.GIDs) == 4 &&
+		expected.UIDs[0] == observed.UIDs[0] &&
+		expected.UIDs[1] == observed.UIDs[1] &&
+		expected.UIDs[2] == observed.UIDs[2] &&
+		expected.GIDs[0] == observed.GIDs[0] &&
+		expected.GIDs[1] == observed.GIDs[1] &&
+		expected.GIDs[2] == observed.GIDs[2] &&
+		equalIntegerSlices(expected.Groups, observed.Groups) &&
+		expected.CapPermitted == observed.CapPermitted
+}
+
+func sameThreadFilesystemIdentity(expected, observed threadFilesystemIdentity) bool {
+	return sameProcessIdentity(expected, observed) &&
+		equalIntegerSlices(expected.UIDs, observed.UIDs) &&
+		equalIntegerSlices(expected.GIDs, observed.GIDs) &&
+		expected.CapEffective == observed.CapEffective &&
+		expected.FSUID == observed.FSUID &&
+		expected.FSGID == observed.FSGID
+}
+
+func equalIntegerSlices(left, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func queryFilesystemUID() (int, error) {
+	return rawSetFilesystemUID(queryFilesystemID)
+}
+
+func queryFilesystemGID() (int, error) {
+	return rawSetFilesystemGID(queryFilesystemID)
+}
+
+func setFilesystemUID(uid int) (int, error) {
+	if uid < 0 || uint64(uid) >= uint64(queryFilesystemID) {
+		return 0, errors.New("fsuid invalid")
+	}
+	return rawSetFilesystemUID(uint32(uid))
+}
+
+func setFilesystemGID(gid int) (int, error) {
+	if gid < 0 || uint64(gid) >= uint64(queryFilesystemID) {
+		return 0, errors.New("fsgid invalid")
+	}
+	return rawSetFilesystemGID(uint32(gid))
+}
+
+func rawSetFilesystemUID(uid uint32) (int, error) {
+	result, _, errno := syscall.RawSyscall(syscall.SYS_SETFSUID, uintptr(uid), 0, 0)
+	if errno != 0 {
+		return 0, errno
+	}
+	return int(uint32(result)), nil
+}
+
+func rawSetFilesystemGID(gid uint32) (int, error) {
+	result, _, errno := syscall.RawSyscall(syscall.SYS_SETFSGID, uintptr(gid), 0, 0)
+	if errno != 0 {
+		return 0, errno
+	}
+	return int(uint32(result)), nil
+}
+
 func writeAtomicExclusive(filePath string, bytes []byte, mode fs.FileMode) error {
 	temporaryPath := filePath + ".tmp-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	file, err := os.OpenFile(temporaryPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	file, err := os.OpenFile(temporaryPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
 	if err != nil {
 		return err
 	}

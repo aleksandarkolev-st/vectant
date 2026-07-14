@@ -22,6 +22,7 @@ import {
   COLD_BUILD_LAUNCHER_RELEASE_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+  COLD_BUILD_OUTPUT_MANIFEST_MODE_COMMAND_PROVIDED,
   coldBuildControlTmpfsOptions,
   coldBuildLauncherCommand,
   coldBuildLauncherEntrypoint,
@@ -439,6 +440,8 @@ export function createColdBuildLauncherExecutionPlan({
   workspaceEntryLimit,
   collectedByteLimit,
   collectedEntryLimit,
+  outputManifestMode = COLD_BUILD_OUTPUT_MANIFEST_MODE_COMMAND_PROVIDED,
+  declaredOutputs = [],
   containerName,
   workerImageId,
   workerImageEnvironment,
@@ -556,6 +559,8 @@ export function createColdBuildLauncherExecutionPlan({
     workspaceEntryLimit: normalizedWorkspaceEntryLimit,
     collectedByteLimit: normalizedCollectedByteLimit,
     collectedEntryLimit: normalizedCollectedEntryLimit,
+    outputManifestMode,
+    declaredOutputs,
   });
   const specBytes = encodeColdBuildLauncherSpec(spec);
   const specHash = coldBuildLauncherSpecHash(spec);

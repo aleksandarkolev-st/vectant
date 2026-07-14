@@ -10,6 +10,7 @@ import {
   COLD_BUILD_LAUNCHER_RELEASE_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+  COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
   materializeColdBuildLauncher,
   runColdBuildHostProcess,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
@@ -198,6 +199,21 @@ async function main() {
       workspaceEntryLimit: 250_000,
       collectedByteLimit: 512 * 1024 * 1024,
       collectedEntryLimit: 4096,
+      outputManifestMode: COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
+      declaredOutputs: [
+        {
+          path: 'nested/z-output.bin',
+          role: 'opaque_secondary_output',
+          artifactKind: 'opaque_build_output',
+          mediaType: 'application/octet-stream',
+        },
+        {
+          path: 'a-output.bin',
+          role: 'opaque_primary_output',
+          artifactKind: 'opaque_build_output',
+          mediaType: 'application/octet-stream',
+        },
+      ],
       containerName: `synthi-cold-${randomBytes(8).toString('hex')}`,
       workerImageId: workerImage.Id,
       workerImageEnvironment: workerImage.Config?.Env ?? [],
@@ -262,6 +278,14 @@ async function main() {
     assert.equal(plan.releaseBindingHash, releaseTreeBindingEvidence.sourceBindingHash);
     assert.equal(plan.spec.expectedLauncherExecutableHash, launcherIdentity.binaryHash);
     assert.equal(plan.spec.command[0], common.command);
+    assert.equal(
+      plan.spec.outputManifestMode,
+      COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
+    );
+    assert.deepEqual(
+      plan.spec.declaredOutputs.map(({ path: outputPath }) => outputPath),
+      ['a-output.bin', 'nested/z-output.bin'],
+    );
     assert.deepEqual(plan.spec.environment, [
       'BUILD_MODE=cold',
       'PATH=/usr/local/bin:/usr/bin:/bin',
@@ -530,6 +554,33 @@ async function main() {
         environment: ['PATH=/bin', 'PATH=/usr/bin'],
       }),
       /environment_invalid/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
+        outputManifestMode: 'command_provided',
+      }),
+      /command_provided_outputs_invalid/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
+        declaredOutputs: [{
+          ...common.declaredOutputs[0],
+          path: '../escape.bin',
+        }],
+      }),
+      /declared_output_path_invalid/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
+        declaredOutputs: [{
+          ...common.declaredOutputs[0],
+          metadataAuthority: 'forged_success',
+        }],
+      }),
+      /declared_output_shape_invalid/,
     );
     assert.throws(
       () => createColdBuildLauncherExecutionPlan({

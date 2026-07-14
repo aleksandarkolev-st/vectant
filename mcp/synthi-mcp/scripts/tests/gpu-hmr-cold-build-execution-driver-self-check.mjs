@@ -15,7 +15,7 @@ import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
-  COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH,
+  COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
   materializeColdBuildLauncher,
   runColdBuildHostProcess,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
@@ -82,33 +82,12 @@ async function createPlanFixture({ root, launcherIdentity, workerImage, valid })
   await chmod(specHostDirectory, 0o700);
 
   const artifactBytes = Buffer.from('opaque project-neutral build bytes\n', 'utf8');
-  const artifactHash = contentHash(artifactBytes);
   const commandSpecHash = contentHash(`opaque-command:${randomBytes(16).toString('hex')}`);
-  const outputManifest = {
-    schemaVersion: 'synthi.gpu_hmr.cold_build_output_manifest.v1',
-    commandSpecHash: '$SYNTHI_COLD_BUILD_COMMAND_SPEC_HASH',
-    sourceBindingHash: '$SYNTHI_COLD_BUILD_SOURCE_BINDING_HASH',
-    acceptedForGpuHmr: false,
-    gpuHmrSuccess: false,
-    canSatisfyRuntimeProof: false,
-    outputs: [{
-      path: 'opaque-output.bin',
-      role: 'generic_build_artifact',
-      artifactKind: 'opaque_build_output',
-      mediaType: 'application/octet-stream',
-      contentHash: artifactHash,
-      byteLength: artifactBytes.byteLength,
-    }],
-  };
-  const expandedManifest = JSON.stringify(outputManifest);
   const script = valid
     ? [
       '#!/bin/sh',
       'set -eu',
       `printf 'opaque project-neutral build bytes\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/opaque-output.bin'`,
-      `cat > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/${COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH}' <<SYNTHI_MANIFEST`,
-      expandedManifest,
-      'SYNTHI_MANIFEST',
       '',
     ].join('\n')
     : [
@@ -141,11 +120,7 @@ async function createPlanFixture({ root, launcherIdentity, workerImage, valid })
     environment: {
       HOME: '/tmp/synthi-home',
       PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-      SYNTHI_COLD_BUILD_COMMAND_SPEC_HASH: commandSpecHash,
-      SYNTHI_COLD_BUILD_OUTPUT_MANIFEST:
-        `${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/${COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH}`,
       SYNTHI_COLD_BUILD_OUTPUT_ROOT: COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
-      SYNTHI_COLD_BUILD_SOURCE_BINDING_HASH: sourceTreeBindingEvidence.sourceBindingHash,
       SYNTHI_COLD_BUILD_SOURCE_ROOT: COLD_BUILD_LAUNCHER_SOURCE_ROOT,
       TMPDIR: '/tmp',
     },
@@ -156,6 +131,13 @@ async function createPlanFixture({ root, launcherIdentity, workerImage, valid })
     workspaceEntryLimit: 4096,
     collectedByteLimit: 4 * 1024 * 1024,
     collectedEntryLimit: 4,
+    outputManifestMode: COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
+    declaredOutputs: [{
+      path: 'opaque-output.bin',
+      role: 'generic_build_artifact',
+      artifactKind: 'opaque_build_output',
+      mediaType: 'application/octet-stream',
+    }],
     containerName: `synthi-cold-driver-${randomBytes(8).toString('hex')}`,
     workerImageId: workerImage.Id,
     workerImageEnvironment: workerImage.Config?.Env ?? [],

@@ -1484,7 +1484,7 @@ async function main() {
     'version',
   ]);
   const versionReceipt = JSON.parse(version.stdout);
-  assert.equal(versionReceipt.schemaVersion, 'synthi.gpu_hmr.cold_build_static_launcher.v2');
+  assert.equal(versionReceipt.schemaVersion, 'synthi.gpu_hmr.cold_build_static_launcher.v3');
   assert.equal(versionReceipt.executableSelfHash, launcher.binaryHash);
 
   const executionNonce = randomBytes(16).toString('hex');

@@ -23,9 +23,9 @@ export const COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA =
 export const COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY =
   'isolated_command_transport_only_not_gpu_hmr_success';
 export const COLD_BUILD_LAUNCHER_SCHEMA =
-  'synthi.gpu_hmr.cold_build_static_launcher.v2';
+  'synthi.gpu_hmr.cold_build_static_launcher.v3';
 export const COLD_BUILD_LAUNCHER_SPEC_SCHEMA =
-  'synthi.gpu_hmr.cold_build_launcher_spec.v2';
+  'synthi.gpu_hmr.cold_build_launcher_spec.v3';
 export const COLD_BUILD_LAUNCHER_BUILD_SCHEMA =
   'synthi.gpu_hmr.cold_build_launcher_build.v2';
 export const COLD_BUILD_LAUNCHER_BUILD_AUTHORITY =
@@ -47,6 +47,11 @@ export const COLD_BUILD_LAUNCHER_CONTROL_ROOT = '/synthi-control';
 export const COLD_BUILD_LAUNCHER_RELEASE_ROOT = '/synthi-release';
 export const COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH =
   'synthi-cold-build-output-manifest.json';
+export const COLD_BUILD_OUTPUT_MANIFEST_MODE_COMMAND_PROVIDED =
+  'command_provided';
+export const COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED =
+  'launcher_generated';
+export const COLD_BUILD_OUTPUT_LABEL_MAX_BYTES = 160;
 export const COLD_BUILD_CONTAINER_COMMAND_UID = 65532;
 export const COLD_BUILD_CONTAINER_COMMAND_GID = 65532;
 export const COLD_BUILD_CONTAINER_CONTROL_TMPFS_BYTES = 1024 * 1024;
@@ -91,8 +96,8 @@ export const COLD_BUILD_LAUNCHER_SOURCE_PATH = path.resolve(
 );
 
 const EXPECTED_LAUNCHER_HASHES = Object.freeze({
-  amd64: 'sha256:cc4c5c3c4e23a419dce0c5151085381e5729a00e9109f1bc662d7b4e6dc46f46',
-  arm64: 'sha256:1667187e33cec7c6a68c4c51fd961ddaf96b1acf7f9e88079fec1a2f51f982c5',
+  amd64: 'sha256:6b2f9abc6547c0a33beaf1aefb7e197b940916a1cd606cd3b0275b4afabd1722',
+  arm64: 'sha256:f8bcf9a1b825bec081155668a50cf20d15a54a3902207ebb4c24b5ed04dff900',
 });
 const PINNED_LAUNCHER_IDENTITIES = new WeakMap();
 const DIRECTORY_SYNC_UNSUPPORTED_CODES = new Set([
@@ -323,6 +328,86 @@ function normalizedPathIdentity(value) {
   const root = path.parse(normalized).root;
   while (normalized.length > root.length && normalized.endsWith(path.sep)) {
     normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+function normalizeDeclaredOutputPath(value) {
+  if (
+    typeof value !== 'string'
+    || value.length < 1
+    || Buffer.byteLength(value, 'utf8') > 32 * 1024
+    || /[\\\0\r\n]/.test(value)
+  ) {
+    throw new Error('cold_build_launcher_declared_output_path_invalid');
+  }
+  const normalized = path.posix.normalize(value);
+  if (
+    normalized !== value
+    || normalized === '.'
+    || normalized === COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH
+    || normalized.startsWith('../')
+    || path.posix.isAbsolute(normalized)
+    || path.win32.isAbsolute(normalized)
+  ) {
+    throw new Error('cold_build_launcher_declared_output_path_invalid');
+  }
+  return normalized;
+}
+
+function normalizeDeclaredOutputLabel(value) {
+  if (
+    typeof value !== 'string'
+    || value.length < 1
+    || Buffer.byteLength(value, 'utf8') > COLD_BUILD_OUTPUT_LABEL_MAX_BYTES
+    || /[\0\r\n]/.test(value)
+  ) {
+    throw new Error('cold_build_launcher_declared_output_label_invalid');
+  }
+  return value;
+}
+
+function normalizeDeclaredOutputs(mode, declaredOutputs, collectedEntryLimit) {
+  if (!Array.isArray(declaredOutputs)) {
+    throw new Error('cold_build_launcher_declared_outputs_invalid');
+  }
+  if (mode === COLD_BUILD_OUTPUT_MANIFEST_MODE_COMMAND_PROVIDED) {
+    if (declaredOutputs.length !== 0) {
+      throw new Error('cold_build_launcher_command_provided_outputs_invalid');
+    }
+    return [];
+  }
+  if (
+    mode !== COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED
+    || !Number.isSafeInteger(collectedEntryLimit)
+    || declaredOutputs.length < 1
+    || declaredOutputs.length > collectedEntryLimit - 1
+  ) {
+    throw new Error('cold_build_launcher_declared_outputs_invalid');
+  }
+  const normalized = declaredOutputs.map((output) => {
+    if (!exactKeys(output, ['path', 'role', 'artifactKind', 'mediaType'])) {
+      throw new Error('cold_build_launcher_declared_output_shape_invalid');
+    }
+    return {
+      path: normalizeDeclaredOutputPath(output.path),
+      role: normalizeDeclaredOutputLabel(output.role),
+      artifactKind: normalizeDeclaredOutputLabel(output.artifactKind),
+      mediaType: normalizeDeclaredOutputLabel(output.mediaType),
+    };
+  }).sort((left, right) => Buffer.compare(
+    Buffer.from(left.path, 'utf8'),
+    Buffer.from(right.path, 'utf8'),
+  ));
+  if (new Set(normalized.map(({ path: outputPath }) => outputPath)).size !== normalized.length) {
+    throw new Error('cold_build_launcher_declared_output_duplicate');
   }
   return normalized;
 }
@@ -1992,8 +2077,15 @@ export function coldBuildLauncherSpec({
   workspaceEntryLimit,
   collectedByteLimit,
   collectedEntryLimit,
+  outputManifestMode = COLD_BUILD_OUTPUT_MANIFEST_MODE_COMMAND_PROVIDED,
+  declaredOutputs = [],
 } = {}) {
   const pinnedLauncher = requirePinnedLauncherIdentity(launcherIdentity);
+  const normalizedDeclaredOutputs = normalizeDeclaredOutputs(
+    outputManifestMode,
+    declaredOutputs,
+    collectedEntryLimit,
+  );
   return {
     schemaVersion: COLD_BUILD_LAUNCHER_SPEC_SCHEMA,
     executionNonce,
@@ -2010,6 +2102,8 @@ export function coldBuildLauncherSpec({
     controlRoot: COLD_BUILD_LAUNCHER_CONTROL_ROOT,
     releaseRoot: COLD_BUILD_LAUNCHER_RELEASE_ROOT,
     outputManifestPath: COLD_BUILD_OUTPUT_MANIFEST_CONTAINER_PATH,
+    outputManifestMode,
+    declaredOutputs: normalizedDeclaredOutputs,
     commandTimeoutMillis,
     releaseTimeoutMillis,
     workspaceByteLimit,

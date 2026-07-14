@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+import { COLD_BUILD_OUTPUT_LABEL_MAX_BYTES } from './gpu-hmr-cold-build-container-contract.mjs';
+
 export const ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_contract.v1';
 export const ARBITRARY_COLD_PROJECT_CONTRACT_AUTHORITY =
@@ -94,11 +96,23 @@ function normalizeOutput(output) {
   if (!exactKeys(output, ['path', 'role', 'artifactKind', 'mediaType'])) {
     throw new Error('arbitrary_cold_project_contract_output_shape_invalid');
   }
+  const labels = {
+    role: normalizeString(output.role, 'output_role'),
+    artifactKind: normalizeString(output.artifactKind, 'output_artifact_kind'),
+    mediaType: normalizeString(output.mediaType, 'output_media_type'),
+  };
+  if (Object.values(labels).some(
+    (value) => Buffer.byteLength(value, 'utf8') > COLD_BUILD_OUTPUT_LABEL_MAX_BYTES,
+  )) {
+    throw new Error('arbitrary_cold_project_contract_output_label_invalid');
+  }
+  const outputPath = normalizeRelativePath(output.path, 'output_path');
+  if (Buffer.byteLength(outputPath, 'utf8') > 32 * 1024) {
+    throw new Error('arbitrary_cold_project_contract_output_path_invalid');
+  }
   return {
-    path: normalizeRelativePath(output.path, 'output_path'),
-    role: normalizeString(output.role, 'output_role', 256),
-    artifactKind: normalizeString(output.artifactKind, 'output_artifact_kind', 256),
-    mediaType: normalizeString(output.mediaType, 'output_media_type', 256),
+    path: outputPath,
+    ...labels,
     metadataAuthority: 'advisory_only_not_output_acceptance',
   };
 }
