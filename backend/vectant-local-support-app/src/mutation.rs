@@ -105,13 +105,12 @@ impl WorkspaceMutationBroker {
         if current_hash != request.expected_content_hash || node.content_hash != current_hash {
             return Err(MutationError::StaleTarget);
         }
-        if self
+        if !self
             .scanner
             .try_scan(&request.replacement)
             .map_err(|_| MutationError::ScannerDenied)?
             .findings
-            .len()
-            > 0
+            .is_empty()
         {
             return Err(MutationError::ScannerDenied);
         }

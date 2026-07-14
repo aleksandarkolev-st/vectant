@@ -181,7 +181,7 @@ pub struct ReceiptBinding<'a> {
     pub capability: FullAccessCapability,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FullAccessBudget {
     pub bytes_sent: u64,
     pub requests_this_minute: u32,
@@ -218,17 +218,6 @@ impl FullAccessState {
         }
         self.budget.paused = true;
         self.process_visibility_paused = true;
-    }
-}
-impl Default for FullAccessBudget {
-    fn default() -> Self {
-        Self {
-            bytes_sent: 0,
-            requests_this_minute: 0,
-            active_reads: 0,
-            active_commands: 0,
-            paused: false,
-        }
     }
 }
 impl FullAccessBudget {
@@ -359,6 +348,7 @@ pub struct SanitizedProcessRecord {
     pub inclusion_reason: String,
     pub freshness_ms: u64,
 }
+#[allow(clippy::too_many_arguments)] // OS adapter fields are independently sanitized at this boundary.
 pub fn sanitized_process_record(
     identity_material: &str,
     executable_name: &str,
@@ -371,7 +361,7 @@ pub fn sanitized_process_record(
 ) -> Result<SanitizedProcessRecord, FullAccessDenied> {
     if executable_name.contains(['/', '\\'])
         || executable_name.len() > 128
-        || ports.iter().any(|port| *port == 0)
+        || ports.contains(&0)
         || reason.len() > 128
     {
         return Err(FullAccessDenied::MalformedRequest);

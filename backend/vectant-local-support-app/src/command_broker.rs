@@ -248,6 +248,7 @@ fn shell_executable(value: &str) -> bool {
     )
 }
 
+#[allow(clippy::while_let_on_iterator)] // OSC parsing needs look-ahead for the ST terminator.
 fn strip_terminal_controls(value: &str) -> String {
     let mut clean = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
