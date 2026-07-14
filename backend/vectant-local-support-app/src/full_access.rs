@@ -76,6 +76,10 @@ pub struct FullAccessPolicy {
     pub max_requests_per_minute: u32,
     pub max_concurrent_reads: u16,
     pub max_process_records: usize,
+    pub allowed_command_executables: BTreeSet<String>,
+    pub max_command_timeout_seconds: u64,
+    pub max_command_output_bytes: usize,
+    pub max_command_concurrency: u16,
 }
 
 impl Default for FullAccessPolicy {
@@ -92,6 +96,10 @@ impl Default for FullAccessPolicy {
             max_requests_per_minute: 30,
             max_concurrent_reads: 2,
             max_process_records: MAX_PROCESS_RECORDS,
+            allowed_command_executables: BTreeSet::new(),
+            max_command_timeout_seconds: 60,
+            max_command_output_bytes: 65_536,
+            max_command_concurrency: 1,
         }
     }
 }

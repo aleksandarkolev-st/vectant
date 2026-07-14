@@ -15,10 +15,14 @@ use vectant_local_support_app::approval::{
 use vectant_local_support_app::audit::{
     AuditClass, AuditLog, AuditStoreError, ConsentReceipt, LocalAuditStore,
 };
+use vectant_local_support_app::command_broker::{
+    execute_command, validate_request, CommandError, CommandRequest,
+};
 use vectant_local_support_app::desktop::{
     build_desktop_status_state, inspect_tauri_config, plan_desktop_ipc_action,
     renderer_command_can_access_secret, sanitize_desktop_ipc_state, DesktopIpcError,
 };
+use vectant_local_support_app::full_access::FullAccessPolicy;
 use vectant_local_support_app::http::{
     bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
     LocalAuthorizationError, LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
@@ -143,6 +147,34 @@ fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
         ),
         Err(MutationError::StaleTarget)
     ));
+}
+
+#[tokio::test]
+async fn command_broker_requires_allowlisted_shell_free_bounded_requests() {
+    let root = tempdir().unwrap();
+    let mut policy = FullAccessPolicy {
+        organization_enabled: true,
+        ..Default::default()
+    };
+    policy.allowed_command_executables.insert("rustc".into());
+    let request = CommandRequest {
+        request_id: "req_command_1".into(),
+        executable: "rustc".into(),
+        arguments: vec!["--version".into()],
+        timeout_seconds: 5,
+        max_output_bytes: 4096,
+    };
+    let context = execute_command(root.path(), &policy, request.clone())
+        .await
+        .unwrap();
+    assert!(context.stdout.contains("rustc"));
+    assert!(!context.argument_hash.contains("--version"));
+    let mut dangerous = request;
+    dangerous.arguments = vec!["--interactive".into()];
+    assert_eq!(
+        validate_request(root.path(), &policy, &dangerous),
+        Err(CommandError::InvalidRequest)
+    );
 }
 
 fn request(path: &str) -> FileReadRequest {

@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod audit;
+pub mod command_broker;
 pub mod desktop;
 pub mod full_access;
 pub mod http;
