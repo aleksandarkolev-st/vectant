@@ -1031,6 +1031,30 @@ async fn full_access_port_discover(
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
         .map_err(full_access_denied)?;
+    // Discovery exposes a listener's stable process identity hash and service
+    // class. That metadata is separately consented from the ability to probe
+    // a policy-scoped port, so neither capability can substitute for the other.
+    let listener_metadata_binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
+        capability: crate::full_access::FullAccessCapability::ProcessListenerMetadata,
+    };
+    authorize_full_access(
+        &full_access.policy,
+        &receipt,
+        &listener_metadata_binding,
+        Utc::now(),
+    )
+    .map_err(full_access_denied)?;
     if !full_access.policy.allowed_loopback_ports.contains(&port) {
         return Err(denied(
             StatusCode::FORBIDDEN,
