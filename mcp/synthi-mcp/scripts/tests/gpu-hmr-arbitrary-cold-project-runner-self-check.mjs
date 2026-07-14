@@ -392,6 +392,13 @@ try {
   assert.match(failure.refusalDiagnostics.streams.stderr.redactedText, /<redacted>/);
   assert.doesNotMatch(refusedCliError.stderr, /cli-secret-must-not-leak/);
   assert.doesNotMatch(refusedCliError.stderr, /second-cli-secret/);
+  assert.equal(failure.launcherDiagnostics.acceptedAsDiagnosticSupportEvidence, true);
+  assert.match(
+    failure.launcherDiagnostics.redactedText,
+    /cold-build output snapshot refused/,
+  );
+  assert.equal(failure.launcherDiagnostics.acceptedForGpuHmr, false);
+  assert.equal(failure.launcherDiagnostics.gpuHmrSuccess, false);
   assert.equal(failure.cleanupEvidence.absenceProven, true);
   failure.gpuHmrSuccess = true;
   assert.throws(

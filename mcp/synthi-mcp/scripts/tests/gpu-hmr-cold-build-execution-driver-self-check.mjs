@@ -22,11 +22,14 @@ import {
 import {
   COLD_BUILD_EXECUTION_DRIVER_AUTHORITY,
   COLD_BUILD_EXECUTION_DRIVER_SCHEMA,
+  COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
+  COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
   COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
   COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
   executeColdBuildLauncherPlan,
+  verifyColdBuildLauncherRefusalDiagnosticsEvidence,
   verifyColdBuildRefusalDiagnosticsEvidence,
   verifyColdBuildReadyRefusalEvidence,
   verifyColdBuildExecutionDriverResult,
@@ -398,6 +401,48 @@ async function main() {
         refusedFixture.plan,
       ),
       diagnostics,
+    );
+    const launcherDiagnostics = refusedError.launcherDiagnostics;
+    assert.equal(
+      launcherDiagnostics.schemaVersion,
+      COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
+    );
+    assert.equal(
+      launcherDiagnostics.proofAuthority,
+      COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
+    );
+    assert.equal(
+      verifyColdBuildLauncherRefusalDiagnosticsEvidence(
+        launcherDiagnostics,
+        refusal,
+        refusedFixture.plan,
+      ),
+      launcherDiagnostics,
+    );
+    assert.match(
+      launcherDiagnostics.redactedText,
+      /cold-build output snapshot refused/,
+    );
+    assert.equal(launcherDiagnostics.acceptedAsColdBuildEvidence, false);
+    assert.equal(launcherDiagnostics.acceptedForGpuHmr, false);
+    assert.equal(launcherDiagnostics.gpuHmrSuccess, false);
+    launcherDiagnostics.canSatisfyRuntimeProof = true;
+    assert.throws(
+      () => verifyColdBuildLauncherRefusalDiagnosticsEvidence(
+        launcherDiagnostics,
+        refusal,
+        refusedFixture.plan,
+      ),
+      /launcher_refusal_diagnostics_evidence_invalid/,
+    );
+    launcherDiagnostics.canSatisfyRuntimeProof = false;
+    assert.equal(
+      verifyColdBuildLauncherRefusalDiagnosticsEvidence(
+        launcherDiagnostics,
+        refusal,
+        refusedFixture.plan,
+      ),
+      launcherDiagnostics,
     );
     refusal.gpuHmrSuccess = true;
     assert.throws(

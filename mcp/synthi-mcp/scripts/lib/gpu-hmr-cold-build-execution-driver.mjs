@@ -54,6 +54,10 @@ export const COLD_BUILD_CONTAINER_CLEANUP_SCHEMA =
   'synthi.gpu_hmr.cold_build_container_cleanup.v1';
 export const COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY =
   'container_cleanup_only_not_gpu_hmr_success';
+export const COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA =
+  'synthi.gpu_hmr.cold_build_launcher_refusal_diagnostics.v1';
+export const COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY =
+  'bounded_redacted_launcher_diagnostics_only_not_cold_build_or_gpu_hmr_success';
 
 const CONTAINER_ID_PATTERN = /^[a-f0-9]{64}$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
@@ -492,6 +496,151 @@ export function verifyColdBuildRefusalDiagnosticsEvidence(evidence, refusalEvide
     || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
   ) {
     throw new Error('cold_build_refusal_diagnostics_evidence_invalid');
+  }
+  return evidence;
+}
+
+function createLauncherRefusalDiagnosticsEvidence(processResult, refusalEvidence, plan) {
+  const stderrAvailable = Buffer.isBuffer(processResult?.stderr);
+  const observed = stderrAvailable ? Buffer.from(processResult.stderr) : Buffer.alloc(0);
+  const excerpt = observed.subarray(Math.max(
+    0,
+    observed.byteLength - COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES,
+  ));
+  const redacted = redactDiagnosticText(excerpt);
+  const blockingGaps = stderrAvailable
+    ? []
+    : ['launcher_stderr_diagnostic_unavailable'];
+  const evidence = {
+    schemaVersion: COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
+    proofAuthority: COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
+    executionNonce: plan.executionNonce,
+    specHash: plan.specHash,
+    readyReceiptHash: refusalEvidence.readyReceiptHash,
+    diagnosticSource: 'docker_start_attach_stderr',
+    captureByteLimit: COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES,
+    processExitCode: Number.isSafeInteger(processResult?.exitCode)
+      ? processResult.exitCode
+      : null,
+    processSignal: typeof processResult?.signal === 'string'
+      ? processResult.signal
+      : null,
+    processTimedOut: processResult?.timedOut === true,
+    processErrorPresent: processResult?.error !== null && processResult?.error !== undefined,
+    stderrAvailable,
+    observedStderrByteLength: observed.byteLength,
+    excerptByteLength: excerpt.byteLength,
+    excerptContentHash: stderrAvailable ? contentHash(excerpt) : '',
+    truncated: observed.byteLength > excerpt.byteLength,
+    redactionPolicy: 'generic_secret_patterns_v1',
+    redactionApplied: redacted.redactionApplied,
+    redactedText: redacted.text,
+    redactedTextHash: contentHash(redacted.text),
+    blockingGaps,
+    acceptedAsDiagnosticSupportEvidence: blockingGaps.length === 0,
+    acceptedAsColdBuildEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  evidence.evidenceHash = recomputeEvidenceHash(evidence);
+  return evidence;
+}
+
+export function verifyColdBuildLauncherRefusalDiagnosticsEvidence(
+  evidence,
+  refusalEvidence,
+  plan,
+) {
+  try {
+    verifyColdBuildReadyRefusalEvidence(refusalEvidence, plan);
+  } catch {
+    throw new Error('cold_build_launcher_refusal_diagnostics_evidence_invalid');
+  }
+  const blockingGaps = evidence?.blockingGaps;
+  const stderrAvailable = evidence?.stderrAvailable === true;
+  const expectedBlockingGaps = stderrAvailable
+    ? []
+    : ['launcher_stderr_diagnostic_unavailable'];
+  const redactedAgain = typeof evidence?.redactedText === 'string'
+    ? redactDiagnosticText(Buffer.from(evidence.redactedText, 'utf8')).text
+    : null;
+  if (
+    !exactKeys(evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'executionNonce',
+      'specHash',
+      'readyReceiptHash',
+      'diagnosticSource',
+      'captureByteLimit',
+      'processExitCode',
+      'processSignal',
+      'processTimedOut',
+      'processErrorPresent',
+      'stderrAvailable',
+      'observedStderrByteLength',
+      'excerptByteLength',
+      'excerptContentHash',
+      'truncated',
+      'redactionPolicy',
+      'redactionApplied',
+      'redactedText',
+      'redactedTextHash',
+      'blockingGaps',
+      'acceptedAsDiagnosticSupportEvidence',
+      'acceptedAsColdBuildEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || evidence.schemaVersion !== COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA
+    || evidence.proofAuthority !== COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY
+    || evidence.executionNonce !== plan?.executionNonce
+    || evidence.specHash !== plan?.specHash
+    || evidence.readyReceiptHash !== refusalEvidence?.readyReceiptHash
+    || evidence.diagnosticSource !== 'docker_start_attach_stderr'
+    || evidence.captureByteLimit !== COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+    || (
+      evidence.processExitCode !== null
+      && (!Number.isSafeInteger(evidence.processExitCode) || evidence.processExitCode < 0)
+    )
+    || (evidence.processSignal !== null && typeof evidence.processSignal !== 'string')
+    || typeof evidence.processTimedOut !== 'boolean'
+    || typeof evidence.processErrorPresent !== 'boolean'
+    || typeof evidence.stderrAvailable !== 'boolean'
+    || !Number.isSafeInteger(evidence.observedStderrByteLength)
+    || evidence.observedStderrByteLength < 0
+    || !Number.isSafeInteger(evidence.excerptByteLength)
+    || evidence.excerptByteLength < 0
+    || evidence.excerptByteLength > COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+    || evidence.excerptByteLength > evidence.observedStderrByteLength
+    || (stderrAvailable
+      ? !HASH_PATTERN.test(evidence.excerptContentHash ?? '')
+      : evidence.excerptContentHash !== '')
+    || evidence.truncated !== (
+      evidence.observedStderrByteLength > evidence.excerptByteLength
+    )
+    || evidence.redactionPolicy !== 'generic_secret_patterns_v1'
+    || typeof evidence.redactionApplied !== 'boolean'
+    || typeof evidence.redactedText !== 'string'
+    || evidence.redactedText.length > COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+    || redactedAgain !== evidence.redactedText
+    || evidence.redactedTextHash !== contentHash(evidence.redactedText)
+    || !Array.isArray(blockingGaps)
+    || stableJson(blockingGaps) !== stableJson(expectedBlockingGaps)
+    || evidence.acceptedAsDiagnosticSupportEvidence !== (blockingGaps.length === 0)
+    || evidence.acceptedAsColdBuildEvidence !== false
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+  ) {
+    throw new Error('cold_build_launcher_refusal_diagnostics_evidence_invalid');
   }
   return evidence;
 }
@@ -1007,6 +1156,7 @@ export async function executeColdBuildLauncherPlan(plan, {
   let containerReference = null;
   let containerMayExist = false;
   let attachedCompletion = null;
+  let attachedProcessResult = null;
   let executionResult = null;
   let primaryError = null;
   let cleanupEvidence = null;
@@ -1298,9 +1448,23 @@ export async function executeColdBuildLauncherPlan(plan, {
       cleanupTimeoutMs,
       { containerMayExist },
     );
-    if (attachedCompletion) await attachedCompletion.catch(() => {});
+    if (attachedCompletion) {
+      attachedProcessResult = await attachedCompletion.catch(() => null);
+    }
   }
   if (primaryError) {
+    if (primaryError.readyRefusalEvidence) {
+      primaryError.launcherDiagnostics = createLauncherRefusalDiagnosticsEvidence(
+        attachedProcessResult,
+        primaryError.readyRefusalEvidence,
+        plan,
+      );
+      verifyColdBuildLauncherRefusalDiagnosticsEvidence(
+        primaryError.launcherDiagnostics,
+        primaryError.readyRefusalEvidence,
+        plan,
+      );
+    }
     primaryError.cleanupEvidence = cleanupEvidence;
     throw primaryError;
   }

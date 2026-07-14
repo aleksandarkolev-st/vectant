@@ -27,6 +27,8 @@ import {
 import {
   COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY,
   COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
+  COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
+  COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
   COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
   COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
@@ -57,7 +59,7 @@ export const ARBITRARY_COLD_PROJECT_RUN_SCHEMA =
 export const ARBITRARY_COLD_PROJECT_RUN_AUTHORITY =
   'orchestrated_cold_build_evidence_only_not_gpu_hmr_success';
 export const ARBITRARY_COLD_PROJECT_RUN_FAILURE_SCHEMA =
-  'synthi.gpu_hmr.arbitrary_cold_project_run_failure.v1';
+  'synthi.gpu_hmr.arbitrary_cold_project_run_failure.v2';
 export const ARBITRARY_COLD_PROJECT_RUN_FAILURE_AUTHORITY =
   'runner_failure_diagnostics_only_not_cold_build_or_gpu_hmr_success';
 
@@ -201,6 +203,36 @@ const REFUSAL_DIAGNOSTIC_STREAM_KEYS = [
   'redactedTextHash',
   'readFailure',
 ];
+const LAUNCHER_REFUSAL_DIAGNOSTICS_KEYS = [
+  'schemaVersion',
+  'proofAuthority',
+  'executionNonce',
+  'specHash',
+  'readyReceiptHash',
+  'diagnosticSource',
+  'captureByteLimit',
+  'processExitCode',
+  'processSignal',
+  'processTimedOut',
+  'processErrorPresent',
+  'stderrAvailable',
+  'observedStderrByteLength',
+  'excerptByteLength',
+  'excerptContentHash',
+  'truncated',
+  'redactionPolicy',
+  'redactionApplied',
+  'redactedText',
+  'redactedTextHash',
+  'blockingGaps',
+  'acceptedAsDiagnosticSupportEvidence',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+];
 const CLEANUP_KEYS = [
   'schemaVersion',
   'proofAuthority',
@@ -245,16 +277,8 @@ function cloneSupportFacet(value, {
   return structuredClone(value);
 }
 
-function diagnosticsShapeAccepted(value) {
-  const streams = value?.streams;
-  if (
-    !exactKeys(streams, ['stdout', 'stderr'])
-    || !exactKeys(streams.stdout, REFUSAL_DIAGNOSTIC_STREAM_KEYS)
-    || !exactKeys(streams.stderr, REFUSAL_DIAGNOSTIC_STREAM_KEYS)
-  ) {
-    return false;
-  }
-  const serialized = `${streams.stdout.redactedText ?? ''}\n${streams.stderr.redactedText ?? ''}`;
+function redactedDiagnosticTextAccepted(serialized) {
+  if (typeof serialized !== 'string') return false;
   const secretValuePatterns = [
     /\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*([^\r\n]+)/gi,
     /\bBearer\s+([^\s\r\n]+)/gi,
@@ -264,6 +288,20 @@ function diagnosticsShapeAccepted(value) {
   return secretValuePatterns.every((pattern) => (
     [...serialized.matchAll(pattern)].every((match) => match[1].trim() === '<redacted>')
   ));
+}
+
+function diagnosticsShapeAccepted(value) {
+  const streams = value?.streams;
+  if (
+    !exactKeys(streams, ['stdout', 'stderr'])
+    || !exactKeys(streams.stdout, REFUSAL_DIAGNOSTIC_STREAM_KEYS)
+    || !exactKeys(streams.stderr, REFUSAL_DIAGNOSTIC_STREAM_KEYS)
+  ) {
+    return false;
+  }
+  return redactedDiagnosticTextAccepted(
+    `${streams.stdout.redactedText ?? ''}\n${streams.stderr.redactedText ?? ''}`,
+  );
 }
 
 function createArbitraryColdProjectRunFailure(error) {
@@ -282,6 +320,12 @@ function createArbitraryColdProjectRunFailure(error) {
     proofAuthority: COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
     nestedValidator: diagnosticsShapeAccepted,
   });
+  const launcherDiagnostics = cloneSupportFacet(error?.launcherDiagnostics, {
+    keys: LAUNCHER_REFUSAL_DIAGNOSTICS_KEYS,
+    schemaVersion: COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
+    proofAuthority: COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
+    nestedValidator: (value) => redactedDiagnosticTextAccepted(value?.redactedText),
+  });
   const cleanupEvidence = cloneSupportFacet(error?.cleanupEvidence, {
     keys: CLEANUP_KEYS,
     schemaVersion: COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
@@ -293,10 +337,12 @@ function createArbitraryColdProjectRunFailure(error) {
     failureCode,
     readyRefusalEvidence,
     refusalDiagnostics,
+    launcherDiagnostics,
     cleanupEvidence,
     acceptedAsFailureDiagnostics: [
       readyRefusalEvidence,
       refusalDiagnostics,
+      launcherDiagnostics,
       cleanupEvidence,
     ].some(Boolean),
     acceptedAsColdBuildEvidence: false,
@@ -312,6 +358,7 @@ function createArbitraryColdProjectRunFailure(error) {
 export function verifyArbitraryColdProjectRunFailure(evidence) {
   const ready = evidence?.readyRefusalEvidence;
   const diagnostics = evidence?.refusalDiagnostics;
+  const launcherDiagnostics = evidence?.launcherDiagnostics;
   const cleanup = evidence?.cleanupEvidence;
   const readyClone = ready === null ? null : cloneSupportFacet(ready, {
     keys: READY_REFUSAL_KEYS,
@@ -324,12 +371,21 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
     proofAuthority: COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
     nestedValidator: diagnosticsShapeAccepted,
   });
+  const launcherDiagnosticsClone = launcherDiagnostics === null
+    ? null
+    : cloneSupportFacet(launcherDiagnostics, {
+      keys: LAUNCHER_REFUSAL_DIAGNOSTICS_KEYS,
+      schemaVersion: COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
+      proofAuthority: COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
+      nestedValidator: (value) => redactedDiagnosticTextAccepted(value?.redactedText),
+    });
   const cleanupClone = cleanup === null ? null : cloneSupportFacet(cleanup, {
     keys: CLEANUP_KEYS,
     schemaVersion: COLD_BUILD_CONTAINER_CLEANUP_SCHEMA,
     proofAuthority: COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY,
   });
-  const supportCount = [ready, diagnostics, cleanup].filter(Boolean).length;
+  const supportCount = [ready, diagnostics, launcherDiagnostics, cleanup]
+    .filter(Boolean).length;
   if (
     !exactKeys(evidence, [
       'schemaVersion',
@@ -337,6 +393,7 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
       'failureCode',
       'readyRefusalEvidence',
       'refusalDiagnostics',
+      'launcherDiagnostics',
       'cleanupEvidence',
       'acceptedAsFailureDiagnostics',
       'acceptedAsColdBuildEvidence',
@@ -351,6 +408,7 @@ export function verifyArbitraryColdProjectRunFailure(evidence) {
     || !/^[a-z0-9][a-z0-9_.:-]{0,255}$/.test(evidence.failureCode ?? '')
     || (ready !== null && readyClone === null)
     || (diagnostics !== null && diagnosticsClone === null)
+    || (launcherDiagnostics !== null && launcherDiagnosticsClone === null)
     || (cleanup !== null && cleanupClone === null)
     || evidence.acceptedAsFailureDiagnostics !== (supportCount > 0)
     || evidence.acceptedAsColdBuildEvidence !== false
