@@ -16,6 +16,7 @@
 
 #![cfg(feature = "gpu-hmr")]
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -150,11 +151,67 @@ pub struct GpuLaunchRequest {
 }
 
 pub const GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA: &str =
-    "synthi.gpu_hmr.dispatch_device_attestation.v1";
+    "synthi.gpu_hmr.dispatch_device_attestation.v2";
 pub const GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY: &str =
     "runtime_driver_native_launch_device_observation";
 pub const GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY: &str =
     "dispatch_device_attestation_unavailable";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GpuDispatchAttestationChallenge {
+    runtime_session_id: String,
+    active_generation: u64,
+    dispatch_id: String,
+    dispatch_nonce: String,
+    stream_token: usize,
+    host_thread_id: String,
+    started_monotonic_ns: u128,
+}
+
+impl GpuDispatchAttestationChallenge {
+    fn new(
+        runtime_session_id: String,
+        active_generation: u64,
+        dispatch_id: String,
+        stream_token: usize,
+        started_monotonic_ns: u128,
+    ) -> Self {
+        let host_thread_id = current_host_thread_id();
+        Self {
+            dispatch_nonce: dispatch_attestation_nonce(
+                &runtime_session_id,
+                active_generation,
+                &dispatch_id,
+                stream_token,
+                &host_thread_id,
+                started_monotonic_ns,
+            ),
+            runtime_session_id,
+            active_generation,
+            dispatch_id,
+            stream_token,
+            host_thread_id,
+            started_monotonic_ns,
+        }
+    }
+}
+
+fn dispatch_attestation_nonce(
+    runtime_session_id: &str,
+    active_generation: u64,
+    dispatch_id: &str,
+    stream_token: usize,
+    host_thread_id: &str,
+    started_monotonic_ns: u128,
+) -> String {
+    let nonce_material = format!(
+        "{runtime_session_id}|{active_generation}|{dispatch_id}|{stream_token}|{host_thread_id}|{started_monotonic_ns}"
+    );
+    format!(
+        "dispatch-nonce:sha256:{}",
+        sha256_hex_raw(nonce_material.as_bytes())
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuDispatchDeviceObservation {
@@ -211,6 +268,12 @@ pub struct GpuDispatchDeviceAttestation {
     authority: String,
     stream_token: usize,
     host_thread_id: String,
+    challenge_runtime_session_id: Option<String>,
+    challenge_active_generation: Option<u64>,
+    challenge_dispatch_id: Option<String>,
+    challenge_nonce: Option<String>,
+    challenge_started_monotonic_ns: Option<u128>,
+    completed_monotonic_ns: Option<u128>,
     before: Option<GpuDispatchDeviceObservation>,
     after: Option<GpuDispatchDeviceObservation>,
     blocking_gap: Option<String>,
@@ -218,11 +281,32 @@ pub struct GpuDispatchDeviceAttestation {
 
 impl GpuDispatchDeviceAttestation {
     pub fn unavailable(stream_token: usize, blocking_gap: impl Into<String>) -> Self {
+        let challenge = current_dispatch_attestation_challenge().filter(|challenge| {
+            challenge.stream_token == stream_token
+                && challenge.host_thread_id == current_host_thread_id()
+        });
+        let completed_monotonic_ns = challenge.as_ref().map(|_| monotonic_timestamp_ns());
         Self {
             schema_version: GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA.to_string(),
             authority: GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY.to_string(),
             stream_token,
             host_thread_id: current_host_thread_id(),
+            challenge_runtime_session_id: challenge
+                .as_ref()
+                .map(|challenge| challenge.runtime_session_id.clone()),
+            challenge_active_generation: challenge
+                .as_ref()
+                .map(|challenge| challenge.active_generation),
+            challenge_dispatch_id: challenge
+                .as_ref()
+                .map(|challenge| challenge.dispatch_id.clone()),
+            challenge_nonce: challenge
+                .as_ref()
+                .map(|challenge| challenge.dispatch_nonce.clone()),
+            challenge_started_monotonic_ns: challenge
+                .as_ref()
+                .map(|challenge| challenge.started_monotonic_ns),
+            completed_monotonic_ns,
             before: None,
             after: None,
             blocking_gap: Some(blocking_gap.into()),
@@ -243,11 +327,25 @@ impl GpuDispatchDeviceAttestation {
         if before.stream_device_ordinal != after.stream_device_ordinal {
             return Err("dispatch_stream_device_changed".to_string());
         }
+        let challenge = current_dispatch_attestation_challenge()
+            .ok_or_else(|| "dispatch_device_attestation_challenge_missing".to_string())?;
+        if challenge.stream_token != stream_token {
+            return Err("dispatch_device_attestation_challenge_stream_mismatch".to_string());
+        }
+        if challenge.host_thread_id != current_host_thread_id() {
+            return Err("dispatch_device_attestation_challenge_thread_mismatch".to_string());
+        }
         Ok(Self {
             schema_version: GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA.to_string(),
             authority: GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY.to_string(),
             stream_token,
-            host_thread_id: current_host_thread_id(),
+            host_thread_id: challenge.host_thread_id.clone(),
+            challenge_runtime_session_id: Some(challenge.runtime_session_id),
+            challenge_active_generation: Some(challenge.active_generation),
+            challenge_dispatch_id: Some(challenge.dispatch_id),
+            challenge_nonce: Some(challenge.dispatch_nonce),
+            challenge_started_monotonic_ns: Some(challenge.started_monotonic_ns),
+            completed_monotonic_ns: Some(monotonic_timestamp_ns()),
             before: Some(before),
             after: Some(after),
             blocking_gap: None,
@@ -259,7 +357,22 @@ impl GpuDispatchDeviceAttestation {
             || self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY
             || self.host_thread_id.is_empty()
             || self.blocking_gap.is_some()
+            || self
+                .challenge_runtime_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || self.challenge_active_generation.is_none()
+            || self
+                .challenge_dispatch_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || self.challenge_nonce.as_deref().is_none_or(str::is_empty)
+            || self.challenge_started_monotonic_ns.is_none()
+            || self.completed_monotonic_ns.is_none()
         {
+            return None;
+        }
+        if self.completed_monotonic_ns? < self.challenge_started_monotonic_ns? {
             return None;
         }
         let before = self.before.as_ref()?;
@@ -291,10 +404,137 @@ impl GpuDispatchDeviceAttestation {
     pub fn blocking_gap(&self) -> Option<&str> {
         self.blocking_gap.as_deref()
     }
+
+    pub fn challenge_runtime_session_id(&self) -> Option<&str> {
+        self.challenge_runtime_session_id.as_deref()
+    }
+
+    pub fn challenge_active_generation(&self) -> Option<u64> {
+        self.challenge_active_generation
+    }
+
+    pub fn challenge_dispatch_id(&self) -> Option<&str> {
+        self.challenge_dispatch_id.as_deref()
+    }
+
+    pub fn challenge_nonce(&self) -> Option<&str> {
+        self.challenge_nonce.as_deref()
+    }
+
+    pub fn challenge_started_monotonic_ns(&self) -> Option<u128> {
+        self.challenge_started_monotonic_ns
+    }
+
+    pub fn completed_monotonic_ns(&self) -> Option<u128> {
+        self.completed_monotonic_ns
+    }
+
+    fn validate_for_challenge(
+        &mut self,
+        challenge: &GpuDispatchAttestationChallenge,
+        dispatch_id: &str,
+        dispatch_completed_monotonic_ns: u128,
+    ) -> Result<(), String> {
+        if self.schema_version != GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA {
+            return Err("dispatch_device_attestation_schema_mismatch".to_string());
+        }
+        if self.stream_token != challenge.stream_token {
+            return Err("dispatch_device_attestation_stream_token_mismatch".to_string());
+        }
+        if self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY
+            && self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY
+        {
+            return Err("dispatch_device_attestation_authority_invalid".to_string());
+        }
+        if self.host_thread_id != challenge.host_thread_id
+            || self.challenge_runtime_session_id.as_deref()
+                != Some(challenge.runtime_session_id.as_str())
+            || self.challenge_active_generation != Some(challenge.active_generation)
+            || self.challenge_dispatch_id.as_deref() != Some(challenge.dispatch_id.as_str())
+            || self.challenge_nonce.as_deref() != Some(challenge.dispatch_nonce.as_str())
+            || self.challenge_started_monotonic_ns != Some(challenge.started_monotonic_ns)
+        {
+            return Err("dispatch_device_attestation_challenge_mismatch".to_string());
+        }
+        let completed_monotonic_ns = self
+            .completed_monotonic_ns
+            .ok_or_else(|| "dispatch_device_attestation_completion_missing".to_string())?;
+        if completed_monotonic_ns < challenge.started_monotonic_ns
+            || completed_monotonic_ns > dispatch_completed_monotonic_ns
+        {
+            return Err("dispatch_device_attestation_completion_out_of_bounds".to_string());
+        }
+        if self.authority == GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY {
+            if self.before.is_some()
+                || self.after.is_some()
+                || self.blocking_gap.as_deref().is_none_or(str::is_empty)
+            {
+                return Err("dispatch_device_attestation_unavailable_shape_invalid".to_string());
+            }
+            self.bind_final_dispatch(challenge, dispatch_id);
+            return Ok(());
+        }
+        if self.verified_observation().is_none() {
+            return Err("dispatch_device_attestation_observation_unverified".to_string());
+        }
+        self.bind_final_dispatch(challenge, dispatch_id);
+        Ok(())
+    }
+
+    fn bind_final_dispatch(
+        &mut self,
+        challenge: &GpuDispatchAttestationChallenge,
+        dispatch_id: &str,
+    ) {
+        self.challenge_dispatch_id = Some(dispatch_id.to_string());
+        self.challenge_nonce = Some(dispatch_attestation_nonce(
+            &challenge.runtime_session_id,
+            challenge.active_generation,
+            dispatch_id,
+            challenge.stream_token,
+            &challenge.host_thread_id,
+            challenge.started_monotonic_ns,
+        ));
+    }
 }
 
 fn current_host_thread_id() -> String {
     format!("thread:{:?}", std::thread::current().id())
+}
+
+thread_local! {
+    static ACTIVE_DISPATCH_ATTESTATION_CHALLENGES: RefCell<Vec<GpuDispatchAttestationChallenge>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn current_dispatch_attestation_challenge() -> Option<GpuDispatchAttestationChallenge> {
+    ACTIVE_DISPATCH_ATTESTATION_CHALLENGES.with(|challenges| challenges.borrow().last().cloned())
+}
+
+struct DispatchAttestationChallengeGuard;
+
+impl Drop for DispatchAttestationChallengeGuard {
+    fn drop(&mut self) {
+        ACTIVE_DISPATCH_ATTESTATION_CHALLENGES.with(|challenges| {
+            challenges
+                .borrow_mut()
+                .pop()
+                .expect("gpu dispatch attestation challenge stack underflow");
+        });
+    }
+}
+
+fn with_dispatch_attestation_challenge<T>(
+    challenge: GpuDispatchAttestationChallenge,
+    dispatch: impl FnOnce() -> T,
+) -> T {
+    ACTIVE_DISPATCH_ATTESTATION_CHALLENGES.with(|challenges| {
+        challenges.borrow_mut().push(challenge);
+    });
+    let guard = DispatchAttestationChallengeGuard;
+    let result = dispatch();
+    drop(guard);
+    result
 }
 
 pub trait GpuLaunchDispatcher: Send + Sync {
@@ -362,6 +602,7 @@ struct BoundaryState {
     next_allocation_sequence: u64,
     launches: Vec<LaunchRecord>,
     dispatch_device_attestations: Vec<GpuDispatchDeviceAttestationRecord>,
+    dispatch_device_attestation_rejections: Vec<GpuDispatchDeviceAttestationRejectionRecord>,
     host_identities: Vec<HostIdentityRecord>,
     output_oracles: Vec<OutputOracleRecord>,
     original_host_paths: Vec<OriginalHostPathRecord>,
@@ -2070,6 +2311,15 @@ pub struct GpuDispatchDeviceAttestationRecord {
     pub attestation: GpuDispatchDeviceAttestation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceAttestationRejectionRecord {
+    pub runtime_session_id: String,
+    pub active_generation: u64,
+    pub dispatch_id: String,
+    pub dispatch_timestamp_monotonic_ns: u128,
+    pub error: String,
+}
+
 /// Rust-only launch entry point that returns the identity of this exact
 /// dispatch. Callers that bind output evidence must use this receipt instead
 /// of querying whichever launch happened to be recorded most recently.
@@ -2218,6 +2468,22 @@ fn synthi_gpu_launch_raw_impl(
         });
         (launch_index, arg_provenance, arg_provenance_complete)
     };
+    let challenge_started_timestamp_ms = epoch_millis_now();
+    let challenge_started_monotonic_ns = monotonic_timestamp_ns();
+    let dispatch_challenge_id = dispatch_id_for_launch(
+        &runtime_session_id,
+        active_generation,
+        launch_index,
+        &kernel_name,
+        challenge_started_timestamp_ms,
+    );
+    let dispatch_attestation_challenge = GpuDispatchAttestationChallenge::new(
+        runtime_session_id.clone(),
+        active_generation,
+        dispatch_challenge_id,
+        stream_token,
+        challenge_started_monotonic_ns,
+    );
 
     let invalid_launch_dims = grid_decoded
         .invalid_reason
@@ -2229,9 +2495,11 @@ fn synthi_gpu_launch_raw_impl(
     } else if stale_generation {
         Some(Err("reload_failed.stale_launch_pointer".to_string()))
     } else {
-        dispatcher
-            .as_ref()
-            .map(|d| d.dispatch_with_device_attestation(&request, dispatch_args))
+        dispatcher.as_ref().map(|d| {
+            with_dispatch_attestation_challenge(dispatch_attestation_challenge.clone(), || {
+                d.dispatch_with_device_attestation(&request, dispatch_args)
+            })
+        })
     };
 
     let dispatch_timestamp_ms = epoch_millis_now();
@@ -2244,19 +2512,26 @@ fn synthi_gpu_launch_raw_impl(
         dispatch_timestamp_ms,
     );
     let mut returned_dispatch_device_attestation = None;
+    let mut returned_dispatch_device_attestation_error = None;
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     if let Some(record) = guard.launches.get_mut(launch_index) {
         record.dispatch_id = Some(dispatch_id.clone());
         record.dispatch_timestamp_ms = Some(dispatch_timestamp_ms);
         record.dispatch_timestamp_monotonic_ns = Some(dispatch_timestamp_monotonic_ns);
         match dispatch_result {
-            Some(Ok(attestation)) => {
-                if attestation.stream_token != record.stream_token {
-                    record.dispatch_error =
-                        Some("dispatch_device_attestation_stream_token_mismatch".to_string());
-                } else {
-                    record.dispatched = true;
-                    returned_dispatch_device_attestation = Some(attestation);
+            Some(Ok(mut attestation)) => {
+                record.dispatched = true;
+                match attestation.validate_for_challenge(
+                    &dispatch_attestation_challenge,
+                    &dispatch_id,
+                    dispatch_timestamp_monotonic_ns,
+                ) {
+                    Ok(()) => {
+                        returned_dispatch_device_attestation = Some(attestation);
+                    }
+                    Err(error) => {
+                        returned_dispatch_device_attestation_error = Some(error);
+                    }
                 }
             }
             Some(Err(e)) => {
@@ -2273,7 +2548,7 @@ fn synthi_gpu_launch_raw_impl(
         let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         match guard.launches.get(launch_index) {
             Some(record) => (
-                record.dispatch_error.is_none(),
+                record.dispatched && record.dispatch_error.is_none(),
                 record.dispatch_error.clone(),
             ),
             None => (false, Some("launch record disappeared".to_string())),
@@ -2291,6 +2566,19 @@ fn synthi_gpu_launch_raw_impl(
                 dispatch_id: dispatch_id.clone(),
                 dispatch_timestamp_monotonic_ns,
                 attestation: attestation.clone(),
+            });
+    }
+    if let Some(error) = returned_dispatch_device_attestation_error.as_ref() {
+        state()
+            .lock()
+            .expect("gpu runtime boundary mutex poisoned")
+            .dispatch_device_attestation_rejections
+            .push(GpuDispatchDeviceAttestationRejectionRecord {
+                runtime_session_id: runtime_session_id.clone(),
+                active_generation,
+                dispatch_id: dispatch_id.clone(),
+                dispatch_timestamp_monotonic_ns,
+                error: error.clone(),
             });
     }
     let dispatch_label = if stale_generation {
@@ -2382,8 +2670,23 @@ fn synthi_gpu_launch_raw_impl(
     let attestation_gap = dispatch_device_attestation
         .as_ref()
         .and_then(|attestation| attestation.blocking_gap.as_deref())
+        .or_else(|| returned_dispatch_device_attestation_error.as_deref())
         .or_else(|| dispatch_error.as_deref())
         .unwrap_or("none");
+    let attestation_nonce = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::challenge_nonce)
+        .unwrap_or("none");
+    let attestation_started_monotonic_ns = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::challenge_started_monotonic_ns)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attestation_completed_monotonic_ns = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::completed_monotonic_ns)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
     let attested_device_ordinal = verified_dispatch_device
         .map(|observation| observation.device_ordinal.to_string())
         .unwrap_or_else(|| "none".to_string());
@@ -2394,7 +2697,7 @@ fn synthi_gpu_launch_raw_impl(
         .map(GpuDispatchDeviceObservation::identity_key)
         .unwrap_or_else(|| "none".to_string());
     eprintln!(
-        "[gpu-runtime-boundary] dispatch_device_attestation schema={} event={} runtime_session={} process_id=pid:{} generation={} dispatch_id={} stream_token={} host_thread_id={} authority={} device_ordinal={} stream_device_ordinal={} device_identity_key={} blocking_gap={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        "[gpu-runtime-boundary] dispatch_device_attestation schema={} event={} runtime_session={} process_id=pid:{} generation={} dispatch_id={} stream_token={} host_thread_id={} authority={} dispatch_nonce={} challenge_started_monotonic_ns={} attestation_completed_monotonic_ns={} device_ordinal={} stream_device_ordinal={} device_identity_key={} blocking_gap={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
         GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA,
         attestation_event,
         runtime_session_id,
@@ -2404,6 +2707,9 @@ fn synthi_gpu_launch_raw_impl(
         stream_token,
         log_token(attestation_thread),
         log_token(attestation_authority),
+        log_token(attestation_nonce),
+        attestation_started_monotonic_ns,
+        attestation_completed_monotonic_ns,
         attested_device_ordinal,
         attested_stream_device_ordinal,
         log_token(&attested_device_identity),
@@ -2509,6 +2815,12 @@ pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
 pub fn dispatch_device_attestation_records_snapshot() -> Vec<GpuDispatchDeviceAttestationRecord> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.dispatch_device_attestations.clone()
+}
+
+pub fn dispatch_device_attestation_rejection_records_snapshot(
+) -> Vec<GpuDispatchDeviceAttestationRejectionRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.dispatch_device_attestation_rejections.clone()
 }
 
 pub fn host_identity_records_snapshot() -> Vec<HostIdentityRecord> {
@@ -4069,6 +4381,119 @@ mod tests {
         }
     }
 
+    struct ReplayingAttestationDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        cached: Arc<Mutex<Option<GpuDispatchDeviceAttestation>>>,
+        device_uuid: [u8; 16],
+    }
+
+    impl GpuLaunchDispatcher for ReplayingAttestationDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, String> {
+            self.dispatch(request, args)?;
+            let mut cached = self.cached.lock().unwrap();
+            if let Some(attestation) = cached.as_ref() {
+                return Ok(attestation.clone());
+            }
+            let before = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)?;
+            let after = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)?;
+            let attestation = GpuDispatchDeviceAttestation::runtime_driver_observed(
+                request.stream_token,
+                before,
+                after,
+            )?;
+            *cached = Some(attestation.clone());
+            Ok(attestation)
+        }
+    }
+
+    struct ReplayingUnavailableAttestationDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        cached: Arc<Mutex<Option<GpuDispatchDeviceAttestation>>>,
+    }
+
+    impl GpuLaunchDispatcher for ReplayingUnavailableAttestationDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, String> {
+            self.dispatch(request, args)?;
+            let mut cached = self.cached.lock().unwrap();
+            if let Some(attestation) = cached.as_ref() {
+                return Ok(attestation.clone());
+            }
+            let attestation = GpuDispatchDeviceAttestation::unavailable(
+                request.stream_token,
+                "native_dispatch_device_observation_unavailable",
+            );
+            *cached = Some(attestation.clone());
+            Ok(attestation)
+        }
+    }
+
+    struct PanickingOnceAttestationDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        panic_next: Arc<Mutex<bool>>,
+        device_uuid: [u8; 16],
+    }
+
+    impl GpuLaunchDispatcher for PanickingOnceAttestationDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            let should_panic = {
+                let mut panic_next = self.panic_next.lock().unwrap();
+                let should_panic = *panic_next;
+                *panic_next = false;
+                should_panic
+            };
+            if should_panic {
+                panic!("synthetic dispatcher panic");
+            }
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, String> {
+            self.dispatch(request, args)?;
+            let before = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)?;
+            let after = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)?;
+            GpuDispatchDeviceAttestation::runtime_driver_observed(
+                request.stream_token,
+                before,
+                after,
+            )
+        }
+    }
+
     #[test]
     fn dispatch_device_attestation_rejects_invalid_or_changed_identity() {
         let uuid = [0xabu8; 16];
@@ -4131,6 +4556,41 @@ mod tests {
         assert_eq!(observation.device_ordinal, 2);
         assert_eq!(observation.stream_device_ordinal, 2);
         assert_eq!(observation.device_uuid, device_uuid);
+        assert_eq!(
+            receipt_attestation.challenge_runtime_session_id(),
+            Some(receipt.runtime_session_id.as_str())
+        );
+        assert_eq!(
+            receipt_attestation.challenge_active_generation(),
+            Some(receipt.active_generation)
+        );
+        assert_eq!(
+            receipt_attestation.challenge_dispatch_id(),
+            Some(receipt.dispatch_id.as_str())
+        );
+        assert!(receipt_attestation
+            .challenge_nonce()
+            .is_some_and(|nonce| nonce.starts_with("dispatch-nonce:sha256:")));
+        let expected_nonce = dispatch_attestation_nonce(
+            &receipt.runtime_session_id,
+            receipt.active_generation,
+            &receipt.dispatch_id,
+            receipt.stream_token,
+            &receipt_attestation.host_thread_id,
+            receipt_attestation
+                .challenge_started_monotonic_ns()
+                .expect("attestation challenge start"),
+        );
+        assert_eq!(
+            receipt_attestation.challenge_nonce(),
+            Some(expected_nonce.as_str())
+        );
+        assert!(receipt_attestation
+            .challenge_started_monotonic_ns()
+            .is_some_and(|started| started <= receipt.dispatch_timestamp_monotonic_ns));
+        assert!(receipt_attestation
+            .completed_monotonic_ns()
+            .is_some_and(|completed| completed <= receipt.dispatch_timestamp_monotonic_ns));
 
         let records = dispatch_device_attestation_records_snapshot();
         assert_eq!(records.len(), 1);
@@ -4138,7 +4598,180 @@ mod tests {
         assert_eq!(records[0].active_generation, receipt.active_generation);
         assert_eq!(records[0].runtime_session_id, receipt.runtime_session_id);
         assert_eq!(records[0].attestation, *receipt_attestation);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(
+            receipt.dispatch_id,
+            dispatch_id_for_launch(
+                &receipt.runtime_session_id,
+                receipt.active_generation,
+                0,
+                "attested_dispatch",
+                launches[0]
+                    .dispatch_timestamp_ms
+                    .expect("recorded dispatch timestamp"),
+            )
+        );
         assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stale_device_attestation_replay_is_rejected_for_the_new_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let cached = Arc::new(Mutex::new(None));
+        install_launch_dispatcher(Arc::new(ReplayingAttestationDispatcher {
+            calls: calls.clone(),
+            cached,
+            device_uuid: [0x24u8; 16],
+        }));
+
+        let kernel = CString::new("replayed_attestation").unwrap();
+        let dim = 1_u32;
+        let first = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x44,
+            std::ptr::null(),
+            0,
+        );
+        let second = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x44,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(first.dispatched);
+        assert!(second.dispatched);
+        assert_ne!(first.dispatch_id, second.dispatch_id);
+        assert!(second.dispatch_device_attestation.is_none());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert!(launches[1].dispatched);
+        assert!(launches[1].dispatch_error.is_none());
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, second.dispatch_id);
+        assert_eq!(
+            rejections[0].error,
+            "dispatch_device_attestation_challenge_mismatch"
+        );
+        let attestations = dispatch_device_attestation_records_snapshot();
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(attestations[0].dispatch_id, first.dispatch_id);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn stale_unavailable_attestation_replay_is_rejected_without_reclassifying_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let cached = Arc::new(Mutex::new(None));
+        install_launch_dispatcher(Arc::new(ReplayingUnavailableAttestationDispatcher {
+            calls: calls.clone(),
+            cached,
+        }));
+
+        let kernel = CString::new("replayed_unavailable_attestation").unwrap();
+        let dim = 1_u32;
+        let launch = || {
+            synthi_gpu_launch_raw_arg_info_with_receipt(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0x55,
+                std::ptr::null(),
+                0,
+            )
+        };
+        let first = launch();
+        let second = launch();
+
+        assert!(first.dispatched);
+        assert!(first.dispatch_device_attestation.is_some());
+        assert!(second.dispatched);
+        assert!(second.dispatch_device_attestation.is_none());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert!(launches[1].dispatched);
+        assert!(launches[1].dispatch_error.is_none());
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, second.dispatch_id);
+        assert_eq!(
+            rejections[0].error,
+            "dispatch_device_attestation_challenge_mismatch"
+        );
+        let attestations = dispatch_device_attestation_records_snapshot();
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(attestations[0].dispatch_id, first.dispatch_id);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn dispatcher_panic_cleans_up_attestation_challenge_stack() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(PanickingOnceAttestationDispatcher {
+            calls: calls.clone(),
+            panic_next: Arc::new(Mutex::new(true)),
+            device_uuid: [0x61u8; 16],
+        }));
+
+        let kernel = CString::new("panic_cleanup").unwrap();
+        let dim = 1_u32;
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            synthi_gpu_launch_raw_arg_info_with_receipt(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0x66,
+                std::ptr::null(),
+                0,
+            )
+        }));
+        assert!(first.is_err());
+        assert!(current_dispatch_attestation_challenge().is_none());
+
+        let second = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x66,
+            std::ptr::null(),
+            0,
+        );
+        assert!(second.dispatched);
+        assert!(second.dispatch_device_attestation.is_some());
+        assert!(current_dispatch_attestation_challenge().is_none());
+        assert_eq!(calls.lock().unwrap().len(), 2);
     }
 
     #[test]
