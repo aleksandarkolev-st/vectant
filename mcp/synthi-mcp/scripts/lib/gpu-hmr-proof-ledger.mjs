@@ -344,6 +344,24 @@ function eventProcessId(event) {
   return firstIdentifierText(event.process_id, event.processId, event.pid);
 }
 
+function eventRuntimeSessionId(event) {
+  return firstText(
+    event.runtime_session_id,
+    event.runtimeSessionId,
+    event.runtime_session,
+    event.runtimeSession,
+  );
+}
+
+function eventDeviceId(event) {
+  return firstIdentifierText(
+    event.device_uuid,
+    event.deviceUuid,
+    event.device_id,
+    event.deviceId,
+  );
+}
+
 function firewallProcessIdBefore(evidence) {
   return firstIdentifierText(
     evidence.process_id_before,
@@ -1102,6 +1120,67 @@ function missingVisualFrameGateRuntimeBindingFields(projection) {
     .map(([key]) => key);
 }
 
+function visualFrameGateRuntimeIdentityEvaluation(record) {
+  const processIdentity = asObject(record.processIdentity ?? record.process_identity);
+  const deviceIdentity = asObject(record.deviceIdentity ?? record.device_identity);
+  const loaderEvent = asObject(record.loaderEvent ?? record.loader_event);
+  const epochPublishEvent = asObject(record.epochPublishEvent ?? record.epoch_publish_event);
+  const dispatchEvent = asObject(record.dispatchEvent ?? record.dispatch_event);
+  const outputEvent = asObject(record.outputEvent ?? record.output_event);
+  const processLocations = {
+    process_identity: eventProcessId(processIdentity),
+    loader_event: eventProcessId(loaderEvent),
+    epoch_publish_event: eventProcessId(epochPublishEvent),
+    dispatch_event: eventProcessId(dispatchEvent),
+    output_event: eventProcessId(outputEvent),
+  };
+  const runtimeSessionLocations = {
+    record: firstText(record.runtimeSessionId, record.runtime_session_id),
+    process_identity: eventRuntimeSessionId(processIdentity),
+    loader_event: eventRuntimeSessionId(loaderEvent),
+    epoch_publish_event: eventRuntimeSessionId(epochPublishEvent),
+    dispatch_event: eventRuntimeSessionId(dispatchEvent),
+    output_event: eventRuntimeSessionId(outputEvent),
+  };
+  const deviceLocations = {
+    device_identity: eventDeviceId(deviceIdentity),
+    loader_event: eventDeviceId(loaderEvent),
+    epoch_publish_event: eventDeviceId(epochPublishEvent),
+    dispatch_event: eventDeviceId(dispatchEvent),
+    output_event: eventDeviceId(outputEvent),
+  };
+  const failures = [];
+  for (const [kind, locations] of [
+    ['process', processLocations],
+    ['session', runtimeSessionLocations],
+    ['device', deviceLocations],
+  ]) {
+    const missingLocations = Object.entries(locations)
+      .filter(([, value]) => !value)
+      .map(([location]) => location);
+    const identities = [...new Set(Object.values(locations).filter(Boolean))];
+    if (missingLocations.length > 0) {
+      failures.push({
+        code: `visual_capture_runtime_${kind}_identity_material_incomplete`,
+        missingLocations,
+      });
+    }
+    if (identities.length !== 1) {
+      failures.push({
+        code: `visual_capture_runtime_${kind}_identity_not_unique`,
+        identities,
+      });
+    }
+  }
+  return {
+    accepted: failures.length === 0,
+    failures,
+    processLocations,
+    runtimeSessionLocations,
+    deviceLocations,
+  };
+}
+
 function visualCaptureManifestEvaluation(record, artifacts) {
   const failures = [];
   const captureManifest = visualCaptureManifestObject(artifacts);
@@ -1115,6 +1194,7 @@ function visualCaptureManifestEvaluation(record, artifacts) {
   const canonicalRuntimeBinding = suppliedRuntimeBinding
     ? canonicalVisualFrameGateRuntimeBinding(suppliedRuntimeBinding)
     : null;
+  const runtimeIdentityEvaluation = visualFrameGateRuntimeIdentityEvaluation(record);
   const pixelVerification = visualPixelVerification(artifacts);
   const afterImageHash = canonicalSha256(visualArtifactHash(
     artifacts,
@@ -1290,6 +1370,7 @@ function visualCaptureManifestEvaluation(record, artifacts) {
   const missingRuntimeFields = missingVisualFrameGateRuntimeBindingFields(
     expectedRuntimeBinding,
   );
+  failures.push(...runtimeIdentityEvaluation.failures);
   if (missingRuntimeFields.length > 0) {
     failures.push({
       code: 'visual_capture_runtime_binding_material_incomplete',
@@ -1344,6 +1425,7 @@ function visualCaptureManifestEvaluation(record, artifacts) {
     suppliedRuntimeBinding: canonicalRuntimeBinding,
     suppliedRuntimeBindingHash: runtimeBindingTransport.suppliedBindingHash,
     recomputedRuntimeBindingHash: runtimeBindingTransport.recomputedBindingHash,
+    runtimeIdentityEvaluation,
     afterImageHash,
     swapchainSize,
     manifestImageHash,

@@ -315,6 +315,16 @@ function baselineVisualRecord(overrides = {}) {
     },
     ...overrides,
   });
+  for (const event of [
+    record.loader_event,
+    record.epoch_publish_event,
+    record.dispatch_event,
+    record.output_event,
+  ]) {
+    event.runtime_session_id ??= 'runtime-session-1';
+    event.device_uuid ??= 'device-1';
+  }
+  record.process_identity.runtime_session_id ??= 'runtime-session-1';
   const artifacts = record.oracle_artifacts?.visual_oracle_artifacts;
   if (artifacts && typeof artifacts === 'object') {
     const gateToken = 'frame-gate:adversarial-visual-proof';
@@ -877,6 +887,62 @@ const authorityClaimingVisualBindingResult = evaluateGpuHmrProofLedger(
 assert.equal(authorityClaimingVisualBindingResult.gpuHmrSuccess, false);
 assert.ok(authorityClaimingVisualBindingResult.failedInvariants.some(
   (failure) => failure.code === 'visual_capture_manifest_runtime_binding_authority_invalid',
+));
+
+const missingVisualLoaderSessionRecord = structuredClone(strictVisualRecord);
+delete missingVisualLoaderSessionRecord.loader_event.runtime_session_id;
+const missingVisualLoaderSessionResult = evaluateGpuHmrProofLedger(
+  missingVisualLoaderSessionRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(missingVisualLoaderSessionResult.gpuHmrSuccess, false);
+assert.ok(missingVisualLoaderSessionResult.failedInvariants.some(
+  (failure) => failure.code
+    === 'visual_capture_runtime_session_identity_material_incomplete',
+));
+
+const mismatchedVisualOutputSessionRecord = structuredClone(strictVisualRecord);
+mismatchedVisualOutputSessionRecord.output_event.runtime_session_id = 'runtime-session-replayed';
+const mismatchedVisualOutputSessionResult = evaluateGpuHmrProofLedger(
+  mismatchedVisualOutputSessionRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(mismatchedVisualOutputSessionResult.gpuHmrSuccess, false);
+assert.ok(mismatchedVisualOutputSessionResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_session_identity_not_unique',
+));
+
+const missingVisualPublishDeviceRecord = structuredClone(strictVisualRecord);
+delete missingVisualPublishDeviceRecord.epoch_publish_event.device_uuid;
+const missingVisualPublishDeviceResult = evaluateGpuHmrProofLedger(
+  missingVisualPublishDeviceRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(missingVisualPublishDeviceResult.gpuHmrSuccess, false);
+assert.ok(missingVisualPublishDeviceResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_device_identity_material_incomplete',
+));
+
+const mismatchedVisualDispatchDeviceRecord = structuredClone(strictVisualRecord);
+mismatchedVisualDispatchDeviceRecord.dispatch_event.device_uuid = 'device-replayed';
+const mismatchedVisualDispatchDeviceResult = evaluateGpuHmrProofLedger(
+  mismatchedVisualDispatchDeviceRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(mismatchedVisualDispatchDeviceResult.gpuHmrSuccess, false);
+assert.ok(mismatchedVisualDispatchDeviceResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_device_identity_not_unique',
+));
+
+const missingVisualLoaderProcessRecord = structuredClone(strictVisualRecord);
+delete missingVisualLoaderProcessRecord.loader_event.process_id;
+const missingVisualLoaderProcessResult = evaluateGpuHmrProofLedger(
+  missingVisualLoaderProcessRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(missingVisualLoaderProcessResult.gpuHmrSuccess, false);
+assert.ok(missingVisualLoaderProcessResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_process_identity_material_incomplete',
 ));
 
 const mixedClockVisualRecord = structuredClone(strictVisualRecord);
