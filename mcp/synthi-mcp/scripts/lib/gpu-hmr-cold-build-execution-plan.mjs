@@ -226,6 +226,8 @@ function executionPlanProjection(plan) {
     commandSpecHash: plan.commandSpecHash,
     sourceBindingHash: plan.sourceBindingHash,
     sourceTreeBindingEvidenceHash: plan.sourceTreeBindingEvidenceHash,
+    releaseBindingHash: plan.releaseBindingHash,
+    releaseTreeBindingEvidenceHash: plan.releaseTreeBindingEvidenceHash,
     specHash: plan.specHash,
     specByteLength: plan.specByteLength,
     launcherExecutableHash: plan.launcherExecutableHash,
@@ -277,6 +279,9 @@ function executionPlanMaterialAccepted(plan) {
     && recomputeEvidenceHash(plan.sourceTreeBindingEvidence)
       === plan.sourceTreeBindingEvidenceHash
     && plan.sourceTreeBindingEvidence?.sourceBindingHash === plan.sourceBindingHash
+    && recomputeEvidenceHash(plan.releaseTreeBindingEvidence)
+      === plan.releaseTreeBindingEvidenceHash
+    && plan.releaseTreeBindingEvidence?.sourceBindingHash === plan.releaseBindingHash
     && plan.launcherExecutableHash === plan.launcherIdentity?.binaryHash
     && plan.launcherBuildEvidenceHash
       === (plan.launcherIdentity?.buildEvidence?.evidenceHash ?? null)
@@ -423,6 +428,7 @@ export function createColdBuildLauncherExecutionPlan({
   executionNonce,
   commandSpecHash,
   sourceTreeBindingEvidence,
+  releaseTreeBindingEvidence,
   command,
   args = [],
   environment = [],
@@ -482,6 +488,11 @@ export function createColdBuildLauncherExecutionPlan({
   );
   const sourceBindingHash = verifiedSourceTreeBinding.sourceBindingHash;
   const releasePath = requireHostPath(releaseHostPath, 'release_path');
+  const verifiedReleaseTreeBinding = verifyColdBuildSourceTreeBindingEvidence(
+    releaseTreeBindingEvidence,
+    releasePath,
+  );
+  const releaseBindingHash = verifiedReleaseTreeBinding.sourceBindingHash;
   const specDirectory = requireHostPath(specHostDirectory, 'spec_directory');
   const launcherPath = requireHostPath(
     launcherIdentity?.executablePath,
@@ -556,6 +567,7 @@ export function createColdBuildLauncherExecutionPlan({
     'synthi.cold_build.command_spec_hash': commandSpecHash,
     'synthi.cold_build.execution_nonce': executionNonce,
     'synthi.cold_build.launcher_executable_hash': launcherIdentity.binaryHash,
+    'synthi.cold_build.release_binding_hash': releaseBindingHash,
     'synthi.cold_build.source_binding_hash': sourceBindingHash,
     'synthi.cold_build.spec_hash': specHash,
   };
@@ -683,6 +695,9 @@ export function createColdBuildLauncherExecutionPlan({
     sourceBindingHash,
     sourceTreeBindingEvidence: verifiedSourceTreeBinding,
     sourceTreeBindingEvidenceHash: verifiedSourceTreeBinding.evidenceHash,
+    releaseBindingHash,
+    releaseTreeBindingEvidence: verifiedReleaseTreeBinding,
+    releaseTreeBindingEvidenceHash: verifiedReleaseTreeBinding.evidenceHash,
     spec,
     specBytes,
     specHash,
@@ -850,7 +865,15 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
   ) {
     throw new Error('cold_build_spec_publication_evidence_invalid');
   }
-  const [source, release, spec, launcher, specParent, sourceTreeBinding] = await Promise.all([
+  const [
+    source,
+    release,
+    spec,
+    launcher,
+    specParent,
+    sourceTreeBinding,
+    releaseTreeBinding,
+  ] = await Promise.all([
     inspectExecutionInput(plan.sourceHostPath, 'directory'),
     inspectExecutionInput(plan.releaseHostPath, 'directory'),
     inspectExecutionInput(plan.specHostPath, 'file', plan.specHash),
@@ -863,6 +886,10 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
     computeColdBuildSourceTreeBinding(plan.sourceHostPath, {
       maxEntryCount: plan.sourceTreeBindingEvidence.maxEntryCount,
       maxByteLength: plan.sourceTreeBindingEvidence.maxByteLength,
+    }),
+    computeColdBuildSourceTreeBinding(plan.releaseHostPath, {
+      maxEntryCount: plan.releaseTreeBindingEvidence.maxEntryCount,
+      maxByteLength: plan.releaseTreeBindingEvidence.maxByteLength,
     }),
   ]);
   const specParentPrivate = process.platform === 'win32'
@@ -908,7 +935,18 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
   if (sourceTreeBinding.sourceBindingHash !== plan.sourceBindingHash) {
     blockingGaps.push('cold_build_execution_input_source_binding_mismatch');
   }
-  const inputs = { source, release, spec, launcher, specParent, sourceTreeBinding };
+  if (releaseTreeBinding.sourceBindingHash !== plan.releaseBindingHash) {
+    blockingGaps.push('cold_build_execution_input_release_binding_mismatch');
+  }
+  const inputs = {
+    source,
+    release,
+    spec,
+    launcher,
+    specParent,
+    sourceTreeBinding,
+    releaseTreeBinding,
+  };
   const observationSequence = (INPUT_OBSERVATION_SEQUENCE.get(plan) ?? 0) + 1;
   INPUT_OBSERVATION_SEQUENCE.set(plan, observationSequence);
   const evidence = {
@@ -919,6 +957,7 @@ export async function verifyColdBuildLauncherExecutionInputs(plan, {
     specHash: plan.specHash,
     launcherExecutableHash: plan.launcherExecutableHash,
     sourceBindingHash: plan.sourceBindingHash,
+    releaseBindingHash: plan.releaseBindingHash,
     phase,
     expectedContainerId: boundContainerId,
     observationSequence,
@@ -1204,6 +1243,7 @@ export function verifyColdBuildLauncherContainerInspection(inspectInput, plan, {
     executionNonce: plan.executionNonce,
     commandSpecHash: plan.commandSpecHash,
     sourceBindingHash: plan.sourceBindingHash,
+    releaseBindingHash: plan.releaseBindingHash,
     specHash: plan.specHash,
     launcherExecutableHash: plan.launcherExecutableHash,
     inputEvidenceBeforeCreateHash: beforeInputs.evidenceHash,

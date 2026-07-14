@@ -173,11 +173,19 @@ async function main() {
         maxByteLength: 4 * 1024 * 1024 * 1024,
       },
     );
+    const releaseTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
+      releaseHostPath,
+      {
+        maxEntryCount: 64,
+        maxByteLength: 1024 * 1024,
+      },
+    );
     const common = {
       launcherIdentity,
       executionNonce: randomBytes(16).toString('hex'),
       commandSpecHash: `sha256:${'1'.repeat(64)}`,
       sourceTreeBindingEvidence,
+      releaseTreeBindingEvidence,
       command: '/toolchain/driver',
       args: ['--input', 'module tree/source unit.ext', '--emit', '/workspace/build'],
       environment: {
@@ -251,6 +259,7 @@ async function main() {
     assert.equal(plan.readyReceiptRequired, true);
     assert.equal(plan.canAuthorizeLauncherExecution, false);
     assert.equal(plan.launcherExecutableHash, launcherIdentity.binaryHash);
+    assert.equal(plan.releaseBindingHash, releaseTreeBindingEvidence.sourceBindingHash);
     assert.equal(plan.spec.expectedLauncherExecutableHash, launcherIdentity.binaryHash);
     assert.equal(plan.spec.command[0], common.command);
     assert.deepEqual(plan.spec.environment, [
@@ -579,6 +588,16 @@ async function main() {
     assert.throws(
       () => createColdBuildLauncherExecutionPlan({
         ...common,
+        releaseTreeBindingEvidence: {
+          ...releaseTreeBindingEvidence,
+          gpuHmrSuccess: true,
+        },
+      }),
+      /source_tree_binding_evidence_invalid/,
+    );
+    assert.throws(
+      () => createColdBuildLauncherExecutionPlan({
+        ...common,
         sourceHostPath: `${common.sourceHostPath}\nreplayed`,
       }),
       /source_path_invalid/,
@@ -587,6 +606,31 @@ async function main() {
     const restoredInputs = await verifyColdBuildLauncherExecutionInputs(plan, {
       phase: 'before_create',
     });
+    const unexpectedReleasePath = path.join(releaseHostPath, 'nested', 'unexpected.json');
+    await mkdir(path.dirname(unexpectedReleasePath), { recursive: true });
+    await writeFile(unexpectedReleasePath, '{"unexpected":true}\n', 'utf8');
+    const changedReleaseInputs = await verifyColdBuildLauncherExecutionInputs(plan, {
+      phase: 'after_create',
+      expectedContainerId: SYNTHETIC_CONTAINER_ID,
+    });
+    assert.equal(changedReleaseInputs.acceptedAsExecutionInputEvidence, false);
+    assert.ok(changedReleaseInputs.blockingGaps.includes(
+      'cold_build_execution_input_release_binding_mismatch',
+    ));
+    assert.notEqual(changedReleaseInputs.inputsHash, restoredInputs.inputsHash);
+    assert.throws(
+      () => verifyColdBuildLauncherContainerInspection(
+        [syntheticInspect(plan)],
+        plan,
+        {
+          expectedContainerId: SYNTHETIC_CONTAINER_ID,
+          inputEvidenceBeforeCreate: restoredInputs,
+          inputEvidenceAfterCreate: changedReleaseInputs,
+        },
+      ),
+      /input_evidence_invalid/,
+    );
+    await rm(path.join(releaseHostPath, 'nested'), { recursive: true, force: true });
     await writeFile(nestedSourcePath, 'changed source bytes\n', 'utf8');
     const changedSourceInputs = await verifyColdBuildLauncherExecutionInputs(plan, {
       phase: 'after_create',
