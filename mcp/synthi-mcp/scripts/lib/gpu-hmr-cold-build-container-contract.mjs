@@ -860,12 +860,13 @@ export function parseColdBuildControlFrame(buffer, {
   }
   const processTree = receipt?.processTree;
   const streamReceipts = [receipt?.commandStdout, receipt?.commandStderr];
-  const blockingGaps = Array.isArray(receipt?.blockingGaps) ? receipt.blockingGaps : [];
-  const gapsCanonical = blockingGaps.every(
-    (value, index) => typeof value === 'string'
-      && value.length > 0
-      && (index === 0 || value > blockingGaps[index - 1]),
-  );
+  const blockingGaps = receipt?.blockingGaps;
+  const gapsCanonical = Array.isArray(blockingGaps)
+    && blockingGaps.every(
+      (value, index) => typeof value === 'string'
+        && value.length > 0
+        && (index === 0 || value > blockingGaps[index - 1]),
+    );
   const processIdsValid = (values) => Array.isArray(values)
     && values.every((value) => Number.isSafeInteger(value));
   if (
@@ -900,9 +901,10 @@ export function parseColdBuildControlFrame(buffer, {
     || receipt.specHash !== expectedSpecHash
     || receipt.commandSpecHash !== expectedCommandSpecHash
     || receipt.sourceBindingHash !== expectedSourceBindingHash
+    || typeof receipt.childIdentityReceiptHash !== 'string'
     || (
       receipt.childIdentityReceiptHash !== ''
-      && !/^sha256:[a-f0-9]{64}$/.test(receipt.childIdentityReceiptHash ?? '')
+      && !/^sha256:[a-f0-9]{64}$/.test(receipt.childIdentityReceiptHash)
     )
     || typeof receipt.childIdentityAccepted !== 'boolean'
     || !Number.isSafeInteger(receipt.childExitCode)
@@ -919,7 +921,8 @@ export function parseColdBuildControlFrame(buffer, {
       ])
       || !Number.isSafeInteger(stream.byteLength)
       || stream.byteLength < 0
-      || !/^sha256:[a-f0-9]{64}$/.test(stream.contentHash ?? '')
+      || typeof stream.contentHash !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(stream.contentHash)
     ))
     || !processTree
     || typeof processTree !== 'object'
@@ -945,9 +948,10 @@ export function parseColdBuildControlFrame(buffer, {
     || processTree.reapedChildCount < 0
     || typeof processTree.quiescent !== 'boolean'
     || typeof receipt.outputSnapshotAccepted !== 'boolean'
+    || typeof receipt.outputSnapshotHash !== 'string'
     || (
       receipt.outputSnapshotHash !== ''
-      && !/^sha256:[a-f0-9]{64}$/.test(receipt.outputSnapshotHash ?? '')
+      && !/^sha256:[a-f0-9]{64}$/.test(receipt.outputSnapshotHash)
     )
     || !Number.isSafeInteger(receipt.outputEntryCount)
     || receipt.outputEntryCount < 0
@@ -965,7 +969,7 @@ export function parseColdBuildControlFrame(buffer, {
         || receipt.outputSnapshotAccepted !== true
         || processTree.quiescent !== true
         || processTree.finalResidualPids.length !== 0
-        || !/^sha256:[a-f0-9]{64}$/.test(receipt.outputSnapshotHash ?? '')
+        || !/^sha256:[a-f0-9]{64}$/.test(receipt.outputSnapshotHash)
       )
     )
   ) {

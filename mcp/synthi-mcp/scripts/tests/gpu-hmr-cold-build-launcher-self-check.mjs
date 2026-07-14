@@ -957,6 +957,47 @@ async function main() {
       ),
       /receipt_binding_invalid/,
     );
+    for (const blockingGaps of [null, {}, '', false]) {
+      assert.throws(
+        () => parseColdBuildControlFrame(
+          encodeControlReceiptFrame({ ...ready, blockingGaps }),
+          controlParserBindings,
+        ),
+        /receipt_binding_invalid/,
+      );
+    }
+    for (const malformedReceipt of [
+      {
+        ...ready,
+        childIdentityReceiptHash: [ready.childIdentityReceiptHash],
+      },
+      {
+        ...ready,
+        commandStdout: {
+          ...ready.commandStdout,
+          contentHash: [ready.commandStdout.contentHash],
+        },
+      },
+      {
+        ...ready,
+        commandStderr: {
+          ...ready.commandStderr,
+          contentHash: [ready.commandStderr.contentHash],
+        },
+      },
+      {
+        ...ready,
+        outputSnapshotHash: [ready.outputSnapshotHash],
+      },
+    ]) {
+      assert.throws(
+        () => parseColdBuildControlFrame(
+          encodeControlReceiptFrame(malformedReceipt),
+          controlParserBindings,
+        ),
+        /receipt_binding_invalid/,
+      );
+    }
 
     const collectResult = await spawnCaptured(dockerExecutable, [
       'exec',
