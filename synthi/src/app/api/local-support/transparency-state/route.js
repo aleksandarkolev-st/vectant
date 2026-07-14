@@ -27,6 +27,7 @@ export async function GET() {
   return jsonNoStore({
     ...summarizeTransparencyState(localState || cloudState, policy),
     local_control_available: Boolean(localState?.session),
+    local_control_via_relay: !localState && Boolean(cloudState?.session),
   });
 }
 

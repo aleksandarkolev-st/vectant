@@ -1,4 +1,27 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const cloudMocks = vi.hoisted(() => ({
+  session: vi.fn(),
+  cloudState: vi.fn(),
+  enqueue: vi.fn(),
+  findSession: vi.fn(),
+}));
+
+vi.mock("next-auth", () => ({ getServerSession: cloudMocks.session }));
+vi.mock("@/app/auth", () => ({ authOptions: {} }));
+vi.mock("@/lib/local-support/transparencyStore", () => ({
+  readCloudTransparencyState: cloudMocks.cloudState,
+}));
+vi.mock("@/lib/local-support/relayStore", async () => {
+  const actual = await vi.importActual("@/lib/local-support/relayStore");
+  return {
+    ...actual,
+    enqueueLocalControlCommand: cloudMocks.enqueue,
+  };
+});
+vi.mock("@/lib/local-support/sessionStore", () => ({
+  findActiveBrowserControlSession: cloudMocks.findSession,
+}));
 
 vi.mock("@/lib/local-support/policyStore", async () => {
   const controlPlane = await import("@/lib/local-support/controlPlane");
@@ -9,9 +32,24 @@ import { POST } from "./route";
 
 const OLD_ENV = { ...process.env };
 
+beforeEach(() => {
+  cloudMocks.session.mockResolvedValue(null);
+  cloudMocks.cloudState.mockResolvedValue(null);
+  cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
+  cloudMocks.findSession.mockResolvedValue(null);
+});
+
 afterEach(() => {
   process.env = { ...OLD_ENV };
   vi.unstubAllGlobals();
+  cloudMocks.session.mockReset();
+  cloudMocks.cloudState.mockReset();
+  cloudMocks.enqueue.mockReset();
+  cloudMocks.findSession.mockReset();
+  cloudMocks.session.mockResolvedValue(null);
+  cloudMocks.cloudState.mockResolvedValue(null);
+  cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
+  cloudMocks.findSession.mockResolvedValue(null);
 });
 
 function request(body, headers = {}) {
@@ -94,6 +132,56 @@ describe("local support transparency action route", () => {
       reason: "bad_origin",
       bytes_sent: 0,
     });
+  });
+
+  it("queues authenticated cloud controls for the paired desktop relay", async () => {
+    process.env.VECTANT_LOCAL_SUPPORT_ENABLED = "true";
+    cloudMocks.session.mockResolvedValue({ user: { id: "acct_live" } });
+    cloudMocks.cloudState.mockResolvedValue({
+      session: {
+        connected: true,
+        session_id: "sess_live_12345678",
+        account_id: "acct_live",
+        org_id: "org_live",
+      },
+      workspace: { workspace_id: "wk_live_12345678", display: "Live workspace" },
+    });
+    cloudMocks.findSession.mockResolvedValue({
+      sessionId: "sess_live_12345678",
+      accountId: "acct_live",
+      orgId: "org_live",
+      workspaceId: "wk_live_12345678",
+      deviceFingerprint: "sha256:1111111111111111",
+    });
+    cloudMocks.enqueue.mockResolvedValue({ commandId: "cmd_12345678" });
+
+    const response = await POST(request({
+      action: "pause_session",
+      session_id: "sess_live_12345678",
+      workspace_id: "wk_live_12345678",
+    }));
+    const json = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(json).toMatchObject({
+      decision: "local_control_command_queued",
+      action: "pause_session",
+      command_id: "cmd_12345678",
+      local_daemon_forwarded: false,
+      bytes_sent: 0,
+    });
+    expect(cloudMocks.findSession).toHaveBeenCalledWith({
+      accountId: "acct_live",
+      sessionId: "sess_live_12345678",
+      workspaceId: "wk_live_12345678",
+    });
+    expect(cloudMocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "sess_live_12345678",
+      accountId: "acct_live",
+      workspaceId: "wk_live_12345678",
+      action: "pause_session",
+      port: null,
+    }));
   });
 
   it("forwards connected actions to the configured loopback daemon", async () => {

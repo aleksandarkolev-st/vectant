@@ -1,10 +1,20 @@
-import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+
+import { authOptions } from "@/app/auth";
 import { deniedJson, isSameOriginRequest, readBoundedJson } from "@/app/api/local-support/httpGuards";
 import {
   buildTransparencyActionDecision,
 } from "@/lib/local-support/controlPlane";
 import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
+import {
+  enqueueLocalControlCommand,
+  LOCAL_CONTROL_COMMAND_ACTIONS,
+} from "@/lib/local-support/relayStore";
+import { findActiveBrowserControlSession } from "@/lib/local-support/sessionStore";
+import { readCloudTransparencyState } from "@/lib/local-support/transparencyStore";
 
 export const runtime = "nodejs";
 
@@ -45,7 +55,18 @@ export async function POST(req) {
   }
 
   const localStatus = await readLocalDaemonStatus();
-  const currentState = localStatus?.state || {};
+  let cloudAccountId = null;
+  let cloudState = null;
+  if (!localStatus) {
+    try {
+      const session = await getServerSession(authOptions);
+      cloudAccountId = session?.user?.id || session?.user?.email || null;
+      if (cloudAccountId) cloudState = await readCloudTransparencyState(cloudAccountId);
+    } catch {
+      return jsonNoStore(deniedBody("cloud_control_unavailable", "Cloud control state is unavailable."), 503);
+    }
+  }
+  const currentState = localStatus?.state || cloudState || {};
   const decision = buildTransparencyActionDecision(
     bodyResult.value,
     currentState,
@@ -60,7 +81,60 @@ export async function POST(req) {
     return jsonNoStore(forwarded.body, forwarded.status);
   }
 
-  return jsonNoStore(decision, 200);
+  if (!cloudAccountId || !LOCAL_CONTROL_COMMAND_ACTIONS.has(decision.action)) {
+    return jsonNoStore(
+      deniedBody(
+        "local_control_transport_unavailable",
+        "This action requires the installed desktop app or an authenticated outbound relay.",
+      ),
+      503,
+    );
+  }
+
+  const sessionId = bodyResult.value?.session_id;
+  const workspaceId = bodyResult.value?.workspace_id;
+  if (!safeIdentifier(sessionId) || !safeIdentifier(workspaceId)
+    || sessionId !== decision.session_id || workspaceId !== decision.workspace_id) {
+    return jsonNoStore(deniedBody("local_control_context_mismatch", "The browser control context no longer matches the paired session."), 403);
+  }
+
+  let paired;
+  try {
+    paired = await findActiveBrowserControlSession({
+      accountId: cloudAccountId,
+      sessionId,
+      workspaceId,
+    });
+  } catch {
+    return jsonNoStore(deniedBody("cloud_control_unavailable", "Cloud control state is unavailable."), 503);
+  }
+  if (!paired) {
+    return jsonNoStore(deniedBody("paired_session_not_found", "The paired desktop session is no longer active."), 403);
+  }
+
+  const port = decision.action === "revoke_port" ? decision.port : null;
+  try {
+    const command = await enqueueLocalControlCommand({
+      commandId: `cmd_${randomUUID().replaceAll("-", "")}`,
+      sessionId: paired.sessionId,
+      accountId: paired.accountId,
+      orgId: paired.orgId,
+      workspaceId: paired.workspaceId,
+      deviceFingerprint: paired.deviceFingerprint,
+      action: decision.action,
+      port,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    return jsonNoStore({
+      ...decision,
+      decision: "local_control_command_queued",
+      command_id: command.commandId,
+      local_daemon_forwarded: false,
+      user_visible_message: "Control command queued for the paired desktop app over the outbound relay.",
+    }, 202);
+  } catch {
+    return jsonNoStore(deniedBody("cloud_control_unavailable", "The control command could not be secured."), 503);
+  }
 }
 
 function jsonNoStore(body, status = 200) {
@@ -257,6 +331,10 @@ function deniedBody(reason, message) {
     bytes_sent: 0,
     user_visible_message: message,
   };
+}
+
+function safeIdentifier(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value);
 }
 
 function scrubLocalDaemonMessage(value) {

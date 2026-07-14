@@ -10,8 +10,23 @@ const MAX_RELAY_RESPONSE_BYTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum RelayPoll {
     Idle,
+    Control(Box<RelayControlCommand>),
     Delivery(Box<RelayDelivery>),
     Revoked,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RelayControlCommand {
+    pub command_id: String,
+    pub session_id: String,
+    pub account_id: String,
+    pub org_id: String,
+    pub workspace_id: String,
+    pub device_fingerprint: String,
+    pub action: String,
+    pub port: Option<u16>,
+    pub expires_at: String,
+    pub lease_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +136,13 @@ impl RelayClient {
         };
         match value.get("decision").and_then(Value::as_str) {
             Some("relay_idle") => Ok(RelayPoll::Idle),
+            Some("relay_control_command") => {
+                let command: RelayControlCommand =
+                    serde_json::from_value(value.get("command").cloned().unwrap_or(Value::Null))
+                        .map_err(|_| "Relay control command was invalid.".to_string())?;
+                command.validate()?;
+                Ok(RelayPoll::Control(Box::new(command)))
+            }
             Some("relay_delivery") => {
                 let delivery: RelayDelivery =
                     serde_json::from_value(value.get("delivery").cloned().unwrap_or(Value::Null))
@@ -130,6 +152,34 @@ impl RelayClient {
             }
             _ => Err("Relay response was not accepted.".to_string()),
         }
+    }
+
+    pub async fn report_control_outcome(
+        &self,
+        identity: &DeviceIdentity,
+        session_id: &str,
+        command: &RelayControlCommand,
+        decision: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        if !matches!(decision, "applied" | "denied") || reason.is_empty() || reason.len() > 256 {
+            return Err("Relay control outcome was invalid.".to_string());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "action": "control_outcome",
+            "command_id": command.command_id,
+            "lease_id": command.lease_id,
+            "decision": decision,
+            "reason": reason,
+        }))
+        .map_err(|_| "Relay control outcome could not be serialized.".to_string())?;
+        let response = self
+            .post_signed(identity, session_id, DEVICE_RELAY_PATH, body)
+            .await?;
+        if response.get("decision").and_then(Value::as_str) != Some(decision) {
+            return Err("Relay control outcome was not accepted.".to_string());
+        }
+        Ok(())
     }
 
     pub async fn report_outcome(
@@ -334,6 +384,50 @@ impl RelayDelivery {
     }
 }
 
+impl RelayControlCommand {
+    fn validate(&self) -> Result<(), String> {
+        let identifiers = [
+            &self.command_id,
+            &self.session_id,
+            &self.account_id,
+            &self.org_id,
+            &self.workspace_id,
+            &self.action,
+        ];
+        if identifiers.iter().any(|value| {
+            value.len() < 3
+                || value.len() > 128
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        }) || !self.device_fingerprint.starts_with("sha256:")
+            || self.device_fingerprint.len() != 23
+            || !matches!(
+                self.action.as_str(),
+                "enable_fast_support"
+                    | "disable_fast_support"
+                    | "pause_session"
+                    | "resume_session"
+                    | "disconnect_session"
+                    | "revoke_session_approvals"
+                    | "revoke_port"
+            )
+            || (self.action == "revoke_port" && !matches!(self.port, Some(1..=65_535)))
+            || !self
+                .lease_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+            || self.lease_id.len() < 16
+            || self.lease_id.len() > 64
+        {
+            return Err("Relay control command fields were invalid.".to_string());
+        }
+        chrono::DateTime::parse_from_rfc3339(&self.expires_at)
+            .map_err(|_| "Relay control command expiry was invalid.".to_string())?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -433,6 +527,27 @@ mod tests {
             .unwrap();
 
         assert!(matches!(result, RelayPoll::Revoked));
+    }
+
+    #[test]
+    fn validates_control_command_envelope_before_execution() {
+        let command = RelayControlCommand {
+            command_id: "cmd_12345678".to_string(),
+            session_id: "sess_12345678".to_string(),
+            account_id: "acct_12345678".to_string(),
+            org_id: "org_12345678".to_string(),
+            workspace_id: "ws_12345678".to_string(),
+            device_fingerprint: "sha256:1234567890123456".to_string(),
+            action: "revoke_port".to_string(),
+            port: Some(443),
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+            lease_id: "11111111-1111-1111-1111-111111111111".to_string(),
+        };
+        assert!(command.validate().is_ok());
+
+        let mut invalid = command;
+        invalid.action = "export_history".to_string();
+        assert!(invalid.validate().is_err());
     }
 
     #[tokio::test]

@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { authenticateLocalSupportDevice } from "@/lib/local-support/deviceAuth";
-import { leaseRelayRequest, recordRelayOutcome } from "@/lib/local-support/relayStore";
+import {
+  leaseLocalControlCommand,
+  leaseRelayRequest,
+  recordLocalControlOutcome,
+  recordRelayOutcome,
+} from "@/lib/local-support/relayStore";
 import { updatePairedSessionPorts } from "@/lib/local-support/sessionStore";
 
 export const runtime = "nodejs";
@@ -15,6 +20,9 @@ const STATUS_FIELDS = new Set(["action", "ports"]);
 const OUTCOME_FIELDS = new Set([
   "action", "request_id", "lease_id", "decision", "bytes_sent",
   "redaction_count", "scanner_version", "reason",
+]);
+const CONTROL_OUTCOME_FIELDS = new Set([
+  "action", "command_id", "lease_id", "decision", "reason",
 ]);
 
 export async function POST(req) {
@@ -40,6 +48,24 @@ export async function POST(req) {
   }
 
   if (body.action === "poll" && hasOnlyFields(body, POLL_FIELDS)) {
+    let controlCommand;
+    try {
+      controlCommand = await leaseLocalControlCommand({
+        sessionId: authentication.session.sessionId,
+        deviceFingerprint: authentication.session.deviceFingerprint,
+      });
+    } catch {
+      return jsonNoStore(denied("relay_unavailable"), 503);
+    }
+    if (controlCommand) {
+      return jsonNoStore({
+        decision: "relay_control_command",
+        command: controlCommand,
+        raw_body_included: false,
+        bytes_sent: 0,
+      });
+    }
+
     let delivery;
     try {
       delivery = await leaseRelayRequest({
@@ -52,6 +78,25 @@ export async function POST(req) {
     return jsonNoStore(delivery
       ? { decision: "relay_delivery", delivery, raw_body_included: false, bytes_sent: 0 }
       : { decision: "relay_idle", raw_body_included: false, bytes_sent: 0 });
+  }
+
+  if (body.action === "control_outcome" && validControlOutcome(body)
+    && hasOnlyFields(body, CONTROL_OUTCOME_FIELDS)) {
+    let outcome;
+    try {
+      outcome = await recordLocalControlOutcome({
+        commandId: body.command_id,
+        leaseId: body.lease_id,
+        sessionId: authentication.session.sessionId,
+        deviceFingerprint: authentication.session.deviceFingerprint,
+        decision: body.decision,
+        reason: body.reason,
+      });
+    } catch {
+      return jsonNoStore(denied("relay_unavailable"), 503);
+    }
+    if (!outcome) return jsonNoStore(denied("control_lease_invalid"), 409);
+    return jsonNoStore({ ...outcome, raw_body_included: false });
   }
 
   if (body.action === "status" && hasOnlyFields(body, STATUS_FIELDS) && Array.isArray(body.ports)) {
@@ -101,6 +146,13 @@ function validOutcome(body) {
     && Number.isSafeInteger(body.bytes_sent) && body.bytes_sent >= 0
     && Number.isSafeInteger(body.redaction_count) && body.redaction_count >= 0
     && typeof body.scanner_version === "string" && body.scanner_version.length <= 128
+    && typeof body.reason === "string" && body.reason.length <= 256;
+}
+
+function validControlOutcome(body) {
+  return safeId(body.command_id)
+    && typeof body.lease_id === "string" && /^[0-9a-f-]{16,64}$/i.test(body.lease_id)
+    && ["applied", "denied"].includes(body.decision)
     && typeof body.reason === "string" && body.reason.length <= 256;
 }
 

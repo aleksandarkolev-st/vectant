@@ -758,6 +758,34 @@ model LocalSupportRelayPayload {
   @@index([expiresAt])
 }
 
+// Durable commands originating from the authenticated browser control surface.
+// The desktop consumes these over the signed outbound device relay; no local
+// daemon bearer or control secret is stored or returned to the browser.
+model LocalSupportControlCommand {
+  commandId          String    @id
+  sessionId          String
+  accountId          String
+  orgId              String
+  workspaceId        String
+  deviceFingerprint  String
+  action             String
+  port               Int?
+  status             String    @default("queued")
+  leaseId            String?
+  leaseExpiresAt     DateTime?
+  deliveryAttempts   Int       @default(0)
+  expiresAt          DateTime
+  completedAt        DateTime?
+  resultReason       String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([sessionId, status, expiresAt])
+  @@index([deviceFingerprint, status, expiresAt])
+  @@index([status, leaseExpiresAt])
+  @@index([accountId, createdAt])
+}
+
 // Product/security audit summaries are deliberately separate from relay
 // delivery state so retention and access policy can differ. There is no raw
 // request or response body column in this model.

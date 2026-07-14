@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { enqueueRelayRequest, leaseRelayRequest, recordRelayOutcome } from "./relayStore";
+import {
+  enqueueLocalControlCommand,
+  enqueueRelayRequest,
+  leaseLocalControlCommand,
+  leaseRelayRequest,
+  recordLocalControlOutcome,
+  recordRelayOutcome,
+} from "./relayStore";
 
 function requestRecord(overrides = {}) {
   return {
@@ -33,6 +40,12 @@ function requestRecord(overrides = {}) {
 
 function fakeClient(overrides = {}) {
   const tx = {
+    localSupportControlCommand: {
+      create: vi.fn(async ({ data }) => controlRecord(data)),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findFirst: vi.fn(async () => controlRecord()),
+      findUnique: vi.fn(async () => controlRecord()),
+    },
     localSupportRelayRequest: {
       create: vi.fn(async ({ data }) => requestRecord(data)),
       updateMany: vi.fn(async () => ({ count: 1 })),
@@ -47,10 +60,85 @@ function fakeClient(overrides = {}) {
     },
     ...overrides,
   };
-  return { tx, client: { $transaction: vi.fn(async (callback) => callback(tx)) } };
+  return { tx, client: { ...tx, $transaction: vi.fn(async (callback) => callback(tx)) } };
+}
+
+function controlRecord(overrides = {}) {
+  return {
+    commandId: "cmd_12345678",
+    sessionId: "sess_12345678",
+    accountId: "acct_123",
+    orgId: "org_123",
+    workspaceId: "wk_12345678",
+    deviceFingerprint: "sha256:3333333333333333",
+    action: "pause_session",
+    port: null,
+    status: "queued",
+    expiresAt: new Date("2030-01-01T00:01:00.000Z"),
+    leaseId: "lease-control-1",
+    leaseExpiresAt: new Date("2030-01-01T00:00:15.000Z"),
+    createdAt: new Date("2030-01-01T00:00:00.000Z"),
+    ...overrides,
+  };
 }
 
 describe("durable local support relay store", () => {
+  it("queues a minimized browser control command without local credentials", async () => {
+    const { client } = fakeClient();
+    await enqueueLocalControlCommand({
+      commandId: "cmd_12345678",
+      sessionId: "sess_12345678",
+      accountId: "acct_123",
+      orgId: "org_123",
+      workspaceId: "wk_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      action: "revoke_port",
+      port: 5173,
+      expiresAt: "2030-01-01T00:01:00.000Z",
+    }, client);
+    expect(client.localSupportControlCommand.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        commandId: "cmd_12345678",
+        action: "revoke_port",
+        port: 5173,
+      }),
+    });
+  });
+
+  it("leases the oldest control command only for its exact paired device", async () => {
+    const { tx, client } = fakeClient();
+    const command = await leaseLocalControlCommand({
+      sessionId: "sess_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      leaseId: "lease-control-1",
+      leaseMs: 999_999,
+    }, client, new Date("2030-01-01T00:00:00.000Z"));
+    expect(tx.localSupportControlCommand.updateMany).toHaveBeenCalledTimes(2);
+    expect(command).toMatchObject({
+      command_id: "cmd_12345678",
+      action: "pause_session",
+      lease_id: "lease-control-1",
+    });
+  });
+
+  it("records a scrubbed applied or denied control outcome only within its lease", async () => {
+    const { client } = fakeClient();
+    const result = await recordLocalControlOutcome({
+      commandId: "cmd_12345678",
+      leaseId: "lease-control-1",
+      sessionId: "sess_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      decision: "applied",
+      reason: "pause_applied Authorization: Bearer should-not-persist",
+    }, client, new Date("2030-01-01T00:00:01.000Z"));
+    expect(result).toMatchObject({ decision: "applied", command_id: "cmd_12345678" });
+    expect(JSON.stringify(result)).not.toContain("should-not-persist");
+    expect(client.localSupportControlCommand.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ commandId: "cmd_12345678", leaseId: "lease-control-1" }),
+      data: expect.objectContaining({ status: "applied", leaseId: null, leaseExpiresAt: null }),
+    });
+  });
+
   it("queues only the signed envelope and a scrubbed control audit", async () => {
     const { tx, client } = fakeClient();
     const decision = {

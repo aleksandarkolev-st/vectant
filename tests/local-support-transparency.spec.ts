@@ -201,7 +201,8 @@ test.describe("local support transparency page", () => {
     await expect(page.getByText("Review required")).toBeVisible();
   });
 
-  test("enables and downgrades bounded Fast Support for a connected workspace", async ({ page }) => {
+  test("queues bounded Fast Support through the outbound relay", async ({ page }) => {
+    const controlRequests = [];
     await page.route("**/api/local-support/policy", async (route) => {
       await route.fulfill({
         status: 200,
@@ -228,21 +229,21 @@ test.describe("local support transparency page", () => {
           },
           workspace: { workspace_id: "wk_live_12345678", display: "vectant-app" },
           inventory: [], sent_payloads: [], blocked_items: [], activity: [], ports: [],
-          local_control_available: true,
+          local_control_available: false,
+          local_control_via_relay: true,
         }),
       });
     });
     await page.route("**/api/local-support/transparency-action", async (route) => {
       const body = route.request().postDataJSON();
+      controlRequests.push(body);
       await route.fulfill({
-        status: 200,
+        status: 202,
         contentType: "application/json",
         body: JSON.stringify({
-          decision: "local_control_action_applied",
+          decision: "local_control_command_queued",
           action: body.action,
-          user_visible_message: body.action === "enable_fast_support"
-            ? "Fast Support enabled for this workspace for up to 30 minutes."
-            : "Fast Support disabled.",
+          user_visible_message: "Local control command queued for the installed desktop app.",
         }),
       });
     });
@@ -250,9 +251,14 @@ test.describe("local support transparency page", () => {
     await page.goto(`${baseURL}/local-support`);
     await page.getByRole("tab", { name: "Permission mode" }).click();
     await page.getByRole("button", { name: "Enable Fast Support" }).click();
-    await expect(page.getByRole("status")).toContainText("Fast Support is active for this session");
-    await expect(page.getByRole("button", { name: "Switch to Balanced" })).toBeVisible();
-    await page.getByRole("button", { name: "Switch to Balanced" }).click();
+    await expect(page.getByText("Local control command queued for the installed desktop app.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Enable Fast Support" })).toBeVisible();
+    expect(controlRequests).toEqual([
+      {
+        action: "enable_fast_support",
+        session_id: "sess_live_12345678",
+        workspace_id: "wk_live_12345678",
+      },
+    ]);
   });
 });

@@ -45,6 +45,9 @@ async fn main() -> anyhow::Result<()> {
         {
             RelayPoll::Idle => println!(r#"{{"decision":"relay_idle"}}"#),
             RelayPoll::Revoked => println!(r#"{{"decision":"relay_revoked"}}"#),
+            RelayPoll::Control(command) => {
+                println!("{}", serde_json::to_string(&*command)?);
+            }
             RelayPoll::Delivery(delivery) => {
                 println!("{}", serde_json::to_string(&*delivery)?);
             }

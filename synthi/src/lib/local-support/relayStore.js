@@ -1,9 +1,156 @@
 import { randomUUID } from "node:crypto";
-
 import prisma from "@/lib/prisma";
 
 const DEFAULT_LEASE_MS = 15_000;
 const MAX_LEASE_MS = 60_000;
+const CONTROL_COMMAND_LEASE_MS = 15_000;
+
+export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
+  "enable_fast_support",
+  "disable_fast_support",
+  "pause_session",
+  "resume_session",
+  "disconnect_session",
+  "revoke_session_approvals",
+  "revoke_port",
+]);
+
+export async function enqueueLocalControlCommand(
+  { commandId, sessionId, accountId, orgId, workspaceId, deviceFingerprint, action, port, expiresAt },
+  client = prisma,
+) {
+  if (!LOCAL_CONTROL_COMMAND_ACTIONS.has(action)) {
+    throw new Error("Unsupported local control command.");
+  }
+  if (action === "revoke_port" && (!Number.isInteger(port) || port < 1 || port > 65_535)) {
+    throw new Error("Invalid local control port.");
+  }
+  return client.localSupportControlCommand.create({
+    data: {
+      commandId,
+      sessionId,
+      accountId,
+      orgId,
+      workspaceId,
+      deviceFingerprint,
+      action,
+      port: action === "revoke_port" ? port : null,
+      expiresAt: new Date(expiresAt),
+    },
+  });
+}
+
+export async function leaseLocalControlCommand(
+  { sessionId, deviceFingerprint, leaseId = randomUUID(), leaseMs = CONTROL_COMMAND_LEASE_MS },
+  client = prisma,
+  now = new Date(),
+) {
+  const boundedLeaseMs = Math.max(1_000, Math.min(Number(leaseMs) || CONTROL_COMMAND_LEASE_MS, MAX_LEASE_MS));
+  const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs);
+
+  return client.$transaction(async (tx) => {
+    await tx.localSupportControlCommand.updateMany({
+      where: {
+        sessionId,
+        deviceFingerprint,
+        status: { in: ["queued", "leased"] },
+        expiresAt: { lte: now },
+      },
+      data: { status: "expired", leaseId: null, leaseExpiresAt: null },
+    });
+    const candidate = await tx.localSupportControlCommand.findFirst({
+      where: {
+        sessionId,
+        deviceFingerprint,
+        expiresAt: { gt: now },
+        OR: [
+          { status: "queued" },
+          { status: "leased", leaseExpiresAt: { lt: now } },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    if (!candidate) return null;
+    const claimed = await tx.localSupportControlCommand.updateMany({
+      where: {
+        commandId: candidate.commandId,
+        expiresAt: { gt: now },
+        OR: [
+          { status: "queued" },
+          { status: "leased", leaseExpiresAt: { lt: now } },
+        ],
+      },
+      data: {
+        status: "leased",
+        leaseId,
+        leaseExpiresAt,
+        deliveryAttempts: { increment: 1 },
+      },
+    });
+    if (claimed.count !== 1) return null;
+    const leased = await tx.localSupportControlCommand.findUnique({
+      where: { commandId: candidate.commandId },
+    });
+    return leased ? controlCommandEnvelope(leased) : null;
+  });
+}
+
+export async function recordLocalControlOutcome(
+  { commandId, leaseId, sessionId, deviceFingerprint, decision, reason },
+  client = prisma,
+  now = new Date(),
+) {
+  const safeDecision = decision === "applied" ? "applied" : "denied";
+  const safeReason = scrubControlReason(reason);
+  return client.localSupportControlCommand.updateMany({
+    where: {
+      commandId,
+      leaseId,
+      sessionId,
+      deviceFingerprint,
+      status: "leased",
+      leaseExpiresAt: { gt: now },
+      expiresAt: { gt: now },
+    },
+    data: {
+      status: safeDecision,
+      completedAt: now,
+      leaseId: null,
+      leaseExpiresAt: null,
+      resultReason: safeReason,
+    },
+  }).then((updated) => updated.count === 1 ? {
+    decision: safeDecision,
+    reason: safeReason,
+    command_id: commandId,
+  } : null);
+}
+
+function scrubControlReason(value) {
+  return String(value || "local_control_denied")
+    .replace(/authorization:\s*(bearer|basic)\s+[^\s]+/gi, "authorization: [REDACTED]")
+    .replace(/\b(postgres|postgresql|mysql|mongodb|redis):\/\/[^\s'"<>]+/gi, "[REDACTED:database_url]")
+    .replace(/\b(cookie|set-cookie):\s*[^\n\r]+/gi, "$1: [REDACTED]")
+    .replace(/AKIA[0-9A-Z]{16}/g, "[REDACTED:aws_access_key]")
+    .replace(/sk-[A-Za-z0-9_-]{20,}/g, "[REDACTED:openai_api_key]")
+    .slice(0, 256);
+}
+
+function controlCommandEnvelope(command) {
+  return {
+    command_id: command.commandId,
+    session_id: command.sessionId,
+    account_id: command.accountId,
+    org_id: command.orgId,
+    workspace_id: command.workspaceId,
+    device_fingerprint: command.deviceFingerprint,
+    action: command.action,
+    port: command.port,
+    expires_at: command.expiresAt.toISOString(),
+    lease_id: command.leaseId,
+    lease_expires_at: command.leaseExpiresAt.toISOString(),
+  };
+}
 
 export async function enqueueRelayRequest(envelope, relayDecision, client = prisma) {
   const data = relayRequestData(envelope, relayDecision);

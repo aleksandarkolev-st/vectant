@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use pairing_client::{ClaimedPairing, DesktopPolicyStatus, PairingClient};
-use relay_client::{ApprovedRelayPayload, RelayClient, RelayDelivery, RelayOutcome, RelayPoll};
+use relay_client::{
+    ApprovedRelayPayload, RelayClient, RelayControlCommand, RelayDelivery, RelayOutcome, RelayPoll,
+};
 use tauri::{Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 use uuid::Uuid;
@@ -855,6 +857,11 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
                     .poll(&runtime.device_identity, &session.session_id)
                     .await
                 {
+                    Ok(RelayPoll::Control(command)) => {
+                        let _ =
+                            handle_relay_control_command(&runtime, &app_state, &session, *command)
+                                .await;
+                    }
                     Ok(RelayPoll::Delivery(delivery)) => {
                         let _ =
                             handle_relay_delivery(&runtime, &app_state, &session, *delivery).await;
@@ -1090,6 +1097,168 @@ async fn handle_relay_delivery(
                 scanner_version: &scanner_version,
                 reason: "local_review_required",
             },
+        )
+        .await
+}
+
+async fn handle_relay_control_command(
+    runtime: &DesktopRuntime,
+    state: &AppState,
+    session: &vectant_local_support_app::session::SessionState,
+    command: RelayControlCommand,
+) -> Result<(), String> {
+    let expires_at = DateTime::parse_from_rfc3339(&command.expires_at)
+        .map_err(|_| "Relay control command expiry was invalid.".to_string())?
+        .with_timezone(&Utc);
+    let context_valid = command.session_id == session.session_id
+        && command.account_id == session.account_id
+        && command.org_id == session.org_id
+        && command.workspace_id == session.workspace_id
+        && command.workspace_id == state.workspace.workspace_id()
+        && command.device_fingerprint == session.device_fingerprint
+        && expires_at > Utc::now();
+    if !context_valid {
+        return report_control_outcome(
+            runtime,
+            session,
+            &command,
+            "denied",
+            "local_control_context_validation_failed",
+        )
+        .await;
+    }
+
+    let result = match command.action.as_str() {
+        "pause_session" => {
+            let mut local_session = state.session.lock().await;
+            if !local_session.is_active() {
+                Err("local_session_inactive")
+            } else {
+                local_session.pause();
+                Ok("local_session_paused")
+            }
+        }
+        "resume_session" => {
+            let mut local_session = state.session.lock().await;
+            if !local_session.is_active() {
+                Err("local_session_inactive")
+            } else {
+                local_session.resume();
+                Ok("local_session_resumed")
+            }
+        }
+        "enable_fast_support" | "disable_fast_support" => {
+            let policy = runtime
+                .pairing_client
+                .policy()
+                .await
+                .unwrap_or_else(|_| DesktopPolicyStatus::unavailable());
+            if !policy.available || !policy.enabled || policy.update_required {
+                Err("local_policy_denied")
+            } else {
+                *runtime
+                    .cloud_policy
+                    .write()
+                    .map_err(|_| "Cloud policy lock failed closed.".to_string())? = policy.clone();
+                apply_policy_to_local_state(state, &policy).await?;
+                let mut local_session = state.session.lock().await;
+                if !local_session.is_active() || local_session.state().paused {
+                    Err("local_session_inactive_or_paused")
+                } else {
+                    local_session.set_fast_support(command.action == "enable_fast_support");
+                    Ok(if command.action == "enable_fast_support" {
+                        "fast_support_enabled"
+                    } else {
+                        "fast_support_disabled"
+                    })
+                }
+            }
+        }
+        "revoke_session_approvals" => {
+            state.approvals.lock().await.revoke_all();
+            state
+                .port_approvals
+                .lock()
+                .await
+                .disconnect_session(&session.session_id);
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .clear();
+            Ok("session_approvals_revoked")
+        }
+        "revoke_port" => {
+            let port = match command.port {
+                Some(port) => port,
+                None => {
+                    return report_control_outcome(
+                        runtime,
+                        session,
+                        &command,
+                        "denied",
+                        "invalid_port",
+                    )
+                    .await
+                }
+            };
+            state.port_approvals.lock().await.revoke_port(port);
+            state.preview_traffic.lock().await.clear_all();
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .remove(&port);
+            Ok("port_approval_revoked")
+        }
+        "disconnect_session" => {
+            shutdown_cleanup(state, "cloud_control_disconnect")
+                .await
+                .map_err(|error| error.to_string())?;
+            runtime
+                .pending_relay_approvals
+                .write()
+                .map_err(|_| "Relay state lock failed closed.".to_string())?
+                .clear();
+            runtime
+                .preview_contexts
+                .write()
+                .map_err(|_| "Preview state lock failed closed.".to_string())?
+                .clear();
+            Ok("session_disconnected")
+        }
+        _ => Err("unsupported_local_control_action"),
+    };
+
+    match result {
+        Ok(reason) => {
+            append_control_event(
+                state,
+                &command.command_id,
+                "Cloud control command applied locally.",
+            )
+            .await?;
+            report_control_outcome(runtime, session, &command, "applied", reason).await
+        }
+        Err(reason) => report_control_outcome(runtime, session, &command, "denied", reason).await,
+    }
+}
+
+async fn report_control_outcome(
+    runtime: &DesktopRuntime,
+    session: &vectant_local_support_app::session::SessionState,
+    command: &RelayControlCommand,
+    decision: &str,
+    reason: &str,
+) -> Result<(), String> {
+    runtime
+        .relay_client
+        .report_control_outcome(
+            &runtime.device_identity,
+            &session.session_id,
+            command,
+            decision,
+            reason,
         )
         .await
 }

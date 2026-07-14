@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authenticate: vi.fn(),
+  controlLease: vi.fn(),
   lease: vi.fn(),
+  controlOutcome: vi.fn(),
   outcome: vi.fn(),
   updatePorts: vi.fn(),
 }));
@@ -11,7 +13,9 @@ vi.mock("@/lib/local-support/deviceAuth", () => ({
   authenticateLocalSupportDevice: mocks.authenticate,
 }));
 vi.mock("@/lib/local-support/relayStore", () => ({
+  leaseLocalControlCommand: mocks.controlLease,
   leaseRelayRequest: mocks.lease,
+  recordLocalControlOutcome: mocks.controlOutcome,
   recordRelayOutcome: mocks.outcome,
 }));
 vi.mock("@/lib/local-support/sessionStore", () => ({
@@ -35,10 +39,66 @@ function authenticate() {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  mocks.authenticate.mockResolvedValue({ ok: false, reason: "device_signature_invalid" });
 });
 
 describe("device-authenticated relay endpoint", () => {
+  it("prioritizes an exact-session control command over file delivery", async () => {
+    authenticate();
+    mocks.controlLease.mockResolvedValue({
+      command_id: "cmd_12345678",
+      session_id: "sess_12345678",
+      action: "pause_session",
+      lease_id: "11111111-1111-1111-1111-111111111111",
+    });
+
+    const response = await POST(request({ action: "poll" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toMatchObject({
+      decision: "relay_control_command",
+      command: { command_id: "cmd_12345678", action: "pause_session" },
+      raw_body_included: false,
+      bytes_sent: 0,
+    });
+    expect(mocks.lease).not.toHaveBeenCalled();
+  });
+
+  it("records a session-bound control outcome without accepting a body", async () => {
+    authenticate();
+    mocks.controlOutcome.mockResolvedValue({
+      decision: "applied",
+      command_id: "cmd_12345678",
+    });
+    const body = {
+      action: "control_outcome",
+      command_id: "cmd_12345678",
+      lease_id: "11111111-1111-1111-1111-111111111111",
+      decision: "applied",
+      reason: "pause_applied",
+    };
+
+    const response = await POST(request(body));
+    expect(response.status).toBe(200);
+    expect(mocks.controlOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: body.command_id,
+      leaseId: body.lease_id,
+      sessionId: "sess_12345678",
+      deviceFingerprint: "sha256:1111111111111111",
+      decision: "applied",
+    }));
+    await expect(response.json()).resolves.toMatchObject({
+      decision: "applied",
+      raw_body_included: false,
+    });
+
+    const forbidden = await POST(request({ ...body, response_body: "local secret" }));
+    expect(forbidden.status).toBe(400);
+    expect(mocks.controlOutcome).toHaveBeenCalledTimes(1);
+  });
+
   it("leases a minimized signed envelope to the paired desktop", async () => {
     authenticate();
     mocks.lease.mockResolvedValue({
@@ -148,7 +208,7 @@ describe("device-authenticated relay endpoint", () => {
     mocks.authenticate.mockResolvedValueOnce({ ok: false, reason: "device_signature_invalid" });
     expect((await POST(request({ action: "poll" }))).status).toBe(403);
 
-    expect((await POST(request("x".repeat(4097)))).status).toBe(400);
+    expect((await POST(request("x".repeat(16 * 1024 + 1)))).status).toBe(400);
 
     authenticate();
     mocks.outcome.mockResolvedValueOnce(null);

@@ -39,6 +39,23 @@ export async function findActivePairedSession(sessionId, deviceFingerprint, clie
   });
 }
 
+export async function findActiveBrowserControlSession(
+  { accountId, sessionId, workspaceId },
+  client = prisma,
+  now = new Date(),
+) {
+  return client.localSupportSession.findFirst({
+    where: {
+      accountId,
+      sessionId,
+      workspaceId,
+      status: "active",
+      revokedAt: null,
+      expiresAt: { gt: now },
+    },
+  });
+}
+
 export async function authorizeRelaySession(decision, client = prisma, now = new Date()) {
   const session = await client.localSupportSession.findFirst({
     where: {

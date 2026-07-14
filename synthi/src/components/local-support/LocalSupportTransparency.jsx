@@ -320,7 +320,9 @@ export default function LocalSupportTransparency() {
   const liveWorkspace = liveState?.workspace || {};
   const connected = Boolean(liveSession.connected) && !localDisconnected;
   const localControlAvailable = liveState?.local_control_available === true;
+  const localControlViaRelay = liveState?.local_control_via_relay === true;
   const controlsAvailable = connected && localControlAvailable;
+  const relayControlsAvailable = connected && (localControlAvailable || localControlViaRelay);
   const paused = Boolean(liveSession.paused || localPaused);
   const liveFastSupport = liveSession.permission_mode === "Fast Support"
     && Number(liveSession.fast_support_remaining_seconds || 0) > 0;
@@ -381,7 +383,9 @@ export default function LocalSupportTransparency() {
       : "Loading cloud policy state without using cached data.");
 
   async function requestLocalControlAction(action, body = {}) {
-    if (!controlsAvailable) {
+    const relayAction = !["export_history", "delete_history"].includes(action);
+    const actionAvailable = connected && (localControlAvailable || (localControlViaRelay && relayAction));
+    if (!actionAvailable) {
       setControlActionStatus({
         tone: "bad",
         text: "Local controls require a live installed desktop app connection.",
@@ -396,7 +400,12 @@ export default function LocalSupportTransparency() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ action, ...body }),
+        body: JSON.stringify({
+          action,
+          ...body,
+          session_id: liveSession.session_id,
+          workspace_id: liveWorkspace.workspace_id,
+        }),
       });
       const result = await response.json();
       if (!response.ok || result.decision === "denied") {
@@ -476,12 +485,12 @@ export default function LocalSupportTransparency() {
   async function togglePause() {
     const action = paused ? "resume_session" : "pause_session";
     const result = await requestLocalControlAction(action);
-    if (result) setLocalPaused(!paused);
+    if (result?.decision === "local_control_action_applied") setLocalPaused(!paused);
   }
 
   async function disconnectLocalSupport() {
     const result = await requestLocalControlAction("disconnect_session");
-    if (result) {
+    if (result?.decision === "local_control_action_applied") {
       setLocalDisconnected(true);
       setLocalPaused(true);
       setApprovalsRevoked(true);
@@ -491,18 +500,18 @@ export default function LocalSupportTransparency() {
 
   async function revokeSessionApprovals() {
     const result = await requestLocalControlAction("revoke_session_approvals");
-    if (result) setApprovalsRevoked(true);
+    if (result?.decision === "local_control_action_applied") setApprovalsRevoked(true);
   }
 
   async function toggleFastSupport() {
     const enabling = !(fastSupportActive || liveFastSupport);
     const result = await requestLocalControlAction(enabling ? "enable_fast_support" : "disable_fast_support");
-    if (result) setFastSupportActive(enabling);
+    if (result?.decision === "local_control_action_applied") setFastSupportActive(enabling);
   }
 
   async function revokePortApproval(port) {
     const result = await requestLocalControlAction("revoke_port", { port });
-    if (result) setRevokedPorts((values) => Array.from(new Set([...values, port])));
+    if (result?.decision === "local_control_action_applied") setRevokedPorts((values) => Array.from(new Set([...values, port])));
   }
 
   async function exportScrubbedHistory() {
@@ -550,7 +559,7 @@ export default function LocalSupportTransparency() {
               size="sm"
               className="border-[var(--border-medium)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-elevated)]"
               onClick={togglePause}
-              disabled={!controlsAvailable}
+              disabled={!relayControlsAvailable}
             >
               {paused ? <Play className="size-4" aria-hidden="true" /> : <Pause className="size-4" aria-hidden="true" />}
               {paused ? "Resume" : "Pause"}
@@ -560,7 +569,7 @@ export default function LocalSupportTransparency() {
               variant="destructive"
               size="sm"
               className="bg-[var(--accent-danger)] text-[var(--bg-app)] hover:brightness-110"
-              disabled={!controlsAvailable}
+              disabled={!relayControlsAvailable}
               onClick={disconnectLocalSupport}
             >
               <Unplug className="size-4" aria-hidden="true" />
@@ -914,7 +923,7 @@ export default function LocalSupportTransparency() {
                             variant="destructive"
                             className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
                             onClick={() => revokePortApproval(item.port)}
-                            disabled={revoked || !controlsAvailable}
+                            disabled={revoked || !relayControlsAvailable}
                           >
                             <Unplug className="size-4" aria-hidden="true" />
                             Revoke port approval
@@ -988,7 +997,7 @@ export default function LocalSupportTransparency() {
                   <div className="font-medium text-amber-100">{fastSupportActive || liveFastSupport ? "Fast Support is active" : "Enable Fast Support for this session"}</div>
                   <p className="mt-1 max-w-[70ch] text-sm leading-6 text-amber-100/80">Automatically shares safe project metadata for the selected workspace. Secrets, source, logs, writes, commands, repo uploads, and persistent approvals remain blocked or approval-gated.</p>
                 </div>
-                <Button type="button" variant={fastSupportActive || liveFastSupport ? "outline" : "default"} disabled={!controlsAvailable || !fastSupportEnabled || paused} onClick={toggleFastSupport}>
+                <Button type="button" variant={fastSupportActive || liveFastSupport ? "outline" : "default"} disabled={!relayControlsAvailable || !fastSupportEnabled || paused} onClick={toggleFastSupport}>
                   {fastSupportActive || liveFastSupport ? "Switch to Balanced" : "Enable Fast Support"}
                 </Button>
               </div>
@@ -1001,7 +1010,7 @@ export default function LocalSupportTransparency() {
                   variant="outline"
                   className="justify-start border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.08]"
                   onClick={revokeSessionApprovals}
-                  disabled={!controlsAvailable}
+                  disabled={!relayControlsAvailable}
                 >
                   <RotateCcw className="size-4" aria-hidden="true" />
                   Revoke session approvals
@@ -1011,7 +1020,7 @@ export default function LocalSupportTransparency() {
                   variant="destructive"
                   className="justify-start bg-red-500/90 text-zinc-950 hover:bg-red-400"
                   onClick={disconnectLocalSupport}
-                  disabled={!controlsAvailable}
+                  disabled={!relayControlsAvailable}
                 >
                   <Unplug className="size-4" aria-hidden="true" />
                   Disconnect and revoke
@@ -1026,7 +1035,7 @@ export default function LocalSupportTransparency() {
                     ? "Session approvals revoked. Future sends require review."
                     : !connected
                       ? "Connect the desktop app before revoking approvals. This page will not fake a revoke."
-                      : localControlAvailable
+                      : localControlAvailable || localControlViaRelay
                         ? "No live approvals are active."
                         : "The browser sees cloud state, but local controls require the installed desktop app."}
                 </div>
