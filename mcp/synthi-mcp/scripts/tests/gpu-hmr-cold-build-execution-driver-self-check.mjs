@@ -22,7 +22,10 @@ import {
 import {
   COLD_BUILD_EXECUTION_DRIVER_AUTHORITY,
   COLD_BUILD_EXECUTION_DRIVER_SCHEMA,
+  COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
+  COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
   executeColdBuildLauncherPlan,
+  verifyColdBuildReadyRefusalEvidence,
   verifyColdBuildExecutionDriverResult,
 } from '../lib/gpu-hmr-cold-build-execution-driver.mjs';
 import { createColdBuildLauncherExecutionPlan } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
@@ -318,6 +321,34 @@ async function main() {
     }
     assert.ok(refusedError instanceof Error);
     assert.match(refusedError.message, /ready_receipt_refused|exited_before_ready/);
+    const refusal = refusedError.readyRefusalEvidence;
+    assert.equal(refusal.schemaVersion, COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA);
+    assert.equal(refusal.proofAuthority, COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY);
+    assert.equal(
+      verifyColdBuildReadyRefusalEvidence(refusal, refusedFixture.plan),
+      refusal,
+    );
+    assert.equal(refusal.childExitCode, 9);
+    assert.equal(refusal.commandTimedOut, false);
+    assert.equal(refusal.protocolAccepted, false);
+    assert.equal(refusal.outputSnapshotAccepted, false);
+    assert.ok(refusal.blockingGaps.includes('output_snapshot_invalid'));
+    assert.match(refusal.commandStdoutHash, /^sha256:[a-f0-9]{64}$/);
+    assert.match(refusal.commandStderrHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(refusal.acceptedAsColdBuildRefusalEvidence, true);
+    assert.equal(refusal.acceptedAsColdBuildEvidence, false);
+    assert.equal(refusal.acceptedForGpuHmr, false);
+    assert.equal(refusal.gpuHmrSuccess, false);
+    refusal.gpuHmrSuccess = true;
+    assert.throws(
+      () => verifyColdBuildReadyRefusalEvidence(refusal, refusedFixture.plan),
+      /ready_refusal_evidence_invalid/,
+    );
+    refusal.gpuHmrSuccess = false;
+    assert.equal(
+      verifyColdBuildReadyRefusalEvidence(refusal, refusedFixture.plan),
+      refusal,
+    );
     assert.equal(refusedError.cleanupEvidence?.absenceProven, true);
     assert.equal(refusedError.cleanupEvidence?.acceptedForGpuHmr, false);
     assert.equal(refusedError.cleanupEvidence?.gpuHmrSuccess, false);

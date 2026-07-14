@@ -41,6 +41,10 @@ export const COLD_BUILD_HOST_FILE_PUBLICATION_SCHEMA =
   'synthi.gpu_hmr.cold_build_host_file_publication.v1';
 export const COLD_BUILD_HOST_FILE_PUBLICATION_AUTHORITY =
   'exclusive_host_control_file_publication_only_not_gpu_hmr_success';
+export const COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA =
+  'synthi.gpu_hmr.cold_build_ready_refusal.v1';
+export const COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY =
+  'observed_ready_receipt_refusal_only_not_cold_build_or_gpu_hmr_success';
 
 const CONTAINER_ID_PATTERN = /^[a-f0-9]{64}$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
@@ -66,6 +70,149 @@ function recomputeEvidenceHash(evidence) {
   const projection = { ...evidence };
   delete projection.evidenceHash;
   return contentHash(stableJson(projection));
+}
+
+function exactKeys(value, keys) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && stableJson(Object.keys(value).sort()) === stableJson([...keys].sort());
+}
+
+function createReadyRefusalEvidence(ready, plan) {
+  const receipt = ready.receipt;
+  const evidence = {
+    schemaVersion: COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
+    proofAuthority: COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
+    executionNonce: plan.executionNonce,
+    specHash: plan.specHash,
+    commandSpecHash: plan.commandSpecHash,
+    sourceBindingHash: plan.sourceBindingHash,
+    launcherExecutableHash: plan.launcherExecutableHash,
+    readyReceiptHash: ready.receiptHash,
+    readyFrameHash: ready.frameHash,
+    protocolAccepted: receipt.protocolAccepted,
+    childIdentityAccepted: receipt.childIdentityAccepted,
+    childExitCode: receipt.childExitCode,
+    commandTimedOut: receipt.commandTimedOut,
+    commandStdoutByteLength: receipt.commandStdout.byteLength,
+    commandStdoutHash: receipt.commandStdout.contentHash,
+    commandStderrByteLength: receipt.commandStderr.byteLength,
+    commandStderrHash: receipt.commandStderr.contentHash,
+    processTreeQuiescent: receipt.processTree.quiescent,
+    residualProcessCount: receipt.processTree.finalResidualPids.length,
+    outputSnapshotAccepted: receipt.outputSnapshotAccepted,
+    outputSnapshotHash: receipt.outputSnapshotHash,
+    outputEntryCount: receipt.outputEntryCount,
+    outputByteLength: receipt.outputByteLength,
+    blockingGaps: [...receipt.blockingGaps],
+    acceptedAsColdBuildRefusalEvidence: true,
+    acceptedAsColdBuildEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  evidence.evidenceHash = recomputeEvidenceHash(evidence);
+  return evidence;
+}
+
+export function verifyColdBuildReadyRefusalEvidence(evidence, plan) {
+  const blockingGaps = evidence?.blockingGaps;
+  const hashOrEmpty = (value) => value === '' || HASH_PATTERN.test(value ?? '');
+  const safeCount = (value) => Number.isSafeInteger(value) && value >= 0;
+  if (
+    !exactKeys(evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'executionNonce',
+      'specHash',
+      'commandSpecHash',
+      'sourceBindingHash',
+      'launcherExecutableHash',
+      'readyReceiptHash',
+      'readyFrameHash',
+      'protocolAccepted',
+      'childIdentityAccepted',
+      'childExitCode',
+      'commandTimedOut',
+      'commandStdoutByteLength',
+      'commandStdoutHash',
+      'commandStderrByteLength',
+      'commandStderrHash',
+      'processTreeQuiescent',
+      'residualProcessCount',
+      'outputSnapshotAccepted',
+      'outputSnapshotHash',
+      'outputEntryCount',
+      'outputByteLength',
+      'blockingGaps',
+      'acceptedAsColdBuildRefusalEvidence',
+      'acceptedAsColdBuildEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || evidence.schemaVersion !== COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA
+    || evidence.proofAuthority !== COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY
+    || evidence.executionNonce !== plan?.executionNonce
+    || evidence.specHash !== plan?.specHash
+    || evidence.commandSpecHash !== plan?.commandSpecHash
+    || evidence.sourceBindingHash !== plan?.sourceBindingHash
+    || evidence.launcherExecutableHash !== plan?.launcherExecutableHash
+    || !HASH_PATTERN.test(evidence.readyReceiptHash ?? '')
+    || !HASH_PATTERN.test(evidence.readyFrameHash ?? '')
+    || typeof evidence.protocolAccepted !== 'boolean'
+    || typeof evidence.childIdentityAccepted !== 'boolean'
+    || !Number.isSafeInteger(evidence.childExitCode)
+    || evidence.childExitCode < 0
+    || evidence.childExitCode > 255
+    || typeof evidence.commandTimedOut !== 'boolean'
+    || !safeCount(evidence.commandStdoutByteLength)
+    || !HASH_PATTERN.test(evidence.commandStdoutHash ?? '')
+    || !safeCount(evidence.commandStderrByteLength)
+    || !HASH_PATTERN.test(evidence.commandStderrHash ?? '')
+    || typeof evidence.processTreeQuiescent !== 'boolean'
+    || !safeCount(evidence.residualProcessCount)
+    || typeof evidence.outputSnapshotAccepted !== 'boolean'
+    || !hashOrEmpty(evidence.outputSnapshotHash)
+    || !safeCount(evidence.outputEntryCount)
+    || !safeCount(evidence.outputByteLength)
+    || !Array.isArray(blockingGaps)
+    || blockingGaps.some((gap, index) => (
+      typeof gap !== 'string'
+      || gap.length < 1
+      || (index > 0 && gap <= blockingGaps[index - 1])
+    ))
+    || evidence.protocolAccepted !== (blockingGaps.length === 0)
+    || (
+      evidence.protocolAccepted === true
+      && (
+        evidence.childIdentityAccepted !== true
+        || evidence.outputSnapshotAccepted !== true
+        || evidence.processTreeQuiescent !== true
+        || evidence.residualProcessCount !== 0
+        || !HASH_PATTERN.test(evidence.outputSnapshotHash)
+      )
+    )
+    || (
+      evidence.protocolAccepted === true
+      && evidence.childExitCode === 0
+      && evidence.commandTimedOut === false
+    )
+    || evidence.acceptedAsColdBuildRefusalEvidence !== true
+    || evidence.acceptedAsColdBuildEvidence !== false
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+  ) {
+    throw new Error('cold_build_ready_refusal_evidence_invalid');
+  }
+  return evidence;
 }
 
 function payloadManifestFromPayloads(payloads) {
@@ -606,7 +753,10 @@ export async function executeColdBuildLauncherPlan(plan, {
       || ready.receipt.childExitCode !== 0
       || ready.receipt.commandTimedOut !== false
     ) {
-      throw new Error('cold_build_execution_driver_ready_receipt_refused');
+      const error = new Error('cold_build_execution_driver_ready_receipt_refused');
+      error.readyRefusalEvidence = createReadyRefusalEvidence(ready, plan);
+      verifyColdBuildReadyRefusalEvidence(error.readyRefusalEvidence, plan);
+      throw error;
     }
 
     const collected = assertProcessSucceeded(await runDocker(
