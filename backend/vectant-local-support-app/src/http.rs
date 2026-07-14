@@ -533,18 +533,44 @@ async fn enroll_full_access(
     }
     let token = bearer(&headers)?;
     let auth = LocalRequestAuthorization::from_headers(&headers)?;
-    let (session_id, account_id, org_id, device_fingerprint) = {
+    let (session_id, account_id, org_id, device_fingerprint, device_proof_valid) = {
         let mut session = state.session.lock().await;
         session
             .validate_control(token, &request.request_id)
             .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        let receipt_expires_at = request.receipt.expires_at.to_rfc3339();
+        let expected_device_proof =
+            session.request_device_proof_for_context(&crate::session::DeviceProofContext {
+                request_id: &request.request_id,
+                account_id: session.account_id(),
+                org_id: session.org_id(),
+                workspace_id: session.workspace_id(),
+                capability: "full_access.enroll",
+                actor: &request.receipt.support_actor,
+                expires_at: &receipt_expires_at,
+                protocol_version: &auth.protocol_version,
+                policy_version: &auth.policy_version,
+            });
         (
             session.session_id().to_string(),
             session.account_id().to_string(),
             session.org_id().to_string(),
             session.device_fingerprint().to_string(),
+            auth.device_fingerprint == session.device_fingerprint()
+                && auth.protocol_version == crate::APP_PROTOCOL_VERSION
+                && auth.policy_version == crate::POLICY_VERSION
+                && constant_time_eq(
+                    auth.device_proof.as_bytes(),
+                    expected_device_proof.as_bytes(),
+                ),
         )
     };
+    if !device_proof_valid {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "full_access_device_proof_invalid",
+        ));
+    }
     let workspace_hash = state.workspace.summary().root_hash;
     if request.receipt.session_id != session_id
         || request.receipt.account_id != account_id
