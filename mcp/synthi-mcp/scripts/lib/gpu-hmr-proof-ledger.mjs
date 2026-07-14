@@ -2,6 +2,14 @@ import { createHash } from 'node:crypto';
 import { evaluateGpuHmrDeterministicVisualMode } from './gpu-hmr-visual-evidence.mjs';
 
 export const GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION = 'synthi.gpu.hmr.proof_ledger.v1';
+export const GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.visual_capture_runtime_binding.v1';
+export const GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_AUTHORITY =
+  'visual_capture_runtime_correlation_only_not_gpu_hmr_success';
+export const GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION =
+  'synthi.gpu_hmr.frame_gate_runtime_binding.v1';
+export const GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY =
+  'validated_runtime_tuple_for_visual_capture_gate_only_not_gpu_hmr_success';
 
 const GPU_PROJECT_KINDS = new Set(['gpu_project', 'mixed_project']);
 const GPU_ARTIFACT_EDIT_KINDS = new Set(['gpu_artifact_edit']);
@@ -59,6 +67,31 @@ function stableJson(value) {
   return `{${Object.keys(value).sort().map((key) =>
     `${JSON.stringify(key)}:${stableJson(value[key])}`
   ).join(',')}}`;
+}
+
+function withoutVisualCaptureRuntimeBinding(value) {
+  if (Array.isArray(value)) return value.map(withoutVisualCaptureRuntimeBinding);
+  if (value === null || typeof value !== 'object') return value;
+  const visualArtifactContainer = [
+    'before_image',
+    'beforeImage',
+    'after_image',
+    'afterImage',
+    'diff_image',
+    'diffImage',
+    'before_image_hash',
+    'beforeImageHash',
+    'after_image_hash',
+    'afterImageHash',
+    'diff_image_hash',
+    'diffImageHash',
+  ].some((key) => hasOwn(value, key));
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !(visualArtifactContainer && [
+      'visual_capture_runtime_binding',
+      'visualCaptureRuntimeBinding',
+    ].includes(key)))
+    .map(([key, entry]) => [key, withoutVisualCaptureRuntimeBinding(entry)]));
 }
 
 function sha256Hex(value) {
@@ -339,6 +372,18 @@ function eventTimestamp(event) {
   );
 }
 
+function eventTimestampBinding(event, metricClock) {
+  const monotonicNs = finiteNumber(
+    event.timestamp_monotonic_ns ?? event.timestampMonotonicNs,
+  );
+  if (monotonicNs !== null) return { clock: 'monotonic_ns', value: monotonicNs };
+  const timestampMs = finiteNumber(event.timestamp_ms ?? event.timestampMs);
+  if (timestampMs !== null) return { clock: 'unix_epoch_ms', value: timestampMs };
+  const genericTimestamp = finiteNumber(event.ts);
+  if (genericTimestamp === null || !firstText(metricClock)) return null;
+  return { clock: firstText(metricClock), value: genericTimestamp };
+}
+
 function outputAfterDispatchId(outputEvent) {
   return firstText(
     outputEvent.after_dispatch_id,
@@ -378,6 +423,48 @@ function outputOracleTarget(record) {
 
 function outputOracleTargetKind(target) {
   return firstText(asObject(target.kind).value, target.kind, target.target_kind, target.targetKind);
+}
+
+function visualOutputTargetId(record) {
+  const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  const eventTarget = asObject(outputEvent.output_target ?? outputEvent.outputTarget);
+  const oracleTarget = outputOracleTarget(record);
+  return firstText(
+    typeof outputEvent.output_target === 'string' ? outputEvent.output_target : null,
+    typeof outputEvent.outputTarget === 'string' ? outputEvent.outputTarget : null,
+    outputEvent.output_target_id,
+    outputEvent.outputTargetId,
+    outputEvent.target_id,
+    outputEvent.targetId,
+    eventTarget.id,
+    eventTarget.target_id,
+    eventTarget.targetId,
+    oracleTarget.id,
+    oracleTarget.target_id,
+    oracleTarget.targetId,
+  );
+}
+
+function runtimeSessionId(record) {
+  const processIdentity = asObject(record.process_identity ?? record.processIdentity);
+  const dispatchEvent = asObject(record.dispatch_event ?? record.dispatchEvent);
+  const outputEvent = asObject(record.output_event ?? record.outputEvent);
+  return firstText(
+    record.runtime_session_id,
+    record.runtimeSessionId,
+    processIdentity.runtime_session_id,
+    processIdentity.runtimeSessionId,
+    processIdentity.runtime_session,
+    processIdentity.runtimeSession,
+    dispatchEvent.runtime_session_id,
+    dispatchEvent.runtimeSessionId,
+    dispatchEvent.runtime_session,
+    dispatchEvent.runtimeSession,
+    outputEvent.runtime_session_id,
+    outputEvent.runtimeSessionId,
+    outputEvent.runtime_session,
+    outputEvent.runtimeSession,
+  );
 }
 
 function computeOnlyOutputTargetVerified(record) {
@@ -684,6 +771,11 @@ function canonicalSha256(value) {
   return digest ? `sha256:${digest}` : null;
 }
 
+function canonicalArtifactSha256(value) {
+  const text = firstText(value);
+  return canonicalSha256(text?.replace(/^artifact:/i, ''));
+}
+
 function expectedVisualCameraStateHashes(record) {
   const contract = asObject(record.acceptanceContract ?? record.acceptance_contract);
   const state = asObject(contract.state_preservation_checks ?? contract.statePreservationChecks);
@@ -786,6 +878,611 @@ function visualTraceCorrelates(trace, identifiers) {
     if (candidate.length >= 6 && normalizedTrace.includes(candidate)) return true;
   }
   return false;
+}
+
+function visualCaptureRuntimeBindingObject(artifacts) {
+  return nonEmptyObject(objectFieldValue(artifacts, [
+    'visual_capture_runtime_binding',
+    'visualCaptureRuntimeBinding',
+  ]));
+}
+
+function visualCaptureManifestObject(artifacts) {
+  return nonEmptyObject(objectFieldValue(artifacts, [
+    'capture_manifest',
+    'captureManifest',
+    'after_capture_manifest',
+    'afterCaptureManifest',
+  ]));
+}
+
+function visualCaptureFrameGateObject(captureManifest) {
+  return nonEmptyObject(objectFieldValue(captureManifest, ['frame_gate', 'frameGate']));
+}
+
+function visualCaptureFrameGateRuntimeBindingObject(frameGate) {
+  return nonEmptyObject(objectFieldValue(frameGate, [
+    'gpu_hmr_runtime_binding',
+    'gpuHmrRuntimeBinding',
+    'runtime_binding',
+    'runtimeBinding',
+  ]));
+}
+
+function timestampBindingProjection(value) {
+  const source = asObject(value);
+  return {
+    clock: firstText(source.clock, source.metric_clock, source.metricClock),
+    value: finiteNumber(source.value ?? source.timestamp),
+  };
+}
+
+function visualFrameGateRuntimeBindingProjection(record) {
+  const epochPublishEvent = asObject(record.epochPublishEvent ?? record.epoch_publish_event);
+  const dispatchEvent = asObject(record.dispatchEvent ?? record.dispatch_event);
+  const outputEvent = asObject(record.outputEvent ?? record.output_event);
+  const processIdentity = asObject(record.processIdentity ?? record.process_identity);
+  const deviceIdentity = asObject(record.deviceIdentity ?? record.device_identity);
+  return {
+    schema_version: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION,
+    proof_authority: GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY,
+    runtime_proof_id: firstText(record.runtimeProofId, record.runtime_proof_id),
+    runtime_proof_state: firstText(record.runtimeProofState, record.runtime_proof_state),
+    runtime_proof_accepted:
+      record.runtimeProofAccepted === true || record.runtime_proof_accepted === true,
+    runtime_proof_observed_at_ms: finiteNumber(
+      record.runtimeProofObservedAtMs ?? record.runtime_proof_observed_at_ms,
+    ),
+    hmr_observed_at_ms: finiteNumber(record.hmrObservedAtMs ?? record.hmr_observed_at_ms),
+    artifact_after_hash: canonicalArtifactSha256(firstText(
+      record.artifactAfterHash,
+      record.artifact_after_hash,
+    )),
+    epoch_publish_event_id: eventId(epochPublishEvent),
+    published_epoch: eventEpoch(epochPublishEvent),
+    dispatch_id: eventId(dispatchEvent),
+    dispatch_epoch: eventEpoch(dispatchEvent),
+    dispatch_artifact_hash: canonicalArtifactSha256(eventArtifactHash(dispatchEvent)),
+    dispatch_timestamp: eventTimestampBinding(dispatchEvent, record.metricClock),
+    output_event_id: eventId(outputEvent),
+    output_after_dispatch_id: outputAfterDispatchId(outputEvent),
+    output_epoch: eventEpoch(outputEvent),
+    output_artifact_hash: canonicalArtifactSha256(eventArtifactHash(outputEvent)),
+    output_target_id: visualOutputTargetId(record),
+    output_timestamp: eventTimestampBinding(outputEvent, record.metricClock),
+    process_id: eventProcessId(processIdentity),
+    runtime_session_id: firstText(record.runtimeSessionId, record.runtime_session_id),
+    device_id: firstIdentifierText(
+      deviceIdentity.device_uuid,
+      deviceIdentity.deviceUuid,
+      deviceIdentity.device_id,
+      deviceIdentity.deviceId,
+    ),
+    metric_clock: firstText(record.metricClock, record.metric_clock),
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+}
+
+export function buildGpuHmrFrameGateRuntimeBinding(input = {}) {
+  const record = normalizeGpuHmrProofLedgerRecord(input);
+  const projection = visualFrameGateRuntimeBindingProjection(record);
+  const missingFields = missingVisualFrameGateRuntimeBindingFields(projection);
+  if (missingFields.length > 0) {
+    throw new Error(
+      `visual_frame_gate_runtime_binding_material_incomplete:${missingFields.join(',')}`,
+    );
+  }
+  return Object.freeze(projection);
+}
+
+function canonicalVisualFrameGateRuntimeBinding(value) {
+  const source = asObject(value);
+  return {
+    schema_version: firstText(source.schema_version, source.schemaVersion),
+    proof_authority: firstText(source.proof_authority, source.proofAuthority),
+    runtime_proof_id: firstText(source.runtime_proof_id, source.runtimeProofId),
+    runtime_proof_state: firstText(source.runtime_proof_state, source.runtimeProofState),
+    runtime_proof_accepted:
+      source.runtime_proof_accepted === true || source.runtimeProofAccepted === true,
+    runtime_proof_observed_at_ms: finiteNumber(
+      source.runtime_proof_observed_at_ms ?? source.runtimeProofObservedAtMs,
+    ),
+    hmr_observed_at_ms: finiteNumber(source.hmr_observed_at_ms ?? source.hmrObservedAtMs),
+    artifact_after_hash: canonicalArtifactSha256(firstText(
+      source.artifact_after_hash,
+      source.artifactAfterHash,
+    )),
+    epoch_publish_event_id: firstText(
+      source.epoch_publish_event_id,
+      source.epochPublishEventId,
+    ),
+    published_epoch: firstText(source.published_epoch, source.publishedEpoch),
+    dispatch_id: firstText(source.dispatch_id, source.dispatchId),
+    dispatch_epoch: firstText(source.dispatch_epoch, source.dispatchEpoch),
+    dispatch_artifact_hash: canonicalArtifactSha256(firstText(
+      source.dispatch_artifact_hash,
+      source.dispatchArtifactHash,
+    )),
+    dispatch_timestamp: timestampBindingProjection(
+      source.dispatch_timestamp ?? source.dispatchTimestamp,
+    ),
+    output_event_id: firstText(source.output_event_id, source.outputEventId),
+    output_after_dispatch_id: firstText(
+      source.output_after_dispatch_id,
+      source.outputAfterDispatchId,
+    ),
+    output_epoch: firstText(source.output_epoch, source.outputEpoch),
+    output_artifact_hash: canonicalArtifactSha256(firstText(
+      source.output_artifact_hash,
+      source.outputArtifactHash,
+    )),
+    output_target_id: firstText(source.output_target_id, source.outputTargetId),
+    output_timestamp: timestampBindingProjection(
+      source.output_timestamp ?? source.outputTimestamp,
+    ),
+    process_id: firstIdentifierText(source.process_id, source.processId),
+    runtime_session_id: firstText(source.runtime_session_id, source.runtimeSessionId),
+    device_id: firstIdentifierText(source.device_id, source.deviceId),
+    metric_clock: firstText(source.metric_clock, source.metricClock),
+    accepted_for_gpu_hmr: source.accepted_for_gpu_hmr === false
+      && source.acceptedForGpuHmr !== true ? false : true,
+    gpu_hmr_success: source.gpu_hmr_success === false
+      && source.gpuHmrSuccess !== true ? false : true,
+    can_satisfy_runtime_proof: source.can_satisfy_runtime_proof === false
+      && source.canSatisfyRuntimeProof !== true ? false : true,
+    can_satisfy_dispatch_proof: source.can_satisfy_dispatch_proof === false
+      && source.canSatisfyDispatchProof !== true ? false : true,
+  };
+}
+
+function missingVisualFrameGateRuntimeBindingFields(projection) {
+  return Object.entries(projection)
+    .filter(([key, value]) => {
+      if (key === 'runtime_proof_accepted') return value !== true;
+      if ([
+        'accepted_for_gpu_hmr',
+        'gpu_hmr_success',
+        'can_satisfy_runtime_proof',
+        'can_satisfy_dispatch_proof',
+      ].includes(key)) return value !== false;
+      if (key === 'dispatch_timestamp' || key === 'output_timestamp') {
+        return !firstText(value?.clock) || finiteNumber(value?.value) === null;
+      }
+      return value === null || value === undefined || value === '';
+    })
+    .map(([key]) => key);
+}
+
+function visualCaptureManifestEvaluation(record, artifacts) {
+  const failures = [];
+  const captureManifest = visualCaptureManifestObject(artifacts);
+  const frameGate = visualCaptureFrameGateObject(captureManifest);
+  const suppliedRuntimeBinding = visualCaptureFrameGateRuntimeBindingObject(frameGate);
+  const expectedRuntimeBinding = visualFrameGateRuntimeBindingProjection(record);
+  const canonicalRuntimeBinding = suppliedRuntimeBinding
+    ? canonicalVisualFrameGateRuntimeBinding(suppliedRuntimeBinding)
+    : null;
+  const pixelVerification = visualPixelVerification(artifacts);
+  const afterImageHash = canonicalSha256(visualArtifactHash(
+    artifacts,
+    pixelVerification,
+    ['after_image_hash', 'afterImageHash'],
+    ['after_image_hash', 'afterImageHash'],
+  ));
+  const swapchainSize = artifactFieldArray(
+    artifacts,
+    'swapchain_size',
+    'swapchainSize',
+  ).map((value) => Number(value));
+
+  if (!captureManifest) failures.push({ code: 'visual_capture_manifest_missing' });
+  if (captureManifest && firstText(
+    captureManifest.schema_version,
+    captureManifest.schemaVersion,
+  ) !== 'synthi.mcp.capture_manifest.v1') {
+    failures.push({ code: 'visual_capture_manifest_schema_invalid' });
+  }
+  if (!frameGate) failures.push({ code: 'visual_capture_manifest_frame_gate_missing' });
+  if (
+    captureManifest
+    && (
+      captureManifest.accepted_for_gpu_hmr === true
+      || captureManifest.acceptedForGpuHmr === true
+      || captureManifest.gpu_hmr_success === true
+      || captureManifest.gpuHmrSuccess === true
+    )
+  ) {
+    failures.push({ code: 'visual_capture_manifest_success_authority_forbidden' });
+  }
+
+  const manifestImageHash = canonicalSha256(firstText(
+    captureManifest?.image_sha256,
+    captureManifest?.imageSha256,
+  ));
+  const imageByteLength = finiteNumber(
+    captureManifest?.image_byte_length ?? captureManifest?.imageByteLength,
+  );
+  if (!manifestImageHash || manifestImageHash !== afterImageHash) {
+    failures.push({ code: 'visual_capture_manifest_image_hash_mismatch' });
+  }
+  if (!Number.isInteger(imageByteLength) || imageByteLength <= 0) {
+    failures.push({ code: 'visual_capture_manifest_image_byte_length_invalid' });
+  }
+  const manifestCaptureBackend = firstText(
+    captureManifest?.capture_backend,
+    captureManifest?.captureBackend,
+  );
+  if (manifestCaptureBackend !== artifactFieldText(
+    artifacts,
+    'capture_backend',
+    'captureBackend',
+  )) {
+    failures.push({ code: 'visual_capture_manifest_backend_mismatch' });
+  }
+  const manifestWidth = finiteNumber(captureManifest?.width);
+  const manifestHeight = finiteNumber(captureManifest?.height);
+  if (
+    swapchainSize.length !== 2
+    || !Number.isInteger(manifestWidth)
+    || !Number.isInteger(manifestHeight)
+    || manifestWidth !== swapchainSize[0]
+    || manifestHeight !== swapchainSize[1]
+  ) {
+    failures.push({ code: 'visual_capture_manifest_dimensions_mismatch' });
+  }
+
+  const manifestSession = firstText(captureManifest?.session_id, captureManifest?.sessionId);
+  const frameGateSession = firstText(frameGate?.session_id, frameGate?.sessionId);
+  const manifestGateToken = firstText(captureManifest?.gate_token, captureManifest?.gateToken);
+  const frameGateToken = firstText(frameGate?.gate_token, frameGate?.gateToken);
+  if (
+    captureManifest?.gate_token_verified !== true
+    || frameGate?.gate_token_verified !== true
+    || !manifestGateToken
+    || manifestGateToken !== frameGateToken
+  ) {
+    failures.push({ code: 'visual_capture_manifest_gate_unverified' });
+  }
+  if (!manifestSession || manifestSession !== frameGateSession) {
+    failures.push({ code: 'visual_capture_manifest_session_mismatch' });
+  }
+
+  const frameSeq = finiteNumber(captureManifest?.frame_seq ?? captureManifest?.frameSeq);
+  const frameTsMs = finiteNumber(captureManifest?.frame_ts_ms ?? captureManifest?.frameTsMs);
+  const captureTsMs = finiteNumber(
+    captureManifest?.capture_ts_ms ?? captureManifest?.captureTsMs,
+  );
+  const requiredFrameSeq = finiteNumber(
+    captureManifest?.required_frame_seq
+    ?? captureManifest?.requiredFrameSeq
+    ?? frameGate?.required_frame_seq
+    ?? frameGate?.requiredFrameSeq,
+  );
+  const requiredTsMs = finiteNumber(
+    captureManifest?.required_ts_ms
+    ?? captureManifest?.requiredTsMs
+    ?? frameGate?.required_ts_ms
+    ?? frameGate?.requiredTsMs,
+  );
+  const capturedFrameSeq = finiteNumber(
+    frameGate?.captured_frame_seq ?? frameGate?.capturedFrameSeq,
+  );
+  const capturedTsMs = finiteNumber(frameGate?.captured_ts_ms ?? frameGate?.capturedTsMs);
+  const gateIssuedAtMs = finiteNumber(
+    frameGate?.gate_token_issued_at_ms ?? frameGate?.gateTokenIssuedAtMs,
+  );
+  const gateExpiresAtMs = finiteNumber(
+    frameGate?.gate_token_expires_at_ms ?? frameGate?.gateTokenExpiresAtMs,
+  );
+  if (
+    !Number.isInteger(frameSeq)
+    || frameSeq < 0
+    || frameSeq !== capturedFrameSeq
+    || !Number.isInteger(requiredFrameSeq)
+    || requiredFrameSeq < 0
+    || frameSeq < requiredFrameSeq
+  ) {
+    failures.push({ code: 'visual_capture_manifest_frame_sequence_invalid' });
+  }
+  if (
+    frameTsMs === null
+    || captureTsMs === null
+    || requiredTsMs === null
+    || capturedTsMs !== frameTsMs
+    || frameTsMs < requiredTsMs
+    || gateIssuedAtMs === null
+    || gateExpiresAtMs === null
+    || captureTsMs < gateIssuedAtMs
+    || captureTsMs > gateExpiresAtMs
+  ) {
+    failures.push({ code: 'visual_capture_manifest_timestamp_order_invalid' });
+  }
+
+  const missingRuntimeFields = missingVisualFrameGateRuntimeBindingFields(
+    expectedRuntimeBinding,
+  );
+  if (missingRuntimeFields.length > 0) {
+    failures.push({
+      code: 'visual_capture_runtime_binding_material_incomplete',
+      missingFields: missingRuntimeFields,
+    });
+  }
+  if (!suppliedRuntimeBinding) {
+    failures.push({ code: 'visual_capture_manifest_runtime_binding_missing' });
+  } else {
+    if (
+      canonicalRuntimeBinding.schema_version
+        !== GPU_HMR_FRAME_GATE_RUNTIME_BINDING_SCHEMA_VERSION
+      || canonicalRuntimeBinding.proof_authority
+        !== GPU_HMR_FRAME_GATE_RUNTIME_BINDING_AUTHORITY
+      || canonicalRuntimeBinding.accepted_for_gpu_hmr !== false
+      || canonicalRuntimeBinding.gpu_hmr_success !== false
+      || canonicalRuntimeBinding.can_satisfy_runtime_proof !== false
+      || canonicalRuntimeBinding.can_satisfy_dispatch_proof !== false
+    ) {
+      failures.push({ code: 'visual_capture_manifest_runtime_binding_authority_invalid' });
+    }
+    if (stableJson(canonicalRuntimeBinding) !== stableJson(expectedRuntimeBinding)) {
+      failures.push({ code: 'visual_capture_manifest_runtime_binding_mismatch' });
+    }
+  }
+  const dispatchTimestamp = expectedRuntimeBinding.dispatch_timestamp;
+  const outputTimestamp = expectedRuntimeBinding.output_timestamp;
+  if (
+    dispatchTimestamp?.clock !== 'monotonic_ns'
+    || outputTimestamp?.clock !== 'monotonic_ns'
+    || expectedRuntimeBinding.metric_clock !== 'monotonic_ns'
+    || dispatchTimestamp.value > outputTimestamp.value
+  ) {
+    failures.push({ code: 'visual_capture_runtime_binding_clock_domain_invalid' });
+  }
+  if (
+    expectedRuntimeBinding.runtime_proof_state !== 'gpu-hmr-full-runtime-proven'
+    || expectedRuntimeBinding.runtime_proof_observed_at_ms
+      < expectedRuntimeBinding.hmr_observed_at_ms
+    || gateIssuedAtMs < expectedRuntimeBinding.runtime_proof_observed_at_ms
+    || requiredTsMs < expectedRuntimeBinding.hmr_observed_at_ms
+  ) {
+    failures.push({ code: 'visual_capture_runtime_binding_proof_gate_order_invalid' });
+  }
+
+  return {
+    accepted: failures.length === 0,
+    failures,
+    captureManifest,
+    frameGate,
+    expectedRuntimeBinding,
+    suppliedRuntimeBinding: canonicalRuntimeBinding,
+    afterImageHash,
+    swapchainSize,
+    manifestImageHash,
+    imageByteLength,
+    manifestSession,
+    manifestGateToken,
+    frameSeq,
+    frameTsMs,
+    captureTsMs,
+    requiredFrameSeq,
+    requiredTsMs,
+    gateIssuedAtMs,
+    gateExpiresAtMs,
+  };
+}
+
+function visualCaptureRuntimeBindingProjection(record, artifacts) {
+  const manifestEvaluation = visualCaptureManifestEvaluation(record, artifacts);
+  const pixelVerification = visualPixelVerification(artifacts);
+  const deterministicVisualMode = asObject(
+    record.deterministicVisualMode ?? record.deterministic_visual_mode,
+  );
+  const projection = {
+    schema_version: GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_SCHEMA_VERSION,
+    proof_authority: GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_AUTHORITY,
+    proof_ledger_id: firstText(record.proofId, record.proof_id),
+    runtime_binding: manifestEvaluation.expectedRuntimeBinding,
+    capture_manifest_hash: manifestEvaluation.captureManifest
+      ? `sha256:${sha256Hex(stableJson(manifestEvaluation.captureManifest))}`
+      : null,
+    capture_event_id: firstText(
+      manifestEvaluation.captureManifest?.capture_event_id,
+      manifestEvaluation.captureManifest?.captureEventId,
+    ),
+    frame_event_id: firstText(
+      manifestEvaluation.captureManifest?.frame_event_id,
+      manifestEvaluation.captureManifest?.frameEventId,
+    ),
+    capture_session_id: manifestEvaluation.manifestSession,
+    gate_token_hash: manifestEvaluation.manifestGateToken
+      ? `sha256:${sha256Hex(manifestEvaluation.manifestGateToken)}`
+      : null,
+    frame_seq: manifestEvaluation.frameSeq,
+    frame_ts: { clock: 'unix_epoch_ms', value: manifestEvaluation.frameTsMs },
+    capture_ts: { clock: 'unix_epoch_ms', value: manifestEvaluation.captureTsMs },
+    gate_issued_ts: { clock: 'unix_epoch_ms', value: manifestEvaluation.gateIssuedAtMs },
+    gate_expires_ts: { clock: 'unix_epoch_ms', value: manifestEvaluation.gateExpiresAtMs },
+    required_frame_seq: manifestEvaluation.requiredFrameSeq,
+    required_frame_ts: { clock: 'unix_epoch_ms', value: manifestEvaluation.requiredTsMs },
+    image_hash: manifestEvaluation.manifestImageHash,
+    image_byte_length: manifestEvaluation.imageByteLength,
+    source_frame_hash: canonicalSha256(firstText(
+      manifestEvaluation.captureManifest?.source_frame_hash,
+      manifestEvaluation.captureManifest?.sourceFrameHash,
+    )),
+    broker_frame_hash: canonicalSha256(firstText(
+      manifestEvaluation.captureManifest?.broker_frame_hash,
+      manifestEvaluation.captureManifest?.brokerFrameHash,
+    )),
+    before_image_hash: canonicalSha256(visualArtifactHash(
+      artifacts,
+      pixelVerification,
+      ['before_image_hash', 'beforeImageHash'],
+      ['before_image_hash', 'beforeImageHash'],
+    )),
+    after_image_hash: manifestEvaluation.afterImageHash,
+    diff_image_hash: canonicalSha256(visualArtifactHash(
+      artifacts,
+      pixelVerification,
+      ['diff_image_hash', 'diffImageHash'],
+      ['diff_image_hash', 'diffImageHash'],
+    )),
+    camera_state_hash: canonicalSha256(artifactFieldText(
+      artifacts,
+      'camera_state_hash',
+      'cameraStateHash',
+    )),
+    capture_backend: artifactFieldText(artifacts, 'capture_backend', 'captureBackend'),
+    swapchain_size: manifestEvaluation.swapchainSize,
+    presentation_boundary_proven:
+      objectFieldValue(deterministicVisualMode, [
+        'frame_capture_after_epoch_dispatch',
+        'frameCaptureAfterEpochDispatch',
+      ]) === true
+      && objectFieldValue(deterministicVisualMode, [
+        'presentation_fence_or_frame_boundary',
+        'presentationFenceOrFrameBoundary',
+      ]) === true,
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+    can_satisfy_dispatch_proof: false,
+  };
+  const missingFields = Object.entries(projection)
+    .filter(([key, value]) => {
+      if (key === 'presentation_boundary_proven') return false;
+      if (key === 'swapchain_size') return !Array.isArray(value) || value.length !== 2;
+      if (key === 'runtime_binding') {
+        return missingVisualFrameGateRuntimeBindingFields(value).length > 0;
+      }
+      if (['frame_ts', 'capture_ts', 'gate_issued_ts', 'gate_expires_ts', 'required_frame_ts']
+        .includes(key)) {
+        return !firstText(value?.clock) || finiteNumber(value?.value) === null;
+      }
+      if ([
+        'accepted_for_gpu_hmr',
+        'gpu_hmr_success',
+        'can_satisfy_runtime_proof',
+        'can_satisfy_dispatch_proof',
+      ].includes(key)) return value !== false;
+      return value === null || value === undefined || value === '';
+    })
+    .map(([key]) => key);
+  return { projection, missingFields, manifestEvaluation };
+}
+
+function buildVisualCaptureRuntimeBindingFromNormalizedRecord(record, artifacts) {
+  const { projection, missingFields, manifestEvaluation } =
+    visualCaptureRuntimeBindingProjection(record, artifacts);
+  if (missingFields.length > 0 || !manifestEvaluation.accepted) {
+    const failureCodes = manifestEvaluation.failures.map(({ code }) => code);
+    throw new Error(
+      `visual_capture_runtime_binding_material_incomplete:${[
+        ...missingFields,
+        ...failureCodes,
+      ].join(',')}`,
+    );
+  }
+  return Object.freeze({
+    ...projection,
+    binding_hash: `sha256:${sha256Hex(stableJson(projection))}`,
+  });
+}
+
+export function buildGpuHmrVisualCaptureRuntimeBinding(input = {}, options = {}) {
+  const record = normalizeGpuHmrProofLedgerRecord(input);
+  const artifacts = mergeVisualOracleArtifactOverlay(
+    visualOracleArtifacts(record.oracleArtifacts, record.outputEvent),
+    visualOracleArtifactOverlay(options),
+  );
+  if (!artifacts) throw new Error('visual_capture_runtime_binding_artifacts_missing');
+  return buildVisualCaptureRuntimeBindingFromNormalizedRecord(record, artifacts);
+}
+
+function evaluateVisualCaptureRuntimeBinding(record, artifacts) {
+  const failures = [];
+  const supplied = visualCaptureRuntimeBindingObject(artifacts);
+  const { projection, missingFields, manifestEvaluation } =
+    visualCaptureRuntimeBindingProjection(record, artifacts);
+  failures.push(...manifestEvaluation.failures);
+  if (!supplied) failures.push({ code: 'visual_capture_runtime_binding_missing' });
+  if (missingFields.length > 0) {
+    failures.push({
+      code: 'visual_capture_runtime_binding_material_incomplete',
+      missingFields,
+    });
+  }
+  const recomputed = missingFields.length === 0 && manifestEvaluation.accepted
+    ? Object.freeze({
+        ...projection,
+        binding_hash: `sha256:${sha256Hex(stableJson(projection))}`,
+      })
+    : null;
+  if (supplied) {
+    if (
+      supplied.schema_version !== GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_SCHEMA_VERSION
+      || supplied.proof_authority !== GPU_HMR_VISUAL_CAPTURE_RUNTIME_BINDING_AUTHORITY
+    ) {
+      failures.push({ code: 'visual_capture_runtime_binding_authority_invalid' });
+    }
+    if (
+      supplied.accepted_for_gpu_hmr !== false
+      || supplied.gpu_hmr_success !== false
+      || supplied.can_satisfy_runtime_proof !== false
+      || supplied.can_satisfy_dispatch_proof !== false
+      || supplied.acceptedForGpuHmr === true
+      || supplied.gpuHmrSuccess === true
+      || supplied.canSatisfyRuntimeProof === true
+      || supplied.canSatisfyDispatchProof === true
+    ) {
+      failures.push({ code: 'visual_capture_runtime_binding_success_authority_forbidden' });
+    }
+    const suppliedProjection = { ...supplied };
+    delete suppliedProjection.binding_hash;
+    const suppliedBindingHash = canonicalSha256(supplied.binding_hash);
+    const recomputedSuppliedHash = `sha256:${sha256Hex(stableJson(suppliedProjection))}`;
+    if (!suppliedBindingHash || suppliedBindingHash !== recomputedSuppliedHash) {
+      failures.push({ code: 'visual_capture_runtime_binding_hash_mismatch' });
+    }
+    if (stableJson(suppliedProjection) !== stableJson(projection)) {
+      failures.push({ code: 'visual_capture_runtime_binding_runtime_material_mismatch' });
+    }
+  }
+  if (projection.presentation_boundary_proven !== true) {
+    failures.push({ code: 'visual_capture_runtime_binding_presentation_boundary_unproven' });
+  }
+  if (
+    projection.source_frame_hash === null
+    || projection.broker_frame_hash === null
+    || projection.source_frame_hash !== projection.broker_frame_hash
+  ) {
+    failures.push({ code: 'visual_capture_runtime_binding_frame_hash_invalid' });
+  }
+  return {
+    accepted: failures.length === 0,
+    failures,
+    suppliedBinding: supplied,
+    recomputedBinding: recomputed,
+    captureManifestEvaluation: manifestEvaluation,
+  };
+}
+
+export function evaluateGpuHmrVisualCaptureRuntimeBinding(input = {}, options = {}) {
+  const record = normalizeGpuHmrProofLedgerRecord(input);
+  const artifacts = mergeVisualOracleArtifactOverlay(
+    visualOracleArtifacts(record.oracleArtifacts, record.outputEvent),
+    visualOracleArtifactOverlay(options),
+  );
+  if (!artifacts) {
+    return {
+      accepted: false,
+      failures: [{ code: 'visual_capture_runtime_binding_artifacts_missing' }],
+      suppliedBinding: null,
+      recomputedBinding: null,
+    };
+  }
+  return evaluateVisualCaptureRuntimeBinding(record, artifacts);
 }
 
 function modelProvenanceEntries(modelProvenance) {
@@ -982,6 +1679,37 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     retirementEvent,
     processIdentity,
     deviceIdentity,
+    runtimeProofId: firstText(
+      record.runtime_proof_id,
+      record.runtimeProofId,
+      outputEvent.runtime_proof_id,
+      outputEvent.runtimeProofId,
+    ),
+    runtimeProofState: firstText(
+      record.runtime_proof_state,
+      record.runtimeProofState,
+      outputEvent.runtime_proof_state,
+      outputEvent.runtimeProofState,
+    ),
+    runtimeProofAccepted: asBool(
+      record.runtime_proof_accepted
+      ?? record.runtimeProofAccepted
+      ?? outputEvent.runtime_proof_accepted
+      ?? outputEvent.runtimeProofAccepted,
+    ),
+    runtimeProofObservedAtMs: finiteNumber(
+      record.runtime_proof_observed_at_ms
+      ?? record.runtimeProofObservedAtMs
+      ?? outputEvent.runtime_proof_observed_at_ms
+      ?? outputEvent.runtimeProofObservedAtMs,
+    ),
+    hmrObservedAtMs: finiteNumber(
+      record.hmr_observed_at_ms
+      ?? record.hmrObservedAtMs
+      ?? outputEvent.hmr_observed_at_ms
+      ?? outputEvent.hmrObservedAtMs,
+    ),
+    runtimeSessionId: runtimeSessionId(record),
     firewallEvidence,
     cpuHmrUsed: asBool(cpuHmrUsed.value),
     cpuHmrUsedEvidencePresent: cpuHmrUsed.present,
@@ -1050,11 +1778,17 @@ export function normalizeGpuHmrProofLedgerRecord(input = {}) {
     loaderEvent: normalized.loaderEvent,
     epochPublishEvent: normalized.epochPublishEvent,
     dispatchEvent: normalized.dispatchEvent,
-    outputEvent: normalized.outputEvent,
+    outputEvent: withoutVisualCaptureRuntimeBinding(normalized.outputEvent),
     retirementEvent: normalized.retirementEvent,
     processIdentity: normalized.processIdentity,
     deviceIdentity: normalized.deviceIdentity,
-    oracleArtifacts: normalized.oracleArtifacts,
+    runtimeProofId: normalized.runtimeProofId,
+    runtimeProofState: normalized.runtimeProofState,
+    runtimeProofAccepted: normalized.runtimeProofAccepted,
+    runtimeProofObservedAtMs: normalized.runtimeProofObservedAtMs,
+    hmrObservedAtMs: normalized.hmrObservedAtMs,
+    runtimeSessionId: normalized.runtimeSessionId,
+    oracleArtifacts: withoutVisualCaptureRuntimeBinding(normalized.oracleArtifacts),
     deterministicVisualMode: normalized.deterministicVisualMode,
     outputOracleTarget: normalized.outputOracleTarget,
     metricClock: normalized.metricClock,
@@ -1362,6 +2096,10 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
   const visualBackend = VISUAL_OR_ENGINE_BACKENDS.has(record.backend);
   const computeOnlyTargetVerified = computeOnlyOutputTargetVerified(record);
   const oracleTargetKind = outputOracleTargetKind(record.outputOracleTarget);
+  const visualCaptureRuntimeBindingRequired =
+    options.requireVisualCaptureRuntimeBinding === true
+    || options.require_visual_capture_runtime_binding === true;
+  let visualCaptureRuntimeBindingEvaluation = null;
   if (visualBackend && !visualOutput && !computeOnlyTargetVerified) {
     addFailure(failures, 'visual_backend_requires_visual_oracle', { backend: record.backend });
   }
@@ -1373,6 +2111,18 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
     if (!artifacts) {
       addFailure(failures, 'visual_oracle_artifacts_missing');
     } else {
+      const suppliedVisualCaptureBinding = visualCaptureRuntimeBindingObject(artifacts);
+      if (visualCaptureRuntimeBindingRequired || suppliedVisualCaptureBinding) {
+        visualCaptureRuntimeBindingEvaluation = evaluateVisualCaptureRuntimeBinding(
+          record,
+          artifacts,
+        );
+        for (const failure of visualCaptureRuntimeBindingEvaluation.failures) {
+          addFailure(failures, failure.code, failure);
+        }
+      } else {
+        warnings.push({ code: 'visual_capture_runtime_binding_legacy_missing' });
+      }
       const missingFields = missingArtifactFields(artifacts, VISUAL_ORACLE_ARTIFACT_FIELDS);
       if (missingFields.length > 0) {
         addFailure(failures, 'visual_oracle_artifacts_incomplete', { missingFields });
@@ -1782,6 +2532,7 @@ export function evaluateGpuHmrProofLedger(input = {}, options = {}) {
     gpuHmrSuccess: failures.length === 0,
     failedInvariants: failures,
     warnings,
+    visualCaptureRuntimeBinding: visualCaptureRuntimeBindingEvaluation,
     record,
     invariantSummary: {
       cpuHmrUsed: record.cpuHmrUsed,
@@ -1837,6 +2588,9 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
           modelPolicy: ledgerModelPolicy,
           computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, index),
           visualOracleArtifactOverlay: visualOracleArtifactOverlay(options, index),
+          requireVisualCaptureRuntimeBinding:
+            options.requireVisualCaptureRuntimeBinding === true
+            || options.require_visual_capture_runtime_binding === true,
         })
         : {
           schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
@@ -1854,6 +2608,9 @@ export function queryGpuHmrLedgerInvariants(input = {}, options = {}) {
         modelPolicy: ledgerModelPolicy,
         computeOracleArtifactOverlay: computeOracleArtifactOverlay(options, 0),
         visualOracleArtifactOverlay: visualOracleArtifactOverlay(options, 0),
+        requireVisualCaptureRuntimeBinding:
+          options.requireVisualCaptureRuntimeBinding === true
+          || options.require_visual_capture_runtime_binding === true,
       }),
     }];
   const recomputed = evaluations[evaluations.length - 1].result;
