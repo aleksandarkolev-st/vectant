@@ -65,6 +65,12 @@ pub async fn execute_command_cancellable(
     cancelled: Arc<AtomicBool>,
 ) -> Result<CommandContext, CommandError> {
     validate_request(workspace, policy, &request)?;
+    // A revocation may arrive while a request is still being authorized. Do
+    // not even resolve an executable (or otherwise touch the workspace) once
+    // cancellation is visible.
+    if cancelled.load(Ordering::Acquire) {
+        return Err(CommandError::Cancelled);
+    }
     let executable_path = resolve_executable_outside_workspace(workspace, &request.executable)?;
     let output_cap = request
         .max_output_bytes
@@ -235,6 +241,9 @@ fn resolve_executable_outside_workspace(
     let canonical_workspace = workspace
         .canonicalize()
         .map_err(|_| CommandError::InvalidRequest)?;
+    #[cfg(not(windows))]
+    let names = vec![executable.to_string()];
+    #[cfg(windows)]
     let mut names = vec![executable.to_string()];
     #[cfg(windows)]
     if !executable.to_ascii_lowercase().ends_with(".exe") {
@@ -524,11 +533,22 @@ mod tests {
         assert!(!debug.contains("DATABASE_URL"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn resolves_allowlisted_tool_outside_the_selected_workspace() {
         let directory = tempfile::tempdir().unwrap();
         let executable =
             super::resolve_executable_outside_workspace(directory.path(), "rustc").unwrap();
+        assert!(!executable.starts_with(directory.path()));
+        assert!(executable.is_file());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolves_allowlisted_tool_outside_the_selected_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable =
+            super::resolve_executable_outside_workspace(directory.path(), "env").unwrap();
         assert!(!executable.starts_with(directory.path()));
         assert!(executable.is_file());
     }

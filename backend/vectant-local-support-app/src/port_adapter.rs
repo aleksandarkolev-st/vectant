@@ -1,4 +1,5 @@
 use serde::Serialize;
+#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,6 +136,7 @@ pub fn detect_loopback_listener(_port: u16) -> Result<DetectedLoopbackPort, Port
     Err(PortDetectionError::Unsupported)
 }
 
+#[cfg(windows)]
 fn hash_process_identity(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"vectant-local-support-process:");

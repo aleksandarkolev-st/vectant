@@ -2,10 +2,12 @@
 //! The production artifact is the Tauri desktop app; this binary is excluded
 //! unless `--features live-test-daemon` is explicitly requested.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use vectant_local_support_app::audit::LocalAuditStore;
+use vectant_local_support_app::full_access::FullAccessCapability;
 use vectant_local_support_app::http::{bind_loopback, shutdown_cleanup, AppState};
 use vectant_local_support_app::pair::DeviceIdentityStore;
 use vectant_local_support_app::scanner::SecretScanner;
@@ -46,6 +48,25 @@ async fn main() -> anyhow::Result<()> {
         LocalAuditStore::new(audit_path, 1, SecretScanner::default()),
     )?;
     state.set_local_control_secret_for_test(TEST_CONTROL_SECRET);
+    // This feature-gated harness models a successfully parsed, explicit test
+    // policy ceiling. Production starts with an empty ceiling and only the
+    // desktop policy synchronizer may replace it.
+    state
+        .set_cloud_full_access_capabilities(BTreeSet::from([
+            FullAccessCapability::Enroll,
+            FullAccessCapability::AutoApprovalEnable,
+            FullAccessCapability::GraphRead,
+            FullAccessCapability::GraphNodeRequest,
+            FullAccessCapability::CommandExecute,
+            FullAccessCapability::CommandContextRead,
+            FullAccessCapability::WorkspaceFileMutate,
+            FullAccessCapability::WorkspaceFileRevert,
+            FullAccessCapability::ProcessInventory,
+            FullAccessCapability::ProcessListenerMetadata,
+            FullAccessCapability::LocalPortDiscover,
+            FullAccessCapability::LocalPortUse,
+        ]))
+        .await;
     let (session_token, preview_token, preview_host) = if let Some(port) = upstream_port {
         let session_id = state.session.lock().await.session_id().to_string();
         let token = state

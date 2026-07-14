@@ -4,9 +4,12 @@
 //! crosses this boundary. This is intentionally not a generic process API.
 
 use std::path::Path;
+#[cfg(windows)]
 use std::time::Instant;
 
-use crate::full_access::{sanitized_process_record, SanitizedProcessRecord, MAX_PROCESS_RECORDS};
+#[cfg(windows)]
+use crate::full_access::sanitized_process_record;
+use crate::full_access::{SanitizedProcessRecord, MAX_PROCESS_RECORDS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessInspectionError {

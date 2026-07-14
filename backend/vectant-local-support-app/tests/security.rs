@@ -153,14 +153,18 @@ fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
 #[tokio::test]
 async fn command_broker_requires_allowlisted_shell_free_bounded_requests() {
     let root = tempdir().unwrap();
+    #[cfg(windows)]
+    let (executable, expected_output) = ("rustc", "rustc");
+    #[cfg(not(windows))]
+    let (executable, expected_output) = ("env", "env");
     let mut policy = FullAccessPolicy {
         organization_enabled: true,
         ..Default::default()
     };
-    policy.allowed_command_executables.insert("rustc".into());
+    policy.allowed_command_executables.insert(executable.into());
     let request = CommandRequest {
         request_id: "req_command_1".into(),
-        executable: "rustc".into(),
+        executable: executable.into(),
         arguments: vec!["--version".into()],
         timeout_seconds: 5,
         max_output_bytes: 4096,
@@ -168,7 +172,7 @@ async fn command_broker_requires_allowlisted_shell_free_bounded_requests() {
     let context = execute_command(root.path(), &policy, request.clone())
         .await
         .unwrap();
-    assert!(context.stdout.contains("rustc"));
+    assert!(context.stdout.contains(expected_output));
     assert!(!context.argument_hash.contains("--version"));
     let mut dangerous = request;
     dangerous.arguments = vec!["--interactive".into()];
