@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -14,6 +14,7 @@ use crate::policy::{Classification, DecisionKind, PolicyDecision};
 use crate::scanner::{ScanReport, SecretScanner};
 
 const MAX_FILE_BYTES: u64 = 262_144;
+const MAX_COMMAND_PROJECTION_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReadRequest {
@@ -62,6 +63,25 @@ pub struct WorkspacePolicy {
     root: PathBuf,
     workspace_id: String,
     scanner: SecretScanner,
+}
+
+/// Disposable, sanitized command working directory. It is never a view of the
+/// actual workspace, so a brokered command cannot change or directly read
+/// files outside the current capability graph.
+pub struct CommandWorkspaceProjection {
+    root: PathBuf,
+}
+
+impl CommandWorkspaceProjection {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for CommandWorkspaceProjection {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }
 
 impl WorkspacePolicy {
@@ -117,6 +137,67 @@ impl WorkspacePolicy {
         &self.workspace_id
     }
 
+    pub fn materialize_command_projection(
+        &self,
+        graph: &HashMap<String, GraphNode>,
+    ) -> Result<CommandWorkspaceProjection> {
+        let root = std::env::temp_dir().join(format!("vectant-command-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).context("command projection directory could not be created")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+                .context("command projection permissions could not be set")?;
+        }
+        let projection = CommandWorkspaceProjection { root };
+        let mut copied = 0u64;
+        let mut nodes = graph.values().collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        for node in nodes {
+            if !matches!(
+                node.state,
+                GraphNodeState::Available | GraphNodeState::AutoRequestable
+            ) || node.classification == RiskClass::E
+                || !safe_workspace_relative_path(&node.relative_path)
+            {
+                continue;
+            }
+            let (content, hash) = self
+                .read_graph_node(node, MAX_FILE_BYTES)
+                .context("command projection graph node could not be revalidated")?;
+            if hash != node.content_hash {
+                return Err(anyhow!("command projection graph node changed"));
+            }
+            copied = copied
+                .checked_add(content.len() as u64)
+                .ok_or_else(|| anyhow!("command projection size overflow"))?;
+            if copied > MAX_COMMAND_PROJECTION_BYTES {
+                return Err(anyhow!("command projection size cap exceeded"));
+            }
+            let destination = projection.root.join(&node.relative_path);
+            let parent = destination
+                .parent()
+                .ok_or_else(|| anyhow!("command projection destination was invalid"))?;
+            fs::create_dir_all(parent).context("command projection parent could not be created")?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .context("command projection file could not be created")?;
+            file.write_all(content.as_bytes())
+                .context("command projection file could not be written")?;
+            file.sync_all()
+                .context("command projection file could not be synchronized")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))
+                    .context("command projection file permissions could not be set")?;
+            }
+        }
+        Ok(projection)
+    }
+
     /// Builds a bounded capability map, never a workspace upload. Paths that
     /// are sensitive are represented only as blocked categories and every node
     /// is tied to a current content hash for TOCTOU revalidation.
@@ -159,19 +240,34 @@ impl WorkspacePolicy {
                 .strip_prefix(&self.root)
                 .map_err(|_| anyhow!("workspace graph path escaped root"))?;
             let display = relative.to_string_lossy().replace('\\', "/");
-            let classification = if is_sensitive_path(&display)
+            let blocked_by_metadata = is_sensitive_path(&display)
                 || is_archive_path(&display)
                 || metadata.len() > MAX_FILE_BYTES
-                || is_sparse_metadata(&metadata)
-            {
-                RiskClass::E
+                || is_sparse_metadata(&metadata);
+            let (classification, state, content_hash) = if blocked_by_metadata {
+                (
+                    RiskClass::E,
+                    GraphNodeState::Blocked,
+                    "sha256:blocked".to_string(),
+                )
             } else {
-                RiskClass::B
-            };
-            let state = if classification == RiskClass::E {
-                GraphNodeState::Blocked
-            } else {
-                GraphNodeState::AutoRequestable
+                match self.safe_read_text(&display, MAX_FILE_BYTES) {
+                    Ok((content, hash))
+                        if self
+                            .scanner
+                            .try_scan(&content)
+                            .is_ok_and(|report| report.findings.is_empty()) =>
+                    {
+                        (RiskClass::B, GraphNodeState::AutoRequestable, hash)
+                    }
+                    // A scanner failure, secret finding, or read race is a
+                    // blocked graph node. It must never become a command input.
+                    _ => (
+                        RiskClass::E,
+                        GraphNodeState::Blocked,
+                        "sha256:blocked".to_string(),
+                    ),
+                }
             };
             let mut hasher = Sha256::new();
             hasher.update(b"vectant-full-access-node-v1\0");
@@ -179,13 +275,6 @@ impl WorkspacePolicy {
             hasher.update(b"\0");
             hasher.update(display.as_bytes());
             let node_id = format!("node_{}", hex::encode(&hasher.finalize()[..16]));
-            let content_hash = if matches!(state, GraphNodeState::Blocked) {
-                "sha256:blocked".to_string()
-            } else {
-                self.safe_read_text(&display, MAX_FILE_BYTES)
-                    .map(|(_, hash)| hash)
-                    .unwrap_or_else(|_| "sha256:unavailable".to_string())
-            };
             graph.insert(
                 node_id.clone(),
                 GraphNode {
@@ -605,4 +694,48 @@ fn same_modified_time(a: &fs::Metadata, b: &fs::Metadata) -> bool {
 
 pub fn scan_for_secrets(content: &str) -> ScanReport {
     SecretScanner::default().scan(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_projection_excludes_sensitive_files_and_cannot_change_workspace() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        fs::write(workspace_root.path().join("app.py"), "print('safe')\n").unwrap();
+        fs::write(
+            workspace_root.path().join("secrets.json"),
+            "{\"token\":\"secret\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace_root.path().join("config.py"),
+            "API = 'sk-abcdefghijklmnopqrstuvwxyz'\n",
+        )
+        .unwrap();
+        let workspace = WorkspacePolicy::new(
+            workspace_root.path(),
+            "wk_projection",
+            SecretScanner::default(),
+        )
+        .unwrap();
+        let graph = workspace.build_capability_graph().unwrap();
+        let projection = workspace.materialize_command_projection(&graph).unwrap();
+        let projection_path = projection.root().to_path_buf();
+
+        assert_eq!(
+            fs::read_to_string(projection.root().join("app.py")).unwrap(),
+            "print('safe')\n"
+        );
+        assert!(!projection.root().join("secrets.json").exists());
+        assert!(!projection.root().join("config.py").exists());
+        fs::write(projection.root().join("app.py"), "changed\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace_root.path().join("app.py")).unwrap(),
+            "print('safe')\n"
+        );
+        drop(projection);
+        assert!(!projection_path.exists());
+    }
 }

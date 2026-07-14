@@ -351,8 +351,32 @@ fn resolve_executable_outside_workspace(
 }
 fn dangerous_argument(value: &str) -> bool {
     value.contains(['|', '&', ';', '>', '<', '`', '$', '\n', '\r'])
-        || value == "--interactive"
-        || value == "-i"
+        || matches!(
+            value,
+            "--interactive"
+                | "-i"
+                | "-c"
+                | "-e"
+                | "-m"
+                | "--command"
+                | "--eval"
+                | "--module"
+                | "--require"
+                | "--loader"
+        )
+        || value.contains("://")
+        || has_external_or_parent_path(value)
+}
+
+fn has_external_or_parent_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with('\\')
+        || value.starts_with('~')
+        || value.as_bytes().get(1).is_some_and(|byte| *byte == b':')
+        || value.contains("=/")
+        || value.contains("=\\")
+        || value.contains("../")
+        || value.contains("..\\")
 }
 
 fn shell_executable(value: &str) -> bool {

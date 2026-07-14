@@ -1093,6 +1093,10 @@ async fn full_access_command(
         )
     };
     let workspace_hash = state.workspace.summary().root_hash;
+    let current_graph = state
+        .workspace
+        .build_capability_graph()
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "full_access_graph_refresh_failed"))?;
     let mut full_access = state.full_access.lock().await;
     let receipt = full_access
         .receipt
@@ -1119,6 +1123,7 @@ async fn full_access_command(
     }
     let policy = full_access.policy.clone();
     let command_cancel = full_access.command_cancel.clone();
+    full_access.graph = current_graph.clone();
     full_access
         .budget
         .reserve(&policy, request.max_output_bytes as u64)
@@ -1128,13 +1133,18 @@ async fn full_access_command(
         .reserve_command(&policy)
         .map_err(full_access_denied)?;
     drop(full_access);
-    let context_result = execute_command_cancellable(
-        state.workspace.root(),
-        &policy,
-        request.clone(),
-        command_cancel,
-    )
-    .await;
+    let projection = state
+        .workspace
+        .materialize_command_projection(&current_graph)
+        .map_err(|_| {
+            denied(
+                StatusCode::FORBIDDEN,
+                "full_access_command_projection_failed",
+            )
+        })?;
+    let context_result =
+        execute_command_cancellable(projection.root(), &policy, request.clone(), command_cancel)
+            .await;
     state.full_access.lock().await.budget.finish_command();
     let context = context_result.map_err(|error| {
         denied(
