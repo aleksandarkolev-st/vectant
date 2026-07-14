@@ -84,11 +84,11 @@ use crate::hmr::gpu_reload_orchestrator::{
 use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation,
-    install_launch_dispatcher_with_metadata_timed, latest_dispatch_id_for_generation,
-    launch_records_snapshot, managed_buffers_snapshot, monotonic_timestamp_ns,
-    output_oracle_records_snapshot, record_hmr_runtime_identity_snapshot,
+    install_launch_dispatcher_with_metadata_timed, launch_records_snapshot,
+    managed_buffers_snapshot, monotonic_timestamp_ns, output_oracle_records_snapshot,
+    record_hmr_runtime_identity_snapshot,
     record_output_buffer_checksum_with_probe_bytes_after_dispatch, runtime_session_id,
-    synthi_gpu_launch_raw_arg_info, synthi_gpu_register_buffer, GpuLaunchDispatcher,
+    synthi_gpu_launch_raw_arg_info_with_receipt, synthi_gpu_register_buffer, GpuLaunchDispatcher,
     GpuLaunchDispatcherMetadata, GpuLaunchRequest, LaunchArgProvenance, LaunchRecord,
     OutputOracleRecord, SynthiGpuLaunchArg, SYNTHI_GPU_ARG_KIND_FLOATING,
     SYNTHI_GPU_ARG_KIND_INTEGER, SYNTHI_GPU_ARG_KIND_POINTER,
@@ -756,7 +756,7 @@ fn run_runtime_output_oracle_profile(
                 value_kind: storage.value_kind(),
             })
             .collect::<Vec<_>>();
-        let launch_ok = synthi_gpu_launch_raw_arg_info(
+        let launch_receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
             std::ptr::null_mut(),
             kernel_cstring.as_ptr(),
             grid.as_ptr().cast(),
@@ -768,18 +768,19 @@ fn run_runtime_output_oracle_profile(
             arg_infos.as_ptr(),
             arg_infos.len(),
         );
-        if !launch_ok {
+        if !launch_receipt.dispatched {
             return Err(format!(
                 "runtime output oracle launch kernel={kernel_name:?} was rejected by runtime boundary"
             ));
         }
-        let after_dispatch_id =
-            latest_dispatch_id_for_generation(active_generation, runtime_session_id())
-                .ok_or_else(|| {
-                    format!(
-                        "runtime output oracle launch kernel={kernel_name:?} did not publish dispatch identity"
-                    )
-                })?;
+        if launch_receipt.active_generation != active_generation
+            || launch_receipt.runtime_session_id != runtime_session_id()
+        {
+            return Err(format!(
+                "runtime output oracle launch kernel={kernel_name:?} receipt identity mismatch"
+            ));
+        }
+        let after_dispatch_id = launch_receipt.dispatch_id;
         let sync_code = unsafe { (symbols.cu_ctx_synchronize)() };
         if sync_code != 0 {
             return Err(format!(
@@ -956,7 +957,7 @@ fn run_runtime_output_oracle_replay(
     let kernel_cstring = runtime_probe_cstring(&record.kernel_name)?;
     let grid = record.grid;
     let block = record.block;
-    let launch_ok = synthi_gpu_launch_raw_arg_info(
+    let launch_receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
         std::ptr::null_mut(),
         kernel_cstring.as_ptr(),
         &grid as *const (u32, u32, u32) as *const c_void,
@@ -968,21 +969,21 @@ fn run_runtime_output_oracle_replay(
         arg_infos.as_ptr(),
         arg_infos.len(),
     );
-    if !launch_ok {
+    if !launch_receipt.dispatched {
         return Err(format!(
             "runtime replay launch kernel={:?} was rejected by runtime boundary",
             record.kernel_name
         ));
     }
-    let after_dispatch_id =
-        latest_dispatch_id_for_generation(active_generation, runtime_session_id()).ok_or_else(
-            || {
-                format!(
-                    "runtime replay launch kernel={:?} did not publish dispatch identity",
-                    record.kernel_name
-                )
-            },
-        )?;
+    if launch_receipt.active_generation != active_generation
+        || launch_receipt.runtime_session_id != runtime_session_id()
+    {
+        return Err(format!(
+            "runtime replay launch kernel={:?} receipt identity mismatch",
+            record.kernel_name
+        ));
+    }
+    let after_dispatch_id = launch_receipt.dispatch_id;
     let sync_code = unsafe { (symbols.cu_ctx_synchronize)() };
     if sync_code != 0 {
         return Err(format!(
@@ -3806,7 +3807,7 @@ mod tests {
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     fn dummy_request() -> AdapterReloadRequest {
         let pid = std::process::id();
@@ -4025,6 +4026,8 @@ mod tests {
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
     static UNLOAD_GENERATION_AT_CALL: AtomicU64 = AtomicU64::new(0);
+    static NESTED_LAUNCH_ARMED: AtomicBool = AtomicBool::new(false);
+    static NESTED_LAUNCH_COUNT: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
     }
@@ -4098,6 +4101,43 @@ mod tests {
         LAUNCH_CALLS.fetch_add(1, Ordering::SeqCst);
         LAST_LAUNCH_GRID_X.store(grid_dim_x as usize, Ordering::SeqCst);
         LAST_LAUNCH_BLOCK_X.store(block_dim_x as usize, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "C" fn ok_launch_kernel_with_nested_dispatch(
+        _f: CuFunction,
+        grid_dim_x: u32,
+        grid_dim_y: u32,
+        grid_dim_z: u32,
+        block_dim_x: u32,
+        block_dim_y: u32,
+        block_dim_z: u32,
+        _shared_mem_bytes: u32,
+        _stream: CuStream,
+        _kernel_params: *mut *mut c_void,
+        _extra: *mut *mut c_void,
+    ) -> CuResult {
+        LAUNCH_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_LAUNCH_GRID_X.store(grid_dim_x as usize, Ordering::SeqCst);
+        LAST_LAUNCH_BLOCK_X.store(block_dim_x as usize, Ordering::SeqCst);
+        if NESTED_LAUNCH_ARMED.swap(false, Ordering::SeqCst) {
+            let grid = [grid_dim_x, grid_dim_y, grid_dim_z];
+            let block = [block_dim_x, block_dim_y, block_dim_z];
+            if synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                b"vec_add\0".as_ptr().cast(),
+                grid.as_ptr().cast(),
+                std::mem::size_of_val(&grid),
+                block.as_ptr().cast(),
+                std::mem::size_of_val(&block),
+                0,
+                0x99,
+                std::ptr::null(),
+                0,
+            ) {
+                NESTED_LAUNCH_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
         0
     }
 
@@ -4840,6 +4880,91 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|line| line.contains("\"type\":\"gpu_hmr_proof\"")));
+        reset_for_test();
+    }
+
+    #[test]
+    fn output_oracle_binds_exact_dispatch_when_nested_launch_finishes_first() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        NESTED_LAUNCH_ARMED.store(false, Ordering::SeqCst);
+        NESTED_LAUNCH_COUNT.store(0, Ordering::SeqCst);
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-receipt-before").unwrap();
+        second.write_all(b"fake-cubin-receipt-after").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let second_artifact_id = format!(
+            "artifact:sha256:{}",
+            sha256_hex_bytes(b"fake-cubin-receipt-after")
+        );
+        let symbols = GpuDriverSymbolTable {
+            cu_launch_kernel: ok_launch_kernel_with_nested_dispatch,
+            ..stub_symbols()
+        };
+        let mut adapter = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..GpuModuleAdapterConfig::default()
+            },
+            symbols,
+        );
+        assert!(matches!(
+            adapter.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.hip".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        launch_vec_add_on_stream(0x77);
+        NESTED_LAUNCH_ARMED.store(true, Ordering::SeqCst);
+        match adapter.reload(&request_with_artifact_and_abi(
+            &second_path,
+            vec!["device.hip".into()],
+            "sig-v1",
+        )) {
+            AdapterReloadResult::Failed { error, recoverable } => {
+                assert!(!recoverable);
+                assert!(error.contains("device_identity_missing"));
+            }
+            other => panic!(
+                "expected device-identity refusal after exact oracle dispatch, got {other:?}"
+            ),
+        }
+        assert_eq!(NESTED_LAUNCH_COUNT.load(Ordering::SeqCst), 1);
+
+        let active_generation = current_launch_generation();
+        let launches = launch_records_snapshot()
+            .into_iter()
+            .filter(|record| {
+                record.active_generation == active_generation
+                    && record.active_artifact_id.as_deref() == Some(second_artifact_id.as_str())
+                    && record.dispatched
+                    && record.dispatch_error.is_none()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[0].stream_token, 0);
+        assert_eq!(launches[1].stream_token, 0x99);
+        let output = output_oracle_records_snapshot()
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.generation == active_generation
+                    && record.artifact_id.as_deref() == Some(second_artifact_id.as_str())
+                    && record.passed
+            })
+            .expect("accepted output oracle for exact dispatch receipt");
+        assert_eq!(
+            output.after_dispatch_id.as_deref(),
+            launches[0].dispatch_id.as_deref()
+        );
+        assert_ne!(
+            output.after_dispatch_id.as_deref(),
+            launches[1].dispatch_id.as_deref()
+        );
         reset_for_test();
     }
 
