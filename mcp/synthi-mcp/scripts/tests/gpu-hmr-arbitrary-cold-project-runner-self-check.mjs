@@ -312,10 +312,42 @@ try {
   assert.equal(retainedExecutionChain.contractReceipt.plaintextCommandEmbedded, false);
   assert.equal(retainedExecutionChain.contractReceipt.plaintextArgumentsEmbedded, false);
   assert.equal(retainedExecutionChain.contractReceipt.plaintextEnvironmentValuesEmbedded, false);
+  assert.equal('workerImageEvidence' in retainedExecutionChain, false);
+  assert.equal(retainedExecutionChain.workerImageReceipt.environmentValuesEmbedded, false);
+  assert.equal(retainedExecutionChain.workerImageReceipt.repoDigestValuesEmbedded, false);
+  assert.equal(
+    retainedExecutionChain.workerImageReceipt.environmentEntryCount >= 0,
+    true,
+  );
   const serializedRetainedExecutionChain = JSON.stringify(retainedExecutionChain);
   assert.doesNotMatch(serializedRetainedExecutionChain, /bound dependency bytes/);
   assert.equal(serializedRetainedExecutionChain.includes(privateArgument), false);
   assert.equal(serializedRetainedExecutionChain.includes(privateEnvironmentValue), false);
+  const { stdout: workerImageInspectOutput } = await execFileAsync(
+    'docker',
+    ['image', 'inspect', COLD_BUILD_LAUNCHER_BUILDER_IMAGE],
+  );
+  const [workerImageDescriptor] = JSON.parse(workerImageInspectOutput);
+  for (const environmentEntry of workerImageDescriptor?.Config?.Env ?? []) {
+    assert.equal(serializedRetainedExecutionChain.includes(environmentEntry), false);
+  }
+
+  const forgedRetainedWorkerEnvironment = structuredClone(retainedExecutionChain);
+  forgedRetainedWorkerEnvironment.workerImageReceipt.environmentValuesEmbedded = true;
+  resealEvidence(forgedRetainedWorkerEnvironment.workerImageReceipt);
+  resealEvidence(forgedRetainedWorkerEnvironment);
+  assert.throws(
+    () => verifyArbitraryColdRetainedExecutionChain(forgedRetainedWorkerEnvironment),
+    /retained_execution_chain_invalid/,
+  );
+
+  const forgedRetainedWorkerReference = structuredClone(retainedExecutionChain);
+  forgedRetainedWorkerReference.workerImageReference = `sha256:${'2'.repeat(64)}`;
+  resealEvidence(forgedRetainedWorkerReference);
+  assert.throws(
+    () => verifyArbitraryColdRetainedExecutionChain(forgedRetainedWorkerReference),
+    /retained_execution_chain_invalid/,
+  );
 
   for (const mutateReceipt of [
     (receipt) => { receipt.commandInvocationHash = `sha256:${'0'.repeat(64)}`; },

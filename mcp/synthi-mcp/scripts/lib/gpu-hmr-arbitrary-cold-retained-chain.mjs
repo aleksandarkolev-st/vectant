@@ -20,8 +20,9 @@ import {
   verifyColdBuildSourceTreeSnapshotReceipt,
 } from './gpu-hmr-cold-build-source-tree-binding.mjs';
 import {
+  createColdBuildWorkerImageReceipt,
   verifyImmutableColdBuildWorkerImage,
-  verifyRetainedImmutableColdBuildWorkerImage,
+  verifyColdBuildWorkerImageReceipt,
 } from './gpu-hmr-cold-build-worker-image.mjs';
 
 export const ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_SCHEMA =
@@ -34,6 +35,7 @@ const ARBITRARY_COLD_PROJECT_RUN_SCHEMA =
 const ARBITRARY_COLD_PROJECT_RUN_AUTHORITY =
   'orchestrated_cold_build_evidence_only_not_gpu_hmr_success';
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const DIGEST_REFERENCE_PATTERN = /^[^\s@\0\r\n]+@sha256:[a-f0-9]{64}$/;
 const ARTIFACT_ID_PATTERN = /^artifact:sha256:[a-f0-9]{64}$/;
 const TRANSPORT_KIND_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const RUN_EVIDENCE_KEYS = Object.freeze([
@@ -104,7 +106,7 @@ const CHAIN_KEYS = Object.freeze([
   'sourceSnapshotReceipt',
   'readOnlyInputSnapshotReceipts',
   'workerImageReference',
-  'workerImageEvidence',
+  'workerImageReceipt',
   'contractReceipt',
   'launcherIdentityReceipt',
   'outputEvidenceReceipt',
@@ -157,6 +159,24 @@ function supportFlagsAreFalse(value) {
     && value?.gpuHmrSuccess === false
     && value?.canSatisfyRuntimeProof === false
     && value?.canSatisfyDispatchProof === false;
+}
+
+function workerImageReferenceAccepted(reference, receipt) {
+  if (
+    typeof reference !== 'string'
+    || reference.length < 1
+    || Buffer.byteLength(reference, 'utf8') > 2048
+  ) {
+    return false;
+  }
+  const kind = SHA256_PATTERN.test(reference)
+    ? 'image_id'
+    : DIGEST_REFERENCE_PATTERN.test(reference)
+      ? 'repo_digest'
+      : null;
+  return kind !== null
+    && receipt?.requestedImageReferenceKind === kind
+    && receipt.requestedImageReferenceHash === contentHash(reference);
 }
 
 function normalizeMountPath(value) {
@@ -319,7 +339,7 @@ function runEvidenceAccepted(chain) {
   const sourceBinding = sourceReceipt.sourceTreeBindingEvidence;
   const snapshotBinding = sourceReceipt.snapshotTreeBindingEvidence;
   const contractReceipt = chain.contractReceipt;
-  const worker = chain.workerImageEvidence;
+  const worker = chain.workerImageReceipt;
   const launcher = chain.launcherIdentityReceipt;
   const outputReceipt = chain.outputEvidenceReceipt;
   const driverReceipt = outputReceipt.executionDriverReceipt;
@@ -359,12 +379,12 @@ function runEvidenceAccepted(chain) {
     && run.readOnlyInputEntryCount === readOnly.entryCount
     && run.readOnlyInputByteLength === readOnly.byteLength
     && stableJson(contractReceipt.readOnlyInputs) === stableJson(readOnly.contractBindings)
-    && run.workerImageEvidenceHash === worker.evidence.evidenceHash
-    && run.workerImageId === worker.descriptor.imageId
-    && contractReceipt.workerImageId === worker.descriptor.imageId
-    && contractReceipt.workerImageOperatingSystem === worker.descriptor.operatingSystem
-    && contractReceipt.workerImageArchitecture === worker.descriptor.architecture
-    && launcher.architecture === worker.descriptor.architecture
+    && run.workerImageEvidenceHash === worker.inspectionEvidenceHash
+    && run.workerImageId === worker.imageId
+    && contractReceipt.workerImageId === worker.imageId
+    && contractReceipt.workerImageOperatingSystem === worker.operatingSystem
+    && contractReceipt.workerImageArchitecture === worker.architecture
+    && launcher.architecture === worker.architecture
     && run.contractHash === contractReceipt.contractHash
     && run.commandSpecHash === contractReceipt.commandSpecHash
     && plan.commandSpecHash === contractReceipt.commandSpecHash
@@ -374,9 +394,14 @@ function runEvidenceAccepted(chain) {
     && stableJson(plan.inputSetBindings) === stableJson(contractReceipt.inputSetBindings)
     && plan.inputSetHash === contractReceipt.inputSetHash
     && plan.readOnlyInputTreesHash === contentHash(stableJson(readOnly.planTreeBindings))
-    && plan.workerImageId === worker.descriptor.imageId
-    && plan.workerImageOperatingSystem === worker.descriptor.operatingSystem
-    && plan.workerImageArchitecture === worker.descriptor.architecture
+    && plan.workerImageId === worker.imageId
+    && plan.workerImageOperatingSystem === worker.operatingSystem
+    && plan.workerImageArchitecture === worker.architecture
+    && plan.expectedContainerConfiguration?.containerEnvironmentHash
+      === worker.environmentHash
+    && plan.expectedContainerConfiguration?.containerEnvironmentEntryCount
+      === worker.environmentEntryCount
+    && plan.expectedContainerConfiguration?.containerEnvironmentValuesEmbedded === false
     && plan.commandHash === contractReceipt.commandInvocationHash
     && plan.environmentHash === contractReceipt.environmentEntrySetHash
     && stableJson(plan.resourcePolicy)
@@ -450,7 +475,10 @@ export function createArbitraryColdRetainedExecutionChain({
     sourceSnapshotReceipt,
     readOnlyInputSnapshotReceipts,
     workerImageReference,
-    workerImageEvidence: structuredClone(workerImage),
+    workerImageReceipt: createColdBuildWorkerImageReceipt(
+      workerImage,
+      workerImageReference,
+    ),
     contractReceipt: createArbitraryColdProjectContractReceipt(contract),
     launcherIdentityReceipt: createColdBuildLauncherIdentityReceipt(launcherIdentity),
     outputEvidenceReceipt: createColdBuildOutputEvidenceReceipt(
@@ -483,10 +511,7 @@ export function verifyArbitraryColdRetainedExecutionChain(chain) {
       normalizeMountPath(entry.mountPath);
       verifyColdBuildSourceTreeSnapshotReceipt(entry.snapshotReceipt);
     }
-    verifyRetainedImmutableColdBuildWorkerImage(
-      chain?.workerImageEvidence,
-      chain?.workerImageReference,
-    );
+    verifyColdBuildWorkerImageReceipt(chain?.workerImageReceipt);
     verifyArbitraryColdProjectContractReceipt(chain?.contractReceipt);
     verifyColdBuildLauncherIdentityReceipt(chain?.launcherIdentityReceipt);
     verifyColdBuildOutputEvidenceReceipt(chain?.outputEvidenceReceipt);
@@ -503,6 +528,10 @@ export function verifyArbitraryColdRetainedExecutionChain(chain) {
     || readOnlyEntries.length > 128
     || new Set(readOnlyEntries.map((entry) => entry.mountPath)).size !== readOnlyEntries.length
     || !artifactBindingsAccepted(chain.artifactLocatorBindings)
+    || !workerImageReferenceAccepted(
+      chain.workerImageReference,
+      chain.workerImageReceipt,
+    )
     || !runEvidenceAccepted(chain)
     || chain.externalAuthenticityAnchorEmbedded !== false
     || chain.acceptedAsRetainedColdExecutionChain !== true
