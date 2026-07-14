@@ -29,12 +29,6 @@ export async function POST(req) {
 
   const body = bodyResult.value;
   const action = typeof body?.action === "string" ? body.action : "";
-  let policy;
-  try {
-    policy = await readDurableLocalSupportPolicy();
-  } catch {
-    return pairingPersistenceFailure("pairing_policy_unavailable");
-  }
   let createBody = body;
   if (action === "create") {
     const session = await getServerSession(authOptions);
@@ -51,8 +45,22 @@ export async function POST(req) {
       ...body,
       account_id: authenticatedUserId,
       requested_user_id: authenticatedUserId,
-      org_id: policy.org_id || body.org_id,
+      org_id: body.org_id || process.env.VECTANT_LOCAL_SUPPORT_ORG_ID || "",
     };
+  }
+
+  let policy;
+  try {
+    policy = await readDurableLocalSupportPolicy(
+      process.env,
+      undefined,
+      action === "create" ? createBody.org_id : body.org_id,
+    );
+  } catch {
+    return pairingPersistenceFailure("pairing_policy_unavailable");
+  }
+  if (action === "create" && !createBody.org_id) {
+    createBody = { ...createBody, org_id: policy.org_id || body.org_id };
   }
 
   let result;
