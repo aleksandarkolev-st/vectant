@@ -219,6 +219,7 @@ function launcherContainerCreateArgs({
   sourceDir,
   releaseDir,
   specPath,
+  launcherCommand = coldBuildLauncherCommand(),
   outputBytes = 64 * 1024 * 1024,
   outputEntries = 4096,
 }) {
@@ -271,12 +272,64 @@ function launcherContainerCreateArgs({
     '--entrypoint',
     coldBuildLauncherEntrypoint()[0],
     COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
-    ...coldBuildLauncherCommand(),
+    ...launcherCommand,
   ];
+}
+
+async function assertLauncherExecutableHashMismatch({
+  containerName,
+  launcherPath,
+  sourceDir,
+  releaseDir,
+  specPath,
+}) {
+  const modeCommands = [
+    ['run', ['run', '--spec', COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH]],
+    ['child', ['child', '--spec', COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH]],
+    ['collect', ['collect', '--spec', COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH]],
+    [
+      'read-control',
+      [
+        'read-control',
+        '--spec',
+        COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+        '--name',
+        'ready.json',
+      ],
+    ],
+  ];
+  for (const [mode, launcherCommand] of modeCommands) {
+    const modeContainerName = `${containerName}-${mode}`;
+    let modeContainerId = null;
+    try {
+      const created = await requireDocker(launcherContainerCreateArgs({
+        containerName: modeContainerName,
+        launcherPath,
+        sourceDir,
+        releaseDir,
+        specPath,
+        launcherCommand,
+      }));
+      modeContainerId = created.stdout.trim();
+      const result = await spawnCaptured(
+        dockerExecutable,
+        ['start', '--attach', modeContainerId],
+        { timeoutMs: 20_000, encoding: 'utf8' },
+      );
+      assert.equal(result.exitCode, 125, `${mode}: ${result.stderr}`);
+      assert.match(result.stderr, /launcher executable hash mismatch/, mode);
+    } finally {
+      await runDocker(
+        ['rm', '--force', modeContainerId || modeContainerName],
+        { timeoutMs: 20_000 },
+      );
+    }
+  }
 }
 
 function beginAttachedContainer(containerId, {
   executionNonce,
+  launcherIdentity,
   specHash,
   commandSpecHash,
   sourceBindingHash,
@@ -322,6 +375,7 @@ function beginAttachedContainer(containerId, {
         {
           maxReceiptBytes: maxDiagnosticBytes,
           expectedExecutionNonce: executionNonce,
+          expectedLauncherIdentity: launcherIdentity,
           expectedSpecHash: specHash,
           expectedCommandSpecHash: commandSpecHash,
           expectedSourceBindingHash: sourceBindingHash,
@@ -438,6 +492,7 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
       || mode === 'symlink-working-directory';
     const spec = coldBuildLauncherSpec({
       executionNonce,
+      launcherIdentity: launcher,
       commandSpecHash,
       sourceBindingHash,
       command: directArgvMode ? '/usr/local/go/bin/go' : '/bin/sh',
@@ -462,6 +517,22 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
     const specHash = coldBuildLauncherSpecHash(spec);
     await writeFile(specPath, specBytes, { mode: 0o444 });
     await chmod(specPath, 0o444);
+    if (mode === 'launcher-executable-hash-mismatch') {
+      const mountedLauncherPath = path.join(root, 'replaced-cold-build-launcher');
+      await writeFile(mountedLauncherPath, Buffer.concat([
+        await readFile(launcher.executablePath),
+        Buffer.from('post-verification-replacement', 'utf8'),
+      ]), { mode: 0o700 });
+      await chmod(mountedLauncherPath, 0o755);
+      await assertLauncherExecutableHashMismatch({
+        containerName,
+        launcherPath: mountedLauncherPath,
+        sourceDir,
+        releaseDir,
+        specPath,
+      });
+      return;
+    }
     const created = await requireDocker(launcherContainerCreateArgs({
       containerName,
       launcherPath: launcher.executablePath,
@@ -472,6 +543,7 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
     containerId = created.stdout.trim();
     const attached = beginAttachedContainer(containerId, {
       executionNonce,
+      launcherIdentity: launcher,
       specHash,
       commandSpecHash,
       sourceBindingHash,
@@ -692,6 +764,17 @@ async function main() {
   assert.ok(['amd64', 'arm64'].includes(launcher.architecture));
   assert.equal(launcher.buildEvidence.staticExecutable, true);
   assert.equal(launcher.buildEvidence.builderCleanupAccepted, true);
+  const forgedLauncherIdentity = JSON.parse(JSON.stringify(launcher));
+  assert.throws(
+    () => coldBuildLauncherSpec({ launcherIdentity: forgedLauncherIdentity }),
+    /cold_build_launcher_pinned_identity_invalid/,
+  );
+  assert.throws(
+    () => parseColdBuildControlFrame(Buffer.alloc(0), {
+      expectedLauncherIdentity: forgedLauncherIdentity,
+    }),
+    /cold_build_launcher_pinned_identity_invalid/,
+  );
   const alternateArchitecture = launcher.architecture === 'amd64' ? 'arm64' : 'amd64';
   const alternateLauncher = await materializeColdBuildLauncher({
     dockerExecutable,
@@ -781,7 +864,8 @@ async function main() {
     'version',
   ]);
   const versionReceipt = JSON.parse(version.stdout);
-  assert.equal(versionReceipt.schemaVersion, 'synthi.gpu_hmr.cold_build_static_launcher.v1');
+  assert.equal(versionReceipt.schemaVersion, 'synthi.gpu_hmr.cold_build_static_launcher.v2');
+  assert.equal(versionReceipt.executableSelfHash, launcher.binaryHash);
 
   const executionNonce = randomBytes(16).toString('hex');
   const commandSpecHash = contentHash('launcher-self-check-command');
@@ -869,6 +953,7 @@ async function main() {
     await chmod(scriptPath, 0o755);
     const spec = coldBuildLauncherSpec({
       executionNonce,
+      launcherIdentity: launcher,
       commandSpecHash,
       sourceBindingHash,
       command: '/bin/sh',
@@ -908,6 +993,7 @@ async function main() {
 
     const attached = beginAttachedContainer(containerId, {
       executionNonce,
+      launcherIdentity: launcher,
       specHash,
       commandSpecHash,
       sourceBindingHash,
@@ -917,7 +1003,8 @@ async function main() {
     const readyBytes = readyFrame.receiptBytes;
     const ready = readyFrame.receipt;
     const readyHash = readyFrame.receiptHash;
-    assert.equal(ready.schemaVersion, 'synthi.gpu_hmr.cold_build_ready_receipt.v1');
+    assert.equal(ready.schemaVersion, 'synthi.gpu_hmr.cold_build_ready_receipt.v2');
+    assert.equal(ready.launcherExecutableSelfHash, launcher.binaryHash);
     assert.equal(ready.executionNonce, executionNonce);
     assert.equal(ready.specHash, specHash);
     assert.equal(ready.commandSpecHash, commandSpecHash);
@@ -939,6 +1026,7 @@ async function main() {
     const controlParserBindings = {
       maxReceiptBytes: maxDiagnosticBytes,
       expectedExecutionNonce: executionNonce,
+      expectedLauncherIdentity: launcher,
       expectedSpecHash: specHash,
       expectedCommandSpecHash: commandSpecHash,
       expectedSourceBindingHash: sourceBindingHash,
@@ -953,6 +1041,16 @@ async function main() {
     assert.throws(
       () => parseColdBuildControlFrame(
         encodeControlReceiptFrame({ ...ready, forgedAuthority: true }),
+        controlParserBindings,
+      ),
+      /receipt_binding_invalid/,
+    );
+    assert.throws(
+      () => parseColdBuildControlFrame(
+        encodeControlReceiptFrame({
+          ...ready,
+          launcherExecutableSelfHash: contentHash('replayed-launcher'),
+        }),
         controlParserBindings,
       ),
       /receipt_binding_invalid/,
@@ -1254,6 +1352,7 @@ async function main() {
     'direct-argv-no-manifest',
     'command-timeout-pipe',
     'windows-absolute-output-path',
+    'launcher-executable-hash-mismatch',
   ]) {
     await runProtocolRefusalScenario({ launcher, mode });
   }

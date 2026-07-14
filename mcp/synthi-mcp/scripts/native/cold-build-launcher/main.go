@@ -25,10 +25,10 @@ import (
 )
 
 const (
-	launcherSchema       = "synthi.gpu_hmr.cold_build_static_launcher.v1"
-	specSchema           = "synthi.gpu_hmr.cold_build_launcher_spec.v1"
+	launcherSchema       = "synthi.gpu_hmr.cold_build_static_launcher.v2"
+	specSchema           = "synthi.gpu_hmr.cold_build_launcher_spec.v2"
 	identitySchema       = "synthi.gpu_hmr.cold_build_child_identity.v1"
-	readySchema          = "synthi.gpu_hmr.cold_build_ready_receipt.v1"
+	readySchema          = "synthi.gpu_hmr.cold_build_ready_receipt.v2"
 	collectorSchema      = "synthi.gpu_hmr.cold_build_collector_receipt.v1"
 	collectorDoneSchema  = "synthi.gpu_hmr.cold_build_collector_completion.v1"
 	releaseSchema        = "synthi.gpu_hmr.cold_build_release_receipt.v1"
@@ -69,28 +69,29 @@ const (
 )
 
 type launcherSpec struct {
-	SchemaVersion          string   `json:"schemaVersion"`
-	ExecutionNonce         string   `json:"executionNonce"`
-	CommandSpecHash        string   `json:"commandSpecHash"`
-	SourceBindingHash      string   `json:"sourceBindingHash"`
-	Command                []string `json:"command"`
-	Environment            []string `json:"environment"`
-	WorkingDirectory       string   `json:"workingDirectory"`
-	CommandUID             int      `json:"commandUid"`
-	CommandGID             int      `json:"commandGid"`
-	SourceRoot             string   `json:"sourceRoot"`
-	OutputRoot             string   `json:"outputRoot"`
-	ControlRoot            string   `json:"controlRoot"`
-	ReleaseRoot            string   `json:"releaseRoot"`
-	OutputManifestPath     string   `json:"outputManifestPath"`
-	CommandTimeoutMillis   int64    `json:"commandTimeoutMillis"`
-	ReleaseTimeoutMillis   int64    `json:"releaseTimeoutMillis"`
-	WorkspaceByteLimit     int64    `json:"workspaceByteLimit"`
-	WorkspaceEntryLimit    int      `json:"workspaceEntryLimit"`
-	CollectedByteLimit     int64    `json:"collectedByteLimit"`
-	CollectedEntryLimit    int      `json:"collectedEntryLimit"`
-	ProcessTermGraceMillis int64    `json:"processTermGraceMillis"`
-	ProcessKillGraceMillis int64    `json:"processKillGraceMillis"`
+	SchemaVersion                  string   `json:"schemaVersion"`
+	ExecutionNonce                 string   `json:"executionNonce"`
+	ExpectedLauncherExecutableHash string   `json:"expectedLauncherExecutableHash"`
+	CommandSpecHash                string   `json:"commandSpecHash"`
+	SourceBindingHash              string   `json:"sourceBindingHash"`
+	Command                        []string `json:"command"`
+	Environment                    []string `json:"environment"`
+	WorkingDirectory               string   `json:"workingDirectory"`
+	CommandUID                     int      `json:"commandUid"`
+	CommandGID                     int      `json:"commandGid"`
+	SourceRoot                     string   `json:"sourceRoot"`
+	OutputRoot                     string   `json:"outputRoot"`
+	ControlRoot                    string   `json:"controlRoot"`
+	ReleaseRoot                    string   `json:"releaseRoot"`
+	OutputManifestPath             string   `json:"outputManifestPath"`
+	CommandTimeoutMillis           int64    `json:"commandTimeoutMillis"`
+	ReleaseTimeoutMillis           int64    `json:"releaseTimeoutMillis"`
+	WorkspaceByteLimit             int64    `json:"workspaceByteLimit"`
+	WorkspaceEntryLimit            int      `json:"workspaceEntryLimit"`
+	CollectedByteLimit             int64    `json:"collectedByteLimit"`
+	CollectedEntryLimit            int      `json:"collectedEntryLimit"`
+	ProcessTermGraceMillis         int64    `json:"processTermGraceMillis"`
+	ProcessKillGraceMillis         int64    `json:"processKillGraceMillis"`
 }
 
 type childIdentityReceipt struct {
@@ -154,26 +155,27 @@ type outputSnapshot struct {
 }
 
 type readyReceipt struct {
-	SchemaVersion            string             `json:"schemaVersion"`
-	LauncherSchemaVersion    string             `json:"launcherSchemaVersion"`
-	ExecutionNonce           string             `json:"executionNonce"`
-	SpecHash                 string             `json:"specHash"`
-	CommandSpecHash          string             `json:"commandSpecHash"`
-	SourceBindingHash        string             `json:"sourceBindingHash"`
-	ChildIdentityReceiptHash string             `json:"childIdentityReceiptHash"`
-	ChildIdentityAccepted    bool               `json:"childIdentityAccepted"`
-	ChildExitCode            int                `json:"childExitCode"`
-	CommandTimedOut          bool               `json:"commandTimedOut"`
-	CommandStdout            streamReceipt      `json:"commandStdout"`
-	CommandStderr            streamReceipt      `json:"commandStderr"`
-	ProcessTree              processTreeReceipt `json:"processTree"`
-	OutputSnapshotAccepted   bool               `json:"outputSnapshotAccepted"`
-	OutputSnapshotHash       string             `json:"outputSnapshotHash"`
-	OutputEntryCount         int                `json:"outputEntryCount"`
-	OutputByteLength         int64              `json:"outputByteLength"`
-	LauncherElapsedNanos     int64              `json:"launcherElapsedNanos"`
-	ProtocolAccepted         bool               `json:"protocolAccepted"`
-	BlockingGaps             []string           `json:"blockingGaps"`
+	SchemaVersion              string             `json:"schemaVersion"`
+	LauncherSchemaVersion      string             `json:"launcherSchemaVersion"`
+	LauncherExecutableSelfHash string             `json:"launcherExecutableSelfHash"`
+	ExecutionNonce             string             `json:"executionNonce"`
+	SpecHash                   string             `json:"specHash"`
+	CommandSpecHash            string             `json:"commandSpecHash"`
+	SourceBindingHash          string             `json:"sourceBindingHash"`
+	ChildIdentityReceiptHash   string             `json:"childIdentityReceiptHash"`
+	ChildIdentityAccepted      bool               `json:"childIdentityAccepted"`
+	ChildExitCode              int                `json:"childExitCode"`
+	CommandTimedOut            bool               `json:"commandTimedOut"`
+	CommandStdout              streamReceipt      `json:"commandStdout"`
+	CommandStderr              streamReceipt      `json:"commandStderr"`
+	ProcessTree                processTreeReceipt `json:"processTree"`
+	OutputSnapshotAccepted     bool               `json:"outputSnapshotAccepted"`
+	OutputSnapshotHash         string             `json:"outputSnapshotHash"`
+	OutputEntryCount           int                `json:"outputEntryCount"`
+	OutputByteLength           int64              `json:"outputByteLength"`
+	LauncherElapsedNanos       int64              `json:"launcherElapsedNanos"`
+	ProtocolAccepted           bool               `json:"protocolAccepted"`
+	BlockingGaps               []string           `json:"blockingGaps"`
 }
 
 type collectorReceipt struct {
@@ -246,10 +248,15 @@ func main() {
 	var err error
 	switch mode {
 	case "version":
-		err = writeJSON(os.Stdout, map[string]any{
-			"schemaVersion":       launcherSchema,
-			"collectorFrameMagic": frameMagic,
-		})
+		var executableHash string
+		executableHash, err = hashSelfExecutable()
+		if err == nil {
+			err = writeJSON(os.Stdout, map[string]any{
+				"schemaVersion":       launcherSchema,
+				"collectorFrameMagic": frameMagic,
+				"executableSelfHash":  executableHash,
+			})
+		}
 	case "run":
 		err = runMain(specPathFromArgs(os.Args[2:]))
 	case "child":
@@ -310,8 +317,16 @@ func validateSpec(spec launcherSpec) error {
 	if !isHex(spec.ExecutionNonce, 32) {
 		return errors.New("execution nonce invalid")
 	}
-	if !isSHA256(spec.CommandSpecHash) || !isSHA256(spec.SourceBindingHash) {
+	if !isSHA256(spec.ExpectedLauncherExecutableHash) ||
+		!isSHA256(spec.CommandSpecHash) || !isSHA256(spec.SourceBindingHash) {
 		return errors.New("spec proof binding invalid")
+	}
+	observedExecutableHash, err := hashSelfExecutable()
+	if err != nil {
+		return fmt.Errorf("hash launcher executable: %w", err)
+	}
+	if observedExecutableHash != spec.ExpectedLauncherExecutableHash {
+		return errors.New("launcher executable hash mismatch")
 	}
 	if len(spec.Command) < 1 || len(spec.Command) > 257 {
 		return errors.New("command argv count invalid")
@@ -373,6 +388,10 @@ func runMain(specPath string) error {
 	spec, _, specHash, err := readSpec(specPath)
 	if err != nil {
 		return err
+	}
+	launcherExecutableHash, err := hashSelfExecutable()
+	if err != nil {
+		return fmt.Errorf("hash launcher executable: %w", err)
 	}
 	if os.Getpid() != 1 || os.Geteuid() != 0 || os.Getegid() != 0 {
 		return errors.New("launcher must run as root PID 1")
@@ -493,24 +512,25 @@ func runMain(specPath string) error {
 		gap(snapshotErr != nil, "output_snapshot_invalid"),
 	})
 	ready := readyReceipt{
-		SchemaVersion:            readySchema,
-		LauncherSchemaVersion:    launcherSchema,
-		ExecutionNonce:           spec.ExecutionNonce,
-		SpecHash:                 specHash,
-		CommandSpecHash:          spec.CommandSpecHash,
-		SourceBindingHash:        spec.SourceBindingHash,
-		ChildIdentityReceiptHash: identityReceiptHash,
-		ChildIdentityAccepted:    identityAccepted,
-		ChildExitCode:            childExitCode,
-		CommandTimedOut:          commandTimedOut,
-		CommandStdout:            stdoutReceipt,
-		CommandStderr:            stderrReceipt,
-		ProcessTree:              processTree,
-		OutputSnapshotAccepted:   snapshotErr == nil,
-		OutputSnapshotHash:       snapshotHash,
-		LauncherElapsedNanos:     time.Since(started).Nanoseconds(),
-		ProtocolAccepted:         len(blockingGaps) == 0,
-		BlockingGaps:             blockingGaps,
+		SchemaVersion:              readySchema,
+		LauncherSchemaVersion:      launcherSchema,
+		LauncherExecutableSelfHash: launcherExecutableHash,
+		ExecutionNonce:             spec.ExecutionNonce,
+		SpecHash:                   specHash,
+		CommandSpecHash:            spec.CommandSpecHash,
+		SourceBindingHash:          spec.SourceBindingHash,
+		ChildIdentityReceiptHash:   identityReceiptHash,
+		ChildIdentityAccepted:      identityAccepted,
+		ChildExitCode:              childExitCode,
+		CommandTimedOut:            commandTimedOut,
+		CommandStdout:              stdoutReceipt,
+		CommandStderr:              stderrReceipt,
+		ProcessTree:                processTree,
+		OutputSnapshotAccepted:     snapshotErr == nil,
+		OutputSnapshotHash:         snapshotHash,
+		LauncherElapsedNanos:       time.Since(started).Nanoseconds(),
+		ProtocolAccepted:           len(blockingGaps) == 0,
+		BlockingGaps:               blockingGaps,
 	}
 	if snapshotErr == nil {
 		ready.OutputEntryCount = len(snapshot.Entries)
@@ -1543,6 +1563,19 @@ func prctlResult(option int, argument2, argument3, argument4, argument5 uintptr)
 func hashBytes(bytes []byte) string {
 	sum := sha256.Sum256(bytes)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func hashSelfExecutable() (string, error) {
+	file, err := os.Open("/proc/self/exe")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func isSHA256(value string) bool {

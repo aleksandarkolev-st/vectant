@@ -20,9 +20,9 @@ export const COLD_BUILD_CONTAINER_PROTOCOL_SCHEMA =
 export const COLD_BUILD_CONTAINER_PROTOCOL_AUTHORITY =
   'isolated_command_transport_only_not_gpu_hmr_success';
 export const COLD_BUILD_LAUNCHER_SCHEMA =
-  'synthi.gpu_hmr.cold_build_static_launcher.v1';
+  'synthi.gpu_hmr.cold_build_static_launcher.v2';
 export const COLD_BUILD_LAUNCHER_SPEC_SCHEMA =
-  'synthi.gpu_hmr.cold_build_launcher_spec.v1';
+  'synthi.gpu_hmr.cold_build_launcher_spec.v2';
 export const COLD_BUILD_LAUNCHER_BUILD_SCHEMA =
   'synthi.gpu_hmr.cold_build_launcher_build.v1';
 export const COLD_BUILD_LAUNCHER_BUILD_AUTHORITY =
@@ -78,9 +78,10 @@ export const COLD_BUILD_LAUNCHER_SOURCE_PATH = path.resolve(
 );
 
 const EXPECTED_LAUNCHER_HASHES = Object.freeze({
-  amd64: 'sha256:2a00c34511d544cd56a556ece07d2983096ce9eccdd94d3bf11e9a9999139e60',
-  arm64: 'sha256:294af726e3886d9e3fe35529793e1cf1c5d114de5e9644b97a3bd3190284867b',
+  amd64: 'sha256:cc4c5c3c4e23a419dce0c5151085381e5729a00e9109f1bc662d7b4e6dc46f46',
+  arm64: 'sha256:1667187e33cec7c6a68c4c51fd961ddaf96b1acf7f9e88079fec1a2f51f982c5',
 });
+const PINNED_LAUNCHER_IDENTITIES = new WeakMap();
 
 function contentHash(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -539,6 +540,34 @@ export function coldBuildLauncherExpectedHash(architecture) {
   return EXPECTED_LAUNCHER_HASHES[normalizeArchitecture(architecture)] ?? null;
 }
 
+function requirePinnedLauncherIdentity(value) {
+  const pinnedIdentity = value && typeof value === 'object'
+    ? PINNED_LAUNCHER_IDENTITIES.get(value)
+    : null;
+  const architecture = normalizeArchitecture(value?.architecture);
+  const expectedHash = coldBuildLauncherExpectedHash(architecture);
+  const buildEvidence = value?.buildEvidence;
+  if (
+    !pinnedIdentity
+    || !expectedHash
+    || pinnedIdentity.architecture !== architecture
+    || pinnedIdentity.executableHash !== expectedHash
+    || value?.binaryHash !== expectedHash
+    || buildEvidence?.schemaVersion !== COLD_BUILD_LAUNCHER_BUILD_SCHEMA
+    || buildEvidence?.proofAuthority !== COLD_BUILD_LAUNCHER_BUILD_AUTHORITY
+    || buildEvidence?.architecture !== architecture
+    || buildEvidence?.binaryHash !== expectedHash
+    || buildEvidence?.accepted !== true
+    || buildEvidence?.acceptedForGpuHmr !== false
+    || buildEvidence?.gpuHmrSuccess !== false
+    || buildEvidence?.canSatisfyRuntimeProof !== false
+    || buildEvidence?.canSatisfyDispatchProof !== false
+  ) {
+    throw new Error('cold_build_launcher_pinned_identity_invalid');
+  }
+  return pinnedIdentity;
+}
+
 export async function coldBuildLauncherSourceIdentity() {
   const bytes = await readFile(COLD_BUILD_LAUNCHER_SOURCE_PATH);
   return {
@@ -709,16 +738,21 @@ export async function materializeColdBuildLauncher({
     canSatisfyRuntimeProof: false,
     canSatisfyDispatchProof: false,
   };
-  return {
+  const launcherIdentity = Object.freeze({
     executablePath: cachedBinaryPath,
     binaryHash,
     architecture: normalizedArchitecture,
-    sourceIdentity,
-    buildEvidence: {
+    sourceIdentity: Object.freeze({ ...sourceIdentity }),
+    buildEvidence: Object.freeze({
       ...buildProjection,
       evidenceHash: contentHash(stableJson(buildProjection)),
-    },
-  };
+    }),
+  });
+  PINNED_LAUNCHER_IDENTITIES.set(launcherIdentity, Object.freeze({
+    architecture: normalizedArchitecture,
+    executableHash: binaryHash,
+  }));
+  return launcherIdentity;
 }
 
 export function coldBuildLauncherEntrypoint() {
@@ -766,6 +800,7 @@ export function coldBuildTmpfsOptions() {
 
 export function coldBuildLauncherSpec({
   executionNonce,
+  launcherIdentity,
   commandSpecHash,
   sourceBindingHash,
   command,
@@ -779,9 +814,11 @@ export function coldBuildLauncherSpec({
   collectedByteLimit,
   collectedEntryLimit,
 } = {}) {
+  const pinnedLauncher = requirePinnedLauncherIdentity(launcherIdentity);
   return {
     schemaVersion: COLD_BUILD_LAUNCHER_SPEC_SCHEMA,
     executionNonce,
+    expectedLauncherExecutableHash: pinnedLauncher.executableHash,
     commandSpecHash,
     sourceBindingHash,
     command: [command, ...args],
@@ -816,10 +853,12 @@ export function coldBuildLauncherSpecHash(spec) {
 export function parseColdBuildControlFrame(buffer, {
   maxReceiptBytes,
   expectedExecutionNonce,
+  expectedLauncherIdentity,
   expectedSpecHash,
   expectedCommandSpecHash,
   expectedSourceBindingHash,
 } = {}) {
+  const pinnedLauncher = requirePinnedLauncherIdentity(expectedLauncherIdentity);
   if (
     !Number.isSafeInteger(maxReceiptBytes)
     || maxReceiptBytes < 2
@@ -884,6 +923,7 @@ export function parseColdBuildControlFrame(buffer, {
       'commandTimedOut',
       'executionNonce',
       'launcherElapsedNanos',
+      'launcherExecutableSelfHash',
       'launcherSchemaVersion',
       'outputByteLength',
       'outputEntryCount',
@@ -895,8 +935,9 @@ export function parseColdBuildControlFrame(buffer, {
       'sourceBindingHash',
       'specHash',
     ].sort())
-    || receipt.schemaVersion !== 'synthi.gpu_hmr.cold_build_ready_receipt.v1'
+    || receipt.schemaVersion !== 'synthi.gpu_hmr.cold_build_ready_receipt.v2'
     || receipt.launcherSchemaVersion !== COLD_BUILD_LAUNCHER_SCHEMA
+    || receipt.launcherExecutableSelfHash !== pinnedLauncher.executableHash
     || receipt.executionNonce !== expectedExecutionNonce
     || receipt.specHash !== expectedSpecHash
     || receipt.commandSpecHash !== expectedCommandSpecHash
