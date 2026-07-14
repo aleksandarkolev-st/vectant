@@ -67,7 +67,15 @@ pub async fn build_desktop_status_state(state: &AppState) -> Value {
     let events = state.audit.lock().await.events().to_vec();
     let full_access = state.full_access.lock().await;
     let receipt = full_access.receipt.as_ref();
-    let capabilities = receipt.map(|value| value.capabilities.iter().map(|capability| capability.wire_name()).collect::<Vec<_>>()).unwrap_or_default();
+    let capabilities = receipt
+        .map(|value| {
+            value
+                .capabilities
+                .iter()
+                .map(|capability| capability.wire_name())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     sanitize_desktop_ipc_state(&serde_json::json!({
         "connected": connected,
@@ -141,14 +149,16 @@ pub fn plan_desktop_ipc_action(
             "/v1/approval/revoke-all/{request_id}",
             true,
         ),
-        "full_access.pause" | "full_access.revoke" | "process.visibility.pause" => DesktopIpcActionPlan {
-            command,
-            daemon_method: None,
-            daemon_path_template: None,
-            requires_local_control: true,
-            returns_sanitized_state: true,
-            user_visible: true,
-        },
+        "full_access.pause" | "full_access.revoke" | "process.visibility.pause" => {
+            DesktopIpcActionPlan {
+                command,
+                daemon_method: None,
+                daemon_path_template: None,
+                requires_local_control: true,
+                returns_sanitized_state: true,
+                user_visible: true,
+            }
+        }
         "history.export" => control_plan(command, "GET", "/v1/history/export/{request_id}", true),
         "history.delete" => control_plan(command, "POST", "/v1/history/delete/{request_id}", true),
         "update.check" => control_plan(command, "NATIVE", "signed-updater/check", true),
