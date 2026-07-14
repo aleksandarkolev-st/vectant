@@ -107,6 +107,22 @@ try {
     }),
     /source_limits_exceed_policy/,
   );
+  assert.throws(
+    () => normalizeArbitraryColdProjectDescriptor({
+      ...descriptor,
+      resources: { ...descriptor.resources, commandTimeoutMillis: 7_200_001 },
+    }),
+    /resources_exceed_policy/,
+  );
+  assert.throws(
+    () => normalizeArbitraryColdProjectDescriptor(descriptor, {
+      policy: {
+        maxCommandTimeoutMillis: 5000,
+        maxReleaseTimeoutMillis: 5000,
+      },
+    }),
+    /resources_exceed_policy/,
+  );
   const missingArtifactRoot = path.join(sourceRoot, 'must-not-be-created');
   await assert.rejects(
     () => runArbitraryColdProject(descriptor, { artifactRoot: missingArtifactRoot }),

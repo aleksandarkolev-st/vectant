@@ -56,6 +56,8 @@ export const DEFAULT_ARBITRARY_COLD_RUNNER_POLICY = Object.freeze({
   maxWorkspaceByteLength: 64 * 1024 * 1024 * 1024,
   maxCollectedEntryCount: 100_000,
   maxCollectedByteLength: 8 * 1024 * 1024 * 1024,
+  maxCommandTimeoutMillis: 2 * 60 * 60 * 1000,
+  maxReleaseTimeoutMillis: 10 * 60 * 1000,
   maxMemoryBytes: 128 * 1024 * 1024 * 1024,
   maxMemorySwapBytes: 128 * 1024 * 1024 * 1024,
   maxNanoCpus: 128_000_000_000,
@@ -203,6 +205,8 @@ function normalizeSourceLimits(value, policy) {
 
 function enforceResourcePolicy(resources, policy) {
   const checks = [
+    ['commandTimeoutMillis', 'maxCommandTimeoutMillis'],
+    ['releaseTimeoutMillis', 'maxReleaseTimeoutMillis'],
     ['workspaceEntryLimit', 'maxWorkspaceEntryCount'],
     ['workspaceByteLimit', 'maxWorkspaceByteLength'],
     ['collectedEntryLimit', 'maxCollectedEntryCount'],
