@@ -217,6 +217,7 @@ async fn full_access_graph_endpoint_requires_live_bound_consent_and_returns_no_b
         scanner_version: vectant_local_support_app::SCANNER_VERSION.into(),
         app_version: "0.1.0".into(),
         policy_major: 1,
+        reconsent_version: 1,
         created_at: chrono::Utc::now(),
         expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         paused_at: None,

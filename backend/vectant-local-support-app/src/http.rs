@@ -555,6 +555,7 @@ async fn enroll_full_access(
         || request.receipt.policy_version != crate::POLICY_VERSION
         || request.receipt.scanner_version != crate::SCANNER_VERSION
         || request.receipt.policy_major != request.policy.policy_major
+        || request.receipt.reconsent_version != request.policy.mandatory_reconsent_version
         || !request.policy.organization_enabled
         || request.policy.emergency_paused
     {
@@ -608,6 +609,7 @@ async fn enroll_full_access(
                 || existing.support_actor != request.receipt.support_actor
                 || existing.workspace_hash != request.receipt.workspace_hash
                 || existing.policy_major != request.receipt.policy_major
+                || existing.reconsent_version != request.receipt.reconsent_version
                 || existing.auto_approval_enabled != request.receipt.auto_approval_enabled)
         {
             return Err(denied(
@@ -686,6 +688,7 @@ async fn full_access_graph(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::GraphRead,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -742,6 +745,7 @@ async fn full_access_graph_node(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::GraphNodeRequest,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -831,6 +835,7 @@ async fn full_access_mutation(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::WorkspaceFileMutate,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -920,6 +925,7 @@ async fn full_access_revert(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::WorkspaceFileRevert,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -994,6 +1000,7 @@ async fn full_access_port_discover(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::LocalPortDiscover,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -1052,6 +1059,7 @@ async fn full_access_command(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::CommandExecute,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -1139,6 +1147,7 @@ async fn full_access_port_use(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::LocalPortUse,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -1272,6 +1281,7 @@ async fn full_access_processes(
         scanner_version: crate::SCANNER_VERSION,
         app_version: &receipt.app_version,
         policy_major: full_access.policy.policy_major,
+        reconsent_version: full_access.policy.mandatory_reconsent_version,
         capability: crate::full_access::FullAccessCapability::ProcessInventory,
     };
     authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
@@ -2522,6 +2532,7 @@ mod tests {
             scanner_version: "scanner".into(),
             app_version: "0.1.0".into(),
             policy_major: 1,
+            reconsent_version: 1,
             created_at: chrono::Utc::now(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
             paused_at: None,

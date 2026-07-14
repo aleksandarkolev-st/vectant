@@ -125,6 +125,7 @@ pub struct FullAccessConsentReceipt {
     pub scanner_version: String,
     pub app_version: String,
     pub policy_major: u16,
+    pub reconsent_version: u32,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub paused_at: Option<DateTime<Utc>>,
@@ -151,6 +152,7 @@ impl FullAccessConsentReceipt {
             || self.scanner_version != binding.scanner_version
             || self.app_version != binding.app_version
             || self.policy_major != binding.policy_major
+            || self.reconsent_version != binding.reconsent_version
         {
             return Err(FullAccessDenied::ReceiptBindingMismatch);
         }
@@ -172,6 +174,7 @@ pub struct ReceiptBinding<'a> {
     pub scanner_version: &'a str,
     pub app_version: &'a str,
     pub policy_major: u16,
+    pub reconsent_version: u32,
     pub capability: FullAccessCapability,
 }
 
@@ -456,6 +459,7 @@ mod tests {
             scanner_version: "scanner-1".into(),
             app_version: "1.0.0".into(),
             policy_major: FULL_ACCESS_POLICY_MAJOR,
+            reconsent_version: 1,
             created_at: now,
             expires_at: now + Duration::minutes(10),
             paused_at: None,
@@ -476,6 +480,7 @@ mod tests {
             scanner_version: "scanner-1",
             app_version: "1.0.0",
             policy_major: FULL_ACCESS_POLICY_MAJOR,
+            reconsent_version: 1,
             capability: FullAccessCapability::GraphNodeRequest,
         }
     }
@@ -497,6 +502,12 @@ mod tests {
         changed.workspace_hash = "sha256:other";
         assert_eq!(
             authorize(&policy, &receipt, &changed, now),
+            Err(FullAccessDenied::ReceiptBindingMismatch)
+        );
+        let mut reconsent_changed = binding();
+        reconsent_changed.reconsent_version = 2;
+        assert_eq!(
+            authorize(&policy, &receipt, &reconsent_changed, now),
             Err(FullAccessDenied::ReceiptBindingMismatch)
         );
     }
