@@ -8,6 +8,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -90,6 +93,8 @@ pub async fn execute_command_cancellable(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     apply_sanitized_environment(&mut command);
+    #[cfg(unix)]
+    configure_unix_process_group(&mut command);
     #[cfg(windows)]
     {
         command.creation_flags(0x0800_0000);
@@ -112,11 +117,17 @@ pub async fn execute_command_cancellable(
     let deadline = tokio::time::Instant::now() + timeout;
     let status = loop {
         if cancelled.load(Ordering::Acquire) {
+            _command_job.terminate();
+            // Retain a direct-child fallback if the OS containment primitive
+            // raced process exit or returned a transient failure.
             let _ = child.kill().await;
             return Err(CommandError::Cancelled);
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
+            _command_job.terminate();
+            // Retain a direct-child fallback if the OS containment primitive
+            // raced process exit or returned a transient failure.
             let _ = child.kill().await;
             return Err(CommandError::TimedOut);
         }
@@ -154,6 +165,19 @@ pub async fn execute_command_cancellable(
         stderr: clean_stderr,
         redaction_count: report.findings.len(),
     })
+}
+
+#[cfg(unix)]
+fn configure_unix_process_group(command: &mut Command) {
+    unsafe {
+        command.as_std_mut().pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
 }
 
 pub fn validate_request(
@@ -438,6 +462,8 @@ impl CommandJob {
         }
         Ok(Self { handle })
     }
+
+    fn terminate(&self) {}
 }
 
 #[cfg(windows)]
@@ -450,13 +476,36 @@ impl Drop for CommandJob {
 }
 
 #[cfg(not(windows))]
+struct CommandJob {
+    process_group: i32,
+}
+
+#[cfg(unix)]
+impl CommandJob {
+    fn assign(process_id: u32) -> Result<Self, ()> {
+        let process_group = i32::try_from(process_id).map_err(|_| ())?;
+        Ok(Self { process_group })
+    }
+
+    fn terminate(&self) {
+        // A negative PID targets the isolated process group created by
+        // configure_unix_process_group, including descendants.
+        unsafe {
+            libc::kill(-self.process_group, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 struct CommandJob;
 
-#[cfg(not(windows))]
+#[cfg(not(any(unix, windows)))]
 impl CommandJob {
     fn assign(_process_id: u32) -> Result<Self, ()> {
-        Ok(Self)
+        Err(())
     }
+
+    fn terminate(&self) {}
 }
 
 #[cfg(test)]
@@ -551,5 +600,51 @@ mod tests {
             super::resolve_executable_outside_workspace(directory.path(), "env").unwrap();
         assert!(!executable.starts_with(directory.path()));
         assert!(executable.is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_containment_kills_descendant_processes() {
+        // This uses a shell only as controlled test scaffolding to create a
+        // descendant. The production broker continues to hard-deny shells.
+        let directory = tempfile::tempdir().unwrap();
+        let child_pid_path = directory.path().join("child.pid");
+        let script = format!(
+            "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait",
+            child_pid_path.display()
+        );
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        super::configure_unix_process_group(&mut command);
+        let mut parent = command.spawn().unwrap();
+        let job = super::CommandJob::assign(parent.id().unwrap()).unwrap();
+        let child_pid = loop {
+            if let Ok(value) = std::fs::read_to_string(&child_pid_path) {
+                break value.trim().parse::<i32>().unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+
+        job.terminate();
+        let _ = parent.wait().await;
+        for _ in 0..50 {
+            let exists = unsafe { libc::kill(child_pid, 0) } == 0;
+            let zombie = std::fs::read_to_string(format!("/proc/{child_pid}/stat"))
+                .ok()
+                .is_some_and(|stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, state)| state.starts_with('Z'))
+                });
+            if !exists || zombie {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("contained descendant process {child_pid} survived termination");
     }
 }

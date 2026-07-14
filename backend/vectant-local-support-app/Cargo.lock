@@ -1671,6 +1671,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hex",
+ "libc",
  "rand",
  "rand_core",
  "regex",
