@@ -45,6 +45,7 @@ pub enum CommandError {
     OutputLimit,
     TimedOut,
     Cancelled,
+    ProcessContainment,
     SpawnFailed,
     Io,
 }
@@ -85,6 +86,12 @@ pub async fn execute_command_cancellable(
         command.creation_flags(0x0800_0000);
     }
     let mut child = command.spawn().map_err(|_| CommandError::SpawnFailed)?;
+    let _command_job =
+        CommandJob::assign(child.id().ok_or(CommandError::SpawnFailed)?).map_err(|_| {
+            // Do not run a command outside containment when the OS boundary cannot
+            // be established. The child has no opportunity to become authorized.
+            CommandError::ProcessContainment
+        })?;
     let stdout = child.stdout.take().ok_or(CommandError::Io)?;
     let stderr = child.stderr.take().ok_or(CommandError::Io)?;
     let stdout_task = tokio::spawn(read_capped(stdout, output_cap));
@@ -155,6 +162,7 @@ pub fn validate_request(
     if !policy
         .allowed_command_executables
         .contains(&request.executable)
+        || shell_executable(&request.executable)
     {
         return Err(CommandError::ExecutableDenied);
     }
@@ -218,6 +226,24 @@ fn dangerous_argument(value: &str) -> bool {
         || value == "-i"
 }
 
+fn shell_executable(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "cmd"
+            | "cmd.exe"
+            | "powershell"
+            | "powershell.exe"
+            | "pwsh"
+            | "pwsh.exe"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "wscript.exe"
+            | "cscript.exe"
+    )
+}
+
 fn strip_terminal_controls(value: &str) -> String {
     let mut clean = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
@@ -268,6 +294,99 @@ fn hash_arguments(arguments: &[String]) -> String {
     format!("sha256:{}", hex::encode(digest.finalize()))
 }
 
+#[cfg(windows)]
+struct CommandJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+// The job handle has exclusive ownership and Windows permits closing it from a
+// different thread; the guard is never shared concurrently.
+#[cfg(windows)]
+unsafe impl Send for CommandJob {}
+
+#[cfg(windows)]
+impl CommandJob {
+    fn assign(process_id: u32) -> Result<Self, ()> {
+        use std::mem::size_of;
+        use std::ptr::null;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+
+        // A private kill-on-close job guarantees descendant processes die with
+        // the brokered command. We deliberately do not accept an existing job.
+        let handle = unsafe { CreateJobObjectW(null(), null()) };
+        if handle.is_null() {
+            return Err(());
+        }
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const std::ffi::c_void,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } != 0;
+        if !configured {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(());
+        }
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                process_id,
+            )
+        };
+        if process.is_null() {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(());
+        }
+        let assigned = unsafe { AssignProcessToJobObject(handle, process) } != 0;
+        unsafe {
+            CloseHandle(process);
+        }
+        if !assigned {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(());
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CommandJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct CommandJob;
+
+#[cfg(not(windows))]
+impl CommandJob {
+    fn assign(_process_id: u32) -> Result<Self, ()> {
+        Ok(Self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -308,5 +427,27 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(CommandError::Cancelled)));
+    }
+
+    #[test]
+    fn shells_stay_denied_even_if_an_incorrect_policy_allowlists_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut policy = FullAccessPolicy {
+            organization_enabled: true,
+            ..Default::default()
+        };
+        policy.allowed_command_executables = BTreeSet::from(["cmd.exe".to_string()]);
+        let result = super::validate_request(
+            directory.path(),
+            &policy,
+            &CommandRequest {
+                request_id: "req_shell_123".to_string(),
+                executable: "cmd.exe".to_string(),
+                arguments: vec!["/c".to_string(), "echo".to_string()],
+                timeout_seconds: 5,
+                max_output_bytes: 1024,
+            },
+        );
+        assert_eq!(result, Err(CommandError::ExecutableDenied));
     }
 }
