@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -32,11 +34,33 @@ import {
   verifyArbitraryColdBatchSelection,
 } from '../lib/gpu-hmr-arbitrary-cold-project-batch.mjs';
 import {
+  ARBITRARY_COLD_RETAINED_EVIDENCE_AUTHORITY,
+  ARBITRARY_COLD_RETAINED_EVIDENCE_SCHEMA,
+  recomputeArbitraryColdRetainedEvidence,
+  verifyArbitraryColdRetainedEvidence,
+} from '../lib/gpu-hmr-arbitrary-cold-retained-evidence.mjs';
+import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-batch-'));
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function rehashEvidence(value) {
+  const projection = { ...value };
+  delete projection.evidenceHash;
+  return `sha256:${createHash('sha256').update(stableJson(projection)).digest('hex')}`;
+}
 
 function descriptor(sourceRoot, variant) {
   const outputPath = `result-${variant}.bin`;
@@ -252,11 +276,167 @@ try {
   assert.equal(batch.reports[0].outputs.length, 1);
   assert.equal(JSON.stringify(batch).includes('renamed-'), false);
 
+  const retainedEvidence = await recomputeArbitraryColdRetainedEvidence(
+    batch,
+    recordsAfterRename,
+    {
+      allowedArtifactRoots: [artifactRoot],
+      samplingSeed: 'live-batch-seed',
+      expectedBatchReportEvidenceHash: batch.evidenceHash,
+    },
+  );
+  assert.equal(retainedEvidence.schemaVersion, ARBITRARY_COLD_RETAINED_EVIDENCE_SCHEMA);
+  assert.equal(retainedEvidence.proofAuthority, ARBITRARY_COLD_RETAINED_EVIDENCE_AUTHORITY);
+  assert.equal(retainedEvidence.acceptedAsRetainedBatchEvidence, true);
+  assert.equal(retainedEvidence.acceptedAsRetainedColdOutputEvidence, true);
+  assert.equal(retainedEvidence.acceptedAsColdBuildEvidence, false);
+  assert.equal(retainedEvidence.acceptedForGpuHmr, false);
+  assert.equal(retainedEvidence.gpuHmrSuccess, false);
+  assert.equal(retainedEvidence.canSatisfyRuntimeProof, false);
+  assert.equal(retainedEvidence.canSatisfyDispatchProof, false);
+  assert.equal(retainedEvidence.samplingSeedPreimageVerified, true);
+  assert.equal(retainedEvidence.externalReportHashMatched, true);
+  assert.equal(retainedEvidence.verifiedArtifactCount, 1);
+  assert.equal(verifyArbitraryColdRetainedEvidence(retainedEvidence), retainedEvidence);
+  const unanchoredRetainedEvidence = await recomputeArbitraryColdRetainedEvidence(
+    batch,
+    recordsAfterRename,
+    { allowedArtifactRoots: [artifactRoot] },
+  );
+  assert.equal(unanchoredRetainedEvidence.samplingSeedPreimageVerified, false);
+  assert.equal(unanchoredRetainedEvidence.externalReportHashMatched, false);
+  assert.ok(unanchoredRetainedEvidence.limitations.includes(
+    'sampling_seed_preimage_not_supplied',
+  ));
+  assert.ok(unanchoredRetainedEvidence.limitations.includes(
+    'external_authenticity_anchor_not_supplied',
+  ));
+  await assert.rejects(
+    () => recomputeArbitraryColdRetainedEvidence(
+      batch,
+      recordsAfterRename,
+      {
+        allowedArtifactRoots: [artifactRoot],
+        samplingSeed: 'wrong-seed',
+        expectedBatchReportEvidenceHash: batch.evidenceHash,
+      },
+    ),
+    /sampling_seed_mismatch/,
+  );
+  await assert.rejects(
+    () => recomputeArbitraryColdRetainedEvidence(
+      batch,
+      recordsAfterRename,
+      {
+        allowedArtifactRoots: [artifactRoot],
+        samplingSeed: 'live-batch-seed',
+        expectedBatchReportEvidenceHash: `sha256:${'0'.repeat(64)}`,
+      },
+    ),
+    /external_report_hash_mismatch/,
+  );
+
+  const forgedInputSet = structuredClone(batch);
+  forgedInputSet.reports[0].runEvidence.inputSetHash = `sha256:${'0'.repeat(64)}`;
+  forgedInputSet.reports[0].runEvidence.evidenceHash = rehashEvidence(
+    forgedInputSet.reports[0].runEvidence,
+  );
+  forgedInputSet.summary.attempts[0].runEvidenceHash =
+    forgedInputSet.reports[0].runEvidence.evidenceHash;
+  forgedInputSet.summary.attempts[0].evidenceHash = rehashEvidence(
+    forgedInputSet.summary.attempts[0],
+  );
+  forgedInputSet.summary.evidenceHash = rehashEvidence(forgedInputSet.summary);
+  forgedInputSet.evidenceHash = rehashEvidence(forgedInputSet);
+  await assert.rejects(
+    () => recomputeArbitraryColdRetainedEvidence(
+      forgedInputSet,
+      recordsAfterRename,
+      {
+        allowedArtifactRoots: [artifactRoot],
+        samplingSeed: 'live-batch-seed',
+        expectedBatchReportEvidenceHash: forgedInputSet.evidenceHash,
+      },
+    ),
+    /run_evidence_invalid/,
+  );
+
+  const forgedAuthority = structuredClone(batch);
+  forgedAuthority.acceptedForGpuHmr = true;
+  forgedAuthority.evidenceHash = rehashEvidence(forgedAuthority);
+  await assert.rejects(
+    () => recomputeArbitraryColdRetainedEvidence(
+      forgedAuthority,
+      recordsAfterRename,
+      {
+        allowedArtifactRoots: [artifactRoot],
+        samplingSeed: 'live-batch-seed',
+        expectedBatchReportEvidenceHash: forgedAuthority.evidenceHash,
+      },
+    ),
+    /batch_report_invalid/,
+  );
+  await assert.rejects(
+    () => recomputeArbitraryColdRetainedEvidence(
+      batch,
+      recordsAfterRename.slice(1),
+      {
+        allowedArtifactRoots: [artifactRoot],
+        samplingSeed: 'live-batch-seed',
+        expectedBatchReportEvidenceHash: batch.evidenceHash,
+      },
+    ),
+    /selection_invalid/,
+  );
+
+  const retainedArtifactPath = batch.reports[0].outputs[0].artifactLocator.storage.localPath;
+  const retainedArtifactBytes = await readFile(retainedArtifactPath);
+  const forgedArtifactBytes = Buffer.from(retainedArtifactBytes);
+  forgedArtifactBytes[0] ^= 0xff;
+  try {
+    await writeFile(retainedArtifactPath, forgedArtifactBytes);
+    await assert.rejects(
+      () => recomputeArbitraryColdRetainedEvidence(
+        batch,
+        recordsAfterRename,
+        {
+          allowedArtifactRoots: [artifactRoot],
+          samplingSeed: 'live-batch-seed',
+          expectedBatchReportEvidenceHash: batch.evidenceHash,
+        },
+      ),
+      /artifact_transport_invalid/,
+    );
+  } finally {
+    await writeFile(retainedArtifactPath, retainedArtifactBytes);
+  }
+  assert.equal(
+    (await recomputeArbitraryColdRetainedEvidence(
+      batch,
+      recordsAfterRename,
+      {
+        allowedArtifactRoots: [artifactRoot],
+        samplingSeed: 'live-batch-seed',
+        expectedBatchReportEvidenceHash: batch.evidenceHash,
+      },
+    )).evidenceHash,
+    retainedEvidence.evidenceHash,
+  );
+
+  const forgedFacet = structuredClone(retainedEvidence);
+  forgedFacet.gpuHmrSuccess = true;
+  forgedFacet.evidenceHash = rehashEvidence(forgedFacet);
+  assert.throws(
+    () => verifyArbitraryColdRetainedEvidence(forgedFacet),
+    /retained_evidence_invalid/,
+  );
+
   process.stdout.write(`${JSON.stringify({
     status: 'self_check_passed',
     descriptorCount: recordsAfterRename.length,
     selectedDescriptorHash: batch.selection.selected[0].descriptorHash,
     batchEvidenceHash: batch.summary.evidenceHash,
+    retainedEvidenceHash: retainedEvidence.evidenceHash,
     acceptedAsColdBuildEvidence: batch.summary.acceptedAsColdBuildEvidence,
     acceptedForGpuHmr: batch.summary.acceptedForGpuHmr,
     gpuHmrSuccess: batch.summary.gpuHmrSuccess,
