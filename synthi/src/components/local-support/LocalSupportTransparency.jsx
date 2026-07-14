@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Ban,
@@ -247,6 +247,7 @@ export default function LocalSupportTransparency() {
     state: null,
     error: null,
   });
+  const transparencyPolicyLoaded = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -260,11 +261,11 @@ export default function LocalSupportTransparency() {
           throw new Error(`policy_${response.status}`);
         }
         const policy = await response.json();
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !transparencyPolicyLoaded.current) {
           setPolicyState({ status: "loaded", policy, error: null });
         }
       } catch (error) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !transparencyPolicyLoaded.current) {
           setPolicyState({
             status: "error",
             policy: null,
@@ -294,6 +295,10 @@ export default function LocalSupportTransparency() {
         const state = await response.json();
         if (!controller.signal.aborted) {
           setTransparencyState({ status: "loaded", state, error: null });
+          if (state?.policy && typeof state.policy === "object") {
+            transparencyPolicyLoaded.current = true;
+            setPolicyState({ status: "loaded", policy: state.policy, error: null });
+          }
         }
       } catch (error) {
         if (!controller.signal.aborted) {

@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/app/auth";
 import { summarizeTransparencyState } from "@/lib/local-support/controlPlane";
-import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
+import { publicLocalSupportPolicy, readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 import { readCloudTransparencyState } from "@/lib/local-support/transparencyStore";
 
 export const runtime = "nodejs";
@@ -27,6 +27,7 @@ export async function GET() {
   }
   return jsonNoStore({
     ...summarizeTransparencyState(localState || cloudState, policy),
+    policy: publicLocalSupportPolicy(policy),
     local_control_available: Boolean(localState?.session),
     local_control_via_relay: !localState && Boolean(cloudState?.session),
   });

@@ -66,6 +66,42 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
   };
 }
 
+export function publicLocalSupportPolicy(policy) {
+  const value = policy && typeof policy === "object" ? policy : {};
+  const emergency = value.emergency_controls && typeof value.emergency_controls === "object"
+    ? value.emergency_controls
+    : {};
+  return {
+    enabled: value.enabled === true,
+    global_enabled: value.global_enabled === true,
+    org_id: typeof value.org_id === "string" ? value.org_id : null,
+    org_kill_switch: value.org_kill_switch === true,
+    pairing_disabled: value.pairing_disabled === true,
+    disabled_reason: typeof value.disabled_reason === "string" ? value.disabled_reason : null,
+    min_app_version: String(value.min_app_version || "0.1.0").slice(0, 128),
+    policy_version: String(value.policy_version || "unknown").slice(0, 128),
+    protocol_version: String(value.protocol_version || "unknown").slice(0, 128),
+    vulnerable_versions: Array.isArray(value.vulnerable_versions)
+      ? value.vulnerable_versions.filter((version) => typeof version === "string").slice(0, 100)
+      : [],
+    retention: value.retention && typeof value.retention === "object" ? value.retention : {},
+    mvp: value.mvp && typeof value.mvp === "object" ? value.mvp : {},
+    emergency_controls: {
+      feature_disabled: emergency.feature_disabled === true,
+      org_disabled: emergency.org_disabled === true,
+      preview_gateway_disabled: emergency.preview_gateway_disabled === true,
+      pairing_disabled: emergency.pairing_disabled === true,
+      agent_access_disabled: emergency.agent_access_disabled !== false,
+      vulnerable_version_blocklist: Array.isArray(emergency.vulnerable_version_blocklist)
+        ? emergency.vulnerable_version_blocklist.filter((version) => typeof version === "string").slice(0, 100)
+        : [],
+      update_revocation_supported: emergency.update_revocation_supported === true,
+    },
+    persistent_policy: value.persistent_policy === true,
+    policy_updated_at: typeof value.policy_updated_at === "string" ? value.policy_updated_at : null,
+  };
+}
+
 function stricterMinimumVersion(storedVersion, environmentVersion) {
   if (typeof environmentVersion !== "string" || !environmentVersion) return storedVersion;
   return compareSemverLike(environmentVersion, storedVersion) > 0

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
+import { publicLocalSupportPolicy, readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
 
 export const runtime = "nodejs";
 
@@ -18,11 +18,12 @@ export async function GET(req) {
       user_visible_message: "Local Support policy is unavailable and requests are disabled.",
     }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
+  const publicPolicy = publicLocalSupportPolicy(policy);
   return NextResponse.json({
-    ...policy,
-    user_visible_message: policy.enabled
+    ...publicPolicy,
+    user_visible_message: publicPolicy.enabled
       ? "Local Support is available for this organization. The local app still enforces every request."
-      : policy.disabled_reason || "Local Support is disabled by organization, emergency, or global policy.",
+      : publicPolicy.disabled_reason || "Local Support is disabled by organization, emergency, or global policy.",
   }, {
     headers: {
       "Cache-Control": "no-store",

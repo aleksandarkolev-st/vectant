@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { readDurableLocalSupportPolicy, updateDurableLocalSupportPolicy } from "./policyStore";
+import {
+  publicLocalSupportPolicy,
+  readDurableLocalSupportPolicy,
+  updateDurableLocalSupportPolicy,
+} from "./policyStore";
 
 describe("durable local support policy", () => {
   it("overrides environment defaults with immediate persistent kill switches", async () => {
@@ -160,5 +164,32 @@ describe("durable local support policy", () => {
       org_disabled: true,
     }, "admin_1", { localSupportPolicyState: { findUnique: vi.fn() } });
     expect(result).toMatchObject({ decision: "denied", reason: "invalid_org_id" });
+  });
+
+  it("projects policy for browsers without secrets or private device restrictions", () => {
+    const projected = publicLocalSupportPolicy({
+      enabled: true,
+      org_id: "org_acme",
+      device_proof_secret: "device-secret",
+      account_id: "acct_private",
+      device_fingerprint: "sha256:private",
+      revoked_sessions: ["sess_private"],
+      revoked_devices: ["sha256:private"],
+      emergency_controls: {
+        feature_disabled: false,
+        org_disabled: false,
+        preview_gateway_disabled: false,
+        pairing_disabled: false,
+        agent_access_disabled: true,
+        vulnerable_version_blocklist: ["0.1.0"],
+        revoked_sessions: ["sess_private"],
+      },
+      mvp: { fast_support_enabled: true, fast_support_ttl_minutes: 30 },
+    });
+    expect(projected).toMatchObject({ org_id: "org_acme", mvp: { fast_support_enabled: true } });
+    expect(JSON.stringify(projected)).not.toContain("device-secret");
+    expect(JSON.stringify(projected)).not.toContain("sess_private");
+    expect(projected).not.toHaveProperty("device_proof_secret");
+    expect(projected).not.toHaveProperty("account_id");
   });
 });
