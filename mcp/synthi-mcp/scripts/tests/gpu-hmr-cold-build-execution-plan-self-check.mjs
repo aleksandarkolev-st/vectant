@@ -35,6 +35,8 @@ import { computeColdBuildSourceTreeBinding } from '../lib/gpu-hmr-cold-build-sou
 
 const dockerExecutable = process.env.SYNTHI_GPU_HMR_DOCKER_EXECUTABLE || 'docker';
 const SYNTHETIC_CONTAINER_ID = 'a'.repeat(64);
+const RETAINED_ENV_SECRET_SENTINEL =
+  'SYNTHI_COLD_PLAN_SECRET_SENTINEL=must-not-be-retained';
 
 async function workerImageDescriptor() {
   const inspected = await runColdBuildHostProcess(dockerExecutable, [
@@ -362,6 +364,47 @@ async function main() {
     assert.equal(planReceipt.proofAuthority, COLD_BUILD_EXECUTION_PLAN_RECEIPT_AUTHORITY);
     assert.equal(planReceipt.planHash, plan.planHash);
     assert.equal(planReceipt.planProjection.inputSetHash, plan.inputSetHash);
+    assert.match(
+      planReceipt.planProjection.expectedContainerConfigurationHash,
+      /^sha256:[0-9a-f]{64}$/,
+    );
+    assert.equal(
+      planReceipt.planProjection.expectedContainerConfiguration
+        .containerEnvironmentEntryCount,
+      common.workerImageEnvironment.length,
+    );
+    assert.equal(
+      planReceipt.planProjection.expectedContainerConfiguration
+        .containerEnvironmentValuesEmbedded,
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(
+        planReceipt.planProjection.expectedContainerConfiguration,
+        'containerEnvironment',
+      ),
+      false,
+    );
+    const secretEnvironmentPlan = createColdBuildLauncherExecutionPlan({
+      ...common,
+      containerName: `synthi-cold-secret-${randomBytes(8).toString('hex')}`,
+      workerImageEnvironment: [
+        ...common.workerImageEnvironment,
+        RETAINED_ENV_SECRET_SENTINEL,
+      ],
+    });
+    const secretEnvironmentPlanReceipt = createColdBuildExecutionPlanReceipt(
+      secretEnvironmentPlan,
+    );
+    assert.equal(
+      secretEnvironmentPlanReceipt.planProjection.expectedContainerConfiguration
+        .containerEnvironmentEntryCount,
+      common.workerImageEnvironment.length + 1,
+    );
+    assert.equal(
+      JSON.stringify(secretEnvironmentPlanReceipt).includes(RETAINED_ENV_SECRET_SENTINEL),
+      false,
+    );
     assert.equal(planReceipt.acceptedAsColdBuildExecutionPlanReceipt, true);
     assert.equal(planReceipt.acceptedForGpuHmr, false);
     assert.equal(planReceipt.gpuHmrSuccess, false);
@@ -381,6 +424,13 @@ async function main() {
     authorityClaimingPlanReceipt.planProjection.gpuHmrSuccess = true;
     assert.throws(
       () => verifyColdBuildExecutionPlanReceipt(authorityClaimingPlanReceipt),
+      /execution_plan_receipt_invalid/,
+    );
+    const environmentLeakingPlanReceipt = structuredClone(retainedPlanReceipt);
+    environmentLeakingPlanReceipt.planProjection.expectedContainerConfiguration
+      .containerEnvironment = [RETAINED_ENV_SECRET_SENTINEL];
+    assert.throws(
+      () => verifyColdBuildExecutionPlanReceipt(environmentLeakingPlanReceipt),
       /execution_plan_receipt_invalid/,
     );
     assert.ok(!JSON.stringify(planReceipt).match(

@@ -95,6 +95,7 @@ const EXECUTION_PLAN_PROJECTION_KEYS = [
   'environmentHash',
   'resourcePolicy',
   'expectedContainerConfiguration',
+  'expectedContainerConfigurationHash',
   'containerCreateArgsHash',
   'collectorCommandHash',
   'readyReceiptRequired',
@@ -104,6 +105,35 @@ const EXECUTION_PLAN_PROJECTION_KEYS = [
   'gpuHmrSuccess',
   'canSatisfyRuntimeProof',
   'canSatisfyDispatchProof',
+];
+const RETAINED_CONTAINER_CONFIGURATION_KEYS = [
+  'imageId',
+  'entrypoint',
+  'command',
+  'user',
+  'workingDirectory',
+  'networkMode',
+  'readOnlyRootfs',
+  'privileged',
+  'capDrop',
+  'capAdd',
+  'securityOpt',
+  'ipcMode',
+  'pidsLimit',
+  'memoryBytes',
+  'memorySwapBytes',
+  'nanoCpus',
+  'ulimits',
+  'tmpfs',
+  'mounts',
+  'labels',
+  'containerEnvironmentHash',
+  'containerEnvironmentEntryCount',
+  'containerEnvironmentValuesEmbedded',
+  'pidMode',
+  'utsMode',
+  'cgroupnsMode',
+  'runtime',
 ];
 
 function stableJson(value) {
@@ -325,7 +355,24 @@ function normalizeMounts(value) {
     .sort((left, right) => left.destination.localeCompare(right.destination));
 }
 
+function retainedContainerConfiguration(configuration) {
+  const {
+    containerEnvironment = [],
+    ...retained
+  } = configuration ?? {};
+  return {
+    ...retained,
+    containerEnvironmentEntryCount: Array.isArray(containerEnvironment)
+      ? containerEnvironment.length
+      : 0,
+    containerEnvironmentValuesEmbedded: false,
+  };
+}
+
 function executionPlanProjection(plan) {
+  const expectedContainerConfiguration = retainedContainerConfiguration(
+    plan.expectedContainerConfiguration,
+  );
   return {
     schemaVersion: plan.schemaVersion,
     proofAuthority: plan.proofAuthority,
@@ -353,7 +400,10 @@ function executionPlanProjection(plan) {
     commandHash: plan.commandHash,
     environmentHash: plan.environmentHash,
     resourcePolicy: plan.resourcePolicy,
-    expectedContainerConfiguration: plan.expectedContainerConfiguration,
+    expectedContainerConfiguration,
+    expectedContainerConfigurationHash: contentHash(stableJson(
+      plan.expectedContainerConfiguration,
+    )),
     containerCreateArgsHash: plan.containerCreateArgsHash,
     collectorCommandHash: plan.collectorCommandHash,
     readyReceiptRequired: plan.readyReceiptRequired,
@@ -414,6 +464,7 @@ export function verifyColdBuildExecutionPlanReceipt(receipt) {
     'launcherPathIdentityHash',
     'commandHash',
     'environmentHash',
+    'expectedContainerConfigurationHash',
     'containerCreateArgsHash',
     'collectorCommandHash',
   ];
@@ -445,7 +496,21 @@ export function verifyColdBuildExecutionPlanReceipt(receipt) {
     || projection.specByteLength < 2
     || projection.workerImageOperatingSystem !== 'linux'
     || !['amd64', 'arm64'].includes(projection.workerImageArchitecture)
+    || !exactKeys(
+      projection.expectedContainerConfiguration,
+      RETAINED_CONTAINER_CONFIGURATION_KEYS,
+    )
     || projection.expectedContainerConfiguration?.imageId !== projection.workerImageId
+    || !SHA256_PATTERN.test(
+      projection.expectedContainerConfiguration?.containerEnvironmentHash ?? '',
+    )
+    || !Number.isSafeInteger(
+      projection.expectedContainerConfiguration?.containerEnvironmentEntryCount,
+    )
+    || projection.expectedContainerConfiguration.containerEnvironmentEntryCount < 0
+    || projection.expectedContainerConfiguration.containerEnvironmentEntryCount > 256
+    || projection.expectedContainerConfiguration.containerEnvironmentValuesEmbedded !== false
+    || Object.hasOwn(projection.expectedContainerConfiguration, 'containerEnvironment')
     || projection.readyReceiptRequired !== true
     || projection.canAuthorizeLauncherExecution !== false
     || projection.planValid !== true
