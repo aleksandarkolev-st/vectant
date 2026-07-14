@@ -23,6 +23,7 @@ use vectant_local_support_app::desktop::{
     renderer_command_can_access_secret, sanitize_desktop_ipc_state, DesktopIpcError,
 };
 use vectant_local_support_app::full_access::FullAccessPolicy;
+use vectant_local_support_app::full_access::{FullAccessCapability, FullAccessConsentReceipt};
 use vectant_local_support_app::http::{
     bind_loopback, shutdown_cleanup, validate_file_request_authorization, AppState,
     LocalAuthorizationError, LocalRequestAuthorization, RateLimiter, MAX_JSON_BODY_BYTES,
@@ -175,6 +176,75 @@ async fn command_broker_requires_allowlisted_shell_free_bounded_requests() {
         validate_request(root.path(), &policy, &dangerous),
         Err(CommandError::InvalidRequest)
     );
+}
+
+#[tokio::test]
+async fn full_access_graph_endpoint_requires_live_bound_consent_and_returns_no_bodies() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("app.rs"), "fn main() {}\n").unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_full_http", SecretScanner::default()).unwrap();
+    let session = SessionGuard::new_bound_device(
+        "acct_full",
+        "org_full",
+        "wk_full_http",
+        "sha256:full-device",
+        std::time::Duration::from_secs(300),
+    );
+    let token = session.token_for_pairing_response().to_string();
+    let state = AppState::new(session, workspace);
+    let summary = state.workspace.summary();
+    let session_state = state.session.lock().await.state();
+    let mut policy = FullAccessPolicy {
+        organization_enabled: true,
+        ..Default::default()
+    };
+    policy.allowed_actors.insert("support_agent".into());
+    policy
+        .allowed_capabilities
+        .insert(FullAccessCapability::GraphRead);
+    let receipt = FullAccessConsentReceipt {
+        consent_id: "consent_full_http".into(),
+        session_id: session_state.session_id,
+        account_id: session_state.account_id,
+        organization_id: session_state.org_id,
+        support_actor: "support_agent".into(),
+        device_fingerprint: session_state.device_fingerprint,
+        workspace_hash: summary.root_hash,
+        capabilities: [FullAccessCapability::GraphRead].into_iter().collect(),
+        auto_approval_enabled: true,
+        policy_version: vectant_local_support_app::POLICY_VERSION.into(),
+        scanner_version: vectant_local_support_app::SCANNER_VERSION.into(),
+        app_version: "0.1.0".into(),
+        policy_major: 1,
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        paused_at: None,
+        revoked_at: None,
+        local_confirmation: "native_button".into(),
+    };
+    let graph = state.workspace.build_capability_graph().unwrap();
+    {
+        let mut access = state.full_access.lock().await;
+        access.policy = policy;
+        access.receipt = Some(receipt);
+        access.graph = graph;
+    }
+    let addr = bind_loopback(state).await.unwrap();
+    let response = reqwest::Client::new()
+        .get(format!("http://{addr}/v1/full-access/graph/req_full_graph"))
+        .headers(http_control_headers(
+            &token,
+            "desktop_control_secret_123456789012345",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["raw_bodies_included"], false);
+    assert_eq!(body["bytes_sent"], 0);
+    assert!(!body.to_string().contains("fn main"));
 }
 
 fn request(path: &str) -> FileReadRequest {
