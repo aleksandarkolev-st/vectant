@@ -156,6 +156,70 @@ fn workspace_mutation_is_graph_bound_atomic_and_revertible() {
     ));
 }
 
+#[test]
+fn workspace_mutation_recovers_after_broker_restart_and_denies_secret_replacement() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join("safe.rs"),
+        "pub const VALUE: &str = \"before\";\n",
+    )
+    .unwrap();
+    let workspace =
+        WorkspacePolicy::new(root.path(), "wk_recovery", SecretScanner::default()).unwrap();
+    let graph = workspace.build_capability_graph().unwrap();
+    let node = graph
+        .values()
+        .find(|node| node.relative_path == "safe.rs")
+        .unwrap()
+        .clone();
+    let transaction = WorkspaceMutationBroker::new(workspace, chrono::Duration::minutes(10))
+        .apply(
+            &graph,
+            MutationRequest {
+                request_id: "req_recovery_1".into(),
+                node_id: node.node_id.clone(),
+                expected_content_hash: node.content_hash.clone(),
+                replacement: "pub const VALUE: &str = \"after\";\n".into(),
+            },
+        )
+        .unwrap();
+
+    let restarted_workspace =
+        WorkspacePolicy::new(root.path(), "wk_recovery", SecretScanner::default()).unwrap();
+    let mut restarted =
+        WorkspaceMutationBroker::new(restarted_workspace, chrono::Duration::minutes(10));
+    assert!(restarted.transaction(&transaction.transaction_id).is_some());
+    assert!(restarted
+        .revert(&transaction.transaction_id, &transaction.after_hash)
+        .is_ok());
+    assert_eq!(
+        fs::read_to_string(root.path().join("safe.rs")).unwrap(),
+        "pub const VALUE: &str = \"before\";\n"
+    );
+
+    let refreshed_workspace =
+        WorkspacePolicy::new(root.path(), "wk_recovery", SecretScanner::default()).unwrap();
+    let refreshed_graph = refreshed_workspace.build_capability_graph().unwrap();
+    let refreshed_node = refreshed_graph
+        .values()
+        .find(|candidate| candidate.relative_path == "safe.rs")
+        .unwrap();
+    let mut broker =
+        WorkspaceMutationBroker::new(refreshed_workspace, chrono::Duration::minutes(10));
+    assert!(matches!(
+        broker.apply(
+            &refreshed_graph,
+            MutationRequest {
+                request_id: "req_recovery_2".into(),
+                node_id: refreshed_node.node_id.clone(),
+                expected_content_hash: refreshed_node.content_hash.clone(),
+                replacement: "const TOKEN: &str = \"sk-0123456789abcdefghijklmnop\";".into(),
+            },
+        ),
+        Err(MutationError::ScannerDenied)
+    ));
+}
+
 #[tokio::test]
 async fn command_broker_requires_allowlisted_shell_free_bounded_requests() {
     let root = tempdir().unwrap();

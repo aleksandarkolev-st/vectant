@@ -44,6 +44,14 @@ pub struct MutationTransaction {
     recovery_path: PathBuf,
 }
 
+/// On-disk transaction metadata. Recovery content remains in the sibling backup
+/// file; the journal intentionally records hashes and identifiers only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MutationJournal {
+    transaction: MutationTransaction,
+    recovery_file: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationError {
     InvalidRequest,
@@ -61,16 +69,21 @@ pub struct WorkspaceMutationBroker {
     scanner: SecretScanner,
     retention: Duration,
     transactions: HashMap<String, MutationTransaction>,
+    storage_error: bool,
 }
 
 impl WorkspaceMutationBroker {
     pub fn new(workspace: WorkspacePolicy, retention: Duration) -> Self {
-        Self {
+        let mut broker = Self {
             workspace,
             scanner: SecretScanner::default(),
             retention,
             transactions: HashMap::new(),
-        }
+            storage_error: false,
+        };
+        broker.load_recovery_journals();
+        broker.prune();
+        broker
     }
 
     pub fn apply(
@@ -78,6 +91,7 @@ impl WorkspaceMutationBroker {
         graph: &HashMap<String, GraphNode>,
         request: MutationRequest,
     ) -> Result<MutationTransaction, MutationError> {
+        self.ensure_storage()?;
         self.prune();
         if self.transactions.len() >= MAX_MUTATION_TRANSACTIONS
             || !safe_id(&request.request_id)
@@ -116,20 +130,11 @@ impl WorkspaceMutationBroker {
         }
         let target = resolve_relative(self.workspace.root(), &node.relative_path)
             .map_err(|_| MutationError::TargetDenied)?;
-        let recovery_path = self.recovery_path()?;
+        let transaction_id = new_id();
+        let recovery_path = self.recovery_path(&transaction_id)?;
         write_new_file(&recovery_path, before.as_bytes()).map_err(|_| MutationError::Io)?;
-        let temp = temp_path_for(&target)?;
-        if write_new_file(&temp, request.replacement.as_bytes()).is_err() {
-            let _ = fs::remove_file(&recovery_path);
-            return Err(MutationError::Io);
-        }
-        if atomic_replace(&temp, &target).is_err() {
-            let _ = fs::remove_file(&temp);
-            let _ = fs::remove_file(&recovery_path);
-            return Err(MutationError::Io);
-        }
         let transaction = MutationTransaction {
-            transaction_id: new_id(),
+            transaction_id: transaction_id.clone(),
             request_id: request.request_id,
             node_id: request.node_id,
             relative_path: node.relative_path.clone(),
@@ -138,8 +143,24 @@ impl WorkspaceMutationBroker {
             bytes_written: request.replacement.len(),
             created_at: Utc::now(),
             recovery_expires_at: Utc::now() + self.retention,
-            recovery_path,
+            recovery_path: recovery_path.clone(),
         };
+        if self.write_journal(&transaction).is_err() {
+            let _ = fs::remove_file(&recovery_path);
+            return Err(MutationError::Io);
+        }
+        let temp = temp_path_for(&target)?;
+        if write_new_file(&temp, request.replacement.as_bytes()).is_err() {
+            let _ = fs::remove_file(&recovery_path);
+            let _ = fs::remove_file(self.journal_path(&transaction_id));
+            return Err(MutationError::Io);
+        }
+        if atomic_replace(&temp, &target).is_err() {
+            let _ = fs::remove_file(&temp);
+            let _ = fs::remove_file(&recovery_path);
+            let _ = fs::remove_file(self.journal_path(&transaction_id));
+            return Err(MutationError::Io);
+        }
         self.transactions
             .insert(transaction.transaction_id.clone(), transaction.clone());
         Ok(transaction)
@@ -150,6 +171,7 @@ impl WorkspaceMutationBroker {
         transaction_id: &str,
         current_hash: &str,
     ) -> Result<MutationTransaction, MutationError> {
+        self.ensure_storage()?;
         self.prune();
         let transaction = self
             .transactions
@@ -172,6 +194,7 @@ impl WorkspaceMutationBroker {
         atomic_replace(&temp, &target).map_err(|_| MutationError::Io)?;
         self.transactions.remove(transaction_id);
         let _ = fs::remove_file(&transaction.recovery_path);
+        let _ = fs::remove_file(self.journal_path(transaction_id));
         Ok(transaction)
     }
 
@@ -179,26 +202,123 @@ impl WorkspaceMutationBroker {
         self.transactions.get(transaction_id)
     }
 
-    fn recovery_path(&self) -> Result<PathBuf, MutationError> {
+    fn recovery_directory(&self) -> Result<PathBuf, MutationError> {
         let directory = self
             .workspace
             .root()
             .join(".vectant-local-support")
             .join("recovery");
         fs::create_dir_all(&directory).map_err(|_| MutationError::Io)?;
-        Ok(directory.join(format!("{}.bak", new_id())))
+        restrict_directory_permissions(&directory).map_err(|_| MutationError::Io)?;
+        Ok(directory)
     }
+
+    fn recovery_path(&self, transaction_id: &str) -> Result<PathBuf, MutationError> {
+        Ok(self
+            .recovery_directory()?
+            .join(format!("{transaction_id}.bak")))
+    }
+
+    fn journal_path(&self, transaction_id: &str) -> PathBuf {
+        self.workspace
+            .root()
+            .join(".vectant-local-support")
+            .join("recovery")
+            .join(format!("{transaction_id}.json"))
+    }
+
+    fn write_journal(&self, transaction: &MutationTransaction) -> std::io::Result<()> {
+        let journal = MutationJournal {
+            transaction: transaction.clone(),
+            recovery_file: format!("{}.bak", transaction.transaction_id),
+        };
+        let encoded = serde_json::to_vec(&journal)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        write_new_file(&self.journal_path(&transaction.transaction_id), &encoded)
+    }
+
+    fn load_recovery_journals(&mut self) {
+        let Ok(directory) = self.recovery_directory() else {
+            self.storage_error = true;
+            return;
+        };
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => {
+                self.storage_error = true;
+                return;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                self.storage_error = true;
+                return;
+            };
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let journal: MutationJournal = match fs::read(&path)
+                .ok()
+                .and_then(|contents| serde_json::from_slice(&contents).ok())
+            {
+                Some(journal) => journal,
+                None => {
+                    self.storage_error = true;
+                    return;
+                }
+            };
+            let expected_filename = format!("{}.json", journal.transaction.transaction_id);
+            if entry.file_name().to_str() != Some(expected_filename.as_str())
+                || !valid_journal(&journal, &directory)
+            {
+                self.storage_error = true;
+                return;
+            }
+            let mut transaction = journal.transaction;
+            transaction.recovery_path = directory.join(journal.recovery_file);
+            self.transactions
+                .insert(transaction.transaction_id.clone(), transaction);
+        }
+    }
+
+    fn ensure_storage(&self) -> Result<(), MutationError> {
+        if self.storage_error {
+            Err(MutationError::RecoveryUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+
     fn prune(&mut self) {
         let now = Utc::now();
+        let journal_directory = self
+            .workspace
+            .root()
+            .join(".vectant-local-support")
+            .join("recovery");
         self.transactions.retain(|_, transaction| {
             if transaction.recovery_expires_at < now {
                 let _ = fs::remove_file(&transaction.recovery_path);
+                let _ = fs::remove_file(
+                    journal_directory.join(format!("{}.json", transaction.transaction_id)),
+                );
                 false
             } else {
                 true
             }
         });
     }
+}
+
+fn valid_journal(journal: &MutationJournal, directory: &Path) -> bool {
+    let transaction = &journal.transaction;
+    safe_id(&transaction.transaction_id)
+        && safe_id(&transaction.request_id)
+        && safe_id(&transaction.node_id)
+        && safe_workspace_relative_path(&transaction.relative_path)
+        && journal.recovery_file == format!("{}.bak", transaction.transaction_id)
+        && directory.join(&journal.recovery_file).is_file()
 }
 
 fn safe_id(value: &str) -> bool {
@@ -223,8 +343,28 @@ fn hash(value: &str) -> String {
 }
 fn write_new_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    restrict_file_permissions(path)?;
     file.write_all(content)?;
     file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_directory_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+#[cfg(not(unix))]
+fn restrict_directory_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+#[cfg(unix)]
+fn restrict_file_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 fn temp_path_for(target: &Path) -> Result<PathBuf, MutationError> {
