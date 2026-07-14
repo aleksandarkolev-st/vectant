@@ -453,6 +453,9 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
   const sourceBindingHash = contentHash(`protocol-refusal-source:${mode}`);
   const artifactBytes = Buffer.from('bounded-protocol-refusal-artifact\n', 'utf8');
   const artifactHash = contentHash(artifactBytes);
+  const declaredArtifactPath = mode === 'collected-output-parent-symlink'
+    ? 'linked-output/artifact.bin'
+    : 'artifact.bin';
   const root = await mkdtemp(path.join(os.tmpdir(), `synthi-cold-refusal-${mode}-`));
   const sourceDir = path.join(root, 'source');
   const releaseDir = path.join(root, 'release');
@@ -475,7 +478,9 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
       gpuHmrSuccess: false,
       canSatisfyRuntimeProof: false,
       outputs: [{
-        path: mode === 'windows-absolute-output-path' ? 'C:/artifact' : 'artifact.bin',
+        path: mode === 'windows-absolute-output-path'
+          ? 'C:/artifact'
+          : declaredArtifactPath,
         role: 'generic_build_artifact',
         artifactKind: 'opaque_build_output',
         mediaType: 'application/octet-stream',
@@ -494,7 +499,27 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
       : [
         '#!/bin/sh',
         'set -eu',
-        `printf 'bounded-protocol-refusal-artifact\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/artifact.bin'`,
+        ...(mode === 'collected-output-symlink'
+          ? [
+            `printf 'bounded-protocol-refusal-artifact\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/real-artifact.bin'`,
+            `ln -s real-artifact.bin '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/artifact.bin'`,
+          ]
+          : mode === 'collected-output-parent-symlink'
+            ? [
+              'mkdir -p /tmp/synthi-declared-output-target',
+              "printf 'bounded-protocol-refusal-artifact\\n' > /tmp/synthi-declared-output-target/artifact.bin",
+              `ln -s /tmp/synthi-declared-output-target '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/linked-output'`,
+            ]
+            : [
+              `printf 'bounded-protocol-refusal-artifact\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/artifact.bin'`,
+            ]),
+        ...(mode === 'uncollected-output-symlink'
+          ? [
+            'mkdir -p /tmp/synthi-uncollected-output-target',
+            'mkfifo /tmp/synthi-uncollected-output-target/must-not-be-walked',
+            `ln -s /tmp/synthi-uncollected-output-target '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/uncollected-link.out'`,
+          ]
+          : []),
         ...(mode === 'unsafe-output-tree'
           ? [
             `ln -s artifact.bin '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/link.out'`,
@@ -595,6 +620,8 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
     const readyHash = readyFrame.receiptHash;
     if ([
       'unsafe-output-tree',
+      'collected-output-symlink',
+      'collected-output-parent-symlink',
       'symlink-working-directory',
       'direct-argv-no-manifest',
       'command-timeout-pipe',
@@ -623,6 +650,10 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
       return;
     }
     assert.equal(ready.protocolAccepted, true, JSON.stringify(ready));
+    if (mode === 'uncollected-output-symlink') {
+      assert.equal(ready.outputSnapshotAccepted, true);
+      assert.equal(ready.outputEntryCount, 2);
+    }
 
     let completion = null;
     let completionHash = null;
@@ -652,6 +683,12 @@ async function runProtocolRefusalScenario({ launcher, mode }) {
         expectedReadyReceiptHash: readyHash,
         expectedOutputSnapshotHash: ready.outputSnapshotHash,
       });
+      if (mode === 'uncollected-output-symlink') {
+        assert.equal(
+          frame.receipt.entries.some((entry) => entry.path === 'uncollected-link.out'),
+          false,
+        );
+      }
       const completionBytes = await pollControl(containerId, 'collector-complete.json');
       const parsedCompletion = parseColdBuildCollectorCompletionReceipt(completionBytes, {
         maxReceiptBytes: maxDiagnosticBytes,
@@ -1967,7 +2004,10 @@ async function main() {
     'skipped-collection',
     'trailing-release',
     'trailing-final-ack',
+    'uncollected-output-symlink',
     'unsafe-output-tree',
+    'collected-output-symlink',
+    'collected-output-parent-symlink',
     'symlink-working-directory',
     'direct-argv-no-manifest',
     'command-timeout-pipe',

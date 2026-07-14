@@ -1232,10 +1232,15 @@ func buildOutputSnapshot(spec launcherSpec, specHash string) (outputSnapshot, st
 			return err
 		}
 		mode := metadata.Mode()
-		if mode&os.ModeSymlink != 0 || (!mode.IsDir() && !mode.IsRegular()) {
+		isSymlink := mode&os.ModeSymlink != 0
+		if !isSymlink && !mode.IsDir() && !mode.IsRegular() {
 			return errors.New("workspace contains unsupported file type")
 		}
-		if mode.IsRegular() {
+		// WalkDir does not follow symbolic links. CMake commonly leaves versioned
+		// library links in otherwise valid build trees, so account for the link
+		// inode without reading its target. Declared outputs are checked below and
+		// must still be regular, non-symlink files.
+		if mode.IsRegular() || isSymlink {
 			if metadata.Size() < 0 || snapshot.WorkspaceByteLength > spec.WorkspaceByteLimit-metadata.Size() {
 				return errors.New("workspace logical byte limit exceeded")
 			}
