@@ -2379,51 +2379,6 @@ function hiprtRuntimeBoundaryAppHookFacet({ events, expected, source = 'profile_
   };
 }
 
-function hiprtRuntimeProbeInstrumentationFromAppHook(facet) {
-  return {
-    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
-    kind: 'declared_runtime_boundary_app_hook',
-    instrumentationKind: 'runtime_boundary_app_hook',
-    instrumentation_kind: 'runtime_boundary_app_hook',
-    adapterFamily: 'hiprt-runtime-boundary-app-hook',
-    adapter_family: 'hiprt-runtime-boundary-app-hook',
-    profileId: CFG.profileId,
-    profile_id: CFG.profileId,
-    targetName: CFG.targetName,
-    target_name: CFG.targetName,
-    accepted: facet.accepted === true,
-    applied: false,
-    adaptedOrAlreadyPresent: false,
-    adapted_or_already_present: false,
-    sourceAdaptations: [],
-    source_adaptations: [],
-    acceptanceScope: 'hiprt_declared_visual_profile',
-    acceptance_scope: 'hiprt_declared_visual_profile',
-    proofAuthority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
-    proof_authority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
-    executionBoundary: 'HIPRT app-emitted runtime boundary events',
-    execution_boundary: 'HIPRT app-emitted runtime boundary events',
-    runtimeBoundaryAppHook: facet,
-    runtime_boundary_app_hook: facet,
-    arbitraryTargetRuntimeAccepted: false,
-    arbitrary_target_runtime_accepted: false,
-    arbitraryLibraryAccepted: false,
-    arbitrary_library_accepted: false,
-    broadApplicationAcceptance: false,
-    broad_application_acceptance: false,
-    broadHipApplicationAcceptance: false,
-    broad_hip_application_acceptance: false,
-    unsupportedWithoutEvidence: [
-      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
-      'runtime_boundary_events_missing_or_unmatched',
-    ],
-    unsupported_without_evidence: [
-      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
-      'runtime_boundary_events_missing_or_unmatched',
-    ],
-  };
-}
-
 function resolveRuntimeBoundaryManifestPath(rawPath) {
   const raw = String(rawPath ?? '').trim();
   if (!raw) return null;
@@ -3197,12 +3152,7 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     },
     source: proof.runtimeBoundaryEventSource ?? proof.runtime_boundary_event_source ?? 'profile_runtime_boundary_events',
   });
-  const appHookRuntimeProbeInstrumentation =
-    runtimeBoundaryAppHook.accepted === true && declaredSourceAdaptedProfile === false
-      ? hiprtRuntimeProbeInstrumentationFromAppHook(runtimeBoundaryAppHook)
-      : null;
-  const runtimeProbeInstrumentation =
-    appHookRuntimeProbeInstrumentation ?? declaredRuntimeProbeInstrumentation;
+  const runtimeProbeInstrumentation = declaredRuntimeProbeInstrumentation;
   const sourceAdaptedProfile =
     declaredSourceAdaptedProfile || isSourceAdaptedRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
   const sourceAdaptations = compactStringList([
@@ -3217,6 +3167,14 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
       code: 'hiprt_runtime_boundary_app_hook_not_accepted',
       blockingGaps: runtimeBoundaryAppHook.blockingGaps,
       blocking_gaps: runtimeBoundaryAppHook.blockingGaps,
+    });
+  }
+  if (runtimeBoundaryAppHook.accepted === true) {
+    limitations.push({
+      code: 'hiprt_runtime_boundary_events_support_only_without_target_process_provenance',
+      source: runtimeBoundaryAppHook.source,
+      eventHashes: runtimeBoundaryAppHook.eventHashes,
+      event_hashes: runtimeBoundaryAppHook.eventHashes,
     });
   }
   if (runtimeBoundaryAppHook.accepted === true && declaredSourceAdaptedProfile === true) {
@@ -4612,22 +4570,25 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
   );
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-hiprt-boundary-self-check-'));
   try {
-    const acceptedProof = await buildHiprtBoundarySelfCheckProof(tmpDir);
+    const declaredBoundaryProof = await buildHiprtBoundarySelfCheckProof(tmpDir);
     if (
-      acceptedProof.gpuHmrSuccess !== true
-      || acceptedProof.runtimeProofArtifact?.strictGate?.accepted !== true
-      || acceptedProof.runtimeBoundaryAppHook?.accepted !== true
-      || acceptedProof.sourceAdaptedProfile !== false
+      declaredBoundaryProof.gpuHmrSuccess !== false
+      || declaredBoundaryProof.runtimeProofArtifact?.strictGate?.accepted === true
+      || declaredBoundaryProof.runtimeBoundaryAppHook?.accepted !== true
+      || declaredBoundaryProof.sourceAdaptedProfile !== false
+      || !declaredBoundaryProof.runtimeProofArtifact?.limitations?.some((entry) =>
+        entry?.code === 'hiprt_runtime_boundary_events_support_only_without_target_process_provenance')
     ) {
-      throw new Error(`HIPRT runtime-boundary self-check proof rejected ${stableJson({
-        gpuHmrSuccess: acceptedProof.gpuHmrSuccess,
-        strictGate: acceptedProof.runtimeProofArtifact?.strictGate,
-        runtimeBoundaryAppHook: acceptedProof.runtimeBoundaryAppHook,
-        sourceAdaptedProfile: acceptedProof.sourceAdaptedProfile,
+      throw new Error(`HIPRT runtime-boundary self-check accepted declared events ${stableJson({
+        gpuHmrSuccess: declaredBoundaryProof.gpuHmrSuccess,
+        strictGate: declaredBoundaryProof.runtimeProofArtifact?.strictGate,
+        runtimeBoundaryAppHook: declaredBoundaryProof.runtimeBoundaryAppHook,
+        sourceAdaptedProfile: declaredBoundaryProof.sourceAdaptedProfile,
+        limitations: declaredBoundaryProof.runtimeProofArtifact?.limitations,
       })}`);
     }
-    const acceptedPath = path.join(tmpDir, 'hiprt-runtime-boundary-app-hook-proof.json');
-    await fs.writeFile(acceptedPath, `${JSON.stringify(acceptedProof, null, 2)}\n`);
+    const declaredBoundaryPath = path.join(tmpDir, 'hiprt-runtime-boundary-app-hook-proof.json');
+    await fs.writeFile(declaredBoundaryPath, `${JSON.stringify(declaredBoundaryProof, null, 2)}\n`);
     const matrix = await collectGpuHmrValidationMatrixLedger({
       repoRoot: REPO_ROOT,
       mcpRoot: path.resolve(__dirname, '..'),
@@ -4636,21 +4597,20 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
       includeUnproven: true,
       generatedAt: '2026-06-30T00:00:00.000Z',
     });
-    const acceptedCandidateRows = matrix.rows.filter((row) =>
-      row.proofIds?.includes(acceptedProof.runtimeProofArtifact.proofId));
-    const acceptedRow = acceptedCandidateRows.find((row) =>
+    const declaredBoundaryRows = matrix.rows.filter((row) =>
+      row.proofIds?.includes(declaredBoundaryProof.runtimeProofArtifact.proofId));
+    const acceptedRow = declaredBoundaryRows.find((row) =>
+      row.matrixOutcome === 'full_runtime_gpu_hmr'
+      || row.acceptedForGpuHmr === true
+      || row.gpuHmrSuccess === true);
+    const refusedRow = declaredBoundaryRows.find((row) =>
       row.backend === 'hiprt'
-      && row.matrixOutcome === 'full_runtime_gpu_hmr'
-      && row.acceptedForGpuHmr === true
-      && row.gpuHmrSuccess === true);
-    if (
-      acceptedRow?.matrixOutcome !== 'full_runtime_gpu_hmr'
-      || acceptedRow?.backend !== 'hiprt'
-      || acceptedRow?.acceptedForGpuHmr !== true
-    ) {
-      throw new Error(`HIPRT runtime-boundary matrix self-check rejected accepted fixture ${stableJson({
-        candidateCount: acceptedCandidateRows.length,
-        candidates: acceptedCandidateRows.map((row) => ({
+      && row.acceptedForGpuHmr !== true
+      && row.gpuHmrSuccess !== true);
+    if (acceptedRow || !refusedRow) {
+      throw new Error(`HIPRT runtime-boundary matrix self-check mishandled declared events ${stableJson({
+        candidateCount: declaredBoundaryRows.length,
+        candidates: declaredBoundaryRows.map((row) => ({
           matrixOutcome: row?.matrixOutcome,
           acceptanceClass: row?.acceptanceClass,
           backend: row?.backend,
@@ -4686,7 +4646,7 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
     }
     const missingOutputProof = await buildHiprtBoundarySelfCheckProof(tmpDir, {
       slug: 'hiprt-runtime-boundary-missing-output-self-check',
-      runtimeBoundaryEvents: acceptedProof.runtimeBoundaryEvents.filter((event) =>
+      runtimeBoundaryEvents: declaredBoundaryProof.runtimeBoundaryEvents.filter((event) =>
         hiprtRuntimeBoundaryEventKind(event) !== 'output_oracle'),
     });
     if (
@@ -4700,10 +4660,11 @@ async function hiprtRuntimeBoundaryAppHookSelfCheck() {
     console.log(JSON.stringify({
       ok: true,
       schemaVersion: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
-      proofId: acceptedProof.proofId,
-      runtimeProofArtifactId: acceptedProof.runtimeProofArtifact.proofId,
+      proofId: declaredBoundaryProof.proofId,
+      runtimeProofArtifactId: declaredBoundaryProof.runtimeProofArtifact.proofId,
       matrixProofId: matrix.proofId,
-      rowId: acceptedRow.rowId,
+      rowId: refusedRow.rowId,
+      declaredBoundaryEventsRefused: true,
       sourceAdaptedRejected: true,
       missingOutputRejected: true,
     }, null, 2));
