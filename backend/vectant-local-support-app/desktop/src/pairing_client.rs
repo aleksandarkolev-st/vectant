@@ -83,7 +83,7 @@ impl DesktopPolicyStatus {
             && !self
                 .vulnerable_versions
                 .iter()
-                .any(|blocked| blocked == version)
+                .any(|blocked| versions_equal(blocked, version))
     }
 }
 
@@ -273,7 +273,7 @@ pub fn parse_policy_status(
         .collect::<Vec<_>>();
     let vulnerable = vulnerable_versions
         .iter()
-        .any(|version| version == current_version);
+        .any(|version| versions_equal(version, current_version));
     let retention_days = match value.pointer("/retention/cloud_security_event_days") {
         None => 30,
         Some(value) => value
@@ -358,6 +358,10 @@ fn compare_numeric_versions(left: &str, right: &str) -> std::cmp::Ordering {
         }
     }
     std::cmp::Ordering::Equal
+}
+
+fn versions_equal(left: &str, right: &str) -> bool {
+    compare_numeric_versions(left, right) == std::cmp::Ordering::Equal
 }
 
 fn pairing_denial_message(reason: &str) -> String {
@@ -598,6 +602,19 @@ mod tests {
         assert_eq!(vulnerable.retention_days, 7);
         assert!(!vulnerable.update_version_allowed("0.1.1"));
         assert!(vulnerable.update_version_allowed("0.2.0"));
+
+        let semantically_vulnerable = parse_policy_status(
+            serde_json::json!({
+                "enabled": true,
+                "min_app_version": "0.1.0",
+                "vulnerable_versions": ["0.1.1.0"],
+                "emergency_controls": { "pairing_disabled": false },
+            }),
+            "0.1.1",
+        )
+        .unwrap();
+        assert_eq!(semantically_vulnerable.reason, "version_vulnerable");
+        assert!(!semantically_vulnerable.update_version_allowed("0.1.1.0"));
 
         let disabled = parse_policy_status(
             serde_json::json!({
