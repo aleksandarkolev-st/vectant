@@ -16,22 +16,31 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
     : null;
   const stored = scopedStored || globalStored;
   if (!stored) return base;
-  const storedVulnerableVersions = parseVersions(stored.vulnerableVersionsJson);
+  const storedPolicies = [globalStored, scopedStored].filter(Boolean);
+  const storedVulnerableVersions = storedPolicies.flatMap((item) => parseVersions(item.vulnerableVersionsJson));
   const vulnerableVersions = uniqueStrings([
     ...base.vulnerable_versions,
     ...storedVulnerableVersions,
   ]);
-  const globalEnabled = stored.globalEnabled && env.VECTANT_LOCAL_SUPPORT_ENABLED !== "false";
-  const orgDisabled = stored.orgDisabled || env.VECTANT_LOCAL_SUPPORT_ORG_DISABLED === "true";
-  const pairingDisabled = stored.pairingDisabled || env.VECTANT_LOCAL_SUPPORT_PAIRING_DISABLED === "true";
-  const previewDisabled = stored.previewDisabled
+  const globalStoredPolicy = globalStored || stored;
+  const globalEnabled = globalStoredPolicy.globalEnabled && env.VECTANT_LOCAL_SUPPORT_ENABLED !== "false";
+  const orgDisabled = storedPolicies.some((item) => item.orgDisabled)
+    || env.VECTANT_LOCAL_SUPPORT_ORG_DISABLED === "true";
+  const pairingDisabled = storedPolicies.some((item) => item.pairingDisabled)
+    || env.VECTANT_LOCAL_SUPPORT_PAIRING_DISABLED === "true";
+  const previewDisabled = storedPolicies.some((item) => item.previewDisabled)
     || env.VECTANT_LOCAL_SUPPORT_PREVIEW_GATEWAY_DISABLED === "true";
-  const agentAccessDisabled = stored.agentAccessDisabled || base.emergency_controls.agent_access_disabled;
-  const minAppVersion = stricterMinimumVersion(
-    stored.minAppVersion,
+  const agentAccessDisabled = storedPolicies.some((item) => item.agentAccessDisabled)
+    || base.emergency_controls.agent_access_disabled;
+  const minAppVersion = storedPolicies.reduce(
+    (current, item) => stricterMinimumVersion(current, item.minAppVersion),
     env.VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION,
+  ) || base.min_app_version;
+  const storedRetentionDays = storedPolicies.reduce(
+    (current, item) => Math.min(current, item.retentionDays),
+    90,
   );
-  const retentionDays = stricterRetentionDays(stored.retentionDays, env);
+  const retentionDays = stricterRetentionDays(storedRetentionDays, env);
   const enabled = globalEnabled && !orgDisabled && !pairingDisabled;
   return {
     ...base,

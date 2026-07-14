@@ -157,6 +157,54 @@ describe("durable local support policy", () => {
     expect(policy).toMatchObject({ org_id: "org_acme", enabled: false, org_kill_switch: true });
   });
 
+  it("keeps stricter global controls authoritative over organization policy", async () => {
+    const global = {
+      id: "global",
+      orgId: null,
+      globalEnabled: false,
+      orgDisabled: false,
+      pairingDisabled: true,
+      previewDisabled: true,
+      agentAccessDisabled: true,
+      minAppVersion: "0.4.0",
+      vulnerableVersionsJson: "[\"0.2.0\"]",
+      retentionDays: 7,
+      updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    const scoped = {
+      ...global,
+      id: "org_org_acme",
+      orgId: "org_acme",
+      globalEnabled: true,
+      pairingDisabled: false,
+      previewDisabled: false,
+      agentAccessDisabled: false,
+      minAppVersion: "0.1.0",
+      vulnerableVersionsJson: "[\"0.3.0\"]",
+      retentionDays: 30,
+    };
+    const findUnique = vi.fn(async ({ where }) => {
+      if (where.id === "global") return global;
+      if (where.orgId === "org_acme") return scoped;
+      return null;
+    });
+
+    const policy = await readDurableLocalSupportPolicy({}, {
+      localSupportPolicyState: { findUnique },
+    }, "org_acme");
+
+    expect(policy).toMatchObject({
+      enabled: false,
+      global_enabled: false,
+      pairing_disabled: true,
+      min_app_version: "0.4.0",
+      vulnerable_versions: ["0.2.0", "0.3.0"],
+      retention: { local_activity_days: 7, cloud_security_event_days: 7 },
+      emergency_controls: { preview_gateway_disabled: true, agent_access_disabled: true },
+      mvp: { browser_preview_enabled: false },
+    });
+  });
+
   it("rejects malformed organization policy scopes", async () => {
     const result = await updateDurableLocalSupportPolicy({
       action: "update_policy",
