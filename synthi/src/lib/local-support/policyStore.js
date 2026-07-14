@@ -83,6 +83,8 @@ export function publicLocalSupportPolicy(policy) {
   const emergency = value.emergency_controls && typeof value.emergency_controls === "object"
     ? value.emergency_controls
     : {};
+  const retention = value.retention && typeof value.retention === "object" ? value.retention : {};
+  const mvp = value.mvp && typeof value.mvp === "object" ? value.mvp : {};
   return {
     enabled: value.enabled === true,
     global_enabled: value.global_enabled === true,
@@ -96,8 +98,32 @@ export function publicLocalSupportPolicy(policy) {
     vulnerable_versions: Array.isArray(value.vulnerable_versions)
       ? value.vulnerable_versions.filter((version) => typeof version === "string").slice(0, 100)
       : [],
-    retention: value.retention && typeof value.retention === "object" ? value.retention : {},
-    mvp: value.mvp && typeof value.mvp === "object" ? value.mvp : {},
+    retention: {
+      no_retention: retention.no_retention === true,
+      local_activity_days: safePublicDays(retention.local_activity_days),
+      cloud_security_event_days: safePublicDays(retention.cloud_security_event_days),
+      raw_bodies_allowed: false,
+      export_available: retention.export_available === true,
+    },
+    mvp: {
+      balanced_mode_default: mvp.balanced_mode_default === true,
+      manual_mode_available: mvp.manual_mode_available === true,
+      fast_support_enabled: mvp.fast_support_enabled === true,
+      fast_support_ttl_minutes: safePublicMinutes(mvp.fast_support_ttl_minutes),
+      fast_support_scope: publicText(mvp.fast_support_scope),
+      fast_support_source_review_required: mvp.fast_support_source_review_required === true,
+      fast_support_logs_review_required: mvp.fast_support_logs_review_required === true,
+      fast_support_ports_manual: mvp.fast_support_ports_manual === true,
+      fast_support_response_bodies_review_required: mvp.fast_support_response_bodies_review_required === true,
+      agent_read_enabled: false,
+      agent_interaction_enabled: false,
+      agent_preview_read_enabled: false,
+      browser_preview_enabled: mvp.browser_preview_enabled === true,
+      persistent_port_approvals: false,
+      shell_commands: false,
+      file_writes: false,
+      repo_upload: false,
+    },
     emergency_controls: {
       feature_disabled: emergency.feature_disabled === true,
       org_disabled: emergency.org_disabled === true,
@@ -112,6 +138,20 @@ export function publicLocalSupportPolicy(policy) {
     persistent_policy: value.persistent_policy === true,
     policy_updated_at: typeof value.policy_updated_at === "string" ? value.policy_updated_at : null,
   };
+}
+
+function safePublicDays(value) {
+  const days = Number(value);
+  return Number.isSafeInteger(days) && days >= 0 && days <= 90 ? days : 0;
+}
+
+function safePublicMinutes(value) {
+  const minutes = Number(value);
+  return Number.isSafeInteger(minutes) && minutes >= 0 && minutes <= 30 ? minutes : 0;
+}
+
+function publicText(value) {
+  return typeof value === "string" ? value.slice(0, 128) : null;
 }
 
 function stricterMinimumVersion(storedVersion, environmentVersion) {

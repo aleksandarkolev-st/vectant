@@ -268,4 +268,40 @@ describe("durable local support policy", () => {
     expect(projected).not.toHaveProperty("device_proof_secret");
     expect(projected).not.toHaveProperty("account_id");
   });
+
+  it("allowlists nested public policy fields instead of forwarding internal metadata", () => {
+    const projected = publicLocalSupportPolicy({
+      enabled: true,
+      retention: {
+        local_activity_days: 14,
+        cloud_security_event_days: 7,
+        raw_bodies_allowed: true,
+        export_available: true,
+        internal_storage_path: "C:\\Users\\private\\audit.json",
+        device_proof_secret: "nested-secret",
+      },
+      mvp: {
+        fast_support_enabled: true,
+        fast_support_ttl_minutes: 12,
+        fast_support_scope: "safe_metadata_one_workspace",
+        internal_feature_flag: "private-value",
+      },
+    });
+
+    expect(projected).toMatchObject({
+      retention: { local_activity_days: 14, cloud_security_event_days: 7, export_available: true },
+      mvp: {
+        fast_support_enabled: true,
+        fast_support_ttl_minutes: 12,
+        agent_read_enabled: false,
+        shell_commands: false,
+      },
+    });
+    expect(projected.retention.raw_bodies_allowed).toBe(false);
+    expect(JSON.stringify(projected)).not.toContain("audit.json");
+    expect(JSON.stringify(projected)).not.toContain("nested-secret");
+    expect(JSON.stringify(projected)).not.toContain("private-value");
+    expect(projected.retention).not.toHaveProperty("internal_storage_path");
+    expect(projected.mvp).not.toHaveProperty("internal_feature_flag");
+  });
 });
