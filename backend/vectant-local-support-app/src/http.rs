@@ -25,6 +25,7 @@ use crate::full_access::{
     authorize as authorize_full_access, validate_graph_request, FullAccessConsentReceipt,
     FullAccessDenied, FullAccessPolicy, FullAccessState, GraphRequest, ReceiptBinding,
 };
+use crate::mutation::{MutationRequest, WorkspaceMutationBroker};
 use crate::port_adapter::native_listener_identity_matches;
 use crate::preview::{
     classify_preview_redirect, decide_preview_request_from_header_list_with_token,
@@ -146,6 +147,13 @@ pub struct FullAccessNodeResponse {
     pub raw_bodies_included: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FullAccessRevertRequest {
+    pub request_id: String,
+    pub transaction_id: String,
+    pub current_content_hash: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub session: Arc<Mutex<SessionGuard>>,
@@ -157,14 +165,16 @@ pub struct AppState {
     pub port_approvals: Arc<Mutex<PortApprovalRegistry>>,
     pub preview_traffic: Arc<Mutex<PreviewTrafficGuard>>,
     pub full_access: Arc<Mutex<FullAccessState>>,
+    pub mutation_broker: Arc<Mutex<WorkspaceMutationBroker>>,
     local_control_secret_hash: Arc<String>,
 }
 
 impl AppState {
     pub fn new(session: SessionGuard, workspace: WorkspacePolicy) -> Self {
+        let workspace = Arc::new(workspace);
         Self {
             session: Arc::new(Mutex::new(session)),
-            workspace: Arc::new(workspace),
+            workspace: workspace.clone(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
                 DEFAULT_RATE_LIMIT_REQUESTS,
                 DEFAULT_RATE_LIMIT_WINDOW,
@@ -175,6 +185,10 @@ impl AppState {
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             full_access: Arc::new(Mutex::new(FullAccessState::default())),
+            mutation_broker: Arc::new(Mutex::new(WorkspaceMutationBroker::new(
+                workspace.as_ref().clone(),
+                chrono::Duration::hours(24),
+            ))),
             local_control_secret_hash: Arc::new(hash_local_control_secret(
                 &generate_local_control_secret(),
             )),
@@ -187,9 +201,10 @@ impl AppState {
         audit_store: LocalAuditStore,
     ) -> Result<Self, AuditStoreError> {
         let audit = audit_store.load()?;
+        let workspace = Arc::new(workspace);
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
-            workspace: Arc::new(workspace),
+            workspace: workspace.clone(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
                 DEFAULT_RATE_LIMIT_REQUESTS,
                 DEFAULT_RATE_LIMIT_WINDOW,
@@ -200,6 +215,10 @@ impl AppState {
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             full_access: Arc::new(Mutex::new(FullAccessState::default())),
+            mutation_broker: Arc::new(Mutex::new(WorkspaceMutationBroker::new(
+                workspace.as_ref().clone(),
+                chrono::Duration::hours(24),
+            ))),
             local_control_secret_hash: Arc::new(hash_local_control_secret(
                 &generate_local_control_secret(),
             )),
@@ -262,6 +281,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/full-access/enroll", post(enroll_full_access))
         .route("/v1/full-access/graph/:request_id", get(full_access_graph))
         .route("/v1/full-access/graph/node", post(full_access_graph_node))
+        .route("/v1/full-access/mutation", post(full_access_mutation))
+        .route("/v1/full-access/mutation/revert", post(full_access_revert))
         .route("/v1/session/pause/:request_id", post(pause_session))
         .route("/v1/session/resume/:request_id", post(resume_session))
         .route(
@@ -681,6 +702,172 @@ async fn full_access_graph_node(
         redaction_count: 0,
         raw_bodies_included: true,
     }))
+}
+
+async fn full_access_mutation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MutationRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let graph = state
+        .workspace
+        .build_capability_graph()
+        .map_err(|_| denied(StatusCode::FORBIDDEN, "full_access_graph_refresh_failed"))?;
+    let mut full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::WorkspaceFileMutate,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    if !receipt.auto_approval_enabled {
+        return Err(denied(StatusCode::FORBIDDEN, "auto_approval_not_enabled"));
+    }
+    let replacement_bytes = request.replacement.len() as u64;
+    let policy = full_access.policy.clone();
+    full_access
+        .budget
+        .reserve(&policy, replacement_bytes)
+        .map_err(full_access_denied)?;
+    full_access.graph = graph.clone();
+    drop(full_access);
+    let transaction = state
+        .mutation_broker
+        .lock()
+        .await
+        .apply(&graph, request.clone())
+        .map_err(|error| {
+            denied(
+                StatusCode::FORBIDDEN,
+                format!("full_access_mutation_{error:?}").to_ascii_lowercase(),
+            )
+        })?;
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Control,
+        Some(request.request_id.clone()),
+        format!(
+            "Automatically changed {} under Full Access policy. Transaction {}; {} bytes written; reversible until {}.",
+            transaction.relative_path,
+            transaction.transaction_id,
+            transaction.bytes_written,
+            transaction.recovery_expires_at.to_rfc3339(),
+        ),
+        true,
+    );
+    persist_audit(&state, &audit)?;
+    Ok(Json(serde_json::json!({
+        "decision": "auto_mutated",
+        "request_id": request.request_id,
+        "transaction_id": transaction.transaction_id,
+        "before_hash": transaction.before_hash,
+        "after_hash": transaction.after_hash,
+        "bytes_written": transaction.bytes_written,
+        "raw_bodies_included": false
+    })))
+}
+
+async fn full_access_revert(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<FullAccessRevertRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    validate_headers(&headers)?;
+    enforce_rate_limit(&state).await?;
+    validate_safe_request_id(&request.request_id)?;
+    let token = bearer(&headers)?;
+    let (session_id, account_id, org_id, device_fingerprint) = {
+        let mut session = state.session.lock().await;
+        session
+            .validate(token, &request.request_id)
+            .map_err(|err| denied(StatusCode::UNAUTHORIZED, format!("{err:?}")))?;
+        (
+            session.session_id().to_string(),
+            session.account_id().to_string(),
+            session.org_id().to_string(),
+            session.device_fingerprint().to_string(),
+        )
+    };
+    let workspace_hash = state.workspace.summary().root_hash;
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access
+        .receipt
+        .clone()
+        .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let binding = ReceiptBinding {
+        session_id: &session_id,
+        account_id: &account_id,
+        organization_id: &org_id,
+        actor: &receipt.support_actor,
+        device_fingerprint: &device_fingerprint,
+        workspace_hash: &workspace_hash,
+        policy_version: crate::POLICY_VERSION,
+        scanner_version: crate::SCANNER_VERSION,
+        app_version: &receipt.app_version,
+        policy_major: full_access.policy.policy_major,
+        capability: crate::full_access::FullAccessCapability::WorkspaceFileRevert,
+    };
+    authorize_full_access(&full_access.policy, &receipt, &binding, Utc::now())
+        .map_err(full_access_denied)?;
+    drop(full_access);
+    let transaction = state
+        .mutation_broker
+        .lock()
+        .await
+        .revert(&request.transaction_id, &request.current_content_hash)
+        .map_err(|error| {
+            denied(
+                StatusCode::FORBIDDEN,
+                format!("full_access_revert_{error:?}").to_ascii_lowercase(),
+            )
+        })?;
+    let mut audit = state.audit.lock().await;
+    audit.append(
+        AuditClass::Control,
+        Some(request.request_id.clone()),
+        format!(
+            "Reverted Full Access transaction {} for {} after current-hash verification.",
+            transaction.transaction_id, transaction.relative_path
+        ),
+        true,
+    );
+    persist_audit(&state, &audit)?;
+    Ok(Json(serde_json::json!({
+        "decision": "reverted",
+        "request_id": request.request_id,
+        "transaction_id": transaction.transaction_id,
+        "raw_bodies_included": false,
+        "bytes_sent": 0
+    })))
 }
 
 fn full_access_denied(error: FullAccessDenied) -> (StatusCode, Json<serde_json::Value>) {
