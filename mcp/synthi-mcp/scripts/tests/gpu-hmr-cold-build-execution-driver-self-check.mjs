@@ -26,6 +26,12 @@ import {
   verifyColdBuildExecutionDriverResult,
 } from '../lib/gpu-hmr-cold-build-execution-driver.mjs';
 import { createColdBuildLauncherExecutionPlan } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
+import {
+  COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY,
+  COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA,
+  deriveColdBuildOutputEvidence,
+  verifyColdBuildOutputEvidence,
+} from '../lib/gpu-hmr-cold-build-output-evidence.mjs';
 import { computeColdBuildSourceTreeBinding } from '../lib/gpu-hmr-cold-build-source-tree-binding.mjs';
 
 const dockerExecutable = process.env.SYNTHI_GPU_HMR_DOCKER_EXECUTABLE || 'docker';
@@ -211,6 +217,32 @@ async function main() {
       verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
       accepted,
     );
+    const outputEvidence = deriveColdBuildOutputEvidence(
+      accepted,
+      acceptedFixture.plan,
+    );
+    assert.equal(
+      verifyColdBuildOutputEvidence(outputEvidence, accepted, acceptedFixture.plan),
+      outputEvidence,
+    );
+    assert.equal(outputEvidence.evidence.schemaVersion, COLD_BUILD_OUTPUT_EVIDENCE_SCHEMA);
+    assert.equal(outputEvidence.evidence.proofAuthority, COLD_BUILD_OUTPUT_EVIDENCE_AUTHORITY);
+    assert.equal(outputEvidence.evidence.acceptedAsColdBuildOutputEvidence, true);
+    assert.equal(outputEvidence.evidence.acceptedForGpuHmr, false);
+    assert.equal(outputEvidence.evidence.gpuHmrSuccess, false);
+    assert.equal(outputEvidence.evidence.declarationMetadataAuthority,
+      'advisory_only_not_output_acceptance');
+    assert.equal(outputEvidence.outputs.length, 1);
+    assert.ok(outputEvidence.outputs[0].bytes.equals(acceptedFixture.artifactBytes));
+    const clonedOutputEvidence = structuredClone(outputEvidence);
+    assert.throws(
+      () => verifyColdBuildOutputEvidence(
+        clonedOutputEvidence,
+        accepted,
+        acceptedFixture.plan,
+      ),
+      /output_evidence_result_invalid/,
+    );
     const clonedResult = structuredClone(accepted);
     assert.throws(
       () => verifyColdBuildExecutionDriverResult(clonedResult, acceptedFixture.plan),
@@ -267,6 +299,20 @@ async function main() {
     assert.equal(
       verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
       accepted,
+    );
+    outputEvidence.evidence.acceptedForGpuHmr = true;
+    assert.throws(
+      () => verifyColdBuildOutputEvidence(
+        outputEvidence,
+        accepted,
+        acceptedFixture.plan,
+      ),
+      /output_evidence_result_invalid/,
+    );
+    outputEvidence.evidence.acceptedForGpuHmr = false;
+    assert.equal(
+      verifyColdBuildOutputEvidence(outputEvidence, accepted, acceptedFixture.plan),
+      outputEvidence,
     );
     await assertContainerAbsent(acceptedFixture.plan.containerName);
 
