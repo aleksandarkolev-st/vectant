@@ -66,11 +66,22 @@ pub type CuContext = *mut c_void;
 pub type CuKernelParams = *mut *mut c_void;
 
 pub const REQUIRED_SYMBOL_COUNT: usize = 16;
+pub const OPTIONAL_DEVICE_IDENTITY_SYMBOL_COUNT: usize = 2;
+
+/// CUDA's `CUuuid` and HIP's `hipUUID` share this C layout.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct GpuDeviceUuid {
+    pub bytes: [u8; 16],
+}
 
 pub type CuInitFn = unsafe extern "C" fn(flags: u32) -> CuResult;
 pub type CuDeviceGetFn = unsafe extern "C" fn(device: *mut i32, ordinal: i32) -> CuResult;
 pub type CuCtxGetCurrentFn = unsafe extern "C" fn(ctx: *mut CuContext) -> CuResult;
 pub type CuCtxSetCurrentFn = unsafe extern "C" fn(ctx: CuContext) -> CuResult;
+pub type CuCtxGetDeviceFn = unsafe extern "C" fn(device: *mut i32) -> CuResult;
+pub type CuDeviceGetUuidFn =
+    unsafe extern "C" fn(uuid: *mut GpuDeviceUuid, device: i32) -> CuResult;
 
 pub type CuModuleLoadDataFn =
     unsafe extern "C" fn(module: *mut CuModule, image: *const c_void) -> CuResult;
@@ -107,16 +118,17 @@ pub type CuMemcpyDtoHFn =
 
 // ── Symbol table ────────────────────────────────────────────
 
-/// Resolved function pointers for one vendor. Phase 2 leaves all
-/// fields non-optional — `try_load` either fills every slot or
-/// returns an error. Future-proofs the swap path against a half-
-/// loaded driver where some symbols missed.
+/// Resolved function pointers for one vendor. `try_load` fills every
+/// required slot or returns an error. Device-identity entry points are
+/// best-effort because older driver libraries may not export them.
 #[derive(Clone, Copy)]
 pub struct GpuDriverSymbolTable {
     pub cu_init: CuInitFn,
     pub cu_device_get: CuDeviceGetFn,
     pub cu_ctx_get_current: CuCtxGetCurrentFn,
     pub cu_ctx_set_current: CuCtxSetCurrentFn,
+    pub cu_ctx_get_device: Option<CuCtxGetDeviceFn>,
+    pub cu_device_get_uuid: Option<CuDeviceGetUuidFn>,
     pub cu_module_load_data: CuModuleLoadDataFn,
     pub cu_module_load: CuModuleLoadFn,
     pub cu_module_unload: CuModuleUnloadFn,
@@ -172,6 +184,17 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; REQUIRED_SYMBO
             "hipMemcpyHtoD",
             "hipMemcpyDtoH",
         ],
+    }
+}
+
+/// Optional driver entry points used to identify the device bound to
+/// the active context. Missing entries do not make the driver unavailable.
+pub fn optional_device_identity_symbol_names(
+    vendor: GpuVendor,
+) -> [&'static str; OPTIONAL_DEVICE_IDENTITY_SYMBOL_COUNT] {
+    match vendor {
+        GpuVendor::Cuda => ["cuCtxGetDevice", "cuDeviceGetUuid"],
+        GpuVendor::Rocm => ["hipCtxGetDevice", "hipDeviceGetUuid"],
     }
 }
 
@@ -314,9 +337,17 @@ pub fn try_load(vendor: GpuVendor) -> Result<GpuDriverHandle, DriverLoadError> {
     })?;
 
     let names = required_symbol_names(vendor);
+    let optional_device_identity_names = optional_device_identity_symbol_names(vendor);
     // Resolve each symbol. The block keeps the unsafe surface
     // tight; if any lookup fails we record which symbol it was.
-    let symbols = unsafe { resolve_symbols(&library, &library_path, &names) }?;
+    let symbols = unsafe {
+        resolve_symbols(
+            &library,
+            &library_path,
+            &names,
+            &optional_device_identity_names,
+        )
+    }?;
 
     Ok(GpuDriverHandle {
         _library: library,
@@ -349,6 +380,7 @@ unsafe fn resolve_symbols(
     library: &libloading::Library,
     library_path: &str,
     names: &[&'static str; REQUIRED_SYMBOL_COUNT],
+    optional_device_identity_names: &[&'static str; OPTIONAL_DEVICE_IDENTITY_SYMBOL_COUNT],
 ) -> Result<GpuDriverSymbolTable, DriverLoadError> {
     macro_rules! fetch {
         ($idx:expr, $ty:ty) => {{
@@ -365,11 +397,23 @@ unsafe fn resolve_symbols(
         }};
     }
 
+    macro_rules! fetch_optional {
+        ($idx:expr, $ty:ty) => {{
+            let sym_name = optional_device_identity_names[$idx];
+            library
+                .get::<$ty>(sym_name.as_bytes())
+                .ok()
+                .map(|symbol| *symbol)
+        }};
+    }
+
     Ok(GpuDriverSymbolTable {
         cu_init: fetch!(0, CuInitFn),
         cu_device_get: fetch!(1, CuDeviceGetFn),
         cu_ctx_get_current: fetch!(2, CuCtxGetCurrentFn),
         cu_ctx_set_current: fetch!(3, CuCtxSetCurrentFn),
+        cu_ctx_get_device: fetch_optional!(0, CuCtxGetDeviceFn),
+        cu_device_get_uuid: fetch_optional!(1, CuDeviceGetUuidFn),
         cu_module_load_data: fetch!(4, CuModuleLoadDataFn),
         cu_module_load: fetch!(5, CuModuleLoadFn),
         cu_module_unload: fetch!(6, CuModuleUnloadFn),
@@ -401,6 +445,38 @@ mod tests {
             required_symbol_names(GpuVendor::Rocm).len(),
             REQUIRED_SYMBOL_COUNT
         );
+    }
+
+    #[test]
+    fn gpu_device_uuid_has_native_16_byte_layout() {
+        assert_eq!(std::mem::size_of::<GpuDeviceUuid>(), 16);
+        assert_eq!(
+            std::mem::align_of::<GpuDeviceUuid>(),
+            std::mem::align_of::<u8>()
+        );
+    }
+
+    #[test]
+    fn optional_device_identity_symbol_names_are_vendor_specific() {
+        assert_eq!(
+            optional_device_identity_symbol_names(GpuVendor::Cuda),
+            ["cuCtxGetDevice", "cuDeviceGetUuid"]
+        );
+        assert_eq!(
+            optional_device_identity_symbol_names(GpuVendor::Rocm),
+            ["hipCtxGetDevice", "hipDeviceGetUuid"]
+        );
+    }
+
+    #[test]
+    fn optional_device_identity_symbols_are_outside_required_contract() {
+        for vendor in [GpuVendor::Cuda, GpuVendor::Rocm] {
+            let required = required_symbol_names(vendor);
+            for optional in optional_device_identity_symbol_names(vendor) {
+                assert!(!required.contains(&optional));
+            }
+        }
+        assert_eq!(REQUIRED_SYMBOL_COUNT, 16);
     }
 
     #[test]
