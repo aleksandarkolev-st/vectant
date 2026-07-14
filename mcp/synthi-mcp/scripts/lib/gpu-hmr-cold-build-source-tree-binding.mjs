@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  cp,
   lstat,
   open,
   readdir,
@@ -12,6 +13,10 @@ export const COLD_BUILD_SOURCE_TREE_BINDING_SCHEMA =
   'synthi.gpu_hmr.cold_build_source_tree_binding.v1';
 export const COLD_BUILD_SOURCE_TREE_BINDING_AUTHORITY =
   'recomputed_source_tree_bytes_only_not_gpu_hmr_success';
+export const COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_source_tree_snapshot.v1';
+export const COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY =
+  'private_content_bound_snapshot_only_not_gpu_hmr_success';
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -299,4 +304,135 @@ export function verifyColdBuildSourceTreeBindingEvidence(evidence, sourceHostPat
     throw new Error('cold_build_source_tree_binding_evidence_invalid');
   }
   return evidence;
+}
+
+export async function materializeColdBuildSourceTreeSnapshot(
+  sourceHostPath,
+  snapshotHostPath,
+  limits = {},
+) {
+  const requestedSource = requireHostPath(sourceHostPath);
+  const requestedSnapshot = requireHostPath(snapshotHostPath);
+  const canonicalSource = await realpath(requestedSource);
+  const snapshotParent = await realpath(path.dirname(requestedSnapshot));
+  if (
+    isPathWithin(requestedSnapshot, canonicalSource)
+    || isPathWithin(canonicalSource, requestedSnapshot)
+    || !isPathWithin(requestedSnapshot, snapshotParent)
+  ) {
+    throw new Error('cold_build_source_tree_snapshot_path_invalid');
+  }
+  try {
+    await lstat(requestedSnapshot);
+    throw new Error('cold_build_source_tree_snapshot_path_exists');
+  } catch (error) {
+    if (error?.message === 'cold_build_source_tree_snapshot_path_exists') throw error;
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  const sourceTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
+    requestedSource,
+    limits,
+  );
+  await cp(canonicalSource, requestedSnapshot, {
+    recursive: true,
+    dereference: false,
+    errorOnExist: true,
+    force: false,
+    preserveTimestamps: false,
+    verbatimSymlinks: true,
+  });
+  const canonicalSnapshot = await realpath(requestedSnapshot);
+  const snapshotMetadata = await lstat(canonicalSnapshot, { bigint: true });
+  if (snapshotMetadata.isSymbolicLink() || !snapshotMetadata.isDirectory()) {
+    throw new Error('cold_build_source_tree_snapshot_path_invalid');
+  }
+  const snapshotTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
+    canonicalSnapshot,
+    limits,
+  );
+  const sourceTreePostBindingEvidence = await computeColdBuildSourceTreeBinding(
+    requestedSource,
+    limits,
+  );
+  if (
+    sourceTreeBindingEvidence.sourceBindingHash
+      !== snapshotTreeBindingEvidence.sourceBindingHash
+    || sourceTreeBindingEvidence.sourceBindingHash
+      !== sourceTreePostBindingEvidence.sourceBindingHash
+  ) {
+    throw new Error('cold_build_source_tree_snapshot_binding_mismatch');
+  }
+  const evidence = {
+    schemaVersion: COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA,
+    proofAuthority: COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY,
+    sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
+    sourceTreeBindingEvidenceHash: sourceTreeBindingEvidence.evidenceHash,
+    sourceTreePostBindingEvidenceHash: sourceTreePostBindingEvidence.evidenceHash,
+    snapshotTreeBindingEvidenceHash: snapshotTreeBindingEvidence.evidenceHash,
+    sourcePathIdentityHash: sourceTreeBindingEvidence.sourcePathIdentityHash,
+    snapshotPathIdentityHash: snapshotTreeBindingEvidence.sourcePathIdentityHash,
+    entryCount: snapshotTreeBindingEvidence.entryCount,
+    totalByteLength: snapshotTreeBindingEvidence.totalByteLength,
+    snapshotMaterialized: true,
+    acceptedAsSourceTreeSnapshotEvidence: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  evidence.evidenceHash = recomputeEvidenceHash(evidence);
+  return Object.freeze({
+    evidence: Object.freeze(evidence),
+    sourceTreeBindingEvidence,
+    sourceTreePostBindingEvidence,
+    snapshotTreeBindingEvidence,
+    snapshotHostPath: canonicalSnapshot,
+  });
+}
+
+export function verifyColdBuildSourceTreeSnapshot(
+  snapshot,
+  sourceHostPath,
+  snapshotHostPath,
+) {
+  const sourceTreeBindingEvidence = verifyColdBuildSourceTreeBindingEvidence(
+    snapshot?.sourceTreeBindingEvidence,
+    sourceHostPath,
+  );
+  const sourceTreePostBindingEvidence = verifyColdBuildSourceTreeBindingEvidence(
+    snapshot?.sourceTreePostBindingEvidence,
+    sourceHostPath,
+  );
+  const snapshotTreeBindingEvidence = verifyColdBuildSourceTreeBindingEvidence(
+    snapshot?.snapshotTreeBindingEvidence,
+    snapshotHostPath,
+  );
+  const evidence = snapshot?.evidence;
+  if (
+    snapshot?.snapshotHostPath !== path.resolve(snapshotHostPath)
+    || evidence?.schemaVersion !== COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA
+    || evidence?.proofAuthority !== COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY
+    || evidence?.sourceBindingHash !== sourceTreeBindingEvidence.sourceBindingHash
+    || evidence?.sourceBindingHash !== sourceTreePostBindingEvidence.sourceBindingHash
+    || evidence?.sourceBindingHash !== snapshotTreeBindingEvidence.sourceBindingHash
+    || evidence?.sourceTreeBindingEvidenceHash !== sourceTreeBindingEvidence.evidenceHash
+    || evidence?.sourceTreePostBindingEvidenceHash
+      !== sourceTreePostBindingEvidence.evidenceHash
+    || evidence?.snapshotTreeBindingEvidenceHash !== snapshotTreeBindingEvidence.evidenceHash
+    || evidence?.sourcePathIdentityHash !== sourceTreeBindingEvidence.sourcePathIdentityHash
+    || evidence?.snapshotPathIdentityHash !== snapshotTreeBindingEvidence.sourcePathIdentityHash
+    || evidence?.entryCount !== snapshotTreeBindingEvidence.entryCount
+    || evidence?.totalByteLength !== snapshotTreeBindingEvidence.totalByteLength
+    || evidence?.snapshotMaterialized !== true
+    || evidence?.acceptedAsSourceTreeSnapshotEvidence !== true
+    || evidence?.acceptedForGpuHmr !== false
+    || evidence?.gpuHmrSuccess !== false
+    || evidence?.canSatisfyRuntimeProof !== false
+    || evidence?.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence?.evidenceHash
+  ) {
+    throw new Error('cold_build_source_tree_snapshot_evidence_invalid');
+  }
+  return snapshot;
 }

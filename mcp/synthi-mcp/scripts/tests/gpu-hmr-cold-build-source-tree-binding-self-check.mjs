@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -13,8 +14,12 @@ import path from 'node:path';
 import {
   COLD_BUILD_SOURCE_TREE_BINDING_AUTHORITY,
   COLD_BUILD_SOURCE_TREE_BINDING_SCHEMA,
+  COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY,
+  COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA,
   computeColdBuildSourceTreeBinding,
+  materializeColdBuildSourceTreeSnapshot,
   verifyColdBuildSourceTreeBindingEvidence,
+  verifyColdBuildSourceTreeSnapshot,
 } from '../lib/gpu-hmr-cold-build-source-tree-binding.mjs';
 
 const LIMITS = {
@@ -38,8 +43,13 @@ async function main() {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'synthi-source-binding-'));
   const firstRoot = path.join(temporaryRoot, 'first arbitrary tree \u03a9');
   const secondRoot = path.join(temporaryRoot, 'second opaque tree');
+  const snapshotsRoot = path.join(temporaryRoot, 'private snapshots');
   try {
-    await Promise.all([writeTree(firstRoot), writeTree(secondRoot)]);
+    await Promise.all([
+      writeTree(firstRoot),
+      writeTree(secondRoot),
+      mkdir(snapshotsRoot, { recursive: false }),
+    ]);
     const first = await computeColdBuildSourceTreeBinding(firstRoot, LIMITS);
     const second = await computeColdBuildSourceTreeBinding(secondRoot, LIMITS);
     assert.equal(first.schemaVersion, COLD_BUILD_SOURCE_TREE_BINDING_SCHEMA);
@@ -61,6 +71,38 @@ async function main() {
     await writeFile(nestedPath, 'nested payload bytes\n', 'utf8');
     const restored = await computeColdBuildSourceTreeBinding(firstRoot, LIMITS);
     assert.equal(restored.sourceBindingHash, first.sourceBindingHash);
+
+    const snapshotPath = path.join(snapshotsRoot, 'content-bound input');
+    const snapshot = await materializeColdBuildSourceTreeSnapshot(
+      firstRoot,
+      snapshotPath,
+      LIMITS,
+    );
+    assert.equal(snapshot.evidence.schemaVersion, COLD_BUILD_SOURCE_TREE_SNAPSHOT_SCHEMA);
+    assert.equal(snapshot.evidence.proofAuthority, COLD_BUILD_SOURCE_TREE_SNAPSHOT_AUTHORITY);
+    assert.equal(snapshot.evidence.acceptedForGpuHmr, false);
+    assert.equal(snapshot.evidence.gpuHmrSuccess, false);
+    assert.equal(
+      verifyColdBuildSourceTreeSnapshot(snapshot, firstRoot, snapshot.snapshotHostPath),
+      snapshot,
+    );
+    await writeFile(nestedPath, 'transient unbound bytes\n', 'utf8');
+    assert.equal(
+      await readFile(
+        path.join(snapshot.snapshotHostPath, 'opaque-a', 'opaque-b', 'payload.two'),
+        'utf8',
+      ),
+      'nested payload bytes\n',
+    );
+    const snapshotAfterSourceMutation = await computeColdBuildSourceTreeBinding(
+      snapshot.snapshotHostPath,
+      LIMITS,
+    );
+    assert.equal(
+      snapshotAfterSourceMutation.sourceBindingHash,
+      snapshot.evidence.sourceBindingHash,
+    );
+    await writeFile(nestedPath, 'nested payload bytes\n', 'utf8');
 
     const originalPath = path.join(firstRoot, 'entry.one');
     const renamedPath = path.join(firstRoot, 'opaque-name');

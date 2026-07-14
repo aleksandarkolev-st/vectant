@@ -35,7 +35,9 @@ import {
 } from './lib/gpu-hmr-cold-build-output-evidence.mjs';
 import {
   computeColdBuildSourceTreeBinding,
+  materializeColdBuildSourceTreeSnapshot,
   verifyColdBuildSourceTreeBindingEvidence,
+  verifyColdBuildSourceTreeSnapshot,
 } from './lib/gpu-hmr-cold-build-source-tree-binding.mjs';
 import {
   inspectImmutableColdBuildWorkerImage,
@@ -370,16 +372,19 @@ function mapWorkingDirectory(relativePath) {
 async function createPrivateOrchestrationRoot() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-run-'));
   const releaseHostPath = path.join(root, 'release');
+  const snapshotsHostDirectory = path.join(root, 'snapshots');
   const specHostDirectory = path.join(root, 'specs');
   await Promise.all([
     mkdir(releaseHostPath, { recursive: false }),
+    mkdir(snapshotsHostDirectory, { recursive: false }),
     mkdir(specHostDirectory, { recursive: false }),
   ]);
   await Promise.all([
     chmod(releaseHostPath, 0o700),
+    chmod(snapshotsHostDirectory, 0o700),
     chmod(specHostDirectory, 0o700),
   ]);
-  return { root, releaseHostPath, specHostDirectory };
+  return { root, releaseHostPath, snapshotsHostDirectory, specHostDirectory };
 }
 
 async function removePrivateOrchestrationRoot(root) {
@@ -576,68 +581,97 @@ export async function runArbitraryColdProject(descriptorInput, {
   verifyImmutableColdBuildWorkerImage(workerImage, descriptor.workerImage);
   const imageInspectionNanos = Number(process.hrtime.bigint() - imageStarted);
 
-  const sourceStarted = process.hrtime.bigint();
-  const sourceTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
-    descriptor.sourceRoot,
-    descriptor.sourceLimits,
-  );
-  verifyColdBuildSourceTreeBindingEvidence(sourceTreeBindingEvidence, descriptor.sourceRoot);
-  const sourceBindingNanos = Number(process.hrtime.bigint() - sourceStarted);
-
-  const readOnlyInputStarted = process.hrtime.bigint();
-  const readOnlyInputTrees = [];
-  let readOnlyInputEntryCount = 0;
-  let readOnlyInputByteLength = 0;
-  for (const input of descriptor.readOnlyInputs) {
-    const sourceTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
-      input.sourceRoot,
-      input.sourceLimits,
-    );
-    verifyColdBuildSourceTreeBindingEvidence(sourceTreeBindingEvidence, input.sourceRoot);
-    readOnlyInputEntryCount += sourceTreeBindingEvidence.entryCount;
-    readOnlyInputByteLength += sourceTreeBindingEvidence.totalByteLength;
-    if (
-      !Number.isSafeInteger(readOnlyInputEntryCount)
-      || !Number.isSafeInteger(readOnlyInputByteLength)
-      || readOnlyInputEntryCount > normalizedPolicy.maxReadOnlyInputTotalEntryCount
-      || readOnlyInputByteLength > normalizedPolicy.maxReadOnlyInputTotalByteLength
-    ) {
-      throw new Error('arbitrary_cold_runner_read_only_input_aggregate_limit_exceeded');
-    }
-    readOnlyInputTrees.push(Object.freeze({
-      hostPath: input.sourceRoot,
-      mountPath: input.mountPath,
-      sourceTreeBindingEvidence,
-    }));
-  }
-  const readOnlyInputBindingNanos = Number(
-    process.hrtime.bigint() - readOnlyInputStarted
-  );
-  const readOnlyInputBindingSet = readOnlyInputBindingProjection(readOnlyInputTrees);
-  const readOnlyInputBindingSetHash = contentHash(stableJson(readOnlyInputBindingSet));
-
-  const contract = createArbitraryColdProjectContract({
-    sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
-    readOnlyInputs: readOnlyInputBindingSet.map(({ mountPath, sourceBindingHash }) => ({
-      mountPath,
-      sourceBindingHash,
-    })),
-    workerImageId: workerImage.descriptor.imageId,
-    workerImageOperatingSystem: workerImage.descriptor.operatingSystem,
-    workerImageArchitecture: workerImage.descriptor.architecture,
-    containerRuntime: descriptor.containerRuntime,
-    command: descriptor.command,
-    args: descriptor.args,
-    environment: descriptor.environment,
-    workingDirectory: descriptor.workingDirectory,
-    outputs: descriptor.outputs,
-    resources: descriptor.resources,
-  });
-  verifyArbitraryColdProjectContract(contract);
-
   let orchestration = null;
   try {
     orchestration = await createPrivateOrchestrationRoot();
+    const sourceStarted = process.hrtime.bigint();
+    const sourceSnapshot = await materializeColdBuildSourceTreeSnapshot(
+      descriptor.sourceRoot,
+      path.join(orchestration.snapshotsHostDirectory, 'source'),
+      descriptor.sourceLimits,
+    );
+    verifyColdBuildSourceTreeSnapshot(
+      sourceSnapshot,
+      descriptor.sourceRoot,
+      sourceSnapshot.snapshotHostPath,
+    );
+    const sourceTreeBindingEvidence = sourceSnapshot.sourceTreeBindingEvidence;
+    const sourceBindingNanos = Number(process.hrtime.bigint() - sourceStarted);
+
+    const readOnlyInputStarted = process.hrtime.bigint();
+    const readOnlyInputSnapshots = [];
+    const readOnlyInputTrees = [];
+    let readOnlyInputEntryCount = 0;
+    let readOnlyInputByteLength = 0;
+    for (const [index, input] of descriptor.readOnlyInputs.entries()) {
+      const snapshot = await materializeColdBuildSourceTreeSnapshot(
+        input.sourceRoot,
+        path.join(
+          orchestration.snapshotsHostDirectory,
+          `input-${String(index).padStart(4, '0')}`,
+        ),
+        input.sourceLimits,
+      );
+      verifyColdBuildSourceTreeSnapshot(
+        snapshot,
+        input.sourceRoot,
+        snapshot.snapshotHostPath,
+      );
+      const sourceTreeBindingEvidence = snapshot.sourceTreeBindingEvidence;
+      readOnlyInputEntryCount += sourceTreeBindingEvidence.entryCount;
+      readOnlyInputByteLength += sourceTreeBindingEvidence.totalByteLength;
+      if (
+        !Number.isSafeInteger(readOnlyInputEntryCount)
+        || !Number.isSafeInteger(readOnlyInputByteLength)
+        || readOnlyInputEntryCount > normalizedPolicy.maxReadOnlyInputTotalEntryCount
+        || readOnlyInputByteLength > normalizedPolicy.maxReadOnlyInputTotalByteLength
+      ) {
+        throw new Error('arbitrary_cold_runner_read_only_input_aggregate_limit_exceeded');
+      }
+      readOnlyInputSnapshots.push(Object.freeze({
+        sourceRoot: input.sourceRoot,
+        mountPath: input.mountPath,
+        sourceTreeBindingEvidence,
+        snapshot,
+      }));
+      readOnlyInputTrees.push(Object.freeze({
+        hostPath: snapshot.snapshotHostPath,
+        mountPath: input.mountPath,
+        sourceTreeBindingEvidence: snapshot.snapshotTreeBindingEvidence,
+      }));
+    }
+    const readOnlyInputBindingNanos = Number(
+      process.hrtime.bigint() - readOnlyInputStarted
+    );
+    const readOnlyInputBindingSet = readOnlyInputBindingProjection(readOnlyInputSnapshots);
+    const readOnlyInputBindingSetHash = contentHash(stableJson(readOnlyInputBindingSet));
+    const readOnlyInputSnapshotBindings = readOnlyInputSnapshots.map((input) => ({
+      mountPath: input.mountPath,
+      snapshotEvidenceHash: input.snapshot.evidence.evidenceHash,
+    }));
+    const readOnlyInputSnapshotSetHash = contentHash(stableJson(
+      readOnlyInputSnapshotBindings,
+    ));
+
+    const contract = createArbitraryColdProjectContract({
+      sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
+      readOnlyInputs: readOnlyInputBindingSet.map(({ mountPath, sourceBindingHash }) => ({
+        mountPath,
+        sourceBindingHash,
+      })),
+      workerImageId: workerImage.descriptor.imageId,
+      workerImageOperatingSystem: workerImage.descriptor.operatingSystem,
+      workerImageArchitecture: workerImage.descriptor.architecture,
+      containerRuntime: descriptor.containerRuntime,
+      command: descriptor.command,
+      args: descriptor.args,
+      environment: descriptor.environment,
+      workingDirectory: descriptor.workingDirectory,
+      outputs: descriptor.outputs,
+      resources: descriptor.resources,
+    });
+    verifyArbitraryColdProjectContract(contract);
+
     const releaseTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
       orchestration.releaseHostPath,
       { maxEntryCount: 64, maxByteLength: 1024 * 1024 },
@@ -652,7 +686,7 @@ export async function runArbitraryColdProject(descriptorInput, {
       launcherIdentity,
       executionNonce: randomBytes(16).toString('hex'),
       commandSpecHash: contract.commandSpecHash,
-      sourceTreeBindingEvidence,
+      sourceTreeBindingEvidence: sourceSnapshot.snapshotTreeBindingEvidence,
       readOnlyInputTrees,
       releaseTreeBindingEvidence,
       command: contract.command,
@@ -673,7 +707,7 @@ export async function runArbitraryColdProject(descriptorInput, {
       workerImageOperatingSystem: workerImage.descriptor.operatingSystem,
       workerImageArchitecture: workerImage.descriptor.architecture,
       containerRuntime: contract.containerRuntime,
-      sourceHostPath: descriptor.sourceRoot,
+      sourceHostPath: sourceSnapshot.snapshotHostPath,
       releaseHostPath: orchestration.releaseHostPath,
       specHostDirectory: orchestration.specHostDirectory,
       memoryBytes: contract.resources.memoryBytes,
@@ -712,8 +746,11 @@ export async function runArbitraryColdProject(descriptorInput, {
       sourcePathIdentityHash: pathIdentityHash(descriptor.sourceRoot),
       sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
       sourceTreeBindingEvidenceHash: sourceTreeBindingEvidence.evidenceHash,
+      sourceSnapshotEvidenceHash: sourceSnapshot.evidence.evidenceHash,
       readOnlyInputBindings: readOnlyInputBindingSet,
       readOnlyInputBindingSetHash,
+      readOnlyInputSnapshotBindings,
+      readOnlyInputSnapshotSetHash,
       readOnlyInputCount: readOnlyInputTrees.length,
       readOnlyInputEntryCount,
       readOnlyInputByteLength,
@@ -761,8 +798,11 @@ export async function runArbitraryColdProject(descriptorInput, {
       descriptorHash,
       artifactSession,
       sourceTreeBindingEvidence,
+      sourceSnapshot,
+      readOnlyInputSnapshots,
       readOnlyInputTrees,
       readOnlyInputBindingSetHash,
+      readOnlyInputSnapshotSetHash,
       workerImage,
       contract,
       launcherIdentity,
@@ -788,18 +828,37 @@ export async function verifyArbitraryColdProjectRun(result) {
       pinned.sourceTreeBindingEvidence,
       pinned.descriptor.sourceRoot,
     );
-    if (pinned.readOnlyInputTrees.length !== pinned.descriptor.readOnlyInputs.length) {
+    verifyColdBuildSourceTreeSnapshot(
+      pinned.sourceSnapshot,
+      pinned.descriptor.sourceRoot,
+      pinned.sourceSnapshot.snapshotHostPath,
+    );
+    if (
+      pinned.readOnlyInputSnapshots.length !== pinned.descriptor.readOnlyInputs.length
+      || pinned.readOnlyInputTrees.length !== pinned.descriptor.readOnlyInputs.length
+    ) {
       throw new Error('arbitrary_cold_runner_read_only_input_count_invalid');
     }
-    for (let index = 0; index < pinned.readOnlyInputTrees.length; index += 1) {
-      const input = pinned.readOnlyInputTrees[index];
+    for (let index = 0; index < pinned.readOnlyInputSnapshots.length; index += 1) {
+      const input = pinned.readOnlyInputSnapshots[index];
+      const physicalInput = pinned.readOnlyInputTrees[index];
       const descriptorInput = pinned.descriptor.readOnlyInputs[index];
-      if (input.mountPath !== descriptorInput.mountPath || input.hostPath !== descriptorInput.sourceRoot) {
+      if (
+        input.mountPath !== descriptorInput.mountPath
+        || input.sourceRoot !== descriptorInput.sourceRoot
+        || physicalInput.mountPath !== descriptorInput.mountPath
+        || physicalInput.hostPath !== input.snapshot.snapshotHostPath
+      ) {
         throw new Error('arbitrary_cold_runner_read_only_input_identity_invalid');
       }
       verifyColdBuildSourceTreeBindingEvidence(
         input.sourceTreeBindingEvidence,
         descriptorInput.sourceRoot,
+      );
+      verifyColdBuildSourceTreeSnapshot(
+        input.snapshot,
+        descriptorInput.sourceRoot,
+        input.snapshot.snapshotHostPath,
       );
     }
     verifyImmutableColdBuildWorkerImage(pinned.workerImage, pinned.descriptor.workerImage);
@@ -845,12 +904,16 @@ export async function verifyArbitraryColdProjectRun(result) {
     }
   }
   const locatorProjection = artifactLocatorProjection(outputs);
-  const readOnlyInputBindingSet = readOnlyInputBindingProjection(pinned.readOnlyInputTrees);
-  const readOnlyInputEntryCount = pinned.readOnlyInputTrees.reduce(
+  const readOnlyInputBindingSet = readOnlyInputBindingProjection(pinned.readOnlyInputSnapshots);
+  const readOnlyInputSnapshotBindings = pinned.readOnlyInputSnapshots.map((input) => ({
+    mountPath: input.mountPath,
+    snapshotEvidenceHash: input.snapshot.evidence.evidenceHash,
+  }));
+  const readOnlyInputEntryCount = pinned.readOnlyInputSnapshots.reduce(
     (total, input) => total + input.sourceTreeBindingEvidence.entryCount,
     0,
   );
-  const readOnlyInputByteLength = pinned.readOnlyInputTrees.reduce(
+  const readOnlyInputByteLength = pinned.readOnlyInputSnapshots.reduce(
     (total, input) => total + input.sourceTreeBindingEvidence.totalByteLength,
     0,
   );
@@ -865,10 +928,16 @@ export async function verifyArbitraryColdProjectRun(result) {
     || evidence?.sourcePathIdentityHash !== pathIdentityHash(pinned.descriptor.sourceRoot)
     || evidence?.sourceBindingHash !== pinned.sourceTreeBindingEvidence.sourceBindingHash
     || evidence?.sourceTreeBindingEvidenceHash !== pinned.sourceTreeBindingEvidence.evidenceHash
+    || evidence?.sourceSnapshotEvidenceHash !== pinned.sourceSnapshot.evidence.evidenceHash
     || stableJson(evidence?.readOnlyInputBindings) !== stableJson(readOnlyInputBindingSet)
     || pinned.readOnlyInputBindingSetHash !== contentHash(stableJson(readOnlyInputBindingSet))
     || evidence?.readOnlyInputBindingSetHash !== pinned.readOnlyInputBindingSetHash
-    || evidence?.readOnlyInputCount !== pinned.readOnlyInputTrees.length
+    || stableJson(evidence?.readOnlyInputSnapshotBindings)
+      !== stableJson(readOnlyInputSnapshotBindings)
+    || pinned.readOnlyInputSnapshotSetHash
+      !== contentHash(stableJson(readOnlyInputSnapshotBindings))
+    || evidence?.readOnlyInputSnapshotSetHash !== pinned.readOnlyInputSnapshotSetHash
+    || evidence?.readOnlyInputCount !== pinned.readOnlyInputSnapshots.length
     || evidence?.readOnlyInputEntryCount !== readOnlyInputEntryCount
     || evidence?.readOnlyInputByteLength !== readOnlyInputByteLength
     || evidence?.workerImageEvidenceHash !== pinned.workerImage.evidence.evidenceHash

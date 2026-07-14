@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -29,6 +30,25 @@ import {
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-self-check-'));
 const execFileAsync = promisify(execFile);
+
+async function runningColdContainers() {
+  const { stdout } = await execFileAsync('docker', ['ps', '--format', '{{.Names}}']);
+  return new Set(stdout.split(/\r?\n/).filter((name) => (
+    name.startsWith('synthi-arbitrary-cold-')
+  )));
+}
+
+async function waitForNewColdContainer(previous, timeoutMillis = 30_000) {
+  const deadline = Date.now() + timeoutMillis;
+  while (Date.now() < deadline) {
+    const current = await runningColdContainers();
+    const added = [...current].find((name) => !previous.has(name));
+    if (added) return added;
+    await delay(100);
+  }
+  throw new Error('arbitrary_cold_runner_test_container_not_observed');
+}
+
 try {
   const sourceRoot = path.join(root, 'opaque source tree');
   const readOnlyInputRoot = path.join(root, 'opaque dependency tree');
@@ -42,7 +62,9 @@ try {
     '#!/bin/sh',
     'set -eu',
     `printf 'arbitrary cold project output\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/result.bin'`,
+    'sleep 2',
     `cat '/workspace/inputs/opaque dependency/input.txt' >> '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/result.bin'`,
+    'sleep 3',
     `printf '{"count":3,"status":"built"}\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/result.json'`,
     '',
   ].join('\n');
@@ -180,10 +202,18 @@ try {
   );
 
   const runDescriptor = structuredClone(descriptor);
+  const preexistingColdContainers = await runningColdContainers();
   const pendingRun = runArbitraryColdProject(runDescriptor, { artifactRoot });
   runDescriptor.outputs[0].role = 'mutated_after_run_started';
   runDescriptor.resources.memoryBytes *= 2;
   runDescriptor.readOnlyInputs[0].mountPath = 'mutated after run started';
+  await waitForNewColdContainer(preexistingColdContainers);
+  try {
+    await writeFile(path.join(readOnlyInputRoot, 'input.txt'), 'transient unbound bytes\n');
+    await delay(3000);
+  } finally {
+    await writeFile(path.join(readOnlyInputRoot, 'input.txt'), 'bound dependency bytes\n');
+  }
   const result = await pendingRun;
   assert.equal(await verifyArbitraryColdProjectRun(result), result);
   assert.equal(result.evidence.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_SCHEMA);
@@ -194,6 +224,12 @@ try {
   assert.equal(result.evidence.gpuHmrSuccess, false);
   assert.equal(result.evidence.canSatisfyRuntimeProof, false);
   assert.equal(result.evidence.canSatisfyDispatchProof, false);
+  assert.match(result.evidence.sourceSnapshotEvidenceHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(result.evidence.readOnlyInputSnapshotBindings.length, 1);
+  assert.match(
+    result.evidence.readOnlyInputSnapshotBindings[0].snapshotEvidenceHash,
+    /^sha256:[0-9a-f]{64}$/,
+  );
   assert.equal(result.evidence.readOnlyInputBindings.length, 1);
   assert.deepEqual(
     Object.keys(result.evidence.readOnlyInputBindings[0]).sort(),
@@ -238,6 +274,14 @@ try {
     /result_invalid/,
   );
   result.evidence.gpuHmrSuccess = false;
+  assert.equal(await verifyArbitraryColdProjectRun(result), result);
+  const sourceSnapshotEvidenceHash = result.evidence.sourceSnapshotEvidenceHash;
+  result.evidence.sourceSnapshotEvidenceHash = `sha256:${'0'.repeat(64)}`;
+  await assert.rejects(
+    () => verifyArbitraryColdProjectRun(result),
+    /result_invalid/,
+  );
+  result.evidence.sourceSnapshotEvidenceHash = sourceSnapshotEvidenceHash;
   assert.equal(await verifyArbitraryColdProjectRun(result), result);
   assert.ok(!JSON.stringify(result.evidence).match(
     /miopen|hiprt|flow|diamond|neural|blas|cuda|rocm|project_name|fixture_name/i,
