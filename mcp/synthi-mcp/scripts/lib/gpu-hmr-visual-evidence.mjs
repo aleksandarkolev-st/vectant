@@ -31,6 +31,11 @@ const CONVERGENCE_METRICS = new Set([
   'stable_histogram_delta',
   'oracle_region_delta',
 ]);
+const NON_AUTHORITATIVE_DETERMINISTIC_VISUAL_CONTROL_AUTHORITIES = new Set([
+  'mcp_frame_evidence',
+  'profile_declaration_only_not_runtime_visual_proof',
+  'verified_mcp_capture_observations_only',
+]);
 
 export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
   'synthi.gpu_hmr.deterministic_visual_mode.v1';
@@ -1416,9 +1421,19 @@ export function normalizeGpuHmrDeterministicVisualMode(input = {}) {
 }
 
 export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
+  const suppliedMode = isObject(input) ? input : {};
   const mode = normalizeGpuHmrDeterministicVisualMode(input);
   const failedGates = [];
   const warnings = [];
+  const controlEvidenceAuthorities = compactStringList([
+    suppliedMode.control_evidence_authority,
+    suppliedMode.controlEvidenceAuthority,
+    suppliedMode.evidence_authority,
+    suppliedMode.evidenceAuthority,
+    suppliedMode.proof_authority,
+    suppliedMode.proofAuthority,
+    suppliedMode.source,
+  ]);
   const convergenceAccepted = convergenceWindowAccepted(mode.convergence_window);
   const temporalControlled = controlSatisfied(
     mode,
@@ -1438,6 +1453,14 @@ export function evaluateGpuHmrDeterministicVisualMode(input = {}) {
     addGate(failedGates, 'deterministic_visual_mode_schema_unsupported', {
       expected: GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION,
       actual: mode.schema_version,
+    });
+  }
+  const nonAuthoritativeControlEvidence = controlEvidenceAuthorities.filter((authority) =>
+    NON_AUTHORITATIVE_DETERMINISTIC_VISUAL_CONTROL_AUTHORITIES.has(authority)
+  );
+  if (nonAuthoritativeControlEvidence.length > 0) {
+    addGate(failedGates, 'deterministic_visual_control_authority_non_authoritative', {
+      authorities: nonAuthoritativeControlEvidence,
     });
   }
   if (mode.frozen_camera !== true) addGate(failedGates, 'frozen_camera_unproven');

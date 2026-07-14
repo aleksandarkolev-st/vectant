@@ -43,6 +43,32 @@ const deterministicSingleFrame = {
 
 assert.equal(deterministicVisualModeAccepted(deterministicSingleFrame), true);
 
+const runtimeObservedDeterministicMode = evaluateGpuHmrDeterministicVisualMode({
+  ...deterministicSingleFrame,
+  proof_authority: 'recomputed_target_process_runtime_visual_control_pair',
+});
+assert.equal(runtimeObservedDeterministicMode.accepted, true);
+
+for (const source of [
+  'mcp_frame_evidence',
+  'profile_declaration_only_not_runtime_visual_proof',
+  'verified_mcp_capture_observations_only',
+]) {
+  const supportOnlyMode = evaluateGpuHmrDeterministicVisualMode({
+    ...deterministicSingleFrame,
+    controlEvidenceAuthority: 'recomputed_target_process_runtime_visual_control_pair',
+    source,
+  });
+  assert.equal(supportOnlyMode.accepted, false);
+  assert.ok(
+    supportOnlyMode.failedGates.some((gate) =>
+      gate.code === 'deterministic_visual_control_authority_non_authoritative'
+      && gate.authorities?.includes(source)
+    ),
+    `expected non-authoritative visual-control refusal for ${source}, got ${supportOnlyMode.failedGates.map((gate) => gate.code).join(',')}`,
+  );
+}
+
 const missingSwapchainCount = evaluateGpuHmrDeterministicVisualMode({
   ...deterministicSingleFrame,
   fixed_swapchain_image_count: false,

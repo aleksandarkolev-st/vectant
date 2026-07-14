@@ -1739,6 +1739,20 @@ const cases = [
       presentation_fence_or_frame_boundary: true,
     },
   }), 'frozen_camera_unproven'],
+  ['screenshot-only deterministic controls replay', baselineVisualRecord({
+    deterministic_visual_mode: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      source: 'mcp_frame_evidence',
+    },
+  }), 'deterministic_visual_control_authority_non_authoritative'],
   ['same frame recaptured after edit', baselineVisualRecord({
     deterministic_visual_mode: {
       fixed_seed: true,
