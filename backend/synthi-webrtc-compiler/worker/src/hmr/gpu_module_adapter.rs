@@ -5220,6 +5220,7 @@ mod tests {
             .push("gpu_sidecar_partial_module".into());
         launch_vec_add_on_stream(0x88);
         let ctx_sync_before_partial_oracle = CTX_SYNC_CALLS.load(Ordering::SeqCst);
+        let stream_sync_before_partial = STREAM_SYNC_CALLS.load(Ordering::SeqCst);
         assert!(matches!(
             a.reload(&partial),
             AdapterReloadResult::Success { .. }
@@ -5228,8 +5229,17 @@ mod tests {
             CTX_SYNC_CALLS.load(Ordering::SeqCst),
             ctx_sync_before_partial_oracle + 1
         );
-        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            STREAM_SYNC_CALLS.load(Ordering::SeqCst),
+            stream_sync_before_partial + 2
+        );
         assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x88);
+        let partial_publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("partial dispatcher epoch publication");
+        assert!(partial_publish.contains("stream_ids=default,0x88"));
         reset_for_test();
     }
 
