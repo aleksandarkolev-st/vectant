@@ -22,9 +22,12 @@ import {
 import {
   COLD_BUILD_EXECUTION_DRIVER_AUTHORITY,
   COLD_BUILD_EXECUTION_DRIVER_SCHEMA,
+  COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
+  COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
   executeColdBuildLauncherPlan,
+  verifyColdBuildRefusalDiagnosticsEvidence,
   verifyColdBuildReadyRefusalEvidence,
   verifyColdBuildExecutionDriverResult,
 } from '../lib/gpu-hmr-cold-build-execution-driver.mjs';
@@ -96,6 +99,9 @@ async function createPlanFixture({ root, launcherIdentity, workerImage, valid })
     : [
       '#!/bin/sh',
       'set -eu',
+      "printf 'opaque configure step failed\\n'",
+      "printf 'Authorization: Bearer synthi-test-secret-value\\n' >&2",
+      "printf 'SYNTHI_TEST_API_KEY=another-secret-value\\n' >&2",
       'exit 9',
       '',
     ].join('\n');
@@ -339,6 +345,47 @@ async function main() {
     assert.equal(refusal.acceptedAsColdBuildEvidence, false);
     assert.equal(refusal.acceptedForGpuHmr, false);
     assert.equal(refusal.gpuHmrSuccess, false);
+    const diagnostics = refusedError.refusalDiagnostics;
+    assert.equal(diagnostics.schemaVersion, COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA);
+    assert.equal(diagnostics.proofAuthority, COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY);
+    assert.equal(
+      verifyColdBuildRefusalDiagnosticsEvidence(
+        diagnostics,
+        refusal,
+        refusedFixture.plan,
+      ),
+      diagnostics,
+    );
+    assert.equal(diagnostics.acceptedAsDiagnosticSupportEvidence, true);
+    assert.equal(diagnostics.acceptedAsColdBuildEvidence, false);
+    assert.equal(diagnostics.acceptedForGpuHmr, false);
+    assert.equal(diagnostics.gpuHmrSuccess, false);
+    assert.equal(diagnostics.canSatisfyRuntimeProof, false);
+    assert.equal(diagnostics.canSatisfyDispatchProof, false);
+    assert.equal(diagnostics.streams.stdout.excerptIsComplete, true);
+    assert.equal(diagnostics.streams.stderr.excerptIsComplete, true);
+    assert.match(diagnostics.streams.stdout.redactedText, /opaque configure step failed/);
+    assert.match(diagnostics.streams.stderr.redactedText, /<redacted>/);
+    assert.doesNotMatch(diagnostics.streams.stderr.redactedText, /synthi-test-secret-value/);
+    assert.doesNotMatch(diagnostics.streams.stderr.redactedText, /another-secret-value/);
+    diagnostics.gpuHmrSuccess = true;
+    assert.throws(
+      () => verifyColdBuildRefusalDiagnosticsEvidence(
+        diagnostics,
+        refusal,
+        refusedFixture.plan,
+      ),
+      /refusal_diagnostics_evidence_invalid/,
+    );
+    diagnostics.gpuHmrSuccess = false;
+    assert.equal(
+      verifyColdBuildRefusalDiagnosticsEvidence(
+        diagnostics,
+        refusal,
+        refusedFixture.plan,
+      ),
+      diagnostics,
+    );
     refusal.gpuHmrSuccess = true;
     assert.throws(
       () => verifyColdBuildReadyRefusalEvidence(refusal, refusedFixture.plan),

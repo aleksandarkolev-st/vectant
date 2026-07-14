@@ -32,6 +32,7 @@ const (
 	collectorSchema       = "synthi.gpu_hmr.cold_build_collector_receipt.v1"
 	collectorDoneSchema   = "synthi.gpu_hmr.cold_build_collector_completion.v1"
 	releaseSchema         = "synthi.gpu_hmr.cold_build_release_receipt.v1"
+	diagnosticAckSchema   = "synthi.gpu_hmr.cold_build_diagnostic_ack.v1"
 	finalSchema           = "synthi.gpu_hmr.cold_build_final_receipt.v1"
 	finalAckSchema        = "synthi.gpu_hmr.cold_build_final_ack.v1"
 	frameMagic            = "SYNTHI-COLD-BUILD-COLLECT-V1\n"
@@ -48,13 +49,17 @@ const (
 	readyControlName      = "ready.json"
 	collectorControlName  = "collector-complete.json"
 	finalControlName      = "final.json"
+	stdoutDiagnosticName  = "command-stdout.tail"
+	stderrDiagnosticName  = "command-stderr.tail"
 	childUID              = 65532
 	childGID              = 65532
 	maxSpecBytes          = 1024 * 1024
 	maxControlBytes       = 1024 * 1024
+	maxDiagnosticBytes    = 64 * 1024
 	maxOutputManifest     = 1024 * 1024
 	maxOutputLabelBytes   = 160
 	maxCollectorHeader    = 64 * 1024 * 1024
+	diagnosticAckTimeout  = 2 * time.Second
 	processTermGrace      = 500 * time.Millisecond
 	processKillGrace      = 2 * time.Second
 	processPollInterval   = 10 * time.Millisecond
@@ -99,6 +104,13 @@ type launcherSpec struct {
 	CollectedEntryLimit            int              `json:"collectedEntryLimit"`
 	ProcessTermGraceMillis         int64            `json:"processTermGraceMillis"`
 	ProcessKillGraceMillis         int64            `json:"processKillGraceMillis"`
+}
+
+type diagnosticAck struct {
+	SchemaVersion    string `json:"schemaVersion"`
+	ExecutionNonce   string `json:"executionNonce"`
+	SpecHash         string `json:"specHash"`
+	ReadyReceiptHash string `json:"readyReceiptHash"`
 }
 
 type declaredOutput struct {
@@ -516,8 +528,14 @@ func runMain(specPath string) error {
 		stderrWriter.Close()
 		return fmt.Errorf("start child launcher: %w", err)
 	}
-	stdoutChannel := hashStream(stdoutReader)
-	stderrChannel := hashStream(stderrReader)
+	stdoutChannel := hashStream(
+		stdoutReader,
+		filepath.Join(spec.ControlRoot, stdoutDiagnosticName),
+	)
+	stderrChannel := hashStream(
+		stderrReader,
+		filepath.Join(spec.ControlRoot, stderrDiagnosticName),
+	)
 	receiptWriter.Close()
 	stdoutWriter.Close()
 	stderrWriter.Close()
@@ -634,6 +652,9 @@ func runMain(specPath string) error {
 			snapshotHash,
 		)
 	} else {
+		// Keep the stopped command namespace available briefly so the host can
+		// retrieve root-owned, bounded diagnostics before container shutdown.
+		_ = waitForDiagnosticAck(spec, specHash, readyHash)
 		releaseErr = errors.New("ready receipt refused")
 	}
 	protocolAccepted := ready.ProtocolAccepted && releaseErr == nil
@@ -836,16 +857,47 @@ func validateChildIdentityReceipt(bytes []byte, nonce string) (childIdentityRece
 	return receipt, accepted
 }
 
-func hashStream(reader *os.File) <-chan streamReceipt {
+type boundedTailWriter struct {
+	bytes    []byte
+	maxBytes int
+}
+
+func (writer *boundedTailWriter) Write(bytes []byte) (int, error) {
+	written := len(bytes)
+	if writer.maxBytes <= 0 || written == 0 {
+		return written, nil
+	}
+	if written >= writer.maxBytes {
+		writer.bytes = append(writer.bytes[:0], bytes[written-writer.maxBytes:]...)
+		return written, nil
+	}
+	overflow := len(writer.bytes) + written - writer.maxBytes
+	if overflow > 0 {
+		copy(writer.bytes, writer.bytes[overflow:])
+		writer.bytes = writer.bytes[:len(writer.bytes)-overflow]
+	}
+	writer.bytes = append(writer.bytes, bytes...)
+	return written, nil
+}
+
+func (writer *boundedTailWriter) snapshot() []byte {
+	return append([]byte(nil), writer.bytes...)
+}
+
+func hashStream(reader *os.File, diagnosticPath string) <-chan streamReceipt {
 	result := make(chan streamReceipt, 1)
 	go func() {
 		defer reader.Close()
 		hasher := sha256.New()
-		byteLength, err := io.Copy(hasher, reader)
+		tail := &boundedTailWriter{maxBytes: maxDiagnosticBytes}
+		byteLength, err := io.Copy(io.MultiWriter(hasher, tail), reader)
 		if err != nil {
 			result <- streamReceipt{ByteLength: -1, ContentHash: ""}
 			return
 		}
+		// Diagnostics are support-only. Failure to publish them must not change the
+		// authoritative full-stream receipt or cold-build acceptance semantics.
+		_ = writeAtomic(diagnosticPath, tail.snapshot(), 0600)
 		result <- streamReceipt{
 			ByteLength:  byteLength,
 			ContentHash: "sha256:" + hex.EncodeToString(hasher.Sum(nil)),
@@ -1331,7 +1383,11 @@ func readControlMain(specPath, name string) error {
 	if err != nil {
 		return err
 	}
-	if name != readyControlName && name != collectorControlName && name != finalControlName {
+	if name != readyControlName &&
+		name != collectorControlName &&
+		name != finalControlName &&
+		name != stdoutDiagnosticName &&
+		name != stderrDiagnosticName {
 		return errors.New("control receipt name invalid")
 	}
 	bytes, err := readBoundedRegularFile(filepath.Join(spec.ControlRoot, name), maxControlBytes)
@@ -1340,6 +1396,33 @@ func readControlMain(specPath, name string) error {
 	}
 	_, err = os.Stdout.Write(bytes)
 	return err
+}
+
+func waitForDiagnosticAck(spec launcherSpec, specHash, readyHash string) error {
+	deadline := time.Now().Add(diagnosticAckTimeout)
+	ackPath := filepath.Join(spec.ReleaseRoot, "diagnostic-ack.json")
+	for time.Now().Before(deadline) {
+		bytes, err := readBoundedRegularFile(ackPath, maxControlBytes)
+		if errors.Is(err, os.ErrNotExist) {
+			time.Sleep(releasePollInterval)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var ack diagnosticAck
+		if err := decodeStrictJSON(bytes, &ack); err != nil {
+			return err
+		}
+		if ack.SchemaVersion != diagnosticAckSchema ||
+			ack.ExecutionNonce != spec.ExecutionNonce ||
+			ack.SpecHash != specHash ||
+			ack.ReadyReceiptHash != readyHash {
+			return errors.New("diagnostic ack binding invalid")
+		}
+		return nil
+	}
+	return errors.New("diagnostic ack timeout")
 }
 
 func waitForRelease(spec launcherSpec, specHash, readyHash, snapshotHash string) (releaseReceipt, []byte, error) {

@@ -45,10 +45,23 @@ export const COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA =
   'synthi.gpu_hmr.cold_build_ready_refusal.v1';
 export const COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY =
   'observed_ready_receipt_refusal_only_not_cold_build_or_gpu_hmr_success';
+export const COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA =
+  'synthi.gpu_hmr.cold_build_refusal_diagnostics.v1';
+export const COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY =
+  'bounded_redacted_command_diagnostics_only_not_cold_build_or_gpu_hmr_success';
+export const COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES = 64 * 1024;
 
 const CONTAINER_ID_PATTERN = /^[a-f0-9]{64}$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
-const CONTROL_FILE_NAMES = new Set(['collector-complete.json', 'final.json']);
+const STDOUT_DIAGNOSTIC_CONTROL_NAME = 'command-stdout.tail';
+const STDERR_DIAGNOSTIC_CONTROL_NAME = 'command-stderr.tail';
+const DIAGNOSTIC_ACK_SCHEMA = 'synthi.gpu_hmr.cold_build_diagnostic_ack.v1';
+const CONTROL_FILE_NAMES = new Set([
+  'collector-complete.json',
+  'final.json',
+  STDOUT_DIAGNOSTIC_CONTROL_NAME,
+  STDERR_DIAGNOSTIC_CONTROL_NAME,
+]);
 const PINNED_DRIVER_RESULTS = new WeakMap();
 
 function stableJson(value) {
@@ -214,6 +227,267 @@ export function verifyColdBuildReadyRefusalEvidence(evidence, plan) {
     || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
   ) {
     throw new Error('cold_build_ready_refusal_evidence_invalid');
+  }
+  return evidence;
+}
+
+function redactDiagnosticText(bytes) {
+  const source = Buffer.from(bytes).toString('utf8');
+  let text = source
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\r\n?/g, '\n');
+  const sanitized = text;
+  const replacements = [
+    [
+      /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
+      '$1<redacted>@',
+    ],
+    [
+      /\b(authorization|proxy-authorization|cookie|set-cookie)(\s*:\s*)[^\r\n]+/gi,
+      '$1$2<redacted>',
+    ],
+    [
+      /\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*)(\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n;,]+)/g,
+      '$1$2<redacted>',
+    ],
+    [
+      /\b(api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|credential)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s\r\n;,]+)/gi,
+      '$1$2<redacted>',
+    ],
+    [
+      /(--(?:api[-_]?key|token|password|secret|credential))(?:\s+|=)([^\s\r\n]+)/gi,
+      '$1=<redacted>',
+    ],
+    [/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>'],
+    [
+      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+      '<redacted>',
+    ],
+    [
+      /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,})\b/g,
+      '<redacted>',
+    ],
+  ];
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, replacement);
+  }
+  return {
+    text,
+    redactionApplied: text !== source || sanitized !== source,
+  };
+}
+
+function createDiagnosticStreamEvidence(controlName, sourceReceipt, readResult) {
+  const excerptAvailable = readResult?.accepted === true && Buffer.isBuffer(readResult.bytes);
+  const excerpt = excerptAvailable ? Buffer.from(readResult.bytes) : Buffer.alloc(0);
+  const excerptContentHash = excerptAvailable ? contentHash(excerpt) : '';
+  const excerptIsComplete = excerptAvailable
+    && excerpt.byteLength === sourceReceipt.byteLength
+    && excerptContentHash === sourceReceipt.contentHash;
+  const bindingMismatch = excerptAvailable && (
+    excerpt.byteLength > sourceReceipt.byteLength
+    || (
+      excerpt.byteLength === sourceReceipt.byteLength
+      && excerptContentHash !== sourceReceipt.contentHash
+    )
+  );
+  const redacted = redactDiagnosticText(excerpt);
+  return {
+    controlName,
+    sourceByteLength: sourceReceipt.byteLength,
+    sourceContentHash: sourceReceipt.contentHash,
+    excerptAvailable,
+    excerptByteLength: excerpt.byteLength,
+    excerptContentHash,
+    excerptIsComplete,
+    excerptIsTail: excerptAvailable,
+    truncated: excerptAvailable && excerpt.byteLength < sourceReceipt.byteLength,
+    bindingMismatch,
+    redactionPolicy: 'generic_secret_patterns_v1',
+    redactionApplied: redacted.redactionApplied,
+    redactedText: redacted.text,
+    redactedTextHash: contentHash(redacted.text),
+    readFailure: excerptAvailable ? '' : 'diagnostic_control_read_failed',
+  };
+}
+
+function createRefusalDiagnosticsEvidence(ready, plan, stdoutRead, stderrRead) {
+  const streams = {
+    stdout: createDiagnosticStreamEvidence(
+      STDOUT_DIAGNOSTIC_CONTROL_NAME,
+      ready.receipt.commandStdout,
+      stdoutRead,
+    ),
+    stderr: createDiagnosticStreamEvidence(
+      STDERR_DIAGNOSTIC_CONTROL_NAME,
+      ready.receipt.commandStderr,
+      stderrRead,
+    ),
+  };
+  const blockingGaps = [
+    streams.stdout.excerptAvailable ? null : 'command_stdout_diagnostic_unavailable',
+    streams.stdout.bindingMismatch ? 'command_stdout_diagnostic_binding_mismatch' : null,
+    streams.stderr.excerptAvailable ? null : 'command_stderr_diagnostic_unavailable',
+    streams.stderr.bindingMismatch ? 'command_stderr_diagnostic_binding_mismatch' : null,
+  ].filter(Boolean).sort();
+  const evidence = {
+    schemaVersion: COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
+    proofAuthority: COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY,
+    executionNonce: plan.executionNonce,
+    specHash: plan.specHash,
+    readyReceiptHash: ready.receiptHash,
+    captureByteLimit: COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES,
+    streams,
+    blockingGaps,
+    acceptedAsDiagnosticSupportEvidence: blockingGaps.length === 0,
+    acceptedAsColdBuildEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  evidence.evidenceHash = recomputeEvidenceHash(evidence);
+  return evidence;
+}
+
+function validDiagnosticStream(stream, name, sourceReceipt) {
+  const redactedText = stream?.redactedText;
+  const redactedAgain = typeof redactedText === 'string'
+    ? redactDiagnosticText(Buffer.from(redactedText, 'utf8')).text
+    : null;
+  const excerptAvailable = stream?.excerptAvailable === true;
+  const completeExpected = excerptAvailable
+    && stream.excerptByteLength === sourceReceipt.byteLength
+    && stream.excerptContentHash === sourceReceipt.contentHash;
+  const mismatchExpected = excerptAvailable && (
+    stream.excerptByteLength > sourceReceipt.byteLength
+    || (
+      stream.excerptByteLength === sourceReceipt.byteLength
+      && stream.excerptContentHash !== sourceReceipt.contentHash
+    )
+  );
+  return exactKeys(stream, [
+    'controlName',
+    'sourceByteLength',
+    'sourceContentHash',
+    'excerptAvailable',
+    'excerptByteLength',
+    'excerptContentHash',
+    'excerptIsComplete',
+    'excerptIsTail',
+    'truncated',
+    'bindingMismatch',
+    'redactionPolicy',
+    'redactionApplied',
+    'redactedText',
+    'redactedTextHash',
+    'readFailure',
+  ])
+    && stream.controlName === name
+    && Number.isSafeInteger(sourceReceipt?.byteLength)
+    && sourceReceipt.byteLength >= 0
+    && HASH_PATTERN.test(sourceReceipt?.contentHash ?? '')
+    && stream.sourceByteLength === sourceReceipt.byteLength
+    && stream.sourceContentHash === sourceReceipt.contentHash
+    && typeof stream.excerptAvailable === 'boolean'
+    && Number.isSafeInteger(stream.excerptByteLength)
+    && stream.excerptByteLength >= 0
+    && stream.excerptByteLength <= COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+    && stream.excerptByteLength <= sourceReceipt.byteLength
+    && (excerptAvailable
+      ? HASH_PATTERN.test(stream.excerptContentHash ?? '')
+      : stream.excerptContentHash === '')
+    && stream.excerptIsComplete === completeExpected
+    && stream.excerptIsTail === excerptAvailable
+    && stream.truncated === (excerptAvailable
+      && stream.excerptByteLength < sourceReceipt.byteLength)
+    && stream.bindingMismatch === mismatchExpected
+    && stream.redactionPolicy === 'generic_secret_patterns_v1'
+    && typeof stream.redactionApplied === 'boolean'
+    && typeof redactedText === 'string'
+    && redactedText.length <= COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+    && redactedAgain === redactedText
+    && stream.redactedTextHash === contentHash(redactedText)
+    && stream.readFailure === (excerptAvailable ? '' : 'diagnostic_control_read_failed');
+}
+
+export function verifyColdBuildRefusalDiagnosticsEvidence(evidence, refusalEvidence, plan) {
+  try {
+    verifyColdBuildReadyRefusalEvidence(refusalEvidence, plan);
+  } catch {
+    throw new Error('cold_build_refusal_diagnostics_evidence_invalid');
+  }
+  const blockingGaps = evidence?.blockingGaps;
+  const streams = evidence?.streams;
+  const stdoutSource = {
+    byteLength: refusalEvidence?.commandStdoutByteLength,
+    contentHash: refusalEvidence?.commandStdoutHash,
+  };
+  const stderrSource = {
+    byteLength: refusalEvidence?.commandStderrByteLength,
+    contentHash: refusalEvidence?.commandStderrHash,
+  };
+  const expectedBlockingGaps = [
+    streams?.stdout?.excerptAvailable === true
+      ? null
+      : 'command_stdout_diagnostic_unavailable',
+    streams?.stdout?.bindingMismatch === true
+      ? 'command_stdout_diagnostic_binding_mismatch'
+      : null,
+    streams?.stderr?.excerptAvailable === true
+      ? null
+      : 'command_stderr_diagnostic_unavailable',
+    streams?.stderr?.bindingMismatch === true
+      ? 'command_stderr_diagnostic_binding_mismatch'
+      : null,
+  ].filter(Boolean).sort();
+  if (
+    !exactKeys(evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'executionNonce',
+      'specHash',
+      'readyReceiptHash',
+      'captureByteLimit',
+      'streams',
+      'blockingGaps',
+      'acceptedAsDiagnosticSupportEvidence',
+      'acceptedAsColdBuildEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || evidence.schemaVersion !== COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA
+    || evidence.proofAuthority !== COLD_BUILD_REFUSAL_DIAGNOSTICS_AUTHORITY
+    || evidence.executionNonce !== plan?.executionNonce
+    || evidence.specHash !== plan?.specHash
+    || evidence.readyReceiptHash !== refusalEvidence?.readyReceiptHash
+    || evidence.captureByteLimit !== COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+    || !exactKeys(streams, ['stdout', 'stderr'])
+    || !validDiagnosticStream(
+      streams.stdout,
+      STDOUT_DIAGNOSTIC_CONTROL_NAME,
+      stdoutSource,
+    )
+    || !validDiagnosticStream(
+      streams.stderr,
+      STDERR_DIAGNOSTIC_CONTROL_NAME,
+      stderrSource,
+    )
+    || !Array.isArray(blockingGaps)
+    || stableJson(blockingGaps) !== stableJson(expectedBlockingGaps)
+    || evidence.acceptedAsDiagnosticSupportEvidence !== (blockingGaps.length === 0)
+    || evidence.acceptedAsColdBuildEvidence !== false
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+  ) {
+    throw new Error('cold_build_refusal_diagnostics_evidence_invalid');
   }
   return evidence;
 }
@@ -435,6 +709,49 @@ async function pollControlFile({
     stderr: diagnosticText(lastResult?.stderr).slice(0, 8192),
   };
   throw error;
+}
+
+async function readDiagnosticControlFile({
+  dockerExecutable,
+  containerId,
+  name,
+  timeoutMs,
+  maxDiagnosticBytes,
+}) {
+  if (
+    name !== STDOUT_DIAGNOSTIC_CONTROL_NAME
+    && name !== STDERR_DIAGNOSTIC_CONTROL_NAME
+  ) {
+    throw new Error('cold_build_execution_driver_diagnostic_control_name_invalid');
+  }
+  const result = await runDocker(dockerExecutable, [
+    'exec',
+    '--user',
+    '0:0',
+    requireContainerId(containerId),
+    COLD_BUILD_LAUNCHER_CONTAINER_PATH,
+    'read-control',
+    '--spec',
+    COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+    '--name',
+    name,
+  ], {
+    timeoutMs: Math.min(timeoutMs, 5_000),
+    maxStdoutBytes: COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES,
+    maxStderrBytes: maxDiagnosticBytes,
+    encoding: null,
+  });
+  if (
+    result.exitCode !== 0
+    || result.signal !== null
+    || result.timedOut !== false
+    || result.error !== null
+    || !Buffer.isBuffer(result.stdout)
+    || result.stdout.byteLength > COLD_BUILD_REFUSAL_DIAGNOSTIC_CAPTURE_BYTES
+  ) {
+    return { accepted: false, bytes: null };
+  }
+  return { accepted: true, bytes: Buffer.from(result.stdout) };
 }
 
 async function publishExclusiveHostControlFile(directory, name, bytes) {
@@ -759,6 +1076,44 @@ export async function executeColdBuildLauncherPlan(plan, {
       const error = new Error('cold_build_execution_driver_ready_receipt_refused');
       error.readyRefusalEvidence = createReadyRefusalEvidence(ready, plan);
       verifyColdBuildReadyRefusalEvidence(error.readyRefusalEvidence, plan);
+      const [stdoutDiagnostic, stderrDiagnostic] = await Promise.all([
+        readDiagnosticControlFile({
+          dockerExecutable,
+          containerId,
+          name: STDOUT_DIAGNOSTIC_CONTROL_NAME,
+          timeoutMs: controlTimeoutMs,
+          maxDiagnosticBytes,
+        }),
+        readDiagnosticControlFile({
+          dockerExecutable,
+          containerId,
+          name: STDERR_DIAGNOSTIC_CONTROL_NAME,
+          timeoutMs: controlTimeoutMs,
+          maxDiagnosticBytes,
+        }),
+      ]);
+      const diagnosticAckBytes = Buffer.from(stableJson({
+        schemaVersion: DIAGNOSTIC_ACK_SCHEMA,
+        executionNonce: plan.executionNonce,
+        specHash: plan.specHash,
+        readyReceiptHash: ready.receiptHash,
+      }), 'utf8');
+      await publishExclusiveHostControlFile(
+        plan.releaseHostPath,
+        'diagnostic-ack.json',
+        diagnosticAckBytes,
+      ).catch(() => null);
+      error.refusalDiagnostics = createRefusalDiagnosticsEvidence(
+        ready,
+        plan,
+        stdoutDiagnostic,
+        stderrDiagnostic,
+      );
+      verifyColdBuildRefusalDiagnosticsEvidence(
+        error.refusalDiagnostics,
+        error.readyRefusalEvidence,
+        plan,
+      );
       throw error;
     }
 
