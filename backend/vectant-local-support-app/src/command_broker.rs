@@ -101,7 +101,7 @@ pub async fn execute_command_cancellable(
     }
     let mut child = command.spawn().map_err(|_| CommandError::SpawnFailed)?;
     let process_id = child.id().ok_or(CommandError::SpawnFailed)?;
-    let _command_job = match CommandJob::assign(process_id) {
+    let _command_job = match CommandJob::assign(process_id, timeout) {
         Ok(job) => job,
         Err(()) => {
             // Do not rely on asynchronous drop cleanup when containment cannot
@@ -481,27 +481,44 @@ unsafe impl Send for CommandJob {}
 
 #[cfg(windows)]
 impl CommandJob {
-    fn assign(process_id: u32) -> Result<Self, ()> {
+    fn assign(process_id: u32, timeout: Duration) -> Result<Self, ()> {
         use std::mem::size_of;
         use std::ptr::null;
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
             SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOB_OBJECT_LIMIT_PROCESS_TIME,
         };
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
         };
 
         // A private kill-on-close job guarantees descendant processes die with
-        // the brokered command. We deliberately do not accept an existing job.
+        // the brokered command. The CPU and memory caps are kernel-enforced,
+        // so they remain effective even if the asynchronous watchdog stalls.
+        // We deliberately do not accept an existing job.
         let handle = unsafe { CreateJobObjectW(null(), null()) };
         if handle.is_null() {
             return Err(());
         }
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        const MAX_MEMORY_BYTES: usize = 1024 * 1024 * 1024;
+        const HUNDRED_NANOSECONDS_PER_SECOND: i64 = 10_000_000;
+        let cpu_limit = timeout
+            .as_secs()
+            .max(1)
+            .saturating_add(1)
+            .saturating_mul(HUNDRED_NANOSECONDS_PER_SECOND as u64)
+            .min(i64::MAX as u64) as i64;
+        limits.BasicLimitInformation.PerProcessUserTimeLimit = cpu_limit;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_PROCESS_TIME
+            | JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.ProcessMemoryLimit = MAX_MEMORY_BYTES;
+        limits.JobMemoryLimit = MAX_MEMORY_BYTES;
         let configured = unsafe {
             SetInformationJobObject(
                 handle,
@@ -561,7 +578,7 @@ struct CommandJob {
 
 #[cfg(unix)]
 impl CommandJob {
-    fn assign(process_id: u32) -> Result<Self, ()> {
+    fn assign(process_id: u32, _timeout: Duration) -> Result<Self, ()> {
         let process_group = i32::try_from(process_id).map_err(|_| ())?;
         Ok(Self { process_group })
     }
@@ -580,7 +597,7 @@ struct CommandJob;
 
 #[cfg(not(any(unix, windows)))]
 impl CommandJob {
-    fn assign(_process_id: u32) -> Result<Self, ()> {
+    fn assign(_process_id: u32, _timeout: Duration) -> Result<Self, ()> {
         Err(())
     }
 
