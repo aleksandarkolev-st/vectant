@@ -27,7 +27,9 @@ import {
 } from './gpu-hmr-cold-build-container-contract.mjs';
 import {
   coldBuildLauncherCollectorExecArgs,
+  createColdBuildExecutionPlanReceipt,
   publishColdBuildLauncherSpec,
+  verifyColdBuildExecutionPlanReceipt,
   verifyColdBuildLauncherContainerInspection,
   verifyColdBuildLauncherExecutionInputs,
 } from './gpu-hmr-cold-build-execution-plan.mjs';
@@ -37,6 +39,10 @@ export const COLD_BUILD_EXECUTION_DRIVER_SCHEMA =
   'synthi.gpu_hmr.cold_build_execution_driver_result.v1';
 export const COLD_BUILD_EXECUTION_DRIVER_AUTHORITY =
   'observed_static_launcher_protocol_only_not_gpu_hmr_success';
+export const COLD_BUILD_EXECUTION_DRIVER_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.cold_build_execution_driver_receipt.v1';
+export const COLD_BUILD_EXECUTION_DRIVER_RECEIPT_AUTHORITY =
+  'serialized_observed_launcher_protocol_only_not_gpu_hmr_success';
 export const COLD_BUILD_HOST_FILE_PUBLICATION_SCHEMA =
   'synthi.gpu_hmr.cold_build_host_file_publication.v1';
 export const COLD_BUILD_HOST_FILE_PUBLICATION_AUTHORITY =
@@ -1532,4 +1538,194 @@ export function verifyColdBuildExecutionDriverResult(result, plan) {
     throw new Error('cold_build_execution_driver_result_invalid');
   }
   return result;
+}
+
+export function createColdBuildExecutionDriverReceipt(result, plan) {
+  verifyColdBuildExecutionDriverResult(result, plan);
+  const receipt = {
+    schemaVersion: COLD_BUILD_EXECUTION_DRIVER_RECEIPT_SCHEMA,
+    proofAuthority: COLD_BUILD_EXECUTION_DRIVER_RECEIPT_AUTHORITY,
+    executionPlanReceipt: createColdBuildExecutionPlanReceipt(plan),
+    driverEvidence: structuredClone(result.evidence),
+    acceptedAsColdBuildExecutionDriverReceipt: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  return receipt;
+}
+
+export function verifyColdBuildExecutionDriverReceipt(receipt) {
+  const planReceipt = receipt?.executionPlanReceipt;
+  const plan = planReceipt?.planProjection;
+  const evidence = receipt?.driverEvidence;
+  const cleanup = evidence?.cleanup;
+  const evidenceHashFields = [
+    'planHash',
+    'commandSpecHash',
+    'sourceBindingHash',
+    'inputSetHash',
+    'specHash',
+    'launcherExecutableHash',
+    'containerIdHash',
+    'specPublicationEvidenceHash',
+    'inputEvidenceBeforeCreateHash',
+    'inputEvidenceAfterCreateHash',
+    'containerInspectionEvidenceHash',
+    'readyReceiptHash',
+    'outputSnapshotHash',
+    'collectorReceiptHash',
+    'collectorFrameHash',
+    'collectorCompletionReceiptHash',
+    'inputEvidenceAfterCollectionHash',
+    'releaseReceiptHash',
+    'releasePublicationEvidenceHash',
+    'hostReceiptHash',
+    'finalReceiptHash',
+    'finalAckHash',
+    'finalAckPublicationEvidenceHash',
+    'finalReleaseTreeBindingHash',
+    'payloadManifestHash',
+  ];
+  try {
+    verifyColdBuildExecutionPlanReceipt(planReceipt);
+  } catch {
+    throw new Error('cold_build_execution_driver_receipt_invalid');
+  }
+  if (
+    !exactKeys(receipt, [
+      'schemaVersion',
+      'proofAuthority',
+      'executionPlanReceipt',
+      'driverEvidence',
+      'acceptedAsColdBuildExecutionDriverReceipt',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || receipt.schemaVersion !== COLD_BUILD_EXECUTION_DRIVER_RECEIPT_SCHEMA
+    || receipt.proofAuthority !== COLD_BUILD_EXECUTION_DRIVER_RECEIPT_AUTHORITY
+    || !exactKeys(evidence, [
+      'schemaVersion',
+      'proofAuthority',
+      'planHash',
+      'executionNonce',
+      'commandSpecHash',
+      'sourceBindingHash',
+      'inputSetHash',
+      'specHash',
+      'launcherExecutableHash',
+      'containerIdHash',
+      'specPublicationEvidenceHash',
+      'inputEvidenceBeforeCreateHash',
+      'inputEvidenceAfterCreateHash',
+      'containerInspectionEvidenceHash',
+      'readyReceiptHash',
+      'outputSnapshotHash',
+      'collectorReceiptHash',
+      'collectorFrameHash',
+      'collectorFrameByteLength',
+      'collectorCompletionReceiptHash',
+      'inputEvidenceAfterCollectionHash',
+      'releaseReceiptHash',
+      'releasePublicationEvidenceHash',
+      'hostReceiptHash',
+      'finalReceiptHash',
+      'finalAckHash',
+      'finalAckPublicationEvidenceHash',
+      'finalReleaseTreeBindingHash',
+      'childExitCode',
+      'payloadManifest',
+      'payloadManifestHash',
+      'protocolAccepted',
+      'acceptedAsColdBuildExecutionEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+      'cleanup',
+    ])
+    || evidence.schemaVersion !== COLD_BUILD_EXECUTION_DRIVER_SCHEMA
+    || evidence.proofAuthority !== COLD_BUILD_EXECUTION_DRIVER_AUTHORITY
+    || evidence.planHash !== planReceipt.planHash
+    || evidence.executionNonce !== plan?.executionNonce
+    || evidence.commandSpecHash !== plan?.commandSpecHash
+    || evidence.sourceBindingHash !== plan?.sourceBindingHash
+    || evidence.inputSetHash !== plan?.inputSetHash
+    || evidence.specHash !== plan?.specHash
+    || evidence.launcherExecutableHash !== plan?.launcherExecutableHash
+    || evidenceHashFields.some((name) => !HASH_PATTERN.test(evidence[name] ?? ''))
+    || !Number.isSafeInteger(evidence.collectorFrameByteLength)
+    || evidence.collectorFrameByteLength < 1
+    || evidence.childExitCode !== 0
+    || !Array.isArray(evidence.payloadManifest)
+    || evidence.payloadManifest.length < 1
+    || evidence.payloadManifest.some((entry) => (
+      !exactKeys(entry, ['path', 'byteLength', 'contentHash', 'mode'])
+      || typeof entry.path !== 'string'
+      || entry.path.length < 1
+      || /[\\\0\r\n]/.test(entry.path)
+      || path.posix.normalize(entry.path) !== entry.path
+      || entry.path.startsWith('../')
+      || path.posix.isAbsolute(entry.path)
+      || path.win32.isAbsolute(entry.path)
+      || !Number.isSafeInteger(entry.byteLength)
+      || entry.byteLength < 0
+      || !HASH_PATTERN.test(entry.contentHash ?? '')
+      || !Number.isSafeInteger(entry.mode)
+      || entry.mode < 0
+      || entry.mode > 0o7777
+    ))
+    || evidence.payloadManifestHash !== contentHash(stableJson(evidence.payloadManifest))
+    || evidence.protocolAccepted !== true
+    || evidence.acceptedAsColdBuildExecutionEvidence !== true
+    || evidence.acceptedForGpuHmr !== false
+    || evidence.gpuHmrSuccess !== false
+    || evidence.canSatisfyRuntimeProof !== false
+    || evidence.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+    || !exactKeys(cleanup, [
+      'schemaVersion',
+      'proofAuthority',
+      'attempted',
+      'removed',
+      'removeCommandSucceeded',
+      'absenceProven',
+      'blockingGaps',
+      'acceptedAsCleanupEvidence',
+      'acceptedForGpuHmr',
+      'gpuHmrSuccess',
+      'canSatisfyRuntimeProof',
+      'canSatisfyDispatchProof',
+      'evidenceHash',
+    ])
+    || cleanup.schemaVersion !== COLD_BUILD_CONTAINER_CLEANUP_SCHEMA
+    || cleanup.proofAuthority !== COLD_BUILD_CONTAINER_CLEANUP_AUTHORITY
+    || cleanup.attempted !== true
+    || cleanup.removed !== true
+    || typeof cleanup.removeCommandSucceeded !== 'boolean'
+    || cleanup.absenceProven !== true
+    || !Array.isArray(cleanup.blockingGaps)
+    || cleanup.blockingGaps.length !== 0
+    || cleanup.acceptedAsCleanupEvidence !== true
+    || cleanup.acceptedForGpuHmr !== false
+    || cleanup.gpuHmrSuccess !== false
+    || cleanup.canSatisfyRuntimeProof !== false
+    || cleanup.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(cleanup) !== cleanup.evidenceHash
+    || receipt.acceptedAsColdBuildExecutionDriverReceipt !== true
+    || receipt.acceptedForGpuHmr !== false
+    || receipt.gpuHmrSuccess !== false
+    || receipt.canSatisfyRuntimeProof !== false
+    || receipt.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(receipt) !== receipt.evidenceHash
+  ) {
+    throw new Error('cold_build_execution_driver_receipt_invalid');
+  }
+  return receipt;
 }

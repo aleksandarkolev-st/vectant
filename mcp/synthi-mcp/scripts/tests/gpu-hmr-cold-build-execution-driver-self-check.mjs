@@ -21,6 +21,8 @@ import {
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
 import {
   COLD_BUILD_EXECUTION_DRIVER_AUTHORITY,
+  COLD_BUILD_EXECUTION_DRIVER_RECEIPT_AUTHORITY,
+  COLD_BUILD_EXECUTION_DRIVER_RECEIPT_SCHEMA,
   COLD_BUILD_EXECUTION_DRIVER_SCHEMA,
   COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_AUTHORITY,
   COLD_BUILD_LAUNCHER_REFUSAL_DIAGNOSTICS_SCHEMA,
@@ -28,11 +30,13 @@ import {
   COLD_BUILD_REFUSAL_DIAGNOSTICS_SCHEMA,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_AUTHORITY,
   COLD_BUILD_READY_REFUSAL_EVIDENCE_SCHEMA,
+  createColdBuildExecutionDriverReceipt,
   executeColdBuildLauncherPlan,
   verifyColdBuildLauncherRefusalDiagnosticsEvidence,
   verifyColdBuildRefusalDiagnosticsEvidence,
   verifyColdBuildReadyRefusalEvidence,
   verifyColdBuildExecutionDriverResult,
+  verifyColdBuildExecutionDriverReceipt,
 } from '../lib/gpu-hmr-cold-build-execution-driver.mjs';
 import { createColdBuildLauncherExecutionPlan } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
 import {
@@ -224,6 +228,39 @@ async function main() {
       verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
       accepted,
     );
+    const driverReceipt = createColdBuildExecutionDriverReceipt(
+      accepted,
+      acceptedFixture.plan,
+    );
+    const retainedDriverReceipt = JSON.parse(JSON.stringify(driverReceipt));
+    assert.equal(driverReceipt.schemaVersion, COLD_BUILD_EXECUTION_DRIVER_RECEIPT_SCHEMA);
+    assert.equal(driverReceipt.proofAuthority, COLD_BUILD_EXECUTION_DRIVER_RECEIPT_AUTHORITY);
+    assert.equal(driverReceipt.driverEvidence.evidenceHash, accepted.evidence.evidenceHash);
+    assert.equal(driverReceipt.executionPlanReceipt.planHash, acceptedFixture.plan.planHash);
+    assert.equal(driverReceipt.acceptedAsColdBuildExecutionDriverReceipt, true);
+    assert.equal(driverReceipt.acceptedForGpuHmr, false);
+    assert.equal(driverReceipt.gpuHmrSuccess, false);
+    assert.equal(driverReceipt.canSatisfyRuntimeProof, false);
+    assert.equal(driverReceipt.canSatisfyDispatchProof, false);
+    assert.equal(
+      verifyColdBuildExecutionDriverReceipt(retainedDriverReceipt),
+      retainedDriverReceipt,
+    );
+    const forgedDriverReceipt = structuredClone(retainedDriverReceipt);
+    forgedDriverReceipt.driverEvidence.payloadManifestHash = `sha256:${'0'.repeat(64)}`;
+    assert.throws(
+      () => verifyColdBuildExecutionDriverReceipt(forgedDriverReceipt),
+      /execution_driver_receipt_invalid/,
+    );
+    const authorityClaimingDriverReceipt = structuredClone(retainedDriverReceipt);
+    authorityClaimingDriverReceipt.driverEvidence.gpuHmrSuccess = true;
+    assert.throws(
+      () => verifyColdBuildExecutionDriverReceipt(authorityClaimingDriverReceipt),
+      /execution_driver_receipt_invalid/,
+    );
+    assert.ok(!JSON.stringify(driverReceipt).match(
+      /miopen|hiprt|flow|diamond|neural|blas|fixture_name|project_name/i,
+    ));
     const outputEvidence = deriveColdBuildOutputEvidence(
       accepted,
       acceptedFixture.plan,
