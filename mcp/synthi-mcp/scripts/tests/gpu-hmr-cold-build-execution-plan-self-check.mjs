@@ -11,6 +11,7 @@ import {
   COLD_BUILD_LAUNCHER_RELEASE_ROOT,
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   COLD_BUILD_LAUNCHER_SPEC_CONTAINER_PATH,
+  COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
   COLD_BUILD_OUTPUT_MANIFEST_MODE_LAUNCHER_GENERATED,
   materializeColdBuildLauncher,
   runColdBuildHostProcess,
@@ -325,6 +326,14 @@ async function main() {
     ));
     assert.ok(plan.containerCreateArgs.some((value) => value.includes('arbitrary source, with spaces')));
     assert.ok(plan.containerCreateArgs.some((value) => value.includes('readonly')));
+    assert.ok(plan.expectedContainerConfiguration.tmpfs['/tmp'].includes('exec'));
+    assert.ok(
+      plan.expectedContainerConfiguration.tmpfs[COLD_BUILD_LAUNCHER_OUTPUT_ROOT]
+        .includes('exec'),
+    );
+    assert.ok(
+      plan.expectedContainerConfiguration.tmpfs['/synthi-control'].includes('noexec'),
+    );
     assert.ok(!JSON.stringify(plan).match(/hiprt|rocm|flow|miopen|blas|neural|diamond/i));
 
     const deterministicPlan = createColdBuildLauncherExecutionPlan(common);
@@ -478,6 +487,11 @@ async function main() {
     }, 'cold_build_container_memory_mismatch');
     assertRefused(plan, syntheticInputsBefore, syntheticInputsAfter, (inspect) => {
       inspect.HostConfig.Tmpfs['/synthi-control'] = 'rw';
+    }, 'cold_build_container_tmpfs_mismatch');
+    assertRefused(plan, syntheticInputsBefore, syntheticInputsAfter, (inspect) => {
+      inspect.HostConfig.Tmpfs[COLD_BUILD_LAUNCHER_OUTPUT_ROOT] = inspect.HostConfig.Tmpfs[
+        COLD_BUILD_LAUNCHER_OUTPUT_ROOT
+      ].replace('exec', 'noexec');
     }, 'cold_build_container_tmpfs_mismatch');
     assertRefused(plan, syntheticInputsBefore, syntheticInputsAfter, (inspect) => {
       inspect.Id = 'b'.repeat(64);

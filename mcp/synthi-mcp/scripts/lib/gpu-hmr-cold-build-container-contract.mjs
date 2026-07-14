@@ -2030,6 +2030,7 @@ export function coldBuildLauncherCommand() {
 
 export function coldBuildOutputTmpfsOptions(workspaceBytes, workspaceEntryCount) {
   return [
+    'exec',
     `gid=${COLD_BUILD_CONTAINER_COMMAND_GID}`,
     'mode=0770',
     'nodev',
@@ -2056,6 +2057,7 @@ export function coldBuildControlTmpfsOptions() {
 
 export function coldBuildTmpfsOptions() {
   return [
+    'exec',
     'nodev',
     'nosuid',
     'rw',

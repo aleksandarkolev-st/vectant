@@ -93,7 +93,13 @@ async function createPlanFixture({ root, launcherIdentity, workerImage, valid })
     ? [
       '#!/bin/sh',
       'set -eu',
-      `printf 'opaque project-neutral build bytes\\n' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/opaque-output.bin'`,
+      `cp '${COLD_BUILD_LAUNCHER_SOURCE_ROOT}/opaque-tool.sh' '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/.opaque-tool'`,
+      `chmod 0755 '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/.opaque-tool'`,
+      `'${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/.opaque-tool' > '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/opaque-output.bin'`,
+      `cp '${COLD_BUILD_LAUNCHER_SOURCE_ROOT}/opaque-tool.sh' '/tmp/.opaque-tool'`,
+      "chmod 0755 '/tmp/.opaque-tool'",
+      "'/tmp/.opaque-tool' > /dev/null",
+      `rm '${COLD_BUILD_LAUNCHER_OUTPUT_ROOT}/.opaque-tool' '/tmp/.opaque-tool'`,
       '',
     ].join('\n')
     : [
@@ -106,8 +112,15 @@ async function createPlanFixture({ root, launcherIdentity, workerImage, valid })
       '',
     ].join('\n');
   const scriptPath = path.join(sourceHostPath, 'opaque-build.sh');
+  const toolPath = path.join(sourceHostPath, 'opaque-tool.sh');
   await writeFile(scriptPath, script, { encoding: 'utf8', mode: 0o755 });
+  await writeFile(toolPath, [
+    '#!/bin/sh',
+    "printf 'opaque project-neutral build bytes\\n'",
+    '',
+  ].join('\n'), { encoding: 'utf8', mode: 0o755 });
   await chmod(scriptPath, 0o755);
+  await chmod(toolPath, 0o755);
   await writeFile(path.join(sourceHostPath, 'input.data'), 'arbitrary input bytes\n', 'utf8');
 
   const sourceTreeBindingEvidence = await computeColdBuildSourceTreeBinding(
