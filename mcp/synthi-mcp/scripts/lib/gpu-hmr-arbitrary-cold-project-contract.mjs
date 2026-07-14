@@ -11,11 +11,63 @@ export const ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA =
   'synthi.gpu_hmr.arbitrary_cold_project_contract.v1';
 export const ARBITRARY_COLD_PROJECT_CONTRACT_AUTHORITY =
   'declared_cold_build_contract_only_not_gpu_hmr_success';
+export const ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_SCHEMA =
+  'synthi.gpu_hmr.arbitrary_cold_project_contract_receipt.v1';
+export const ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_AUTHORITY =
+  'serialized_contract_commitments_only_not_plaintext_secrets_or_gpu_hmr_success';
 
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RUNTIME_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const PINNED_CONTRACTS = new WeakMap();
+const CONTRACT_RESOURCE_KEYS = Object.freeze([
+  'commandTimeoutMillis',
+  'releaseTimeoutMillis',
+  'workspaceByteLimit',
+  'workspaceEntryLimit',
+  'collectedByteLimit',
+  'collectedEntryLimit',
+  'memoryBytes',
+  'memorySwapBytes',
+  'nanoCpus',
+  'pidsLimit',
+  'nofileLimit',
+]);
+const CONTRACT_RECEIPT_KEYS = Object.freeze([
+  'schemaVersion',
+  'proofAuthority',
+  'sourceBindingHash',
+  'readOnlyInputs',
+  'inputSetBindings',
+  'inputSetHash',
+  'workerImageId',
+  'workerImageOperatingSystem',
+  'workerImageArchitecture',
+  'containerRuntime',
+  'commandExecutableHash',
+  'commandArgumentCount',
+  'commandArgumentsHash',
+  'commandInvocationHash',
+  'environmentVariableNames',
+  'environmentVariableNameSetHash',
+  'environmentEntrySetHash',
+  'workingDirectoryHash',
+  'outputManifestMode',
+  'outputs',
+  'resources',
+  'commandSpecHash',
+  'contractHash',
+  'plaintextCommandEmbedded',
+  'plaintextArgumentsEmbedded',
+  'plaintextEnvironmentValuesEmbedded',
+  'acceptedAsRetainedContractReceipt',
+  'acceptedAsColdBuildEvidence',
+  'acceptedForGpuHmr',
+  'gpuHmrSuccess',
+  'canSatisfyRuntimeProof',
+  'canSatisfyDispatchProof',
+  'evidenceHash',
+]);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -29,6 +81,12 @@ function stableJson(value) {
 
 function contentHash(value) {
   return `sha256:${createHash('sha256').update(String(value)).digest('hex')}`;
+}
+
+function recomputeEvidenceHash(value) {
+  const projection = { ...value };
+  delete projection.evidenceHash;
+  return contentHash(stableJson(projection));
 }
 
 function exactKeys(value, keys) {
@@ -449,4 +507,142 @@ export function verifyRetainedArbitraryColdProjectContract(contract) {
     throw new Error('arbitrary_cold_project_retained_contract_invalid');
   }
   return contract;
+}
+
+function contractReceiptMaterialAccepted(receipt) {
+  let inputSet;
+  let normalizedOutputs;
+  try {
+    inputSet = createColdBuildInputSet({
+      sourceBindingHash: receipt?.sourceBindingHash,
+      readOnlyInputs: receipt?.readOnlyInputs,
+    });
+    verifyColdBuildInputSet({
+      entries: receipt?.inputSetBindings,
+      inputSetHash: receipt?.inputSetHash,
+    }, {
+      sourceBindingHash: receipt?.sourceBindingHash,
+      readOnlyInputs: receipt?.readOnlyInputs,
+    });
+    normalizedOutputs = receipt.outputs.map((output) => normalizeOutput({
+      path: output.path,
+      role: output.role,
+      artifactKind: output.artifactKind,
+      mediaType: output.mediaType,
+    }));
+  } catch {
+    return false;
+  }
+  const names = receipt.environmentVariableNames;
+  const resources = receipt.resources;
+  return exactKeys(receipt, CONTRACT_RECEIPT_KEYS)
+    && receipt.schemaVersion === ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_SCHEMA
+    && receipt.proofAuthority === ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_AUTHORITY
+    && HASH_PATTERN.test(receipt.sourceBindingHash ?? '')
+    && receipt.inputSetHash === inputSet.inputSetHash
+    && HASH_PATTERN.test(receipt.workerImageId ?? '')
+    && receipt.workerImageOperatingSystem === 'linux'
+    && ['amd64', 'arm64'].includes(receipt.workerImageArchitecture)
+    && RUNTIME_PATTERN.test(receipt.containerRuntime ?? '')
+    && [
+      'commandExecutableHash',
+      'commandArgumentsHash',
+      'commandInvocationHash',
+      'environmentVariableNameSetHash',
+      'environmentEntrySetHash',
+      'workingDirectoryHash',
+      'commandSpecHash',
+      'contractHash',
+      'evidenceHash',
+    ].every((name) => HASH_PATTERN.test(receipt[name] ?? ''))
+    && Number.isSafeInteger(receipt.commandArgumentCount)
+    && receipt.commandArgumentCount >= 0
+    && receipt.commandArgumentCount <= 4096
+    && Array.isArray(names)
+    && names.length <= 128
+    && names.every((name, index) => ENVIRONMENT_NAME_PATTERN.test(name)
+      && (index === 0 || names[index - 1].localeCompare(name) < 0))
+    && receipt.environmentVariableNameSetHash === contentHash(stableJson(names))
+    && receipt.outputManifestMode === 'launcher_generated'
+    && Array.isArray(receipt.outputs)
+    && receipt.outputs.length > 0
+    && stableJson(receipt.outputs) === stableJson(normalizedOutputs)
+    && exactKeys(resources, CONTRACT_RESOURCE_KEYS)
+    && CONTRACT_RESOURCE_KEYS.every((name) => Number.isSafeInteger(resources[name])
+      && resources[name] >= 1)
+    && resources.commandTimeoutMillis >= 1000
+    && resources.commandTimeoutMillis <= 2 * 60 * 60 * 1000
+    && resources.releaseTimeoutMillis >= 1000
+    && resources.releaseTimeoutMillis <= 10 * 60 * 1000
+    && resources.workspaceByteLimit >= 1024 * 1024
+    && resources.memorySwapBytes >= resources.memoryBytes
+    && resources.collectedByteLimit <= resources.workspaceByteLimit
+    && resources.collectedEntryLimit >= receipt.outputs.length + 1
+    && resources.collectedEntryLimit <= resources.workspaceEntryLimit
+    && receipt.plaintextCommandEmbedded === false
+    && receipt.plaintextArgumentsEmbedded === false
+    && receipt.plaintextEnvironmentValuesEmbedded === false
+    && receipt.acceptedAsRetainedContractReceipt === true
+    && receipt.acceptedAsColdBuildEvidence === false
+    && receipt.acceptedForGpuHmr === false
+    && receipt.gpuHmrSuccess === false
+    && receipt.canSatisfyRuntimeProof === false
+    && receipt.canSatisfyDispatchProof === false
+    && receipt.evidenceHash === recomputeEvidenceHash(receipt);
+}
+
+export function createArbitraryColdProjectContractReceipt(contract) {
+  verifyArbitraryColdProjectContract(contract);
+  const environmentVariableNames = Object.keys(contract.environment).sort(
+    (left, right) => left.localeCompare(right),
+  );
+  const environmentEntries = Object.entries(contract.environment)
+    .map(([name, value]) => `${name}=${value}`)
+    .sort((left, right) => left.localeCompare(right));
+  const receipt = {
+    schemaVersion: ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_SCHEMA,
+    proofAuthority: ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_AUTHORITY,
+    sourceBindingHash: contract.sourceBindingHash,
+    readOnlyInputs: structuredClone(contract.readOnlyInputs),
+    inputSetBindings: structuredClone(contract.inputSetBindings),
+    inputSetHash: contract.inputSetHash,
+    workerImageId: contract.workerImageId,
+    workerImageOperatingSystem: contract.workerImageOperatingSystem,
+    workerImageArchitecture: contract.workerImageArchitecture,
+    containerRuntime: contract.containerRuntime,
+    commandExecutableHash: contentHash(contract.command),
+    commandArgumentCount: contract.args.length,
+    commandArgumentsHash: contentHash(stableJson(contract.args)),
+    commandInvocationHash: contentHash(stableJson([contract.command, ...contract.args])),
+    environmentVariableNames,
+    environmentVariableNameSetHash: contentHash(stableJson(environmentVariableNames)),
+    environmentEntrySetHash: contentHash(stableJson(environmentEntries)),
+    workingDirectoryHash: contentHash(contract.workingDirectory),
+    outputManifestMode: contract.outputManifestMode,
+    outputs: structuredClone(contract.outputs),
+    resources: structuredClone(contract.resources),
+    commandSpecHash: contract.commandSpecHash,
+    contractHash: contract.contractHash,
+    plaintextCommandEmbedded: false,
+    plaintextArgumentsEmbedded: false,
+    plaintextEnvironmentValuesEmbedded: false,
+    acceptedAsRetainedContractReceipt: true,
+    acceptedAsColdBuildEvidence: false,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    canSatisfyRuntimeProof: false,
+    canSatisfyDispatchProof: false,
+  };
+  receipt.evidenceHash = recomputeEvidenceHash(receipt);
+  if (!contractReceiptMaterialAccepted(receipt)) {
+    throw new Error('arbitrary_cold_project_contract_receipt_source_invalid');
+  }
+  return receipt;
+}
+
+export function verifyArbitraryColdProjectContractReceipt(receipt) {
+  if (!contractReceiptMaterialAccepted(receipt)) {
+    throw new Error('arbitrary_cold_project_contract_receipt_invalid');
+  }
+  return receipt;
 }

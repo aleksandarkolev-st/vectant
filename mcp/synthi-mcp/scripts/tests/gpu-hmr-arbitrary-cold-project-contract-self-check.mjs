@@ -1,12 +1,35 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import {
   ARBITRARY_COLD_PROJECT_CONTRACT_AUTHORITY,
+  ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_AUTHORITY,
+  ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_SCHEMA,
   ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA,
   createArbitraryColdProjectContract,
+  createArbitraryColdProjectContractReceipt,
   verifyArbitraryColdProjectContract,
+  verifyArbitraryColdProjectContractReceipt,
   verifyRetainedArbitraryColdProjectContract,
 } from '../lib/gpu-hmr-arbitrary-cold-project-contract.mjs';
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function resealEvidence(value) {
+  const projection = { ...value };
+  delete projection.evidenceHash;
+  value.evidenceHash = `sha256:${createHash('sha256')
+    .update(stableJson(projection))
+    .digest('hex')}`;
+}
 
 const base = {
   sourceBindingHash: `sha256:${'1'.repeat(64)}`,
@@ -85,6 +108,70 @@ retainedContractWithAuthorityClaim.gpuHmrSuccess = true;
 assert.throws(
   () => verifyRetainedArbitraryColdProjectContract(retainedContractWithAuthorityClaim),
   /retained_contract_invalid/,
+);
+
+const secretValue = 'contract-secret-value-must-not-be-retained';
+const secretArgument = '--credential=argument-secret-must-not-be-retained';
+const secretCommand = '/private/command-name-must-not-be-retained';
+const secretWorkingDirectory = 'private-working-directory-must-not-be-retained';
+const sensitiveContract = createArbitraryColdProjectContract({
+  ...structuredClone(base),
+  command: secretCommand,
+  args: ['--build', secretArgument],
+  environment: {
+    MODE: 'cold',
+    API_TOKEN: secretValue,
+  },
+  workingDirectory: secretWorkingDirectory,
+});
+const contractReceipt = createArbitraryColdProjectContractReceipt(sensitiveContract);
+const retainedContractReceipt = JSON.parse(JSON.stringify(contractReceipt));
+assert.equal(contractReceipt.schemaVersion, ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_SCHEMA);
+assert.equal(
+  contractReceipt.proofAuthority,
+  ARBITRARY_COLD_PROJECT_CONTRACT_RECEIPT_AUTHORITY,
+);
+assert.equal(contractReceipt.plaintextCommandEmbedded, false);
+assert.equal(contractReceipt.plaintextArgumentsEmbedded, false);
+assert.equal(contractReceipt.plaintextEnvironmentValuesEmbedded, false);
+assert.equal(contractReceipt.acceptedAsRetainedContractReceipt, true);
+assert.equal(contractReceipt.acceptedAsColdBuildEvidence, false);
+assert.equal(contractReceipt.acceptedForGpuHmr, false);
+assert.equal(contractReceipt.gpuHmrSuccess, false);
+assert.equal(contractReceipt.canSatisfyRuntimeProof, false);
+assert.equal(contractReceipt.canSatisfyDispatchProof, false);
+assert.equal(
+  verifyArbitraryColdProjectContractReceipt(retainedContractReceipt),
+  retainedContractReceipt,
+);
+const serializedContractReceipt = JSON.stringify(contractReceipt);
+for (const secret of [
+  secretValue,
+  secretArgument,
+  secretCommand,
+  secretWorkingDirectory,
+]) {
+  assert.equal(serializedContractReceipt.includes(secret), false);
+}
+assert.throws(
+  () => createArbitraryColdProjectContractReceipt(structuredClone(sensitiveContract)),
+  /contract_invalid/,
+);
+const forgedReceiptInputSet = structuredClone(retainedContractReceipt);
+forgedReceiptInputSet.inputSetHash = `sha256:${'0'.repeat(64)}`;
+resealEvidence(forgedReceiptInputSet);
+assert.throws(
+  () => verifyArbitraryColdProjectContractReceipt(forgedReceiptInputSet),
+  /contract_receipt_invalid/,
+);
+const forgedReceiptAuthority = structuredClone(retainedContractReceipt);
+forgedReceiptAuthority.acceptedAsColdBuildEvidence = true;
+forgedReceiptAuthority.acceptedForGpuHmr = true;
+forgedReceiptAuthority.gpuHmrSuccess = true;
+resealEvidence(forgedReceiptAuthority);
+assert.throws(
+  () => verifyArbitraryColdProjectContractReceipt(forgedReceiptAuthority),
+  /contract_receipt_invalid/,
 );
 
 const reorderedInputs = createArbitraryColdProjectContract({
