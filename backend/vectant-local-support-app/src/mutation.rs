@@ -20,6 +20,7 @@ use crate::workspace::{resolve_relative, WorkspacePolicy};
 
 pub const MAX_MUTATION_BYTES: usize = 262_144;
 pub const MAX_MUTATION_TRANSACTIONS: usize = 64;
+const MAX_JOURNAL_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MutationRequest {
@@ -249,6 +250,7 @@ impl WorkspaceMutationBroker {
                 return;
             }
         };
+        let mut journal_count = 0usize;
         for entry in entries {
             let Ok(entry) = entry else {
                 self.storage_error = true;
@@ -257,6 +259,15 @@ impl WorkspaceMutationBroker {
             let path = entry.path();
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
+            }
+            journal_count += 1;
+            if journal_count > MAX_MUTATION_TRANSACTIONS
+                || fs::metadata(&path)
+                    .map(|metadata| metadata.len() > MAX_JOURNAL_BYTES)
+                    .unwrap_or(true)
+            {
+                self.storage_error = true;
+                return;
             }
             let journal: MutationJournal = match fs::read(&path)
                 .ok()
