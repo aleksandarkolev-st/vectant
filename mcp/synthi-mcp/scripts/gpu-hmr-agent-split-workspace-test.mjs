@@ -2019,6 +2019,9 @@ function builtinFixtureSource(vendor, fixture = selectedPackagedFixture()) {
   if (normalizedFixture === 'complex-flow') return complexFlowSource(vendor);
   if (normalizedFixture === 'ray-light') return rayLightSource(vendor);
   if (normalizedFixture === 'realistic-raytrace') return realisticRaytraceSource(vendor);
+  if (normalizedFixture !== 'flow') {
+    throw new Error(`unknown packaged GPU visual fixture: ${normalizedFixture || '<empty>'}`);
+  }
 
   const api = runtimeApi(vendor);
   const target = vendor === 'rocm' ? 'rocm' : 'cuda';
@@ -5739,9 +5742,23 @@ function selfCheckAgentVisualProfile() {
     }
     CFG.allowPackagedDefaultFixture = true;
     const diagnosticDefaultFixtureSource = monolithicSource('rocm');
+    CFG.allowPackagedDefaultFixture = false;
+    CFG.fixture = 'flow';
+    const explicitFlowFixtureSource = monolithicSource('rocm');
+    let unknownPackagedFixtureRejected = false;
+    try {
+      CFG.fixture = 'flow-typo-must-not-select-a-fixture';
+      monolithicSource('rocm');
+    } catch (err) {
+      unknownPackagedFixtureRejected = String(err.message).includes(
+        'unknown packaged GPU visual fixture',
+      );
+    }
     if (
       !implicitPackagedFixtureRejected
       || !diagnosticDefaultFixtureSource.includes('particle_flow')
+      || !explicitFlowFixtureSource.includes('particle_flow')
+      || !unknownPackagedFixtureRejected
     ) {
       throw new Error('agent visual profile self-check failed packaged fixture selection gate');
     }
