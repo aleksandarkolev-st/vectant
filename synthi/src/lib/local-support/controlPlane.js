@@ -24,6 +24,8 @@ const MVP_ALLOWED_CAPABILITIES = new Set([
 // only a locally reviewed operation; they never carry file bodies, raw process
 // data, shell strings, or loopback response bodies through the cloud relay.
 const FULL_ACCESS_CAPABILITIES = new Map([
+  ["support.full_access.enroll", "enabled"],
+  ["support.auto_approval.enable", "auto_approval_enabled"],
   ["support.full_access.graph.read", "enabled"],
   ["support.full_access.graph.node.request", "enabled"],
   ["support.full_access.workspace.file.mutate", "workspace_mutation_enabled"],

@@ -433,7 +433,22 @@ describe("local support control plane policy", () => {
     expect(validateRequestEnvelope(envelope({ capability: "support.full_access.command.execute", actor: "user_browser" }), full)).toMatchObject({
       decision: "denied", reason: "full_access_actor_not_allowed",
     });
+    expect(validateRequestEnvelope(envelope({ capability: "support.full_access.enroll" }), full)).toMatchObject({
+      decision: "approval_required", local_enforcement_required: true,
+    });
+    expect(validateRequestEnvelope(envelope({ capability: "support.auto_approval.enable" }), full)).toMatchObject({
+      decision: "denied", reason: "full_access_capability_disabled",
+    });
+    const autoApproval = enabledPolicy({
+      VECTANT_LOCAL_SUPPORT_FULL_ACCESS_ENABLED: "true",
+      VECTANT_LOCAL_SUPPORT_FULL_ACCESS_AUTO_APPROVAL: "true",
+    });
+    expect(validateRequestEnvelope(envelope({ capability: "support.auto_approval.enable" }), autoApproval)).toMatchObject({
+      decision: "approval_required", local_enforcement_required: true,
+    });
     expect(full.allowed_capabilities).toContain("support.full_access.command.execute");
+    expect(full.allowed_capabilities).toContain("support.full_access.enroll");
+    expect(autoApproval.allowed_capabilities).toContain("support.auto_approval.enable");
     expect(full.allowed_capabilities).not.toContain("support.full_access.workspace.file.mutate");
   });
 
