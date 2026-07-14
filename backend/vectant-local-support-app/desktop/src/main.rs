@@ -1537,10 +1537,20 @@ fn app_data_root() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        policy_requires_session_disconnect, relay_release_context_allowed, validate_private_target,
-        DesktopPolicyStatus, RelayDelivery,
+        enforce_cloud_policy, policy_requires_session_disconnect, relay_release_context_allowed,
+        validate_private_target, DesktopPolicyStatus, DesktopRuntime, RelayDelivery,
     };
+    use crate::pairing_client::PairingClient;
+    use crate::relay_client::RelayClient;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::sync::RwLock;
+    use std::time::Duration;
+    use vectant_local_support_app::http::AppState;
+    use vectant_local_support_app::pair::DeviceIdentity;
+    use vectant_local_support_app::session::SessionGuard;
     use vectant_local_support_app::session::SessionState;
+    use vectant_local_support_app::workspace::WorkspacePolicy;
 
     fn release_policy() -> DesktopPolicyStatus {
         DesktopPolicyStatus {
@@ -1652,5 +1662,47 @@ mod tests {
         policy = release_policy();
         policy.update_required = true;
         assert!(policy_requires_session_disconnect(&policy));
+    }
+
+    #[tokio::test]
+    async fn blocked_cloud_policy_disconnects_active_session_once() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("vectant-desktop-policy-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&workspace_path).unwrap();
+        let workspace =
+            WorkspacePolicy::new(&workspace_path, "wk_policy_test", Default::default()).unwrap();
+        let session = SessionGuard::new_paired(
+            "sess_policy_test",
+            "acct_policy_test",
+            "org_policy_test",
+            "wk_policy_test",
+            "sha256:1111111111111111",
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let state = AppState::new(session, workspace);
+        let runtime = DesktopRuntime {
+            app_state: RwLock::new(state.clone()),
+            device_identity: DeviceIdentity::generate(),
+            pairing_client: PairingClient::new("http://127.0.0.1:3000/api/local-support/pairing")
+                .unwrap(),
+            cloud_policy: RwLock::new(DesktopPolicyStatus::unavailable()),
+            available_update_version: RwLock::new(None),
+            relay_client: RelayClient::new("http://127.0.0.1:3000/api/local-support/relay/device")
+                .unwrap(),
+            pending_pairing: RwLock::new(None),
+            pending_relay_approvals: RwLock::new(HashMap::new()),
+            preview_contexts: RwLock::new(HashMap::new()),
+            local_api_address: RwLock::new(None),
+            last_synced_port_status: RwLock::new(None),
+        };
+
+        let blocked = DesktopPolicyStatus::unavailable();
+        enforce_cloud_policy(&runtime, &state, &blocked, true).await;
+        enforce_cloud_policy(&runtime, &state, &blocked, true).await;
+
+        assert!(!state.session.lock().await.is_active());
+        assert_eq!(state.audit.lock().await.events().len(), 1);
+        fs::remove_dir_all(workspace_path).unwrap();
     }
 }
