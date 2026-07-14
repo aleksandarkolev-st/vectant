@@ -23,6 +23,7 @@ vi.mock("@/lib/local-support/pairingStore", async (importOriginal) => {
   return {
     ...(await importOriginal()),
     persistPairingChallenge: persistPairingChallengeMock,
+    findPairingOrganization: async () => null,
     claimPairingChallengeDurably: async (body, policy) => {
       if (pairingPersistenceFailure.active) throw new Error("database unavailable");
       return controlPlane.claimPairingChallenge(body, policy);

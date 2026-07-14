@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   claimPairingChallengeDurably,
   completePairingChallengeDurably,
+  findPairingOrganization,
   persistPairingChallenge,
 } from "./pairingStore";
 
@@ -82,6 +83,14 @@ describe("durable local support pairing", () => {
     expect(stored).not.toHaveProperty("code");
     expect(stored.codeHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(stored)).not.toContain(CODE);
+  });
+
+  it("resolves challenge organization without returning pairing secrets", async () => {
+    const { client, tx } = fakeClient();
+    await expect(findPairingOrganization({ code: CODE }, "claim", client)).resolves.toBe("org_12345678");
+    expect(tx.localSupportPairingChallenge.findUnique).toHaveBeenCalledWith({
+      where: { codeHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
   });
 
   it("claims atomically with app/protocol policy and a durable rate window", async () => {

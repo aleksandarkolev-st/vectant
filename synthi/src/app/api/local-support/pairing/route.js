@@ -9,6 +9,7 @@ import {
 import {
   claimPairingChallengeDurably,
   completePairingChallengeDurably,
+  findPairingOrganization,
   persistPairingChallenge,
 } from "@/lib/local-support/pairingStore";
 import { readDurableLocalSupportPolicy } from "@/lib/local-support/policyStore";
@@ -49,12 +50,21 @@ export async function POST(req) {
     };
   }
 
+  let policyOrgId = action === "create" ? createBody.org_id : null;
+  if (action !== "create") {
+    try {
+      policyOrgId = await findPairingOrganization(body, action);
+    } catch {
+      return pairingPersistenceFailure("pairing_policy_unavailable");
+    }
+  }
+
   let policy;
   try {
     policy = await readDurableLocalSupportPolicy(
       process.env,
       undefined,
-      action === "create" ? createBody.org_id : body.org_id,
+      policyOrgId,
     );
   } catch {
     return pairingPersistenceFailure("pairing_policy_unavailable");

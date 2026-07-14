@@ -15,6 +15,17 @@ const CAPABILITIES = [
   "localhost.preview.browser",
 ];
 
+export async function findPairingOrganization(input, action, client = prisma) {
+  const where = action === "claim"
+    ? { codeHash: pairingCodeHash(typeof input?.code === "string" ? input.code : "") }
+    : action === "complete" && typeof input?.pairing_id === "string"
+      ? { pairingId: input.pairing_id }
+      : null;
+  if (!where) return null;
+  const challenge = await client.localSupportPairingChallenge.findUnique({ where });
+  return challenge?.orgId || null;
+}
+
 export async function persistPairingChallenge(challenge, client = prisma) {
   if (challenge?.decision !== "pairing_challenge_created") {
     throw new Error("Pairing challenge was not valid for persistence.");
