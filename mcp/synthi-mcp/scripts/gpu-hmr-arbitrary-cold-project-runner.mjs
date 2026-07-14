@@ -519,6 +519,7 @@ export async function runArbitraryColdProject(descriptorInput, {
 
   const contract = createArbitraryColdProjectContract({
     sourceBindingHash: sourceTreeBindingEvidence.sourceBindingHash,
+    readOnlyInputs: [],
     workerImageId: workerImage.descriptor.imageId,
     workerImageOperatingSystem: workerImage.descriptor.operatingSystem,
     workerImageArchitecture: workerImage.descriptor.architecture,

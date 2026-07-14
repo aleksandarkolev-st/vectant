@@ -9,6 +9,10 @@ import {
 
 const base = {
   sourceBindingHash: `sha256:${'1'.repeat(64)}`,
+  readOnlyInputs: [
+    { mountPath: 'toolchain headers', sourceBindingHash: `sha256:${'3'.repeat(64)}` },
+    { mountPath: 'vendor/source', sourceBindingHash: `sha256:${'4'.repeat(64)}` },
+  ],
   workerImageId: `sha256:${'2'.repeat(64)}`,
   workerImageOperatingSystem: 'linux',
   workerImageArchitecture: 'amd64',
@@ -49,7 +53,28 @@ assert.equal(first.gpuHmrSuccess, false);
 assert.equal(first.canSatisfyRuntimeProof, false);
 assert.equal(first.canSatisfyDispatchProof, false);
 assert.equal(first.outputs[0].metadataAuthority, 'advisory_only_not_output_acceptance');
+assert.deepEqual(first.readOnlyInputs.map((entry) => entry.mountPath), [
+  'toolchain headers',
+  'vendor/source',
+]);
 assert.equal(verifyArbitraryColdProjectContract(first), first);
+
+const reorderedInputs = createArbitraryColdProjectContract({
+  ...structuredClone(base),
+  readOnlyInputs: [...base.readOnlyInputs].reverse(),
+});
+assert.equal(reorderedInputs.commandSpecHash, first.commandSpecHash);
+assert.equal(reorderedInputs.contractHash, first.contractHash);
+
+const changedInput = createArbitraryColdProjectContract({
+  ...structuredClone(base),
+  readOnlyInputs: [{
+    ...base.readOnlyInputs[0],
+    sourceBindingHash: `sha256:${'5'.repeat(64)}`,
+  }],
+});
+assert.notEqual(changedInput.commandSpecHash, first.commandSpecHash);
+assert.notEqual(changedInput.contractHash, first.contractHash);
 
 const changedOutput = createArbitraryColdProjectContract({
   ...structuredClone(base),
@@ -89,6 +114,37 @@ assert.throws(
     resources: { ...base.resources, collectedEntryLimit: 1 },
   }),
   /resources_invalid/,
+);
+assert.throws(
+  () => createArbitraryColdProjectContract({
+    ...structuredClone(base),
+    readOnlyInputs: [{ mountPath: '../escape', sourceBindingHash: `sha256:${'3'.repeat(64)}` }],
+  }),
+  /read_only_input_mount_path_invalid/,
+);
+assert.throws(
+  () => createArbitraryColdProjectContract({
+    ...structuredClone(base),
+    readOnlyInputs: [base.readOnlyInputs[0], { ...base.readOnlyInputs[0] }],
+  }),
+  /read_only_input_overlap/,
+);
+assert.throws(
+  () => createArbitraryColdProjectContract({
+    ...structuredClone(base),
+    readOnlyInputs: [
+      { mountPath: 'vendor', sourceBindingHash: `sha256:${'3'.repeat(64)}` },
+      { mountPath: 'vendor/nested', sourceBindingHash: `sha256:${'4'.repeat(64)}` },
+    ],
+  }),
+  /read_only_input_overlap/,
+);
+assert.throws(
+  () => createArbitraryColdProjectContract({
+    ...structuredClone(base),
+    readOnlyInputs: [{ ...base.readOnlyInputs[0], project: 'shortcut' }],
+  }),
+  /read_only_input_shape_invalid/,
 );
 assert.ok(!JSON.stringify(first).match(/miopen|hiprt|flow|diamond|neural|blas|cuda|rocm/i));
 

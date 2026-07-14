@@ -117,11 +117,34 @@ function normalizeOutput(output) {
   };
 }
 
+function normalizeReadOnlyInput(input) {
+  if (!exactKeys(input, ['mountPath', 'sourceBindingHash'])) {
+    throw new Error('arbitrary_cold_project_contract_read_only_input_shape_invalid');
+  }
+  const mountPath = normalizeRelativePath(input.mountPath, 'read_only_input_mount_path');
+  if (
+    Buffer.byteLength(mountPath, 'utf8') > 1024
+    || !HASH_PATTERN.test(input.sourceBindingHash ?? '')
+  ) {
+    throw new Error('arbitrary_cold_project_contract_read_only_input_invalid');
+  }
+  return {
+    mountPath,
+    sourceBindingHash: input.sourceBindingHash,
+  };
+}
+
+function relativePathOverlaps(left, right) {
+  const relative = path.posix.relative(left, right);
+  return relative === '' || (relative !== '..' && !relative.startsWith('../'));
+}
+
 function contractProjection(contract) {
   return {
     schemaVersion: contract.schemaVersion,
     proofAuthority: contract.proofAuthority,
     sourceBindingHash: contract.sourceBindingHash,
+    readOnlyInputs: contract.readOnlyInputs,
     workerImageId: contract.workerImageId,
     workerImageOperatingSystem: contract.workerImageOperatingSystem,
     workerImageArchitecture: contract.workerImageArchitecture,
@@ -143,6 +166,7 @@ function contractProjection(contract) {
 export function createArbitraryColdProjectContract(input) {
   if (!exactKeys(input, [
     'sourceBindingHash',
+    'readOnlyInputs',
     'workerImageId',
     'workerImageOperatingSystem',
     'workerImageArchitecture',
@@ -158,6 +182,23 @@ export function createArbitraryColdProjectContract(input) {
   }
   if (!HASH_PATTERN.test(input.sourceBindingHash ?? '')) {
     throw new Error('arbitrary_cold_project_contract_source_binding_hash_invalid');
+  }
+  if (!Array.isArray(input.readOnlyInputs) || input.readOnlyInputs.length > 128) {
+    throw new Error('arbitrary_cold_project_contract_read_only_inputs_invalid');
+  }
+  const readOnlyInputs = input.readOnlyInputs
+    .map(normalizeReadOnlyInput)
+    .sort((left, right) => Buffer.compare(
+      Buffer.from(left.mountPath, 'utf8'),
+      Buffer.from(right.mountPath, 'utf8'),
+    ));
+  if (readOnlyInputs.some((entry, index) => (
+    readOnlyInputs.slice(index + 1).some((candidate) => (
+      relativePathOverlaps(entry.mountPath, candidate.mountPath)
+      || relativePathOverlaps(candidate.mountPath, entry.mountPath)
+    ))
+  ))) {
+    throw new Error('arbitrary_cold_project_contract_read_only_input_overlap');
   }
   if (!HASH_PATTERN.test(input.workerImageId ?? '')) {
     throw new Error('arbitrary_cold_project_contract_worker_image_id_invalid');
@@ -233,6 +274,7 @@ export function createArbitraryColdProjectContract(input) {
     schemaVersion: ARBITRARY_COLD_PROJECT_CONTRACT_SCHEMA,
     proofAuthority: ARBITRARY_COLD_PROJECT_CONTRACT_AUTHORITY,
     sourceBindingHash: input.sourceBindingHash,
+    readOnlyInputs,
     workerImageId: input.workerImageId,
     workerImageOperatingSystem: input.workerImageOperatingSystem,
     workerImageArchitecture: input.workerImageArchitecture,
@@ -251,6 +293,7 @@ export function createArbitraryColdProjectContract(input) {
   };
   contract.commandSpecHash = contentHash(stableJson({
     sourceBindingHash: contract.sourceBindingHash,
+    readOnlyInputs: contract.readOnlyInputs,
     workerImageId: contract.workerImageId,
     workerImageOperatingSystem: contract.workerImageOperatingSystem,
     workerImageArchitecture: contract.workerImageArchitecture,
@@ -278,6 +321,7 @@ export function verifyArbitraryColdProjectContract(contract) {
   const pinned = PINNED_CONTRACTS.get(contract);
   const commandSpecHash = contentHash(stableJson({
     sourceBindingHash: contract?.sourceBindingHash,
+    readOnlyInputs: contract?.readOnlyInputs,
     workerImageId: contract?.workerImageId,
     workerImageOperatingSystem: contract?.workerImageOperatingSystem,
     workerImageArchitecture: contract?.workerImageArchitecture,
