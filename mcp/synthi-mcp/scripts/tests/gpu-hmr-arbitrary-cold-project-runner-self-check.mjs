@@ -110,6 +110,12 @@ try {
   assert.equal(normalized.sourceRoot, path.resolve(sourceRoot));
   assert.equal(normalized.readOnlyInputs[0].sourceRoot, path.resolve(readOnlyInputRoot));
   assert.equal(normalized.readOnlyInputs[0].mountPath, 'opaque dependency');
+  const legacyV1Descriptor = structuredClone(descriptor);
+  delete legacyV1Descriptor.readOnlyInputs;
+  assert.deepEqual(
+    normalizeArbitraryColdProjectDescriptor(legacyV1Descriptor).readOnlyInputs,
+    [],
+  );
   assert.throws(
     () => normalizeArbitraryColdProjectDescriptor({ ...descriptor, projectName: 'shortcut' }),
     /descriptor_shape_invalid/,

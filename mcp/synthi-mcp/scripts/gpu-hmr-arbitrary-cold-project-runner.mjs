@@ -83,6 +83,7 @@ const DESCRIPTOR_KEYS = [
   'sourceLimits',
   'resources',
 ];
+const LEGACY_V1_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'readOnlyInputs');
 const POLICY_KEYS = Object.keys(DEFAULT_ARBITRARY_COLD_RUNNER_POLICY).sort();
 
 function stableJson(value) {
@@ -273,7 +274,7 @@ function enforceResourcePolicy(resources, policy) {
 }
 
 export function normalizeArbitraryColdProjectDescriptor(input, { policy = {} } = {}) {
-  if (!exactKeys(input, DESCRIPTOR_KEYS)) {
+  if (!exactKeys(input, DESCRIPTOR_KEYS) && !exactKeys(input, LEGACY_V1_DESCRIPTOR_KEYS)) {
     throw new Error('arbitrary_cold_runner_descriptor_shape_invalid');
   }
   const copiedInput = cloneDescriptorValue(input);
@@ -286,7 +287,7 @@ export function normalizeArbitraryColdProjectDescriptor(input, { policy = {} } =
     normalizedPolicy,
   ));
   const sourceRoot = requireHostPath(copiedInput.sourceRoot, 'source_root');
-  const readOnlyInputs = normalizeReadOnlyInputs(copiedInput.readOnlyInputs, normalizedPolicy);
+  const readOnlyInputs = normalizeReadOnlyInputs(copiedInput.readOnlyInputs ?? [], normalizedPolicy);
   const allSourceRoots = [sourceRoot, ...readOnlyInputs.map((input) => input.sourceRoot)];
   if (allSourceRoots.some((root, index) => allSourceRoots.slice(index + 1).some(
     (candidate) => sameOrInside(root, candidate) || sameOrInside(candidate, root),
