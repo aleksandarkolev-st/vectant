@@ -9,6 +9,7 @@ const UPDATE_FIELDS = new Set([
 
 export async function readDurableLocalSupportPolicy(env = process.env, client = prisma, orgId = null) {
   const base = readLocalSupportPolicy(env);
+  assertVersionPolicy(base.min_app_version, base.vulnerable_versions, "environment");
   const globalStored = await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } });
   const normalizedOrgId = normalizeOrgId(orgId);
   const scopedStored = normalizedOrgId
@@ -17,6 +18,7 @@ export async function readDurableLocalSupportPolicy(env = process.env, client = 
   const stored = scopedStored || globalStored;
   if (!stored) return base;
   const storedPolicies = [globalStored, scopedStored].filter(Boolean);
+  for (const storedPolicy of storedPolicies) assertStoredPolicyVersionFields(storedPolicy);
   const storedVulnerableVersions = storedPolicies.flatMap((item) => parseVersions(item.vulnerableVersionsJson));
   const vulnerableVersions = uniqueStrings([
     ...base.vulnerable_versions,
@@ -208,6 +210,7 @@ export async function updateDurableLocalSupportPolicy(input, updatedBy, client =
     ? await client.localSupportPolicyState.findUnique({ where: { id: POLICY_ID } })
     : null;
   const defaults = existing || fallback;
+  if (defaults) assertStoredPolicyVersionFields(defaults);
   const data = {
     orgId,
     globalEnabled: body.global_enabled ?? defaults?.globalEnabled ?? false,
@@ -255,6 +258,34 @@ function parseVersions(value) {
   } catch {
     return [];
   }
+}
+
+function assertStoredPolicyVersionFields(stored) {
+  let versions;
+  try {
+    versions = JSON.parse(stored.vulnerableVersionsJson || "[]");
+  } catch {
+    throw new Error("durable_policy_versions_invalid");
+  }
+  if (!Array.isArray(versions) || versions.length > 100
+    || versions.some((version) => !isPolicyVersion(version))) {
+    throw new Error("durable_policy_versions_invalid");
+  }
+  assertVersionPolicy(stored.minAppVersion, versions, "durable");
+}
+
+function assertVersionPolicy(minimum, vulnerableVersions, source) {
+  if (!isPolicyVersion(minimum)
+    || !Array.isArray(vulnerableVersions)
+    || vulnerableVersions.some((version) => !isPolicyVersion(version))) {
+    throw new Error(`${source}_policy_versions_invalid`);
+  }
+}
+
+function isPolicyVersion(value) {
+  return typeof value === "string"
+    && /^\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$/.test(value)
+    && value.length <= 128;
 }
 
 function denied(reason) {

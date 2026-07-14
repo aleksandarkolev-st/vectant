@@ -63,6 +63,30 @@ describe("durable local support policy", () => {
     }));
   });
 
+  it("fails closed when durable version policy data is corrupt", async () => {
+    await expect(readDurableLocalSupportPolicy({}, {
+      localSupportPolicyState: {
+        findUnique: vi.fn(async () => ({
+          globalEnabled: true,
+          orgDisabled: false,
+          pairingDisabled: false,
+          previewDisabled: false,
+          agentAccessDisabled: true,
+          minAppVersion: "not-a-version",
+          vulnerableVersionsJson: "[]",
+          retentionDays: 30,
+          updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+        })),
+      },
+    })).rejects.toThrow("durable_policy_versions_invalid");
+
+    await expect(readDurableLocalSupportPolicy({
+      VECTANT_LOCAL_SUPPORT_MIN_APP_VERSION: "not-a-version",
+    }, {
+      localSupportPolicyState: { findUnique: vi.fn(async () => null) },
+    })).rejects.toThrow("environment_policy_versions_invalid");
+  });
+
   it("keeps explicit environment emergency controls stricter than durable state", async () => {
     const policy = await readDurableLocalSupportPolicy({
       VECTANT_LOCAL_SUPPORT_ENABLED: "false",
