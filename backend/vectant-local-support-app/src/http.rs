@@ -577,6 +577,12 @@ async fn enroll_full_access(
             "full_access_scope_not_allowed_by_policy",
         ));
     }
+    if !auto_approval_scope_valid(&request.policy, &request.receipt) {
+        return Err(denied(
+            StatusCode::FORBIDDEN,
+            "auto_approval_scope_not_granted",
+        ));
+    }
     if let Some(cloud_capabilities) = state.cloud_full_access_capabilities.lock().await.clone() {
         if !request
             .policy
@@ -601,7 +607,8 @@ async fn enroll_full_access(
             && (existing.capabilities != request.receipt.capabilities
                 || existing.support_actor != request.receipt.support_actor
                 || existing.workspace_hash != request.receipt.workspace_hash
-                || existing.policy_major != request.receipt.policy_major)
+                || existing.policy_major != request.receipt.policy_major
+                || existing.auto_approval_enabled != request.receipt.auto_approval_enabled)
         {
             return Err(denied(
                 StatusCode::CONFLICT,
@@ -626,6 +633,19 @@ async fn enroll_full_access(
     Ok(Json(
         serde_json::json!({"decision":"full_access_enrolled","request_id":request.request_id,"raw_bodies_included":false,"bytes_sent":0}),
     ))
+}
+
+fn auto_approval_scope_valid(
+    policy: &FullAccessPolicy,
+    receipt: &FullAccessConsentReceipt,
+) -> bool {
+    !receipt.auto_approval_enabled
+        || (receipt
+            .capabilities
+            .contains(&crate::full_access::FullAccessCapability::AutoApprovalEnable)
+            && policy
+                .allowed_capabilities
+                .contains(&crate::full_access::FullAccessCapability::AutoApprovalEnable))
 }
 
 async fn full_access_graph(
@@ -2463,8 +2483,10 @@ fn denied(status: StatusCode, reason: impl ToString) -> (StatusCode, Json<serde_
 
 #[cfg(test)]
 mod tests {
-    use super::validate_headers;
+    use super::{auto_approval_scope_valid, validate_headers};
+    use crate::full_access::{FullAccessCapability, FullAccessConsentReceipt, FullAccessPolicy};
     use axum::http::{HeaderMap, HeaderValue};
+    use std::collections::BTreeSet;
 
     #[test]
     fn accepts_the_production_app_origin_without_broadening_cross_site_access() {
@@ -2482,5 +2504,43 @@ mod tests {
 
         headers.insert("origin", HeaderValue::from_static("https://evil.example"));
         assert!(validate_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn auto_approval_requires_its_own_receipt_and_policy_capability() {
+        let mut receipt = FullAccessConsentReceipt {
+            consent_id: "consent_123".into(),
+            session_id: "sess_123".into(),
+            account_id: "acct_123".into(),
+            organization_id: "org_123".into(),
+            support_actor: "support_agent".into(),
+            device_fingerprint: "sha256:abc".into(),
+            workspace_hash: "sha256:workspace".into(),
+            capabilities: BTreeSet::from([FullAccessCapability::Enroll]),
+            auto_approval_enabled: true,
+            policy_version: "policy".into(),
+            scanner_version: "scanner".into(),
+            app_version: "0.1.0".into(),
+            policy_major: 1,
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+            paused_at: None,
+            revoked_at: None,
+            local_confirmation: "native_button".into(),
+        };
+        let mut policy = FullAccessPolicy {
+            organization_enabled: true,
+            ..Default::default()
+        };
+        policy
+            .allowed_capabilities
+            .insert(FullAccessCapability::AutoApprovalEnable);
+        assert!(!auto_approval_scope_valid(&policy, &receipt));
+        receipt
+            .capabilities
+            .insert(FullAccessCapability::AutoApprovalEnable);
+        assert!(auto_approval_scope_valid(&policy, &receipt));
+        policy.allowed_capabilities.clear();
+        assert!(!auto_approval_scope_valid(&policy, &receipt));
     }
 }
