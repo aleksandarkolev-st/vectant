@@ -21,6 +21,10 @@ import {
   verifyArbitraryColdProjectContract,
 } from './lib/gpu-hmr-arbitrary-cold-project-contract.mjs';
 import {
+  createArbitraryColdRetainedExecutionChain,
+  verifyArbitraryColdRetainedExecutionChain,
+} from './lib/gpu-hmr-arbitrary-cold-retained-chain.mjs';
+import {
   COLD_BUILD_LAUNCHER_SOURCE_ROOT,
   materializeColdBuildLauncher,
 } from './lib/gpu-hmr-cold-build-container-contract.mjs';
@@ -1105,8 +1109,23 @@ export async function runArbitraryColdProject(descriptorInput, {
       canSatisfyDispatchProof: false,
     };
     evidence.evidenceHash = recomputeEvidenceHash(evidence);
+    const retainedExecutionChain = createArbitraryColdRetainedExecutionChain({
+      descriptorHash,
+      sourceSnapshot,
+      readOnlyInputSnapshots,
+      workerImageReference: descriptor.workerImage,
+      workerImage,
+      contract,
+      launcherIdentity,
+      outputEvidence,
+      driverResult,
+      plan,
+      runEvidence: evidence,
+      outputs,
+    });
     const result = {
       evidence,
+      retainedExecutionChain,
       outputs,
       artifactSessionRoot: artifactSession.canonicalPath,
     };
@@ -1126,6 +1145,7 @@ export async function runArbitraryColdProject(descriptorInput, {
       plan,
       driverResult,
       outputEvidence,
+      retainedExecutionChain,
       evidenceHash: evidence.evidenceHash,
     }));
     return result;
@@ -1186,6 +1206,7 @@ export async function verifyArbitraryColdProjectRun(result) {
       pinned.driverResult,
       pinned.plan,
     );
+    verifyArbitraryColdRetainedExecutionChain(result?.retainedExecutionChain);
   } catch {
     throw new Error('arbitrary_cold_runner_result_invalid');
   }
@@ -1288,6 +1309,8 @@ export async function verifyArbitraryColdProjectRun(result) {
     || evidence?.canSatisfyRuntimeProof !== false
     || evidence?.canSatisfyDispatchProof !== false
     || recomputeEvidenceHash(evidence) !== evidence?.evidenceHash
+    || result?.retainedExecutionChain !== pinned.retainedExecutionChain
+    || result.retainedExecutionChain.runEvidence.evidenceHash !== evidence.evidenceHash
   ) {
     throw new Error('arbitrary_cold_runner_result_invalid');
   }
@@ -1337,6 +1360,7 @@ async function main() {
   console.log(JSON.stringify({
     descriptorBytesHash: contentHash(descriptorBytes),
     evidence: result.evidence,
+    retainedExecutionChain: result.retainedExecutionChain,
     outputs: result.outputs.map((output) => ({
       metadata: output.metadata,
       artifactLocator: output.artifactLocator,

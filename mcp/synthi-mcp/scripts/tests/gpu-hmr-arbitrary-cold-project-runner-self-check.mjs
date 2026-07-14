@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmod,
   mkdir,
@@ -30,9 +31,32 @@ import {
   COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
+import {
+  ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_AUTHORITY,
+  ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_SCHEMA,
+  verifyArbitraryColdRetainedExecutionChain,
+} from '../lib/gpu-hmr-arbitrary-cold-retained-chain.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'synthi-arbitrary-cold-self-check-'));
 const execFileAsync = promisify(execFile);
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function resealEvidence(value) {
+  const projection = { ...value };
+  delete projection.evidenceHash;
+  value.evidenceHash = `sha256:${createHash('sha256')
+    .update(stableJson(projection))
+    .digest('hex')}`;
+}
 
 async function runningColdContainers() {
   const { stdout } = await execFileAsync('docker', ['ps', '--format', '{{.Names}}']);
@@ -53,6 +77,8 @@ async function waitForNewColdContainer(previous, timeoutMillis = 30_000) {
 }
 
 try {
+  const privateArgument = '--private-self-check-argument=not-for-retention';
+  const privateEnvironmentValue = 'private-self-check-environment-value-not-for-retention';
   const sourceRoot = path.join(root, 'opaque source tree');
   const readOnlyInputRoot = path.join(root, 'opaque dependency tree');
   const artifactRoot = path.join(root, 'retained artifact cas');
@@ -92,10 +118,11 @@ try {
     workerImage: COLD_BUILD_LAUNCHER_BUILDER_IMAGE,
     containerRuntime: 'runc',
     command: '/bin/sh',
-    args: ['/workspace/source/build-project.sh'],
+    args: ['/workspace/source/build-project.sh', privateArgument],
     environment: {
       HOME: '/tmp/cold-home',
       PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      PRIVATE_SELF_CHECK_VALUE: privateEnvironmentValue,
       TMPDIR: '/tmp',
     },
     workingDirectory: '.',
@@ -255,6 +282,86 @@ try {
   assert.equal(result.evidence.readOnlyInputCount, 1);
   assert.equal(result.evidence.readOnlyInputEntryCount, 1);
   assert.ok(result.evidence.readOnlyInputByteLength > 0);
+  const retainedExecutionChain = JSON.parse(JSON.stringify(result.retainedExecutionChain));
+  assert.equal(
+    retainedExecutionChain.schemaVersion,
+    ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_SCHEMA,
+  );
+  assert.equal(
+    retainedExecutionChain.proofAuthority,
+    ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_AUTHORITY,
+  );
+  assert.equal(retainedExecutionChain.acceptedAsRetainedColdExecutionChain, true);
+  assert.equal(retainedExecutionChain.externalAuthenticityAnchorEmbedded, false);
+  assert.equal(retainedExecutionChain.acceptedAsColdBuildEvidence, false);
+  assert.equal(retainedExecutionChain.acceptedForGpuHmr, false);
+  assert.equal(retainedExecutionChain.gpuHmrSuccess, false);
+  assert.equal(retainedExecutionChain.canSatisfyRuntimeProof, false);
+  assert.equal(retainedExecutionChain.canSatisfyDispatchProof, false);
+  assert.equal(retainedExecutionChain.readOnlyInputSnapshotReceipts.length, 1);
+  assert.equal(
+    verifyArbitraryColdRetainedExecutionChain(retainedExecutionChain),
+    retainedExecutionChain,
+  );
+  assert.equal('contract' in retainedExecutionChain, false);
+  assert.equal(retainedExecutionChain.contractReceipt.plaintextCommandEmbedded, false);
+  assert.equal(retainedExecutionChain.contractReceipt.plaintextArgumentsEmbedded, false);
+  assert.equal(retainedExecutionChain.contractReceipt.plaintextEnvironmentValuesEmbedded, false);
+  const serializedRetainedExecutionChain = JSON.stringify(retainedExecutionChain);
+  assert.doesNotMatch(serializedRetainedExecutionChain, /bound dependency bytes/);
+  assert.equal(serializedRetainedExecutionChain.includes(privateArgument), false);
+  assert.equal(serializedRetainedExecutionChain.includes(privateEnvironmentValue), false);
+
+  for (const mutateReceipt of [
+    (receipt) => { receipt.commandInvocationHash = `sha256:${'0'.repeat(64)}`; },
+    (receipt) => { receipt.environmentEntrySetHash = `sha256:${'1'.repeat(64)}`; },
+    (receipt) => { receipt.resources.nanoCpus += 1; },
+    (receipt) => { receipt.containerRuntime = 'different-runtime'; },
+  ]) {
+    const forgedRetainedContractCommitment = structuredClone(retainedExecutionChain);
+    mutateReceipt(forgedRetainedContractCommitment.contractReceipt);
+    resealEvidence(forgedRetainedContractCommitment.contractReceipt);
+    resealEvidence(forgedRetainedContractCommitment);
+    assert.throws(
+      () => verifyArbitraryColdRetainedExecutionChain(forgedRetainedContractCommitment),
+      /retained_execution_chain_invalid/,
+    );
+  }
+
+  const forgedRetainedContractLink = structuredClone(retainedExecutionChain);
+  forgedRetainedContractLink.runEvidence.contractHash = `sha256:${'0'.repeat(64)}`;
+  resealEvidence(forgedRetainedContractLink.runEvidence);
+  resealEvidence(forgedRetainedContractLink);
+  assert.throws(
+    () => verifyArbitraryColdRetainedExecutionChain(forgedRetainedContractLink),
+    /retained_execution_chain_invalid/,
+  );
+
+  const forgedRetainedArtifact = structuredClone(retainedExecutionChain);
+  forgedRetainedArtifact.artifactLocatorBindings[0].contentHash =
+    `sha256:${'1'.repeat(64)}`;
+  forgedRetainedArtifact.artifactLocatorBindings[0].artifactId =
+    `artifact:sha256:${'1'.repeat(64)}`;
+  forgedRetainedArtifact.runEvidence.artifactLocatorSetHash =
+    `sha256:${createHash('sha256')
+      .update(stableJson(forgedRetainedArtifact.artifactLocatorBindings))
+      .digest('hex')}`;
+  resealEvidence(forgedRetainedArtifact.runEvidence);
+  resealEvidence(forgedRetainedArtifact);
+  assert.throws(
+    () => verifyArbitraryColdRetainedExecutionChain(forgedRetainedArtifact),
+    /retained_execution_chain_invalid/,
+  );
+
+  const forgedRetainedAuthority = structuredClone(retainedExecutionChain);
+  forgedRetainedAuthority.acceptedAsColdBuildEvidence = true;
+  forgedRetainedAuthority.acceptedForGpuHmr = true;
+  forgedRetainedAuthority.gpuHmrSuccess = true;
+  resealEvidence(forgedRetainedAuthority);
+  assert.throws(
+    () => verifyArbitraryColdRetainedExecutionChain(forgedRetainedAuthority),
+    /retained_execution_chain_invalid/,
+  );
   assert.equal(result.outputs.length, 2);
   const binary = result.outputs.find((output) => output.metadata.path === 'result.bin');
   const structured = result.outputs.find((output) => output.metadata.path === 'result.json');
@@ -337,6 +444,14 @@ try {
   assert.equal(cliResult.evidence.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_SCHEMA);
   assert.equal(cliResult.evidence.acceptedForGpuHmr, false);
   assert.equal(cliResult.evidence.gpuHmrSuccess, false);
+  assert.equal(
+    verifyArbitraryColdRetainedExecutionChain(cliResult.retainedExecutionChain),
+    cliResult.retainedExecutionChain,
+  );
+  assert.equal(
+    cliResult.retainedExecutionChain.runEvidence.evidenceHash,
+    cliResult.evidence.evidenceHash,
+  );
   assert.equal(cliResult.outputs.length, descriptor.outputs.length);
   assert.ok(!JSON.stringify(cliResult.evidence).match(
     /miopen|hiprt|flow|diamond|neural|blas|cuda|rocm|project_name|fixture_name/i,
