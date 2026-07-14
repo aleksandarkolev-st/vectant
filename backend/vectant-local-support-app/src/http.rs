@@ -176,8 +176,8 @@ pub struct AppState {
     pub port_approvals: Arc<Mutex<PortApprovalRegistry>>,
     pub preview_traffic: Arc<Mutex<PreviewTrafficGuard>>,
     pub full_access: Arc<Mutex<FullAccessState>>,
-    // `None` is used only by the standalone library/test daemon. The desktop
-    // installs a cloud-derived ceiling before it permits Full Access enrollment.
+    // An empty ceiling is the startup default. The desktop replaces it only
+    // after successfully parsing cloud policy, so policy-fetch races fail closed.
     pub cloud_full_access_capabilities:
         Arc<Mutex<Option<BTreeSet<crate::full_access::FullAccessCapability>>>>,
     pub mutation_broker: Arc<Mutex<WorkspaceMutationBroker>>,
@@ -200,7 +200,7 @@ impl AppState {
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             full_access: Arc::new(Mutex::new(FullAccessState::default())),
-            cloud_full_access_capabilities: Arc::new(Mutex::new(None)),
+            cloud_full_access_capabilities: Arc::new(Mutex::new(Some(BTreeSet::new()))),
             mutation_broker: Arc::new(Mutex::new(WorkspaceMutationBroker::new(
                 workspace.as_ref().clone(),
                 chrono::Duration::hours(24),
@@ -231,7 +231,7 @@ impl AppState {
             port_approvals: Arc::new(Mutex::new(PortApprovalRegistry::new())),
             preview_traffic: Arc::new(Mutex::new(PreviewTrafficGuard::new())),
             full_access: Arc::new(Mutex::new(FullAccessState::default())),
-            cloud_full_access_capabilities: Arc::new(Mutex::new(None)),
+            cloud_full_access_capabilities: Arc::new(Mutex::new(Some(BTreeSet::new()))),
             mutation_broker: Arc::new(Mutex::new(WorkspaceMutationBroker::new(
                 workspace.as_ref().clone(),
                 chrono::Duration::hours(24),
