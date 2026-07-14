@@ -1145,146 +1145,57 @@ function waitContractFromCompileResult(result) {
   return result?.wait?.wait_contract ?? result?.wait?.waitContract ?? result?.waitArgs ?? null;
 }
 
-function deterministicVisualModeForMcp(profile, before, after, afterCompile) {
-  const base = isObject(profile.visualProof.deterministicMode)
-    ? profile.visualProof.deterministicMode
-    : {};
+function deterministicVisualModeForMcp(_profile, before, after, afterCompile) {
   return deterministicVisualModeFromMcpEvidence({
-    base,
     before,
     after,
     wait: afterCompile?.wait,
   });
 }
 
-function withExternalVisualStateHashes(mode, visualState) {
-  if (!visualState) return mode;
+function declaredDeterministicVisualModeEvidence(profile) {
+  const declaredMode = profile?.visualProof?.deterministicMode;
+  if (!isObject(declaredMode) || Object.keys(declaredMode).length === 0) return null;
+  const mode = JSON.parse(JSON.stringify(declaredMode));
+  const declaredModeHash = sha256(stableJson(mode));
+  const facetCore = {
+    schemaVersion: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    schema_version: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    proofAuthority: 'profile_declaration_only_not_runtime_visual_proof',
+    proof_authority: 'profile_declaration_only_not_runtime_visual_proof',
+    profileId: profile?.id ?? null,
+    profile_id: profile?.id ?? null,
+    declaredMode: mode,
+    declared_mode: mode,
+    declaredModeHash,
+    declared_mode_hash: declaredModeHash,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyVisualProof: false,
+    can_satisfy_visual_proof: false,
+  };
+  const facetHash = sha256(stableJson(facetCore));
   return {
-    ...(isObject(mode) ? mode : {}),
-    seed_policy_hash: visualState.seedPolicyHash,
-    seedPolicyHash: visualState.seedPolicyHash,
-    camera_state_hash: visualState.cameraStateHash,
-    cameraStateHash: visualState.cameraStateHash,
+    ...facetCore,
+    facetHash,
+    facet_hash: facetHash,
   };
 }
 
-function deterministicModeWithoutExternalVisualStateHashes(mode) {
-  if (!isObject(mode)) return {};
-  const copy = { ...mode };
-  delete copy.seed_policy_hash;
-  delete copy.seedPolicyHash;
-  delete copy.camera_state_hash;
-  delete copy.cameraStateHash;
-  delete copy.deterministic_camera_state_hash;
-  delete copy.deterministicCameraStateHash;
-  delete copy.external_visual_state_material_hash;
-  delete copy.externalVisualStateMaterialHash;
-  return copy;
-}
-
-function externalVisualStateHashMaterial(report, visualArtifacts) {
-  const deterministicMode = deterministicModeWithoutExternalVisualStateHashes(
-    isObject(report.deterministicVisualMode ?? report.deterministic_visual_mode)
-    ? report.deterministicVisualMode ?? report.deterministic_visual_mode
-    : {},
-  );
-  const visualDiff = isObject(report.visualDiff ?? report.visual_diff)
-    ? report.visualDiff ?? report.visual_diff
-    : {};
-  const screenshots = Array.isArray(report.screenshots)
-    ? report.screenshots.map((row) => ({
-        label: row.label ?? null,
-        width: Number.isFinite(Number(row.width)) ? Number(row.width) : null,
-        height: Number.isFinite(Number(row.height)) ? Number(row.height) : null,
-        capture_backend: row.capture_backend ?? row.captureBackend ?? null,
-        frame_capture_after_epoch_dispatch:
-          row.frame_capture_after_epoch_dispatch ?? row.frameCaptureAfterEpochDispatch ?? null,
-        wait_frame_gate_status:
-          row.wait_frame_gate?.status ?? row.waitFrameGate?.status ?? null,
-      }))
-    : [];
-  const captureBackend = visualArtifacts.capture_backend
-    ?? visualArtifacts.captureBackend
-    ?? screenshots.find((row) => row.capture_backend)?.capture_backend
-    ?? null;
-  const artifactHashes = {
-    before_image_hash:
-      visualArtifacts.before_image_hash ?? visualArtifacts.beforeImageHash ?? report.beforeImageHash ?? null,
-    after_image_hash:
-      visualArtifacts.after_image_hash ?? visualArtifacts.afterImageHash ?? report.afterImageHash ?? null,
-    diff_image_hash:
-      visualArtifacts.diff_image_hash ?? visualArtifacts.diffImageHash ?? report.diffImageHash ?? null,
-  };
-  const base = {
-    schemaVersion: 'synthi.gpu_hmr.external_visual_state_hash_material.v1',
-    proofMode: report.proofMode ?? report.proof_mode ?? null,
-    captureBackend,
-    artifactHashes,
-    visualDiffWidth: Number.isFinite(Number(visualDiff.width)) ? Number(visualDiff.width) : null,
-    visualDiffHeight: Number.isFinite(Number(visualDiff.height)) ? Number(visualDiff.height) : null,
-    deterministicMode,
-    screenshots,
-  };
-  const cameraMaterial = {
-    ...base,
-    materialKind: 'camera_state',
-  };
-  const seedMaterial = {
-    schemaVersion: 'synthi.gpu_hmr.external_visual_state_hash_material.v1',
-    materialKind: 'seed_policy',
-    proofMode: report.proofMode ?? report.proof_mode ?? null,
-    captureBackend,
-    deterministicMode: {
-      fixed_seed: deterministicMode.fixed_seed ?? deterministicMode.fixedSeed ?? null,
-      seed_policy_fixed: deterministicMode.seed_policy_fixed ?? deterministicMode.seedPolicyFixed ?? null,
-      temporal_accumulation_disabled:
-        deterministicMode.temporal_accumulation_disabled
-        ?? deterministicMode.temporalAccumulationDisabled
-        ?? null,
-      temporal_accumulation_not_applicable:
-        deterministicMode.temporal_accumulation_not_applicable
-        ?? deterministicMode.temporalAccumulationNotApplicable
-        ?? null,
-      taa_disabled: deterministicMode.taa_disabled ?? deterministicMode.taaDisabled ?? null,
-      taa_not_applicable:
-        deterministicMode.taa_not_applicable ?? deterministicMode.taaNotApplicable ?? null,
-      denoiser_disabled:
-        deterministicMode.denoiser_disabled ?? deterministicMode.denoiserDisabled ?? null,
-      denoiser_not_applicable:
-        deterministicMode.denoiser_not_applicable
-        ?? deterministicMode.denoiserNotApplicable
-        ?? null,
-    },
-  };
-  return {
-    cameraStateHash: sha256(stableJson(cameraMaterial)),
-    seedPolicyHash: sha256(stableJson(seedMaterial)),
-    materialHash: sha256(stableJson({ cameraMaterial, seedMaterial })),
-  };
-}
-
-function visualArtifactsWithExternalVisualState(visualArtifacts, visualState) {
-  if (!visualState) return visualArtifacts;
-  return {
-    ...(isObject(visualArtifacts) ? visualArtifacts : {}),
-    camera_state_hash: visualState.cameraStateHash,
-    cameraStateHash: visualState.cameraStateHash,
-    external_visual_state_material_hash: visualState.materialHash,
-    externalVisualStateMaterialHash: visualState.materialHash,
-  };
-}
-
-function deterministicVisualModeForExternal(profile, before, after, visualState = null) {
-  if (!isObject(profile.visualProof.deterministicMode)) return null;
-  const base = profile.visualProof.deterministicMode;
+function deterministicVisualModeForExternal(_profile, before, after) {
   const sameResolution = Number(before?.width) > 0
     && Number(before?.height) > 0
     && Number(before?.width) === Number(after?.width)
     && Number(before?.height) === Number(after?.height);
-  return withExternalVisualStateHashes({
-    ...base,
-    fixed_resolution: sameResolution === true ? true : base.fixed_resolution,
-  }, visualState);
+  return {
+    schema_version: 'synthi.gpu_hmr.deterministic_visual_mode.v1',
+    fixed_resolution: sameResolution === true ? true : null,
+    evidence_authority: 'decoded_external_frame_dimensions_only',
+  };
 }
 
 function sha256(value) {
@@ -1417,20 +1328,23 @@ async function writeExternalVisualProofArtifact(profile, report) {
   const acceptedVisualEvidenceArtifacts = visualEvidenceArtifacts
     .filter((artifact) => visualEvidenceArtifactAccepted(artifact));
   const status = deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts);
-  const visualState = externalVisualStateHashMaterial(
-    report,
-    report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? {},
-  );
-  const visualOracleArtifacts = visualArtifactsWithExternalVisualState(
-    report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? null,
-    visualState,
-  );
-  const deterministicVisualMode = withExternalVisualStateHashes(
-    report.deterministicVisualMode ?? report.deterministic_visual_mode ?? null,
-    visualState,
-  );
+  const visualOracleArtifacts = report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? null;
+  const deterministicVisualMode =
+    report.deterministicVisualMode ?? report.deterministic_visual_mode ?? null;
+  const declaredDeterministicVisualMode =
+    report.declaredDeterministicVisualMode
+    ?? report.declared_deterministic_visual_mode
+    ?? declaredDeterministicVisualModeEvidence(profile);
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+    proofAuthority: 'external_visual_artifact_bytes_only_not_gpu_hmr_acceptance',
+    proof_authority: 'external_visual_artifact_bytes_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
     profileId: profile.id,
     proofMode: report.proofMode,
     status,
@@ -1458,8 +1372,8 @@ async function writeExternalVisualProofArtifact(profile, report) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
     deterministic_visual_mode_evaluation: report.deterministicVisualModeEvaluation ?? null,
-    externalVisualStateMaterialHash: visualState.materialHash,
-    external_visual_state_material_hash: visualState.materialHash,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     mcp: report.mcp ? {
       visualProofGate: report.mcp.visualProofGate ?? null,
       before: report.mcp.before ? {
@@ -1565,6 +1479,12 @@ async function writeExternalRejectionProofArtifact(profile, report) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+    proofAuthority: 'external_project_rejection_only_not_gpu_hmr_acceptance',
+    proof_authority: 'external_project_rejection_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
     profileId: profile.id,
     proofMode: report.proofMode,
     status: report.status,
@@ -1604,6 +1524,10 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     visualDiff: report.visualDiff ?? null,
     deterministicVisualMode: report.deterministicVisualMode ?? null,
     deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    declaredDeterministicVisualMode:
+      report.declaredDeterministicVisualMode
+      ?? report.declared_deterministic_visual_mode
+      ?? declaredDeterministicVisualModeEvidence(profile),
     mcp: report.mcp ? {
       visualProofGate: report.mcp.visualProofGate ?? null,
       before: waitSummaryFromCompileResult(report.mcp.before),
@@ -2066,6 +1990,9 @@ async function selfCheckVisualProofArtifact() {
   };
   const written = await writeExternalVisualProofArtifact({
     id: 'external-visual-proof-self-check',
+    visualProof: {
+      deterministicMode: selfCheckDeterministicVisualMode,
+    },
   }, {
     proofMode: 'mcp_preview',
     status: 'pass',
@@ -2135,14 +2062,18 @@ async function selfCheckVisualProofArtifact() {
   const waitContractPersisted =
     artifact.mcp?.after?.waitContract?.module === 'device'
     && artifact.visualOracleArtifacts?.wait_contract?.module === 'device';
-  const visualStateBindingPersisted =
-    typeof artifact.visualOracleArtifacts?.camera_state_hash === 'string'
-    && artifact.visualOracleArtifacts.camera_state_hash.startsWith('sha256:')
-    && artifact.visualOracleArtifacts.camera_state_hash === artifact.deterministicVisualMode?.camera_state_hash
-    && typeof artifact.deterministicVisualMode?.seed_policy_hash === 'string'
-    && artifact.deterministicVisualMode.seed_policy_hash.startsWith('sha256:')
-    && typeof artifact.externalVisualStateMaterialHash === 'string'
-    && artifact.externalVisualStateMaterialHash.startsWith('sha256:');
+  const authorityBoundaryPersisted =
+    artifact.proofAuthority === 'external_visual_artifact_bytes_only_not_gpu_hmr_acceptance'
+    && artifact.acceptedForGpuHmr === false
+    && artifact.gpuHmrSuccess === false
+    && artifact.canSatisfyRuntimeProof === false
+    && artifact.visualOracleArtifacts?.camera_state_hash === undefined
+    && artifact.deterministicVisualMode?.seed_policy_hash === undefined
+    && artifact.externalVisualStateMaterialHash === undefined
+    && artifact.declaredDeterministicVisualMode?.proofAuthority
+      === 'profile_declaration_only_not_runtime_visual_proof'
+    && artifact.declaredDeterministicVisualMode?.acceptedForGpuHmr === false
+    && artifact.declaredDeterministicVisualMode?.gpuHmrSuccess === false;
   const acceptedCount = (artifact.visualEvidenceArtifacts ?? [])
     .filter((row) => row.acceptedAsVisualEvidence === true).length;
   return {
@@ -2152,7 +2083,7 @@ async function selfCheckVisualProofArtifact() {
       && written.proofId.startsWith('external-visual-proof:')
       && hashMatch
       && waitContractPersisted
-      && visualStateBindingPersisted
+      && authorityBoundaryPersisted
       && acceptedCount >= 2
       && invalidArtifactRejected
       && invalidProofArtifactFailed,
@@ -2161,7 +2092,7 @@ async function selfCheckVisualProofArtifact() {
     expectedHashes,
     observedHashes,
     acceptedCount,
-    visualStateBindingPersisted,
+    authorityBoundaryPersisted,
     invalidArtifactRejected,
     invalidProofArtifactFailed,
   };
@@ -2177,12 +2108,20 @@ async function selfCheck() {
     const mcpPreviewComplete = profile.proofMode !== 'mcp_preview'
       || Boolean(profile.mcpPreview?.language && profile.mcpPreview?.entryFile);
     const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
-    const deterministicVisualProfile = evaluateGpuHmrDeterministicVisualMode({
+    const declaredDeterministicVisualProfile = evaluateGpuHmrDeterministicVisualMode({
       ...(profile.visualProof.deterministicMode ?? {}),
       fixed_resolution: true,
       frame_capture_after_epoch_dispatch: true,
       presentation_fence_or_frame_boundary: true,
     });
+    const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence(profile);
+    const observedOnlyDeterministicVisualMode = deterministicVisualModeForExternal(
+      profile,
+      { width: 640, height: 480 },
+      { width: 640, height: 480 },
+    );
+    const observedOnlyDeterministicVisualModeEvaluation =
+      evaluateGpuHmrDeterministicVisualMode(observedOnlyDeterministicVisualMode);
     const runtimeCommandComplete = profile.proofMode === 'mcp_preview'
       || Boolean(profile.runtime.run?.command);
     checks.push({
@@ -2194,7 +2133,16 @@ async function selfCheck() {
         && screenshotHasOutput
         && mcpPreviewComplete
         && mcpPreviewGpuProof.satisfied
-        && deterministicVisualProfile.accepted,
+        && declaredDeterministicVisualProfile.accepted
+        && declaredDeterministicVisualMode?.proofAuthority
+          === 'profile_declaration_only_not_runtime_visual_proof'
+        && declaredDeterministicVisualMode?.acceptedForGpuHmr === false
+        && declaredDeterministicVisualMode?.gpuHmrSuccess === false
+        && observedOnlyDeterministicVisualMode?.fixed_resolution === true
+        && observedOnlyDeterministicVisualMode?.frozen_camera === undefined
+        && observedOnlyDeterministicVisualModeEvaluation.accepted === false
+        && observedOnlyDeterministicVisualModeEvaluation.failedGates
+          .some((gate) => gate.code === 'frozen_camera_unproven'),
       id: profile.id,
       project: profile.project.name,
       source: profile.source.file,
@@ -2203,7 +2151,10 @@ async function selfCheck() {
       screenshotHasOutput,
       mcpPreviewComplete,
       mcpPreviewGpuProofGate: mcpPreviewGpuProof,
-      deterministicVisualProfile,
+      declaredDeterministicVisualProfile,
+      declaredDeterministicVisualMode,
+      observedOnlyDeterministicVisualMode,
+      observedOnlyDeterministicVisualModeEvaluation,
     });
   }
   const profileSelectionEnvNames = [
@@ -2483,8 +2434,15 @@ async function runProfile(profile, profileSelection) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const dir = projectDir(profile);
   const runStartedMonotonicNs = monotonicNowNs();
+  const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence(profile);
   const report = {
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+    proofAuthority: 'external_project_profile_observation_only_not_gpu_hmr_acceptance',
+    proof_authority: 'external_project_profile_observation_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
     profile,
     proofMode: profile.proofMode,
     ...profileContractFields(profile),
@@ -2500,6 +2458,8 @@ async function runProfile(profile, profileSelection) {
     ),
     profileSelection,
     profile_selection: profileSelection,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     startedAt: new Date().toISOString(),
     metric_clock: 'monotonic_ns',
     started_monotonic_ns: runStartedMonotonicNs,
@@ -2559,16 +2519,7 @@ async function runProfile(profile, profileSelection) {
     });
     report.deterministicVisualMode = deterministicVisualModeForExternal(profile, before, after);
     report.deterministic_visual_mode = report.deterministicVisualMode;
-    const visualState = externalVisualStateHashMaterial(report, report.visualOracleArtifacts);
-    report.visualOracleArtifacts = visualArtifactsWithExternalVisualState(
-      report.visualOracleArtifacts,
-      visualState,
-    );
     report.visual_oracle_artifacts = report.visualOracleArtifacts;
-    report.deterministicVisualMode = withExternalVisualStateHashes(report.deterministicVisualMode, visualState);
-    report.deterministic_visual_mode = report.deterministicVisualMode;
-    report.externalVisualStateMaterialHash = visualState.materialHash;
-    report.external_visual_state_material_hash = visualState.materialHash;
     report.deterministicVisualModeEvaluation = report.deterministicVisualMode
       ? evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode)
       : null;
@@ -2721,19 +2672,7 @@ async function runMcpPreviewProfile(profile, dir, report) {
     });
     report.deterministicVisualMode = deterministicVisualModeForMcp(profile, before, after, afterCompile);
     report.deterministic_visual_mode = report.deterministicVisualMode;
-    const visualState = externalVisualStateHashMaterial(report, report.visualOracleArtifacts);
-    report.visualOracleArtifacts = visualArtifactsWithExternalVisualState(
-      report.visualOracleArtifacts,
-      visualState,
-    );
     report.visual_oracle_artifacts = report.visualOracleArtifacts;
-    report.deterministicVisualMode = withExternalVisualStateHashes(
-      report.deterministicVisualMode,
-      visualState,
-    );
-    report.deterministic_visual_mode = report.deterministicVisualMode;
-    report.externalVisualStateMaterialHash = visualState.materialHash;
-    report.external_visual_state_material_hash = visualState.materialHash;
     report.deterministicVisualModeEvaluation =
       evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode);
     report.deterministic_visual_mode_evaluation = report.deterministicVisualModeEvaluation;
