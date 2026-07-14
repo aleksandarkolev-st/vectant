@@ -59,7 +59,6 @@ const (
 	maxOutputManifest     = 1024 * 1024
 	maxOutputLabelBytes   = 160
 	maxCollectorHeader    = 64 * 1024 * 1024
-	diagnosticAckTimeout  = 2 * time.Second
 	processTermGrace      = 500 * time.Millisecond
 	processKillGrace      = 2 * time.Second
 	processPollInterval   = 10 * time.Millisecond
@@ -1404,7 +1403,7 @@ func readControlMain(specPath, name string) error {
 }
 
 func waitForDiagnosticAck(spec launcherSpec, specHash, readyHash string) error {
-	deadline := time.Now().Add(diagnosticAckTimeout)
+	deadline := time.Now().Add(time.Duration(spec.ReleaseTimeoutMillis) * time.Millisecond)
 	ackPath := filepath.Join(spec.ReleaseRoot, "diagnostic-ack.json")
 	for time.Now().Before(deadline) {
 		bytes, err := readBoundedRegularFile(ackPath, maxControlBytes)

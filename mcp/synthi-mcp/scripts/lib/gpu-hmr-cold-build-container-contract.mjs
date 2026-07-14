@@ -101,8 +101,8 @@ export const COLD_BUILD_LAUNCHER_SOURCE_PATH = path.resolve(
 );
 
 const EXPECTED_LAUNCHER_HASHES = Object.freeze({
-  amd64: 'sha256:21f66dfe730b0e3eda211be5ebd6ea96a671766049eb4f4f23036de92ff89d04',
-  arm64: 'sha256:e12732203f920306e5dbbcb6143ab509c63022dbc60f4a46830ede59211654a1',
+  amd64: 'sha256:44ee25aee904e7ee09c345a121b15449251ad765ce95c31a9c3766b89afe5aaf',
+  arm64: 'sha256:4ee9b485435d1b7c30fc1c73871a9cd45d38c23c1f126d390a0876003c36fe9a',
 });
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const PINNED_LAUNCHER_IDENTITIES = new WeakMap();
