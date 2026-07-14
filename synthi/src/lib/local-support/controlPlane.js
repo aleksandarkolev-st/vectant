@@ -75,6 +75,9 @@ const TRANSPARENCY_ACTIONS = new Set([
   "resume_session",
   "disconnect_session",
   "revoke_session_approvals",
+  "full_access_pause",
+  "full_access_revoke",
+  "process_visibility_pause",
   "export_history",
   "delete_history",
   "revoke_port",
@@ -1106,6 +1109,9 @@ function transparencyActionMessage(action) {
   if (action === "resume_session") return "Resume requested. The local app must re-check session validity before sending data.";
   if (action === "disconnect_session") return "Disconnect requested. The local app must revoke session approvals and approved ports.";
   if (action === "revoke_session_approvals") return "Approval revoke requested. The local app must invalidate queued and session approvals.";
+  if (action === "full_access_pause") return "Full Access pause requested. The local app must stop automatic Full Access delivery immediately.";
+  if (action === "full_access_revoke") return "Full Access revoke requested. The local app must invalidate the Full Access receipt and process visibility.";
+  if (action === "process_visibility_pause") return "Process visibility pause requested. The local app must stop releasing process inventory.";
   if (action === "export_history") return "Scrubbed history export requested from local product storage.";
   if (action === "delete_history") return "Local history delete requested from local product storage.";
   return "Local control action requested.";

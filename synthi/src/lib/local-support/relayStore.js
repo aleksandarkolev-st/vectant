@@ -15,6 +15,9 @@ export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
   "disconnect_session",
   "revoke_session_approvals",
   "revoke_port",
+  "full_access_pause",
+  "full_access_revoke",
+  "process_visibility_pause",
 ]);
 
 export async function enqueueLocalControlCommand(

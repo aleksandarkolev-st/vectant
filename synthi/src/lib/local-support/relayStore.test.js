@@ -142,6 +142,23 @@ describe("durable local support relay store", () => {
     });
   });
 
+  it("queues only narrowing Full Access emergency controls", async () => {
+    const { client } = fakeClient();
+    await enqueueLocalControlCommand({
+      commandId: "cmd_full_revoke_123",
+      sessionId: "sess_12345678",
+      accountId: "acct_123",
+      orgId: "org_123",
+      workspaceId: "wk_12345678",
+      deviceFingerprint: "sha256:3333333333333333",
+      action: "full_access_revoke",
+      expiresAt: "2030-01-01T00:01:00.000Z",
+    }, client);
+    expect(client.localSupportControlCommand.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ action: "full_access_revoke", port: null }),
+    });
+  });
+
   it("leases the oldest control command only for its exact paired device", async () => {
     const { tx, client } = fakeClient();
     const command = await leaseLocalControlCommand({
