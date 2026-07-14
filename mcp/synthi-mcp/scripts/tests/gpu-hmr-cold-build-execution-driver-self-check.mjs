@@ -23,6 +23,7 @@ import {
   COLD_BUILD_EXECUTION_DRIVER_AUTHORITY,
   COLD_BUILD_EXECUTION_DRIVER_SCHEMA,
   executeColdBuildLauncherPlan,
+  verifyColdBuildExecutionDriverResult,
 } from '../lib/gpu-hmr-cold-build-execution-driver.mjs';
 import { createColdBuildLauncherExecutionPlan } from '../lib/gpu-hmr-cold-build-execution-plan.mjs';
 import { computeColdBuildSourceTreeBinding } from '../lib/gpu-hmr-cold-build-source-tree-binding.mjs';
@@ -206,6 +207,15 @@ async function main() {
       readyTimeoutMs: 30_000,
       controlTimeoutMs: 30_000,
     });
+    assert.equal(
+      verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
+      accepted,
+    );
+    const clonedResult = structuredClone(accepted);
+    assert.throws(
+      () => verifyColdBuildExecutionDriverResult(clonedResult, acceptedFixture.plan),
+      /driver_result_invalid/,
+    );
     assert.equal(accepted.evidence.schemaVersion, COLD_BUILD_EXECUTION_DRIVER_SCHEMA);
     assert.equal(accepted.evidence.proofAuthority, COLD_BUILD_EXECUTION_DRIVER_AUTHORITY);
     assert.equal(accepted.evidence.protocolAccepted, true);
@@ -240,6 +250,24 @@ async function main() {
     assert.ok(!JSON.stringify(accepted.evidence).match(
       /miopen|hiprt|flow|diamond|neural|blas|fixture_name|project_name/i,
     ));
+    const originalAcceptedForGpuHmr = accepted.evidence.acceptedForGpuHmr;
+    accepted.evidence.acceptedForGpuHmr = true;
+    assert.throws(
+      () => verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
+      /driver_result_invalid/,
+    );
+    accepted.evidence.acceptedForGpuHmr = originalAcceptedForGpuHmr;
+    const originalPayloadByte = artifactPayload.bytes[0];
+    artifactPayload.bytes[0] ^= 1;
+    assert.throws(
+      () => verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
+      /driver_result_invalid/,
+    );
+    artifactPayload.bytes[0] = originalPayloadByte;
+    assert.equal(
+      verifyColdBuildExecutionDriverResult(accepted, acceptedFixture.plan),
+      accepted,
+    );
     await assertContainerAbsent(acceptedFixture.plan.containerName);
 
     const refusedFixture = await createPlanFixture({

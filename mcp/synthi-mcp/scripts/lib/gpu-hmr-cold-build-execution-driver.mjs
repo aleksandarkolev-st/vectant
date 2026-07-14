@@ -45,6 +45,7 @@ export const COLD_BUILD_HOST_FILE_PUBLICATION_AUTHORITY =
 const CONTAINER_ID_PATTERN = /^[a-f0-9]{64}$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const CONTROL_FILE_NAMES = new Set(['collector-complete.json', 'final.json']);
+const PINNED_DRIVER_RESULTS = new WeakMap();
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -65,6 +66,32 @@ function recomputeEvidenceHash(evidence) {
   const projection = { ...evidence };
   delete projection.evidenceHash;
   return contentHash(stableJson(projection));
+}
+
+function payloadManifestFromPayloads(payloads) {
+  if (!Array.isArray(payloads) || payloads.length < 1) {
+    throw new Error('cold_build_execution_driver_payloads_invalid');
+  }
+  return payloads.map(({ entry, bytes }) => {
+    if (
+      !entry
+      || typeof entry !== 'object'
+      || Array.isArray(entry)
+      || !Buffer.isBuffer(bytes)
+      || !Number.isSafeInteger(entry.byteLength)
+      || entry.byteLength !== bytes.byteLength
+      || !HASH_PATTERN.test(entry.contentHash ?? '')
+      || entry.contentHash !== contentHash(bytes)
+    ) {
+      throw new Error('cold_build_execution_driver_payload_invalid');
+    }
+    return {
+      path: entry.path,
+      byteLength: bytes.byteLength,
+      contentHash: contentHash(bytes),
+      mode: entry.mode,
+    };
+  });
 }
 
 function requireSafeInteger(value, name, minimum = 1) {
@@ -702,12 +729,7 @@ export async function executeColdBuildLauncherPlan(plan, {
     ) {
       throw new Error('cold_build_execution_driver_final_container_state_invalid');
     }
-    const payloadManifest = frame.payloads.map(({ entry, bytes }) => ({
-      path: entry.path,
-      byteLength: bytes.byteLength,
-      contentHash: contentHash(bytes),
-      mode: entry.mode,
-    }));
+    const payloadManifest = payloadManifestFromPayloads(frame.payloads);
     const evidence = {
       schemaVersion: COLD_BUILD_EXECUTION_DRIVER_SCHEMA,
       proofAuthority: COLD_BUILD_EXECUTION_DRIVER_AUTHORITY,
@@ -776,5 +798,60 @@ export async function executeColdBuildLauncherPlan(plan, {
   }
   executionResult.evidence.cleanup = cleanupEvidence;
   executionResult.evidence.evidenceHash = recomputeEvidenceHash(executionResult.evidence);
+  PINNED_DRIVER_RESULTS.set(executionResult, Object.freeze({
+    plan,
+    evidenceHash: executionResult.evidence.evidenceHash,
+    payloadManifestHash: executionResult.evidence.payloadManifestHash,
+  }));
   return executionResult;
+}
+
+export function verifyColdBuildExecutionDriverResult(result, plan) {
+  const pinned = PINNED_DRIVER_RESULTS.get(result);
+  const evidence = result?.evidence;
+  const cleanup = evidence?.cleanup;
+  let payloadManifest;
+  try {
+    payloadManifest = payloadManifestFromPayloads(result?.payloads);
+  } catch {
+    throw new Error('cold_build_execution_driver_result_invalid');
+  }
+  if (
+    !pinned
+    || pinned.plan !== plan
+    || pinned.evidenceHash !== evidence?.evidenceHash
+    || pinned.payloadManifestHash !== evidence?.payloadManifestHash
+    || evidence?.schemaVersion !== COLD_BUILD_EXECUTION_DRIVER_SCHEMA
+    || evidence?.proofAuthority !== COLD_BUILD_EXECUTION_DRIVER_AUTHORITY
+    || evidence?.planHash !== plan?.planHash
+    || evidence?.executionNonce !== plan?.executionNonce
+    || evidence?.commandSpecHash !== plan?.commandSpecHash
+    || evidence?.sourceBindingHash !== plan?.sourceBindingHash
+    || evidence?.specHash !== plan?.specHash
+    || evidence?.launcherExecutableHash !== plan?.launcherExecutableHash
+    || evidence?.protocolAccepted !== true
+    || evidence?.acceptedAsColdBuildExecutionEvidence !== true
+    || evidence?.acceptedForGpuHmr !== false
+    || evidence?.gpuHmrSuccess !== false
+    || evidence?.canSatisfyRuntimeProof !== false
+    || evidence?.canSatisfyDispatchProof !== false
+    || !Array.isArray(evidence?.payloadManifest)
+    || stableJson(payloadManifest) !== stableJson(evidence.payloadManifest)
+    || contentHash(stableJson(payloadManifest)) !== evidence.payloadManifestHash
+    || recomputeEvidenceHash(evidence) !== evidence.evidenceHash
+    || cleanup?.schemaVersion !== 'synthi.gpu_hmr.cold_build_container_cleanup.v1'
+    || cleanup?.proofAuthority !== 'container_cleanup_only_not_gpu_hmr_success'
+    || cleanup?.acceptedAsCleanupEvidence !== true
+    || cleanup?.absenceProven !== true
+    || !Array.isArray(cleanup?.blockingGaps)
+    || cleanup.blockingGaps.length !== 0
+    || cleanup?.acceptedForGpuHmr !== false
+    || cleanup?.gpuHmrSuccess !== false
+    || cleanup?.canSatisfyRuntimeProof !== false
+    || cleanup?.canSatisfyDispatchProof !== false
+    || recomputeEvidenceHash(cleanup) !== cleanup.evidenceHash
+  ) {
+    throw new Error('cold_build_execution_driver_result_invalid');
+  }
+  return result;
 }
