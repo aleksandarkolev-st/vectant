@@ -37,7 +37,19 @@ export const GPU_HMR_DETERMINISTIC_VISUAL_MODE_SCHEMA_VERSION =
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_visual_control_observation.v1';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY =
-  'target_process_runtime_visual_control_observation';
+  'verified_target_process_visual_control_state_and_capture_bindings';
+export const GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_visual_control_state.v1';
+export const GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_AUTHORITY =
+  'target_process_runtime_visual_control_state';
+export const GPU_HMR_RUNTIME_VISUAL_FRAME_BINDING_AUTHORITY =
+  'independent_verifier_bound_capture_bytes';
+export const GPU_HMR_RUNTIME_VISUAL_DIMENSIONS_BINDING_AUTHORITY =
+  'independent_verifier_decoded_capture_dimensions';
+export const GPU_HMR_RUNTIME_VISUAL_DEVICE_BINDING_AUTHORITY =
+  'independent_runtime_trace_device_identity';
+export const GPU_HMR_RUNTIME_VISUAL_DISPATCH_BINDING_AUTHORITY =
+  'independent_runtime_trace_dispatch_identity';
 export const GPU_HMR_RUNTIME_VISUAL_CONTROL_PAIR_SCHEMA_VERSION =
   'synthi.gpu_hmr.runtime_visual_control_pair.v1';
 export const GPU_HMR_VISUAL_ARTIFACT_TRANSPORT_EVIDENCE_SCHEMA_VERSION =
@@ -677,6 +689,181 @@ function monotonicNsOrNull(value) {
   }
 }
 
+function normalizedRuntimeVisualControlState(input = {}) {
+  const state = isObject(input) ? input : {};
+  return {
+    schema_version: textOrNull(state.schema_version ?? state.schemaVersion),
+    proof_authority: textOrNull(state.proof_authority ?? state.proofAuthority),
+    phase: textOrNull(state.phase),
+    runtime_session: textOrNull(state.runtime_session ?? state.runtimeSession),
+    process_id: textOrNull(state.process_id ?? state.processId),
+    capture_event_id: textOrNull(state.capture_event_id ?? state.captureEventId),
+    frame_timestamp_monotonic_ns: monotonicNsOrNull(
+      state.frame_timestamp_monotonic_ns ?? state.frameTimestampMonotonicNs,
+    ),
+    after_epoch_dispatch: boolOrNull(
+      state.after_epoch_dispatch ?? state.afterEpochDispatch,
+    ),
+    capture_synchronized: boolOrNull(
+      state.capture_synchronized ?? state.captureSynchronized,
+    ),
+    presentation_boundary_observed: boolOrNull(
+      state.presentation_boundary_observed ?? state.presentationBoundaryObserved,
+    ),
+    presentation_boundary_kind: textOrNull(
+      state.presentation_boundary_kind ?? state.presentationBoundaryKind,
+    ),
+    fixed_seed: boolOrNull(state.fixed_seed ?? state.fixedSeed),
+    seed_state_token: textOrNull(state.seed_state_token ?? state.seedStateToken),
+    camera_state_token: textOrNull(state.camera_state_token ?? state.cameraStateToken),
+    temporal_accumulation_present: boolOrNull(
+      state.temporal_accumulation_present ?? state.temporalAccumulationPresent,
+    ),
+    temporal_accumulation_disabled: boolOrNull(
+      state.temporal_accumulation_disabled ?? state.temporalAccumulationDisabled,
+    ),
+    temporal_accumulation_not_applicable: boolOrNull(
+      state.temporal_accumulation_not_applicable
+      ?? state.temporalAccumulationNotApplicable,
+    ),
+    taa_present: boolOrNull(state.taa_present ?? state.taaPresent),
+    taa_disabled: boolOrNull(state.taa_disabled ?? state.taaDisabled),
+    taa_not_applicable: boolOrNull(
+      state.taa_not_applicable ?? state.taaNotApplicable,
+    ),
+    denoiser_present: boolOrNull(state.denoiser_present ?? state.denoiserPresent),
+    denoiser_disabled: boolOrNull(
+      state.denoiser_disabled ?? state.denoiserDisabled,
+    ),
+    denoiser_not_applicable: boolOrNull(
+      state.denoiser_not_applicable ?? state.denoiserNotApplicable,
+    ),
+    presentation_image_count: positiveIntegerOrNull(
+      state.presentation_image_count ?? state.presentationImageCount,
+    ),
+    warmup_frames: nonNegativeIntegerOrNull(state.warmup_frames ?? state.warmupFrames),
+    width: positiveIntegerOrNull(state.width),
+    height: positiveIntegerOrNull(state.height),
+    accepted_for_gpu_hmr: boolOrNull(
+      state.accepted_for_gpu_hmr ?? state.acceptedForGpuHmr,
+    ),
+    gpu_hmr_success: boolOrNull(state.gpu_hmr_success ?? state.gpuHmrSuccess),
+    can_satisfy_runtime_proof: boolOrNull(
+      state.can_satisfy_runtime_proof ?? state.canSatisfyRuntimeProof,
+    ),
+  };
+}
+
+export function parseRuntimeVisualControlStateLine(sourceLine) {
+  const line = textOrNull(sourceLine);
+  const marker = '[gpu-runtime-boundary] visual_control_observation ';
+  const markerIndex = line?.indexOf(marker) ?? -1;
+  const failedGates = [];
+  let parsed = null;
+  if (markerIndex < 0) {
+    failedGates.push('runtime_visual_control_state_marker_missing');
+  } else {
+    const payloadText = line.slice(markerIndex + marker.length).trim();
+    try {
+      parsed = JSON.parse(payloadText);
+    } catch {
+      failedGates.push('runtime_visual_control_state_json_invalid');
+    }
+  }
+  if (parsed !== null && !isObject(parsed)) {
+    failedGates.push('runtime_visual_control_state_payload_invalid');
+  }
+  const state = normalizedRuntimeVisualControlState(parsed);
+  if (state.schema_version !== GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_SCHEMA_VERSION) {
+    failedGates.push('runtime_visual_control_state_schema_invalid');
+  }
+  if (state.proof_authority !== GPU_HMR_RUNTIME_VISUAL_CONTROL_STATE_AUTHORITY) {
+    failedGates.push('runtime_visual_control_state_authority_invalid');
+  }
+  if (
+    state.accepted_for_gpu_hmr !== false
+    || state.gpu_hmr_success !== false
+    || state.can_satisfy_runtime_proof !== false
+  ) {
+    failedGates.push('runtime_visual_control_state_authority_claim_invalid');
+  }
+  const uniqueFailedGates = compactStringList(failedGates);
+  return {
+    accepted: uniqueFailedGates.length === 0,
+    state,
+    statePayloadHash: sha256Text(stableJson(state)),
+    state_payload_hash: sha256Text(stableJson(state)),
+    sourceLine: line,
+    source_line: line,
+    sourceLineHash: line ? sha256Text(line) : null,
+    source_line_hash: line ? sha256Text(line) : null,
+    failedGates: uniqueFailedGates,
+    failed_gates: uniqueFailedGates,
+  };
+}
+
+export function materializeRuntimeVisualControlObservation(input = {}) {
+  const sourceLine = input.source_line ?? input.sourceLine;
+  const parsed = parseRuntimeVisualControlStateLine(sourceLine);
+  const state = parsed.state;
+  const record = {
+    schema_version: GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_SCHEMA_VERSION,
+    proof_authority: GPU_HMR_RUNTIME_VISUAL_CONTROL_OBSERVATION_AUTHORITY,
+    phase: state.phase,
+    runtime_session: state.runtime_session,
+    process_id: state.process_id,
+    device_identity: textOrNull(input.device_identity ?? input.deviceIdentity),
+    capture_event_id: state.capture_event_id,
+    frame_hash: sha256ContentAddress(input.frame_hash ?? input.frameHash),
+    frame_hash_binding_authority: GPU_HMR_RUNTIME_VISUAL_FRAME_BINDING_AUTHORITY,
+    frame_dimensions_binding_authority:
+      GPU_HMR_RUNTIME_VISUAL_DIMENSIONS_BINDING_AUTHORITY,
+    device_identity_binding_authority: GPU_HMR_RUNTIME_VISUAL_DEVICE_BINDING_AUTHORITY,
+    dispatch_identity_binding_authority: GPU_HMR_RUNTIME_VISUAL_DISPATCH_BINDING_AUTHORITY,
+    width: positiveIntegerOrNull(input.width),
+    height: positiveIntegerOrNull(input.height),
+    frame_timestamp_monotonic_ns: state.frame_timestamp_monotonic_ns,
+    source_line_hash: parsed.sourceLineHash,
+    source_line: parsed.sourceLine,
+    source_line_index: nonNegativeIntegerOrNull(
+      input.source_line_index ?? input.sourceLineIndex,
+    ),
+    state_payload_hash: parsed.statePayloadHash,
+    state_line_accepted: parsed.accepted,
+    state_line_failed_gates: parsed.failedGates,
+    dispatch_id: textOrNull(input.dispatch_id ?? input.dispatchId),
+    after_epoch_dispatch: state.after_epoch_dispatch,
+    capture_synchronized: state.capture_synchronized,
+    presentation_boundary_observed: state.presentation_boundary_observed,
+    presentation_boundary_kind: state.presentation_boundary_kind,
+    fixed_seed: state.fixed_seed,
+    seed_state_token: state.seed_state_token,
+    seed_policy_hash: state.seed_state_token ? sha256Text(state.seed_state_token) : null,
+    camera_state_token: state.camera_state_token,
+    camera_state_hash: state.camera_state_token ? sha256Text(state.camera_state_token) : null,
+    temporal_accumulation_present: state.temporal_accumulation_present,
+    temporal_accumulation_disabled: state.temporal_accumulation_disabled,
+    temporal_accumulation_not_applicable: state.temporal_accumulation_not_applicable,
+    taa_present: state.taa_present,
+    taa_disabled: state.taa_disabled,
+    taa_not_applicable: state.taa_not_applicable,
+    denoiser_present: state.denoiser_present,
+    denoiser_disabled: state.denoiser_disabled,
+    denoiser_not_applicable: state.denoiser_not_applicable,
+    presentation_image_count: state.presentation_image_count,
+    warmup_frames: state.warmup_frames,
+    target_reported_width: state.width,
+    target_reported_height: state.height,
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+  };
+  return {
+    ...record,
+    observation_hash: runtimeVisualControlObservationHash(record),
+  };
+}
+
 function normalizedRuntimeVisualControlObservation(input = {}) {
   const observation = isObject(input) ? input : {};
   return {
@@ -688,6 +875,21 @@ function normalizedRuntimeVisualControlObservation(input = {}) {
     device_identity: textOrNull(observation.device_identity ?? observation.deviceIdentity),
     capture_event_id: textOrNull(observation.capture_event_id ?? observation.captureEventId),
     frame_hash: sha256ContentAddress(observation.frame_hash ?? observation.frameHash),
+    frame_hash_binding_authority: textOrNull(
+      observation.frame_hash_binding_authority ?? observation.frameHashBindingAuthority,
+    ),
+    frame_dimensions_binding_authority: textOrNull(
+      observation.frame_dimensions_binding_authority
+      ?? observation.frameDimensionsBindingAuthority,
+    ),
+    device_identity_binding_authority: textOrNull(
+      observation.device_identity_binding_authority
+      ?? observation.deviceIdentityBindingAuthority,
+    ),
+    dispatch_identity_binding_authority: textOrNull(
+      observation.dispatch_identity_binding_authority
+      ?? observation.dispatchIdentityBindingAuthority,
+    ),
     width: positiveIntegerOrNull(observation.width),
     height: positiveIntegerOrNull(observation.height),
     frame_timestamp_monotonic_ns: monotonicNsOrNull(
@@ -700,6 +902,12 @@ function normalizedRuntimeVisualControlObservation(input = {}) {
     source_line_index: nonNegativeIntegerOrNull(
       observation.source_line_index ?? observation.sourceLineIndex,
     ),
+    state_payload_hash: sha256ContentAddress(
+      observation.state_payload_hash ?? observation.statePayloadHash,
+    ),
+    state_line_accepted: boolOrNull(
+      observation.state_line_accepted ?? observation.stateLineAccepted,
+    ),
     dispatch_id: textOrNull(observation.dispatch_id ?? observation.dispatchId),
     after_epoch_dispatch: boolOrNull(
       observation.after_epoch_dispatch ?? observation.afterEpochDispatch,
@@ -710,12 +918,21 @@ function normalizedRuntimeVisualControlObservation(input = {}) {
     presentation_boundary_observed: boolOrNull(
       observation.presentation_boundary_observed ?? observation.presentationBoundaryObserved,
     ),
+    presentation_boundary_kind: textOrNull(
+      observation.presentation_boundary_kind ?? observation.presentationBoundaryKind,
+    ),
     fixed_seed: boolOrNull(observation.fixed_seed ?? observation.fixedSeed),
+    seed_state_token: textOrNull(
+      observation.seed_state_token ?? observation.seedStateToken,
+    ),
     seed_policy_hash: sha256ContentAddress(
       observation.seed_policy_hash ?? observation.seedPolicyHash,
     ),
     camera_state_hash: sha256ContentAddress(
       observation.camera_state_hash ?? observation.cameraStateHash,
+    ),
+    camera_state_token: textOrNull(
+      observation.camera_state_token ?? observation.cameraStateToken,
     ),
     temporal_accumulation_present: boolOrNull(
       observation.temporal_accumulation_present ?? observation.temporalAccumulationPresent,
@@ -744,6 +961,12 @@ function normalizedRuntimeVisualControlObservation(input = {}) {
     ),
     warmup_frames: nonNegativeIntegerOrNull(
       observation.warmup_frames ?? observation.warmupFrames,
+    ),
+    target_reported_width: positiveIntegerOrNull(
+      observation.target_reported_width ?? observation.targetReportedWidth,
+    ),
+    target_reported_height: positiveIntegerOrNull(
+      observation.target_reported_height ?? observation.targetReportedHeight,
     ),
     accepted_for_gpu_hmr: boolOrNull(
       observation.accepted_for_gpu_hmr ?? observation.acceptedForGpuHmr,
@@ -851,6 +1074,27 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     if (!observation.device_identity) fail(`runtime_visual_control_${phase}_device_missing`);
     if (!observation.capture_event_id) fail(`runtime_visual_control_${phase}_capture_event_missing`);
     if (!observation.frame_hash) fail(`runtime_visual_control_${phase}_frame_hash_missing`);
+    if (observation.frame_hash_binding_authority !== GPU_HMR_RUNTIME_VISUAL_FRAME_BINDING_AUTHORITY) {
+      fail(`runtime_visual_control_${phase}_frame_binding_authority_invalid`);
+    }
+    if (
+      observation.frame_dimensions_binding_authority
+      !== GPU_HMR_RUNTIME_VISUAL_DIMENSIONS_BINDING_AUTHORITY
+    ) {
+      fail(`runtime_visual_control_${phase}_dimensions_binding_authority_invalid`);
+    }
+    if (
+      observation.device_identity_binding_authority
+      !== GPU_HMR_RUNTIME_VISUAL_DEVICE_BINDING_AUTHORITY
+    ) {
+      fail(`runtime_visual_control_${phase}_device_binding_authority_invalid`);
+    }
+    if (
+      observation.dispatch_identity_binding_authority
+      !== GPU_HMR_RUNTIME_VISUAL_DISPATCH_BINDING_AUTHORITY
+    ) {
+      fail(`runtime_visual_control_${phase}_dispatch_binding_authority_invalid`);
+    }
     if (!observation.width || !observation.height) {
       fail(`runtime_visual_control_${phase}_resolution_missing`);
     }
@@ -866,10 +1110,64 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     } else if (sha256Text(observation.source_line) !== observation.source_line_hash) {
       fail(`runtime_visual_control_${phase}_source_line_hash_mismatch`);
     }
-    if (!observation.seed_policy_hash || observation.fixed_seed !== true) {
+    const parsedState = parseRuntimeVisualControlStateLine(observation.source_line);
+    if (observation.state_line_accepted !== true || parsedState.accepted !== true) {
+      fail(`runtime_visual_control_${phase}_target_state_invalid`);
+    }
+    if (
+      !observation.state_payload_hash
+      || observation.state_payload_hash !== parsedState.statePayloadHash
+    ) {
+      fail(`runtime_visual_control_${phase}_target_state_hash_mismatch`);
+    }
+    const targetState = parsedState.state;
+    const targetProjection = {
+      phase: observation.phase,
+      runtime_session: observation.runtime_session,
+      process_id: observation.process_id,
+      capture_event_id: observation.capture_event_id,
+      frame_timestamp_monotonic_ns: observation.frame_timestamp_monotonic_ns,
+      after_epoch_dispatch: observation.after_epoch_dispatch,
+      capture_synchronized: observation.capture_synchronized,
+      presentation_boundary_observed: observation.presentation_boundary_observed,
+      presentation_boundary_kind: observation.presentation_boundary_kind,
+      fixed_seed: observation.fixed_seed,
+      seed_state_token: observation.seed_state_token,
+      camera_state_token: observation.camera_state_token,
+      temporal_accumulation_present: observation.temporal_accumulation_present,
+      temporal_accumulation_disabled: observation.temporal_accumulation_disabled,
+      temporal_accumulation_not_applicable: observation.temporal_accumulation_not_applicable,
+      taa_present: observation.taa_present,
+      taa_disabled: observation.taa_disabled,
+      taa_not_applicable: observation.taa_not_applicable,
+      denoiser_present: observation.denoiser_present,
+      denoiser_disabled: observation.denoiser_disabled,
+      denoiser_not_applicable: observation.denoiser_not_applicable,
+      presentation_image_count: observation.presentation_image_count,
+      warmup_frames: observation.warmup_frames,
+      width: observation.target_reported_width,
+      height: observation.target_reported_height,
+      accepted_for_gpu_hmr: observation.accepted_for_gpu_hmr,
+      gpu_hmr_success: observation.gpu_hmr_success,
+      can_satisfy_runtime_proof: observation.can_satisfy_runtime_proof,
+    };
+    const expectedTargetProjection = { ...targetState };
+    delete expectedTargetProjection.schema_version;
+    delete expectedTargetProjection.proof_authority;
+    if (stableJson(targetProjection) !== stableJson(expectedTargetProjection)) {
+      fail(`runtime_visual_control_${phase}_target_state_projection_mismatch`);
+    }
+    if (
+      !observation.seed_state_token
+      || observation.seed_policy_hash !== sha256Text(observation.seed_state_token)
+      || observation.fixed_seed !== true
+    ) {
       fail(`runtime_visual_control_${phase}_seed_policy_unproven`);
     }
-    if (!observation.camera_state_hash) {
+    if (
+      !observation.camera_state_token
+      || observation.camera_state_hash !== sha256Text(observation.camera_state_token)
+    ) {
       fail(`runtime_visual_control_${phase}_camera_state_missing`);
     }
     if (observation.capture_synchronized !== true) {
@@ -877,6 +1175,9 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     }
     if (observation.presentation_boundary_observed !== true) {
       fail(`runtime_visual_control_${phase}_presentation_boundary_missing`);
+    }
+    if (!observation.presentation_boundary_kind) {
+      fail(`runtime_visual_control_${phase}_presentation_boundary_kind_missing`);
     }
     if (!observation.presentation_image_count) {
       fail(`runtime_visual_control_${phase}_presentation_image_count_missing`);
@@ -910,6 +1211,14 @@ export function evaluateRuntimeVisualControlObservationPair(input = {}) {
     || after.height !== expectedHeight
   ) {
     fail('runtime_visual_control_decoded_resolution_mismatch');
+  }
+  if (
+    before.target_reported_width !== expectedWidth
+    || before.target_reported_height !== expectedHeight
+    || after.target_reported_width !== expectedWidth
+    || after.target_reported_height !== expectedHeight
+  ) {
+    fail('runtime_visual_control_target_reported_resolution_mismatch');
   }
   if (!expectedProcessId || before.process_id !== expectedProcessId || after.process_id !== expectedProcessId) {
     fail('runtime_visual_control_process_identity_mismatch');
