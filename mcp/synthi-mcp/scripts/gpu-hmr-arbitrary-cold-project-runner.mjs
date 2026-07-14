@@ -21,6 +21,10 @@ import {
   verifyArbitraryColdProjectContract,
 } from './lib/gpu-hmr-arbitrary-cold-project-contract.mjs';
 import {
+  createArbitraryColdCliResultEnvelope,
+  verifyArbitraryColdCliResultEnvelope,
+} from './lib/gpu-hmr-arbitrary-cold-cli-envelope.mjs';
+import {
   createArbitraryColdRetainedExecutionChain,
   verifyArbitraryColdRetainedExecutionChain,
 } from './lib/gpu-hmr-arbitrary-cold-retained-chain.mjs';
@@ -1357,16 +1361,12 @@ async function main() {
     dockerExecutable: args['--docker'] ?? 'docker',
   });
   await verifyArbitraryColdProjectRun(result);
-  console.log(JSON.stringify({
+  const envelope = createArbitraryColdCliResultEnvelope({
     descriptorBytesHash: contentHash(descriptorBytes),
-    evidence: result.evidence,
-    retainedExecutionChain: result.retainedExecutionChain,
-    outputs: result.outputs.map((output) => ({
-      metadata: output.metadata,
-      artifactLocator: output.artifactLocator,
-      transportEvidence: output.transportEvidence,
-    })),
-  }, null, 2));
+    result,
+  });
+  verifyArbitraryColdCliResultEnvelope(envelope);
+  console.log(JSON.stringify(envelope, null, 2));
 }
 
 async function canonicalInvocationPath(value) {

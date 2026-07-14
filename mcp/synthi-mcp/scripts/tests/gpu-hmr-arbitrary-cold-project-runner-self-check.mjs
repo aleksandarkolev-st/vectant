@@ -32,6 +32,11 @@ import {
   COLD_BUILD_LAUNCHER_OUTPUT_ROOT,
 } from '../lib/gpu-hmr-cold-build-container-contract.mjs';
 import {
+  ARBITRARY_COLD_CLI_RESULT_ENVELOPE_AUTHORITY,
+  ARBITRARY_COLD_CLI_RESULT_ENVELOPE_SCHEMA,
+  verifyArbitraryColdCliResultEnvelope,
+} from '../lib/gpu-hmr-arbitrary-cold-cli-envelope.mjs';
+import {
   ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_AUTHORITY,
   ARBITRARY_COLD_RETAINED_EXECUTION_CHAIN_SCHEMA,
   verifyArbitraryColdRetainedExecutionChain,
@@ -441,6 +446,17 @@ try {
   });
   assert.equal(stderr, '');
   const cliResult = JSON.parse(stdout);
+  assert.equal(cliResult.schemaVersion, ARBITRARY_COLD_CLI_RESULT_ENVELOPE_SCHEMA);
+  assert.equal(cliResult.proofAuthority, ARBITRARY_COLD_CLI_RESULT_ENVELOPE_AUTHORITY);
+  assert.equal(verifyArbitraryColdCliResultEnvelope(cliResult), cliResult);
+  assert.equal(cliResult.outputBytesEmbedded, false);
+  assert.equal(cliResult.externalAuthenticityAnchorEmbedded, false);
+  assert.equal(cliResult.acceptedAsCliResultEnvelope, true);
+  assert.equal(cliResult.acceptedAsColdBuildEvidence, false);
+  assert.equal(cliResult.acceptedForGpuHmr, false);
+  assert.equal(cliResult.gpuHmrSuccess, false);
+  assert.equal(cliResult.canSatisfyRuntimeProof, false);
+  assert.equal(cliResult.canSatisfyDispatchProof, false);
   assert.equal(cliResult.evidence.schemaVersion, ARBITRARY_COLD_PROJECT_RUN_SCHEMA);
   assert.equal(cliResult.evidence.acceptedForGpuHmr, false);
   assert.equal(cliResult.evidence.gpuHmrSuccess, false);
@@ -453,6 +469,30 @@ try {
     cliResult.evidence.evidenceHash,
   );
   assert.equal(cliResult.outputs.length, descriptor.outputs.length);
+  assert.equal(stdout.includes(privateArgument), false);
+  assert.equal(stdout.includes(privateEnvironmentValue), false);
+  const forgedCliDescriptorBinding = structuredClone(cliResult);
+  forgedCliDescriptorBinding.descriptorHash = `sha256:${'0'.repeat(64)}`;
+  resealEvidence(forgedCliDescriptorBinding);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliDescriptorBinding),
+    /cli_result_envelope_invalid/,
+  );
+  const forgedCliSiblingEvidence = structuredClone(cliResult);
+  forgedCliSiblingEvidence.evidence.contractHash = `sha256:${'1'.repeat(64)}`;
+  resealEvidence(forgedCliSiblingEvidence.evidence);
+  resealEvidence(forgedCliSiblingEvidence);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliSiblingEvidence),
+    /cli_result_envelope_invalid/,
+  );
+  const forgedCliOutputAuthority = structuredClone(cliResult);
+  forgedCliOutputAuthority.outputs[0].transportEvidence.runtimeAuthority = true;
+  resealEvidence(forgedCliOutputAuthority);
+  assert.throws(
+    () => verifyArbitraryColdCliResultEnvelope(forgedCliOutputAuthority),
+    /cli_result_envelope_invalid/,
+  );
   assert.ok(!JSON.stringify(cliResult.evidence).match(
     /miopen|hiprt|flow|diamond|neural|blas|cuda|rocm|project_name|fixture_name/i,
   ));
